@@ -52,7 +52,7 @@ extern "C"
     void arch_irq_restore(arch_irq_state_t) {}
     int arch_in_isr(void) { return 0; }
 
-    void arch_console_write(char const*, size_t) { note_poke(); }
+    int arch_console_write(char const*, size_t) { note_poke(); return 1; }
     void arch_console_write_sync(char const*, size_t) { note_poke(); }
     void arch_console_flush_sync(void) {}
     void arch_console_reclaim(void) { g_reclaims = g_reclaims + 1; }

@@ -1036,6 +1036,16 @@ config KICKOS_CONSOLE
 	default "rtt" if CONSOLE_RTT
 	default "both" if CONSOLE_BOTH
 
+config KICKOS_DIAG_LINE_MAX
+	int "Kernel diagnostic line bytes"
+	range 128 4096
+	default 256
+	help
+	  The kprintf line buffer, and the independent variable the console TX ring
+	  is sized from: the ring holds one of these lines CRLF-expanded, which the
+	  ring's own header derives. A board short of RAM lowers this and its ring
+	  follows; a line past the bound truncates.
+
 choice
 	prompt "Telemetry transport"
 	default TELEMETRY_OFF

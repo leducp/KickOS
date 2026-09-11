@@ -66,7 +66,7 @@ int main(int, char**)
     emit(msg);
 
     // The announce above must be ON THE WIRE before the fault, not merely queued. A chip
-    // with a buffered console (stm32f302, xmc4800: arch_console_write is console_tx_write,
+    // with a buffered console (stm32f302, xmc4800: arch_console_write is the line insert,
     // a ring the UART TX-empty ISR drains) has only pushed a few bytes by now, and
     // kpanic_enter masks IRQs before it flushes, so anything still in the ring is at the
     // mercy of the reporter completing. Without this wait a board that dies AT the read is

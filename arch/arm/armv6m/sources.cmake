@@ -5,9 +5,7 @@
 # relative to arch/, not to this directory, and the list order is the archive's member order.
 
 # Cortex-M0/M0+ (RP2040). No arch_trace_now fallback: v6-M has no DWT, so the trace clock
-# is a chip contract. Fault isolation has a real v6-M backend (it reads CONTROL.nPRIV),
-# linked in place of the declining fallbacks removed from KICKOS_SEAM_DEFAULTS_COMMON under
-# the same gate.
+# is a chip contract.
 set(_armv6m_fault "")
 if(KICKOS_FAULT_ISOLATION)
   set(_armv6m_fault arm/armv6m/arch_armv6m_fault.cc)

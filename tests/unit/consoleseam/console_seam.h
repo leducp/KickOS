@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The mock console transport both console host gates drive: a counted interrupt mask with a
-// gap hook, a mock TX edge, and a drain ISR that runs ONLY while the mask is open. A producer
-// that never opens the mask can therefore never be drained, which is what makes the
-// masked-push metric separate a bit-banged transmission from a ring enqueue.
-//
-// It answers NOTHING of the ownership boundary. console_chip_writer_enter/_leave is a
-// reference count console.cc owns and console_owner_set_user asserts on, so a suite that
-// compiles console.cc takes the real one and a suite that does not supplies its own stub;
-// either way it comes from that suite's own seam and never from here.
+// The mock console transport: a counted interrupt mask with a gap hook, a mock TX edge, and
+// a drain ISR that runs ONLY while the mask is open. A producer that never opens the mask can
+// therefore never be drained, which is what makes the masked-push metric separate a
+// bit-banged transmission from a ring enqueue.
 
 #ifndef KICKOS_TESTS_UNIT_CONSOLESEAM_CONSOLE_SEAM_H
 #define KICKOS_TESTS_UNIT_CONSOLESEAM_CONSOLE_SEAM_H

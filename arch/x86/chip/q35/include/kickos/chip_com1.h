@@ -11,6 +11,10 @@ namespace kickos::q35
     void com1_init(void);
     void com1_putc(char c);
 
+    // The status read and the data write com1_putc is built from.
+    int com1_slot_free(void);
+    void com1_push(uint8_t b);
+
     // com1_putc polls only the holding register, so a 16550 with its transmit FIFO on can
     // outrun a shutdown; this waits for the shift register too, bounded.
     void com1_drain(void);

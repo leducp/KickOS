@@ -222,9 +222,7 @@ namespace
     void rp_tx_push(uint8_t b) { r32(reg::uart::DR) = b; }
     void rp_tx_irq_enable(void) { r32(reg::uart::IMSC + mmap::ATOMIC_SET) = reg::uart::IMSC_TXIM; }
     void rp_tx_irq_disable(void) { r32(reg::uart::IMSC + mmap::ATOMIC_CLR) = reg::uart::IMSC_TXIM; }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
 }
@@ -252,7 +250,7 @@ void arch_init(void)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::UART0_IRQ;
     return &rp_console_backend;
 }

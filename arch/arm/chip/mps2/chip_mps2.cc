@@ -9,6 +9,7 @@
 // declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 
@@ -64,6 +65,21 @@ namespace
     constexpr long SYS_CLOCK = 0x10;
     constexpr long SYS_EXIT_EXTENDED = 0x20;
     constexpr uint32_t ADP_Stopped_ApplicationExit = 0x20026u;
+
+    // --- Buffered console TX backend (console_tx.h). The semihosting trap takes the byte
+    // inside the call: no channel to wait on, no completion to interrupt on. ---
+    int mps2_tx_slot_free(void) { return 1; }
+    void mps2_tx_push(uint8_t b)
+    {
+        char c = static_cast<char>(b);
+        semihost(SYS_WRITEC, &c);
+    }
+    void mps2_tx_irq_enable(void) {}
+    void mps2_tx_irq_disable(void) {}
+
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
+    console_tx_backend const mps2_console_backend = {
+        mps2_tx_slot_free, mps2_tx_push, mps2_tx_irq_enable, mps2_tx_irq_disable};
 
     void run_init_array()
     {
@@ -131,15 +147,28 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
+int arch_console_write(char const* buf, size_t n)
+{
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+}
+
 // SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
 // here and arch_console_flush_sync is left to its no-op fallback.
-void arch_console_write(char const* buf, size_t n)
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         char c = buf[i];
         semihost(SYS_WRITEC, &c);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = KICKOS_CONSOLE_TX_SIZE;
+    *irq_line = -1; // no TX completion event exists; the producer drains
+    return &mps2_console_backend;
 }
 
 void arch_shutdown(int status)

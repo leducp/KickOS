@@ -7,19 +7,16 @@
 # riscv64-unknown-elf) are C-only/picolibc: without this gate configure succeeds and
 # the build dies much later on `#include <exception>` or at the application link.
 #
-# No link-test, deliberately: a bare-metal link needs the board's linker script +
-# startup, supplied only at the application-link step (why the toolchain files set
-# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY). Compiler queries plus one
+# No link test: a bare-metal link needs the board's linker script + startup, supplied
+# only at the application-link step, which is what the toolchain files set
+# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY for. Compiler queries plus one
 # compile-only probe; nothing is linked.
-#
-# The ARM, AArch64 and RISC-V toolchain files include it list-dir-relative right after
-# their find_program calls, and installed MCU packages ship it beside them.
 
 # kickos_require_usable_cross_cxx(<label> <cxx> <override-var> <tarball-url> <flags>...)
 #
 #   <label>        family name for the diagnostic ("arm", "riscv")
-#   <cxx>          the resolved C++ compiler. libstdc++ is a C++ question, and
-#                  the C/ASM drivers come from the same install.
+#   <cxx>          the resolved C++ compiler. The C/ASM drivers come from the same
+#                  install.
 #   <override-var> the cache variable that repoints the search at a good install
 #   <tarball-url>  the official build KickOS CI pins (.github/workflows/ci.yml)
 #   <flags>...     the multilib-selecting flags THIS build compiles with
@@ -41,7 +38,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
   endif()
 
   # Which multilib do these flags select? Diagnostic only: a compiler that
-  # cannot answer is not fatal here; the library probe below is the verdict.
+  # cannot answer is not fatal; the library probe below is the verdict.
   execute_process(COMMAND "${_cxx}" ${_flags} -print-multi-directory
                   OUTPUT_VARIABLE _multilib OUTPUT_STRIP_TRAILING_WHITESPACE
                   ERROR_QUIET RESULT_VARIABLE _rc)
@@ -51,8 +48,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
 
   # gcc -print-file-name=<lib> answers an absolute path when the library exists in
   # the search dirs these flags select, and echoes the bare name back when not.
-  # The full-C++ opt-in links both libs; a toolchain lacking them lacks the C++
-  # headers too.
+  # A toolchain lacking these two lacks the C++ headers too.
   set(_absent "")
   foreach(_lib libstdc++.a libsupc++.a)
     execute_process(COMMAND "${_cxx}" ${_flags} "-print-file-name=${_lib}"
@@ -66,8 +62,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
   # Which libc? KickOS wants newlib. Test __PICOLIBC__ POSITIVELY: picolibc also
   # defines __NEWLIB__ for source compatibility, so "no picolibc macro" is the only
   # honest reading of "newlib". -fsyntax-only: no object, no link, so it holds
-  # under CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY. A libc header carries the
-  # macro, hence the include.
+  # under CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY.
   set(_probe "${CMAKE_BINARY_DIR}/CMakeFiles/kickos-libc-probe-${_label}.cc")
   file(WRITE "${_probe}"
     "/* KickOS libc probe: compiled, never linked. */\n"
@@ -84,8 +79,6 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     if("${_probe_out}${_probe_err}" MATCHES "KICKOS_PROBE_SAW_PICOLIBC")
       set(_picolibc TRUE)
     else()
-      # Not picolibc: the probe itself would not compile, so this compiler cannot
-      # preprocess a plain libc header. Report that rather than guess a libc.
       string(STRIP "${_probe_out}${_probe_err}" _probe_broken)
     endif()
   endif()
@@ -98,7 +91,6 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
       " (-print-file-name echoed the bare name back instead of a path)")
   endif()
   if(_picolibc)
-    # If picolibc is ever adopted, delete this block; nothing else reads _picolibc.
     string(APPEND _why
       "\n  * its libc is PICOLIBC (__PICOLIBC__ is defined); KickOS requires NEWLIB")
   endif()

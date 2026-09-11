@@ -4,16 +4,15 @@
 # The AMP partition's geometry and its port capabilities, resolved at CONFIGURE time.
 #
 # ORDERING IS LOAD-BEARING: this runs before cap_table.cmake, whose width has a term per
-# listed crossing (KICKOS_AMP_PORT_COUNT below). include()d rather than wrapped in a
-# function, because the root file and everything under it read the variables it sets and a
-# function scope would swallow them.
+# listed crossing (KICKOS_AMP_PORT_COUNT below). It must stay include()d at directory scope:
+# the root file and everything under it read the variables it sets, and a function scope
+# would not export them.
 # --- The AMP partition's geometry -------------------------------------------------------
-# Under one image per node the region every node writes has to sit at one address two link
-# scripts agree on. They agree by DERIVING it: each image states its own node index and the
-# three partition facts, and arch/common/amp_partition.ld.h computes every address from them.
+# arch/common/amp_partition.ld.h computes every address from a node index and these three
+# facts.
 if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   foreach(_geo KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE)
-    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
+    # math() normalises every spelling of zero; a string test would pass 0x00.
     set(_geo_v 0)
     if(NOT "${${_geo}}" STREQUAL "")
       math(EXPR _geo_v "${${_geo}}")
@@ -32,7 +31,6 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   # obscurely: ld reports a FLASH overflow that names neither knob.
   set(_amp_text_v "")
   foreach(_geo KICKOS_AMP_TEXT_BASE KICKOS_AMP_TEXT_SHARE)
-    # Through math(), so every spelling of zero answers zero: a string test would pass 0x00.
     set(_geo_v 0)
     if(NOT "${${_geo}}" STREQUAL "")
       math(EXPR _geo_v "${${_geo}}")
@@ -61,10 +59,6 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
       "KICKOS_AMP_PARTITION_BASE describes all of it.")
   endif()
 
-  # amp::ring turns a node index into a doorbell target, and the two coincide only under the
-  # shared-image posture, where a node's identity IS the core register. Under one image per
-  # node they are unrelated, so without this map the doorbell would ring whichever local core
-  # carries the target's index, silently and with no refusal.
   string(REPLACE "," ";" _amp_cores "${KICKOS_AMP_NODE_CORES}")
   list(LENGTH _amp_cores _amp_cores_len)
   if(NOT _amp_cores_len EQUAL KICKOS_AMP_NODES)
@@ -97,10 +91,6 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     list(APPEND _amp_seen "${_core}")
     math(EXPR _amp_node "${_amp_node} + 1")
   endforeach()
-  # Node 0 is the partition primary and the node the machine enters; arch_amp_release_peers
-  # starts every OTHER node at the core this map names it, so a map putting a peer on the
-  # primary's own core makes the primary release itself. No chip in the tree states which core
-  # it resets into, so 0 is the assumption.
   list(GET _amp_cores 0 _amp_node0_core)
   if(NOT _amp_node0_core EQUAL 0)
     message(FATAL_ERROR
@@ -128,14 +118,11 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     KICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
     KICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})
   # --- What a peer node is configured from, and what proves two images agree ---------------
-  # The seed is this node's RESOLVED .config, because a knob forwarded under its Kconfig name
-  # rather than a KICKOS_ one reaches .config and no KICKOS_* cache entry. It is half of what a
-  # peer is configured from; build-partition.sh sweeps the cache beside it for the knobs that
-  # are no Kconfig symbol, and its header says why neither half covers the other.
+  # The seed is this node's RESOLVED .config, which is half of what a peer is configured from:
+  # build-partition.sh sweeps the cache beside it for the knobs that are no Kconfig symbol.
   #
-  # KICKOS_AMP_NODE_ID is the one symbol a node may differ in, so the seed omits it and
-  # build-partition.sh states it per node. Everything else is derived from that index, at build
-  # time or through KICKOS_AMP_NODE_CORES at run time.
+  # KICKOS_AMP_NODE_ID is the one symbol a node may differ in: the seed omits it and
+  # build-partition.sh states it per node.
   file(STRINGS "${PROJECT_BINARY_DIR}/generated/.config" _amp_cfg_lines
        REGEX "^CONFIG_[A-Z0-9_]+=")
   foreach(_line IN LISTS _amp_cfg_lines)
@@ -144,8 +131,8 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     string(REGEX REPLACE "^\"(.*)\"$" "\\1" _amp_cfg_${_amp_n} "${_amp_v}")
   endforeach()
 
-  # Written as an initial-cache script rather than as a list of switches, so a seeded value
-  # carrying a space or a semicolon reaches the peer whole.
+  # An initial-cache script: a seeded value carrying a space or a semicolon reaches the peer
+  # whole.
   set(_amp_seed "# Written by node ${KICKOS_AMP_NODE_ID}'s configure. Read by tools/amp/build-partition.sh.\n")
   foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_VALUE
                     ITEMS KICKOS_CONSOLE KICKOS_TELEMETRY)
@@ -157,9 +144,9 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
              "set(${_amp_name} \"${_amp_cfg_${_amp_name}}\" CACHE STRING \"\" FORCE)\n")
     endif()
   endforeach()
-  # Both directions, and unconditionally: kconfiglib writes an off bool as a COMMENT rather
-  # than as `=n`, so absent from the resolved .config is off and not unstated. Seeded as
-  # unstated the peer would take its Kconfig default instead.
+  # Both directions, and unconditionally: kconfiglib writes an off bool as a COMMENT, not as
+  # `=n`, so absent from the resolved .config is off and not unstated. Seeded as unstated the
+  # peer would take its Kconfig default.
   foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_FLAG)
     set(_amp_v "OFF")
     if(DEFINED _amp_cfg_${_amp_name} AND _amp_cfg_${_amp_name} STREQUAL "y")
@@ -170,18 +157,15 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   file(WRITE "${PROJECT_BINARY_DIR}/generated/amp-peer-seed.cmake" "${_amp_seed}")
 
   # The fingerprint the IMAGE carries, over that same resolved configuration with the one
-  # per-node symbol taken out, so a stale or foreign peer image is refused from the ARTEFACT and
-  # not from the tree that produced it. TWO absolute symbols of 32 bits: a 32-bit linker
-  # truncates one 64-bit --defsym without saying so.
+  # per-node symbol taken out. TWO absolute symbols of 32 bits: a 32-bit linker truncates one
+  # 64-bit --defsym without saying so.
   #
-  # IT COVERS THE KCONFIG HALF ALONE, which is narrower than "two nodes agree". The hash is over
-  # .config, so two images differing only in an input that is a CMake cache entry and no Kconfig
-  # symbol carry the SAME fingerprint: KICKOS_APPDATA_SIZE=112K and =120K are indistinguishable
-  # here, and so are the toolchain and the build type. The cache half is carried by
-  # build-partition.sh instead, which configures every peer FROM node 0's own KICKOS_* cache
-  # entries and so cannot produce a peer that differs in one. Widening the hash to cover them
-  # would have to enumerate the cache at a point where the cache is complete, and this is not
-  # that point: KICKOS_INIT_PROVIDER is declared further down this file.
+  # IT COVERS THE KCONFIG HALF ALONE, which is narrower than "two nodes agree": two images
+  # differing only in an input that is a CMake cache entry and no Kconfig symbol carry the SAME
+  # fingerprint, KICKOS_APPDATA_SIZE=112K and =120K among them, and so do the toolchain and the
+  # build type. build-partition.sh covers that half, configuring every peer FROM node 0's own
+  # KICKOS_* cache entries. The hash cannot be widened here: the cache is still incomplete at
+  # this point, KICKOS_INIT_PROVIDER being declared further down this file.
   string(REGEX REPLACE "CONFIG_KICKOS_AMP_NODE_ID=[0-9]+" "" _amp_common "${_amp_cfg_lines}")
   string(SHA256 _amp_fp "${_amp_common}")
   string(SUBSTRING "${_amp_fp}" 0 8 _amp_fp_hi)
@@ -197,14 +181,14 @@ endif()
 
 # --- The partition's port capabilities ---------------------------------------------------
 # ONE list for the whole partition: every node's image reads the same string and derives both
-# its sets from its own index, so there is no second list to disagree with this one.
+# its sets from its own index.
 #
 # The order here is the order the kernel seats them into root's table, so an entry's position
-# IS its capability index and every check below defends that.
+# IS its capability index.
 if(KICKOS_AMP_NODE)
   # Which node this image seats for. Under the shared image the identity is a core register
   # and exactly one core runs a kernel, the one kmain boots on; kernel/init/kmain.cc asserts
-  # the two agree rather than trusting this.
+  # the two agree.
   set(KICKOS_AMP_SELF_NODE 0)
   if(KICKOS_AMP_OWN_IMAGE)
     set(KICKOS_AMP_SELF_NODE "${KICKOS_AMP_NODE_ID}")
@@ -278,8 +262,6 @@ if(KICKOS_AMP_NODE)
     endif()
   endforeach()
 
-  # Checked where a number can still be changed: a pool that cannot cover the list would
-  # panic at boot on a board that configured and built cleanly.
   if(NOT KICKOS_MAX_ENDPOINTS GREATER _amp_ports_len)
     message(FATAL_ERROR
       "KickOS: KICKOS_AMP_PORTS names ${_amp_ports_len} crossing(s) and the board provisions "
@@ -289,9 +271,9 @@ if(KICKOS_AMP_NODE)
       "CONFIG_KICKOS_MAX_ENDPOINTS in this board's defconfig.")
   endif()
 
-  # The ports are only ONE of the seats root holds against KICKOS_TASK_ENDPOINT_BUDGET, and
-  # the others are a service list's, whose target does not exist this early. That relation is
-  # kickos_endpoint_seats_check (cmake/cap_table.cmake), called once the list is known.
+  # The ports are only ONE of the seats root holds against KICKOS_TASK_ENDPOINT_BUDGET; the
+  # rest are a service list's, whose target does not exist this early. That relation is
+  # kickos_endpoint_seats_check (cmake/cap_table.cmake).
 
   set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
   string(REPLACE ";" "," KICKOS_AMP_PORT_NODE_INIT "${_amp_port_nodes}")

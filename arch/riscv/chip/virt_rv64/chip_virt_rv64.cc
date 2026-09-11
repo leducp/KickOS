@@ -23,6 +23,7 @@
 // Virtual board, no pads; arch_pinmux_set is left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/rv64_doorbell.h>
@@ -97,6 +98,17 @@ namespace
     constexpr uint8_t UART_LSR_THRE = 1u << 5;
     constexpr uint8_t UART_LSR_TEMT = 1u << 6;
     constexpr uint32_t UART_POLL_BOUND = KICKOS_RV64_UART_POLL_BOUND;
+
+    // --- Buffered console TX backend (console_tx.h). No TX line is routed through the PLIC,
+    // so irq_line is -1 and the producer drains. ---
+    int ns16550_tx_slot_free(void) { return (*r8p(UART_LSR) & UART_LSR_THRE) != 0; }
+    void ns16550_tx_push(uint8_t b) { *r8p(UART_THR) = b; }
+    void ns16550_tx_irq_enable(void) {}
+    void ns16550_tx_irq_disable(void) {}
+
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
+    console_tx_backend const ns16550_console_backend = {
+        ns16550_tx_slot_free, ns16550_tx_push, ns16550_tx_irq_enable, ns16550_tx_irq_disable};
 
     // QEMU `virt` CLINT: the machine timer and the per-hart software interrupt. The timebase
     // here is the time/stimecmp CSR pair; the msip words are the cross-hart doorbell, and
@@ -304,10 +316,15 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return n;
 }
 
+int arch_console_write(char const* buf, size_t n)
+{
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+}
+
 // The UART comes out of QEMU's reset already usable at the machine's default baud, so the
-// polled path needs no bring-up. Bounded because the arch_console_write_sync fallback
-// aliases this body onto the panic path, where a wedged UART must cost a dropped tail.
-void arch_console_write(char const* buf, size_t n)
+// polled path needs no bring-up. Bounded because this body is the panic path's writer, where
+// a wedged UART must cost a dropped tail.
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -318,6 +335,14 @@ void arch_console_write(char const* buf, size_t n)
         }
         *r8p(UART_THR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = KICKOS_CONSOLE_TX_SIZE;
+    *irq_line = -1; // no TX line is routed through the PLIC; the producer drains
+    return &ns16550_console_backend;
 }
 
 // THRE says the holding register can take a byte; TEMT says the FIFO and the shift register

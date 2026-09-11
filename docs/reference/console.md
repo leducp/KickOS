@@ -27,22 +27,25 @@ kprintf / kputs / kernel code          (kprintf formats into a 256B stack buffer
         v
 kconsole_write                 -- frontend, fans out to compile-time backends
    +- RTT   (CONSOLE=rtt|both):  memcpy -> SEGGER control block, under IrqLock
-   \- chip  (CONSOLE=chip|both): CRLF-expand '\n'->'\r\n' (MCU only), then per chunk:
+   \- chip  (CONSOLE=chip|both): RAW bytes, the CRLF expansion happening at the device end
         v
-console_emit                   -- THE routing guard
+console_emit                   -- THE ownership guard
    |   g_console_state ?                            (ownership axis, checked FIRST)
    +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it)
-   +- RECLAIMED   -> arch_console_write_sync        (panic OR a driver death took it back; polled)
+   +- RECLAIMED   -> console_write_line_sync        (panic OR a driver death took it back)
    \- KERNEL_OWNED:
-        |   armed && !arch_in_isr() && !panicking ?
-        +- YES -> arch_console_write        (buffered)
-        \- NO  -> arch_console_write_sync   (polled, always safe)
+        |   panicking ?
+        +- NO  -> arch_console_write        (the chip seam)
+        \- YES -> console_write_line_sync   (polled under IrqLock, always safe)
         v
-[buffered]  console_tx_write:   memcpy burst into the SPSC ring (lock-free)
-                                -> IrqLock { publish head; enable TX IRQ } -> return
-        ... asynchronously ...
-[drain ISR] console_tx_isr:     push ring bytes while a HW TX slot is free;
-                                disable own TX IRQ when the ring drains empty
+arch_console_write (per chip)
+   +- console_tx_insert_line(buf, n, CRLF) != 0 -> the line is in the ring, return
+   +- unarmed ring (pre-init)                   -> console_write_line_sync, no drain to race
+   \- refused                                   -> the line does not go out; answer 0
+        ... then the bytes leave ...
+[drain ISR]        console_tx_isr:        on a backend with a TX interrupt
+[producer drain]   drain_in_producer:     on a backend with none (irq_line < 0), outside
+                                          the lock, one drainer at a time
 ```
 
 Source: `kernel/init/console.cc` (frontend + routing + panic), `kernel/init/console_tx.cc`
@@ -79,12 +82,16 @@ RECLAIMED     ->  arch_console_write_sync (panic or driver death reclaimed the U
 KERNEL_OWNED  ->  the buffered-vs-sync sub-decision below
 ```
 
-and only when `KERNEL_OWNED` does it make the buffered-vs-synchronous choice:
+and only when `KERNEL_OWNED` does it hand the line to the chip seam:
 
 ```
-armed && !arch_in_isr() && !g_console_panicking  ->  arch_console_write      (buffered)
-otherwise                                         ->  arch_console_write_sync (polled)
+!g_console_panicking  ->  arch_console_write       (the chip seam: insert, else locked write)
+otherwise             ->  console_write_line_sync  (polled under IrqLock)
 ```
+
+`arch_in_isr()` is NOT a condition here. It stood for "this context may not wait", which was
+true of `console_tx_write` and is not a rule about buffering: `console_tx_insert_line` never
+waits under its lock.
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
 so the sub-decision is the whole story for them); `kos_console_publish` moves it to
@@ -99,29 +106,35 @@ in-flight bracket can finish on a device it still owns. Flipping `USER_OWNED` in
 masked region as the ring teardown instead makes an in-flight chunked writer resume, find
 the device no longer the kernel's, and drop the rest of its message with nothing said.
 
-The `KERNEL_OWNED` sub-decision is the load-bearing invariant of the whole design:
-**the buffered producer is
-only ever entered in ordinary thread context.** Any ISR/fault caller, a panic in
-progress, and all pre-arm boot output take the polled path. That is what lets the
-ring be a true single-producer / single-consumer structure without a general lock
-(see below). Every one of `kconsole_write`'s chip-side calls goes through
-`console_emit` -- there is no other caller of `arch_console_write` in the tree, so
-the guard has complete coverage.
+The load-bearing invariant of the whole design is **line atomicity**: a reader parses lines,
+so bytes from two producers inside one line destroy it while whole lines in any order stay
+legible. `console_tx_insert_line` copies a whole line under one `IrqLock` or refuses it, and a
+refused line DOES NOT GO OUT, so nothing ever writes at the device beside the drain. A panic still takes the polled path: the system stops
+afterwards, so a line left queued is a line nobody reads.
 
-## The buffered path (SPSC ring)
+The ring is therefore MULTI-producer, and the exclusion is the lock rather than a structural
+claim about callers. What the ring buys over the locked writer is the SHAPE of the masked
+window: a copy instead of a transmission. That is why a ring too small to hold a line is a
+silent regression rather than a visible one, and why `console_tx.cc` asserts the size.
+
+## The buffered path (multi-producer ring)
 
 The ring decouples a write from the UART bit rate. The polled alternative busy-waits
 on the TX-ready flag -- telemetry measured that as the single largest on-CPU cost
 (~879 us per burst at the K64F FEI clock). The buffered producer instead copies and
 returns; the bytes leave later, in an interrupt.
 
-- **Producer** (`console_tx_write`, thread context): under `IrqLock`, compute free
-  space, copy the burst into `[head, ...)`, publish the new `head` and enable the
-  TX-empty IRQ ("prime the pump"). Returns immediately -- the caller's cost is a
-  copy, not the transmission.
+- **Producer** (`console_tx_insert_line`, any context): under `IrqLock`, count the bytes the
+  line needs once `\n` is expanded, refuse if they do not fit, else copy the line into
+  `[head, ...)` expanding as it goes, publish the new `head` and enable the TX-empty IRQ
+  ("prime the pump"). Returns immediately -- the caller's cost is a copy, not the
+  transmission. `console_tx_write` is the older burst producer, which chunks at ring size
+  and waits UNMASKED between chunks; it makes no atomicity promise and no chip enters it.
 - **Consumer** (`console_tx_isr`, ISR context, bound to the chip's TX line via
   `irq_attach`): push ring bytes while a HW TX slot is free; when the ring drains
-  to empty, disable its own TX IRQ.
+  to empty, disable its own TX IRQ. A chip whose console has no TX interrupt reports
+  `irq_line < 0` and is drained instead by `drain_in_producer`, in the producer's own
+  context, outside the lock and one drainer at a time.
 
 **Why the lock is brief, and why it is correct.** The drain ISR runs at
 `PRIO_DEVICE` (0x30). `IrqLock` raises `BASEPRI` to 0x20, which masks everything
@@ -129,24 +142,40 @@ numerically >= 0x20 -- including the TX ISR (`arch/arm/armv7m/regs.h`). So the
 producer's "publish head + enable IRQ" is atomic with respect to the ISR's "drain
 to empty + disable IRQ": either the ISR's empty-check happened before the publish
 (then the producer's enable re-arms it) or after (then the ISR sees the new bytes
-and keeps draining). **No lost wakeup, and no dropped output.** The lock is held
+and keeps draining). **No lost wakeup.** The lock is held
 for the copy plus a pointer store and one bit -- microseconds bounded by the ring
 size -- not the ~22 ms a 256-byte transmission used to hold. The copy is inside the
 lock, not outside it: that also serialises concurrent *thread* producers, which the
-SPSC argument alone would not cover.
+single-producer argument alone would not cover: the ring takes a line from any
+context, so its producers are many and only the lock orders them.
 
-**Overflow policy: stall-with-sync-drain, not drop.** If a burst does not fit, the
-producer disables the TX IRQ, drains the ring and writes the burst by polling -- in
-order, with other IRQs still serviced. RTT drops on a full ring (its host may be
-detached, so a blocking writer would hang forever); the UART trades latency for data
-whenever the wire is alive, because **losing kernel debug output is worse than a
-bounded stall.** Both poll loops are nonetheless bounded by `DRAIN_POLL_CAP`: a
-channel that never frees a slot makes `drain_sync` reset the ring and the burst loop
-return mid-buffer, dropping silently and without a counter. That is the one case this
-path does lose bytes, and it is the case where the wire is already dead. Ring
-sizing is per-chip: 512 B on every chip that carries one, over `kprintf`'s 256 B
-buffer. The sim's ring is deliberately 128 B, below that buffer, so ordinary
-console traffic wraps it.
+**Overflow policy: DROP, not stall and not a fallback write.** A line the ring cannot
+take does not go out, and `console_tx_insert_line` answers zero so the caller knows.
+The reason is that the alternative is unavailable rather than merely slower: the drain
+is already a writer at the device, so a producer writing the refused line there itself
+puts a SECOND writer on the wire and the two interleave mid-line. No locking discipline
+around the fallback fixes that, because the interleaving is between the fallback and a
+drain that is not holding the lock. Waiting instead is a decision for the caller, not
+one the kernel takes on its behalf.
+
+The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing
+counts it. The USER path is different and already settled: `kos_kconsole_write` splits
+a write into chunks, and the syscall STOPS at the first chunk the ring refused and
+returns how much landed, so userspace retries or gives up. Carrying on past a refusal
+would put a hole in the middle of a line whose tail arrived, which is worse than losing
+the line.
+
+RTT drops on a full ring for its own reason: its host may be detached, so a blocking
+writer would hang forever. A channel that never frees a slot makes the producer drain
+reset the ring, which is the one case bytes already queued are lost, and it is the case
+where the wire is already dead. Ring sizing is DERIVED, never set. The knob is the line bound `KICKOS_DIAG_LINE_MAX`
+(default 256 B, lowered per board where RAM is short), and `kickos/console_tx.h` computes
+the ring as `2 * (KICKOS_DIAG_LINE_MAX - 1) + 1` rounded up to a power of two. What
+`kernel/init/console_tx.cc` still asserts is the one relation no derivation covers: the
+FAULT reporter's separate buffer (`KDIAG_FAULT_LINE_MAX`) must also fit, so it may not
+exceed the ordinary bound. A ring one byte short would make every such line REFUSED and
+quietly served by the locked synchronous writer, which still prints, so nothing a run
+reports would move.
 
 ## The synchronous path and the panic-safe seam
 
@@ -154,13 +183,14 @@ console traffic wraps it.
 the scheduler and IRQs down. The seam is arranged so only the buffered backends
 carry a distinct implementation:
 
+- Every chip **defines its own** bounded polled writer (the fleet wraps its TX-ready poll
+  in a spin-then-drop guard, so a wedged UART drops bytes instead of hanging the panic
+  path); the sim defines a bounded one-byte-at-a-time `write(1, ...)` to host stdout.
 - A **fallback TU** (`arch/common/arch_console_write_sync_default.cc`) forwards
-  `arch_console_write_sync` -> `arch_console_write`. Every polled-only chip reuses its
-  normal writer for free.
-- Nearly every chip **defines its own** bounded polled writer (the fleet wraps its
-  TX-ready poll in a spin-then-drop guard, so a wedged UART drops bytes instead of hanging
-  the panic path); the sim defines a bounded one-byte-at-a-time `write(1, ...)` to host
-  stdout. The fallback covers any chip that supplies no distinct sync writer.
+  `arch_console_write_sync` -> `arch_console_write` and is extracted by nothing. It is kept
+  as a trap marker, not as a service: `arch_console_write` enters the line insert, whose
+  refusal path calls `console_write_line_sync` -> `arch_console_write_sync`, so a chip that
+  resolved to it would recurse off its stack on the panic path.
 
 **Panic and fault.** `kpanic` sets `g_console_panicking` (forcing every subsequent
 write to the sync path), flushes the ring in order (`console_tx_flush_sync` --
@@ -203,7 +233,7 @@ A chip's TX IRQ-line number is a HW-confirm item (a wrong line silently never dr
 the ring fills and everything falls back to the bounded sync path, so it *looks* like it
 works). The buffered drain is **silicon-validated** on the XMC4800, ESP32-C6, and K64F (a
 full selftest streamed in-order over the armed ring). The **sim's backend** additionally
-exercises the full SPSC ring -- producer, publish+prime, async drain ISR, wrap, and
+exercises the full ring -- producer, publish+prime, async drain ISR, wrap, and
 overflow -- in-tree under `ctest`, which is what a sync-path-only run cannot cover.
 
 ## Boot ordering
@@ -218,7 +248,7 @@ would have to be reordered so the console arms earlier.)
 
 The sim supplies a **fictional TX peripheral** (see Per-chip backend above), so it
 arms the buffered path like a real chip: after `console_buffer_init`, steady-state
-writes go through `console_tx_write` into the SPSC ring and drain asynchronously in
+writes go through `console_tx_insert_line` into the ring and drain asynchronously in
 a `SIGUSR1`-delivered TX-empty ISR. This is deliberate -- the MCU backends never run
 in-tree, so the sim is the **only** in-tree exerciser of the ring/drain/wrap/overflow
 paths; the selftest and stress runs push enough output to fill and wrap the ring
@@ -231,10 +261,9 @@ Details specific to the sim:
 - **The emulated TX line shares `SIGUSR1`** with the IRQ-inject path (a shared
   interrupt vector): `on_sigusr1` consumes the assertion, runs the drain, and
   re-asserts if the synthetic slot budget left bytes queued.
-- **The fault handler enters ISR context** (`isr_frame_enter` before
-  `kickos_isr_fault`) so the routing guard sees `arch_in_isr()` and takes the sync
-  writer -- parity with the ARM fault path, where the report must not be enqueued
-  into a ring that the handler `_exit()`s without draining.
+- **The fault handler enters ISR context** (`isr_frame_enter` before `kickos_isr_fault`),
+  which no longer changes the transport: the insert never waits, so a fault report is
+  queued like any other line and `arch_shutdown`'s flush carries it.
 - **`arch_shutdown` flushes synchronously** (`console_tx_flush_sync`) before
   `_exit`, because IRQs/signals are masked there and the `SIGUSR1` drain can no
   longer run -- otherwise the final `[ktrace] counters` line would be stranded in
@@ -242,10 +271,10 @@ Details specific to the sim:
 
 ## Invariants a change must not break
 
-1. **The buffered producer runs in thread context only.** The SPSC argument
-   depends on it. Keep the `arch_in_isr()` guard at the lowest choke point
-   (`console_emit`); any future path that logs from a raw ISR must not reach
-   `console_tx_write`.
+1. **One line is one indivisible insert.** `console_tx_insert_line` copies a whole line
+   under one `IrqLock` or refuses it, and the refusal path (`console_write_line_sync`) holds
+   `IrqLock` across the transmission. A path that splits a line across two inserts, or drops
+   either lock, puts one producer's bytes inside another's line.
 2. **The TX ISR is `IrqLock`-maskable.** It must sit in the device priority band
    (`PRIO_DEVICE`), or the producer's publish+prime is no longer atomic against it.
 3. **The TX IRQ is enabled whenever the ring is non-empty.** The ISR disables it

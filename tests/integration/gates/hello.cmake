@@ -126,6 +126,18 @@ add_test(NAME irq_syscall_locked
           "${PROJECT_SOURCE_DIR}")
 kickos_host_gate(irq_syscall_locked)
 
+# The ESP UART's TX-empty acknowledgement, read out of the SOURCE TREE. Keyed on nothing: the
+# three bodies are source whichever board this build is for, and two of the three are compiled
+# on chips this preset may not name.
+# It runs no image, so it carries the host label.
+#
+# Structural because no board in the fleet can witness it: neither ESP part has an emulator, so
+# nothing in a run raises the interrupt whose acknowledgement this is.
+add_test(NAME esp_tx_latch_ack
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_esp_tx_latch_ack.sh"
+          "${PROJECT_SOURCE_DIR}")
+kickos_host_gate(esp_tx_latch_ack)
+
 # The sole decider of a logical line's delivery gating, read out of the SOURCE TREE. Keyed on
 # nothing: the rule binds at one kernel core too.
 # It runs no image, so it carries the host label.

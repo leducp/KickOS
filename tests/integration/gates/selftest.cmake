@@ -252,7 +252,12 @@ if(KICKOS_BOARD STREQUAL "microbit")
   set(_mb_partials_selftest "")
   set(_mb_skips_selftest_p2 "uart_service")
   set(_mb_partials_selftest_p2 "")
-  set(_mb_skips_selftest_p3 "domain_share,confused_deputy,mem_self_grant")
+  # irq_as_event asks the arena for a 4 KiB MMIO page after the suite's threads have taken
+  # their stacks from it, and on 32 KiB it no longer fits: this board's console TX ring costs
+  # 256 bytes of .bss, which is what that page stood on. The arm sees the alloc fail and skips
+  # itself by name. Measured: a 128-byte ring restores it, and that needs a 64-byte line
+  # bound, below the fault reporter's own KDIAG_FAULT_LINE_MAX.
+  set(_mb_skips_selftest_p3 "domain_share,confused_deputy,mem_self_grant,irq_as_event")
   set(_mb_partials_selftest_p3 "caller_stack,mmio_grant")
   # DERIVED from the decision above rather than restated: these three sets are literals, so a
   # permission appended to the whole-suite list reached every other board and not this one,

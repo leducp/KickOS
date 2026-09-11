@@ -25,7 +25,7 @@ set(KICKOS_ARCH_SOURCES
 set(KICKOS_ARCH_PRIVATE_INCLUDE_DIRS
   # The arch-neutral cpp constants (fatal_status.ld.h).
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
-  # Telemetry: the sim flushes the RTT ch1 ring to a file at shutdown, so it reads lib's rtt.h.
+  # Telemetry: the sim reads lib's rtt.h to flush the RTT ch1 ring to a file at shutdown.
   "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
 if(KICKOS_MULTI_INSTANCE)
   # Linked PUBLIC: -pthread has to reach the final link of every app, not just this

@@ -4,10 +4,10 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// Reuses the ordinary writer. Correct ONLY on a polled-only chip (mps2/virt/nrf51),
-// where arch_console_write already IS the polled writer. A chip with a buffered
-// console MUST define its own: panic and fault output would otherwise enqueue into a
-// ring whose drain ISR is masked and never runs.
+// EVERY CHIP MUST DEFINE ITS OWN BOUNDED POLLED WRITER, and this body is a trap marker
+// rather than a service: arch_console_write enters console_tx_insert_line, whose refusal
+// path calls console_write_line_sync -> arch_console_write_sync, so a chip that resolves
+// here recurses off its stack on the panic path.
 
 #include <kickos/arch/arch.h>
 

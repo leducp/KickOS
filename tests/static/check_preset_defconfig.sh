@@ -5,35 +5,24 @@
 # CI gate on the preset-to-defconfig bijection: every visible configure preset resolves to a
 # defconfig, and every defconfig is reachable from a preset.
 #
-# Neither direction was checked anywhere. tests/static/preset_boards.cmake TOLERATES a missing
-# defconfig, and check_kconfig_gen.sh walks defconfigs and never reads presets, so a preset
-# naming a variant directory that does not exist fails only when somebody configures it, and a
-# defconfig nothing selects is compiled by nothing and reported by nothing.
-#
 # THE MAPPING IS NOT NAME EQUALITY, AND IT IS NOT THE PRESET'S NAME AT ALL. A preset's
 # defconfig is decided by its BOARD and its resolved KICKOS_CONFIG_VARIANT, so a preset named
 # <board>-<variant> whose variant resolves to something else entirely is exactly the defect
-# this gate exists to catch and a sed on the name cannot see it. The key therefore comes from
+# this gate exists to catch and a sed on the name cannot see it. The key comes from
 # preset_boards.cmake's third field, the registration key it rebuilds from the RESOLVED
 # variant, never from the first.
 #
 # An own-image AMP partition has ONE defconfig serving one preset per node, and the flattener
-# appends -n<N> to that key for those presets alone. So a key is tried as it stands FIRST and
-# the suffix is stripped only as a fallback, which a blind strip gets wrong twice: it would
-# refuse a legitimate board or variant whose own name ends in -n<digits>.
-#
-# THE EXCEPTION LIST IS ITSELF CHECKED, or it would be a place to hide a real gap: a variant
-# declared here as consumed-by-path must be named by something under tests/ OTHER THAN THIS
-# FILE, and it is named as a path rather than as a bare word. Grepping for the bare variant
-# from a gate that lists it in its own source matches ITSELF, so every entry would prove its
-# own consumption and the leg could never fire.
+# appends -n<N> to that key for those presets alone. A key is therefore tried as it stands
+# FIRST and the suffix stripped only as a fallback: a blind strip would refuse a legitimate
+# board or variant whose own name ends in -n<digits>.
 #
 # Source-tree gate: reads the tree through `git ls-files` plus the preset files, builds nothing
 # and configures nothing, so it registers on every board.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-# Findings accumulate over the whole corpus, so set -e must stay off. bad() sets rc.
+# Findings accumulate over the whole corpus, so set -e must stay off.
 rc=0
 
 if [ "$#" -ne 2 ]; then
@@ -50,15 +39,13 @@ require_repo_root "$SRC is not the repo root"
 FLATTEN="tests/static/preset_boards.cmake"
 [ -f "$FLATTEN" ] || fail "no preset flattener at $SRC/$FLATTEN"
 
-# A defconfig with no preset, because a gate consumes it BY PATH rather than by configuring it.
-# Each entry is <board>/<variant> and each must be named by a file under tests/.
+# A defconfig with no preset, consumed BY PATH by some gate. Each entry is <board>/<variant>
+# and each must be named by a file under tests/.
 FIXTURES="sim/smp-ineligible"
 
 scratch_dir
 
 # --- the two sets ------------------------------------------------------------
-# Through the tree's own preset reader, so a preset file it cannot parse refuses here rather
-# than silently shrinking the set being compared.
 "$CMAKE" -DSRC="$SRC" -DOUT="$TMP/presets.tsv" -P "$FLATTEN" >"$TMP/flatten.log" 2>&1 \
     || fail "$FLATTEN refused: $(tail -1 "$TMP/flatten.log")"
 
@@ -97,8 +84,8 @@ while IFS= read -r key; do
         echo "$key" >>"$TMP/matched_keys.txt"
         continue
     fi
-    # The AMP fallback, tried only after the key itself has failed, so a board or variant whose
-    # own name ends in -n<digits> is never mistaken for a node index.
+    # The AMP fallback, tried only after the key itself has failed: a board or variant whose
+    # own name ends in -n<digits> must never be mistaken for a node index.
     _stripped="$(printf '%s\n' "$key" | sed -E 's/-n[0-9]+$//')"
     if [ "$_stripped" != "$key" ] && grep -qxF "$_stripped" "$TMP/defconfig_keys.txt"; then
         echo "$_stripped" >>"$TMP/matched_keys.txt"
@@ -130,8 +117,7 @@ while IFS= read -r key; do
 done <"$TMP/defconfig_keys.txt"
 
 # --- leg 3: the exception list is not a hiding place -------------------------
-# A fixture must BE a tracked defconfig and must be named by a file under tests/. Without this
-# leg the list would launder exactly the defect leg 2 exists to find.
+# A fixture must BE a tracked defconfig and must be named by a file under tests/.
 n_dead=0
 for _f in $FIXTURES; do
     _b="${_f%%/*}"
@@ -142,14 +128,13 @@ for _f in $FIXTURES; do
         continue
     fi
     # EXCLUDING THIS FILE, which lists the entry two dozen lines up: without that exclusion
-    # every entry matches its own declaration, every entry proves its own consumption, and
-    # this leg can never fire at all.
+    # every entry matches its own declaration and this leg can never fire at all.
     #
     # The needle is the bare VARIANT and cannot be board-qualified: check_smp_predicate.sh
     # composes its path out of shell variables, so `sim/configs/smp-ineligible` appears
     # nowhere in the tree as a literal. A distinctive variant name is therefore part of what
-    # makes an entry checkable, and a short one (`st`, `flat`) would satisfy this on an
-    # unrelated hit. Keep the list short and its names specific.
+    # makes an entry checkable; a short one (`st`, `flat`) would satisfy this on an unrelated
+    # hit. Keep the list short and its names specific.
     if ! grep -rl -e "$_v" tests/ 2>/dev/null \
          | grep -qvxF "tests/static/$(basename "$0")"; then
         n_dead=$((n_dead + 1))

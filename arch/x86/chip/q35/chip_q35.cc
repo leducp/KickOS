@@ -170,8 +170,11 @@ void arch_init(void)
 }
 
 // --- Console ----------------------------------------------------------------
+// The BUFFERED half is console_q35.cc, a translation unit of its own: it needs the kernel's
+// ring, and this one is linked into the kernel-less bring-up images too.
+//
 // Raw bytes: no newline translation here, unlike com1_puts.
-void arch_console_write(char const* buf, size_t n)
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {

@@ -128,7 +128,6 @@ namespace
     // sets is a LATCH, so enabling INT_ENA on an idle channel raises at once AND the source
     // stays asserted after the FIFO refills until INT_CLR is written (c6_tx_push).
     constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
-    constexpr uint32_t CONSOLE_TX_SIZE = 512;             // ring; power of two; > kprintf's 256B buf
 
     // The window arch_console_reclaim rewrites, and the one a userspace console driver is
     // granted (system/init/esp32c6-wroom/service_list_uartirq.cc). ONE constant: a reclaim
@@ -375,9 +374,9 @@ extern "C"
 //     USB-Serial-JTAG at 0x6000_F000 does not reliably deliver output once the app takes
 //     over: it is gated on the host draining CDC and it re-enumerates on reset. UART0 has
 //     neither behaviour.
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered ring; the routing guard (console.cc) keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 // Synchronous polled writer for the panic / fault / pre-arm path (console.cc picks it when
@@ -513,14 +512,14 @@ static void c6_tx_irq_disable(void)
     r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
 }
 
-static char console_tx_buf[CONSOLE_TX_SIZE];
+static char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
 console_tx_backend const c6_console_backend = {
     c6_tx_slot_free, c6_tx_push, c6_tx_irq_enable, c6_tx_irq_disable};
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::UART0_TX_LINE;
     return &c6_console_backend;
 }

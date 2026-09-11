@@ -2,10 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The placement arms: affinity, the task core set, and the isolated cores.
-// One guarded block: the `#if` below is the guard the registration list in main.cc
-// registers these arms under, and this app's CMakeLists compiles the file only where
-// it holds. A mismatch between the two is an undefined reference at link, never a
-// lost arm.
 
 #include "selftest.h"
 
@@ -590,7 +586,7 @@ namespace selftest
     // --- A SECOND grant narrows again and never re-widens -------------------------------
     // The caller-side check in task_sched_grant weighs a request against the CALLER's grant,
     // which root holds whole, so only task_sched_narrow's own check against the TASK's current
-    // set can refuse this. Nothing else in the suite reaches that check.
+    // set can refuse this.
     void t_grant_second_narrow_only()
     {
         if (PL_ALL == 0x1u)

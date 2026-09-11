@@ -26,3 +26,17 @@ CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048
 CONFIG_KICKOS_ENABLE_SELFTEST=y
+
+# 128 AND NOT THE FLEET'S 256, which is 32 KiB of SRAM paying for itself rather than the
+# fleet paying for it: the console TX ring is derived at twice this rounded to a power of
+# two, so 256 costs 512 bytes of kernel .bss here and 128 costs 256, out of the same arena
+# the selftest allocates from. The longest diagnostic this board can emit measures 86
+# characters (the wild-PSP report at a 20-character reason and a 15-character thread name),
+# so nothing in the catalogue truncates at 128.
+#
+# 128 IS THE FLOOR AND IT IS NOT LOW ENOUGH FOR EVERY ARM. Measured: at a 256-byte ring the
+# selftest's irq_as_event still cannot allocate its 4 KiB MMIO page and skips itself; at 128
+# it runs. A 128-byte ring needs a 64-byte line bound, and the fault reporter's own
+# KDIAG_FAULT_LINE_MAX is 96, so its records would no longer fit the ring CRLF-expanded and
+# would silently take the locked writer. That trade is not this knob's to make.
+CONFIG_KICKOS_DIAG_LINE_MAX=128

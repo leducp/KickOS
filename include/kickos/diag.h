@@ -55,6 +55,10 @@
                         "       (a dynamic install into root ran before the partition's)", "P20")  \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
+// The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
+// from a C-facing one to reach KICKOS_DIAG_LINE_MAX, so the block is guarded rather than the
+// whole file being C++ only (tests/static/check_c_headers.sh).
+#ifdef __cplusplus
 namespace kickos
 {
     namespace diag
@@ -64,6 +68,7 @@ namespace kickos
 #undef KICKOS_DIAG_DEFINE
     }
 }
+#endif
 
 // These stay macros: format(printf) checks the argument list only against a literal AT THE CALL
 // SITE, so a constexpr array would silently retire -Wformat on every one of them. The terse
@@ -83,12 +88,17 @@ namespace kickos
 #define KDIAG_F_BANNER_NOHEAP KICKOS_DIAG_PICK("   heap    none\n", "h 0\n")
 #define KDIAG_F_BANNER_KSTACK KICKOS_DIAG_PICK("   kstack  %u B x %u = %u B\n", "k %u %u %u\n")
 
+// The ordinary kprintf line buffer, and what the console TX ring is sized from
+// (kickos/console_tx.h). A line past it truncates.
+#ifndef KICKOS_DIAG_LINE_MAX
+#define KICKOS_DIAG_LINE_MAX 256
+#endif
+
 // Thread fault (kernel/init/fault.cc). The reporter formats into a stack array of exactly
-// KDIAG_FAULT_LINE_MAX bytes, and that array is the largest term of a descent the trap
-// red-zone gate measures as EXITK (and as EXIT where no kernel block is carved), so the bound
-// is a stack figure and not a taste. It clears every record below at a 38-character thread name,
-// which KICKOS_THREAD_NAME_MAX does not permit, so the fit has headroom rather than being tight
-// and truncation is unreachable today. tests/unit/faultline is where the fit is proved.
+// KDIAG_FAULT_LINE_MAX bytes, on a descent the trap red-zone gate measures as EXITK (and as
+// EXIT where no kernel block is carved), so this bound is a stack figure. Measured on
+// qemu-riscv by moving it: 96 -> 256 takes EXITK from 384 to 528. tests/unit/faultline proves
+// every record below fits at its worst case.
 #define KDIAG_FAULT_LINE_MAX 96
 #define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \
                                               "\n=== THREAD FAULT === thread '%s' killed\n")

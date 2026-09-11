@@ -112,9 +112,9 @@ namespace
 extern "C"
 {
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 void arch_console_write_sync(char const* buf, size_t n)

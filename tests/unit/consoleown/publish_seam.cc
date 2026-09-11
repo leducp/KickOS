@@ -18,9 +18,10 @@ extern "C"
 {
     // Every buffered chip's arch_console_write is exactly this, so the routing decision in
     // console.cc reaches the real ring producer.
-    void arch_console_write(char const* buf, size_t n)
+    int arch_console_write(char const* buf, size_t n)
     {
         console_tx_write(buf, n);
+        return 1;
     }
 
     void arch_console_flush_sync(void)

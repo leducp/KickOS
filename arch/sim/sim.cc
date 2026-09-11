@@ -431,13 +431,12 @@ namespace
     enum
     {
         TX_LINE = 30,       // < KICKOS_MAX_IRQ / SIM_IRQ_LINES; not used by any test/bench
-        // Deliberately small, so ordinary console traffic WRAPS the ring and crosses
-        // the index-mask boundary many times. Usable 127 still exceeds the largest
-        // single burst, so a burst takes the fast enqueue+prime path.
-        TX_RING_SIZE = 128,  // power of two (index masking); usable capacity 127
         TX_BUDGET = 8       // bytes drained per ISR delivery (synthetic slot budget)
     };
-    kickos::InstanceLocal<char[TX_RING_SIZE]> g_tx_ring;
+    // The same knob every chip carves its ring from. Shrinking it here to wrap the indices
+    // more often trades that coverage for silence: below one CRLF-expanded kprintf line the
+    // insert refuses every such line and the locked writer prints it anyway.
+    kickos::InstanceLocal<char[KICKOS_CONSOLE_TX_SIZE]> g_tx_ring;
 
     int sim_tx_slot_free()
     {
@@ -943,11 +942,10 @@ int arch_sim_instance_run(int argc, char** argv)
 }
 #endif
 
-// Enqueue into the console ring; the SIGUSR1-driven drain ISR writes it out. Before the ring
-// is armed, and in ISR/panic/fault context, console.cc's routing guard takes the sync writer.
-void arch_console_write(char const* buf, size_t n)
+// Insert one line into the console ring; the SIGUSR1-driven drain ISR writes it out.
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n);
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 // The bounded synchronous stdout writer (panic / fault / pre-arm boot). The ring's
@@ -990,7 +988,7 @@ void arch_console_write_sync(char const* buf, size_t n)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = g_tx_ring.get();
-    *size = TX_RING_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = TX_LINE;
     return &g_sim_tx_backend;
 }

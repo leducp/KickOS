@@ -3,24 +3,21 @@
 //
 // The two-thread buffered UART console service as one construct: the IRQ thunk, the block
 // initialiser, the descriptor, its two static_asserts, and the C entry point a board service
-// list calls. A chip states only what its silicon decides.
+// list calls.
 //
-// SPAWN ORDER IS LOAD-BEARING and is fixed here: the IRQ thread first is what leaves the TX
-// ring provably empty when kos_uart_open puts the channel live. That line's FIRST irq_wait
-// DISCARDS any pend latched before it, so a byte pushed earlier would lose its event and
-// stall until the next doorbell.
+// SPAWN ORDER IS LOAD-BEARING and is fixed here: the IRQ thread first leaves the TX ring
+// provably empty when kos_uart_open puts the channel live. That line's FIRST irq_wait
+// DISCARDS any pend latched before it, so a byte pushed earlier loses its event and stalls
+// until the next doorbell.
 //
 // The service thread holds the endpoint (WAIT) then the line it rings (SIGNAL), in that
-// order, which is the layout <kickos/sys/uart_service.h> reads and desc_ok checks. SIGNAL
-// there is a pure post on the binding, not a raise at the controller.
+// order, which is the layout <kickos/sys/uart_service.h> reads and desc_ok checks.
 //
-// A CHIP THAT CLAIMS A VECTOR BY NUMBER must pass its own window base, never 0: leg L9
-// refuses the descriptor otherwise, and a cfg naming a sibling instance would grant one
-// window and interrupt on another.
+// A CHIP THAT CLAIMS A VECTOR BY NUMBER must pass its own window base, never 0; leg L9
+// refuses the descriptor otherwise.
 //
-// NOT FOR A DESCRIPTOR THAT DEPARTS FROM THE SHAPE. Two lines, a relay thread, a retained
-// endpoint, or a service kind other than the console are each outside it, and such a driver
-// writes the literal: system/driver/rx72m/rxsci and system/init/sim do.
+// NOT FOR A DESCRIPTOR THAT DEPARTS FROM THE SHAPE: two lines, a relay thread, a retained
+// endpoint, or a service kind other than the console. Such a driver writes the literal.
 
 #ifndef KICKOS_SYS_UART_CONSOLE_DESC_H
 #define KICKOS_SYS_UART_CONSOLE_DESC_H
@@ -34,8 +31,8 @@
 #include <kickos/sys/uart_service.h>
 
 // `svc_name` is a bare token spelling the tag "[svc_name] " and the entry svc_name_console_start.
-// It may NOT be called `name`: the designated initialiser `.name` below is an identifier the
-// preprocessor would substitute, and the expansion then names a member Thread does not have.
+// It may NOT be called `name`: the preprocessor would then substitute the designated
+// initialiser `.name` below.
 //
 // THE INVOCATION TAKES A TRAILING SEMICOLON. Without one, tests/static/check_syscall_return_codes.sh
 // reads the whole file as one unfinished statement and reports its tail unread.

@@ -3,8 +3,7 @@
 //
 // The ESP UART0 family body: read, write, flush and close, shared by the ESP32 (Xtensa LX6)
 // and ESP32-C6 (RV32) backends of <kickos/driver/uart.h>. Which chip's registers these are
-// is decided by the include path; see uart_esp.h. kos_uart_open is NOT here, being a
-// different contract on each part.
+// is decided by the include path; see uart_esp.h.
 //
 // UART_INT_ST == UART_INT_RAW & UART_INT_ENA, and RAW is a LATCH that only an INT_CLR write
 // drops, so every serviced source needs a clear. (ESP32 TRM v5.8 appendix "Interrupt
@@ -98,7 +97,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         dst[i] = static_cast<unsigned char>(r32(u->base + ru::OFF_FIFO) & 0xFFu);
     }
     kos_counter_increment(&u->stats->rx_bytes, cnt);
-    // AFTER the drain, and only then does the hardware accept it.
+    // AFTER the drain: refused while the threshold still holds.
     r32(u->base + ru::OFF_INT_CLR) = ru::RXFIFO_FULL_INT;
     return cnt;
 }
@@ -113,13 +112,11 @@ uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n
             break;
         }
         r32(u->base + ru::OFF_FIFO) = src[i];
-        // The latch survives the FIFO passing the threshold, so it is dropped per push
-        // rather than once at the end of the burst.
+        // The latch survives the FIFO passing the threshold, so it is dropped per push.
         r32(u->base + ru::OFF_INT_CLR) = ru::TXFIFO_EMPTY_INT;
         i++;
     }
-    // Armed only when the FIFO refused a byte: arming with nothing left to send is a storm,
-    // the condition being level on occupancy.
+    // The condition is level on occupancy, so arming with nothing left to send is a storm.
     tx_int_set(u->base, i < n);
     return i;
 }
@@ -142,7 +139,7 @@ int32_t kos_uart_flush(struct kos_uart* u)
 int32_t kos_uart_close(struct kos_uart* u)
 {
     // Framing and enable belong to the ROM on the LX6 and to PCR on the C6, and a CONF0
-    // rewrite truncates a frame still shifting, so this drops the interrupt enables alone.
+    // rewrite truncates a frame still shifting.
     r32(u->base + ru::OFF_INT_ENA) = 0;
     r32(u->base + ru::OFF_INT_CLR) = 0xFFFFFFFFu;
     return 0;

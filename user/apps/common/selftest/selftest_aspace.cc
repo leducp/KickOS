@@ -3,10 +3,6 @@
 //
 // The address-space arms: the map editor, frame capabilities, processes, and the stack as
 // frames.
-// One guarded block: the `#if` below is the guard the registration list in main.cc
-// registers these arms under, and this app's CMakeLists compiles the file only where
-// it holds. A mismatch between the two is an undefined reference at link, never a
-// lost arm.
 
 #include "selftest.h"
 
@@ -126,9 +122,8 @@ namespace selftest
         TAP_CHECK(kos_frame_unmap(other, acap, va) != 0); // same length, different run
         kos_handle_close(other);
         kos_handle_close(static_cast<kos_cap_t>(seed2 >> 32));
-        // An address inside a range and not its base is refused. NOT an image-revoke witness:
-        // at_base() answers null for any non-base address, so the old predicate refused it too.
-        // The identity property is the other-run check above.
+        // An address inside a range and not its base is refused. The identity property is
+        // the other-run check above.
         uintptr_t const g2 = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         uintptr_t const inside_text = reinterpret_cast<uintptr_t>(&t_cap_map) & ~(g2 - 1u);
         TAP_CHECK(kos_frame_unmap(fcap, acap, inside_text) != 0);
@@ -270,10 +265,7 @@ namespace selftest
     // --- A LIVE THREAD STACK IS NOT THE CALLER'S TO NAME ---------------------------------
     // Every caller-controlled admission path asks ONE question of a range it found
     // (vr_caller_nameable): may a caller name this at all. The image and a thread's stack with
-    // its guard both answer no. Before that predicate the paths filtered on the image alone,
-    // so a task could self-grant its own live stack, which maps the guard and retypes the
-    // frames under a running thread, and hand a donor's stack to a child, which then keeps
-    // the mapping after the donor's run is freed.
+    // its guard both answer no.
     constexpr uint32_t SNP_BLK = 256;
     // ONE reservation for all three arms: a range slot is a LIFETIME cost with no user-facing
     // free, so a block per arm would spend three of the app's budget.
@@ -1152,9 +1144,6 @@ namespace selftest
     }
 
     // --- Two members of ONE group share their image: the sibling witness -------------
-    // The arm domain_share was mistaken for, and it is observable only now: before the
-    // per-process data copy every task read the one set of app-data frames, so two members
-    // agreeing said nothing about their group.
     volatile uint32_t g_sib_word = 0u;
     void sib_writer(void* arg) // caps: done@1
     {
@@ -3143,8 +3132,8 @@ namespace selftest
             tap::skip("thread pool too small");
             return;
         }
-        // Site A: an unmapped out-pointer never reaches the mint, and the ordinary rendezvous
-        // through the reworked arm is unchanged.
+        // Site A: an unmapped out-pointer never reaches the mint, and the ordinary
+        // rendezvous through that same arm still lands.
         TAP_CHECK(a_entry == -KOS_EFAULT);
         TAP_CHECK(a_ctl == static_cast<int32_t>(LU_LEN));
         TAP_CHECK(a_info.reply_cap != KOS_CAP_NONE);

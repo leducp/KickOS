@@ -109,7 +109,7 @@ namespace
 
     void put(char const* s)
     {
-        arch_console_write(s, slen(s));
+        arch_console_write_sync(s, slen(s));
     }
 
     // Always eighteen characters, which is what lets the run script hold a report line to a

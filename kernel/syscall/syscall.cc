@@ -124,7 +124,15 @@ namespace kickos
                 {
                     break;
                 }
-                kconsole_write(chunk, n); // fan-out (chip + RTT), not the raw transport
+                // STOPS AT THE FIRST CHUNK THE CONSOLE DID NOT TAKE. A line longer than this
+                // buffer is several inserts, and under pressure the ring can refuse one and
+                // accept the next: carrying on would put a HOLE in the middle of a line whose
+                // tail arrived. The caller is told how much landed and decides what to do,
+                // which is what a short write is for.
+                if (kconsole_write(chunk, n) == 0)
+                {
+                    break;
+                }
                 done += n;
             }
             return done;

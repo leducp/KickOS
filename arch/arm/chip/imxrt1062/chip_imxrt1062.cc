@@ -444,9 +444,7 @@ namespace
     void lp6_tx_push(uint8_t b) { r32(reg::lpuart::LPUART6_DATA) = b; }
     void lp6_tx_irq_enable(void) { r32(reg::lpuart::LPUART6_CTRL) |= reg::lpuart::CTRL_TIE; }
     void lp6_tx_irq_disable(void) { r32(reg::lpuart::LPUART6_CTRL) &= ~reg::lpuart::CTRL_TIE; }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const lp6_console_backend = {
         lp6_tx_slot_free, lp6_tx_push, lp6_tx_irq_enable, lp6_tx_irq_disable};
 
@@ -549,9 +547,9 @@ extern "C"
 }
 #endif
 
-void arch_console_write(char const* buf, size_t n)
+int arch_console_write(char const* buf, size_t n)
 {
-    console_tx_write(buf, n); // buffered; the routing guard keeps this thread-only
+    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
 void arch_console_write_sync(char const* buf, size_t n)
@@ -573,7 +571,7 @@ void arch_console_write_sync(char const* buf, size_t n)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::LPUART6_IRQ;
     return &lp6_console_backend;
 }

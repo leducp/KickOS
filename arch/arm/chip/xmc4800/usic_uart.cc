@@ -114,9 +114,7 @@ namespace
     void xmc_tx_push(uint8_t b) { u::tx_put(U0C0, b); }
     void xmc_tx_irq_enable(void) { u::tx_irq_enable(U0C0); }
     void xmc_tx_irq_disable(void) { u::tx_irq_disable(U0C0); }
-
-    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
-    char console_tx_buf[CONSOLE_TX_SIZE];
+    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const xmc_console_backend = {
         xmc_tx_slot_free, xmc_tx_push, xmc_tx_irq_enable, xmc_tx_irq_disable};
 }
@@ -318,7 +316,7 @@ uint32_t kickos_xmc_usic_errors(void)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = CONSOLE_TX_SIZE;
+    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = kickos::xmc::irq::USIC0_SR0;
     return &xmc_console_backend;
 }
