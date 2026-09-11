@@ -1193,6 +1193,21 @@ resolves inside the tree.
       and the correctness of the rate rests on the datasheet sections named above. Cost on
       `due`: `chip_sam3x8e.cc.obj` .text 896 -> 904, the selftest image 93064 -> 93076, no
       `.bss` or `.data` movement.
+      **AND ONE DEGRADE RETURN STILL ASSERTED A RATE IT COULD NOT CONFIRM. FIXED** (M8.6,
+      decided by the owner). Step 3 writes `CKGR_MOR = MOR_CRYSTAL | MOR_MOSCSEL` and MOSCSEL
+      moves MCK with no `PMC_MCKR` write of its own, so on the `SR_MOSCSELS` timeout the code
+      returned with `SystemCoreClock` still naming the 4 MHz RC while MCK may already have
+      been on the 12 MHz crystal -- a switch that LANDED without reporting, which is the one
+      outcome that timeout cannot distinguish. The UART divisor and the tick rate would both
+      have been wrong by 3x. The return now writes `CKGR_MOR = MOR_CRYSTAL` back, deselecting
+      the crystal, so the rate asserted below is true whichever way the switch went; the
+      constant is the one already in the file and the write is the same glitch-free path
+      (Atmel-11057 sec.27.5.3). **Still not witnessable**, for the same reason as above: the
+      Due is retired and no emulator models a status bit that never asserts. What the build
+      says is that the store is emitted and kept -- a volatile MMIO write the compiler cannot
+      elide -- and the control agrees at the byte: reverting the fix takes
+      `chip_sam3x8e.cc.obj` .text from 920 back to exactly the 904 recorded above, the image
+      93088 -> 93072, no `.bss` or `.data` movement.
       `xmc4800` DOES recover: init and reclaim programmed `BAUD_115200_72MHZ` unconditionally
       while only the retune selected, and the port already carried the 24 MHz point it needed.
       All three sites now select on the LIVE fPERIPH.
@@ -1398,6 +1413,38 @@ inside the tree.
       from the one this bullet assumed. It stays a question because M9 owns it, but it is now a
       question about a product surface: a partition that shares one UART is a posture the tree
       ships presets for.
+      **THE RATE IS LOAD-DEPENDENT, AND A "SERIALLY AND UNLOADED" FIGURE FOR IT IS WRONG**
+      (M8.6, re-measured at master). Three measurements on one tree, one variable between
+      them. The whole preset in the CI job's own shape (`ctest --preset qemu-riscv64-smp -LE
+      tree`, 33 s a run) came back GREEN 30 times out of 30 on an idle box. The
+      `qemu_riscv64_selftest` arm alone, serially, came back green 30 of 30 on the same idle
+      box. The same arm with 24 spinners on the box failed **7 of 30**. So the figure of about
+      seven in thirty is real and it is a LOADED figure: this bullet's original "under load"
+      framing was right, and an unloaded rate of roughly a quarter is not reproducible here.
+      What that costs when it fires: five of the seven lost the whole TAP stream (`FAIL: no
+      '1..N' plan line in the TAP stream`), and two shredded the banner itself instead, the
+      gate then reporting `0 thread-fault banner(s) and 1 kill` and `1 banner and 0 kill`.
+      The window is narrower than the arm count suggests: one boot prints ONE thread-fault
+      banner against a 176-line TAP stream, so the two producers overlap once per run.
+      **ROOT CAUSE, ESTABLISHED HERE AND PREVIOUSLY RECORDED IN NO FILE: NO BACKEND EXCLUDES
+      A SECOND CORE, AND THE KERNEL STATES TWO LAYERS UP THAT ONE DOES.** There are eighteen
+      `arch_console_write` bodies. Seven are bare device or semihosting loops with no lock of
+      any kind (`imx8mp`, `virt_arm64`, `mps2`, `nrf51`, `virt_rv32`, `virt_rv64`, `q35`); the
+      other eleven delegate to `console_tx_write`, whose `IrqLock` does take the cross-core
+      kernel lock but holds it for ONE ring chunk with the wait between chunks unmasked, and
+      whose unbuffered fallback (`write_unbuffered`, taken whenever the ring is not armed)
+      runs unmasked with nothing but the writer refcount around `arch_console_write_sync`.
+      **The two presets that tear are both in the bare-loop set**: `qemu-riscv64-smp` is
+      `virt_rv64` and `qemu-arm64-amp2` is `virt_arm64`. Meanwhile `kernel/init/console.cc`
+      (`kconsole_write_impl`) says in as many words that "the chip transport locks internally
+      and must NEVER be held under IrqLock across a whole transmission", which is why the chip
+      arm is the one path that takes no lock at all in that function. That sentence is true of
+      no backend in the tree. And `console_chip_writer_enter`/`_leave` is a REFERENCE COUNT for
+      publish-drain convergence -- its own comment says so, and `console_owner_set_user` asserts
+      it reaches zero -- never mutual exclusion, so two harts both enter and interleave by
+      construction. **The repair is M9's by the roadmap, which owns console locking; the rate
+      is the argument for M9 taking it early.** Not pulled into M8.6: that is the widening M8's
+      phase ordering exists to prevent.
 
 - [ ] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
       THE NEXT SPAWN.** `user/apps/common/selftest/main.cc` (`join_stale_gen`), 5 runs in 320 at
@@ -1842,6 +1889,33 @@ rather than reader and corpus scaffolding, so the static ledger's estimate below
 and reusing that arithmetic here would be misleading. **It wants its own measurement before it wants
 a direction.**
 
+**THE MEASUREMENT IS TAKEN AND IT OVERTURNS THE PARAGRAPH ABOVE. DIRECTION: LEAVE IT ALONE.**
+Current tree: 47 files, 5448 lines, 3131 of them code and 2006 distinct, and **all 47** source
+`gate.sh` (not 42). **The two pairs named above have collapsed** now that `gate.sh` absorbed the
+scaffolding: `check_libc_exit.sh` against `check_sched_exit.sh` is **0.41**, not 0.88, and
+`check_mpu_fault.sh` against `check_rootfault.sh` is **0.61**, not 0.85. The duplication that
+figure priced has already been extracted.
+**AND MOST OF WHAT IS LEFT IS NOT DUPLICATION, WHICH IS WHAT THE FIGURE IS A FIGURE OF.** 736
+line occurrences sit in 166 distinct lines present in two or more files, so 570 would nominally
+vanish. Sorted by what the line IS: 99 are shell syntax (`fi`, `esac`, `done`, `else`, `;;`), 143
+are script prologue (`set -u`, `exit 0`, the `. gate.sh` line), and 106 are CALLS INTO `gate.sh`.
+**Those 348 of 570 cannot fold**: a script cannot move its own `fi` or its own source line into a
+library, and a call site is what an extraction LEAVES BEHIND -- `run_image` appears 23 times
+because the fold already happened. Containment over a 14-line file also has a resolution of 0.07
+per line, and every pair at or above 0.50 has `min` between 14 and 38, so most are seven lines of
+prologue.
+**"PER-BOARD CLONING" IS FALSE OF THIS CORPUS.** Six of 47 name a board at all; the scripts take
+the image as `argv[1]` and the multiplicity lives in the REGISTRATION, where 47 scripts carry 71
+of them and `check_faultsurvive.sh` alone answers 7. The four arch-split pairs are not clones
+either: `check_kernel_half_rv64.sh` asserts scause 13 with no permission or translation split, a
+different claim in half its lines, already behind a shared helper.
+**What survives, priced**: a `sim_build` helper over 10 configure-and-build sites in 7 files is
+about **-50** and is the one worth taking, being mechanical and covered by the sim gates that
+already run it; a `sim_run` helper is about -22 and a defaulted `QEMU_TIMEOUT` about -8, and each
+of those two adds a `gate.sh` function whose own doc paragraph eats most of the gain. **About -80
+against 5448 lines, 1.5 percent.** There is no ledger here comparable to the static corpus's.
+The measurement is of TEXT: no integration script was executed to produce it.
+
 **WHAT THE EXTRACTION IS WORTH, WITH THE ARITHMETIC SHOWN.** The repo-root check is 46 lines over 24
 files against 24 one-line calls, about -20. The `git ls-files` corpus construction is about 81 lines
 over 23 files, some building two corpora, against roughly 26 call sites, about -55. The objdump
@@ -1866,7 +1940,35 @@ parsing a different section shape.
 
 External audit, itemised into `roadmap.md` M8.6.
 
-- [ ] **THE ROOT FILE KEPT THE SHAPE M8.1.1 REMOVED FROM THE APPS, IN 22 COPIES AND 70 DEAD
+**AND THE AUDIT'S CORPUS FIGURES THROUGHOUT THIS SECTION ARE STALE, RE-DERIVED AT THE M8.6
+REVIEW AND LEFT IN PLACE AS WRITTEN so the record of what the audit SAID stays readable.** The
+audit's numbers against the tree it was itemised into, master first and this branch second: the
+static corpus is **67 gates over 22374 lines** and not 60 over 19768, so anything dividing by 60
+inherits the error; `gate.sh` was **824** lines and not 796; **111 of 116** gate scripts sourced
+it and not 102 of 107, and at this branch's tip it is 117 of 117; `tests/integration/gates/` holds
+**37** fragments and not 36, with the inclusion list that long; the integration corpus is **5465**
+lines and not 5228; and **39** files exported `LC_ALL=C` and not 41. Two counts inside the landed
+work were off by one in the same direction and are corrected here rather than in place: **nine**
+gates carry a dead-tool control and not eight, of which **four** stayed local and not three.
+**The rule this is the fourth instance of: re-derive an audit's figure before briefing work from
+it.** None of these changes a decision that was taken; every one would have changed a denominator
+quoted in a report.
+
+**THE LEDGER'S OWN ARITHMETIC WAS WRONG IN BOTH DIRECTIONS, AND THE CORRECTION MATTERS MORE THAN
+THE TOTAL.** Measured on the four moves that have landed. The toolchain extraction beat its
+estimate: -398 across the six real toolchain files against "about -400", -286 once the shared
+body is counted. The arch ladder MISSED its estimate and not because the work stopped short: it
+is **net +27 across the tree**, against a predicted -135. Of the nine branches' 286 lines only 99
+were the repeated dispatch and the five commands, and those went to 27; the other 187 are source
+lists and per-arch constraint comments, which MOVE rather than fold, and nine new files cost nine
+gated SPDX headers besides. **The lesson is the one this milestone keeps meeting from the other
+side: a containment or shingle figure counts lines that LOOK alike, and a source list resembles
+another source list without being duplication.** Treat every remaining estimate in this section
+as an upper bound on the fold and not as a promise. The AMP block move is net +10 for the same
+reason, 310 lines out of the root and 319 into a module. Measured totals so far: the build corpus
+12741 lines over 284 files -> **12470 over 296**, a real -271; the root file 2039 -> **1551**.
+
+- [x] **THE ROOT FILE KEPT THE SHAPE M8.1.1 REMOVED FROM THE APPS, IN 22 COPIES AND 70 DEAD
       GUARDS.** `CMakeLists.txt` 1339-1507 holds 22 flat copies of one four-condition `if` around 34
       `add_subdirectory(tests/unit/...)`, and ordering explains only 12 of the 34 (ten nest under
       kfixture, two under exitquiesce); the other 22 are an orderless list, and no CMakeLists.txt
@@ -1877,8 +1979,22 @@ External audit, itemised into `roadmap.md` M8.6.
       1672 and 1680. That is the "guard against a declaration that cannot decline" class the apps
       were cleaned of. Direction: one guard plus a foreach, and delete the guards; the tree already
       uses this idiom for the per-chip fragments and for the gate includes.
+      **LANDED, and every figure above had drifted**: it is 38 unit descents not 34, 26 kernel
+      sources in that foreach not 25, and 75 guarded paths not 70, each re-checked against
+      `git ls-files` one at a time. The descents now live in a new `tests/unit/CMakeLists.txt`
+      the root adds once, matching what `user/apps` and `tests/integration` already do; the root
+      drops 195 lines. **NINE GUARDS STAYED and none is in the class**: a board-derived path may
+      genuinely be absent, and the five per-chip opt-in fragments ARE the declination idiom.
+      **The ordered twelve were derived rather than trusted**, from the link edges --
+      `kickos_kseam` is defined in kfixture and linked by exactly ten, `kickos_kseam_smp` in
+      exitquiesce by exactly two -- and the mutation that proves it matters is worth keeping:
+      moving `migrateask` ahead of `exitquiesce` configures clean and keeps the count at 596,
+      the only tell being that the TU takes both postures, because `kickos_add_unit_test` reads
+      `KICKOS_POSTURE` off the library AT CALL TIME. **So the count is not the ordering's
+      witness**; dropping one directory from the loop reports "100% passed, out of 568", which
+      is what the count does witness.
 
-- [ ] **THE 36 GATE FILES NOW REPEAT WHAT THE APP FILES USED TO, AND A NEW ONE IS PICKED UP BY
+- [x] **THE 36 GATE FILES NOW REPEAT WHAT THE APP FILES USED TO, AND A NEW ONE IS PICKED UP BY
       NOTHING.** `tests/integration/gates/` is 1837 lines: 49 raw `add_test` across 22 files with 18
       sharing an identical `TIMEOUT 120 LABELS host` tail while `kickos_add_qemu_test` covers the 60
       emulator registrations and nothing covers these; 12 hand-written board ladders over the same
@@ -1888,8 +2004,36 @@ External audit, itemised into `roadmap.md` M8.6.
       it is silently not registered. Direction: a host-gate helper for the identical tail, use the
       existing board-set helpers, and glob-or-rule the inclusion so a new gate cannot be silently
       absent -- the same "an authority is total" arrow M8.1.1 turned everywhere else.
+      **LANDED.** Inclusion is a sorted `CONFIGURE_DEPENDS` glob over `gates/*.cmake` that
+      `FATAL_ERROR`s on an empty match, so "the directory moved" cannot become zero gates and
+      no complaint; sorting reproduces the old list order exactly, which matters because a
+      fragment may read a figure an earlier one computed. A planted fragment named in no list
+      is absent on the base tree at 70 tests and present on this one at 71, and removing it
+      returns to 70. 27 sites take a `kickos_host_gate` helper (18 dropping the identical
+      `TIMEOUT 120 LABELS host`, 6 at 60, 2 at 300, 1 at 900) and no `LABELS host` literal is
+      left in the directory.
+      **THE HELPER TAKES A TEST NAME AND NOT A `COMMAND`, AND THAT IS MEASURED RATHER THAN
+      TASTE.** `cmake_parse_arguments` plus an unquoted re-expansion LOSES a backslash-escaped
+      semicolon: a throwaway project shows a literal `add_test` emitting one argument where
+      the wrapped call emits three. `selftest.cmake` passes exactly such an argument to
+      `check_class_backend.sh`, whose own comment warns that a split there shifts every
+      positional after it. A `COMMAND`-taking helper would have been right at 26 of 27 sites
+      and silently wrong at the 27th.
+      **The recurring four-board set is gone and no second list replaced it.** That set was
+      never a fleet fact, it was "every emulated board minus the ones this gate does not
+      cover", so five sites state the EXCLUSION by arch and leave membership to
+      `kickos_qemu_machine`, the one board-to-machine map. Nine other multi-board ladders were
+      deliberately NOT folded: their predicates sit under `KICKOS_MEMORY_ENFORCED` or
+      `KICKOS_HAVE_MPU`, where an arch-shaped exclusion would change which boards register.
+      **What a green run here does NOT say**: 20 presets of 71 were compared, name set by name
+      set, and they are identical -- but the POINT of the change is that a future board on a
+      covered arch now registers these five gates automatically, and nothing here witnesses
+      that being right for a board nobody has written. The name-set instrument also cannot see
+      a test whose ARGUMENTS changed; only the AMP three had their generated entries read by
+      hand. Owed and out of scope: 37 more `TIMEOUT`/`LABELS` tails in the root file's
+      static-gate block that the same helper would serve.
 
-- [ ] **THE THREE CMAKE CONCENTRATIONS, WITH THE MOVE EACH ONE WANTS.** Corpus 11925 lines over 272
+- [x] **THE THREE CMAKE CONCENTRATIONS, WITH THE MOVE EACH ONE WANTS.** Corpus 11925 lines over 272
       files; the root is 16 percent of it and no function in `cmake/kickos.cmake` is dead, so this is
       unfactored rather than over-engineered. (1) Seven `cmake/toolchain-*.cmake` total 818 lines of
       which 253 match a shared set of 47 normalised lines -- compiler search, find-root modes, the
@@ -1902,16 +2046,107 @@ External audit, itemised into `roadmap.md` M8.6.
       modules. **ORDERING CONSTRAINT**: the AMP block must keep running before `cap_table.cmake` at
       root 1709, whose width depends on the port count. Also `toolchain-cxx-runtime-check.cmake` is
       not a toolchain file -- it defines one probe function and is misfiled by name.
+      **ALL THREE LANDED, plus the rename to `cmake/cross_cxx_capability.cmake`.** See the ledger
+      correction above for what the arithmetic actually came to.
+      **THE RENAME UNCOVERED A LATENT PACKAGING DEFECT that no gate would have caught until a
+      consumer hit it.** The root file derived which fragments to SHIP by regex over the
+      toolchain file's own text, matching `toolchain-*.cmake` one level deep. After the
+      extraction the probe no longer matches that name at all and `toolchain-package-board.cmake`
+      is reached one level further down, so a package would have shipped NEITHER and failed in
+      the consumer's own `project()` line, nowhere earlier. The walk is transitive now.
+      **The AMP block's budget clause could NOT move with it**, which is the one thing the
+      audit did not foresee: `cmake/amp_partition.cmake` is include()d long before
+      `add_subdirectory(system)`, so no service-list target exists there and no seat can be read.
+      The pool relation needs only Kconfig and stays; the budget relation belongs with the other
+      seat arithmetic. That is the AMP-seat item above.
+      **What the three moves do NOT witness**: no silicon and no image ran for any of them. The
+      arch fragments were proven by comparing the loadable section table and symbol dump across
+      eleven presets, with a null control and three positive controls, which is a statement about
+      emitted code and not about behaviour. RX and Xtensa have no capability gate to break, so
+      the toolchain refusal evidence covers arm, arm64 and riscv only, and the AArch64 arm of it
+      is a proxy: there is no C-only `aarch64-none-elf` twin on this box.
 
-- [ ] **NOTHING ENFORCES THE PRESET-TO-DEFCONFIG BIJECTION, THOUGH IT HOLDS TODAY WITH ZERO
+- [x] **THE AMP-PORT RELATION ADMITS EQUALITY, AND THE SEAT IT DOES NOT COUNT IS DECLARED BY
+      NOBODY.** `CMakeLists.txt` refuses only `ports GREATER budget`, so a partition may state
+      exactly as many crossings as the endpoint budget and boot root at its ceiling from ports
+      alone; a published console and a `KOS_DRV_EP_RETAIN` driver endpoint are further holds no
+      admission sees, so such a board goes over the moment it publishes. **The second half is
+      the live one and it is wider than the AMP relation.** `RETAINED_CAPS` on
+      `kickos_add_board_provider` is the one declaration for "what a service list leaves in
+      root's table for the life of the image", and exactly three providers state it
+      (`services_frdmk64f`, `services_xmc4800relax`, `services_simuart`, all for an endpoint) --
+      while every list that publishes a console states NOTHING, the `*_uartirq`, `*_usbcdc` and
+      `xmc4800relax_console` set included. The reserved capability INDEX is accounted for
+      (`KOS_CAP_STDOUT` = 0, summed into `KICKOS_CAP_FIRST_DYNAMIC`); the endpoint POOL SLOT
+      behind it is not, and the budget guards the pool. So `RETAINED_CAPS` cannot simply be
+      added to the port count either: it counts table indices, and a retained cap need not be
+      an endpoint. **Nothing is broken today and the reason is an accident**: no AMP defconfig
+      names a service list at all, so every shipped partition takes `kickos_services_none` and
+      the two terms have never met. Shipped headroom is 3 ports against a budget of 8, 3
+      against 7, 3 against 8 and 4 against 9. **Direction, decided by the owner**: give
+      `kickos_add_board_provider` a `RETAINED_ENDPOINTS <n>` sibling declared by whoever owns
+      the fact, the same shape as `RETAINED_CAPS`; make the refusal `ports +
+      retained_endpoints < budget`; and name the `KOS_DRV_EP_RETAIN` seat in the refusal text
+      as the caller's remaining obligation, since that flag is a runtime one no build can read.
+      A positive control is cheap here and is owed: a defconfig raised to equality must fail
+      the configure, and it must still fail with the ports one below and a console list named.
+      **LANDED, and the audit found the retention was NEVER ZERO on twelve of the fifteen
+      providers.** `RETAINED_ENDPOINTS` is declared per provider and summed with the port count
+      by `kickos_endpoint_seats_check` in `cmake/cap_table.cmake`, called immediately before
+      `kickos_cap_table_resolve`. It is deliberately a SECOND function rather than a term inside
+      the resolve: the resolve's every other term is a capability table INDEX against a board
+      supply, and refusing a POOL overrun from inside it would re-create in the code the exact
+      conflation this item exists to remove.
+      **What the audit established, per provider, from the source rather than the name**: a
+      console handover retains no capability index of its own, the published route living at the
+      reserved `KOS_CAP_STDOUT`, yet root's table still names that endpoint and holds its pool
+      slot until the image dies -- so a handover is 1 endpoint and 0 caps, and a
+      `KOS_DRV_EP_RETAIN` driver endpoint is 1 of each. Twelve providers hold one, `frdmk64f`
+      and `xmc4800relax` hold TWO (a console handover plus a retained SPI request endpoint), and
+      only `services_none` holds none.
+      **AND THOSE TWO BOARDS NOW SIT ONE SLOT UNDER THE DEFAULT BUDGET OF 3.** It configures,
+      because the relation only counts what the build can read, but an app bringing up its own
+      `KOS_DRV_EP_RETAIN` driver on either lands exactly on the ceiling. Recorded rather than
+      fixed: raising a budget is a board decision and nothing is failing.
+      **The declaration is MANDATORY for a `services_*` provider**, zero included. Defaulting it
+      read a list that forgot to declare as one holding nothing, which is precisely how twelve
+      seats went uncounted; a 0 must now be typed. That closes the forgotten-declaration case
+      and NOT the wrong-number case: nothing derives the figure from the driver TUs, so a list
+      declaring 1 where it holds 2 still passes. Deriving it means following start functions in
+      to read `ep_posture`, and a half-built check there would be worse than none.
+      **What these green runs do NOT say**: no image ran, so nothing observed root actually
+      holding the seats the declarations claim -- the authority is the source and Kconfig's own
+      sentence, not a boot. The relation is incomplete BY CONSTRUCTION and says so in its
+      refusal, a `KOS_DRV_EP_RETAIN` driver an app brings up being unreadable at build time. And
+      the `KICKOS_MAX_ENDPOINTS == 0` corner is unguarded, `cap.h` skipping its assert there, so
+      `retained < budget` could pass over a pool that seats nothing; no board sets 0 today.
+
+- [x] **NOTHING ENFORCES THE PRESET-TO-DEFCONFIG BIJECTION, THOUGH IT HOLDS TODAY WITH ZERO
       EXCEPTIONS.** 76 configure presets over seven JSON files, 69 of them pure board-plus-variant
       pairs; 68 defconfigs, 67 with a preset, the gap being a gate fixture consumed by path. The
       naming rule is mechanical. But `tests/static/preset_boards.cmake` 168-178 tolerates a missing
       defconfig, and `check_kconfig_gen.sh` walks defconfigs and never reads presets, so neither
       direction is checked. Direction: one set-equality gate, roughly +15 lines, which is the cheapest
       item in this section and the only one that adds rather than removes.
+      **LANDED as `tests/static/check_preset_defconfig.sh`, and it is 130 lines rather than
+      15, because the bijection is NOT name equality and an exception list needs guarding.**
+      An own-image AMP partition has ONE defconfig serving one preset per node, the node index
+      riding in on a `-n<N>` suffix, so the key is the preset name with that suffix stripped
+      and several presets legitimately share a defconfig. Today: 71 presets over 67 keys
+      against 68 defconfigs. The single defconfig no preset names is `sim/smp-ineligible`,
+      consumed by path from `check_smp_predicate.sh`, and it is the only declared fixture.
+      **THE EXCEPTION LIST IS ITSELF CHECKED**, which is the leg that stops it becoming the
+      hiding place for the defect leg 2 exists to find: a declared fixture must be a TRACKED
+      defconfig and must be named by something under `tests/`, and a declaration nothing
+      consumes is refused as dead.
+      All three legs were fired before the gate was trusted: a planted `sim-orphanctl`
+      defconfig reddens leg 2, a planted `sim-nosuchvariant` preset reddens leg 1, and a
+      `FIXTURES` entry for a defconfig that does not exist reddens leg 3.
+      **The gate caught its own author on the way in**: `grep -rqF -- "$_v"` tripped
+      `dash_punct`, the rule that a doubled hyphen is never punctuation in code, and the
+      end-of-options separator became `-e`. sim 596 -> 597 with it registered.
 
-- [ ] **DRY-8: `tests/lib/gate.sh` IS SOURCED BY 102 OF 107 GATE SCRIPTS BUT LACKS THE CORPUS
+- [x] **DRY-8: `tests/lib/gate.sh` IS SOURCED BY 102 OF 107 GATE SCRIPTS BUT LACKS THE CORPUS
       HALF, SO A CORPUS-FILTER FIX GETS MADE TWENTY-THREE TIMES.** `tests/lib/gate.sh` (796 lines).
       23 gates rebuild a `git ls-files` corpus by hand, three of them twice in one file; 22 re-type
       the repo-root check verbatim and 2 more in a reworded line; 16 embed their own `objdump`-reader
@@ -1924,8 +2159,53 @@ External audit, itemised into `roadmap.md` M8.6.
       8 gates M8.4 gave one. Direction: move the corpus-build, repo-root check, `objdump` reader,
       dead-tool control and `bad()` into `gate.sh` itself, one authority instead of twenty-three
       copies; bring the five sim scripts under it too.
+      **LANDED, AND THE ESTIMATE WAS WRONG IN BOTH DIRECTIONS, WHICH IS NOW THE PATTERN FOR
+      THIS SECTION.** The five named idioms came to **-104 against -145**. The miss is the
+      corpus builder: 23 sites at three lines each fold to one line, but the shared function
+      plus the paragraph that has to explain it costs 36, so it is **-3** where -55 was
+      predicted. The overshoot is `LC_ALL=C`, FLAGGED at -40 and actually **-117**, because
+      those 39 files each carried a one-to-five-line paragraph explaining the line rather than
+      just the line. Whole tracked shell and awk corpus 30162 -> 29928, **-234**.
+      What moved: `require_repo_root`, `corpus` with its three filtered forms, `scoped_body`,
+      `ctl_dead_reader`, `bad()`, and one exported `LC_ALL=C`; the shared awk scope is a new
+      `tests/lib/objdump_scope.awk`. The five sim scripts now source `gate.sh`.
+      **THE `LC_ALL=C` MOVE IS A FIX AND THIS ENTRY FIRST RECORDED IT AS A NO-OP, WHICH WAS THE
+      WRONG FALSIFIER ASKED THE WRONG WAY ROUND** (corrected at the M8.6 review). What was
+      tested is whether REMOVING the export breaks anything, and the export is being ADDED to
+      files that lacked it; the question is whether forcing C CHANGES a verdict where it was
+      previously absent. **It does, in two gates that run the HOST compiler**, so "all four
+      cross toolchains speak English" does not cover them:
+      `tests/static/check_c_headers.sh` greps the compiler's output for `No such file or
+      directory` and set no `LC_ALL` at all, and `check_public_headers.sh` greps for the same
+      string while its only two `LC_ALL=C` prefixes sit on later `awk` calls and do not reach
+      it. This box's gcc under `fr_FR.UTF-8` prints `Aucun fichier ou dossier de ce nom`, so
+      the match failed and the `rc=2` UNKNOWN arm was UNREACHABLE: the gate blamed the headers
+      for its own missing include root, reporting "8 C-facing header(s) are not valid C11"
+      where under C it reports "an #include could not be found for 8 header(s), so the compiler
+      judged nothing and their verdict is UNKNOWN, not clean". M8.6 repaired that silently.
+      **And the scope of the reading was wrong too**: 39 scripts set it before this milestone,
+      not 41, and what is newly forced is 77 files (30 static, 46 integration, plus
+      `tests/lib/scratch_ci.sh`) rather than 19 or 20, because `gate.sh` did not export it
+      before and every integration gate that already sourced it is newly covered. The reading
+      itself holds for the static half -- no POSIX class beyond space and blank, no non-ASCII
+      byte, no `wc -m`, every `comm` sorted in one process -- and it does not speak for the
+      other 46.
+      **What a green run here does NOT say, and it is the important line for a change to the
+      instrument itself.** Only three idioms were re-proved by MUTATION (a planted ternary and
+      a planted non-ASCII byte for the corpus, a dropped fence and a renamed body header for
+      the reader, two `bad()` sites made true and both collected without exiting). The other
+      59 gates rest on byte-identical `ctest -V` output before and after, 8834 lines diffing
+      empty apart from timestamps and the corpus count moving by exactly the one new file --
+      **which proves no arm stopped executing, not that detection still works**. Thirteen
+      presets is not the fleet, and the whole run is one box with one awk: the two-`-f` rule
+      order is POSIX but only gawk executed it, and `check_awk_portable` scans for extensions,
+      not for rule-order semantics under mawk.
+      Owed: three of the eight dead-tool controls stayed local because they run the whole
+      verdict rather than the reader record, and routing them through the shared one would
+      weaken them; two gates keep a bespoke root check; the `nm` one-liner is still 9 copies,
+      untouched on purpose.
 
-- [ ] **DRY-10a: THE APP-TO-TEST DEPENDENCY IS INVERTED, AND THE 291-LINE `hello` FILE IS THE
+- [x] **DRY-10a: THE APP-TO-TEST DEPENDENCY IS INVERTED, AND THE 291-LINE `hello` FILE IS THE
       SYMPTOM RATHER THAN THE DEFECT.** An application is not a test, yet
       `user/apps/common/hello/CMakeLists.txt` registers 21 ctest entries invoking 17 different
       scripts, of which only five are hello tests: the rest are kernel gates that merely need the
@@ -1939,8 +2219,15 @@ External audit, itemised into `roadmap.md` M8.6.
       stops. Fleet-wide this is 64 app files and 102 `kickos_add_qemu_test` calls. Note for M8.4:
       its gate work must not entrench the present direction by adding more registrations to app
       files. `hello_c/CMakeLists.txt` is 8 lines and shows what an application file should be.
+      **ALREADY LANDED WHEN M8.6 OPENED, AND THIS FILE SAID OTHERWISE FOR A WHOLE MILESTONE.**
+      Checked at the M8.6 base: `hello/CMakeLists.txt` is SIX lines and registers nothing, and
+      no app file anywhere in the fleet calls `add_test` or `kickos_add_qemu_test` at all. The
+      arrow was inverted by the M8.2-era build-file cleanup and the item was never ticked. **The
+      lesson is the one that costs a session**: an open checkbox is not evidence the work is
+      open, and an audit itemised into a file goes stale against the tree behind it. Read the
+      code before briefing an item out of this list.
 
-- [ ] **DRY-10b: EVERY APP GUARDS A HELPER THAT ALREADY KNOWS THE ANSWER.** The per-board `if()`
+- [x] **DRY-10b: EVERY APP GUARDS A HELPER THAT ALREADY KNOWS THE ANSWER.** The per-board `if()`
       ladders around `kickos_add_qemu_test` re-ask a question the function itself decides:
       `cmake/kickos.cmake` (`kickos_add_qemu_test`) dispatches on `BOARD` across all ten emulatable
       boards to choose the emulator and its flags. The guards exist only because the helper's final
@@ -1951,53 +2238,254 @@ External audit, itemised into `roadmap.md` M8.6.
       simply has no emulator (return without registering), then delete the guards and let `BOARD`
       default to `KICKOS_BOARD` and `NAME` derive from the tag and target, which the app files
       currently hand-derive with `string(REPLACE "-" "_" ...)`.
+      **ALREADY LANDED TOO, by the same cleanup.** `kickos_qemu_machine` is the total
+      authority this item asks for: its final `else()` calls `kickos_is_board` and is fatal only
+      for a name that is no board, otherwise it returns BOTH out-parameters empty (both, or a
+      caller looping over boards keeps the previous board's answer), and `kickos_add_qemu_test`
+      defaults `BOARD` to `KICKOS_BOARD`, derives `NAME`, and returns early on an empty machine.
+      **AND THE ITEM'S OWN EVIDENCE HAD ROTTED WITH IT**: the "two board-set helpers at
+      `cmake/kickos.cmake` 821 and 839 with no caller at all" do not exist. The functions at
+      those lines today are `kickos_board_names` and `kickos_enforcing_mpu_boards`, both called
+      from the root file, and an enumeration of every function in `cmake/*.cmake` finds none
+      dead.
 
-- [ ] **DRY-10c: TEN 12-LINE `cpu.cmake` FILES DIFFER BY THREE LINES EACH.**
+- [x] **DRY-10c: TEN 12-LINE `cpu.cmake` FILES DIFFER BY THREE LINES EACH.**
       `arch/arm/chip/*/cpu.cmake`. Direction: a `kickos_arm_cpu()` helper.
+      **LANDED**, in `cmake/toolchain-common.cmake` beside the other pre-`project()` macros,
+      since that is what include()s a `cpu.cmake`. 120 lines over the ten to 60, against a
+      19-line macro: net -41. The value is not the count, it is that the float-ABI DEFAULT
+      rule was ten copies of one guarded `if` and is now one, and the guard matters -- a board
+      descriptor is read FIRST and a board stating its own ABI must win.
+      **Both ways.** The ten boards' normalised `FLAGS`/`DEFINES`/`LINK_FLAGS` lines are
+      byte-identical to the base tree's (19 to 37 unique lines each, source and build paths
+      normalised, since the two trees sit at different paths and every include dir would
+      otherwise differ). The comparison is shown to have teeth: moving `mk64f` from
+      `fpv4-sp-d16` to `fpv5-sp-d16` reddens it by 22 lines naming both spellings.
 
-- [ ] **EIGHT SYSTEM/DRIVER ADAPTER TRANSLATION UNITS (46-108 LINES EACH) SHARE 0.5+
+- [x] **EIGHT SYSTEM/DRIVER ADAPTER TRANSLATION UNITS (46-108 LINES EACH) SHARE 0.5+
       CONTAINMENT.** Each is one `drv::Descriptor` literal plus two 3-line thunks, retyped per
       chip. Direction: a descriptor macro, or a generated table, replacing the eight hand-written
       copies.
+      **FIVE FOLDED, AND BOTH FIGURES WERE WRONG WHEN THE ITEM WAS WRITTEN.** They are 92 to 126
+      lines, not 46 to 108 (`git show` at the introducing commit gives the same sizes), and they
+      are not one 0.5+ set but TWO clusters: the five UART console adapters sit at 0.75 to 0.82
+      pairwise, the two SPI ones at 0.75 with each other, and the SPI pair against the UART
+      cluster at 0.27 to 0.37. The fifteen lines common to all eight are includes and namespace
+      aliases. `user/include/kickos/sys/uart_console_desc.h` (103 lines) now emits the IRQ thunk,
+      the block initialiser, the descriptor, both static_asserts and the entry; the five TUs go
+      499 lines to 224, net -172, each still stating its own base, vector, trigger, thread name
+      and fallback baud.
+      **THREE DID NOT FOLD AND THE REASONS ARE SHAPE, NOT EFFORT.** `rxsci` is two lines, three
+      threads and an edge relay between them: a different shape, not different constants. The
+      SPI pair differs in `expected_base`, `line_count`, `cap_count` and the caps array, four of
+      the fields that DECIDE the driver, so two members behind four parameters removes about 20
+      lines and adds a header of about 30.
+      **AND THE LOUDEST PAIR IN THE CORPUS IS NOT IN THIS ITEM AT ALL.** `k64uart.cc` and
+      `xmcuart.cc`, the polled TX consoles at 157 and 172 lines, sit at **0.86** -- 64 of 74 and
+      88 normalised code lines identical, including private copies of `poll_put` and `win_puts`
+      where the library already declares `kickos::uart::win_puts`, the whole recv loop, and a
+      descriptor differing only in tag and entry. It is a shared BODY rather than a descriptor
+      macro, `xmcuart` carries a `print_rate` the other does not, and no arrangement leaves the
+      emitted code where it is. Left for a later pass rather than widened into.
+      Two traps the macro cost, worth carrying: its parameter is `svc_name` and not `name`,
+      because `name` substitutes inside `.name = irq_thread_name`; and the invocation needs a
+      trailing semicolon or `check_syscall_return_codes.sh` reads the file as one unfinished
+      statement and exits 2 saying the tail is unread. That was a real red before the fix.
+      **Backward on five presets, 71 images, all unchanged**, with a null control per toolchain
+      family and a positive control on one immediate. Byte-identity is NOT available here:
+      `build_stamp.cmake` regenerates `kickos_build_time` every build, and excising the two
+      obvious stamps was not enough -- a WEAK `kickos_app_build_time` kept the null control red
+      until the filter matched the whole family, and on these boards the linker folds `.rodata`
+      into `.text` so the stamp shows up in the disassembly as `.word` data.
 
-- [ ] **`uart_service.cc` / `usb_cdc_service.cc` SHARE 0.66 CONTAINMENT: THE CONSOLE_SERVICE /
+- [x] **`uart_service.cc` / `usb_cdc_service.cc` SHARE 0.66 CONTAINMENT: THE CONSOLE_SERVICE /
       USB_CDC_SERVICE MERGE.** `user/src/uart_service.cc` / `usb_cdc_service.cc`. `shared_init`,
       `tx_write`, `console_flush`, `console_write`, `reply_status` and `console_serve_loop` are
       duplicated (62 diff lines out of 199+158 total). Direction: one `console_service` template over
       a `Transport` parameter, mirroring the existing `uart_service.h` template shape.
+      **LANDED.** `user/include/kickos/sys/console_service.h` holds `reply_status`,
+      `shared_init`, `serve_one` and `console_serve_loop` as templates over a `Transport` policy
+      that stays a plain struct of three things -- `MODE_REQUIRED`, `inflight`, `tx_lost` --
+      taken as an explicit first template argument so the policy needs no member typedef.
+      `uart_service.cc` 205 -> 75, `usb_cdc_service.cc` 161 -> 27. Ten symbols left the public
+      surface, all internal bindings to `console_ring.h` both copies had open-coded, and
+      `uart::push_all` had no caller anywhere. **Nothing touches the writer brackets**: the
+      deleted bodies never named them and the merged body is ring and reply code. The USB CDC
+      defect is unchanged in both directions and is now compiled once for both.
+      Every image on all eight boards SHRANK, 8 to 88 bytes, `.bss` and `.data` unchanged. GCC
+      does not inline the templates into the forwarders at -Os: it emits each instantiation as
+      a weak comdat and makes the entry an 8-byte tail-call thunk, paid for twice over because
+      the merged `serve_one` no longer needs the `.part.0` outlining clone the duplicates were
+      split into.
+      **What no run here says**: nothing in `tests/` or the selftest names `console_serve_loop`
+      or `console_thread`, so the merged loop -- the arm every published console actually parks
+      in -- has no automated execution coverage at all. What does execute is `serve_one`, in
+      process, through the selftest's `uart_service` arm, and `serve_loop` through the sim
+      loopback. On the USB side the gap is total: `usbcdcwit` is built by no default
+      configuration and needs a host to enumerate the device.
 
-- [ ] **`uart_lx6.cc` / `uart_c6.cc` SHARE 0.68 CONTAINMENT: THE SAME DRIVER BODY FOR TWO IP
+- [x] **`uart_lx6.cc` / `uart_c6.cc` SHARE 0.68 CONTAINMENT: THE SAME DRIVER BODY FOR TWO IP
       REVISIONS.** `system/driver/esp32/lx6uart/uart_lx6.cc` and
       `system/driver/esp32c6/c6uart/uart_c6.cc`. Direction: parameterise the register map so one
       driver body serves both IP revisions.
+      **LANDED, mirroring the idiom `arch/arm/chip/rp2xxx` and `stm32f1f3` already use rather
+      than inventing one.** `system/driver/espuart/uart_esp.cc` holds `kos_uart_read`, `_write`,
+      `_flush`, `_close` and three file-local helpers, entering each driver's own archive
+      through a relative path in that driver's existing `SOURCES`, so it needs no new target,
+      include directory or install rule. `uart_lx6.cc` 226 -> 99, `uart_c6.cc` 324 -> 202.
+      **`kos_uart_open` stays per chip and the header says why**: the LX6 refuses any rate or
+      frame change and keeps what the ROM left, while the C6 programs both across a `_SYNC`
+      commit protocol the LX6 has no counterpart for.
+      The two parts are different ARCHITECTURES, not two IP revisions, so the offsets were read
+      out of each TRM separately rather than off each other; all equal. One family caveat is now
+      a comment: 8 bits is the whole TX count only while each FIFO keeps its default block, the
+      ESP32's three high bits living in a second register.
+      Emitted code: on esp32 the four moved bodies are instruction-identical, cost zero bytes.
+      On esp32c6 they are too, and `kos_uart_open` grew SIX bytes -- not the TU crossing, which
+      was already `auipc`/`jalr` under `R_RISCV_CALL_PLT`, but two shared-epilogue jumps
+      tail-duplicated into in-place returns once the TU held one function instead of five. No
+      named flag reproduces it and that is stated rather than guessed at.
+      **What no run here says**: there is no QEMU machine for either part, so both suites are
+      entirely static and build gates. These four entry points have only ever run on silicon,
+      and that witness was taken on the pre-merge code.
 
-- [ ] **DRY-9: 30% OF THE PUBLIC ABI HEADER IS SELFTEST-ONLY PROBE SURFACE, SHIPPED TO EVERY C
+- [x] **DRY-9: 30% OF THE PUBLIC ABI HEADER IS SELFTEST-ONLY PROBE SURFACE, SHIPPED TO EVERY C
       CONSUMER.** `user/include/kickos/sys/abi.h` (1001 lines). ~290 lines are selftest-only probe
       enums and result defines (`kos_doorbell_op`, `kos_sched_op`, `kos_aspace_op`, `kos_amp_op`,
       `KOS_ASPACE_*`). Direction: split into `abi_probe.h`; the ABI is alpha so no deprecation
       ceremony is owed on the split.
+      **LANDED, AND BOTH FIGURES IN THIS ITEM WERE STALE.** The header had grown to 1157 lines
+      and the probe surface is 513 of them, 44 percent rather than 30. `abi.h` 1157 -> 644, new
+      `abi_probe.h` 536. `kos_grant_op` moved too, unnamed by the audit: it is the fifth
+      `KOS_SYS_*_PROBE` selector and leaving it would make "where does a probe selector live" a
+      two-answer question. `KOS_AMP_RING_SLOTS`, `KOS_AMP_PORT_ECHO`/`_REPLY`, `KOS_NEST_*` and
+      `kos_bench_op` deliberately stayed: the kernel and the public `<kickos/amp.h>` name them.
+      **IT IS INSTALLED, AND THE REASON IS NOT THE ONE THE BRIEF ASSUMED.** `install(DIRECTORY)`
+      over `user/include/` ships it with no list to add it to. The oot gates do NOT build the
+      selftest -- they build `examples/oot-app` and `examples/oot-mcu-app`, neither of which
+      includes probe surface -- so "the selftest needs it out of tree" is false. What installing
+      buys is that `check_public_headers.sh` keeps compiling it standalone at the C++17 the
+      package advertises; the item's actual cost, 513 lines every consumer of `<kickos/sys.h>`
+      parsed, is already gone.
+      **THE SPLIT OPENED A GATE HOLE AND CLOSED IT.** `check_c_headers.sh` derives its corpus
+      from headers that guard an `extern "C"` with `__cplusplus`, plus what those include. A
+      macro-and-enum-only `abi_probe.h` fell straight out: corpus 30 -> 29, gate green, and a
+      planted `namespace` went unnoticed. It has two real C consumers, so it carries its own
+      `extern "C"` block wrapping nothing -- a true statement of C-facing-ness and the corpus
+      selector. 31 of 299 now, and a planted `static_cast` reddens it.
+      **A VACUOUS CONTROL WAS CAUGHT BEFORE IT WAS BELIEVED.** Deleting `KOS_ASPACE_OP_CAP_RUN_REFS`
+      left the sim build GREEN: sim is `KICKOS_HAVE_ASPACE=0` and every aspace arm is
+      preprocessed away there. The control that works removes `KOS_DOORBELL_OP_KERNEL_LINE` and
+      breaks both the kernel dispatch and the selftest.
 
-- [ ] **THE SELFTEST'S `main.cc` IS A 12566-LINE SINGLE TRANSLATION UNIT BY CONSTRUCTION, AND
+- [x] **THE SELFTEST'S `main.cc` IS A 12566-LINE SINGLE TRANSLATION UNIT BY CONSTRUCTION, AND
       NOTHING STATES WHY.** `user/apps/common/selftest/main.cc`; `CMakeLists.txt` 42. 193 arms,
       419 functions, 198 `skip()` sites spelled as string literals; the existing three-part split for
       64 KiB parts recompiles the WHOLE file three times rather than splitting the source. Per-board
       skip sets are data today, encoded as scattered string-literal calls rather than a table.
       Direction: split the translation unit along its arm boundaries, and make the per-board skip
       sets a data table rather than call-site literals.
+      **SPLIT LANDED; THE SKIP TABLE WAS NOT BUILT BECAUSE ITS PREMISE IS FALSE.** Every figure
+      in this item was stale: the TU is 14210 lines not 12566, 206 `TAP_ADD` sites not 193, 477
+      namespace-scope functions not 419 (362 survive as symbols at -Os), 227 `skip()` sites not
+      198 over 96 distinct literals. `f302nucleo-st` splits **37/26/44**, not the 37/26/39
+      `boards.md` was still stating in the present tense.
+      **THERE ARE NO PER-BOARD SKIP SETS.** A grep for `KICKOS_BOARD` or `KICKOS_CHIP` over all
+      the suite's sources returns ZERO. Every `tap::skip` reason is a RUNTIME decision the arm
+      makes from what the machine actually granted it, and the per-board sets already are a
+      table -- `tests/integration/gates/selftest.cmake`, keyed on posture predicates. A table
+      would save nothing besides: identical literals merge in `.rodata`, so "thread pool too
+      small" is written 44 times in source and appears ONCE in the image.
+      **DEFINITION ORDER DOES NOT RESPECT THE THREE PARTS** (11 interleaved runs), so no
+      contiguous split can help that posture. What landed lifts the three large,
+      already-contiguous, already-guarded thematic blocks -- aspace 3358, amp 2133, smp 1172 --
+      leaving `main.cc` at 7417 with `main()`, the whole registration list, both `#undef
+      TAP_ADD` boundaries and its ANONYMOUS namespace. Zero original non-blank lines are absent
+      from the new set.
+      **COMPILE TIME IS NOT THE WIN THE ITEM ASSUMED, AND THAT IS THE FINDING.** The 3x
+      recompile it names is worth under a second: three parts cost 1.45 s in total. Serial
+      compile went UP 5 to 11 percent; the `-j` critical path fell 27 percent on wide
+      single-image boards and **zero** on the three-part boards. The real shape was that
+      `main.cc` was 20.5 percent of the whole tree's serial compile and 6.3x the next object.
+      **TWO TRAPS PAID FOR ON THE WAY.** Putting `main.cc` in a NAMED namespace cost **+1420
+      bytes** on microbit's `selftest_p2`, pure internal-to-external linkage and not the split;
+      keeping the anonymous namespace and externalising only the cross-file surface holds every
+      image to -8 to +56 bytes. And `check-x86_64-no-got.sh` REFUSED the first link, a cross-TU
+      address-take going GOT-indirect under `-fpie`, fixed with a hidden-visibility macro on all
+      98 declarations.
+      **EVIDENCE IS BEHAVIOURAL AND CANNOT BE ANYTHING ELSE**: `TAP_CHECK` bakes
+      `__FILE__ ":" __LINE__`, so every moved arm's `.rodata` differs by construction. Every
+      `ok`/`not ok`/`1..N` line is byte-identical to base on nine streams, the only diffs being
+      `#` diagnostics -- one of them a burn figure proved to be run-to-run noise by three
+      baseline reruns. Skip and partial LINES, not counts, diff to zero everywhere.
+      **What it does NOT say**: ten presets of about 71 and no hardware; the two 64 KiB boards
+      were built and measured but never booted, only microbit exercised the three-image posture
+      at run time; and `EXPECT_SKIPS` is a permission set, so identical streams prove the change
+      moved nothing and not that the declared sets are correct -- microbit p3's three declared
+      skips did not skip on either side.
 
-- [ ] **THE CONSOLE-TX UNIT MOCK SEAM IS RE-DECLARED IN TWO TEST DIRECTORIES.**
+- [x] **THE CONSOLE-TX UNIT MOCK SEAM IS RE-DECLARED IN TWO TEST DIRECTORIES.**
       `tests/unit/consoleown/publish_seam.cc` / `tests/unit/consoletx/tx_seam.cc`, 0.67 containment.
       Direction: one shared mock seam translation unit under `tests/unit`, included by both suites.
+      **THEY ARE NOT ONE SEAM, AND THE THIRD THAT DIFFERS IS THE PART THAT MATTERS.** The 0.67
+      is real duplication of the TRANSPORT mock; the differing third is the OWNERSHIP boundary.
+      `tx_seam.cc` defines `console_owner_is_kernel`, `console_chip_writable` and the two writer
+      brackets; `publish_seam.cc` does not, because `console_tx_masked_window` compiles
+      `console_tx.cc` alone while `console_publish_handoff` compiles `console.cc` beside it. A
+      seam is the set of symbols its sources leave UNDEFINED, and those two sets differ by the
+      whole of `console.cc`. Sharing those four would give the publish gate a duplicate
+      definition or, worse, a no-op writer count silently replacing the reference count
+      `console_owner_set_user` asserts to zero -- making every publish-drain convergence arm
+      vacuous. **So the transport folded and the boundary did not**: `tests/unit/consoleseam/`
+      carries the counted mask, the gap hook, the wire and the arch stubs, 675 lines -> 456,
+      and each suite keeps a residual TU of exactly what its own sources leave open.
+      The witness that both suites really link it is one mutation in the shared TU reddening a
+      case in EACH; a first attempt reddened only the tx suite and was too weak to use.
 
-- [ ] **FIVE NAMESPACE-CLOSE COMMENTS VIOLATE STYLE.MD.** `tls.h` 33, `tls.cc` 133, `emit.h` 52,
+- [x] **FIVE NAMESPACE-CLOSE COMMENTS VIOLATE STYLE.MD.** `tls.h` 33, `tls.cc` 133, `emit.h` 52,
       and two in `tlscarve`. Direction: delete the five `// namespace` closing comments; nothing else
       changes.
 
-- [ ] **NINE NARRATION-SURVIVOR COMMENTS ARE STILL IN TREE, UNGATED.** `usic.h` 229 and 163;
+- [x] **NINE NARRATION-SURVIVOR COMMENTS ARE STILL IN TREE, UNGATED.** `usic.h` 229 and 163;
       `rv_trap_stack.h` 85, 91; `rv64_doorbell.h` 10; `boot_layout.ld.h` 39; `chip_virt_rv64.cc` 248;
       `chip_esp32.cc` 602; `thread.h` 400; `arch_rv32imac.cc` 748. "Measured on" / "used to" comments
       that state history rather than a current invariant. Small, ungated; sweep on next touch of each
       file per the comment-sweep-on-touch rule, or in one pass here.
+
+## M8.6 review residue: three gate holes, none of them an M8.6 regression
+
+Found by planting violations during the milestone review, which is the only thing that finds this
+class. All three are pre-existing except the first, which is in the check M8.6 itself added.
+
+- [ ] **THE SELFTEST ARMS CHECK MISSES A MULTI-LINE DECLARATION AND A COMMENTED-OUT
+      REGISTRATION.** `user/apps/common/selftest/CMakeLists.txt`. It does NOT repeat the
+      partition check's mistake -- both sides are `file(STRINGS)` over real source and it
+      asserts set containment -- and it caught five of eight planted attacks. It misses a
+      declaration split across lines (`void` newline `t_ghost();`), which its regex cannot see,
+      and a `TAP_ADD` inside a `/* */` block comment, which it counts as a registration and
+      reports as "all registered". **Both produce exactly the state it exists to prevent**: an
+      arm compiled into every image and run in none, with no link error (never odr-used), no
+      plan mismatch, and no `-Wunused-function`, external linkage having removed that backstop.
+      The `#if 0` shape is caught downstream by the plan count, but only on a preset carrying a
+      run gate, and `f302nucleo` has none. Direction: strip block comments before counting, and
+      match a declaration across a newline.
+
+- [ ] **`check_irq_syscall_locked` PASSES A LOCK SCOPE THAT OPENS AND CLOSES ON ONE LINE.**
+      `{ IrqLock lock; }` followed by `arch_irq_inject(irq)` goes GREEN. The reader records
+      `lockdepth` BEFORE counting the line's braces, so a one-line block nets zero and the "a
+      block that has already closed does not count" refinement never fires. Its own
+      `ctl_closed.cc` plants only the multi-line shape, which is why the control passes while
+      the refinement is untested. Pre-existing; M8.6's diff on that file removes only the
+      `LC_ALL` line. Direction: count the braces before recording the depth, and plant the
+      one-line shape in the control.
+
+- [ ] **TWO KERNEL GATES DO NOT REACH THE TRACKED `kernel/**.h.in`.**
+      `check_irq_line_op_sole` filters `'kernel/*.cc' 'kernel/*.h'` and `check_park_death_point`
+      filters `\.(cc|h)$`, so both pass over an `arch_irq_mask()` call and a
+      `ThreadState::BLOCKED` write planted at file scope in
+      `kernel/include/kickos/config/amp_ports.h.in` and `cap_width.h.in`. Those configure into
+      real kernel translation units. The shared `corpus_sources()` already carries `*.h.in`, so
+      this is one word in each. Pre-existing.
 
 ## M8.7 -- P0: the rebaseline campaign and the end-to-end instrument
 
@@ -2322,12 +2810,32 @@ the three that have no fastpath and the declaration really is conditional.
       **One case is genuinely different and must not be swept in:** `__register_frame` in
       `chip_esp32c6.cc` and `chip_virt_rv32.cc` is libgcc's, not ours, and optional by its own
       contract rather than by ours.
-      **Open question to answer while converting:** `klink.h`'s comment says the PE32+ target
-      reaches a weak undef GOT-indirect, links clean and faults later at a plausible address, which
-      is why `tools/check-x86_64-no-got.sh` exists. The eight raw declarations do not take the
-      hidden arm, so either x86_64 never compiles those two files or that gate is what stands
-      between the tree and the failure the comment describes. Establish which before deleting
-      anything.
+      **THE OPEN QUESTION IS ANSWERED, AND BOTH OF ITS BRANCHES WERE WRONG** (M8.6, measured on
+      `qemu-x86_64`). It asked whether x86_64 never compiles those two files, or whether
+      `tools/check-x86_64-no-got.sh` is what stands between the tree and the failure
+      `klink.h` describes. Neither.
+      `arch/common/arch_ram_common.cc` is NOT in the x86_64 build graph at all -- it appears in
+      no `compile_commands.json` entry. `kernel/mem/aspace.cc` IS, and compiles to a
+      **ZERO-BYTE object**: 0 text, 0 data, 0 bss, because the whole body sits behind
+      `#if KICKOS_HAVE_ASPACE` and that preset sets it 0. So the nine raw declarations reach
+      the PE32+ target in neither file, and the five symbols are UND in **zero** of the x86_64
+      link inputs. The object carries no GOT relocation, and the scanner is not blind: 39
+      relocations are visible in it, all `R_X86_64_32`, and `x86_64_no_got_selftest` passes its
+      own planted control.
+      **SO THE GATE IS NOT WHAT KEEPS THIS SAFE -- IT CURRENTLY HAS NOTHING TO REFUSE.** What
+      keeps it safe is that x86_64 has no address space, so the code carrying those references
+      is compiled out. **That makes the hazard LATENT AND DATED**: the day x86_64 gains an
+      address space, those five declarations begin reaching the PE32+ target with no hidden
+      arm, and the gate becomes the only thing between the tree and a link that is clean and
+      faults later at a plausible address. `KICKOS_LINK_OPTIONAL` exists to take the hidden arm
+      there and these nine bypass it, which is the item's own point.
+      **So the conversion is owed BEFORE M8.10**, which is where the translating backends are
+      touched. Its true size, deliberately not attempted at the end of an already-wide
+      de-duplication milestone: the strong-reference half needs every board's linker script to
+      define the bound, empty if empty, which is a fleet-wide change to eleven-plus scripts and
+      is what makes empty distinct from absent at link time. Routing the nine through
+      `KICKOS_LINK_OPTIONAL` first is the cheap half and changes behaviour only on x86_64,
+      where hidden is what the toolchain file says such a declaration owes.
 
 ## M8.2 pickups
 

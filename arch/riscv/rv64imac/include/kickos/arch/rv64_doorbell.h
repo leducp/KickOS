@@ -25,6 +25,9 @@ extern "C"
 //
 // A publish the far side must observe is ordered by the caller ahead of this, so the body owes
 // the fence that makes its own stores visible before the raise.
+//
+// SUPERVISOR MODE MAY DO THIS WRITE WITH NO MACHINE-MODE LEG: PMP entry 0 grants the whole
+// space and QEMU's CLINT gates the msip write on no privilege, both measured on qemu-riscv64.
 void kickos_rv64_doorbell_send(uint32_t cores);
 
 // The far side, on the calling core: answers every peer that has asked. Takes NO kernel lock.

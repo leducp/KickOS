@@ -314,7 +314,9 @@ KickOS/
                                     #   .config, include/kickos/board_config.h, kickos_config.cmake
   cmake/
     toolchain-{arm-none-eabi,aarch64-none-elf,riscv-none-elf,rx-elf,xtensa-esp32-elf,x86_64-uefi,host}.cmake
-    toolchain-cxx-runtime-check.cmake  # refuses a resolved cross compiler that lacks
+    toolchain-common.cmake          # what every cross toolchain file spells the same way:
+                                    #   descriptor chain, CPU baseline, program search, link rules
+    cross_cxx_capability.cmake      # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
     cap_geometry.cmake              # the table's structural constants, emitted to C

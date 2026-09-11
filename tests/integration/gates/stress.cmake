@@ -50,21 +50,15 @@ if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
   set(_stress_isolated ${KICKOS_ISOLATED_CORES})
 endif()
 
-if(KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_KERNEL_CORES GREATER 1)
-  kickos_add_qemu_test(NAME qemu_arm64_smp_threads TARGET stress
+# ONE call for both SMP backends: the arch travels as an argument. The gate's first channel is
+# the emulator's execution log and is architecture-neutral; its second reads the trap log on
+# rv64, whose line names the hart and the cause where the GIC's event names the interface and
+# the INTID.
+if((KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+   AND KICKOS_KERNEL_CORES GREATER 1)
+  kickos_add_qemu_test(NAME ${_tag}_smp_threads TARGET stress
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
-    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" armv8a
-         ${_stress_isolated}
-    TIMEOUT 300)
-endif()
-
-# The same gate on the second backend. Its first channel is the emulator's execution log and is
-# architecture-neutral; its second reads the trap log, whose line names the hart and the cause
-# where the GIC's event names the interface and the INTID.
-if(KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL_CORES GREATER 1)
-  kickos_add_qemu_test(NAME qemu_riscv64_smp_threads TARGET stress
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
-    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" rv64imac
+    ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" ${KICKOS_ARCH}
          ${_stress_isolated}
     TIMEOUT 300)
 endif()

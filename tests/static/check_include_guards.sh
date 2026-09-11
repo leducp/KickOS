@@ -37,10 +37,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # Findings accumulate over the whole corpus, so set -e must stay off.
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -308,9 +305,7 @@ guard_mutation first-directive 1 0 "$ENDIF_ERE"     7
 guard_mutation endif-last      1 1 "$ENDIF_ERE_ANY" 6
 
 # --- leg 1: no `#pragma once`, over every tracked C/C++ file ------------------
-git ls-files -- '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.S' '*.inc' '*.h.in' \
-    > "$TMP/sources" || fail "git ls-files failed"
-require_nonempty "$TMP/sources" "git ls-files matched no C/C++ file; the pragma scan would pass vacuously"
+corpus_sources "$TMP/sources"
 SOURCES="$(wc -l < "$TMP/sources" | tr -d ' ')"
 
 : > "$TMP/pragma"
@@ -320,9 +315,7 @@ while IFS= read -r f; do
 done < "$TMP/sources"
 
 # --- leg 2: the headers, their guards, and the spelling the path dictates -----
-git ls-files -- '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' > "$TMP/headers" \
-    || fail "git ls-files failed"
-require_nonempty "$TMP/headers" "git ls-files matched no header; every check below would pass vacuously"
+corpus "$TMP/headers" "header" '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in'
 HEADERS="$(wc -l < "$TMP/headers" | tr -d ' ')"
 
 : > "$TMP/findings"

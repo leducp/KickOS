@@ -205,6 +205,10 @@ namespace
         r32(CKGR_MOR) = MOR_CRYSTAL | MOR_MOSCSEL;
         if (not pmc_wait(SR_MOSCSELS))
         {
+            // MOSCSEL moves MCK with no PMC_MCKR write, so a switch that landed without
+            // reporting would leave MCK on the crystal while the rate below still reads the
+            // RC. Deselect before returning, and the asserted rate is true either way.
+            r32(CKGR_MOR) = MOR_CRYSTAL;
             return;
         }
         mckr_select(MCKR_MAIN, MAINCK_XTAL_HZ);

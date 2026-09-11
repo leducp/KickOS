@@ -16,11 +16,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(sim_libc_exit PROPERTIES TIMEOUT 15)
 endif()
 
-# The board list is enumerated rather than left to every board with an emulator: the arm64 and
-# x86_64 boards build the app and register no arm today.
-if(KICKOS_CHIP STREQUAL "mps2"
-   OR KICKOS_BOARD STREQUAL "microbit"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+# Not armv8a and not x86_64: those build the app and register no arm today.
+if(NOT KICKOS_ARCH STREQUAL "armv8a" AND NOT KICKOS_ARCH STREQUAL "x86_64")
   kickos_add_qemu_test(TARGET libc_exit SCRIPT "${_libc_exit_script}")
 endif()

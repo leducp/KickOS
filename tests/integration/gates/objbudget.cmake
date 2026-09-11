@@ -20,8 +20,8 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh" "$<TARGET_FILE:objbudget>"
             objbudget ${_arms} "${_absent}")
   set_tests_properties(objbudget PROPERTIES TIMEOUT 15)
-elseif(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "microbit"
-       OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+# Not armv8a and not x86_64: those build the app and register no arm today.
+elseif(NOT KICKOS_ARCH STREQUAL "armv8a" AND NOT KICKOS_ARCH STREQUAL "x86_64")
   kickos_add_qemu_test(TARGET objbudget
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
     ARGS objbudget ${_arms} "${_absent}")

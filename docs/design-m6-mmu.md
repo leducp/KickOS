@@ -2766,7 +2766,7 @@ by the auditor and green here, both correctly.
   - **`discover_granule` was the same class** and is the one that mattered, being memoised, so a
     single bad first pair would have poisoned every later consumer for the whole run. Under
     `KICKOS_HAVE_ASPACE` it now ASKS, the probe ABI already carrying the op
-    (`KOS_ASPACE_OP_GRANULE`, `user/include/kickos/sys/abi.h`), so nothing was added for this. The
+    (`KOS_ASPACE_OP_GRANULE`, `user/include/kickos/sys/abi_probe.h`), so nothing was added for this. The
     power-of-two test on the answer is what turns an unavailable probe into a skip rather than into a
     garbage granule.
   - **`sgnp_worker` is the third and is left registered**, with the assumption named. Its "consecutive

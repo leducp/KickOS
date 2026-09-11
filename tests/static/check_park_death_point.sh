@@ -37,11 +37,8 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
-export LC_ALL=C
 scratch_dir
 
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
@@ -53,7 +50,7 @@ SITES="$(dirname "$0")/park_death_sites.txt"
 WRITE='[^=!<>]=[[:space:]]*ThreadState::BLOCKED'
 ASK='park_cancel_pending'
 
-git ls-files kernel > "$TMP/all" || fail "git ls-files failed; the corpus is UNKNOWN"
+corpus "$TMP/all" "tracked file under kernel/" kernel
 grep -E '\.(cc|h)$' "$TMP/all" > "$TMP/corpus"
 NFILES=$(wc -l < "$TMP/corpus")
 [ "$NFILES" -gt 0 ] || fail "no tracked C/C++ file under kernel/; an empty corpus passes forever"

@@ -48,10 +48,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-[ -f CMakeLists.txt ] || fail "run from the repo root (see WORKING_DIRECTORY)"
-# `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
-[ -d .git ] || [ -f .git ] || fail "run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+require_repo_root
 
 scratch_dir
 
@@ -158,8 +155,7 @@ raw="$(LC_ALL=C grep -cE "$ASSIGN_ERE" "$TMP/cmt.sh" || true)"
       the erase is not a near miss and proves nothing about what it hides"
 
 # --- the corpus ---------------------------------------------------------------
-git ls-files > "$TMP/tracked" || fail "git ls-files failed"
-require_nonempty "$TMP/tracked" "git ls-files matched nothing; the scan would pass vacuously"
+corpus_all "$TMP/tracked"
 
 : > "$TMP/corpus"
 while IFS= read -r f; do

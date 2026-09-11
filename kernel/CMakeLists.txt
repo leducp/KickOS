@@ -17,13 +17,33 @@ set(KICKOS_KERNEL_SOURCES
   init/fault.cc
   init/led.cc
   init/instance.cc
-  init/kmain.cc)
-
-foreach(_f mem/aspace.cc mem/frame.cc mem/frame_pool.cc mem/ramown.cc mem/ustack.cc mem/vrange.cc sync/sync.cc sync/klock.cc sync/corestart.cc amp/ampwindow.cc amp/ampmap.cc amp/ampdiag.cc sync/smptrace.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/syscall_aspace.cc syscall/syscall_amp.cc syscall/syscall_mem.cc syscall/syscall_obj.cc syscall/syscall_ipc.cc syscall/syscall_ipc_fast.cc syscall/syscall_thread.cc syscall/cap.cc irq/irq.cc irq/irq_route.cc)
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
-    list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
-  endif()
-endforeach()
+  init/kmain.cc
+  mem/aspace.cc
+  mem/frame.cc
+  mem/frame_pool.cc
+  mem/ramown.cc
+  mem/ustack.cc
+  mem/vrange.cc
+  sync/sync.cc
+  sync/klock.cc
+  sync/corestart.cc
+  amp/ampwindow.cc
+  amp/ampmap.cc
+  amp/ampdiag.cc
+  sync/smptrace.cc
+  time/time.cc
+  time/clock_select.cc
+  syscall/syscall.cc
+  syscall/syscall_aspace.cc
+  syscall/syscall_amp.cc
+  syscall/syscall_mem.cc
+  syscall/syscall_obj.cc
+  syscall/syscall_ipc.cc
+  syscall/syscall_ipc_fast.cc
+  syscall/syscall_thread.cc
+  syscall/cap.cc
+  irq/irq.cc
+  irq/irq_route.cc)
 
 # Microbenchmark accumulator, paired with the cycle-counter bracket in switch.S. On M0 and
 # the sim it links but the cycle path is inert, switch.S bracketing nothing there.

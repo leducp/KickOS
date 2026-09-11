@@ -35,9 +35,10 @@
 
 /* The CLINT, whose msip word per hart IS the cross-hart doorbell. startup.S's machine-mode
  * trampoline lowers a raise on it to mip.SSIP, and arch_ipi_send writes a peer's word from
- * SUPERVISOR mode: PMP entry 0 grants the whole space and QEMU's CLINT gates on no privilege,
- * both measured on this machine. The trampoline reaches it UNTRANSLATED, so this is the
- * address it uses; a supervisor writer adds the device window's base.
+ * SUPERVISOR mode with no machine-mode leg (the PMP/CLINT measurements this depends on are on
+ * kickos_rv64_doorbell_send in arch/riscv/rv64imac/include/kickos/arch/rv64_doorbell.h). The
+ * trampoline reaches it UNTRANSLATED, so this is the address it uses; a supervisor writer adds
+ * the device window's base.
  */
 #define KICKOS_RV64_CLINT_PA         0x02000000
 

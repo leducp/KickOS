@@ -14,6 +14,7 @@
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
+#include <kickos/sys/abi_probe.h>
 
 #define AMPPING_RECV_US (2u * 1000u * 1000u)
 #define AMPPING_IDLE_NS (100ull * 1000ull * 1000ull)

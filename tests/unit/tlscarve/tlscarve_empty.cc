@@ -45,7 +45,7 @@ void assert_fabricated_layout()
     ASSERT_EQ(__kickos_tbss_end - __kickos_tdata_start, -4);
 }
 
-} // namespace
+}
 
 TEST(TlsCarveEmpty, no_thread_local_carves_nothing)
 {

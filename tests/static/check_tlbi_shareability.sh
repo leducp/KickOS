@@ -40,10 +40,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_tlbi_shareability.sh <elf> <expect-kernel-cores> <nm> <objdump>"
 elf="${1:?$_usage}"
 cores="${2:?$_usage}"

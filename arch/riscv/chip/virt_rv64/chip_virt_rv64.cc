@@ -244,11 +244,12 @@ void arch_timer_disarm(void)
 #if KICKOS_NUM_CORES > 1
 // --- The cross-hart doorbell's raise ----------------------------------------
 // A write of 1 to a hart's CLINT msip word raises a MACHINE software interrupt on it, which
-// mideleg cannot delegate (measured: writing all ones reads back 0x3666, bit 3 clear). The
-// machine-mode trampoline in startup.S clears the word and re-raises it as mip.SSIP.
+// mideleg cannot delegate. The machine-mode trampoline in startup.S clears the word and
+// re-raises it as mip.SSIP.
 //
-// SUPERVISOR MODE MAY DO THIS WRITE. PMP entry 0 grants the whole space and QEMU's CLINT gates
-// on no privilege, both measured on this machine, so the send needs no machine-mode leg.
+// SUPERVISOR MODE MAY DO THIS WRITE WITH NO MACHINE-MODE LEG (the mideleg and PMP/CLINT
+// measurements this depends on are on kickos_rv64_doorbell_send in
+// arch/riscv/rv64imac/include/kickos/arch/rv64_doorbell.h).
 //
 // THE DENSE CORE INDEX IS THE HART INDEX HERE: startup.S seats each hart's row from its own
 // mhartid, so msip[index] is that core's word. A part whose ids are not dense would owe a

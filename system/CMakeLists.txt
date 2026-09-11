@@ -50,7 +50,8 @@ target_include_directories(kickos_default_init PRIVATE
 # All the board providers (this + the pinmaps + the per-board service lists below) go
 # through kickos_add_board_provider, which self-installs to KickOSTargets, so there
 # is no separate hand-maintained install(TARGETS ...) list to drift out of sync.
-kickos_add_board_provider(services_none SOURCE init/common/services_none.cc)
+kickos_add_board_provider(services_none SOURCE init/common/services_none.cc
+  RETAINED_ENDPOINTS 0)
 
 # Board pin-map providers: each DEFINES kickos_board_pinmap (see <kickos/sys/pinmap.h>),
 # selected by KICKOS_BOARD_PINMAP. Pure data TUs (no further deps); one definition of
@@ -71,36 +72,39 @@ kickos_add_board_provider(pinmap_f302nucleo SOURCE init/f302nucleo/pinmap.cc)
 # carry user/include (kos.h/sys.h + the driver headers) transitively.
 if(KICKOS_CHIP STREQUAL "mk64f")
   # RETAINED_CAPS 1: k64dspi keeps its SPI request endpoint (g_spi0_ep) in root's table for
-  # the life of the image. The console entry retains nothing; console_handover_finish
+  # the life of the image. The console entry retains no INDEX; console_handover_finish
   # closes root's cap, and the published route lives at the reserved index 0.
+  # RETAINED_ENDPOINTS 2: that reserved index still names the console endpoint, so its POOL
+  # SLOT is root's for the life of the image too, and the SPI one is the second.
   kickos_add_board_provider(services_frdmk64f SOURCE init/frdmk64f/service_list.cc
-    LINK kickos_k64dspi kickos_k64uart RETAINED_CAPS 1)
+    LINK kickos_k64dspi kickos_k64uart RETAINED_CAPS 1 RETAINED_ENDPOINTS 2)
   # IRQ-console alternative: the same KOS_SVC_CONSOLE entry served by the two-thread
   # buffered driver, with the SPI one left out, so it links kickos_k64uartirq ALONE.
   # Never the board default: the IRQ-driven console has no silicon witness yet.
   kickos_add_board_provider(services_frdmk64f_uartirq
     SOURCE init/frdmk64f/service_list_uartirq.cc
-    LINK kickos_k64uartirq)
+    LINK kickos_k64uartirq RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_frdmk64f_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "xmc4800")
-  # RETAINED_CAPS 1: xmcssc keeps its SPI request endpoint (g_spi0_ep) in root's table for
-  # the life of the image. The console entry retains nothing (see the mk64f list above).
+  # RETAINED_CAPS 1 and RETAINED_ENDPOINTS 2, for the reason the mk64f list above gives:
+  # xmcssc keeps its SPI request endpoint (g_spi0_ep) in root's table, and the console
+  # retains a pool slot at the reserved index without retaining an index of its own.
   kickos_add_board_provider(services_xmc4800relax SOURCE init/xmc4800-relax/service_list.cc
-    LINK kickos_xmcuart kickos_xmcssc RETAINED_CAPS 1)
+    LINK kickos_xmcuart kickos_xmcssc RETAINED_CAPS 1 RETAINED_ENDPOINTS 2)
   # Console-only alternative: the same KOS_SVC_CONSOLE entry with the SPI one left out,
   # so it links kickos_xmcuart ALONE. That is the point of it: the SSC driver's
   # bring-up needs a privileged root, so an image for an unprivileged root must not
   # link it at all rather than link it and not call it.
   kickos_add_board_provider(services_xmc4800relax_console
     SOURCE init/xmc4800-relax/service_list_console.cc
-    LINK kickos_xmcuart)
+    LINK kickos_xmcuart RETAINED_ENDPOINTS 1)
   # IRQ-console alternative: the same KOS_SVC_CONSOLE entry served by the two-thread
   # buffered driver, so it links kickos_xmcuartirq ALONE (no polled UART, no SSC).
   # Never the board default: the IRQ-driven console has no silicon witness yet.
   kickos_add_board_provider(services_xmc4800relax_uartirq
     SOURCE init/xmc4800-relax/service_list_uartirq.cc
-    LINK kickos_xmcuartirq)
+    LINK kickos_xmcuartirq RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_xmc4800relax_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "esp32c6")
@@ -109,7 +113,7 @@ elseif(KICKOS_CHIP STREQUAL "esp32c6")
   # exports no header, so the provider declares the bring-up itself.
   kickos_add_board_provider(services_esp32c6_uartirq
     SOURCE init/esp32c6-wroom/service_list_uartirq.cc
-    LINK kickos_c6uart)
+    LINK kickos_c6uart RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_esp32c6_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rx72m")
@@ -118,7 +122,7 @@ elseif(KICKOS_CHIP STREQUAL "rx72m")
   # from kickos_rxsci's own PUBLIC dir, hence the <rxsci.h> spelling in the provider.
   kickos_add_board_provider(services_rx72m_uartirq
     SOURCE init/rx72m/service_list_uartirq.cc
-    LINK kickos_rxsci)
+    LINK kickos_rxsci RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_rx72m_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "esp32")
@@ -127,27 +131,27 @@ elseif(KICKOS_CHIP STREQUAL "esp32")
   # exports no header, so the provider declares the bring-up itself.
   kickos_add_board_provider(services_esp32_uartirq
     SOURCE init/esp32-wroom/service_list_uartirq.cc
-    LINK kickos_lx6uart)
+    LINK kickos_lx6uart RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_esp32_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rp2350")
   # Never a board default: it blinds the pin UART the kernel console uses.
   kickos_add_board_provider(services_pizero2350_usbcdc
     SOURCE init/pizero2350/service_list_usbcdc.cc
-    LINK kickos_rpusb)
+    LINK kickos_rpusb RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_pizero2350_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rp2040")
   # Never a board default: it blinds the pin UART the kernel console uses.
   kickos_add_board_provider(services_picopi_usbcdc
     SOURCE init/picopi/service_list_usbcdc.cc
-    LINK kickos_rpusb)
+    LINK kickos_rpusb RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_picopi_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "imxrt1062")
   kickos_add_board_provider(services_teensy41_usbcdc
     SOURCE init/teensy41/service_list_usbcdc.cc
-    LINK kickos_rt1062usb)
+    LINK kickos_rt1062usb RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_teensy41_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "stm32f411")
@@ -156,14 +160,17 @@ elseif(KICKOS_CHIP STREQUAL "stm32f411")
   # and rate are board facts, so they live in this per-board provider.
   kickos_add_board_provider(services_f411disco_uartirq
     SOURCE init/f411disco/service_list_uartirq.cc
-    LINK kickos_f4uartirq)
+    LINK kickos_f4uartirq RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_f411disco_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 endif()
 # Not the sim default: the ordinary sim gate must keep covering the pre-publish route.
 # Unlike the pure-data providers above it calls kos_*, so it needs user/include.
 if(KICKOS_ARCH STREQUAL "sim")
-  kickos_add_board_provider(services_sim SOURCE init/sim/service_list.cc)
+  # RETAINED_ENDPOINTS 1: the console handover. Every one of this provider's three start
+  # paths publishes exactly one endpoint, the two KICKOS_SIMCON_* variants included.
+  kickos_add_board_provider(services_sim SOURCE init/sim/service_list.cc
+    RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_sim PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
   # Make the console driver DIE after N served messages, so driver-death reclaim has a
@@ -201,10 +208,11 @@ if(KICKOS_ARCH STREQUAL "sim")
   # loopback "device" (init/sim/service_list_uart.cc). Its own provider rather than a second
   # entry in the list above, because one service list links per image and the existing sim
   # gates must keep testing the console posture unchanged.
-  # RETAINED_CAPS 1: g_uart_ep stays in root's table until the app takes it, and the app
-  # runs on that same table, so the slot is spoken for either way.
+  # RETAINED_CAPS 1 and RETAINED_ENDPOINTS 1: g_uart_ep stays in root's table until the app
+  # takes it, and the app runs on that same table, so both the index and the pool slot are
+  # spoken for either way.
   kickos_add_board_provider(services_simuart SOURCE init/sim/service_list_uart.cc
-    RETAINED_CAPS 1)
+    RETAINED_CAPS 1 RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_simuart PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 endif()

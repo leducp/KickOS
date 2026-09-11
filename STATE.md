@@ -940,6 +940,16 @@ The whole point of this file. A green fleet pass says none of the following.
 
 ## Gates: what is not gating, and the one that is deliberate
 
+- **THE SELFTEST PARTITION CHECK CANNOT SEE A DELETED ARM.** `p1 + p2 + p3 == total` compares
+  CMake literals on BOTH sides, so removing a `TAP_ADD` from the source leaves it green. Found
+  in M8.6 while building a positive control for the split, not by the check failing. What does
+  catch a deletion is the plan line moving, which only a run sees.
+- **AND `check-x86_64-no-got.sh` IS A LIVE BACKSTOP, NOT A DORMANT ONE.** M8.6 established that
+  the weak-undef hazard `klink.h` describes cannot reach the PE32+ target today, so the gate has
+  nothing to refuse on THAT account -- and in the same milestone it refused a real link, a
+  cross-TU address-take going GOT-indirect under `-fpie` when the selftest TU was split. So the
+  two statements sit together: dormant for the case it was written for, and firing on another.
+
 - **`check_c_headers.sh` compiles with no `-D` at all**, so a C-facing header's other `#if
   KICKOS_<knob>` arm is compiled by nothing and the gate still reports PASS. NOT fixed on
   purpose: widening wants measuring first.
@@ -954,6 +964,12 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The `KCAP_`/`CAP_` left-word-boundary defect**: 26 names were valid only as substrings.
 - **A line-number citation is what the doc gate cannot check**, and one carried here had drifted
   onto unrelated text. Cite a path and an identifier.
+- **AND THE PATH-PLUS-IDENTIFIER FORM IS WEAKER THAN IT READS.** `doc_names` checks that the path
+  resolves and that the identifier exists SOMEWHERE in the tree, never that the identifier is in
+  the file named. Found in M8.6 when the probe surface left `abi.h`: a design record citing
+  `KOS_ASPACE_OP_GRANULE` at `abi.h` stayed green with the symbol now in `abi_probe.h`, and the
+  citation was fixed by hand because nothing would have reported it. So a move between headers
+  silently falsifies every citation naming the old one.
 - **Turning CONTAINMENT on flips what a gate may assert.** `kernelhalf` and `stackguard` were
   dying-image gates reading the panic dump; once armv8a joined `KICKOS_FAULT_ISOLATION` the same
   encodings had to be read off the thread-kill record instead, and `check_tap_stream.sh`'s blanket
@@ -996,6 +1012,17 @@ The whole point of this file. A green fleet pass says none of the following.
   preset, `bench-fleet.sh` does not list the board, and no aarch64 round-trip figure exists
   anywhere. Recorded as a debt at T7 and in `TODO.md` since 2026-08-26, so this line is no longer
   the only thing that says so.
+- **THE CONSOLE HAS NO CROSS-CORE EXCLUSION ANYWHERE, AND A RED `qemu-riscv64-smp` UNDER LOAD IS
+  THAT, NOT NEW BREAKAGE.** No `arch_console_write` backend excludes a second core: seven are bare
+  device loops and the other eleven reach `console_tx_write`, which holds the kernel lock for one
+  ring chunk and drops it between chunks. `kernel/init/console.cc` (`kconsole_write_impl`) states
+  the opposite -- "the chip transport locks internally" -- which is why the chip arm deliberately
+  takes no lock, and that sentence is true of no backend. `console_chip_writer_enter`/`_leave`
+  counts writers for the publish drain and excludes nothing. **The rate is load-dependent and only
+  that**: idle, the preset's whole CI job is green thirty runs out of thirty; loaded it costs the
+  TAP stream about seven times in thirty. So the figure to distrust is an unloaded one, and a red
+  here is read against what the box was doing. The repair is M9's, which owns console locking;
+  `TODO.md` carries the measurements and the two failure signatures.
 - **The boot identity root still grants EL0 read-write over all of low DRAM**, the kernel's own
   `.data` and `.bss` at their LOAD addresses included. No unprivileged thread runs under it today,
   and revoking EL0 there was MEASURED green -- but that root is what the fault reporter and
@@ -2322,6 +2349,72 @@ serving every kernel message alike.
   reruns do not clear it. The same class was attributed this session to an arm resting on a
   duration margin, which reddens on the pre-change tree under the same load; this sighting is
   CONSISTENT WITH that and is not independent evidence of it.
+
+## M8.6: DRY in the build and userspace, and what these green runs do NOT say
+
+**THE MILESTONE'S YIELD IS NOT THE LINE COUNT, AND FOUR OF ITS OWN ESTIMATES WERE WRONG IN
+OPPOSITE DIRECTIONS.** One beat its figure, one missed it by becoming a net ADDITION, one split
+the difference by overshooting on a term that had been flagged and not counted, and one turned
+out to want no work at all. The common cause is single and worth more than the total: a
+containment or shingle metric counts lines that LOOK alike, and a source list resembles another
+source list, a per-board gate wrapper another wrapper, a descriptor literal another descriptor,
+without any of them being duplication. `roadmap.md` carries the arithmetic; what belongs here is
+that **a shingle-derived estimate is an upper bound on the fold**, and that an audit itemised
+into a file goes stale against the tree behind it -- two items were already CLOSED on master
+before the milestone opened, and four more carried figures that were wrong when written.
+
+**THE THINGS THAT WERE NOT DUPLICATION, EACH FOUND BY DIFFING RATHER THAN BY TRUSTING A SCORE.**
+The two console unit mock seams are not one seam: the shared two-thirds is the transport, and the
+differing third is the ownership boundary, because one suite compiles `console.cc` and the other
+does not, so the seams differ by exactly that file's symbols. Sharing the four ownership stubs
+would have replaced the writer reference count with a no-op and made every publish-drain
+convergence arm vacuous. The eight driver adapters are two clusters, not one set, and three of
+them differ in shape rather than in constants. The selftest has no per-board skip sets at all --
+zero hits for `KICKOS_BOARD` or `KICKOS_CHIP` across the suite -- so the table the item asked for
+had nothing to tabulate, and identical literals merge in `.rodata` anyway, 44 source copies to one.
+
+**A REFACTOR OF THE INSTRUMENT IS THE ONE CHANGE A GREEN RUN CANNOT VOUCH FOR, AND ONLY THREE
+IDIOMS WERE RE-PROVED BY MUTATION.** The gate library moved five idioms into `gate.sh` across
+sixty gates. Three were re-proved by planting a violation. The other fifty-nine rest on
+byte-identical `ctest -V` output before and after, which proves NO ARM STOPPED EXECUTING and not
+that detection still works. That distinction is the milestone's main unpaid debt.
+
+**THE NEW GATE'S OWN ADVERTISED LEGS COULD NOT FAIL, AND ONLY A REVIEW THAT ATTACKED THEM FOUND
+IT.** `check_preset_defconfig.sh` shipped with leg 1 keyed on the preset's NAME, so a preset whose
+`KICKOS_CONFIG_VARIANT` resolved to a directory that does not exist passed while the configure it
+claims to pre-empt would have refused it; and leg 3, the one that stops the exception list hiding a
+real orphan, grepped for the bare variant from a file that LISTS the variant, so every entry proved
+its own consumption. Both are fixed and fire now. **The lesson is the milestone's own, one level
+up: the gate was written with three controls, all three passed, and two of them exercised a
+different clause from the one they were written for.** A control that fires is not yet evidence
+that the clause you meant is the clause that fired.
+
+**THREE GATE HOLES WERE FOUND, NONE BY A GATE FAILING.** `doc_names` checks that a path resolves
+and that an identifier exists SOMEWHERE, never that it is in the file named, so moving a symbol
+between headers silently falsifies every citation naming the old one. The selftest partition
+check compares CMake literals on both sides of `p1 + p2 + p3 == total`, so deleting a `TAP_ADD`
+leaves it green. And `check_c_headers.sh` selects its corpus on an `extern "C"` guard, so a
+macro-and-enum-only header falls straight out of it -- which the ABI split did, dropping the
+corpus 30 to 29 with a planted `namespace` unnoticed, before the new header was made to declare
+its own.
+
+**WHAT NO RUN IN THIS MILESTONE WITNESSES.** No silicon ran at all, on any board. The merged
+console service loop is named by nothing in `tests/` and nothing in the selftest, so the arm every
+published console actually parks in has no automated execution coverage; what executes is
+`serve_one` in process and `serve_loop` over the sim loopback. Neither ESP part has a QEMU
+machine, so both their suites are static and build gates, and the four shared UART entry points
+have only ever run on silicon against the PRE-merge code. `usbcdcwit` is built by no default
+configuration and needs a host to enumerate the device. The selftest split is behavioural evidence
+by construction, `TAP_CHECK` baking `__FILE__ ":" __LINE__` so every moved arm's `.rodata` differs;
+its two 64 KiB boards were built and measured but never booted, and only microbit exercised the
+three-image posture at run time.
+
+**AND THE ENDPOINT SEAT ARITHMETIC IS INCOMPLETE BY CONSTRUCTION AND SAYS SO IN ITS OWN REFUSAL.**
+A `KOS_DRV_EP_RETAIN` driver an app brings up is a RUNTIME posture no build can read, so a board
+can still overrun through that door. The declaration is mandatory now, which closes the forgotten
+case and not the wrong-number case: nothing derives the figure from the driver translation units.
+`frdmk64f` and `xmc4800relax` retain TWO each against a default budget of three, so both sit one
+slot from their ceiling; that is recorded and not fixed, a budget being a board decision.
 
 ## Where to go next
 

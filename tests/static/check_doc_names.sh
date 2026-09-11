@@ -73,8 +73,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-[ -d .git ] || [ -f .git ] || fail "must run from the repo root (no .git here)"
-command -v git >/dev/null 2>&1 || fail "git not found"
+require_repo_root
 
 scratch_dir
 

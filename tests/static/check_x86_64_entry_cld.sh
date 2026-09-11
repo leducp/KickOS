@@ -20,10 +20,6 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The parses below read objdump's own output back, and this box's binutils is localised.
-LC_ALL=C
-export LC_ALL
-
 # Against the one trap_x86_64.S object this board's libraries produce. An unbuilt tree and a
 # walk that found the wrong directory are what this refuses.
 OBJ_FLOOR=1

@@ -30,10 +30,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_doorbell_generic.sh <elf> <nm> <objdump> <arch>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -102,16 +98,9 @@ scratch_dir
 # --- reader one: the branch targets inside one body --------------------------
 # Emits one NAME per line, deduplicated, or a single NOSYM / NOINSN record. Direct branches
 # only: an indirect one names no symbol and contributes nothing either way.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/calls.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1; self = name }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -124,7 +113,7 @@ $0 !~ /^[ \t]*[0-9a-f]+:/ { next }
     sub(/^[^<]*</, "", tgt)
     sub(/>.*$/, "", tgt)
     sub(/\+0x[0-9a-f]+$/, "", tgt)
-    if (tgt == self) { next }
+    if (tgt == sym) { next }
     if (!(tgt in got)) { got[tgt] = 1; order[++k] = tgt }
 }
 END {
@@ -135,7 +124,7 @@ END {
 AWK
 
 body_calls() { # <listing> <symbol>
-    awk -v sym="$2" -v brx="$BRX" -f "$TMP/calls.awk" "$1"
+    scoped_body "$TMP/calls.awk" "$1" "$2" -v brx="$BRX"
 }
 
 # --- reader two: the guard between the take and the scheduler entry ----------
@@ -143,16 +132,9 @@ body_calls() { # <listing> <symbol>
 #
 # A conditional branch is what a guard lowers to on this backend: cbz/cbnz and tbz/tbnz test a
 # register outright, b.<cond> tests the flags a compare set.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/guard.awk" <<'AWK'
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1; self = name }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     text = $0
     sub(/^[^:]*:[ \t]*/, "", text)
@@ -188,7 +170,8 @@ END {
 AWK
 
 body_guard() { # <listing> <symbol>
-    awk -v sym="$2" -v take="$TAKE" -v resched="$RESCHED" -v brx="$BRX" -v condx="$CONDX" -f "$TMP/guard.awk" "$1"
+    scoped_body "$TMP/guard.awk" "$1" "$2" \
+        -v take="$TAKE" -v resched="$RESCHED" -v brx="$BRX" -v condx="$CONDX"
 }
 
 # --- the readers' controls, before the image is read --------------------------
@@ -261,12 +244,8 @@ if [ "$ctl" != "1" ]; then
   cannot go red"
 fi
 
-ctl="$(body_calls "$TMP/ctl_send_clean" a_symbol_no_listing_carries)"
-case "$ctl" in
-    NOSYM) ;;
-    *) fail "the branch reader answered [$ctl] for a symbol the listing does not carry, so a
-  renamed body would read as a clean one" ;;
-esac
+ctl_dead_reader "$(body_calls "$TMP/ctl_send_clean" a_symbol_no_listing_carries)" \
+    "a renamed body would read as a clean one"
 
 ctl="$(body_guard "$TMP/ctl_guarded" planted_dispatch)"
 case "$ctl" in

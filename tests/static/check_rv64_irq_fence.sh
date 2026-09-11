@@ -45,10 +45,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_rv64_irq_fence.sh <elf> <nm> <objdump>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -67,6 +63,8 @@ scratch_dir
 # --- the reader ---------------------------------------------------------------
 # Ordinals, not addresses: the verdict is an ORDER. Emits tab-separated records, one per memory
 # access and one per fence, in program order, under a COUNT line.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 function shortname(s)
 {
@@ -126,15 +124,6 @@ function is_branch(m)
     return (m == "j" || m == "jal")
 }
 
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     nl++
     line[nl] = $0
@@ -241,7 +230,7 @@ END {
 AWK
 
 read_body() { # <listing> <symbol>
-    awk -v sym="$2" -f "$TMP/reader.awk" "$1"
+    scoped_body "$TMP/reader.awk" "$1" "$2"
 }
 
 # The verdict over one body's records: one line on stdout, or fail().

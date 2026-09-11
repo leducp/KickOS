@@ -5,6 +5,16 @@
 #   . "$(dirname "$0")/../lib/gate.sh"
 # POSIX sh (dash-clean), because /bin/sh is dash on the CI images.
 
+# THE LOCALE, FOR EVERY GATE, SET BEFORE ANY OF THEM READS ANYTHING. Two things a gate reads
+# stop meaning what it expects under a UTF-8 locale. Binutils, cmake and the compilers
+# TRANSLATE their headings and diagnostics, so a host readelf answers `Fichier:` where a member
+# slicer keys on `File:` and the slice comes back empty. And awk's length(), substr() and
+# index() count CHARACTERS under gawk, so a capture carrying one invalid sequence shifts every
+# offset the byte-exact matchers below compute. Collation follows: `sort` order and a `grep`
+# range are locale-dependent too.
+LC_ALL=C
+export LC_ALL
+
 # Every reporter's literal dump marker, as one ERE. Case-sensitive and anchored on the
 # banner shape, because a substring match on "fault" also hits "EFAULT" and "default" in
 # benign output.
@@ -20,6 +30,10 @@ if [ -z "$KOS_PANIC_RE" ]; then
 fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# A finding COLLECTED rather than fatal, so one run names them all. It sets the caller's `rc`,
+# which the caller declares and exits on. A broken tool takes fail()'s hard exit instead.
+bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # A literal tab, for `while IFS="$TAB" read -r ...` over tab-separated records. NOT $'\t':
 # that is a bashism, and dash sets IFS to the three characters $ \ t instead, so every field
@@ -102,6 +116,49 @@ require_nonempty() {
     fi
 }
 
+# The working directory a source-tree gate needs, which ctest sets through WORKING_DIRECTORY
+# and a hand run does not. <prose> names the directory in the refusal for a gate that was
+# handed one rather than run in it.
+require_repo_root() { # [<prose>]
+    _rr="${1:-run from the repo root (see WORKING_DIRECTORY)}"
+    [ -f CMakeLists.txt ] || fail "$_rr"
+    # `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
+    [ -d .git ] || [ -f .git ] || fail "$_rr (no .git here)"
+}
+
+# THE CORPUS, AND WHY IT IS ONE FUNCTION. `git ls-files` and not `find`: an untracked scratch
+# file is neither gated nor counted, which also means a NEW file is invisible here until it is
+# staged. An empty result is refused rather than walked, an empty corpus satisfying every
+# absence-assertion below it; a failed `git ls-files` is refused for the stronger reason that
+# the tree is then UNKNOWN and not empty.
+#
+# <what> completes "git ls-files matched no <what>", so it names what the pathspec selects.
+corpus() { # <outfile> <what> [pathspec]...
+    _co="$1"
+    _cw="$2"
+    shift 2
+    command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be built"
+    git ls-files -- "$@" > "$_co" \
+        || fail "git ls-files failed; the corpus is UNKNOWN and not empty"
+    require_nonempty "$_co" "git ls-files matched no $_cw, so this gate would pass on any tree
+      at all. An untracked file is invisible here (git add first)."
+}
+
+# The three pathspecs more than one gate wants, so a new extension reaches every gate at once.
+# A gate needing a narrower set spells its own and calls corpus() directly.
+corpus_all() { # <outfile>
+    corpus "$1" "tracked file"
+}
+
+corpus_sources() { # <outfile>
+    corpus "$1" "C/C++ or assembler source" \
+        '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S'
+}
+
+corpus_headers() { # <outfile>
+    corpus "$1" "header" '*.h' '*.hh' '*.hpp'
+}
+
 # The same trap one level up: a binutils invocation that FAILED also produces nothing, so
 # every absence-assertion reading its output concludes "clean". Route every invocation
 # through here. The landmark is a positive control (a section, a symbol shape) that a healthy
@@ -126,6 +183,36 @@ tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
         echo "FAIL: nothing matching /$_mark/ came out of: $*" >&2
         exit 1
     fi
+}
+
+# THE OBJDUMP READER'S SCOPE, shared so a listing-shape fix is made once. The reader awk a
+# caller passes carries the per-arch mnemonic match and the END verdict, which are bespoke;
+# what it does NOT carry is finding the body, and getting that wrong reads as a clean body.
+# tests/lib/objdump_scope.awk documents what the reader inherits and why the -f order matters.
+#
+# Extra `-v` assignments go after the three fixed arguments, before the program files, POSIX
+# putting every assignment ahead of the first -f.
+KOS_OBJDUMP_SCOPE="$(dirname "$0")/../lib/objdump_scope.awk"
+
+scoped_body() { # <reader.awk> <listing> <symbol> [-v name=value]...
+    _sb_prog="$1"
+    _sb_list="$2"
+    _sb_sym="$3"
+    shift 3
+    [ -r "$KOS_OBJDUMP_SCOPE" ] || fail "$KOS_OBJDUMP_SCOPE is unreadable, so no reader can
+      find a body and every one of them would report the symbol as absent"
+    [ -r "$_sb_prog" ] || fail "$_sb_prog is unreadable; the reader has no verdict half"
+    awk -v sym="$_sb_sym" "$@" -f "$KOS_OBJDUMP_SCOPE" -f "$_sb_prog" "$_sb_list"
+}
+
+# THE DEAD-READER CONTROL, which no planted body can stand in for: a reader handed a symbol
+# the listing does not carry must say NOSYM, or a renamed, inlined or static body reads as a
+# clean one and the gate goes green on an image it never decoded. <prose> completes "so ...".
+ctl_dead_reader() { # <verdict> <prose>
+    case "$1" in
+        NOSYM) ;;
+        *) fail "the reader answered [$1] for a symbol the listing does not carry, so $2" ;;
+    esac
 }
 
 # The -D arguments an installed KickOS package puts on a consumer's compile line, read back

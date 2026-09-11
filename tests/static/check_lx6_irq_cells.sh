@@ -14,10 +14,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# The host binutils is localised and prints translated headers, which every parse below reads.
-LC_ALL=C
-export LC_ALL
-
 _usage="usage: check_lx6_irq_cells.sh <elf> <nm> <objdump>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
@@ -42,6 +38,8 @@ scratch_dir
 # Emits tab-separated records under a COUNT line, one per byte access, one per cell access of
 # another width, and one per memw:
 #   <ordinal> <kind> <mnemonic> <array> <register> <provenance> <address>
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 function h2d(s,    d, n, k, c, v)
 {
@@ -148,15 +146,6 @@ BEGIN {
     }
 }
 
-/^[0-9a-f]+ <.*>:$/ {
-    name = $2
-    gsub(/[<>:]/, "", name)
-    inbody = (name == sym)
-    if (inbody) { seen = 1 }
-    next
-}
-!inbody { next }
-$0 !~ /^[ \t]*[0-9a-f]+:/ { next }
 {
     a = $0
     sub(/:.*$/, "", a)
@@ -341,7 +330,7 @@ END {
 AWK
 
 read_body() { # <listing> <symbol> <end-address, empty for the whole block>
-    awk -v sym="$2" -v endaddr="$3" -f "$TMP/reader.awk" "$1"
+    scoped_body "$TMP/reader.awk" "$1" "$2" -v endaddr="$3"
 }
 
 # The verdict over one body's records: one line on stdout, or fail().

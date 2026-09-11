@@ -38,11 +38,6 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-# Locale-independent sort/grep collation; the map and the tool output are both parsed
-# structurally, never by their translated headings (readelf's are, under any other
-# locale, and the "File:" member marker the awks key on is one of them).
-export LC_ALL=C
-
 if [ "$#" -lt 6 ]; then
     echo "usage: $0 <nm> <readelf> <elf> <map> <allowlist> <archive>..." >&2
     exit 2
@@ -92,9 +87,6 @@ done
 
 scratch_dir
 rc=0
-# A seam violation is accumulated, so one run names every one of them. A BROKEN TOOL is
-# not: it takes the hard exit.
-bad() { echo "FAIL: $*" >&2; rc=1; }
 
 # Every leg prints one finding per line and the caller turns each into a `bad`. NOT a
 # pipeline: `bad` sets rc, and a pipeline would set it in a subshell and lose it.

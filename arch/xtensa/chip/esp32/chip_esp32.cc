@@ -255,14 +255,14 @@ namespace
         // APB doubled 40->80 MHz, so the ROM's UART0 divider now halves the baud.
         // Drain any in-flight byte, then recompute CLKDIV for 80 MHz APB. clkdiv is
         // in 1/16 units: integer=[19:0], fraction=[23:20].
-        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) != 0)
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) != 0)
         {
         }
         uint32_t clkdiv16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
         uint32_t integer = clkdiv16 >> 4;
         uint32_t frac = clkdiv16 & 0xF;
         r32(reg::uart::CLKDIV) =
-            (frac << reg::uart::CLKDIV_FRAC_SHIFT) | (integer & reg::uart::CLKDIV_INT_MASK);
+            (frac << reg::uart::CLKDIV_FRAC_S) | (integer & reg::uart::CLKDIV_INT_MASK);
     }
 
     // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
@@ -340,7 +340,7 @@ namespace
     // INTENABLE bit is the kernel's mask and is not touched here. ---
     uint32_t uart0_txfifo_cnt()
     {
-        return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK;
+        return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
     }
 
     int esp32_tx_slot_free(void)
@@ -411,9 +411,9 @@ namespace
         r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
 
         uint32_t conf1 = r32(reg::uart::CONF1);
-        conf1 &= ~(reg::uart::TXFIFO_EMPTY_THRHD_MASK << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT);
+        conf1 &= ~(reg::uart::TXFIFO_EMPTY_THRHD_MASK << reg::uart::TXFIFO_EMPTY_THRHD_S);
         conf1 |= (reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
-                 << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT;
+                 << reg::uart::TXFIFO_EMPTY_THRHD_S;
         r32(reg::uart::CONF1) = conf1;
 
         // Pinned to the taking core's bank, which is the form freeze N3 rests on.
@@ -495,14 +495,14 @@ void arch_console_reclaim(void)
     // the latter of which would gate TX on a CTS this board does not wire.
     r32(reg::uart::CONF1) =
         ((reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
-         << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT)
+         << reg::uart::TXFIFO_EMPTY_THRHD_S)
         | ((reg::uart::RXFIFO_FULL_THRHD & reg::uart::RXFIFO_FULL_THRHD_MASK)
-           << reg::uart::RXFIFO_FULL_THRHD_SHIFT);
+           << reg::uart::RXFIFO_FULL_THRHD_S);
 
     // Baud off the fixed 80 MHz APB, the same constant folding clock_init_240mhz does.
     // SystemCoreClock is deliberately not consulted: it is writable state.
     constexpr uint32_t CLKDIV16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
-    r32(reg::uart::CLKDIV) = ((CLKDIV16 & 0xFu) << reg::uart::CLKDIV_FRAC_SHIFT)
+    r32(reg::uart::CLKDIV) = ((CLKDIV16 & 0xFu) << reg::uart::CLKDIV_FRAC_S)
                              | ((CLKDIV16 >> 4) & reg::uart::CLKDIV_INT_MASK);
 }
 
@@ -745,7 +745,7 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) >=
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
                reg::uart::TXFIFO_LIMIT)
         {
             // A local bound, not KICKOS_POLL_SPIN_MAX: this is a per-byte loop on the
@@ -769,8 +769,8 @@ void arch_console_flush_sync(void)
     while (true)
     {
         uint32_t const status = r32(reg::uart::STATUS);
-        uint32_t const queued = (status >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK;
-        uint32_t const tx_fsm = (status >> reg::uart::ST_UTX_OUT_SHIFT) & reg::uart::ST_UTX_OUT_MASK;
+        uint32_t const queued = (status >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
+        uint32_t const tx_fsm = (status >> reg::uart::ST_UTX_OUT_S) & reg::uart::ST_UTX_OUT_MASK;
         if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_TX_IDLE)
         {
             return;

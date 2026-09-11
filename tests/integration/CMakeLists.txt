@@ -21,17 +21,25 @@
 #
 # NO board predicate belongs to a gate merely because a board has no emulator:
 # kickos_add_qemu_test is total and registers nothing there. A predicate here states which
-# boards make the CLAIM.
+# boards make the CLAIM, and where the claim is every emulated board but a few, it is spelled
+# as the EXCLUSION: a list of the covered boards leaves a new board out and says nothing.
 
 # The board name as a CTest-name prefix, for the gates whose ctest name is the claim rather
 # than the image and so cannot take kickos_add_qemu_test's derived name.
 string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
 
-foreach(_gate
-    ampping aspacefault aspaceufault cxxtest drvdeath errnoprobe fault faultsurvive
-    fp_switch hello initdemo kernelhalf libc_exit mpu_fault objbudget panicgate pspguard
-    pubpanic rebootdemo reclaimwit ringpriv rootauth rootfault rootgone sched_exit selftest
-    simconabi slaypeer stackdepth stackguard stress taskleave tele_flood tele_pingpong
-    tlsprobe trapnest uartloop)
-  include("${CMAKE_CURRENT_LIST_DIR}/gates/${_gate}.cmake")
+# EVERY fragment in gates/, found rather than listed: a name list is a second place to edit
+# and a fragment missing from it registers nothing while the configure stays green.
+# CONFIGURE_DEPENDS is what makes an added or deleted fragment re-run this configure instead of
+# being picked up at the next unrelated one.
+# SORTED, because a fragment may read a figure an earlier one computed and the glob's own order
+# is the filesystem's.
+file(GLOB _kickos_gates CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/gates/*.cmake")
+list(SORT _kickos_gates)
+if(NOT _kickos_gates)
+  message(FATAL_ERROR "no fragment in ${CMAKE_CURRENT_LIST_DIR}/gates/, so this directory "
+                      "would register no integration gate at all")
+endif()
+foreach(_gate IN LISTS _kickos_gates)
+  include("${_gate}")
 endforeach()

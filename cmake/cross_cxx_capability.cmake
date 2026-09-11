@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Shared capability gate for the ARM + RISC-V cross toolchain files: refuse at
-# configure time a resolved compiler that cannot build KickOS. find_program HINTS
-# fall through to PATH when the hinted directory is absent, and distro cross gccs
-# there (Debian's arm-none-eabi, riscv64-unknown-elf) are C-only/picolibc: without
-# this gate configure succeeds and the build dies much later on
-# `#include <exception>` or at the application link.
+# Capability gate for a resolved cross C++ compiler: refuse at configure time one
+# that cannot build KickOS. find_program HINTS fall through to PATH when the hinted
+# directory is absent, and the distro cross gccs there (Debian's arm-none-eabi,
+# riscv64-unknown-elf) are C-only/picolibc: without this gate configure succeeds and
+# the build dies much later on `#include <exception>` or at the application link.
 #
 # No link-test, deliberately: a bare-metal link needs the board's linker script +
 # startup, supplied only at the application-link step (why the toolchain files set
 # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY). Compiler queries plus one
 # compile-only probe; nothing is linked.
 #
-# Installed MCU packages ship this file beside the toolchain file that includes
-# it (see the root CMakeLists install); the include path is list-dir-relative.
+# The ARM, AArch64 and RISC-V toolchain files include it list-dir-relative right after
+# their find_program calls, and installed MCU packages ship it beside them.
 
 # kickos_require_usable_cross_cxx(<label> <cxx> <override-var> <tarball-url> <flags>...)
 #

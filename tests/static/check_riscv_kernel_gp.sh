@@ -29,8 +29,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-export LC_ALL=C
-
 if [ "$#" -lt 3 ]; then
     echo "usage: $0 <objdump> <section> <image>..." >&2
     exit 2

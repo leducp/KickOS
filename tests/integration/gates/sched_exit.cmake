@@ -35,12 +35,7 @@ if(KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_MULTI_INSTANCE)
   set_tests_properties(sim_multi_instance PROPERTIES TIMEOUT 300)
 endif()
 
-# The board list is enumerated rather than left to every board with an emulator: the arm64
-# boards build the app and register no arm today.
-if(KICKOS_CHIP STREQUAL "mps2"
-   OR KICKOS_BOARD STREQUAL "microbit"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv64"
-   OR KICKOS_BOARD STREQUAL "qemu-x86_64")
+# Not armv8a: the arm64 boards build the app and register no arm today.
+if(NOT KICKOS_ARCH STREQUAL "armv8a")
   kickos_add_qemu_test(TARGET sched_exit SCRIPT "${_sched_exit_script}")
 endif()

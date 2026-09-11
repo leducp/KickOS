@@ -51,10 +51,6 @@
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-# readelf translates `File:` and `Relocation section` under a localised LANG, and both are
-# parsed below. The cross readelf does not translate, but a host one in the same slot would.
-export LC_ALL=C
-
 if [ "$#" -lt 5 ]; then
     echo "usage: $0 <readelf> <allowlist> <image>... '--' <archive>..." >&2
     exit 2

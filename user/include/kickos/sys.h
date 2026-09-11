@@ -339,7 +339,7 @@ uint32_t kos_nest_witness(int which);
 // identically. Reads 0 on a backend whose calls all take the generic path.
 uint32_t kos_ipc_fast_taken(void);
 // Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
-// `op` is an enum kos_grant_op (abi.h):
+// `op` is an enum kos_grant_op (sys/abi_probe.h):
 //   HITS_RESERVED -> grant_hits_reserved(base,size)                  (0/1)
 //   RAM_PRIVILEGED/RAM_UNPRIVILEGED -> grant_region_admissible RAM   (0/1)
 //   DEV_PRIVILEGED/DEV_UNPRIVILEGED -> grant_region_admissible DEV   (0/1)
@@ -350,25 +350,25 @@ uint32_t kos_ipc_fast_taken(void);
 // grant module).
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
 // Test-only: run one address-space seam scenario in the kernel and return its answer (see
-// enum kos_aspace_op in sys/abi.h). The map editor has no syscall of its own, so an arm asks
+// enum kos_aspace_op in sys/abi_probe.h). The map editor has no syscall of its own, so an arm asks
 // for a whole scenario rather than for a mapping. -KOS_ENOSYS where the board describes
 // regions instead of translating, cast up through the uintptr_t return.
 uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
 
 // Test-only: run one shared-window scenario in the kernel, or read one of its counters (see
-// enum kos_amp_op in sys/abi.h). -KOS_EINVAL for a bad op and on an image that is not a node
+// enum kos_amp_op in sys/abi_probe.h). -KOS_EINVAL for a bad op and on an image that is not a node
 // of a partition, cast up through the uintptr_t return: a caller reading a counter must read
 // the answer as SIGNED first, or a refusal arrives as a very large count.
 uintptr_t kos_amp_probe(uintptr_t op, uintptr_t a1);
 
 // Test-only: read one of the cross-core doorbell's per-core counts, or the shape of the matrix
-// they are indexed by (see enum kos_doorbell_op in sys/abi.h). -KOS_EINVAL for a bad op, cast
+// they are indexed by (see enum kos_doorbell_op in sys/abi_probe.h). -KOS_EINVAL for a bad op, cast
 // up through the return, so read the answer as SIGNED before reading it as a number. Total
 // over every posture: an image whose doorbell folds out answers a real zero, not a refusal.
 uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1);
 
 // Test-only: read one item of the CALLER's own scheduling state (see enum kos_sched_op in
-// sys/abi.h). -KOS_EINVAL for a bad op and on an image built without KICKOS_ENABLE_SELFTEST,
+// sys/abi_probe.h). -KOS_EINVAL for a bad op and on an image built without KICKOS_ENABLE_SELFTEST,
 // cast up through the uintptr_t return.
 uintptr_t kos_sched_probe(uintptr_t op);
 // Test-only: enable a controller line directly, so an injected raise reaches the
