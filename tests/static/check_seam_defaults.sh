@@ -16,6 +16,26 @@
 # the wrong symbol whatever its linkage, and leg 4 still requires every weak C++ symbol to
 # BE COMDAT, so a deliberate weak attribute is not exempted anywhere.
 #
+# THE SCAN ORDER IS A PRECONDITION OF LEGS 2 AND 3, not a fifth leg, and it is checked
+# first. Those two legs read WHICH member the link map says resolved a seam; what makes
+# that answer the intended one is that the link scanned kickos_kernel, then
+# kickos_chip_<chip>, then kickos_arch_<arch>. Leg 1 reads none of that: it is nm data
+# about the archives themselves (a member's own symbol count, a twin inside the same
+# archive), true or false independent of any one link's observed order, so a bad order
+# does not put a leg 1 finding in doubt and it is collected same as always. A bad order
+# DOES put legs 2 and 3's findings in doubt, so those are collected labeled as such
+# rather than silently, and never dropped: the alternative is a maintainer fixing the
+# order and re-running to learn whether there was ALSO a real leg 2 or 3 defect.
+# Inside a --start-group the archives are still scanned LEFT TO RIGHT, so the first archive
+# holding a definition is extracted and a definition in a later archive is either dropped,
+# its member anchored by nothing else, or a hard multiple-definition error. A seam that may
+# live in kickos_chip_<chip> beside a fallback in kickos_arch_<arch> may NOT live the other
+# way round. The order is read off the map's own LOAD lines, which are ld's record of the
+# inputs it processed, and never off the _kickos_group string in the root CMakeLists that
+# builds it: that string is not the sole determinant, a PUBLIC target_link_libraries and the
+# generator's closure flattening both put archives on the line, and the same map LOADs the
+# toolchain's own libc.a and libgcc.a twice from one mention of them.
+#
 # Four legs:
 #   1. Each fallback member defines EXACTLY ONE strong global symbol, since a second drags
 #      the member in unconditionally and collides with every backend; no other member of
@@ -97,6 +117,27 @@ collect() { # <findings file>
     done < "$1"
 }
 
+# Set once the scan-order precondition below is read. Legs 2 and 3 read WHICH member
+# the link map says resolved a seam, and that answer is only the one CMake intends when
+# the order held; collect_dependent is collect() for exactly those two legs, so a finding
+# made against a false premise cannot be mistaken for an independent one. Leg 1 reads no
+# map at all and keeps using collect().
+ORDER_BAD=0
+collect_dependent() { # <findings file>
+    while IFS= read -r _finding; do
+        [ -n "$_finding" ] || continue
+        if [ "$ORDER_BAD" -eq 1 ]; then
+            bad "$_finding
+      (CONSEQUENCE OF THE BAD SCAN ORDER ABOVE: this leg reads which member resolved a
+      seam, and the order that answer relies on does not hold here, so this finding may
+      be an artifact of the wrong order rather than an independent defect. Fix the order
+      first and re-run.)"
+        else
+            bad "$_finding"
+        fi
+    done < "$1"
+}
+
 # `grep -c .` exits 1 on zero matches, so counting that way makes the count depend on this
 # script never using `set -e` and dies before the diagnostic it feeds.
 nlines() { # <newline-joined list>
@@ -135,6 +176,8 @@ COMDAT_BIND_RE='^(GLOBAL|WEAK)$'
 FB_MEMBER_RE='_default[.]cc[.]o(bj)?$'
 # Only an inclusion entry puts an `<archive>(<member>)` at column 0.
 INCLUDE_RE='^[^[:blank:]].*[.]a[(].*[)]$'
+# The KickOS archives among the map's LOAD lines, by name rather than by position.
+LOADED_RE='^libkickos_.*[.]a$'
 MANGLED_RE='^_?_Z'
 ELF_WEAK_SKIP_RE='^_?_Z|^DW[.]ref[.]'
 KERNEL_ARCHIVE_GLOB='*libkickos_kernel.a'
@@ -243,6 +286,44 @@ map_included() { # <map> <inclusion ere>
             pend = ""
         }
         END { if (pend != "") { print pend "\t" } }' "$1" | sort -u
+}
+
+# The KickOS archives in LOAD order, one basename per line. `LOAD linker stubs` is a real ld
+# line with no path in it, and the toolchain's own libc.a and libgcc.a LOAD lines sit in the
+# same block: neither is a KickOS archive, so the name filter is what keeps them out instead
+# of a position that would shift when the group gains a member.
+map_loaded() { # <map> <kickos archive ere> -> the basenames in LOAD order
+    awk -v A="$2" '/^LOAD /{
+        n = split($2, p, "/")
+        b = p[n]
+        if (b ~ A) { print b }
+    }' "$1"
+}
+
+# The verdict over one such list, as BAD tokens and one ORDER tally, so each control below is
+# a minimal pair on a named reason rather than on a sentence. The three roles are matched on
+# the archive NAMING RULE and not on a list of names, so a new chip or a new arch joins
+# without an edit here.
+order_verdict() { # <basename list file> -> BAD/ORDER records
+    awk '
+{
+    i++
+    if ($0 == "libkickos_kernel.a")   { if (!kernel) { kernel = i }; kernel_n++ }
+    if ($0 ~ /^libkickos_chip_/)      { if (!chip)   { chip = i };   chip_n++ }
+    if ($0 ~ /^libkickos_arch_/)      { if (!arch)   { arch = i };   arch_n++ }
+}
+END {
+    if (i == 0)        { print "BAD NO_ARCHIVES"; exit }
+    if (!kernel)       { print "BAD NO_KERNEL" }
+    if (!arch)         { print "BAD NO_ARCH" }
+    if (kernel_n > 1)  { print "BAD KERNEL_TWICE" }
+    if (chip_n > 1)    { print "BAD CHIP_TWICE" }
+    if (arch_n > 1)    { print "BAD ARCH_TWICE" }
+    if (kernel && arch && kernel > arch) { print "BAD KERNEL_AFTER_ARCH" }
+    if (kernel && chip && kernel > chip) { print "BAD KERNEL_AFTER_CHIP" }
+    if (chip && arch && chip > arch)     { print "BAD CHIP_AFTER_ARCH" }
+    printf "ORDER %d %d %d %d\n", i, kernel + 0, chip + 0, arch + 0
+}' "$1"
 }
 
 weak_rows() { # <readelf -sW output> <archive key>
@@ -616,6 +697,101 @@ ST_N="$(map_included "$TMP/st_map" '.*[.]a[(].*[)]$' | wc -l | tr -d ' ')"
     || fail "with the column-0 anchor dropped the map scan read $ST_N entries, expected 7;
       the indented reason line and the memory-map placement are not near misses"
 
+# --- clause: the scan order, read off the LOAD block alone
+# The block ld really emits, with the toolchain archives and the pathless line that would
+# otherwise be read as an input name.
+cat > "$TMP/st_lmap" <<'EOF'
+Archive member included to satisfy reference by file (symbol)
+
+kernel/libkickos_kernel.a(sched.cc.obj)
+                              main.cc.obj (kickos::sched_yield())
+Linker script and memory map
+
+LOAD user/apps/x/CMakeFiles/x.dir/main.cc.obj
+LOAD user/libkickos_user.a
+LOAD kernel/libkickos_kernel.a
+LOAD system/libkickos_default_init.a
+LOAD arch/libkickos_chip_mps2.a
+LOAD arch/libkickos_arch_armv7m.a
+LOAD lib/libkickos_lib.a
+LOAD /toolchain/lib/libc.a
+LOAD /toolchain/lib/libgcc.a
+LOAD linker stubs
+EOF
+map_loaded "$TMP/st_lmap" "$LOADED_RE" > "$TMP/st_lnames"
+cat > "$TMP/st_lwant" <<'EOF'
+libkickos_user.a
+libkickos_kernel.a
+libkickos_default_init.a
+libkickos_chip_mps2.a
+libkickos_arch_armv7m.a
+libkickos_lib.a
+EOF
+cmp -s "$TMP/st_lnames" "$TMP/st_lwant" \
+    || fail "the LOAD scan read $(tr '\n' ' ' < "$TMP/st_lnames"), expected
+      $(tr '\n' ' ' < "$TMP/st_lwant"); it is reading the wrong block, taking the toolchain
+      archives, or tripping on the pathless `LOAD linker stubs` line"
+
+# The map's OTHER blocks name the same archives, and map_included reads one of them. A LOAD
+# scan reading them too would see kernel/libkickos_kernel.a above the LOAD block and report a
+# different order.
+[ "$(grep -c 'libkickos_kernel[.]a' "$TMP/st_lmap")" -eq 2 ] \
+    || fail "the control map no longer names an archive outside its LOAD block, so it cannot
+      show that the LOAD scan reads the LOAD block alone"
+
+st_order() { # <lines> -> the BAD reasons, space separated
+    printf '%s' "$1" > "$TMP/st_lone"
+    order_verdict "$TMP/st_lone" | awk '/^BAD /{ printf "%s ", $2 }'
+}
+ST_GOOD='libkickos_user.a
+libkickos_kernel.a
+libkickos_chip_mps2.a
+libkickos_arch_armv7m.a
+libkickos_lib.a
+'
+[ -z "$(st_order "$ST_GOOD")" ] || fail "the correctly ordered control reported $(st_order "$ST_GOOD")"
+printf '%s' "$ST_GOOD" > "$TMP/st_lone"
+order_verdict "$TMP/st_lone" | grep -qxF 'ORDER 5 2 3 4' \
+    || fail "the correctly ordered control tallied $(order_verdict "$TMP/st_lone" | grep '^ORDER ')"
+
+# Each positive control differs from the good one in exactly one property.
+st_order_is() { # <what> <lines> <expected reasons>
+    _got="$(st_order "$2")"
+    [ "$_got" = "$3" ] || fail "the $1 control reported '$_got', expected '$3'"
+}
+st_order_is "arch before chip" 'libkickos_kernel.a
+libkickos_arch_armv7m.a
+libkickos_chip_mps2.a
+' 'CHIP_AFTER_ARCH '
+st_order_is "kernel after chip" 'libkickos_chip_mps2.a
+libkickos_kernel.a
+libkickos_arch_armv7m.a
+' 'KERNEL_AFTER_CHIP '
+st_order_is "kernel after arch" 'libkickos_chip_mps2.a
+libkickos_arch_armv7m.a
+libkickos_kernel.a
+' 'KERNEL_AFTER_ARCH KERNEL_AFTER_CHIP '
+st_order_is "no kernel archive" 'libkickos_chip_mps2.a
+libkickos_arch_armv7m.a
+' 'NO_KERNEL '
+st_order_is "no arch archive" 'libkickos_kernel.a
+libkickos_chip_mps2.a
+' 'NO_ARCH '
+st_order_is "kernel twice" 'libkickos_kernel.a
+libkickos_kernel.a
+libkickos_arch_armv7m.a
+' 'KERNEL_TWICE '
+st_order_is "arch twice" 'libkickos_kernel.a
+libkickos_arch_armv7m.a
+libkickos_arch_armv7m.a
+' 'ARCH_TWICE '
+st_order_is "no archive at all" '' 'NO_ARCHIVES '
+# A chipless link is legitimate (the host sim carries no chip archive) and must not read as a
+# missing role.
+st_order_is "chipless link" 'libkickos_kernel.a
+libkickos_arch_sim.a
+' ''
+
 # --- clause: leg 1, one strong symbol per fallback member, unique in its archive
 tr '|' "$TAB" > "$TMP/st_fb1" <<'EOF'
 /p/libkickos_arch.a|two_syms_default.cc.obj|T|sym_a
@@ -842,6 +1018,23 @@ strong_only "$TMP/defs" "$TMP/comdat_syms" > "$TMP/strong_defs"
 awk -F'\t' -v RE="$FB_MEMBER_RE" '$2 ~ RE' "$TMP/strong_defs" > "$TMP/fb_defs"
 awk -F'\t' -v RE="$FB_MEMBER_RE" '$2 !~ RE' "$TMP/strong_defs" > "$TMP/be_defs"
 
+# --- the precondition: the order legs 1 to 3 read their answer against ---------
+map_loaded "$MAP" "$LOADED_RE" > "$TMP/loaded"
+require_nonempty "$TMP/loaded" "no KickOS archive appears in a LOAD line of $MAP; the map has
+      no LOAD block, or the archive naming changed, and the order below would pass vacuously"
+order_verdict "$TMP/loaded" > "$TMP/order"
+while IFS= read -r _o; do
+    case "$_o" in
+        "BAD "*) ;;
+        *) continue ;;
+    esac
+    ORDER_BAD=1
+    bad "scan order: ${_o#BAD }; the link did not scan kickos_kernel, then kickos_chip_<chip>,
+      then kickos_arch_<arch>, which is the order the seam answers below are read against.
+      _kickos_group in the root CMakeLists sets it. LOAD order was:
+      $(tr '\n' ' ' < "$TMP/loaded")"
+done < "$TMP/order"
+
 # --- leg 1: one strong symbol per fallback member, unique in its archive ------
 awk -F'\t' '{ print $1 "\t" $2 }' "$TMP/fb_defs" | sort -u > "$TMP/fb_members"
 if [ ! -s "$TMP/fb_members" ]; then
@@ -856,10 +1049,19 @@ map_included "$MAP" "$INCLUDE_RE" > "$TMP/included"
 awk -F'\t' '{ print $4 }' "$TMP/fb_defs" | sort -u > "$TMP/seams"
 legs23_findings "$TMP/fb_defs" "$TMP/be_defs" "$TMP/seams" "$TMP/included" \
     "$TMP/cmdline_members" "$MAP" "$PSABI_PREFIX" "$TMP/resolved" > "$TMP/leg23_out"
-collect "$TMP/leg23_out"
+collect_dependent "$TMP/leg23_out"
 checked_fallback="$(cat "$TMP/resolved")"
 if [ "$checked_fallback" -eq 0 ]; then
-    bad "leg 3: this board resolved no seam from its fallback, so the fallback path is untested here"
+    if [ "$ORDER_BAD" -eq 1 ]; then
+        bad "leg 3: this board resolved no seam from its fallback, so the fallback path is
+      untested here
+      (CONSEQUENCE OF THE BAD SCAN ORDER ABOVE: which member resolved which seam is read
+      off the same map the order above is wrong about, so this may be the bad order
+      hiding a real resolution rather than there being none. Fix the order first and
+      re-run.)"
+    else
+        bad "leg 3: this board resolved no seam from its fallback, so the fallback path is untested here"
+    fi
 fi
 
 # --- leg 4: no weak symbol outside the allowlist ------------------------------
@@ -884,6 +1086,11 @@ collect "$TMP/leg4_elf_out"
 if [ "$rc" -eq 0 ]; then
     nfb=$(wc -l < "$TMP/fb_members" | tr -d ' ')
     nseam=$(wc -l < "$TMP/seams" | tr -d ' ')
-    echo "seam_defaults: OK ($nfb fallback members, $nseam seams, $checked_fallback resolved from a fallback)"
+    nload=$(wc -l < "$TMP/loaded" | tr -d ' ')
+    awk -v N="$nload" -v FB="$nfb" -v SE="$nseam" -v CF="$checked_fallback" \
+        '/^ORDER /{ k = $3; c = $4; a = $5
+           if (c == 0) { chip = "no chip archive" } else { chip = "chip at " c }
+           printf "seam_defaults: OK (%d KickOS archive(s) LOADed, kernel at %d, %s, arch at %d; %d fallback members, %d seams, %d resolved from a fallback)\n", N, k, chip, a, FB, SE, CF
+         }' "$TMP/order"
 fi
 exit "$rc"

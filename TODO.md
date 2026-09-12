@@ -1654,11 +1654,11 @@ inside the tree.
       **RESOLVED**: the rule is stated once at the top of `arch/CMakeLists.txt`, the four
       restatements are gone, the `rescans FIRST` sentence names the group order instead, and
       `docs/reference/porting.md` no longer says a backend moved arch-side would definitely
-      resolve to the fallback. The control is the ctest `link_scan_order`
-      (`tests/static/check_link_scan_order.sh`), which reads the archive order back off the
-      link map's own `LOAD` lines rather than off the CMake variable, and refuses a link with
-      no kernel or no arch archive so it cannot pass vacuously. It registers on every preset
-      that links `selftest` and reports `no chip archive` on the host sim.
+      resolve to the fallback. The control reads the archive order back off the link map's own
+      `LOAD` lines rather than off the CMake variable, and refuses a link with no kernel or no
+      arch archive so it cannot pass vacuously. It is the precondition leg of the ctest
+      `seam_defaults` (`tests/static/check_seam_defaults.sh`), registers on every preset that
+      links `selftest` and reports `no chip archive` on the host sim.
 
 External audit, itemised into `roadmap.md` M8.5, measured by a normalised 3-shingle scan over
 every `.cc`/`.h`/`.S` file (identifiers, numbers and strings mapped to tokens; blank, comment,
@@ -2451,6 +2451,206 @@ reason, 310 lines out of the root and 319 into a module. Measured totals so far:
       `chip_esp32.cc` 602; `thread.h` 400; `arch_rv32imac.cc` 748. "Measured on" / "used to" comments
       that state history rather than a current invariant. Small, ungated; sweep on next touch of each
       file per the comment-sweep-on-touch rule, or in one pass here.
+
+## M8.6.2 -- the static gate corpus, audited and shrunk
+
+**THE SUSPICION WAS THAT A LARGE PART OF THE CORPUS DOES NOT EARN ITS KEEP, AND THE MEASUREMENT
+SAYS OTHERWISE.** All 68 gates were classified on five questions: whose code the verdict comes
+from, whether a positive control exists, whether it has ever fired, whether a cheaper mechanism
+could carry it, and whether it is redundant. **Only THREE test a third party's verdict** rather
+than ours (`check_c_headers` and `check_public_headers`, where gcc decides but the SELECTOR is
+ours and is the load-bearing half, and `check_smp_trace_builds`). **Sixty of 68 carry a positive
+control**, not the 51 this file's "seventeen without" implied; that figure was stale and is
+corrected here. The eight without are `check_smp_trace_builds`, `check_park_death_point`,
+`check_trap_redzone`, `check_preset_defconfig`, plus four partials where a harvest or a reader is
+controlled and the reporting half is not.
+**The discriminator worth keeping is WHOSE CODE PRODUCES THE VERDICT, not whether a gate feeds
+bad input.** Four gates look like misuse-testing and are not: two plant into their own parser,
+one greps our generator's own `REFUSED`, and two plant bodies their own readers must flag. That
+is a gate proving its detector fires, which is the good shape. The bad shape was one gate testing
+kconfiglib's dependency system and then GRADING THE WORDING of its refusal, which is what a leg
+does when it has run out of things to assert.
+The ledger is `.session/reports/2026-09-11-m862-static-gate-audit.md`. Corpus 68 files to **65**,
+557 lines of gate deleted for +103 net, because every fold bought a control the pair did not have.
+
+- [x] **FOUR LEGS OF `check_kconfig_gen.sh` TESTED KCONFIGLIB AND A FIFTH WAS A SECOND WALK.**
+      297 lines to 190, 10.10s to 0.75s. Legs 4 and 5 fed a posture kconfiglib itself refuses;
+      7 and 8 were string-escaping unit tests wearing a gate costume. **Leg 6 was cut on evidence
+      that corrected the premise**: `check_preset_defconfig.sh` proves a preset NAMES a defconfig,
+      which is a different claim from one RESOLVING, and 37 of 68 keys are named by a preset no CI
+      job configures. The real cover is `check_kconfig_reach.sh` leg 1, which walks the identical
+      glob through the same generator and fails on any refusal. Its one unique assertion moved
+      there rather than being dropped. A hardcoded `9 refusals` beside a counted tally, the second
+      truth its own comment warns of, now counts.
+
+- [x] **FOUR VACUOUS LEGS, EACH FOUND BY PLANTING AND NONE BY A GATE FAILING.**
+      `check_no_privileged_tls.sh` named no x86_64 relocation and ran on x86_64: the pre-fix
+      pattern matched ZERO lines on the real archives and the post-fix one matched the planted
+      `R_X86_64_TPOFF32`. `check_amp_no_xip_pin.sh` exited 0 where it meant "not applicable", so
+      four `pizero2350` presets reported an unearned green; it exits 77 now with
+      `SKIP_RETURN_CODE` set at the registration in the same change. `trap_redzone.py` counted its
+      `.ci` corpus and never floored it, where its sibling does -- **placement was the substance**,
+      since a floor at the print site never runs on a partial build, and the floors are PER ARCH
+      because the corpus runs 102 files on rxv3 against 147 on armv7m. `check_doc_names.sh` proved
+      its harvest and never its reporting half: with `report()` emptied it printed PASS over a
+      corpus citing a knob and a file that do not exist.
+
+- [x] **FOUR OF FIVE MERGES TAKEN, AND THE TWO REFUSALS ARE THE FINDINGS.**
+      `check_forever_loop` into `check_ternary` (both spellings off one strip), `check_whitespace`
+      into `check_ascii` (one walk for bytes and lines), the C11 compile shared by the source-tree
+      and installed-package header gates, and `check_link_scan_order` into `check_seam_defaults`.
+      **THE PREMISE FOR THE WHITESPACE FOLD WAS FALSE AND CHECKING IT SAVED THREE CLASSES.** The
+      audit said `.gitattributes eol=lf` plus `git diff --check` carry three of its five; there is
+      no `.gitattributes` in this repository, `core.whitespace` is unset everywhere, and nothing
+      runs `git diff --check`. All five stayed.
+      **AND CONFIGURE TIME LOST TO MEASUREMENT ON THE SCAN ORDER.** The house preference is a
+      build refusal over a test report, and it does not apply: what configure time can read is the
+      `_kickos_group` literal written three lines above it, so the check would assert that the
+      string says what the string says. The map is the link ld actually performed, and on a real
+      one `libc.a` and `libgcc.a` are LOADed TWICE from one mention -- the shape `KERNEL_TWICE`
+      exists to catch, which no string can show.
+
+- [ ] **`check_smp_trace_builds` CANNOT BECOME A PRESET, AND THE KNOB DOES NOT LINK ON TWO
+      ARCHES.** The replacement was built and the tree refuses it:
+      `check_trap_redzone_decls.sh` runs `uniq -d` over the registration key every visible preset
+      rebuilds from its board and resolved variant, so a second preset on one board collides by
+      name wherever it is put. The only escape is minting a `smp-trace` defconfig byte-identical
+      to `smp`'s, which is a second truth about that board's configuration for a knob Kconfig does
+      not declare; a hidden preset is refused by CMake and dropped by the sweep's flattener.
+      **The attempt found something the gate cannot see**: `KICKOS_SMP_TRACE=ON` does not LINK on
+      armv6m or rv32imac, its rings costing 12352 bytes of `.bss` per core, and `microbit` and
+      `qemu-riscv` die with the tree's own kernel-data-reserve diagnostic. The gate reports PASS on
+      both, having only ever claimed syntax. Direction: decide whether to mint the variant, and
+      give the gate the positive control it lacks -- its silent-pass mode is a `sed` dropping the
+      `-D`, after which the disabled arm compiles clean.
+
+- [ ] **FOUR RESIDUES THE AUDIT MEASURED AND THIS MILESTONE DID NOT CLOSE.** `trap_redzone`'s new
+      floors rest on seven presets of 54, so the other 47 inherit an arch floor untested and a
+      preset legitimately smaller than the arch minimum would be a FALSE RED rather than a missed
+      catch. `check_doc_names` now proves its reporting half can report and still nothing proves
+      its extraction selects the right candidates. `check_public_headers` cannot distinguish a
+      quoted from an angled include, its working directory holding no `kickos/` tree, so its C
+      corpus claim is weaker than it reads. And `check_ascii` says nothing about a file that is
+      both NUL-holding and byte-exempt, refused by neither half; that one is stated in its header
+      and predates this branch.
+
+## M8.6.2 audit round: what an external pass found in the audited corpus
+
+**THE MILESTONE THAT AUDITED THE GATES WAS ITSELF AUDITED, AND THE VERDICT WAS HOLD.** Six High,
+nine Medium, three Low against the consolidation. Every finding was reproduced before it was
+touched and every fix was planted, reddened and cleared both ways. Two premises did not survive
+contact and are corrected below; the rest held, and three of them were worse than reported.
+
+- [x] **THE RED-ZONE WALK READ WHATEVER `.ci` FILES LAY IN ITS SCRATCH TREE, AND 98 OF 151
+      OMISSIONS PASSED.** Brute-forcing one omitted translation unit at a time over a warm
+      `qemu` tree, 98 of 151 left the gate green with the identical depths reported. The file
+      count drops far below what would notice, the armv7m floor standing at 85 against a real
+      119. The omissions that WERE caught were caught by accident and misdiagnosed: dropping
+      `grant.cc` reports UNSIZED REACHABLE NODE for two functions that are perfectly sized in
+      the real build, sending the reader to edit a declaration file over a tree problem.
+      Freshness is now keyed to the build's own `compile_commands.json` -- a unit the database
+      names and the tree does not hold is refused, and a `.ci` no compile command produced is
+      refused. CMake's two `CompilerId` probe units had been walked as part of the kernel
+      callgraph all along. Numeric floors survive only as the gross guard.
+
+- [x] **`console_reach` HAD THE SAME HOLE AND A WORSE RATE: 116 OF 139 OMISSIONS PASSED,
+      `kernel/init/fault.cc` AMONG THEM.** None of the 116 moved the reported route (71 of 1041
+      every time), so what is demonstrated is an unchecked corpus rather than a wrong verdict on
+      this preset. `corpus()` now lives inside the graph's constructor, so the keying is not a
+      parameter a caller can omit, and the globbing default is GONE rather than left as a second,
+      weaker path. Its floors were declared per (arch, preset) with no duplicate or positivity
+      check either.
+
+- [x] **MEASURED MINIMA AGAINST THE FLOORS THAT WERE DECLARED**, all taken on this box
+      2026-09-11 in private per-preset scratch trees: armv7m 119/811 against 85/600, armv6m
+      114/880 against 85/600, rv32imac **108/880 against 100/700**, rxv3 102/897 against 75/650,
+      lx6 105/905 against 75/650. The audit's "20-35% below" holds everywhere except rv32imac,
+      which sat EIGHT units under a real board -- a tripwire, not a guard -- and whose declared
+      reason cited a preset that is not the minimum. `console_reach`'s reasons were staler still:
+      qemu-arm64 recorded 116/931 in August against 135/1040 today.
+
+- [x] **A FLOOR COULD BE DISARMED BY APPENDING A SECOND ONE.** `floor armv7m files=-1 nodes=-1`
+      after the measured line silently won, and every preset stayed green. Floor records are now
+      shape-, duplicate- and range-checked for EVERY declared arch before the arch filter, so a
+      floor disarmed on one arch reddens every run.
+
+- [x] **THE BANNED-SPELLING SCAN NEVER OPENED A FILE WHOSE NAME LOOKS LIKE AN AWK ASSIGNMENT.**
+      A tracked `z=z.cc` is read by POSIX awk as a variable assignment: the corpus count grows by
+      one, the code-line tally does not move, and the gate passes. A name holding the sed
+      delimiter was worse -- sed failed loudly, its findings were discarded, and the gate still
+      passed. Names now travel on stdin and through the environment, never as operands or into a
+      replacement.
+
+- [x] **THE SHARED STRIPPER COULD BE MADE TO BLANK THE REST OF A FILE AND EXIT CLEAN.** The
+      audit's own spelling `R"(x")"` already exits 2, so that half of its premise was wrong, but
+      the defect is real: `R"(" /* )"` then `R"(*/")"`, both valid C++, open and close a block
+      comment when read as ordinary literals. A raw-string opener is now REFUSED as UNKNOWN
+      rather than parsed. Parsing was declined deliberately -- twelve gates read that stripper,
+      and a delimiter-aware parser is exactly where a silent false negative would hide, which is
+      the class under repair. No tracked file spells one today, and the whole tree's residue and
+      exit status are byte-identical before and after.
+
+- [x] **A CONTROL THAT CANNOT FIRE UNDER THE DEFAULT AWK OF THE COMMONEST CI IMAGE.** The
+      dead-reader plant `{ if (1 and 1) { print } }` is a syntax error only in gawk; mawk reads
+      `and` as concatenation and RUNS it, so the arm proving a broken strip is refused could not
+      fire there. Pre-existing, not a consolidation regression. The plant is now one every awk
+      refuses, and the whole gate's stdout and stderr are byte-identical under gawk, mawk and
+      busybox awk.
+
+- [x] **COMPILER ARGV WAS FLATTENED INTO A STRING AND EXPANDED UNQUOTED, AND THE PROVENANCE
+      SPLITS.** The `-D` half is a REGRESSION of this consolidation: master carried a real array,
+      the merge flattened it and then added a refusal of whitespace-bearing values to paper over
+      the split it had just made. The installed prefix's `-I` is a regression the same way. The
+      include roots of `check_c_headers` are PRE-EXISTING, master having joined them too.
+      Witnessed: `-DKOS_GLOB=1*1` run from a directory holding a file of that name compiled the
+      wrong value while the `#ifndef` control passed, it checking only that the name exists. Argv
+      now travels in positional parameters and the whitespace refusal is gone -- with boundaries
+      preserved it was refusing legitimate values.
+
+- [x] **THE BYTE WALK ASKED FOR OPTIONS POSIX DOES NOT HAVE, AND ITS CONTROL USED A DIFFERENT
+      FORM THAN ITS READER.** With a grep that rejects `-a`, the gate printed a full-size corpus
+      and passed over a planted high byte, because the control ran `grep -q` where the reader ran
+      `grep -a`. That is the whole lesson of the milestone restated: a control must run the
+      reader's own form, options included. The reader now maps NUL through `tr` and asks for
+      nothing outside POSIX, and every detector returns a status the tally respects.
+      **`check_doc_names` is the counter-example worth recording**: it asks for `-aohE`, three
+      extensions, and REFUSES loudly under a conforming grep rather than passing. It was
+      unportable, not untrustworthy, and the fix buys it running on a POSIX grep and nothing more.
+
+- [x] **THE REUSED-SYSCALL-NUMBER CHECK HAD NEVER BEEN ABLE TO FIRE.** Found while planting the
+      control the audit asked for: an early `continue` on an exact identifier match ran before
+      the syscall clause could be reached for any correctly-spelled name. A coverage finding that
+      turned out to be a functional one.
+
+- [x] **THE ESCAPING LEGS THIS FILE CALLED UNIT TESTS IN A GATE COSTUME WERE CARRYING REAL
+      COVERAGE, AND ARE RESTORED.** Deleting legs 7 and 8 left nothing supplying a value holding
+      `;` or `$` anywhere in the split pair, so a regression admitting CMake list injection or
+      expansion would pass. Both are back, and the two halves discriminate: dropping `;` escaping
+      is caught by the round-trip leg, dropping `"` escaping only by the unit leg. The judgement
+      on legs 4 and 5 stands -- they graded kconfiglib's own refusal wording -- but a third thing
+      went with them, the only assertion that a refusal carries the help text saying how to fix
+      it, and that is restored on a surviving fixture.
+
+- [x] **SIX SMALLER ONES, EACH REPRODUCED FIRST.** A relocation against a symbol merely NAMED
+      `R_X86_64_TLSGD_decoy` was rejected as thread-local storage, the match scanning whole
+      readelf lines rather than the type column. A `.config` naming rp2350 with the posture line
+      absent earned a SKIP where a broken image should fail. A scan-order failure let dependent
+      legs report unlabelled findings as though independent -- now labelled, and only the two legs
+      that actually read the map-derived resolution, leg 1 being pure archive data whose finding
+      is byte-identical under a bad order. A header whose name holds a space or a glob character
+      went unchecked while its pieces reported. A `.cxx` source was selected by no gate at all.
+      And `boards.md` still named the deleted whitespace gate in the present tense.
+
+- [x] **ONE REFUSED.** `check_shell_special_names` was asked whether it should have caught the
+      quoting defects and the answer is no: it enforces a disjoint rule -- no tracked script
+      WRITES an identifier the shell owns -- and nothing here writes one. Its silence is correct.
+
+- [ ] **`check_dash_punct` COULD NOT SEE A COMMAND POSITION AFTER A CASE PATTERN'S `)`.** Fixed,
+      and the gate's own mutation counts were re-tuned deliberately rather than incidentally:
+      every count that moved, moved because the corpus gained a line the disabled variant
+      legitimately exposes, and the all-clauses-on negative total stayed at zero. Left open here
+      only as the pointer to that discipline: a count re-tuned without saying why is how a
+      control goes quiet.
 
 ## M8.6 review residue: three gate holes, none of them an M8.6 regression
 

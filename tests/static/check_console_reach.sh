@@ -61,24 +61,26 @@ then
     fail "preset/arch pair $PRESET/$ARCH is not declared in $DECL (for $ARCH: $KNOWN)"
 fi
 
-# --- clause 1: the floor is armed ---------------------------------------------
+# --- clause 1: the corpus check is armed --------------------------------------
 # THE ONE THING A CLAUSE THAT ASSERTS AN ABSENCE CANNOT SKIP. The tool is handed an empty
-# directory and has to refuse it. A floor that has stopped firing then fails HERE, on every
-# board, rather than the day a build breaks and the gate reports the route clean over nothing.
+# directory and has to refuse it. A corpus check that has stopped firing then fails HERE, on
+# every board, rather than the day a build breaks and the gate reports the route clean over
+# nothing. The refusal names compile_commands.json because that is what the corpus is keyed
+# to: an empty directory holds no record of what it was meant to compile.
 mkdir -p "$TMP/empty"
 if python3 "$TOOL" --ci-dir "$TMP/empty" --arch "$ARCH" --preset "$PRESET" \
        --decl "$DECL" --indirect "$INDIRECT" > "$TMP/floor.log" 2>&1
 then
     sed -n '1,20p' "$TMP/floor.log" >&2
-    fail "the clause reported success over an EMPTY .ci directory. Its corpus floor is not
+    fail "the clause reported success over an EMPTY .ci directory. Its corpus check is not
     working, so every green run it has ever produced is an absence over an unknown corpus"
 fi
-if ! grep -q 'no .ci file under' "$TMP/floor.log"; then
+if ! grep -q 'compile_commands.json' "$TMP/floor.log"; then
     sed -n '1,20p' "$TMP/floor.log" >&2
     fail "the clause refused an empty .ci directory for the wrong reason; the refusal must be
-    the corpus floor and not an accident of the declaration"
+    the corpus check and not an accident of the declaration"
 fi
-echo "console_reach: floor armed, an empty .ci directory is refused"
+echo "console_reach: corpus check armed, an empty .ci directory is refused"
 
 # --- configure and build the scratch tree ------------------------------------
 # Named per preset so two boards do not fight over one tree, and reused so a re-run is cheap.

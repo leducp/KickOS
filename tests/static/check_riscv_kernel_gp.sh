@@ -97,7 +97,7 @@ sd a0,16(gp)
 addi a0,gp,8
 KOS_CTL_INSNS_END
 # objdump prints an operand-less instruction with a trailing separator, so line 13 carries one.
-# It cannot live in the heredoc above: tests/static/check_whitespace.sh reads this file.
+# It cannot live in the heredoc above: tests/static/check_ascii.sh reads this file.
 printf 'ret \n' >> "$TMP/ctl.insns"
 : > "$TMP/ctl.bad"
 CTL_A="$(classify "$TMP/ctl.insns" "$TMP/ctl.bad")"

@@ -11,9 +11,28 @@
 # residue of a joined line prints on the FIRST of the lines it came from and each further
 # line prints empty, which is what keeps the line count equal to the input's.
 #
-# Exits 2, and the residue must then not be read as clean, when either
-#   - a block comment is still open at EOF, or
-#   - a string or character literal is unclosed at the end of a joined line.
+# Exits 2, and the residue must then not be read as clean, when
+#   - a block comment is still open at EOF,
+#   - a string or character literal is unclosed at the end of a joined line, or
+#   - a raw string literal opens. Its delimiter carries its own quoting rules, and a raw
+#     string is free to hold a lone quote, a comment opener and a comment closer as ordinary
+#     content, so this scan cannot tell where one ends. It is refused rather than guessed at:
+#     a wrong guess blanks the code after it and exits 0, which reads as a clean file.
+function rawopen(line, i,    j, pre, c) {
+    if (substr(line, i, 1) != "R" || substr(line, i + 1, 1) != "\"") { return 0 }
+    # The R has to start a token, alone or behind an encoding prefix, or it is an identifier
+    # character and the quote after it opens an ordinary literal.
+    j = i - 1
+    pre = ""
+    while (j >= 1) {
+        c = substr(line, j, 1)
+        if (c !~ /[A-Za-z0-9_]/) { break }
+        pre = c pre
+        j--
+    }
+    if (pre == "" || pre == "L" || pre == "u" || pre == "U" || pre == "u8") { return 1 }
+    return 0
+}
 function scan(line, first, blanks,    out, i, n, c, d, q, e, closed, kind) {
     out = ""
     i = 1
@@ -28,6 +47,12 @@ function scan(line, first, blanks,    out, i, n, c, d, q, e, closed, kind) {
         }
         if (d == "/*") { inblk = 1; blkline = first; i += 2; continue }
         if (d == "//") { break }
+        if (rawopen(line, i)) {
+            printf("%s:%d: a raw string literal opens here and this scan cannot classify one\n",
+                   FILENAME, first) > "/dev/stderr"
+            bad = 1
+            break
+        }
         if (c == "\"" || c == "'") {
             q = c
             i++

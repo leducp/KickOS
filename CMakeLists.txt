@@ -887,11 +887,6 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
-  _add_test(NAME whitespace
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_whitespace.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(whitespace PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
   _add_test(NAME shell_special_names
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_shell_special_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -911,11 +906,6 @@ if(KICKOS_BUILD_TESTS)
   # 77 is the gate's SKIP: above one core the seam is a real function and the fold is not a
   # property to check.
   set_tests_properties(cpu_id_fold PROPERTIES TIMEOUT 120 LABELS host SKIP_RETURN_CODE 77)
-
-  _add_test(NAME forever_loop
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_forever_loop.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
   _add_test(NAME dash_punct
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_dash_punct.sh"
@@ -1038,7 +1028,10 @@ if(KICKOS_BUILD_TESTS)
     _add_test(NAME amp_no_xip_pin
               COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_no_xip_pin.sh"
                       "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS host)
+    # 77 is the gate's SKIP: outside the own-image posture no peer kernel shares the cache,
+    # and there is no property to check.
+    set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS host
+                         SKIP_RETURN_CODE 77)
   endif()
 
   # Every mtvec target seats gp before its first gp-relative access, and no seat is relaxable.

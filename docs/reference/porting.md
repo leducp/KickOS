@@ -30,9 +30,9 @@ seam whose fallback sits in the arch archive must keep its backend definition ch
 here the backend would share an archive with its own fallback, and which one the image takes is
 then the source order of that `add_library()` call: the fallback listed first replaces the
 backend and the board SILENTLY DECLINES, the backend listed first leaves the fallback
-unextracted. `tests/static/check_seam_defaults.sh` refuses the pair either way, and
-`tests/static/check_link_scan_order.sh` is what says the group still has the order this
-paragraph rests on.
+unextracted. `tests/static/check_seam_defaults.sh` refuses the pair either way, and reads the group's
+scan order off the link map first, so the order this paragraph rests on is checked before the
+answers that depend on it.
 
 No KickOS seam is a weak symbol. An optional seam's fallback body lives ALONE in a
 translation unit named `<symbol>_default.cc` that defines EXACTLY ONE global symbol, and a

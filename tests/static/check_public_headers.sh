@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -32,51 +32,67 @@ INC="$PREFIX/include"
 # arch.h then reaches for an mpu_encoded.h the package correctly does not ship, and 26 of
 # the installed headers report a missing include that no consumer would ever see.
 #
-# An ARRAY, not a joined string: joined, the whole thing arrives as one unrecognised
-# argument and every define is dropped.
+# ONE LINE OF THE FILE IS ONE ARGUMENT, carried in the POSITIONAL PARAMETERS from here down
+# and never joined into a string the shell re-splits. A define whose value holds a space is a
+# value and not a hazard, and one holding a glob character keeps the value the package gave it
+# instead of the name of whatever file sits in the working directory. The command line's own
+# arguments are read above and are not wanted below.
 [ -s "$DEFS_FILE" ] || fail "no package definitions at $DEFS_FILE, so every header below
       would be compiled without the ones a consumer inherits"
-DEFS=()
+set --
+N_DEFS=0
 while IFS= read -r _d; do
     case "$_d" in
-        -D*) DEFS+=("$_d") ;;
+        -D*) set -- "$@" "$_d"; N_DEFS=$((N_DEFS + 1)) ;;
         "")  ;;
         *)   fail "$DEFS_FILE holds a line that is not a -D argument: $_d" ;;
     esac
 done < "$DEFS_FILE"
-[ "${#DEFS[@]}" -gt 0 ] || fail "$DEFS_FILE holds no -D argument"
+[ "$N_DEFS" -gt 0 ] || fail "$DEFS_FILE holds no -D argument"
 
 # The instrument, proven BOTH ways before it is used: one #ifndef per definition, so the
-# probe reddens if any of them fails to arrive and not merely if the array is empty.
+# probe reddens if any of them fails to arrive and not merely if the set is empty.
 : > "$TMP/defs_probe.h"
-for _d in "${DEFS[@]}"; do
+for _d in "$@"; do
     _n="${_d#-D}"
     _n="${_n%%=*}"
     printf '#ifndef %s\n#error "a package definition did not reach the compiler"\n#endif\n' \
         "$_n" >> "$TMP/defs_probe.h"
 done
-"$CXX" -std="$STD" -fsyntax-only "${DEFS[@]}" -x c++ "$TMP/defs_probe.h" 2>"$TMP/defs.err" || {
+"$CXX" -std="$STD" -fsyntax-only "$@" -x c++ "$TMP/defs_probe.h" 2>"$TMP/defs.err" || {
     sed -n '1,4p' "$TMP/defs.err" >&2
-    fail "${#DEFS[@]} package definition(s) were passed and at least one did not reach the
+    fail "$N_DEFS package definition(s) were passed and at least one did not reach the
       compiler, so every verdict below would be taken under the wrong configuration"
 }
 if "$CXX" -std="$STD" -fsyntax-only -x c++ "$TMP/defs_probe.h" 2>/dev/null; then
     fail "the same probe compiles with NO definition passed, so it is blind to a dropped
       -D and proves nothing about the ones above"
 fi
-echo "== ${#DEFS[@]} package definition(s) from $DEFS_FILE reach the compiler =="
+echo "== $N_DEFS package definition(s) from $DEFS_FILE reach the compiler =="
+
+# THE ENUMERATION IS READ A LINE AT A TIME, never `for h in $(find ...)`: a name holding a
+# space or a glob character would be re-split or rewritten there, and the header the name
+# belongs to would go uncompiled while the pieces compiled clean. A name holding a NEWLINE is
+# the one shape a line-delimited list cannot carry, so it is counted against the number of
+# files found and refused rather than read as two headers.
+( cd "$INC" && find kickos -name '*.h' ) | sort > "$TMP/installed"
+NLINES=$(wc -l < "$TMP/installed" | tr -d ' ')
+NFILES=$( (cd "$INC" && find kickos -name '*.h' -exec printf 'x\n' ';') | wc -l | tr -d ' ')
+[ "$NLINES" -eq "$NFILES" ] || fail "$NFILES installed header(s) came back as $NLINES line(s),
+      so a name holds a newline and the header it names would go unchecked while its pieces
+      report"
 
 n=0
 bad=0
-for h in $(cd "$INC" && find kickos -name '*.h' | sort); do
+while IFS= read -r h; do
     n=$((n + 1))
-    if ! echo "#include <$h>" | "$CXX" -std="$STD" -fsyntax-only "${DEFS[@]}" \
+    if ! printf '#include <%s>\n' "$h" | "$CXX" -std="$STD" -fsyntax-only "$@" \
          -I"$INC" -x c++ - 2>"$TMP/hdr.err"; then
         bad=$((bad + 1))
         echo "FAIL $h"
         head -4 "$TMP/hdr.err"
     fi
-done
+done < "$TMP/installed"
 
 [ "$n" -gt 0 ] || fail "no headers found under $INC, so this gate proved nothing"
 [ "$bad" -eq 0 ] || fail "$bad of $n installed header(s) do not compile at $STD"
@@ -106,29 +122,16 @@ echo "PASS: $n installed headers compile standalone at $STD"
 # -fsyntax-only says nothing about LINKING.
 # ===========================================================================
 
-CSTD=c11
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
 [ -r "$STRIP" ] || fail "tests/lib/strip_comments.awk is unreadable; nothing below can tell code from prose"
 
-# $CFLAGS is deliberately unquoted at the call sites so it word-splits.
-CFLAGS="-std=$CSTD -ffreestanding -fsyntax-only"
-PEDFLAGS="$CFLAGS -pedantic-errors"
-
-compile_as_c() { # <include-spelling> <stderr file>; 0 ok, 1 not valid C, 2 an include was missing
-  # The TU comes from stdin so nothing resolves relative to a scratch directory.
-  if echo "#include <$1>" | "$CC" $CFLAGS "${DEFS[@]}" -I"$INC" -I"$TMP/p" -x c - 2>"$2"; then
-    return 0
-  fi
-  grep -q 'No such file or directory' "$2" && return 2
-  return 1
-}
-
-# The trailing typedef keeps the TU non-empty: -pedantic-errors forbids an empty translation
-# unit, which is what a macros-only header would otherwise produce.
-compile_pedantic_c() { # <include-spelling> <stderr file>
-  printf '#include <%s>\ntypedef int kos_gate_pedantic_tu;\n' "$1" \
-    | "$CC" $PEDFLAGS "${DEFS[@]}" -I"$INC" -I"$TMP/p" -x c - 2>"$2"
-}
+# The probe headers written under $TMP/p are reached by SPELLING like any installed one, so
+# a control compiles through the same path a corpus header does. The two roots join the
+# package's defines in the positional parameters, which every compile below passes on whole.
+KOS_C_FORM=angled
+KOS_C_CC="$CC"
+set -- "$@" "-I$INC" "-I$TMP/p"
+. "$(dirname "$0")/../lib/c_probe.sh"
 
 # --- the compiler and the pin, proven both ways ----------------------------
 mkdir -p "$TMP/p"
@@ -138,54 +141,60 @@ cat > "$TMP/p/ok.h" <<'EOF'
 _Static_assert(sizeof(uint32_t) == 4, "the C11 spelling");
 static inline uint32_t kos_probe_id(uint32_t v) { return (uint32_t)v; }
 EOF
-if ! compile_as_c ok.h "$TMP/p/ok.err"; then
+if ! compile_as_c ok.h "$TMP/p/ok.err" "$@"; then
   sed -n '1,4p' "$TMP/p/ok.err" >&2
-  fail "$CC refuses a plain C11 header at $CFLAGS, so every finding below would be its own"
+  fail "$CC refuses a plain C11 header at $KOS_C_FLAGS, so every finding below would be its own"
 fi
 
 # Each is valid C++ and invalid C11, one construct per probe so a compiler blind to one
 # cannot hide behind the others. The last four are C23 keywords, so they also pin -std=c11.
-probe_neg() { # <tag> <one line of C++>
+probe_neg() { # <tag> <one line of C++> <compiler argument>...
+  _tag="$1"
   printf '%s\n' "$2" > "$TMP/p/neg.h"
-  if compile_as_c neg.h "$TMP/p/neg.err"; then
-    fail "$CC accepts \`$1\`, which is C++ only, so this arm is blind to it: the compiler is
-      in the wrong mode or the -std=$CSTD in CFLAGS did not take"
+  shift 2
+  if compile_as_c neg.h "$TMP/p/neg.err" "$@"; then
+    fail "$CC accepts \`$_tag\`, which is C++ only, so this arm is blind to it: the compiler is
+      in the wrong mode or the -std=$KOS_C_STD in KOS_C_FLAGS did not take"
   fi
 }
-probe_neg namespace     'namespace kos_probe { }'
-probe_neg static_cast   'static inline unsigned f(unsigned v) { return static_cast<unsigned>(v); }'
-probe_neg nullptr       'static inline void* f(void) { return nullptr; }'
-probe_neg bool          'bool kos_probe_b(void);'
-probe_neg static_assert 'static_assert(1, "the C++ spelling");'
-probe_neg alignas       'struct s { alignas(8) unsigned char b[8]; };'
+probe_neg namespace     'namespace kos_probe { }' "$@"
+probe_neg static_cast   'static inline unsigned f(unsigned v) { return static_cast<unsigned>(v); }' "$@"
+probe_neg nullptr       'static inline void* f(void) { return nullptr; }' "$@"
+probe_neg bool          'bool kos_probe_b(void);' "$@"
+probe_neg static_assert 'static_assert(1, "the C++ spelling");' "$@"
+probe_neg alignas       'struct s { alignas(8) unsigned char b[8]; };' "$@"
 
-# Strictly conforming C11 and nothing else: a red at PEDFLAGS must never be the probe's own.
+# Strictly conforming C11 and nothing else: a red at KOS_C_PEDFLAGS must never be the probe's own.
 cat > "$TMP/p/ped_ok.h" <<'EOF'
 #include <stdint.h>
 _Static_assert(sizeof(uint32_t) == 4, "the C11 spelling");
 EOF
-compile_pedantic_c ped_ok.h "$TMP/p/ped_ok.err" || {
+compile_pedantic_c ped_ok.h "$TMP/p/ped_ok.err" "$@" || {
   sed -n '1,4p' "$TMP/p/ped_ok.err" >&2
-  fail "$CC refuses strictly conforming C11 at $PEDFLAGS, so every pedantic finding below
+  fail "$CC refuses strictly conforming C11 at $KOS_C_PEDFLAGS, so every pedantic finding below
       would be its own"
 }
 
 # Each is a GNU extension the first pass accepts, so the pedantic pass is the one that has to
 # reject it.
-probe_ped() { # <tag> <one line of GNU-extension C>
+probe_ped() { # <tag> <one line of GNU-extension C> <compiler argument>...
+  _tag="$1"
   printf '%s\n' "$2" > "$TMP/p/ped.h"
-  if ! compile_as_c ped.h "$TMP/p/ped.err"; then
+  shift 2
+  if ! compile_as_c ped.h "$TMP/p/ped.err" "$@"; then
     sed -n '1,4p' "$TMP/p/ped.err" >&2
-    fail "the first pass rejects \`$1\`, so it is no longer the extension-tolerant pass the
+    fail "the first pass rejects \`$_tag\`, so it is no longer the extension-tolerant pass the
       pedantic one is meant to sit beside"
   fi
-  if compile_pedantic_c ped.h "$TMP/p/ped.err"; then
-    fail "$CC accepts \`$1\` at $PEDFLAGS, which is a GNU extension and not ISO C11, so the
+  if compile_pedantic_c ped.h "$TMP/p/ped.err" "$@"; then
+    fail "$CC accepts \`$_tag\` at $KOS_C_PEDFLAGS, which is a GNU extension and not ISO C11, so the
       pedantic pass is blind to it and -pedantic-errors did not take"
   fi
 }
-probe_ped fixed_enum 'enum kos_probe_fe : unsigned { KOS_PROBE_FE = 0 };'
-probe_ped zero_array 'struct kos_probe_za { unsigned n; int v[0]; };'
+probe_ped fixed_enum 'enum kos_probe_fe : unsigned { KOS_PROBE_FE = 0 };' "$@"
+probe_ped zero_array 'struct kos_probe_za { unsigned n; int v[0]; };' "$@"
+
+kos_c_prove_missing_include "$TMP/p" "$@"
 
 # --- the selector -----------------------------------------------------------
 # The stripper blanks string literals as well as comments, so `extern "C"` survives it only
@@ -209,13 +218,13 @@ includes_of() { # <path> -> its angled include targets that are CODE
 
 # --- corpus: the guarded seeds, then the include closure -------------------
 : > "$TMP/seeds"
-for h in $(cd "$INC" && find kickos -name '*.h' | sort); do
+while IFS= read -r h; do
   c_facing "$INC/$h"
   case $? in
     0) printf '%s\n' "$h" >> "$TMP/seeds" ;;
     2) printf '%s\n' "$h" >> "$TMP/unstrippable" ;;
   esac
-done
+done < "$TMP/installed"
 # A file the stripper could not finish is UNKNOWN, not clean: it may be a C-facing header
 # this run never selected.
 if [ -s "$TMP/unstrippable" ]; then
@@ -249,7 +258,7 @@ CSEEDS=$(wc -l < "$TMP/seeds" | tr -d ' ')
 CADDED=$(wc -l < "$TMP/added" | tr -d ' ')
 CN=$(wc -l < "$TMP/ccorpus" | tr -d ' ')
 echo "== $CN C-facing installed header(s) of $n: $CSEEDS guard an extern \"C\" block, $CADDED reached by include =="
-echo "== compiled standalone with $CC ($("$CC" -dumpversion 2>/dev/null)) at $CFLAGS =="
+echo "== compiled standalone with $CC ($("$CC" -dumpversion 2>/dev/null)) at $KOS_C_FLAGS =="
 if [ -s "$TMP/added" ]; then
   echo "== in the C corpus by include only, not by a guard of their own =="
   sort "$TMP/added" | sed 's/^/   /'
@@ -261,7 +270,7 @@ fi
 : > "$TMP/crefused.err"
 sort "$TMP/ccorpus" > "$TMP/ccorpus.s"
 while IFS= read -r h; do
-  compile_as_c "$h" "$TMP/c.err"
+  compile_as_c "$h" "$TMP/c.err" "$@"
   case $? in
     0) ;;
     2) printf '%s\n' "$h" >> "$TMP/crefused"
@@ -289,7 +298,7 @@ fi
 : > "$TMP/pedbad"
 : > "$TMP/pedbad.err"
 while IFS= read -r h; do
-  if ! compile_pedantic_c "$h" "$TMP/ped.err"; then
+  if ! compile_pedantic_c "$h" "$TMP/ped.err" "$@"; then
     printf '%s\n' "$h" >> "$TMP/pedbad"
     { printf '%s\n' "$h"; sed -n '1,6p' "$TMP/ped.err"; } >> "$TMP/pedbad.err"
   fi
@@ -303,4 +312,4 @@ if [ -s "$TMP/pedbad" ]; then
       out of a shipped header, so write the ISO C11 spelling of what it needs."
 fi
 
-echo "PASS: $CN C-facing installed header(s) compile standalone at $CFLAGS, and at $PEDFLAGS"
+echo "PASS: $CN C-facing installed header(s) compile standalone at $KOS_C_FLAGS, and at $KOS_C_PEDFLAGS"

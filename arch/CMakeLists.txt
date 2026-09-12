@@ -23,7 +23,8 @@ endif()
 #   change which archive wins: a definition in a later archive is dropped when nothing else
 #   anchors its member, and is a multiple-definition error when something does. The order is
 #   kickos_kernel, kickos_chip_<chip>, kickos_arch_<arch> (_kickos_group in the root
-#   CMakeLists.txt); tests/static/check_link_scan_order.sh reads it back off the link map.
+#   CMakeLists.txt); tests/static/check_seam_defaults.sh reads it back off the link map before
+#   it reads which member resolved each seam.
 # Two rules follow, both enforced rather than restated. A fallback never shares an archive
 # with a backend for the same seam (leg 1 of check_seam_defaults.sh), so an arch's own
 # sources.cmake drops the members the backend in that archive defines. And an arch-neutral

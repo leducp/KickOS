@@ -51,25 +51,29 @@ preset  rv64imac qemu-riscv64-smp
 preset  x86_64   qemu-x86_64
 
 # --- the corpus floor ----------------------------------------------------------
-# A partial or interrupted build, or one compiled without -fcallgraph-info, finds no edge into
-# a panic and reports exactly what a clean tree reports; these figures are what makes that case
-# RED. They are LOWER BOUNDS with room under the measurement: a board that legitimately sheds a
-# translation unit must not go red, and a board that sheds a hundred must.
-floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured 116 .ci files and 931 nodes on 2026-08-29
-floor   armv8a   imx8mp-evk        files=90 nodes=700 reason: measured 121 .ci files and 975 nodes on 2026-09-02
-floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: the same board and route at four cores, the count reaching no console path
-floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: the same board and route at four cores with one isolated, placement reaching no console path
-floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: the same board and route at four cores, the interrupt controller reaching no console path
-floor   armv8a   qemu-arm64-amp    files=90 nodes=700 reason: the same board and route at four cores, one kernel core, the model reaching no console path
-floor   armv8a   qemu-arm64-amp2-n0 files=90 nodes=700 reason: the same board and route at one core, the partition posture reaching no console path
-floor   armv8a   qemu-arm64-amp2-n1 files=90 nodes=700 reason: the same board and route at one core, the node index reaching no console path
-floor   armv8a   qemu-arm64-amp3-n0 files=90 nodes=700 reason: the same board and route at one core, the partition's width reaching no console path
-floor   armv8a   qemu-arm64-amp3-n1 files=90 nodes=700 reason: the same board and route at one core, a middle node's index reaching no console path
-floor   armv8a   qemu-arm64-amp3-n2 files=90 nodes=700 reason: the same board and route at one core, the last node's index reaching no console path
-floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
-floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured 115 .ci files and 973 nodes on 2026-08-29
-floor   rv64imac qemu-riscv64-smp  files=90 nodes=700 reason: same board and arch as qemu-riscv64; the core count moves no console route
-floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured 119 .ci files and 907 nodes on 2026-08-29
+# SECONDARY, and exactly one record per declared preset. WHICH units a run walks is settled
+# against the build's own compile database: a tree missing one of them, or holding a .ci no
+# compile command of this build produces, is refused by name. What is left for a count to
+# catch is a tree whose compile database is ITSELF near empty, which agrees with its own
+# corpus at every step. So these are gross guards and not tripwires.
+#
+# EVERY FIGURE BELOW IS THAT PRESET'S OWN. A floor carried over from a sibling board reads as a
+# measurement and is an inference, and the two are indistinguishable once written down.
+floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1045 nodes on 2026-09-12
+floor   armv8a   imx8mp-evk        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1047 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1111 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp    files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1192 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp2-n0 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1182 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp2-n1 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1181 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp3-n0 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1182 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp3-n1 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1181 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-amp3-n2 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1181 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1081 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1081 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64-smp  files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1138 nodes on 2026-09-12
+floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured directly on this preset, 130 .ci files and 958 nodes on 2026-09-12
 
 # --- the route -----------------------------------------------------------------
 root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record entry, the only caller that passes route=true, so the delivery half of kvprintf_route runs inside it

@@ -444,6 +444,27 @@ arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
 preset  lx6 esp32-wroom
 preset  lx6 esp32-wroom-st
 preset  lx6 esp32-wroom-smp
+
+# --- the corpus floor ----------------------------------------------------------
+# SECONDARY, and exactly one record per arch. WHICH units a run measures is settled against
+# the build's own compile database: a tree missing one of them, or holding a .ci no compile
+# command of this build produces, is refused by name. What is left for a count to catch is a
+# tree whose compile database is ITSELF near empty, which agrees with its own corpus at every
+# step. So these are gross guards and not tripwires, and none sits within a few units of a
+# board that legitimately builds small.
+#
+# PER ARCH, not per preset, because the corpus is decided by what the image compiles and that
+# varies more ACROSS arches than within one: the measured spread is 99 files on rxv3 against
+# 158 on armv7m, while inside armv7m it is 107 to 158.
+#
+# EVERY RECORD NAMES ITS SCOPE. A minimum is only a minimum over the presets actually swept,
+# and a reason that does not say which they were cannot be told from one measured on a single
+# board that happened to be handy.
+floor   armv7m   files=85 nodes=600 reason: all 37 declared armv7m presets swept 2026-09-12; smallest 107 files on teensy41-flat and 815 nodes on bluepill-c8 and due, largest 158 files/1034 nodes on xmc4800-relax-bench
+floor   armv6m   files=85 nodes=600 reason: all 4 declared armv6m presets swept 2026-09-12; smallest 109 files/836 nodes on picopi-flat, largest 138 files/888 nodes on microbit
+floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swept 2026-09-12; smallest 99 files/830 nodes on esp32c6-wroom-flat, largest 134 files/969 nodes on esp32c6-wroom-st
+floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-09-12; smallest 99 files/852 nodes on rx72m-flat, largest 123 files/979 nodes on rx72m-st
+floor   lx6      files=75 nodes=650 reason: all 3 declared lx6 presets swept 2026-09-12; smallest 103 files/909 nodes on esp32-wroom, largest 123 files/1035 nodes on esp32-wroom-smp
 class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
 class   lx6 PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic
 root    lx6 PREEMPT kickos_lx6_dispatch_l1

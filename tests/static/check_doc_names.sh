@@ -12,9 +12,11 @@
 #
 #   corpus       every tracked *.md, discovered via `git ls-files`. Nothing is
 #                hardcoded, so moving a file into docs/archive/ neither hides it from
-#                the gate nor breaks the gate. Read with `grep -a`: M1_raw_meas.md
-#                holds raw serial captures with NUL bytes, and a checker that lets
-#                grep skip a "binary" file passes vacuously.
+#                the gate nor breaks the gate. Read one file at a time, its NUL bytes
+#                mapped to an ASCII control byte first and its lines numbered by awk:
+#                M1_raw_meas.md holds raw serial captures with NUL bytes, a checker that
+#                lets a tool skip a "binary" file passes vacuously, and the option that
+#                used to stop that is not one a conforming grep has.
 #
 #   fences       lines inside a ``` fence are SKIPPED. Design docs fence PROPOSED
 #                code and capture files fence device output; neither names the tree.
@@ -158,12 +160,28 @@ FNR == 1 {
     } else if (ctype == 2) {
         sub(/#.*/, "", line)
     }
-    print line
+    emit(line)
+}
+
+# The left boundary, spelled here rather than in the alphabet: `\b` is not a word boundary
+# in awk, where it reads as a backspace and the scan then matches nothing and says so calmly.
+# A match whose left neighbour is a name character is dropped whole, so KCAP_X never yields
+# its CAP_X tail.
+function emit(s,   p, pre) {
+    while (match(s, CORE)) {
+        p = RSTART
+        pre = ""
+        if (p > 1) { pre = substr(s, p - 1, 1) }
+        if (pre !~ /[A-Za-z0-9_]/) { print substr(s, p, RLENGTH) }
+        s = substr(s, p + RLENGTH)
+    }
 }
 AWK
 
-# The one alphabet, as one ERE, so the self-test and the corpus scan cannot disagree.
-ID_ERE='\b(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]'
+# The one alphabet, handed to the one scan, so the self-test and the corpus scan cannot
+# disagree. It is matched by awk and never by grep: -o and -h are no more standard than the
+# -a a capture's NUL bytes used to need, and a conforming grep rejects the lot.
+ID_CORE='(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]'
 
 # Refuses by name instead of reading less. xargs splits the list across SEVERAL awk
 # invocations, and awk exits FATALLY on a file it cannot open, dropping every remaining file
@@ -179,8 +197,8 @@ harvest_ids() { # <file-list> <outfile>; 0 ok, 1 a member went unread (named in 
         [ -r "$_f" ] || printf '%s\n' "$_f" >> "$TMP/unread"
     done < "$1"
     if [ ! -s "$TMP/unread" ]; then
-        tr '\n' '\0' < "$1" | xargs -0 awk -v SEEN="$TMP/seen" -f "$TMP/harvest.awk" \
-            2>"$TMP/harvest.err" | grep -aohE "$ID_ERE" | sort -u > "$2"
+        tr '\n' '\0' < "$1" | xargs -0 awk -v SEEN="$TMP/seen" -v CORE="$ID_CORE" \
+            -f "$TMP/harvest.awk" 2>"$TMP/harvest.err" | sort -u > "$2"
         # COVERAGE, the general form of the failure above: awk must have OPENED every
         # member. A count floor cannot tell a smaller tree from an unread batch; the
         # per-file marker can, and it names what was missed.
@@ -281,10 +299,21 @@ sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TM
 # One pass over the corpus. Output is file-ordered then line-ordered, so the
 # report is byte-identical across runs given the same tree.
 # =============================================================================
-# Two stages, not one pipe: under /bin/sh there is no pipefail, so `RC=$?` after a
-# pipeline sees only awk. A grep that cannot read a file would then feed awk short
-# input and the gate would report PASS on a corpus it never read.
-tr '\n' '\0' < "$TMP/docs.txt" | xargs -0 grep -an '' /dev/null > "$TMP/corpus.txt" 2>/dev/null
+# ONE FILE AT A TIME, EVERY STAGE'S STATUS READ: under /bin/sh there is no pipefail, so a
+# reader on the left of a pipe can die and leave the run reading the right-hand tool's
+# success. A short corpus and a short file look alike, and the gate would report PASS on
+# a corpus it never read.
+#
+# The name goes to awk through -v and never as an operand: awk reads an operand of the form
+# `name=value` as a VARIABLE ASSIGNMENT, and one doc named like an assignment would take
+# the rest of the list with it.
+: > "$TMP/corpus.txt"
+while IFS= read -r _d; do
+    LC_ALL=C tr '\000' '\001' < "$_d" > "$TMP/nulfree" \
+        || fail "cannot read $_d, so every name in it would be checked against nothing"
+    awk -v F="$_d" '{ print F ":" NR ":" $0 }' < "$TMP/nulfree" >> "$TMP/corpus.txt" \
+        || fail "the reader failed on $_d, so its lines are UNREAD and not clean"
+done < "$TMP/docs.txt"
 [ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s); extraction is broken"
 # Non-emptiness alone is satisfied by ONE readable doc: xargs splits the corpus into
 # several grep invocations and keeps going after one of them dies, so a doc the scan
@@ -299,7 +328,10 @@ while read -r d; do
 done < "$TMP/docs.txt"
 [ -z "$MISSED" ] || fail "the scan never read:$MISSED, so those were checked against nothing"
 
-awk -v T="$TMP" -v ABIH="$ABI" -F: '
+# THE REPORTING PASS, IN A FILE, BECAUSE IT IS DRIVEN TWICE: once over a planted corpus whose
+# findings are known, and once over the tree. Inline it could only ever be run over the tree,
+# and a regression in it would then be indistinguishable from a corpus with nothing wrong.
+cat > "$TMP/report.awk" <<'AWKEOF'
 function load(f, arr,   l) { while ((getline l < f) > 0) { arr[l] = 1 } close(f) }
 
 # Collapse "a/b/../c" and "a/./b". Leading ".." that escapes the root is left in
@@ -333,7 +365,7 @@ BEGIN {
   findings = 0
 }
 
-# grep -an prints "<file>:<lineno>:<text>"; -F: splits it, but the text may hold
+# The reader prints "<file>:<lineno>:<text>"; -F: splits it, but the text may hold
 # colons, so rebuild it from field 3 onward.
 {
   file = $1; lineno = $2 + 0
@@ -375,12 +407,18 @@ BEGIN {
     if (tail == "*" || tail == "_") { continue }                # wildcard family / bare prefix
     if (tok ~ /_[A-Za-z0-9]$/) { continue }                     # placeholder (CAP_X) / include guard (..._H)
 
-    singular = tok
-    sub(/s$/, "", singular)
-    if (singular in VALID_ID) { continue }                      # English plural of a real symbol
-
+    # THE PLURAL AND MIS-CASED FALLBACKS ONLY APPLY WHEN TOK ITSELF IS NOT ALREADY VALID.
+    # Nested inside that branch and not ahead of it: a bare `if (singular in VALID_ID)
+    # continue` fires on every EXACT match too (singular equals tok when tok has no
+    # trailing s), which would skip a live, correctly-spelled KOS_SYS_* name straight
+    # past the syscall-number check below and leave the reused-number case unreachable
+    # for the one spelling that matters most.
     name = tok
     if (!(tok in VALID_ID)) {
+      singular = tok
+      sub(/s$/, "", singular)
+      if (singular in VALID_ID) { continue }                    # English plural of a real symbol
+
       up = toupper(tok)
       if (!(up in VALID_ID)) {
         report(file, lineno, "identifier does not exist anywhere in the tree: " tok)
@@ -470,7 +508,173 @@ BEGIN {
 END {
   if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed; extraction cannot trust this file") }
   exit (findings > 0)
-}' < "$TMP/corpus.txt" > "$TMP/findings.txt"
+}
+AWKEOF
+
+# --- self-test: prove the reporting pass fires, before the tree is read -------
+# The harvest is proven above. This proves the half that REPORTS: a citation naming an
+# identifier or a path that does not resolve has to become a finding. Without it a green run
+# says only that the corpus was read, not that a dead citation would be seen.
+mkdir -p "$TMP/rt"
+printf '%s\n' KICKOS_RT_LIVE > "$TMP/rt/valid_ids.txt"
+printf '%s\n' docs kernel docs/rt.md kernel/rt_live.cc > "$TMP/rt/valid_paths.txt"
+printf '%s\n' docs kernel > "$TMP/rt/toplevel.txt"
+printf '%s\n' md cc > "$TMP/rt/exts.txt"
+printf '%s\n' 'KOS_SYS_RT 7' > "$TMP/rt/sysnum.txt"
+
+# The clean twin FIRST: two citations that resolve, so the dirty run below differs from it in
+# the two names alone and each finding is attributable to its own name.
+cat > "$TMP/rt/clean" <<'RTEOF'
+docs/rt.md:1:KICKOS_RT_LIVE is the knob
+docs/rt.md:2:the body is in kernel/rt_live.cc today
+RTEOF
+if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+        < "$TMP/rt/clean" > "$TMP/rt/clean.out"; then
+    cat "$TMP/rt/clean.out" >&2
+    fail "the reporting pass reports a finding on a planted corpus whose every citation
+      resolves, so every finding it makes against the tree is unattributable"
+fi
+
+cat > "$TMP/rt/dirty" <<'RTEOF'
+docs/rt.md:1:KICKOS_RT_GONE is the knob
+docs/rt.md:2:the body is in kernel/rt_gone.cc today
+RTEOF
+if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+       < "$TMP/rt/dirty" > "$TMP/rt/dirty.out"; then
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus citing the identifier KICKOS_RT_GONE
+      and the path kernel/rt_gone.cc, neither of which exists. It cannot report a dead
+      citation, which is the one thing this gate is for, so a green run over the tree
+      witnesses nothing."
+fi
+_rt_n="$(wc -l < "$TMP/rt/dirty.out" | tr -d " ")"
+[ "$_rt_n" -eq 2 ] \
+    || fail "the reporting pass made $_rt_n finding(s) on a planted corpus carrying exactly
+      one dead identifier and one dead path: $(cat "$TMP/rt/dirty.out")"
+grep -q "KICKOS_RT_GONE" "$TMP/rt/dirty.out" \
+    || fail "the reporting pass made two findings and neither names the dead identifier
+      KICKOS_RT_GONE: $(cat "$TMP/rt/dirty.out")"
+grep -q "kernel/rt_gone.cc" "$TMP/rt/dirty.out" \
+    || fail "the reporting pass made two findings and neither names the dead path
+      kernel/rt_gone.cc: $(cat "$TMP/rt/dirty.out")"
+
+# The pair above proves two of the reporting pass's clauses: the dangling identifier and the
+# dead path. The pass has FOUR more, each its OWN branch of the awk program and each reachable
+# only through its own input shape; a control that never takes one of those branches can be
+# disabled without a single self-test noticing. One clean/dirty pair per remaining clause,
+# below, closes that gap. Both files extend the same valid set the pair above used, so the
+# extension itself is proof against nothing shifting underneath the controls already run.
+printf '%s\n' KOS_SYS_RT >> "$TMP/rt/valid_ids.txt"
+printf '%s\n' docs/rt2.md >> "$TMP/rt/valid_paths.txt"
+
+# --- clause: MIS-CASED IDENTIFIER ----------------------------------------------
+# KICKOS_rt_live is not itself a tree symbol, but its upper-cased form is: the mis-cased
+# branch must fire instead of the dangling-identifier one, and name the correct spelling.
+printf '%s\n' 'docs/rt.md:1:KICKOS_RT_LIVE is spelled the way the tree defines it' \
+    > "$TMP/rt/case_clean"
+if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+        < "$TMP/rt/case_clean" > "$TMP/rt/case_clean.out"; then
+    cat "$TMP/rt/case_clean.out" >&2
+    fail "the reporting pass reports a finding on a correctly-cased citation of
+      KICKOS_RT_LIVE, so the mis-casing control below cannot be trusted either"
+fi
+printf '%s\n' 'docs/rt.md:1:KICKOS_rt_live is not spelled the way the tree defines it' \
+    > "$TMP/rt/case_dirty"
+if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+       < "$TMP/rt/case_dirty" > "$TMP/rt/case_dirty.out"; then
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus citing KICKOS_rt_live, whose
+      upper-cased form is a real tree symbol but whose own spelling greps for nothing.
+      The mis-casing branch can be disabled and no control would notice."
+fi
+grep -q "mis-cased" "$TMP/rt/case_dirty.out" \
+    || fail "the reporting pass flagged KICKOS_rt_live but not as mis-cased: $(cat "$TMP/rt/case_dirty.out")"
+grep -q "KICKOS_RT_LIVE" "$TMP/rt/case_dirty.out" \
+    || fail "the mis-casing finding does not name the tree's own spelling KICKOS_RT_LIVE:
+      $(cat "$TMP/rt/case_dirty.out")"
+
+# --- clause: SYSCALL NUMBER DISAGREEMENT ---------------------------------------
+# KOS_SYS_RT is both a live identifier and a number abi.h pins at 7. A doc quoting the
+# right number must stay silent; one quoting any other number is a stale citation of a
+# REUSED number, which is the dangerous case this clause exists for.
+printf '%s\n' 'docs/rt.md:1:KOS_SYS_RT = 7 today' > "$TMP/rt/sysnum_clean"
+if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+        < "$TMP/rt/sysnum_clean" > "$TMP/rt/sysnum_clean.out"; then
+    cat "$TMP/rt/sysnum_clean.out" >&2
+    fail "the reporting pass reports a finding on KOS_SYS_RT = 7, which agrees with
+      $ABI, so the disagreement control below cannot be trusted either"
+fi
+printf '%s\n' 'docs/rt.md:1:KOS_SYS_RT = 8 today' > "$TMP/rt/sysnum_dirty"
+if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+       < "$TMP/rt/sysnum_dirty" > "$TMP/rt/sysnum_dirty.out"; then
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus quoting KOS_SYS_RT = 8 where
+      $ABI pins it at 7. A doc can quote the WRONG number for a live syscall, which is a
+      reused number naming the wrong one, and no control would notice this clause going
+      dark."
+fi
+grep -q "syscall number disagrees" "$TMP/rt/sysnum_dirty.out" \
+    || fail "the reporting pass flagged KOS_SYS_RT = 8 but not as a number disagreement:
+      $(cat "$TMP/rt/sysnum_dirty.out")"
+
+# --- clause: UNBALANCED FENCE ---------------------------------------------------
+# A ``` opened and never closed has to be reported on its OWN opening line, not silently
+# swallowed as "the rest of the file is fenced". The state machine's correctness rests on
+# this firing; nothing else in this gate would catch a stuck fence.
+cat > "$TMP/rt/fence_clean" <<'RTEOF'
+docs/fence.md:1:```
+docs/fence.md:2:proposed code, not a citation
+docs/fence.md:3:```
+RTEOF
+if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+        < "$TMP/rt/fence_clean" > "$TMP/rt/fence_clean.out"; then
+    cat "$TMP/rt/fence_clean.out" >&2
+    fail "the reporting pass reports a finding on a balanced fence, so the unbalanced-fence
+      control below cannot be trusted either"
+fi
+cat > "$TMP/rt/fence_dirty" <<'RTEOF'
+docs/fence.md:1:```
+docs/fence.md:2:never closed
+RTEOF
+if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+       < "$TMP/rt/fence_dirty" > "$TMP/rt/fence_dirty.out"; then
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus whose lone fence opens on line 1
+      and never closes. Every line under it is skipped as fenced code, so a dangling
+      citation inside it would read as PROPOSED, not live, and this clause is the only
+      thing that can say the fence itself is broken."
+fi
+grep -q "unbalanced .* fence" "$TMP/rt/fence_dirty.out" \
+    || fail "the reporting pass did not name the unbalanced fence: $(cat "$TMP/rt/fence_dirty.out")"
+
+# --- clause: RELATIVE (../) PATH NORMALIZATION ----------------------------------
+# A doc under docs/sub/ citing ../rt2.md means docs/rt2.md, and that has to resolve
+# without a finding; the same doc citing ../rt2_missing.md means docs/rt2_missing.md,
+# which does not exist, and that has to become one. Collapsing the ".." wrong breaks
+# either direction silently: it either flags every good relative link or clears every
+# bad one, and only testing BOTH tells which.
+printf '%s\n' 'docs/sub/x.md:1:see ../rt2.md for details' > "$TMP/rt/norm_clean"
+if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+        < "$TMP/rt/norm_clean" > "$TMP/rt/norm_clean.out"; then
+    cat "$TMP/rt/norm_clean.out" >&2
+    fail "the reporting pass reports a finding on ../rt2.md from docs/sub/x.md, which
+      normalizes to the tracked docs/rt2.md, so the broken-relative-link control below
+      cannot be trusted either"
+fi
+printf '%s\n' 'docs/sub/y.md:1:see ../rt2_missing.md for details' > "$TMP/rt/norm_dirty"
+if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+       < "$TMP/rt/norm_dirty" > "$TMP/rt/norm_dirty.out"; then
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus whose ../rt2_missing.md, cited from
+      docs/sub/y.md, normalizes to docs/rt2_missing.md, which is not tracked. Relative
+      normalization can be disabled and no control would notice."
+fi
+grep -q "rt2_missing.md" "$TMP/rt/norm_dirty.out" \
+    || fail "the reporting pass did not name the unresolved ../rt2_missing.md:
+      $(cat "$TMP/rt/norm_dirty.out")"
+
+echo "== control: the reporting pass finds the planted dead identifier and dead path, and
+   nothing in their resolving twins; and each of mis-casing, syscall number disagreement,
+   an unbalanced fence and a broken ../ link fires on its own planted dirty twin and stays
+   silent on its clean one =="
+
+awk -v T="$TMP" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
+    < "$TMP/corpus.txt" > "$TMP/findings.txt"
 RC=$?
 
 echo "== checked $DOCS doc file(s) against $IDS tree identifier(s) and $(wc -l < "$TMP/valid_paths.txt" | tr -d ' ') tracked path(s) =="

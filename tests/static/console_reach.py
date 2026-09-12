@@ -3,7 +3,8 @@
 #
 # Reachability-only clause on the fault-record console route: no kpanic from kvprintf_route. It
 # walks the callgraph tests/static/trap_redzone.py builds, out of the .ci files
-# gcc -fcallgraph-info=su,da leaves next to every object, importing that module.
+# gcc -fcallgraph-info=su,da leaves next to every object, importing that module. The corpus is
+# that module's too: the units of the build's own compile database, and no other.
 #
 # From the declared roots, following direct edges and the indirect edges bound in the bindings
 # file, no path reaches kpanic or kpanic_at.
@@ -34,6 +35,8 @@ class Decl(object):
         self.witnesses = []               # [(symbol, reason)]
         self.forbid = []                  # [(symbol, optional, reason)]
         self.opaque = collections.OrderedDict()   # symbol -> reason
+        seen_preset = set()                       # (arch, preset) over the whole file
+        floor_at = {}                             # (arch, preset) -> where its floor is
         for n, f, reason in tz.records(path):
             where = '%s:%d' % (path, n)
             kind = f[0]
@@ -42,15 +45,15 @@ class Decl(object):
             if kind == 'preset':
                 if len(f) != 3:
                     die('%s: preset wants <arch> <configure-preset>' % where)
+                seen_preset.add((f[1], f[2]))
                 if f[1] == arch:
                     self.presets.append(f[2])
                 continue
             if kind == 'floor':
-                if len(f) != 5:
-                    die('%s: floor wants <arch> <preset> files=<n> nodes=<n>' % where)
-                if reason is None:
-                    die('%s: floor carries no "reason:"; a figure with no measurement behind'
-                        ' it is a guess this clause would then trust' % where)
+                # Checked for every preset, not just this run's: a later record REPLACES an
+                # earlier one, so a duplicate has to be refused by whichever preset happens to
+                # be measured or the board it disarms is the one board that cannot report it.
+                self._check_floor(where, f, reason, floor_at)
                 if f[1] != arch or f[2] != preset:
                     continue
                 self.floor_files = self._number(where, f[3], 'files=')
@@ -92,10 +95,37 @@ class Decl(object):
             die('%s declares no floor record for %s/%s. Without one the clause reports the'
                 ' same clean answer over a full build and over an empty directory'
                 % (path, arch, preset))
+        for other in sorted(seen_preset - set(floor_at)):
+            die('%s declares preset %s for arch %s and no floor record for it, so that board'
+                ' runs with no corpus floor at all' % (path, other[1], other[0]))
+        for other in sorted(set(floor_at) - seen_preset):
+            die('%s: %s declares a floor for %s/%s, which is no declared preset here; the'
+                ' record bounds nothing'
+                % (path, floor_at[other], other[0], other[1]))
         for name, got in (('root', self.roots), ('witness', self.witnesses),
                           ('forbid', self.forbid)):
             if not got:
                 die('%s declares no %s record for arch %s' % (path, name, arch))
+
+    @staticmethod
+    def _check_floor(where, f, reason, seen):
+        """One floor record, whatever arch and preset it names."""
+        if len(f) != 5:
+            die('%s: floor wants <arch> <preset> files=<n> nodes=<n>' % where)
+        if reason is None:
+            die('%s: floor carries no "reason:"; a figure with no measurement behind'
+                ' it is a guess this clause would then trust' % where)
+        if (f[1], f[2]) in seen:
+            die('%s: floor for %s/%s is declared a second time, the first at %s. The later'
+                ' record wins, so a floor can be lowered or disarmed without the measured'
+                ' line being touched or even read'
+                % (where, f[1], f[2], seen[(f[1], f[2])]))
+        seen[(f[1], f[2])] = where
+        for field, key in ((f[3], 'files='), (f[4], 'nodes=')):
+            if Decl._number(where, field, key) < 1:
+                die('%s: floor %s is not a positive count. A corpus of nothing clears a floor'
+                    ' of zero or less, which is the one case the floor exists to refuse'
+                    % (where, field))
 
     @staticmethod
     def _number(where, field, key):
@@ -221,6 +251,9 @@ def run(argv):
           % (arch, preset, graph.files, len(graph.dropped), nodes, len(graph.all_sites())))
 
     # --- the corpus floor, before anything is asserted about an absence ---------
+    # SECONDARY: building the graph above already refused a tree that is missing a unit this
+    # build compiled or holds one it did not. What is left for a count is a tree whose compile
+    # database is itself near empty, which agrees with its own corpus at every step.
     if graph.files < decl.floor_files:
         die('CORPUS FLOOR: %d .ci file(s) under %s, and %s declares a floor of %d for %s/%s.'
             ' This is a partial or interrupted build, not a clean route: the walk below would'

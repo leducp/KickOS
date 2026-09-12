@@ -47,7 +47,8 @@ further down: it binds every tracked file.
   in C, and it is `#ifndef __cplusplus` inside, so an `#ifdef __cplusplus` around the include
   would guard nothing. A freestanding C implementation must provide it, so no backend lacks it.
   There is therefore no reason to split a condition into nested ifs to keep a header C-valid.
-- **`while (true)`**, never `for (;;)`. **gated**
+- **`while (true)`**, never `for (;;)`. **gated** by `tests/static/check_ternary.sh`, which
+  reads the same comment-stripped residue the ternary rule above is read from.
 - **Traditional include guards**, never `#pragma once`. The macro derives from the project prefix
   plus the file path. **gated**
 - **Fixed-width C99 types**: `uint8_t`, `int32_t`, `size_t`. Avoid `long`, `short` and bare
@@ -160,9 +161,11 @@ further down: it binds every tracked file.
 ## Corpus
 
 - **ASCII only**, in every tracked file. A comma or a single `-` for an em dash, `->` not an arrow,
-  straight quotes, "section" spelled out. **gated**
+  straight quotes, "section" spelled out. **gated** `tests/static/check_ascii.sh`
 - **SPDX header** within the first five lines, with the copyright line beside it. **gated**
-- No trailing whitespace, no CRLF, a final newline. **gated**
+- No trailing whitespace, no CRLF, a final newline, no space immediately before a tab in a
+  line's indent, no blank line at end of file. **gated** by `tests/static/check_ascii.sh`,
+  which walks every tracked file once for the byte rule above and these five line classes.
 - `set -u` in a gate script.
 
 ## Comments

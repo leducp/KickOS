@@ -893,6 +893,7 @@ is the next one's baseline.
 | M8.5.1 | what M8.5 measured and left: the budget made to bind per kind, the window priced and declined, the reporter narrowed, and the package read from outside on every arch |
 | M8.6 | DRY in the build, the gate library and userspace |
 | M8.6.1 | the console's unit of atomicity becomes a LINE, and every chip gets a ring |
+| M8.6.2 | the static gate corpus audited: the suspicion that it was mostly dead weight, measured and answered |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
 | M8.9 | the IPC structure: the reserved reply slot, and the fused reply-receive |
@@ -1146,7 +1147,10 @@ Both follow from what the two later phases rest on. A DRY pass is exactly the ch
 gate is supposed to catch, and seventeen `tests/static` gates have no positive control -- no
 planted violation the detector must fire on every run -- so they cannot be shown to fire at all.
 Those controls are worth more before the refactor than after it, and the seventeen are named in
-`TODO.md` rather than counted here, a denominator moving every time a gate lands. And P0 is a
+`TODO.md` rather than counted here, a denominator moving every time a gate lands.
+**THAT FIGURE WAS OVERTAKEN AND M8.6.2 RE-DERIVED IT: sixty of 68 gates carry a control, so eight
+lack one and not seventeen.** The number moved because M8.4 added controls and because a gate
+that HAS one is not the same as a gate whose control can fire, which only a mutation shows. And P0 is a
 measurement campaign rather than a repair: the rv32 bracket excludes the save and restore that the
 switch column claims to contain, and the phase table's composite correction is arithmetic on the
 instrument rather than on the kernel. Repairing the instrument inside the campaign would make the
