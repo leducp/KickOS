@@ -4773,8 +4773,8 @@ board's own map is entirely below 4 GiB. Read a `56 PA bits` in a dated step rec
 that step measured, not as what a re-run answers.
 *WHY EACH BOARD MOVED, stated here once rather than by rewriting twenty dated measurements.* THREE
 changes are FLEET-WIDE and lift every board by one each: `tests/static/check_shell_special_names.sh`,
-the entry seam differ and, on 2026-08-29, `tests/static/check_whitespace.sh`, each
-registered unconditionally under the `host` label. TWO more are BOARD-LOCAL and landed the same day:
+the entry seam differ and, on 2026-08-29, the `whitespace` gate whose classes now sit in
+`tests/static/check_ascii.sh`, each registered unconditionally under the `host` label. TWO more are BOARD-LOCAL and landed the same day:
 five `qemu_arm64_panicgate` arms, which take `qemu-arm64` from 35 to 40 before the fleet-wide one,
 and two x86_64 static gates, which take `qemu-x86_64` from 34 to 36 before it. The RV64 total moved
 only by that fleet-wide gate and its COMPOSITION moved without it:

@@ -98,6 +98,7 @@ for dc in "$SRC"/boards/*/configs/*/defconfig; do
     gen "$dc" "$out" || fail "$dc was refused: $(cat "$out.err")"
     frag="$out/kickos_config.cmake"
     [ -s "$frag" ] || fail "$dc generated no $frag"
+    [ -s "$out/include/kickos/board_config.h" ] || fail "$dc generated no board_config.h"
     # The separator spelled through $TAB, not as an invisible literal an editor can eat.
     tool_out "$out.want" "^KICKOS_BOARD${TAB}set\(KICKOS_BOARD \"" \
              "$PY" "$TMP/want.py" "$SRC" "$out/.config"

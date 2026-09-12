@@ -24,6 +24,10 @@
 # 0 only, before anything is pinned and before core 1 is launched. That call site is read by a
 # person, not by this gate.
 
+# NOT APPLICABLE EXITS 77, WHICH IS CTEST'S SKIP. The registration carries SKIP_RETURN_CODE 77
+# or the skip reads as a failure. Exit 0 here would report a green this gate did not earn on
+# every rp2350 preset outside the own-image posture.
+
 set -eu
 here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
@@ -34,19 +38,45 @@ SRC="${2:?}"
 CFG="$BUILD/generated/.config"
 [ -f "$CFG" ] || fail "no resolved Kconfig at $CFG"
 
-# Read the posture from the RESOLVED configuration, not from a preset name.
-own="$(sed -n 's/^CONFIG_KICKOS_AMP_OWN_IMAGE=\(.*\)$/\1/p' "$CFG" | tail -1)"
-if [ "${own:-0}" != "1" ]; then
+# Read the posture from the RESOLVED configuration, not from a preset name. KICKOS_AMP_OWN_IMAGE
+# is an int symbol with exactly two defaults (1 or 0), so a resolved .config always carries
+# exactly one line spelling one of those; a missing, duplicated or otherwise malformed line is
+# not "posture off", it is a .config this gate cannot trust, and a chip that can lose a pinned
+# line must not earn a skip on that account.
+own_n="$(grep -c '^CONFIG_KICKOS_AMP_OWN_IMAGE=' "$CFG" || true)"
+[ "$own_n" -eq 1 ] \
+    || fail "$CFG carries $own_n CONFIG_KICKOS_AMP_OWN_IMAGE line(s), expected exactly 1; a
+  resolved Kconfig always has one, and a missing or duplicated one must not read as this
+  gate not applying"
+own="$(sed -n 's/^CONFIG_KICKOS_AMP_OWN_IMAGE=\(.*\)$/\1/p' "$CFG")"
+case "$own" in
+    0|1)
+        ;;
+    *)
+        fail "$CFG's CONFIG_KICKOS_AMP_OWN_IMAGE is '$own', neither of the two values this
+  int symbol ever resolves to; a broken .config must not read as posture off"
+        ;;
+esac
+if [ "$own" = "0" ]; then
     echo "SKIP: not the own-image AMP posture, so no peer kernel can lose a pinned line"
-    exit 0
+    exit 77
 fi
 
 # And the chip, for the same reason: a chip whose cache is partitionable, or which has none,
-# is not this hazard.
-chip="$(sed -n 's/^CONFIG_KICKOS_CHIP="\(.*\)"$/\1/p' "$CFG" | tail -1)"
-if [ "${chip:-}" != "rp2350" ]; then
-    echo "SKIP: chip is '${chip:-unset}', and the shared XIP cache this refuses is the RP2350's"
-    exit 0
+# is not this hazard, but a missing, duplicated or malformed chip string is not that either.
+# COUNTED BEFORE IT IS SHAPED: the counting pattern requires only the "=", never the opening
+# quote, or a well-formed line beside a malformed duplicate assignment of the same symbol
+# counts as the ONE valid line and the duplicate is never seen at all.
+chip_n="$(grep -c '^CONFIG_KICKOS_CHIP=' "$CFG" || true)"
+[ "$chip_n" -eq 1 ] \
+    || fail "$CFG carries $chip_n CONFIG_KICKOS_CHIP=... line(s), expected exactly 1"
+chip="$(sed -n 's/^CONFIG_KICKOS_CHIP="\(.*\)"$/\1/p' "$CFG")"
+[ -n "$chip" ] \
+    || fail "$CFG's CONFIG_KICKOS_CHIP is empty or unterminated, which is not a chip this
+  gate can rule applicable or not"
+if [ "$chip" != "rp2350" ]; then
+    echo "SKIP: chip is '$chip', and the shared XIP cache this refuses is the RP2350's"
+    exit 77
 fi
 
 cd "$SRC" || fail "cannot enter $SRC"

@@ -324,7 +324,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
   `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe`, `qemu_arm64_fp_switch` and, since 2026-08-29,
   `qemu_arm64_panicgate1` through `qemu_arm64_panicgate5`; plus the `host`-labelled gates every
-  build tree registers, one of which is the fleet-wide `whitespace` gate and one `console_reach`,
+  build tree registers, one of which is the fleet-wide `ascii` gate and one `console_reach`,
   registered on the translating presets only. A full run read 42 of 42 on this tree on 2026-08-29.
 - **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips**, over 134 arms
   (re-derived 2026-08-29, the plan line reading `1..134`). The partial is

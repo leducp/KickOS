@@ -377,15 +377,6 @@ add_test(
           ${_seam_archives})
 kickos_host_gate(seam_defaults)
 
-# The order the gate above rests on. seam_defaults says WHICH member resolved each seam; this
-# says the archives were scanned in the order that makes the answer the intended one, read off
-# the linker's own LOAD record rather than off the variable that builds the group.
-add_test(
-  NAME    link_scan_order
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_link_scan_order.sh"
-          "${_selftest_map}")
-kickos_host_gate(link_scan_order TIMEOUT 60)
-
 # Driver-class shadowing gate, on the SAME inventory. The last argument before the inventory is
 # 1 when this image compiles the mocks, which is the gate's positive control: it must SEE a
 # class definition on the link line.

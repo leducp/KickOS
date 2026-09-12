@@ -150,9 +150,104 @@ corpus_all() { # <outfile>
     corpus "$1" "tracked file"
 }
 
+# WHAT COUNTS AS A SOURCE, in one list, because a spelling missing from it takes its file
+# out of every gate built on this corpus at once and takes the corpus figure DOWN by one,
+# which reads like an ordinary deletion. The compiled spellings are the ones CMake hands to
+# a compiler; the rest are the include-only spellings, which no compiler names and every
+# gate still wants. `m`, `M` and `mm` are here because CMake gives them to the C and C++
+# compilers in a tree that enables neither Objective-C nor Objective-C++, which this one
+# does not: the driver refuses them further down, and a gate that never read them would have
+# said nothing either way.
+KOS_SOURCE_EXT='c m cc cpp cxx c++ C M CPP mm ixx cppm ccm cxxm c++m mpp
+                h hh hpp hxx h++ inc inl ipp tpp tcc h.in
+                S s asm'
+
+# CMAKE'S OWN ANSWER, NOT A COPY OF IT, because a control planting the list it is checking
+# proves only that git still globs. These three files are where CMake keeps the extension
+# sets it dispatches on, and reading them is what lets this refuse a spelling the list has
+# never heard of.
+KOS_CMAKE_EXT_FILES='Modules/CMakeCCompiler.cmake.in
+                     Modules/CMakeCXXCompiler.cmake.in
+                     Modules/CMakeASMInformation.cmake'
+
+cmake_source_ext() { # <outfile>
+    command -v cmake >/dev/null 2>&1 \
+        || fail "cmake is not on PATH, so the source corpus cannot be checked against the
+      extension sets it is supposed to cover"
+    # message() writes to stderr under -P, and a warning of its own would arrive on the same
+    # stream, so the answer carries a marker rather than being taken for the first line.
+    printf 'message("KOSROOT=${CMAKE_ROOT}")\n' > "$TMP/cmakeroot.cmake"
+    cmake -P "$TMP/cmakeroot.cmake" > "$TMP/cmakeroot" 2>&1 \
+        || fail "cmake could not name its own module directory"
+    sed -n 's/^KOSROOT=//p' "$TMP/cmakeroot" > "$TMP/cmakeroot.v" \
+        || fail "cannot read the module directory cmake named"
+    require_nonempty "$TMP/cmakeroot.v" "cmake named no module directory, so the extension
+      sets below would read as empty and every omission would pass"
+    read -r _cr < "$TMP/cmakeroot.v" || fail "cmake named no module directory"
+    : > "$1"
+    for _cf in $KOS_CMAKE_EXT_FILES; do
+        [ -r "$_cr/$_cf" ] || fail "$_cr/$_cf is unreadable, so the extension set it carries
+      would read as empty and every omission below would pass"
+        sed -n 's/^[[:space:]]*set(CMAKE_[A-Za-z_${}]*_SOURCE_FILE_EXTENSIONS[[:space:]][[:space:]]*\([^)]*\)).*/\1/p' \
+            "$_cr/$_cf" > "$TMP/extline" || fail "cannot read the extension set out of $_cf"
+        require_nonempty "$TMP/extline" "$_cf names no extension set, so a compiled spelling
+      missing from the corpus would pass unnoticed"
+        tr ';' '\n' < "$TMP/extline" >> "$1" || fail "cannot split the extension set of $_cf"
+    done
+    sort -u "$1" > "$1.s" || fail "cannot order the extension sets"
+    mv "$1.s" "$1" || fail "cannot replace the extension list"
+}
+
+# The list decides the corpus, so it is exercised against a planted tree before it is
+# trusted: one file per spelling CMake compiles, one per spelling this list adds, and three
+# names that must not be selected.
+ctl_source_ext() { # <pathspec>...
+    _ce="$TMP/srcext"
+    rm -rf "$_ce"
+    mkdir -p "$_ce" || fail "cannot create the tree the source list is proven against"
+    git -C "$_ce" init -q || fail "cannot init the tree the source list is proven against"
+    cmake_source_ext "$TMP/cmake_ext"
+    while IFS= read -r _e; do
+        : > "$_ce/planted.$_e"
+    done < "$TMP/cmake_ext"
+    for _e in $KOS_SOURCE_EXT; do
+        : > "$_ce/planted.$_e"
+    done
+    for _e in md txt cmake; do
+        : > "$_ce/prose.$_e"
+    done
+    git -C "$_ce" add -f -A . >/dev/null 2>&1 \
+        || fail "cannot stage the tree the source list is proven against"
+    # check_dash_punct.sh reads an option separator structurally and sees none behind a -C.
+    GIT_DIR="$_ce/.git" GIT_WORK_TREE="$_ce" git ls-files -- "$@" > "$_ce/selected" \
+        || fail "git ls-files failed on the tree the source list is proven against"
+    while IFS= read -r _e; do
+        grep -Fxq -e "planted.$_e" "$_ce/selected" \
+            || fail "CMake compiles a .$_e and the source corpus does not select one, so a
+      file the tree builds would leave every gate at once"
+    done < "$TMP/cmake_ext"
+    for _e in $KOS_SOURCE_EXT; do
+        grep -Fxq -e "planted.$_e" "$_ce/selected" \
+            || fail "the source corpus does not select a .$_e file, so every gate built on it
+      reads one as absent rather than clean"
+    done
+    for _e in md txt cmake; do
+        if grep -Fxq -e "prose.$_e" "$_ce/selected"; then
+            fail "the source corpus selects a .$_e file, so every gate built on it reads
+      prose as a source"
+        fi
+    done
+}
+
 corpus_sources() { # <outfile>
-    corpus "$1" "C/C++ or assembler source" \
-        '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S'
+    _cs="$1"
+    [ -n "${TMP:-}" ] || fail "corpus_sources needs scratch_dir first"
+    set --
+    for _e in $KOS_SOURCE_EXT; do
+        set -- "$@" "*.$_e"
+    done
+    ctl_source_ext "$@"
+    corpus "$_cs" "C/C++ or assembler source" "$@"
 }
 
 corpus_headers() { # <outfile>
@@ -436,6 +531,11 @@ poll_image() { # <elf> <ere>...
     kos_trap
     _n=0
     POLL_ALIVE=1
+    # EIGHT, WHERE run_image TAKES TWENTY, AND THE TWO ARE NOT INTERCHANGEABLE. A gate that
+    # polls spends this whole bound before it reports no progress, and two of them register
+    # their sim arm at a ctest TIMEOUT of 15 (tests/integration/gates/rootfault.cmake and
+    # mpu_fault.cmake). At twenty ctest kills those at 15 instead, and a reported "the poll
+    # ran out" becomes a timeout carrying no finding. Raise the registered bounds first.
     while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
         if _poll_matched "$_log" "$@" && _poll_until; then
             break

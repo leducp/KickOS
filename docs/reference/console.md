@@ -229,12 +229,13 @@ i.MX RT1062, SAM3X, RX72M, ESP32, ESP32-C6, and the sim); three illustrative one
   and empties -- host stdout never blocks, so without it the ring would drain in one
   shot. `arch/sim/sim.cc`.
 
-A chip's TX IRQ-line number is a HW-confirm item (a wrong line silently never drains --
-the ring fills and everything falls back to the bounded sync path, so it *looks* like it
-works). The buffered drain is **silicon-validated** on the XMC4800, ESP32-C6, and K64F (a
-full selftest streamed in-order over the armed ring). The **sim's backend** additionally
-exercises the full ring -- producer, publish+prime, async drain ISR, wrap, and
-overflow -- in-tree under `ctest`, which is what a sync-path-only run cannot cover.
+A chip's TX IRQ-line number is a HW-confirm item (a wrong line never drains -- the ring
+fills, every line after it is refused, and the console goes dark a few lines into the
+boot, with no diagnostic naming the line). The buffered drain is **silicon-validated** on
+the XMC4800, ESP32-C6, and K64F (a full selftest streamed in-order over the armed ring).
+The **sim's backend** additionally exercises the full ring -- producer, publish+prime,
+async drain ISR, wrap, and overflow -- in-tree under `ctest`, which is what a
+sync-path-only run cannot cover.
 
 ## Boot ordering
 

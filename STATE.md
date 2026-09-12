@@ -2416,6 +2416,75 @@ case and not the wrong-number case: nothing derives the figure from the driver t
 `frdmk64f` and `xmc4800relax` retain TWO each against a default budget of three, so both sit one
 slot from their ceiling; that is recorded and not fixed, a budget being a board decision.
 
+## M8.6.1: the console's unit of atomicity, and what these green runs do NOT say
+
+**THE RATE THAT JUSTIFIED TAKING THIS FROM M9 WAS RIGHT AND ITS ATTRIBUTION WAS WRONG.** The
+tear was briefed as measured serially and with no load, about seven runs in thirty on
+`qemu-riscv64-smp`. Re-measured, an idle serial run tore ZERO times in thirty; the same thirty
+under twenty-four spinners tore seven. The figure was never the problem, the premise under it
+was, and the same number would have been read as a flake by anyone who reproduced it the way it
+was described.
+
+**THE HONEST ORDER OF THE FIX IS NOT THE ORDER THE MILESTONE'S TITLE SUGGESTS: THE LOCKED WRITER
+FIXED THE TEAR, AND THE RINGS BUY THE MASKED-WINDOW SHAPE.** A line copied whole under one lock
+is what makes two cores interleave lines instead of bytes. Giving every chip a ring is what keeps
+that lock from spanning a transmission, and it is worth having for that reason -- but a reader of
+the diff would conclude the rings did the work, and they did not.
+
+**FOUR EXTERNAL PASSES, AND EACH FOUND WHAT THE PREVIOUS FIX HAD OPENED.** A flush on refusal,
+reached for because the function already existed, cost a 44 ms masked span holding the kernel
+lock at 115200 baud. Taking the ring tail before the unlocked push removed a duplicate byte and
+opened a priming race, the ring reading empty while a byte is in flight. And the witness arm for
+that race, seated on the drain's FIRST push, could not fire at all; seated on the LAST push it
+discriminates depth two from depth one. **A fix that closes a race is not evidence until the arm
+proving it is seated where the race actually is.**
+
+**WHAT THESE RUNS DO NOT WITNESS.** No silicon ran, on any board, for any part of this. The ESP32
+transmit-latch acknowledgement -- the one change that answers a real interrupt storm -- is held up
+by a source gate and by nothing executing. The i.MX8MP has the hardware in this building and was
+not booted. What ran is the sim, `qemu-riscv64-smp`, `esp32-wroom-smp` as a build, microbit, and
+the tree gates.
+
+**THE USERSPACE CHUNK BOUND IS STILL 64 BYTES AND THAT IS A DECISION, NOT AN OVERSIGHT.** The
+syscall splits a line into 64-byte inserts, so a longer line is several inserts and several lines
+in the ring; 54 of the selftest's 240 TAP lines exceed 64 bytes. The buffer is deliberately
+`noinline` so it does not widen the dispatch frame, which is the constraint any widening has to
+answer. A short write is REPORTED and the caller decides -- waiting is a user decision and the
+kernel console is a debug facility -- so the remaining work is a measurement about frame budget,
+carried as an M8.11 item and not a correctness debt.
+
+## M8.6.2: the gate corpus audited, then audited again, and what these green runs do NOT say
+
+**THE SUSPICION THAT DROVE THE MILESTONE WAS MEASURED AND DISPROVED, WHICH IS THE RESULT WORTH
+KEEPING.** Three gates of 68 rest on a third party's verdict, and in two of those the SELECTOR is
+ours and is the load-bearing half. Sixty of 68 carry a positive control. The corpus shrank to 65
+files, and every fold was taken because it bought the pair a control neither had, never because
+two scripts looked alike.
+
+**THEN AN EXTERNAL PASS FOUND SIX HIGH FINDINGS IN THE CONSOLIDATION ITSELF, AND THE RATES ARE
+THE PART A COMMAND WILL NOT RE-DERIVE.** Omitting one translation unit at a time from a warm
+tree, the red-zone walk stayed green through 98 of 151 omissions and `console_reach` through 116
+of 139, the fault path's own unit among them. Both read whatever `.ci` files lay in a scratch
+directory; both are now keyed to the build's own compile database. The floors that were supposed
+to catch this sat 20-35% under the true minima, except one that sat EIGHT units under a real
+board.
+
+**THE ONE SENTENCE TO CARRY FORWARD: A CONTROL MUST RUN THE READER'S OWN FORM, OPTIONS INCLUDED.**
+The byte walk's control ran `grep -q` where its reader ran `grep -a`, so a grep rejecting the
+reader's option left the gate printing a full-size corpus over an unread tree. The same shape
+appeared in a plant that only gawk refuses, leaving the arm dead under the default awk of the
+commonest CI image. Neither was visible to anything but a planted violation.
+
+**WHAT THE GREEN FLEET DOES NOT SAY.** A sweep proves the gates RUN and that nothing regressed
+where a verdict was already being produced; it says nothing about detection power except where a
+mutation was planted, and the milestone before this one left fifty-nine idioms resting on
+byte-identical output rather than on a re-proved catch. The portability fixes are proved against
+STUB tools that reject a specific option, not against a genuinely POSIX host, so "runs on a
+conforming grep" is an argued claim with a targeted witness and not a measured one. And the
+numeric floors, now demoted to a gross-partial-build guard, are still declared from seven presets
+of 54: a preset legitimately smaller than its arch minimum would be a FALSE RED rather than a
+missed catch.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

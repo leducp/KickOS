@@ -73,8 +73,9 @@ CC="${1:-}"
 shift
 command -v "$CC" >/dev/null 2>&1 || fail "not an executable C compiler: $CC"
 
-CFLAGS="-std=c11 -ffreestanding -fsyntax-only"
-PEDFLAGS="$CFLAGS -pedantic-errors"
+KOS_C_FORM=quoted
+KOS_C_CC="$CC"
+. "$(dirname "$0")/../lib/c_probe.sh"
 
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
 [ -r "$STRIP" ] || fail "tests/lib/strip_comments.awk is unreadable; nothing below can read code apart from prose"
@@ -87,7 +88,14 @@ scratch_dir
 
 corpus_all "$TMP/tracked"
 
-ROOTS=""
+# ONE ROOT PER LINE IN A FILE, never a space-joined string: a root holding a space is one
+# root, and one holding a glob character is not rewritten by what sits in the working
+# directory. $ROOTS is the path of that file, which is what the selector self-test repoints
+# at a synthetic tree and restores.
+NL='
+'
+ROOTS="$TMP/roots"
+: > "$ROOTS"
 sed -n 's|^\(.*\)include/kickos/.*|\1include|p' "$TMP/tracked" | sort -u > "$TMP/roots.tree"
 require_nonempty "$TMP/roots.tree" "no include root under a tracked kickos/ path; the corpus would resolve nothing"
 while IFS= read -r r; do
@@ -95,30 +103,37 @@ while IFS= read -r r; do
         arch/*|boards/*) continue ;;
     esac
     [ -d "$r" ] || fail "derived include root is not a directory: $r"
-    ROOTS="$ROOTS $r"
+    printf '%s\n' "$r" >> "$ROOTS"
 done < "$TMP/roots.tree"
 
 for r in "$@"; do
     # A root that does not exist turns every include under it into an UNKNOWN.
     [ -d "$r" ] || fail "include root passed on the command line does not exist: $r"
-    ROOTS="$ROOTS $r"
+    case "$r" in
+        *"$NL"*) fail "include root holds a newline, so a line-delimited list reads it as two
+      roots and resolves against neither: $r" ;;
+    esac
+    printf '%s\n' "$r" >> "$ROOTS"
 done
 
-INCARGS=""
-for r in $ROOTS; do
-    INCARGS="$INCARGS -I$r"
-done
+# The compiler arguments live in the POSITIONAL PARAMETERS from here down, one -I per root,
+# so each root reaches the compiler as the single word it is. The command line's own
+# arguments are read above and are not wanted below.
+set --
+while IFS= read -r r; do
+    set -- "$@" "-I$r"
+done < "$ROOTS"
 
 # --- the selector and the compile, as functions, so the self-test runs the SAME code -------
 
 # resolve_header reads the global ROOTS, which the self-test repoints and restores.
 resolve_header() { # <relative include path> -> the resolved path, or 1
-    for _r in $ROOTS; do
+    while IFS= read -r _r; do
         if [ -f "$_r/$1" ]; then
             printf '%s\n' "$_r/$1"
             return 0
         fi
-    done
+    done < "$ROOTS"
     return 1
 }
 
@@ -184,28 +199,6 @@ close_over_includes() { # <seed list file> <workdir> -> <workdir>/corpus and <wo
     done
 }
 
-# 0 valid C11, 1 a language error, 2 an #include was not found. The TU comes from stdin so a
-# quoted include resolves against the repo root, which every corpus path is relative to; a TU
-# written into $TMP would resolve them against $TMP.
-compile_as_c() { # <header path> <stderr file>
-    # shellcheck disable=SC2086
-    if printf '#include "%s"\n' "$1" | "$CC" $CFLAGS $INCARGS -x c - 2>"$2"; then
-        return 0
-    fi
-    if grep -q 'No such file or directory' "$2"; then
-        return 2
-    fi
-    return 1
-}
-
-# The trailing typedef keeps the TU non-empty: -pedantic-errors forbids an empty translation
-# unit, which is what a macros-only header would otherwise produce.
-compile_pedantic_c() { # <header path> <stderr file>
-    # shellcheck disable=SC2086
-    printf '#include "%s"\ntypedef int kos_gate_pedantic_tu;\n' "$1" \
-        | "$CC" $PEDFLAGS $INCARGS -x c - 2>"$2"
-}
-
 # --- the compiler, proven both ways --------------------------------------------------------
 
 mkdir -p "$TMP/p"
@@ -225,9 +218,9 @@ static inline uint32_t kos_probe_load(struct kos_probe const* p)
 }
 EOF
 
-if ! compile_as_c "$TMP/p/ok.h" "$TMP/p/ok.err"; then
+if ! compile_as_c "$TMP/p/ok.h" "$TMP/p/ok.err" "$@"; then
     sed -n '1,4p' "$TMP/p/ok.err" >&2
-    fail "$CC refuses a plain C11 header at $CFLAGS, so every finding below would be its own;
+    fail "$CC refuses a plain C11 header at $KOS_C_FLAGS, so every finding below would be its own;
       the corpus needs stdint.h, stdatomic.h, _Static_assert and __asm from this compiler"
 fi
 
@@ -248,11 +241,13 @@ neg bool          'bool kos_probe_b(void);'
 neg static_assert 'static_assert(1, "the C++ spelling");'
 
 while IFS= read -r tag; do
-    if compile_as_c "$TMP/p/neg_$tag.h" "$TMP/p/neg.err"; then
+    if compile_as_c "$TMP/p/neg_$tag.h" "$TMP/p/neg.err" "$@"; then
         fail "$CC accepts \`$tag\`, which is C++ only, so this gate is blind to it;
-      the compiler is in the wrong mode or the -std=c11 in CFLAGS did not take"
+      the compiler is in the wrong mode or the -std=c11 in KOS_C_FLAGS did not take"
     fi
 done < "$TMP/p/neg.list"
+
+kos_c_prove_missing_include "$TMP/p" "$@"
 
 # --- the pedantic pass, proven both ways ---------------------------------------------------
 
@@ -265,9 +260,9 @@ struct kos_probe_ped
 };
 _Static_assert(sizeof(uint32_t) == 4, "the C11 spelling");
 EOF
-compile_pedantic_c "$TMP/p/ped_ok.h" "$TMP/p/ped_ok.err" || {
+compile_pedantic_c "$TMP/p/ped_ok.h" "$TMP/p/ped_ok.err" "$@" || {
     sed -n '1,4p' "$TMP/p/ped_ok.err" >&2
-    fail "$CC refuses strictly conforming C11 at $PEDFLAGS, so every pedantic finding below
+    fail "$CC refuses strictly conforming C11 at $KOS_C_PEDFLAGS, so every pedantic finding below
       would be its own"
 }
 
@@ -282,13 +277,13 @@ ped_neg fixed_enum 'enum kos_probe_fe : unsigned { KOS_PROBE_FE = 0 };'
 ped_neg zero_array 'struct kos_probe_za { unsigned n; int v[0]; };'
 
 while IFS= read -r tag; do
-    if ! compile_as_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err"; then
+    if ! compile_as_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err" "$@"; then
         sed -n '1,4p' "$TMP/p/ped.err" >&2
         fail "the main pass rejects \`$tag\`, so it is no longer the extension-tolerant pass
       the pedantic one is meant to sit beside"
     fi
-    if compile_pedantic_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err"; then
-        fail "$CC accepts \`$tag\` at $PEDFLAGS, which is a GNU extension and not ISO C11,
+    if compile_pedantic_c "$TMP/p/ped_$tag.h" "$TMP/p/ped.err" "$@"; then
+        fail "$CC accepts \`$tag\` at $KOS_C_PEDFLAGS, which is a GNU extension and not ISO C11,
       so the pedantic pass is blind to it and -pedantic-errors did not take"
     fi
 done < "$TMP/p/ped.list"
@@ -344,14 +339,13 @@ struct kos_probe_prose
 };
 EOF
 
-# resolve_header reads ROOTS and compile_as_c reads INCARGS: both are repointed at the
-# synthetic tree and restored. The tree roots stay OFF the path, or a kickos/probe_*.h could
-# resolve out of the real tree.
+# resolve_header reads $ROOTS, which is repointed at the synthetic tree and restored, and the
+# two compiles below name the synthetic root themselves. The tree roots stay OFF both, or a
+# kickos/probe_*.h could resolve out of the real tree.
 ls "$TMP/st/inc/kickos/"*.h | sort > "$TMP/st/headers"
 SAVED_ROOTS="$ROOTS"
-SAVED_INCARGS="$INCARGS"
-ROOTS="$TMP/st/inc"
-INCARGS="-I$TMP/st/inc"
+ROOTS="$TMP/st/roots"
+printf '%s\n' "$TMP/st/inc" > "$ROOTS"
 seeds_of "$TMP/st/headers" > "$TMP/st/seeds"
 close_over_includes "$TMP/st/seeds" "$TMP/st/w"
 
@@ -369,15 +363,14 @@ if [ -s "$TMP/unstrippable" ]; then
 fi
 
 # End to end on a selected header: clean passes, the same header with one C++-only line fails.
-compile_as_c "$TMP/st/inc/kickos/probe_seed.h" "$TMP/st/e.err" \
+compile_as_c "$TMP/st/inc/kickos/probe_seed.h" "$TMP/st/e.err" "-I$TMP/st/inc" \
     || fail "the synthetic C-facing header does not compile as C11; the corpus verdicts are its own"
 printf 'namespace kos_probe_tail { }\n' >> "$TMP/st/inc/kickos/probe_seed.h"
-if compile_as_c "$TMP/st/inc/kickos/probe_seed.h" "$TMP/st/e.err"; then
+if compile_as_c "$TMP/st/inc/kickos/probe_seed.h" "$TMP/st/e.err" "-I$TMP/st/inc"; then
     fail "a namespace in a selected header passed as C11; this gate would report a C++ header clean"
 fi
 
 ROOTS="$SAVED_ROOTS"
-INCARGS="$SAVED_INCARGS"
 
 # --- the corpus ----------------------------------------------------------------------------
 
@@ -393,7 +386,7 @@ ADDED="$(wc -l < "$TMP/w/added" | tr -d ' ')"
 N="$(wc -l < "$TMP/w/corpus" | tr -d ' ')"
 
 echo "== $N C-facing header(s) of $HDRS tracked: $SEEDS guard an extern \"C\" block, $ADDED reached by include =="
-echo "== compiled standalone with $CC ($("$CC" -dumpversion 2>/dev/null)) at $CFLAGS =="
+echo "== compiled standalone with $CC ($("$CC" -dumpversion 2>/dev/null)) at $KOS_C_FLAGS =="
 if [ -s "$TMP/w/added" ]; then
     echo "== in the corpus by include only, not by a guard of their own =="
     sort "$TMP/w/added" | sed 's/^/   /'
@@ -403,7 +396,7 @@ fi
 : > "$TMP/refused"
 sort "$TMP/w/corpus" > "$TMP/corpus.s"
 while IFS= read -r f; do
-    compile_as_c "$f" "$TMP/c.err"
+    compile_as_c "$f" "$TMP/c.err" "$@"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         continue
@@ -422,7 +415,7 @@ done < "$TMP/corpus.s"
 while IFS= read -r f; do
     grep -Fxq "$f" "$TMP/bad" 2>/dev/null && continue
     grep -Fxq "$f" "$TMP/refused" 2>/dev/null && continue
-    if ! compile_pedantic_c "$f" "$TMP/ped.err"; then
+    if ! compile_pedantic_c "$f" "$TMP/ped.err" "$@"; then
         printf '%s\n' "$f" >> "$TMP/ped.bad"
         { printf '%s\n' "$f"; sed -n '1,6p' "$TMP/ped.err"; } >> "$TMP/ped.bad.err"
     fi

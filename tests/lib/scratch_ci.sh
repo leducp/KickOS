@@ -55,14 +55,30 @@ _scratch_ci_wipe() {
     _scratch_ci_configure
 }
 
-_scratch_ci_flags_ok() {
-    _cxx="$(sed -n 's/^CMAKE_CXX_FLAGS:STRING=//p' "$_KOS_CI_BUILD/CMakeCache.txt" | head -n1)"
-    case " $_cxx " in
+# One language's cached flags against the measurement's flag and this board's ISA baseline.
+# Reads $_mcpu, which _scratch_ci_flags_ok sets before calling this.
+_scratch_ci_lang_ok() { # <C|CXX>
+    _lang="$1"
+    _lflags="$(sed -n "s/^CMAKE_${_lang}_FLAGS:STRING=//p" "$_KOS_CI_BUILD/CMakeCache.txt" \
+               | head -n1)"
+    case " $_lflags " in
         *" $KOS_CI_FLAGS "*) ;;
-        *) echo "$KOS_CI_TAG: scratch tree lacks $KOS_CI_FLAGS" >&2; return 1 ;;
+        *) echo "$KOS_CI_TAG: scratch tree lacks $KOS_CI_FLAGS in CMAKE_${_lang}_FLAGS" >&2
+           return 1 ;;
     esac
+    for _tok in $_mcpu; do
+        case " $_lflags " in
+            *" $_tok "*) ;;
+            *) echo "$KOS_CI_TAG: CMAKE_${_lang}_FLAGS is missing the ISA flag $_tok" >&2
+               return 1 ;;
+        esac
+    done
+    return 0
+}
+
+_scratch_ci_flags_ok() {
     # A CMake list in the cache, so semicolon-separated; the flags reach the compiler one
-    # per argument, and this loop compares them one at a time.
+    # per argument, and the loop above compares them one at a time.
     # PRESENT-BUT-EMPTY IS LEGAL AND ABSENT IS NOT: the xtensa toolchain names no ISA flag,
     # the windowed ABI being the compiler's default, so grep for the KEY and let the value be
     # empty. Testing the value alone would read a toolchain that stopped seeding the cache as
@@ -71,13 +87,11 @@ _scratch_ci_flags_ok() {
         || { echo "$KOS_CI_TAG: scratch tree has no KICKOS_MCPU_FLAGS" >&2; return 1; }
     _mcpu="$(sed -n 's/^KICKOS_MCPU_FLAGS:INTERNAL=//p' "$_KOS_CI_BUILD/CMakeCache.txt" \
              | head -n1 | tr ';' ' ')"
-    for _tok in $_mcpu; do
-        case " $_cxx " in
-            *" $_tok "*) ;;
-            *) echo "$KOS_CI_TAG: scratch tree is missing the ISA flag $_tok" >&2
-               return 1 ;;
-        esac
-    done
+    # BOTH languages. The two are seeded and cached separately, so a C-side change leaves the
+    # C++ side agreeing with itself; one .c unit whose object was built to other flags is
+    # enough to put a stale frame, or none at all, into the merged callgraph.
+    _scratch_ci_lang_ok C || return 1
+    _scratch_ci_lang_ok CXX || return 1
     return 0
 }
 

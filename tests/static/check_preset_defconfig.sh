@@ -45,6 +45,55 @@ FIXTURES="sim/smp-ineligible"
 
 scratch_dir
 
+# --- fixture consumption, and the bound that keeps one entry from covering another ---------
+# The needle is the bare VARIANT and cannot be board-qualified: check_smp_predicate.sh
+# composes its path out of shell variables, so `sim/configs/smp-ineligible` appears nowhere in
+# the tree as a literal. A distinctive variant name is therefore part of what makes an entry
+# checkable; keep the list short and its names specific.
+#
+# BOUNDED, never a bare substring. `-` is an ordinary character in a variant name, so a plain
+# match lets any entry whose name is a piece of a LIVE one ride on the live one's mentions,
+# and the dead entry then sits in the list forever with the gate green. The bound is any
+# character a variant name cannot hold.
+VARIANT_EDGE='[^A-Za-z0-9_-]'
+
+fixture_consumed() { # <variant> <root>; 0 when a file under <root> besides this gate names it
+    # The alphabet VARIANT_EDGE assumes. Anything else reaches the match as a pattern, where a
+    # dot stands for a character the name does not hold and the entry rides on a near neighbour.
+    case "$1" in
+        *[!A-Za-z0-9_-]*) fail "FIXTURES names the variant '$1', which holds a character no
+      board variant may: it would reach the consumption match as a regular expression" ;;
+    esac
+    grep -rlE "(^|$VARIANT_EDGE)$1($VARIANT_EDGE|\$)" "$2" 2>/dev/null \
+        | grep -qvxF "tests/static/$(basename "$0")"
+}
+
+# The match as it was before the bound, so the control below is a near miss and not a needle
+# that never matched anything. Self-test only; the legs never call it.
+fixture_consumed_unbounded() { # <variant> <root>
+    grep -rl -e "$1" "$2" 2>/dev/null | grep -qvxF "tests/static/$(basename "$0")"
+}
+
+# One consumer naming one variant, and a second variant whose name is a piece of the first.
+mkdir -p "$TMP/st"
+printf 'KOS_FIXTURE_VARIANT="kos-probe-live"\n' >"$TMP/st/consumer.sh"
+fixture_consumed "kos-probe-live" "$TMP/st" \
+    || fail "the consumption match does not see a variant a file under tests/ names outright,
+      so every entry would read as dead and this leg would cry wolf"
+if fixture_consumed "kos-probe" "$TMP/st"; then
+    fail "a variant whose name is a piece of a live one reads as consumed, so a dead entry
+      hides behind the live one's mentions and stays in the list forever"
+fi
+fixture_consumed_unbounded "kos-probe" "$TMP/st" \
+    || fail "the unbounded match does not accept the alias either, so the bound above is not
+      what refuses it and the control proves nothing"
+# The same alias spelled with a dot, which matches the live name as a pattern and nothing as a
+# literal, so the refusal above is what keeps it out and not a needle that misses.
+if ( fixture_consumed "kos.probe-live" "$TMP/st" ) 2>/dev/null; then
+    fail "a variant holding a regular-expression character is matched as a pattern, so a dot
+      in the list stands for a character no variant name holds"
+fi
+
 # --- the two sets ------------------------------------------------------------
 "$CMAKE" -DSRC="$SRC" -DOUT="$TMP/presets.tsv" -P "$FLATTEN" >"$TMP/flatten.log" 2>&1 \
     || fail "$FLATTEN refused: $(tail -1 "$TMP/flatten.log")"
@@ -129,14 +178,7 @@ for _f in $FIXTURES; do
     fi
     # EXCLUDING THIS FILE, which lists the entry two dozen lines up: without that exclusion
     # every entry matches its own declaration and this leg can never fire at all.
-    #
-    # The needle is the bare VARIANT and cannot be board-qualified: check_smp_predicate.sh
-    # composes its path out of shell variables, so `sim/configs/smp-ineligible` appears
-    # nowhere in the tree as a literal. A distinctive variant name is therefore part of what
-    # makes an entry checkable; a short one (`st`, `flat`) would satisfy this on an unrelated
-    # hit. Keep the list short and its names specific.
-    if ! grep -rl -e "$_v" tests/ 2>/dev/null \
-         | grep -qvxF "tests/static/$(basename "$0")"; then
+    if ! fixture_consumed "$_v" tests/; then
         n_dead=$((n_dead + 1))
         bad "FIXTURES names '$_f' and nothing under tests/ besides this gate names the" \
             "variant '$_v'. A declared exception nothing consumes is an orphan defconfig" \

@@ -7,8 +7,8 @@
 # INPUT is the .ci files gcc -fcallgraph-info=su,da leaves next to every object: one VCG
 # graph per translation unit, carrying each function's own frame size ("N bytes (static)"),
 # its alloca/VLA count, its call edges with file:line:col, and an edge to the literal node
-# `__indirect_call` for every call through a pointer. The whole tree's .ci files are merged
-# and the longest weighted path from the declared roots is the answer.
+# `__indirect_call` for every call through a pointer. The units of the build's own compile
+# database are merged, and the longest weighted path from the declared roots is the answer.
 #
 # NOTHING IS DEFAULTED: every figure comes from the declaration files or from the caller, a
 # red zone derived from a silent under-approximation being worse than none at all.
@@ -30,8 +30,10 @@
 
 import collections
 import glob
+import json
 import os
 import re
+import shlex
 import sys
 
 NODE_RE = re.compile(r'^node:\s*\{\s*title:\s*"([^"]*)"\s*label:\s*"([^"]*)"')
@@ -39,6 +41,12 @@ EDGE_RE = re.compile(
     r'^edge:\s*\{\s*sourcename:\s*"([^"]*)"\s*targetname:\s*"([^"]*)"'
     r'(?:\s*label:\s*"([^"]*)")?')
 INDIRECT = '__indirect_call'
+# gcc writes the .ci beside the OBJECT, so a unit's .ci is its compile-database output with
+# the extension swapped. Assembly sits in that database and writes none.
+CI_SOURCE_EXT = ('.c', '.cc', '.cpp', '.cxx')
+# The configure compiles this one itself to identify the compiler, so it answers to no compile
+# command: the one unexpected .ci in a tree that is not a stale unit.
+COMPILER_ID_DIR = re.compile(r'(?:^|/)CompilerId[^/]*/')
 # Appended to a CALLER key to stand for every unlocated indirect site inside it.
 UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
@@ -101,7 +109,10 @@ class Decl(object):
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
         self.unsized = collections.OrderedDict()      # symbol -> (bytes, reason)
+        self.floor_files = None
+        self.floor_nodes = None
         seen_arch = set()
+        floor_at = {}                                 # arch -> where its floor is declared
         for n, f, reason in records(roots_path):
             where = '%s:%d' % (roots_path, n)
             kind = f[0]
@@ -109,6 +120,11 @@ class Decl(object):
                 seen_arch.add(f[1])
             if len(f) < 2:
                 die('%s: record "%s" has no arch' % (where, kind))
+            # Every arch's floor, not just this run's: a later record REPLACES an earlier one,
+            # so a duplicate has to be refused by whichever arch happens to be measured or the
+            # arch it disarms is the one arch that cannot report it.
+            if kind == 'floor':
+                self._check_floor(where, f, reason, floor_at)
             if f[1] != arch:
                 continue
             if kind == 'arch':
@@ -117,6 +133,9 @@ class Decl(object):
                 self.header = f[2][len('header='):]
             elif kind == 'preset':
                 self.presets.append(f[2])
+            elif kind == 'floor':
+                self.floor_files = self._number(where, f[2], 'files=')
+                self.floor_nodes = self._number(where, f[3], 'nodes=')
             elif kind == 'class':
                 name = f[2]
                 frame = None
@@ -204,11 +223,49 @@ class Decl(object):
             die('%s declares nothing for arch %s' % (roots_path, arch))
         if not self.classes:
             die('%s declares no class for arch %s' % (roots_path, arch))
+        if self.floor_files is None:
+            die('%s declares no floor record for arch %s. Without one this gate reports the'
+                ' same clean answer over a full build and over an empty directory'
+                % (roots_path, arch))
+        for other in sorted(seen_arch - set(floor_at)):
+            die('%s declares arch %s and no floor record for it, so that arch runs with no'
+                ' corpus floor at all' % (roots_path, other))
+        for other in sorted(set(floor_at) - seen_arch):
+            die('%s: %s declares a floor for %s, which is no declared arch here; the record'
+                ' bounds nothing' % (roots_path, floor_at[other], other))
         for cls in self.classes:
             if not self.roots[cls] and cls not in self.rootless:
                 die('%s: class %s has no root, so it would measure 0 and always pass.'
                     ' Declare `root %s %s NONE reason: ...` if that is the honest answer'
                     % (roots_path, cls, arch, cls))
+
+    @staticmethod
+    def _check_floor(where, f, reason, seen):
+        """One floor record, whatever arch it names."""
+        if len(f) != 4:
+            die('%s: floor wants <arch> files=<n> nodes=<n>' % where)
+        if reason is None:
+            die('%s: floor carries no "reason:"; a figure with no measurement behind'
+                ' it is a guess this gate would then trust' % where)
+        if f[1] in seen:
+            die('%s: floor for %s is declared a second time, the first at %s. The later'
+                ' record wins, so a floor can be lowered or disarmed without the measured'
+                ' line being touched or even read' % (where, f[1], seen[f[1]]))
+        seen[f[1]] = where
+        for field, key in ((f[2], 'files='), (f[3], 'nodes=')):
+            if Decl._number(where, field, key) < 1:
+                die('%s: floor %s is not a positive count. A corpus of nothing clears a floor'
+                    ' of zero or less, which is the one case the floor exists to refuse'
+                    % (where, field))
+
+    @staticmethod
+    def _number(where, field, key):
+        if not field.startswith(key):
+            die('%s: expected %s<n>, got "%s"' % (where, key, field))
+        try:
+            return int(field[len(key):])
+        except ValueError:
+            die('%s: %s"%s" is not a number' % (where, key, field[len(key):]))
 
     def off_thread(self):
         """Classes whose descent spends no unprivileged thread stack."""
@@ -374,8 +431,116 @@ def pretty_leaf(name):
     return name.rsplit('::', 1)[-1]
 
 
+# --- the corpus, keyed to the build that wrote it ------------------------------
+
+def entry_output(where, e):
+    """The object path one compile-database entry writes.
+
+    EVERY SHAPE THAT IS NOT THAT IS REFUSED HERE, by name. This file is machine written, so a
+    surprise in it means the generator changed or the tree is not what it claims; a traceback
+    out of this function would read as a broken gate rather than as the refusal it is. The
+    `arguments` list is the trap worth naming: a STRING there answers `in` and `index` as a
+    substring search, which yields a plausible path and a corpus diagnostic about the wrong
+    thing.
+    """
+    obj = e.get('output')
+    if obj is not None:
+        if not isinstance(obj, str):
+            die('%s names "output" as something other than a string' % where)
+        return obj
+    argv = e.get('arguments')
+    if argv is None:
+        cmd = e.get('command')
+        if not isinstance(cmd, str):
+            die('%s carries no "output", no "arguments" and no "command" string' % where)
+        try:
+            argv = shlex.split(cmd)
+        except ValueError as exc:
+            die('%s has a "command" that does not split as a shell word list: %s'
+                % (where, exc))
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        die('%s names "arguments" as something other than a list of strings' % where)
+    if '-o' not in argv:
+        die('%s names no output, so the .ci gcc wrote for it cannot be located' % where)
+    at = argv.index('-o')
+    if at + 1 >= len(argv):
+        die('%s ends at "-o" with no operand, so the object it writes, and the .ci beside it,'
+            ' cannot be named' % where)
+    return argv[at + 1]
+
+
+def build_units(build_dir):
+    """Absolute .ci path -> source file, one entry per C/C++ unit THIS build compiles.
+
+    compile_commands.json is the build's own record of what it asked the compiler for, and a
+    directory that is not this build cannot produce one that agrees.
+    """
+    path = os.path.join(build_dir, 'compile_commands.json')
+    try:
+        db = json.load(open(path))
+    except (OSError, ValueError) as e:
+        die('cannot read %s: %s. It is what says which translation units this measurement is'
+            ' of, and without it every .ci lying in the tree passes for one of them'
+            % (path, e))
+    if not isinstance(db, list):
+        die('%s does not hold a JSON array, so it is not a compile database and the corpus'
+            ' cannot be keyed to it' % path)
+    out = {}
+    for n, e in enumerate(db):
+        if not isinstance(e, dict):
+            die('%s: entry %d is not a JSON object' % (path, n))
+        src = e.get('file')
+        if not isinstance(src, str):
+            die('%s: entry %d names no "file" string, so there is no unit to key' % (path, n))
+        if os.path.splitext(src)[1] not in CI_SOURCE_EXT:
+            continue
+        where = '%s: the entry for %s' % (path, src)
+        directory = e.get('directory', build_dir)
+        if not isinstance(directory, str):
+            die('%s names "directory" as something other than a string' % where)
+        obj = os.path.realpath(os.path.join(directory, entry_output(where, e)))
+        out[os.path.splitext(obj)[0] + '.ci'] = src
+    if not out:
+        die('%s names no C or C++ translation unit, so this tree compiled nothing this gate'
+            ' can measure' % path)
+    return out
+
+
+def corpus(build_dir):
+    """The .ci files of this build, refusing a tree that is not exactly this build's.
+
+    THE COUNT IS NOT THE CHECK. A .ci outlives the unit that wrote it: a source dropped from a
+    target leaves its own behind, and a scratch tree shared with another checkout collects
+    that checkout's, so a corpus can be complete-looking and hold code the image cannot
+    contain while missing a unit the image does. Both directions are refused by IDENTITY here;
+    the declared floor below stays as the gross guard on a build that barely started.
+    """
+    want = build_units(build_dir)
+    # realpath on both sides: the database records the path cmake resolved, and a build
+    # directory reached through a symlink globs as the other spelling of it.
+    found = set(os.path.realpath(p)
+                for p in glob.glob(os.path.join(build_dir, '**', '*.ci'), recursive=True))
+    missing = sorted(set(want) - found)
+    if missing:
+        die('CORPUS IS NOT THIS BUILD: %d translation unit(s) of %s left no .ci file, the'
+            ' first being %s, compiled from %s. gcc writes one per unit it compiles, so a unit'
+            ' the compile database names and the tree does not hold is a unit this'
+            ' measurement never saw: a path dropped from the graph, a build stopped before'
+            ' it finished, or a tree compiled without -fcallgraph-info. Every figure below'
+            ' would be read off what happened to be there'
+            % (len(missing), build_dir, missing[0], want[missing[0]]))
+    extra = sorted(p for p in found - set(want) if not COMPILER_ID_DIR.search(p))
+    if extra:
+        die('CORPUS IS NOT THIS BUILD: %d .ci file(s) under %s answer to no compile command of'
+            ' this build, the first being %s. They are units that left the build, or another'
+            ' checkout sharing this scratch tree, and the merged graph carries their code as'
+            ' if the image held it. Delete the tree and let it build cold'
+            % (len(extra), build_dir, extra[0]))
+    return sorted(want)
+
+
 class Graph(object):
-    """Every .ci under the build dir, merged, MINUS the ones the link threw away.
+    """This build's .ci files merged, MINUS the ones the link threw away.
 
     COMPILED IS NOT LINKED: a .ci file is written by the compiler, so the corpus on disk
     includes translation units that never entered the image. KickOS resolves an optional
@@ -400,9 +565,7 @@ class Graph(object):
         self.files = 0
         self._spec = {}
         self._located = {}
-        found = sorted(glob.glob(os.path.join(ci_dir, '**', '*.ci'), recursive=True))
-        if not found:
-            die('no .ci file under %s; -fcallgraph-info did not reach this build' % ci_dir)
+        found = corpus(ci_dir)
         tu_of = {}
         defined = collections.defaultdict(set)        # TU path -> {global key}
         for ci in found:
@@ -821,7 +984,26 @@ def run(argv):
             die('--not-compiled names class %s, which %s declares nowhere for %s'
                 % (cls, opt['roots'], arch))
 
+    # Building the graph settles WHICH units this run measures, against the build's own
+    # compile database, and refuses a stale, partial or shared tree by name.
     graph = Graph(opt['ci-dir'])
+
+    # --- the corpus floor, BEFORE any key is resolved and any absence asserted --
+    # The gross guard the identity check above cannot give: a tree whose compile database is
+    # itself near empty agrees with it at every step. Ahead of the binding and root resolution
+    # below because those die on whichever symbol happens to be missing, which names a stale
+    # declaration for what is really an unbuilt tree and sends the reader to the wrong file.
+    _floor_nodes = len(graph.universe())
+    if graph.files < decl.floor_files:
+        die('CORPUS FLOOR: %d .ci file(s) under %s, and %s declares a floor of %d for %s.'
+            ' This is a partial or interrupted build, not a measured image: every depth'
+            ' below it would be the depth of whatever happened to compile'
+            % (graph.files, opt['ci-dir'], opt['roots'], decl.floor_files, arch))
+    if _floor_nodes < decl.floor_nodes:
+        die('CORPUS FLOOR: %d graph node(s), and %s declares a floor of %d for %s. A graph'
+            ' this small is not this image'
+            % (_floor_nodes, opt['roots'], decl.floor_nodes, arch))
+
     present = graph.all_sites()
     bindings = resolve_bindings(graph, read_bindings(opt['indirect'], arch, preset))
     graph.bind_indirect(bindings)
