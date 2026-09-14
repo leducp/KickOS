@@ -26,6 +26,6 @@
 #define KICKOS_RP2350_SIO_IRQ_BELL 26
 
 /* Clear of USBCTRL_IRQ (14, irq.h), which the default block 6..14 would cover. */
-#define KICKOS_SELFTEST_IRQ_BASE 15
+#define KICKOS_IRQ_FREE_BASE 15
 
 #endif /* KICKOS_CHIP_LIMITS_H */

@@ -227,6 +227,10 @@ static_assert(offsetof(struct rv64_percpu_block, switch_to) == 8,
               "switch.S spells PERCPU_SWITCH_TO as 8");
 static_assert(offsetof(struct rv64_percpu_block, isr_depth) == 16,
               "switch.S spells PERCPU_ISR_DEPTH as 16");
+#if KICKOS_BENCH
+static_assert(offsetof(struct rv64_percpu_block, bench_sw_start) == 24,
+              "switch.S spells PERCPU_BENCH_SW_START as 24");
+#endif
 static_assert(offsetof(struct rv64_percpu_row, block) == KICKOS_RV64_TRAP_STACK_SIZE,
               "sscratch holds the trap-stack top, so the block must begin exactly there");
 static_assert(sizeof(kickos_rv64_percpu[0].trap_stack) == KICKOS_RV64_TRAP_STACK_SIZE,
@@ -437,7 +441,7 @@ int arch_in_isr(void)
 }
 
 // --- Clocks -----------------------------------------------------------------
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
     return 0;
 }

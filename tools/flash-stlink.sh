@@ -23,7 +23,7 @@ if [ -n "$FL_SNVAL" ]; then
 elif have st-info; then
     FL_NPROBE=$(st-info --probe 2>/dev/null | sed -n 's/^Found \([0-9][0-9]*\) stlink.*/\1/p')
     if [ "${FL_NPROBE:-1}" -gt 1 ]; then
-        die "$FL_NPROBE ST-Link probes are present and $FL_SNKEY is unset in ${RIG_CONF:-<no rig.conf>}: st-flash would take whichever enumerates first (see tools/bench/rig.conf.example)"
+        die "$FL_NPROBE ST-Link probes are present and $FL_SNKEY is unset in ${RIG_CONF:-<no rig.conf>}: st-flash would take whichever enumerates first. tools/bench/bench-present.sh names every probe on the bus and its serial; see tools/bench/rig.conf.example for the key"
     fi
 fi
 # A RUNNING KickOS image parks the idle thread in WFI and SWD cannot halt a live
@@ -39,9 +39,7 @@ esac
 [ "${STLINK_UNDER_RESET:-}" = "0" ] && FL_UR=()
 # NEVER add --reset to a --connect-under-reset write: it leaves the core under halting debug
 # with DEMCR.VC_HARDERR armed, so the first HardFault halts the CPU at the handler's first
-# instruction and the fault reporter is silent while the board looks locked up. Measured on
-# f302nucleo 2026-08-13, DFSR.VCATCH set and DHCSR.S_LOCKUP clear. Releasing NRST already
-# starts the image, so --reset buys nothing here.
+# instruction and the fault reporter is silent while the board looks locked up.
 #
 # The bench capture path issues no reset of its own, so this branch's write IS the boot the
 # capture reads. Adding a reset here would cut it off mid-line and start a second one.

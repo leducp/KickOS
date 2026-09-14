@@ -44,6 +44,11 @@ struct alignas(KICKOS_RV64_PERCPU_BLOCK_SIZE) rv64_percpu_block
     // The dense index this hart answers arch_cpu_id with, seated by kickos_rv64_init.
     uint32_t id;
 
+#if KICKOS_BENCH
+    // The cycle CSR at the switch window's open, read back at its close by the same hart.
+    uint32_t bench_sw_start;
+#endif
+
     // THE SOFTWARE CONTROLLER'S CELLS MAY NOT BE KEYED HERE. A logical line is one system-wide
     // resource, so per hart a driver that unmasks on one and an injector that raises on another
     // never meet. They are file-scope in arch_rv64imac.cc, mutated one instruction at a time

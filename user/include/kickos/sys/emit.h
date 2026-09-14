@@ -21,6 +21,35 @@
 namespace kickos
 {
 
+// Yields spent waiting for the console TX ring to drain before a line is given up.
+constexpr unsigned EMIT_DRAIN_YIELDS = 256;
+
+inline void kconsole_write_all(char const* s, size_t n)
+{
+    size_t sent = 0;
+    unsigned stalls = 0;
+    while (sent < n)
+    {
+        int32_t const w = kos_kconsole_write(s + sent, n - sent);
+        if (w < 0)
+        {
+            return; // a rejected buffer; no retry can change the answer
+        }
+        if (w == 0)
+        {
+            if (stalls >= EMIT_DRAIN_YIELDS)
+            {
+                return;
+            }
+            stalls++;
+            kos_yield();
+            continue;
+        }
+        stalls = 0;
+        sent += static_cast<size_t>(w);
+    }
+}
+
 inline void emit(char const* s)
 {
     size_t total = 0;
@@ -50,7 +79,7 @@ inline void emit(char const* s)
             }
             // Remainder only: resending from the start duplicates the chunks the driver
             // already took.
-            kos_kconsole_write(s + sent, total - sent);
+            kconsole_write_all(s + sent, total - sent);
             return;
         }
         sent += static_cast<size_t>(r);

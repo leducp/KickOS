@@ -56,9 +56,6 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // Nominal core clock (Hz).
-    uint32_t SystemCoreClock = 0;
-
     void kfault_terminate(void) __attribute__((noreturn));
 }
 
@@ -204,7 +201,6 @@ void arch_init(void)
         arch_console_write(BAD_CNTFRQ, sizeof(BAD_CNTFRQ) - 1);
         kfault_terminate();
     }
-    SystemCoreClock = static_cast<uint32_t>(freq);
 
     kickos_armv8a_gic_dist_init();
     kickos_armv8a_percore_init();

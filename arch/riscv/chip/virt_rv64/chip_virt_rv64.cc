@@ -65,9 +65,6 @@ extern "C"
     // runs before any space exists, so nothing maps that half yet and these are reached
     // through the kernel's own alias of the same frames instead.
     extern uintptr_t __kickos_appbss_start[], __kickos_appbss_end[];
-
-    // No core clock on this machine: TIME_HZ below is the CLINT rate, not a core rate.
-    uint32_t SystemCoreClock = 0;
 }
 
 namespace

@@ -637,7 +637,7 @@ uint64_t kickos_lx6_ccount_ns(void)
     return cycles_to_ns(now_cycles());
 }
 
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
     return SystemCoreClock;
 }

@@ -245,9 +245,14 @@ namespace kickos
             // saved frame base still describes an earlier run, and kickos_switch_unlock is
             // what ends the span. The depth rides on this frame, travelling with the thread.
             uint32_t const klock_depth = klock_detach();
+            // The bench bracket's depth rides this frame for the same reason the lock's does.
+            // Its START does not: that one describes the CORE's masked window, which the
+            // thread resuming here continues.
+            KICKOS_BENCH_LOCK_DETACH(bench_depth);
             KICKOS_BENCH_MARK(bm_arch);
             arch_switch(&prev->ctx, &next->ctx);
             KICKOS_BENCH_SPAN(PH_ARCH_SWITCH, bm_arch);
+            KICKOS_BENCH_LOCK_ATTACH(bench_depth);
             klock_attach(klock_depth);
         }
     }
@@ -386,6 +391,7 @@ namespace kickos
             ktime_rearm();
             // arch_start does not return, so the bracket above is dropped by hand.
             klock_drop();
+            KICKOS_BENCH_LOCK_DROP();
             arch_start(&kernel().boot[kickos_kernel_core()], &first->ctx);
         }
 

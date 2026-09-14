@@ -380,7 +380,7 @@ uint64_t arch_clock_now(void)
 // (never 0), so cpu_clock_set runs the coherence tail (B1). The generic tail re-derives
 // the baud + re-arms SysTick. Called privileged, IRQs already masked. PIT is bus =
 // core/BUS_DIV, so the monotonic clock's rate moves and MUST be re-anchored here.
-uint32_t arch_cpu_clock_set(uint32_t target)
+uint64_t arch_cpu_clock_set(uint32_t target)
 {
     uint32_t const previous = SystemCoreClock;
     // Achievable set is {120 MHz PEE, 20.97 MHz FEI}; MID rounds UP to MAX (no distinct

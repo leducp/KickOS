@@ -64,7 +64,7 @@ namespace kickos
             g_cells[1] = static_cast<uint32_t>(KICKOS_AMP_NODE_ID);
             g_cells[2] = vector_base();
             g_cells[3] = static_cast<uint32_t>(KICKOS_AMP_DIAG_TAG);
-            g_cells[4] = arch_cpu_clock_hz();
+            g_cells[4] = static_cast<uint32_t>(arch_cpu_clock_hz());
             g_cells[0] = MAGIC; // last: the reader gates on this
         }
 

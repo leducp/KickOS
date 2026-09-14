@@ -13,6 +13,7 @@
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/arch/arch.h>
+#include <kickos/bench.h> // the end-to-end span's taking-core stamp
 #include <kickos/ktrace.h>
 
 #include <kickos/sys/abi.h>   // KOS_IRQ_LEVEL claim flag
@@ -213,6 +214,7 @@ namespace kickos
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
+            KICKOS_BENCH_E2E_ISR_MARK();
             irq_line_op_local(b->line, LineOp::MASK);
             sem_post(&b->sem);
         }
@@ -659,6 +661,9 @@ namespace kickos
             // `b` survives the park: this waiter's own cap holds a reference to the slot.
             c->wait_result = 0; // sem_post hands the token WITHOUT writing this
             epoch = c->switch_count;
+            // Under THIS lock and ahead of the block: the post that wakes this thread takes
+            // the same lock, so nothing delivered past this mark can arrive before the park.
+            KICKOS_BENCH_E2E_PARK_MARK();
             // WAIT_IRQ, not WAIT_SEM, though the queue is a semaphore's: only this tag says
             // the park reads wait_result and so may be ended early.
             wq_block(b->sem.waiters, WAIT_IRQ, b);

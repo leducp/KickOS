@@ -37,6 +37,7 @@
 preset  armv8a   imx8mp-evk
 preset  armv8a   qemu-arm64
 preset  armv8a   qemu-arm64-smp
+preset  armv8a   qemu-arm64-benchsmp
 preset  armv8a   qemu-arm64-smpiso
 preset  armv8a   qemu-arm64-gicv3
 preset  armv8a   qemu-arm64-amp
@@ -45,10 +46,14 @@ preset  armv8a   qemu-arm64-amp2-n1
 preset  armv8a   qemu-arm64-amp3-n0
 preset  armv8a   qemu-arm64-amp3-n1
 preset  armv8a   qemu-arm64-amp3-n2
+preset  armv8a   qemu-arm64-bench
 preset  rv64imac qemu-riscv64
 preset  rv64imac qemu-riscv64-sv48
 preset  rv64imac qemu-riscv64-smp
+preset  rv64imac qemu-riscv64-bench
+preset  rv64imac qemu-riscv64-benchsmp
 preset  x86_64   qemu-x86_64
+preset  x86_64   qemu-x86_64-bench
 
 # --- the corpus floor ----------------------------------------------------------
 # SECONDARY, and exactly one record per declared preset. WHICH units a run walks is settled
@@ -62,6 +67,7 @@ preset  x86_64   qemu-x86_64
 floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1045 nodes on 2026-09-12
 floor   armv8a   imx8mp-evk        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1047 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-benchsmp files=90 nodes=700 reason: measured directly on this preset, 138 .ci files and 1127 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1111 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-amp    files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1192 nodes on 2026-09-12
@@ -70,10 +76,14 @@ floor   armv8a   qemu-arm64-amp2-n1 files=90 nodes=700 reason: measured directly
 floor   armv8a   qemu-arm64-amp3-n0 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1182 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-amp3-n1 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1181 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-amp3-n2 files=90 nodes=700 reason: measured directly on this preset, 137 .ci files and 1181 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-bench  files=90 nodes=700 reason: measured directly on this preset, 135 .ci files and 1064 nodes on 2026-09-12
 floor   rv64imac qemu-riscv64      files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1081 nodes on 2026-09-12
 floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1081 nodes on 2026-09-12
 floor   rv64imac qemu-riscv64-smp  files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1138 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64-bench files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1100 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64-benchsmp files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1162 nodes on 2026-09-12
 floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured directly on this preset, 130 .ci files and 958 nodes on 2026-09-12
+floor   x86_64   qemu-x86_64-bench files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 977 nodes on 2026-09-12
 
 # --- the route -----------------------------------------------------------------
 root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record entry, the only caller that passes route=true, so the delivery half of kvprintf_route runs inside it
@@ -92,7 +102,7 @@ forbid  * ?_ZN6kickos9kpanic_atEPKcj reason: the terse assert terminal, the seco
 # --- what the graph does not know ----------------------------------------------
 # A reachable node with no "bytes (static)" has no out-edges here, so anything it calls is
 # invisible. Each one is a hole in the claim and has to be named.
-opaque  armv8a   kickos_armv8a_switch_now reason: the context-switch trampoline in arch/arm64/armv8a/switch.S. It restores a thread's callee-saved state and returns into that thread, calling nothing; the C it returns into is that thread's own continuation and not a descent of this route
+opaque  armv8a   kickos_armv8a_switch_now reason: the context-switch trampoline in arch/arm64/armv8a/switch.S. It restores a thread's callee-saved state and returns into that thread; the C it returns into is that thread's own continuation and not a descent of this route. Under KICKOS_BENCH it also calls the switch accumulator, which is arithmetic over kernel .bss and reaches no console
 opaque  rv64imac __clzdi2 reason: a libgcc count-leading-zeros helper, reached from the format code on this multilib only. It is a frameless register-only leaf and calls nothing, so having no out-edge here costs the claim nothing
 opaque  rv64imac kickos_rv64_switch_now reason: the context-switch trampoline in arch/riscv/rv64imac/switch.S, same shape as the armv8a one
 opaque  x86_64   kickos_x86_64_switch_now reason: the context-switch trampoline in arch/x86/x86_64/switch.S, same shape as the armv8a one

@@ -17,6 +17,9 @@ namespace
     uint32_t g_seat_gap = 0;
     uint32_t g_pushes_after_commit = 0;
     int g_slot_free = 1;
+    uint32_t g_gap_budget = 0;
+    uint32_t g_gap_left = 0;
+    bool g_in_isr = false;
     bool g_committed = false;
     bool g_isr_runs = true;
     bool g_tx_irq_on = false;
@@ -28,11 +31,19 @@ namespace
 
     int mock_slot_free(void)
     {
+        if (g_in_isr and g_gap_budget != 0 and g_gap_left == 0)
+        {
+            return 0;
+        }
         return g_slot_free;
     }
 
     void mock_push(uint8_t b)
     {
+        if (g_in_isr and g_gap_left != 0)
+        {
+            g_gap_left--;
+        }
         if (g_mask_depth > 0)
         {
             g_cur_masked++;
@@ -79,7 +90,10 @@ namespace
         }
         if (g_isr_runs and g_tx_irq_on)
         {
+            g_gap_left = g_gap_budget;
+            g_in_isr = true;
             console_tx_isr();
+            g_in_isr = false;
         }
         if (seated != nullptr)
         {
@@ -120,6 +134,9 @@ namespace consoleseam
         g_seat_gap = 0;
         g_pushes_after_commit = 0;
         g_slot_free = 1;
+        g_gap_budget = 0;
+        g_gap_left = 0;
+        g_in_isr = false;
         g_committed = false;
         g_isr_runs = true;
         g_tx_irq_on = false;
@@ -133,6 +150,11 @@ namespace consoleseam
     void set_slot_free(int free)
     {
         g_slot_free = free;
+    }
+
+    void set_gap_budget(uint32_t bytes)
+    {
+        g_gap_budget = bytes;
     }
 
     void set_isr_runs_in_gap(bool runs)

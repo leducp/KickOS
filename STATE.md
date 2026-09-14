@@ -2485,6 +2485,148 @@ numeric floors, now demoted to a gross-partial-build guard, are still declared f
 of 54: a preset legitimately smaller than its arch minimum would be a FALSE RED rather than a
 missed catch.
 
+## M8.7: the rebaseline campaign, and what these green runs do NOT say
+
+**THE SUSPICION THAT DROVE THE MILESTONE WAS LARGELY DISPROVED, AND THAT IS THE RESULT.** Every
+published figure was held suspect because it predated trusted per-thread kernel stacks, the MMU,
+the big kernel lock, word-wise `memcpy` and the PMP precompute. Re-measured on the same board and
+posture as the 2026-08-18 table, thirteen of fourteen leaves moved by a few cycles or not at all
+(`ARCH_SWITCH` 21 both times, `SWITCH_BOOK` 70 both times, `CALL_PEEK` 16 both times). The one
+that moved is the one `roadmap.md` already named: `MPU_APPLY` 443 to **16 plus a `MPU_COMMIT` of
+73**, against the 19 and 75 that section quoted. The reason the other four changes do not show is
+worth stating rather than discovering twice: that board has no MMU, runs one kernel core so the
+big lock is uncontended, and its leaves are small enough that `memcpy` reaches only the two copy
+rows.
+
+**THE LOCKED FRACTION IS MEASURED NOW AND NOT DERIVED.** `lock-hold` at p50 768 cycles, n exactly
+2.0 outermost spans per switch, against a measured 6700-cycle round: **about 46 percent inside the
+outermost lock**, with no composite arithmetic and no correction constant. That supersedes in kind
+the 43-to-53 percent bracket derived from composites, and `f = 0.457` with its 1.37x stays dead --
+the term it removed is now a quarter of its assumed size and the campaign confirms it. It is read
+off `lock-hold`, so it is the figure the silicon re-take below most concerns.
+
+**A COMPOSITE IS NOT A COST ON AN INLINE-SWAP ARCH, AND ABOVE ONE CORE IT IS NOT REPRESENTABLE.**
+On arm64, rv64, x86_64, the LX6 and the sim the switch swaps inline, so a composite closes when
+the thread is next resumed. The four-core boards then subtract two cores' unsynchronised counters
+and land near 2^64. The instrument counts those as `SAT` instead of wrapping, and the split falls
+exactly on the line the maintainer ruled: **every row carrying `SAT` is a switch-enclosing
+composite and every leaf is clean.** Before that landed the phase table published `4294967295`
+with `min=0` and nothing said so. The cause was NOT long parks, which is what it looks like: the
+same image at one core saturates not once.
+
+**FOUR-CORE RATIOS ARE NOT KERNEL COSTS AND THE TWO ARCHES ARE NOT COMPARABLE TO EACH OTHER.**
+arm64 costs about 2.4x a one-core switch and rv64 about six times. The instrument's own per-core addressing was
+ruled out by A/B (per-core stamping made it slightly FASTER), the lock is outside the bracket at
+both ends, and the instruction sequence is the same -- so the remainder is the emulator. rv64's
+`rdcycle` reads the HOST TSC while arm64's `PMCCNTR_EL0` reads QEMU virtual time, which alone
+could carry the difference between the two ratios. **Nothing on this bench can separate the
+kernel's share**, there being no multi-core silicon here.
+
+**p50 SURVIVES A BUSY BOX AND `max` DOES NOT.** The switch p50 was the same figure in all five
+runs on four of six emulator boards and took two adjacent values on the other two, at a host load
+of five to seven, while `max` moved by up to two orders of magnitude in the same runs -- 16020
+cycles in one `qemu-riscv-bench` run against 982680 in another, p50 1536 in all five.
+`lock-hold`'s p50 is looser than the switch's on every board and its spread is in the record,
+because a figure differenced later needs its spread and not only its median. Silicon has neither
+problem: TWO flash-and-capture cycles per board, and within one image the two logs are identical
+apart from the build stamp -- every cycle figure, every nanosecond and every sample count --
+because the counter stops when the core stops. That is determinism across a reflash of ONE image,
+which is why the pass takes two a board rather than three. It is not a claim across trees: the
+XMC's DWT is intermittent between them, as the paragraph below records.
+
+**THE XMC4800's CYCLE FIGURE COMES AND GOES AND THE CHAIN NOW SAYS SO.** Its DWT sits in the core
+debug power domain; it read `0/0/0` over 40002 samples in both of the first captures and was
+refused, `78/78/294` in an earlier session, and `83` a switch live in both captures of the
+re-take the archive now embeds. Intermittent, not dead, and no one reading is its character. **The gate written
+this milestone to refuse exactly this could not see it**: it is registered through
+`kickos_add_qemu_test`, which registers nothing for a board with no emulator, so the one board in
+the fleet whose counter is documented unreliable was the one board the refusal structurally could
+not reach. It lives in the capture path now. Its wall-clock figures come from CCU40 and stand, and
+`f411disco`'s 80 cycles against that historical 78 is the campaign's only independent
+corroboration of anything.
+
+**THE PHASE TABLE DID NOT SURVIVE THE CONSOLE ON SILICON, AND NO EMULATOR CAN SHOW IT.** Six rows
+of forty arrived on `f411disco`, nine on `esp32c6-wroom`, seven on the XMC -- whole lines dropped,
+the `sat-probe` terminator with them. The console was behaving as M8.6.1 designed it: whole lines
+or nothing, a short write REPORTED, the caller deciding. The defect was that `bench_phase_print`
+was a caller that should have waited and did not. QEMU's PL011 and 16550 hand each byte to the
+chardev on the register write, so the ring never fills and **no emulated board reproduces this**;
+the witness is a rate-modelled host fixture plus an arm that counts the report's rows against a
+count the header now carries.
+
+**THE CAMPAIGN WAS AUDITED AFTER IT WAS TAKEN, AND THE AUDIT MOVED THE KERNEL.** Five findings,
+each landed with the mutation that exposes it; four are here and the fifth is the retraction
+below. A bench capture was accepted on any text at all, so
+it is now validated AS a bench report: the banner's commit compared against the stamp the build put
+in that image, five mandatory markers, the phase table's arrived rows reconciled against the count
+its header declares, and a dead or frozen counter refused. A bench image granted its threads IRQ
+authority the ordinary syscall would have refused, making the instrument the CHEAPER route to the
+hardware than the path it measures; the bench ops carry the same authority as `KOS_SYS_IRQ_ATTACH`
+now, under twenty-two arms. The end-to-end raise read the waiter's `Thread::state`, which is the
+scheduler's word and not the protocol's, so the waiter publishes its own park under the lock the
+waking post takes -- the window is zero rather than small, and DELETING the check instead was
+measured and rejected, moving rv64's locality split from 95/105 to 175/25. And a percentile took
+its rank from one read and its buckets from another, which is a quantile of neither; the walk takes
+no count now, so that shape cannot be spelled.
+
+**THE FOUR-CORE IRQ ROWS THIS CAMPAIGN FIRST PUBLISHED ARE RETRACTED, AND THE ROWS REFUSE NOW.**
+`qemu-arm64-benchsmp` printed `irq: 983040`, and the first reading of it -- in this section and in
+the record -- was the raiser spinning until a peer took the line. It was the offset between two
+cycle counters, which share no zero: a wait would have grown with the masked body beside it and it
+did not. **This is the third instance of one defect class in this milestone**, after the locality
+split and the phase-table composites, and it is the class to suspect first anywhere above one
+core. The probe now names the sweep's core, the handler's core and the raise-to-observation
+window, and refuses a sample failing either test; both four-core boards print `n=0` on every
+entry and masked row, beside `foreign=100` except where no handler stamped at all. The four-core
+IRQ figure is the end-to-end span alone, which reads one clock for the whole image.
+
+**WHAT THE CAMPAIGN DOES NOT WITNESS.** No emulator tick is a cycle of any real part. The
+end-to-end span's last leg is a granted arena block and not a device register, because no board
+the bench runs under an emulator can grant a user thread a DEV window at all. The IRQ-entry row is
+void wherever the syscall that raises the line runs masked, which is armv8a at every core count
+and rv64imac at one hart. No four-core board here delivers an injected line to the core that
+raised it, so the masked-span comparison is unwitnessed above one core rather than judged. And no
+silicon on this bench has more than one core, so every multi-core figure here is emulator-grade by
+construction.
+
+**THE SILICON HALF IS RE-TAKEN TWICE AND EVERY PERCENTILE HELD BOTH TIMES.** The second re-take
+puts the captures on the tree they ship with; the IPC call leaves moved by one to four cycles
+against the first and the switch leaves did not, `max` moved everywhere as a single sample does,
+and the esp32c6's `e2e-local` p99 went back to where it started, that cell being one sample at
+n = 50. What the re-take turned up instead: the armv7m
+boards' missing `bench: done` was never the capture window closing, it was a kernel-console short
+write dropped unread, so a line issued behind a kernel print burst was lost whole; and the XMC's
+DWT read a CONSTANT ZERO on the earlier trees and LIVE on both captures of the one the record
+ships, with nothing in the rig changed, so its published row carries cycles and the constant is
+the reading a dead DWT prints. The boards were captured on both sides of
+that console fix and every cycle p50 and p99 is
+identical. The one row the fix moved is the esp32c6's `e2e-local` p99, which at n = 50 IS the
+maximum -- a percentile is only a percentile where the sample count supports its rank, and the
+swept rows here carry 50 to 150 samples while the workload-fed ones carry tens of thousands.
+
+**THE EMULATOR HALF IS RE-TAKEN TOO, SO NOTHING IN THE RECORD IS A MIXED TREE ANY MORE.** Those
+thirty runs predated the console fix and the capture tooling and carried no end-to-end
+denominator, which today's validator refuses. Re-taken serially at a host load of five to
+seven, which every run's own line records, five of the
+twelve cycle cells read exactly what they read before and the other seven moved by a bucket or
+two, every one of them inside the previous pass's own run-to-run spread but four-core arm64's
+`lock-hold`. The wall clock moved by up to nine percent in both directions, which is the box.
+**The one cell worth naming is arm64's `e2e-cross` p50**, 212992 ns before against 131072 now:
+212992 is what the largest of the five new runs reports on its own, so that cell was reading a
+single loaded run rather than a cost.
+
+**THE IRQ BLOCK IS NOT IN CI AND THAT IS DELIBERATE.** CI is a regression test and not a
+performance one: every arm of that gate reads a timing distribution off a runner whose load it
+does not control. It is witnessed by hand at each rebaseline instead. The instrument's other
+gates -- the counter, the lock probe, the saturation column, the phase-table reconciliation and
+the twenty-two authority arms -- are regression tests and do run there, on armv8a and rv64 at
+ONE kernel core and again at FOUR. The four-core step is the only place `bench_percore` and
+`bench_doorbell` run at all, both being registered above one kernel core, and the lock WAIT
+slot exists only there too. Its
+margin is the runner having four cores to itself and is not large, so an arm there that starts
+failing on its own time bound is read as the runner and not as the kernel. The x86_64 image
+rides the firmware job at one core.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

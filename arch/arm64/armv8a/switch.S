@@ -33,6 +33,7 @@
    TPIDR_EL1 above one (percpu.h). static_asserted against offsetof in arch_armv8a.cc. */
 #define PERCPU_CTX_CURRENT  8
 #define PERCPU_SWITCH_TO    16
+#define PERCPU_BENCH_SW_START 32
 
 /* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
    sp already names the incoming one: the call frame then lands on the incoming thread's own
@@ -55,6 +56,35 @@
     add     \reg, \reg, #:lo12:kickos_armv8a_percpu + \disp
 #endif
     .endm
+
+#if KICKOS_BENCH
+/* The switch window (kernel/bench/bench.cc). It encloses the SOFTWARE REGISTER SAVE and the
+   stack-pointer swap, and NOT the software restore: RESTORE_FRAME_AND_ERET reloads every GPR
+   and all 32 FP registers before the eret, so no register is free to close a window on there,
+   and that macro is shared with every non-switch exception return.
+
+   THE STAMP IS THIS CORE'S CELL. A word shared with a peer subtracts one core's open from
+   another's close, which wraps near 2^32 whenever the peer opened later.
+
+   PMCCNTR_EL0 is 64 bits and the accumulator is 32: the low word alone is kept, which is
+   exact for any delta shorter than 2^32 ticks. */
+    .macro  BENCH_SW_OPEN
+    mrs     x2, pmccntr_el0
+    PERCPU_CELL x3, PERCPU_BENCH_SW_START
+    str     w2, [x3]
+    .endm
+
+/* CALL ONLY where SWITCH_UNLOCK may be called, and ABOVE it so the kernel lock's release
+   falls outside the window: sp already names the incoming frame, and the restore below
+   reloads every register this clobbers. */
+    .macro  BENCH_SW_CLOSE
+    mrs     x2, pmccntr_el0
+    PERCPU_CELL x3, PERCPU_BENCH_SW_START
+    ldr     w3, [x3]
+    sub     w0, w2, w3
+    bl      kickos_bench_switch_done
+    .endm
+#endif
 
     .macro  SAVE_FRAME
     sub     sp, sp, #FRAME_SIZE
@@ -300,6 +330,9 @@ karch_syscall64:
  */
     .global kickos_armv8a_switch_now
 kickos_armv8a_switch_now:
+#if KICKOS_BENCH
+    BENCH_SW_OPEN
+#endif
     SAVE_FRAME
     str     x30, [sp, #F_ELR]               /* resume where our caller expects to continue */
     mrs     x2, daif                        /* keep the caller's interrupt state exactly */
@@ -312,6 +345,9 @@ kickos_armv8a_switch_now:
     str     x2, [x0, #CTX_SP]
     ldr     x2, [x1, #CTX_SP]
     mov     sp, x2
+#if KICKOS_BENCH
+    BENCH_SW_CLOSE
+#endif
     SWITCH_UNLOCK
     RESTORE_FRAME_AND_ERET
 

@@ -539,15 +539,14 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_CPU_CLOCK_SET:
         {
             // AUTH_PSTATE: it mutates SystemCoreClock, retimes every thread's SysTick basis and
-            // moves the shared console baud. Out of the -KOS_E* scheme: it returns a u32 Hz whose
+            // moves the shared console baud. Out of the -KOS_E* scheme: it returns a u64 Hz whose
             // 0 sentinel already means cannot/unsupported/not-permitted.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_PSTATE))
             {
                 return 0;
             }
-            return static_cast<uint64_t>(
-                cpu_clock_set(static_cast<kos_pstate_t>(a0)));
+            return cpu_clock_set(static_cast<kos_pstate_t>(a0));
         }
         case KOS_SYS_THREAD_CREATE:
         {
@@ -999,9 +998,9 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_CPU_CLOCK_HZ:
         {
-            // OUT of the -KOS_E* scheme: a u32 Hz whose 0 sentinel already means
+            // OUT of the -KOS_E* scheme: a u64 Hz whose 0 sentinel already means
             // unknown / no silicon clock.
-            return static_cast<uint64_t>(arch_cpu_clock_hz());
+            return arch_cpu_clock_hz();
         }
         case KOS_SYS_PERIPH_CLOCK_HZ:
         {
@@ -1327,53 +1326,140 @@ uint64_t syscall_body(uintptr_t nr,
             // The ONLY route to the bench helpers from an app: each reads kernel .data or a
             // peripheral, so an app calling them directly runs them at ITS privilege and faults.
             // Both prints run here, in thread context and holding no IrqLock.
+            //
+            // BEING A BENCH IMAGE GRANTS NO THREAD ANYTHING. An op that attaches, injects or
+            // rings a doorbell carries the AUTH_IRQ its non-bench counterpart carries, and every
+            // caller-supplied count is bounded here rather than inside the helper, so a sweep
+            // body stays a measurement and not a gate.
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:
                 {
-                    bench_reset();
+                    // The fastpath's own count, handed in rather than reached for: the bench
+                    // has no business including a syscall-private header, and a counter of its
+                    // own beside this one would be a second truth about the same swap.
+                    bench_reset(ipc_fast_taken_count());
                     return 0;
                 }
                 case KOS_BENCH_OP_CYCCNT_HZ:
                 {
                     return bench_cyccnt_hz();
                 }
-                case KOS_BENCH_OP_SWITCH_PRINT:
+                case KOS_BENCH_OP_DIST_PRINT:
                 {
-                    return bench_switch_print();
+                    return bench_dist_print(ipc_fast_taken_count());
                 }
                 case KOS_BENCH_OP_IRQ_SETUP:
                 {
+                    // bench_irq_setup calls irq_attach, whose own syscall (KOS_SYS_IRQ_ATTACH)
+                    // takes AUTH_IRQ; reaching it through here must not be the cheaper route.
+                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
                     int const line = static_cast<int>(a1);
                     if (line < 0 or line >= KICKOS_MAX_IRQ)
                     {
                         return static_cast<uint64_t>(-KOS_EINVAL);
                     }
-                    bench_irq_setup(line);
+                    return static_cast<uint64_t>(bench_irq_setup(line));
+                }
+                case KOS_BENCH_OP_IRQ_SWEEP:
+                {
+                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
+                    if (a1 > KOS_BENCH_SAMPLES_MAX)
+                    {
+                        return static_cast<uint64_t>(-KOS_EINVAL);
+                    }
+                    return bench_irq_sweep(static_cast<uint32_t>(a1));
+                }
+                case KOS_BENCH_OP_IRQ_WCASE:
+                {
+                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
+                    if (a2 > KOS_BENCH_SAMPLES_MAX)
+                    {
+                        return static_cast<uint64_t>(-KOS_EINVAL);
+                    }
+                    return bench_irq_wcase_sweep(static_cast<uint32_t>(a1),
+                                                 static_cast<uint32_t>(a2));
+                }
+                case KOS_BENCH_OP_WCASE_SPANS:
+                {
+                    return bench_irq_wcase_spans();
+                }
+                case KOS_BENCH_OP_E2E_ARM:
+                {
+                    // The span's line is the one the caller's OWN cap names, never a bare
+                    // number: the raise that follows takes no authority, so this is where the
+                    // line stops being attacker-chosen. Resolve and use under one lock, as
+                    // every other cap arm does.
+                    IrqLock lock;
+                    int err = 0;
+                    IrqBinding* const b = static_cast<IrqBinding*>(
+                        cap_resolve_e(sched::current(), static_cast<uint32_t>(a1),
+                                      CapType::CAP_IRQ, CAP_WAIT, &err));
+                    if (b == nullptr)
+                    {
+                        return static_cast<uint64_t>(-err); // EBADF, or EPERM without WAIT
+                    }
+                    return static_cast<uint64_t>(bench_e2e_arm(b->line));
+                }
+                case KOS_BENCH_OP_E2E_RAISE:
+                {
+                    return static_cast<uint64_t>(bench_e2e_raise());
+                }
+                case KOS_BENCH_OP_E2E_TARE:
+                {
+                    return static_cast<uint64_t>(bench_e2e_tare());
+                }
+                case KOS_BENCH_OP_E2E_CLOSE:
+                {
+                    return static_cast<uint64_t>(bench_e2e_close());
+                }
+                case KOS_BENCH_OP_E2E_PRINT:
+                {
+                    // NOT bounded, unlike the counted ops above: a1 drives no kernel work at
+                    // all. It is the sweep size the app ran, echoed beside the raises the
+                    // kernel let through, and the sweep's loop is the app's.
+                    bench_e2e_print(static_cast<uint32_t>(a1));
                     return 0;
-                }
-                case KOS_BENCH_OP_IRQ_ONCE:
-                {
-                    int const line = static_cast<int>(a1);
-                    if (line < 0 or line >= KICKOS_MAX_IRQ)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return bench_irq_once(line);
-                }
-                case KOS_BENCH_OP_IRQ_MASKED_ONCE:
-                {
-                    int const line = static_cast<int>(a1);
-                    if (line < 0 or line >= KICKOS_MAX_IRQ)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return bench_irq_masked_once(line, static_cast<uint32_t>(a2));
                 }
                 case KOS_BENCH_OP_PHASE_PRINT:
                 {
                     bench_phase_print();
                     return 0;
+                }
+                case KOS_BENCH_OP_LOCK_PROBE:
+                {
+                    bench_lock_probe_print();
+                    return 0;
+                }
+                case KOS_BENCH_OP_DOORBELL_PROBE:
+                {
+#if KICKOS_KERNEL_CORES > 1
+                    // Every round runs under ONE IrqLock and raises an IPI on every peer, so
+                    // the round count is how long this core stays masked and how hard the
+                    // others are hammered. AUTH_IRQ, and never more rounds than the instrument
+                    // sweeps.
+                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
+                    if (a1 >= KICKOS_KERNEL_CORES or a2 > KOS_BENCH_ROUNDS_MAX)
+                    {
+                        return static_cast<uint64_t>(-KOS_EINVAL);
+                    }
+                    return bench_doorbell_probe_print(static_cast<uint32_t>(a1),
+                                                      static_cast<uint32_t>(a2));
+#else
+                    return static_cast<uint64_t>(-KOS_ENOSYS);
+#endif
                 }
                 default:
                 {

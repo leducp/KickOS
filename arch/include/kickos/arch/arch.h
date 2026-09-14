@@ -314,7 +314,7 @@ void arch_timer_disarm(void);
 
 // Running core clock in Hz (the CMSIS SystemCoreClock the chip tracks at PLL bring-up). 0 where
 // the backend has no silicon core clock (the host sim, a QEMU virt guest).
-uint32_t arch_cpu_clock_hz(void);
+uint64_t arch_cpu_clock_hz(void);
 
 // Read-only branch-clock oracle: the peripheral branch clock in Hz feeding the register block
 // whose base is `base`. `base` is the peripheral register-BLOCK base (e.g. a K64F UART at
@@ -368,7 +368,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 //
 // `target` carries a kos_pstate_t (sys/abi.h) as a plain u32; a backend that opts in includes
 // sys/abi.h itself to name the KOS_PSTATE_* points.
-uint32_t arch_cpu_clock_set(uint32_t target);
+uint64_t arch_cpu_clock_set(uint32_t target);
 
 // Console coherence hooks (both no-op fallbacks):
 //   arch_console_flush_sync: block until the TX shift register is fully idle

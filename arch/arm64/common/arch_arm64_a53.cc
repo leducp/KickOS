@@ -20,6 +20,10 @@ using kickos::arm64::PPI_EL1_PHYS_TIMER;
 using kickos::arm64::semihost;
 using kickos::arm64::SYS_EXIT;
 
+// E (bit 0), C (bit 2) and LC (bit 6) in ONE immediate, which is what the static gate reads
+// out of the linked image.
+#define KICKOS_A53_PMCR_E_C_LC 0x45u
+
 namespace
 {
     constexpr uint64_t CNTP_CTL_ENABLE = 1u << 0;
@@ -62,6 +66,25 @@ void kickos_armv8a_percore_init(void)
     // this, an output still asserted when the GIC below enables this core's PPI pends the line
     // the write above exists to silence.
     __asm volatile("isb" ::: "memory");
+
+#if defined(KICKOS_BENCH) && KICKOS_BENCH
+    // The bench cycle source (kickos/bench.h) is PMCCNTR_EL0, and nothing else in this port
+    // programs the PMU. PMCR_EL0.D divides the count by 64 and its reset value is
+    // architecturally UNKNOWN, so it is cleared rather than assumed.
+    //
+    // LC IS PART OF THE WIDTH CLAIM. bench_cyccnt subtracts PMCCNTR_EL0 at 64 bits
+    // (KICKOS_BENCH_TICK_BITS), and with LC clear the cycle counter's overflow sits at bit 31;
+    // Arm deprecates that setting. tests/static/check_bench_a53_pmcr.sh holds the bit, because
+    // no vehicle in this tree can tell the two images apart at run time.
+    // Per core, these registers being per PE.
+    uint64_t pmcr = 0;
+    __asm volatile("mrs %0, pmcr_el0" : "=r"(pmcr));
+    pmcr &= ~static_cast<uint64_t>(1u << 3);
+    pmcr |= KICKOS_A53_PMCR_E_C_LC;
+    __asm volatile("msr pmcr_el0, %0" ::"r"(pmcr));
+    __asm volatile("msr pmcntenset_el0, %0" ::"r"(static_cast<uint64_t>(1ull << 31)));
+    __asm volatile("isb" ::: "memory");
+#endif
 
     kickos_armv8a_gic_percore_init();
 }

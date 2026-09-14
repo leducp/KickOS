@@ -700,20 +700,6 @@ endif()
 
 include("${CMAKE_SOURCE_DIR}/cmake/amp_partition.cmake")
 
-# The microbench accumulates into one set of phase cells for the whole image, and its own
-# contract is that every write happens under the interrupt lock or on one thread. A switch span
-# breaks that above one kernel core: it closes when the outgoing thread is next RESUMED, which
-# the swap does after releasing the kernel lock and possibly on a different core, so two cores
-# closing the same phase race unlocked. Refused rather than measured wrong. What it wants is one
-# accumulator per core plus an aggregation at report time.
-if(KICKOS_BENCH AND KICKOS_KERNEL_CORES GREATER 1)
-  message(FATAL_ERROR
-    "KickOS: KICKOS_BENCH=ON with KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. The phase "
-    "accumulators are one set for the image and a switch span closes on the resuming core "
-    "outside the kernel lock, so two cores race on the same cells. Give kernel/bench/bench.cc "
-    "one accumulator per core and aggregate when the report is emitted.")
-endif()
-
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # The floor must cover the thread-exit teardown, which runs on the CALLING thread's stack.
 # An arch property; the measured figures are in the Kconfig declaration.

@@ -6,6 +6,7 @@
 #include <stdarg.h>
 
 #include <kickos/sys.h>
+#include <kickos/sys/emit.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/libc/string.h>
 
@@ -80,7 +81,7 @@ namespace tap
                     }
                     // Remainder only: resending from the start would duplicate the
                     // chunks the driver already took.
-                    kos_kconsole_write(s + sent, total - sent);
+                    kickos::kconsole_write_all(s + sent, total - sent);
                     return;
                 }
                 sent += static_cast<size_t>(r);

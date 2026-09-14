@@ -60,11 +60,11 @@ namespace
         return d;
     }
 
-    void print_hz(char const* label, uint32_t hz)
+    void print_hz(char const* label, uint64_t hz)
     {
         char s[96];
-        ksnprintf(s, sizeof(s), "[clockretune] %s: cpu_clock_hz = %u\n", label,
-                  static_cast<unsigned>(hz));
+        ksnprintf(s, sizeof(s), "[clockretune] %s: cpu_clock_hz = %llu\n", label,
+                  static_cast<unsigned long long>(hz));
         emit(s);
     }
 }
@@ -77,10 +77,10 @@ int main(int, char**)
 
     emit("[clockretune] START privileged retune harness\n");
 
-    uint32_t const hz_boot = kos::cpu_clock_hz();
+    uint64_t const hz_boot = kos::cpu_clock_hz();
     uint64_t const t0 = kos::clock_now();
-    ksnprintf(s, sizeof(s), "[clockretune] boot: cpu_clock_hz = %u  clock_now t0 = %llu ns\n",
-              static_cast<unsigned>(hz_boot), static_cast<unsigned long long>(t0));
+    ksnprintf(s, sizeof(s), "[clockretune] boot: cpu_clock_hz = %llu  clock_now t0 = %llu ns\n",
+              static_cast<unsigned long long>(hz_boot), static_cast<unsigned long long>(t0));
     emit(s);
 
     uint64_t const spin_max = timed_spin("MAX");
@@ -88,7 +88,7 @@ int main(int, char**)
     // 1. retune -> LOW. Sample now() immediately BEFORE the seam so step 2 can bound
     //    the mispriced-window delta across the actual PLL/divider move.
     uint64_t const t_pre = kos::clock_now();
-    uint32_t const hz_low = kos_cpu_clock_set(KOS_PSTATE_LOW);
+    uint64_t const hz_low = kos_cpu_clock_set(KOS_PSTATE_LOW);
     print_hz("after set(LOW)", hz_low);
 
     // 2. IMMEDIATELY re-read now() several times. Assert monotonic (no backward step)
@@ -153,7 +153,7 @@ int main(int, char**)
 
     // 5. retune -> MAX; console must STILL be readable after both retunes (baud
     //    re-derived at each rate).
-    uint32_t const hz_max = kos_cpu_clock_set(KOS_PSTATE_MAX);
+    uint64_t const hz_max = kos_cpu_clock_set(KOS_PSTATE_MAX);
     print_hz("after set(MAX)", hz_max);
     emit("[clockretune] console still readable after both retunes (this line proves baud)\n");
 

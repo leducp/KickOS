@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-extern "C" uint32_t arch_cpu_clock_set(uint32_t target)
+extern "C" uint64_t arch_cpu_clock_set(uint32_t target)
 {
     (void)target;
     return 0;

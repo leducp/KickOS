@@ -32,6 +32,8 @@ and, for hardware facts, the TRM section.)
 - **`bench.md`** -- the bench chain (`../../tools/bench/`): the flash-and-capture order per
   board class, the refusals, the service-list coverage rule, and the boundary between what
   the repo knows about a board and what only one rig knows -- the gitignored rig config.
+  What is on the bench right now is answered by `../../tools/bench/bench-present.sh` and is
+  written down nowhere.
 - **`boards.md`** -- per-board reference: pins, console, LED, flash backend, and per-target
   quirks. The source of truth for "how board X is wired", with a summary HW-validated indicator
   per board, plus what CI gates per ISA and the cross-toolchain convention. The authoritative

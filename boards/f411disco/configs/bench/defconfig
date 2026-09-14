@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_F411DISCO=y
+
+# The microbench on an armv7m part whose cycle counter is trustworthy. xmc4800-relax declares
+# KICKOS_CHIP_CYCCNT_GLITCHES, which compiles the histogram out and leaves MIN as its headline;
+# stm32f411 declares no such limit, so this is where the arch's percentiles come from.
+# This mirrors the `st` variant and not `flat`: the ENFORCING posture is the one the figures are
+# wanted under, and a posture change moves the rendezvous cost being measured.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_USER_STACK_SIZE=4096
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=4096
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y
+
+# No service list is pinned because this board declares none and the default is already
+# kickos_services_none: a console driver is a thread and its device is an interrupt source,
+# and both would compete with the bench peers for the window being timed. The app writes
+# through kickos::emit, so the lines still reach the kernel console the capture reads.

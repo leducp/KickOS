@@ -469,9 +469,9 @@ uint64_t kos_clock_now(void)
     return arch_syscall64(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0);
 }
 
-uint32_t kos_cpu_clock_hz(void)
+uint64_t kos_cpu_clock_hz(void)
 {
-    return static_cast<uint32_t>(arch_syscall(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0));
+    return arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0);
 }
 
 uint32_t kos_periph_clock_hz(uintptr_t base)
@@ -491,10 +491,9 @@ int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
                                          static_cast<uintptr_t>(value), 0));
 }
 
-uint32_t kos_cpu_clock_set(kos_pstate_t pstate)
+uint64_t kos_cpu_clock_set(kos_pstate_t pstate)
 {
-    return static_cast<uint32_t>(
-        arch_syscall(KOS_SYS_CPU_CLOCK_SET, static_cast<uintptr_t>(pstate), 0, 0, 0));
+    return arch_syscall64(KOS_SYS_CPU_CLOCK_SET, static_cast<uintptr_t>(pstate), 0, 0, 0);
 }
 
 void* kos_ram_alloc(size_t size)
@@ -521,13 +520,13 @@ void kos_kernel_diag_led_toggle(void)
 }
 
 #if defined(KICKOS_BENCH) && KICKOS_BENCH
-static_assert(sizeof(kos_bench(0, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_bench(0, 0, 0)) == 8, "must be exactly 8 bytes");
 
-int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
+int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
 {
-    return static_cast<int32_t>(arch_syscall(KOS_SYS_BENCH, static_cast<uintptr_t>(op),
-                                             static_cast<uintptr_t>(a0),
-                                             static_cast<uintptr_t>(a1), 0));
+    return static_cast<int64_t>(arch_syscall64(KOS_SYS_BENCH, static_cast<uintptr_t>(op),
+                                               static_cast<uintptr_t>(a0),
+                                               static_cast<uintptr_t>(a1), 0));
 }
 #endif
 }

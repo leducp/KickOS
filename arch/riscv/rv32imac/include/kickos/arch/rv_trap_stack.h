@@ -56,17 +56,21 @@
  * so it is not re-derived as a new opportunity: the block falls from 1184 to 1104, 80 bytes
  * per KICKOS_THREAD_SLOTS.
  *
- *   _TRAP  480 enforced, 224 measured, and one reading for the whole arch now that the
- *              console is off it: kickos_isr_timer[0] -> ktime_on_timer[64]
- *              -> endpoint_wait_abort[32] -> sched::wake[16] -> resched_after_wake[32]
- *              -> reschedule[32] -> the SchedPolicy hook -> policy_on_switch_in[16]
- *              -> arm_slice[32]
- *   _SYS   912 enforced, 800 measured on esp32c6-wroom-bench, the one dispatch left that
- *              walks the console: syscall_dispatch[80] -> bench_phase_print[48]
- *              -> kprintf[320] -> kconsole_write[0]
- *              -> kconsole_write_impl[176] -> console_emit[48] -> arch_console_write[0]
- *              -> console_tx_write[80] -> drain_sync[32] -> wait_slot[16]. Off KICKOS_BENCH
- *              the deepest reading is 656.
+ *   _TRAP  480 enforced, 224 measured on the five non-bench presets and 256 on the two
+ *              bench ones, one chain for the whole arch: kickos_isr_timer[0]
+ *              -> ktime_on_timer[64] -> endpoint_wait_abort[32] -> sched::wake[16]
+ *              -> resched_after_wake[32] -> reschedule[32] -> the SchedPolicy hook
+ *              -> policy_on_switch_in[16] -> arm_slice[32]. The 32 KICKOS_BENCH adds is its
+ *              IrqLock bracket taking a slot in sched::wake and one in reschedule.
+ *   _SYS   912 enforced, 720 measured on BOTH bench presets, the dispatch that prints, and
+ *              the two reach that figure down different tails:
+ *              syscall_dispatch[80] -> bench_irq_sweep[112] -> dist_print_fmt[32]
+ *              -> kprintf_paced[320] -> kconsole_write[0] -> console_emit[48]
+ *              -> arch_console_write[0] -> console_tx_insert_line[64]
+ *              -> console_write_line_sync[32] -> arch_console_write_sync[32]
+ *              on qemu-riscv-bench, and dist_print_fmt[48] -> kprintf_paced[320]
+ *              -> kvsnprintf[80] -> emit_uint[80] on esp32c6-wroom-bench, where the
+ *              formatter beats the console. Off KICKOS_BENCH the deepest reading is 656.
  *
  * FRAME_SYS + _SYS = 1168, and the LOWEST word of a block is its overflow canary
  * (kernel/thread/thread.cc), so KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes of slack
@@ -90,23 +94,27 @@
  * fleet-wide number would make every non-bench board's floor reserve for a bracket its image
  * does not contain.
  *
- *   KICKOS_BENCH 0, 704 over 688 measured on BOTH boards, the console tail being gone so the
- *   chain no longer walks a per-board backend:
- *     688  syscall_dispatch[32] -> syscall_body[128] -> thread_create_call[272]
- *          -> thread_create[96] -> task_for[16] -> domain_for[32]
- *          -> grant_region_admissible[32] -> grant_hits_reserved[80]
+ *   KICKOS_BENCH 0, 704 over 656 measured on qemu-riscv, tied by esp32c6-wroom-st. THE
+ *   PRESETS DO NOT AGREE: gcc inlines syscall_body into syscall_dispatch on every one of them
+ *   and that head frame is per board, so esp32c6-wroom reads 608; the two flat presets take a
+ *   different chain again and read 544.
+ *     656  syscall_dispatch[128] -> thread_create_call[272] -> thread_create[96]
+ *          -> task_for[16] -> domain_for[32] -> grant_region_admissible[32]
+ *          -> grant_hits_reserved[80]
  *
- *   KICKOS_BENCH 1, 832 over 800 measured on the worse board. The bench arm prints, so it
- *   walks the console and the figure is per board. gcc inlines syscall_body into
- *   syscall_dispatch here, so the head is one frame rather than 32 + 128:
- *     800  syscall_dispatch[80] -> bench_phase_print[48] -> kprintf[320]
- *          -> kconsole_write[0] -> kconsole_write_impl[176]
- *          -> console_emit[48] -> arch_console_write[0] -> console_tx_write[80]
- *          -> drain_sync[32] -> wait_slot[16]     (qemu-riscv-bench: 704, its
- *                                                  arch_console_write being a 32-byte leaf)
+ *   KICKOS_BENCH 1, 832 over 720 measured on BOTH bench presets. The bench arm prints, so it
+ *   walks the console, and the two boards reach one figure down two tails:
+ *     720  syscall_dispatch[80] -> bench_irq_sweep[112] -> dist_print_fmt[32]
+ *          -> kprintf_paced[320] -> kconsole_write[0] -> console_emit[48]
+ *          -> arch_console_write[0] -> console_tx_insert_line[64]
+ *          -> console_write_line_sync[32] -> arch_console_write_sync[32]
+ *                                                          (qemu-riscv-bench)
+ *     720  syscall_dispatch[80] -> bench_irq_sweep[112] -> dist_print_fmt[48]
+ *          -> kprintf_paced[320] -> kvsnprintf[80] -> emit_uint[80]
+ *                                                          (esp32c6-wroom-bench)
  *
- * Each is its measurement rounded up to the next multiple of 64, the convention a thread-stack
- * figure carries here, so the slack cannot be spent silently.
+ * A thread-stack figure here is its measurement rounded up to the next multiple of 64, so the
+ * slack cannot be spent silently. 704 is that of 656; 832 is enforced above the 720.
  *
  * THE RESIDUAL THIS ONCE CARRIED IS GONE. A kernel assertion firing while a privileged thread
  * sat at the very bottom of a floor-sized stack had the console writer descend up to 144 bytes
@@ -136,23 +144,39 @@
 
 /* The two death-path stubs that relocate, on the thread's own KERNEL BLOCK: .Lfault moves sp
  * to kickos_fault_stack_top and arch_ctx_redirect fabricates a frame there, both answering
- * with ctx.kernel_sp. 544 on esp32c6-wroom, the fault reporter winning, and no posture moves
- * it. The reporter formats into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary
- * kprintf gets, which is why its array no longer dominates the console tail below it.
+ * with ctx.kernel_sp. 432 on both bench presets and 384 on the five that are not, the
+ * CAPABILITY TEARDOWN winning and not the fault reporter:
+ *   kickos_thread_fault_exit[16] -> sched::exit_current[80] -> cap_teardown[32]
+ *   -> teardown_entry[64] -> obj_close_protocol[32] -> mutex_force_unlock[32]
+ *   -> sched::wake[16] -> resched_after_wake[32] -> reschedule[32]
+ *   -> the SchedPolicy hook -> policy_on_switch_in[16] -> arm_slice[32]
+ * The 48 KICKOS_BENCH adds is its IrqLock bracket taking a slot in cap_teardown, sched::wake
+ * and reschedule.
  * NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure
  * is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
  * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, _SYS winning the block on every
- * registered preset, so the reason for that convention does not reach it. 576 is the 544
- * measured rounded up to the next multiple of 64: 128 + 576 = 704 against 1180 usable, where
- * _SYS asks 1168, so this would have to grow 464 more before it bound. */
+ * registered preset, so the reason for that convention does not reach it. 576 stands above
+ * the 432 measured: 128 + 576 = 704 against 1180 usable, where _SYS asks 1168, so this would
+ * have to grow 464 more before it bound. */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
 
 /* kickos_thread_return ALONE: a PRIVILEGED thread's entry-return stub, a user thread's being
  * the kickos_user_thread_return syscall instead, so no fault and no redirect relocates it and
  * it runs at the depth the entry returned from on the thread's own stack. 384 on every
- * registered preset; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this class, so the
- * 128 + 384 red zone is checked against the floor rather than setting it. */
+ * registered non-bench preset; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this
+ * class, so the 128 + 384 red zone is checked against the floor rather than setting it.
+ *
+ * TWO FIGURES FOR THE SAME REASON _SYSPRIV CARRIES TWO. Under KICKOS_BENCH the IrqLock bracket
+ * samples the outermost masked window inline, which costs one stack slot in sched::wake,
+ * sched::reschedule and cap_teardown: 432 measured on BOTH rv32 bench presets, down the same
+ * teardown chain _EXITK walks, entered from kickos_thread_return. One fleet-wide figure would
+ * make every non-bench board's floor reserve for a bracket its image does not contain. This is
+ * the one class sitting exactly on its bound off KICKOS_BENCH. */
+#if KICKOS_BENCH
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 448
+#else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 384
+#endif
 
 /* THE SYSCALL REQUIREMENT HOLDS TWO FRAMES, the second being the msip frame the deferred
  * switcher builds. A blocking dispatch pends msip and the trap fires at whatever depth the
@@ -185,20 +209,20 @@
  * kernel bug: arch_fault_is_user_thread refuses a frame not on the running thread's kernel
  * stack, so kickos_rv_fault_report terminates and the overwritten frame is never resumed.
  *
- * .Lfault's reporter sizes this stack, the four .Lintr ISR arms being shallower. The figure is
- * the worse of the two boards, the console backend being per board:
- *   640  kickos_rv_fault_report[32] -> kickos_isr_fault[32] -> kprintf[320]
- *        -> kconsole_write[0] -> kconsole_write_impl[176]
- *        -> console_emit[48] -> arch_console_write[32]            (qemu-riscv)
- *   736  the same chain on esp32c6-wroom-st, whose arch_console_write is a 0-byte thunk into
- *        console_tx_write[80] -> drain_sync[32] -> wait_slot[16].
+ * .Lfault's reporter sizes this stack, the four .Lintr ISR arms being shallower:
+ *   560  kickos_rv_fault_report[32] -> kickos_isr_fault[32] -> kprintf[320]
+ *        -> kconsole_write[0] -> console_emit[48] -> arch_console_write[0]
+ *        -> console_tx_insert_line[64] -> console_write_line_sync[32]
+ *        -> arch_console_write_sync[32]                           (qemu-riscv-bench ALONE)
+ *   544  every other registered preset. On the esp32c6 ones the same reporter wins down the
+ *        FORMATTER instead of the console, kprintf[320] -> kvsnprintf[80] -> emit_uint[80].
  *
  * ENFORCED TWICE, over the same reporter chain on two different stacks: an ACCEPTED U-mode
  * fault runs .Lfault with sp on the frame the entry built, which is the kernel stack, so the
  * gate's FAULT class charges KICKOS_RV_TRAP_FRAME plus this depth, 960, against the block.
  *
  * THIS CLASS IS THE ONE THAT WALKS THE CONSOLE, so a console change moves it. 832 is
- * deliberately above the 736 measured: the enforced figure is what a FUTURE change is
+ * deliberately above the 560 measured: the enforced figure is what a FUTURE change is
  * measured against, and the margin costs one shared kernel array rather than per-thread
  * bytes. Do NOT tighten it back to the measurement. */
 #define KICKOS_RV_TRAP_NESTED_DEPTH 832
@@ -257,12 +281,14 @@
  * frame on whatever that names: never this array. Such a fault is a kernel bug on a path that
  * is already terminal, exactly as for the nested frame on the trap stack above.
  *
- * THE DEPTH IS NOT THE MEASUREMENT. The PANIC class measures 384 on the four esp32c6 presets,
- * worst on the board whose arch_console_write is a thunk into the C6 TX ring, and 288 on the
- * three qemu-riscv ones. 448 is the next multiple of 64 STRICTLY ABOVE that, which is the rule
- * every arch's PANIC figure follows and the reason a reading already 64-aligned still gains a
- * step: a byte here costs one shared array rather than one per thread slot, and the enforced
- * figure is what a future change is measured against.
+ * THE DEPTH IS NOT THE MEASUREMENT. The PANIC class measures 208 at worst, on
+ * qemu-riscv-bench, 192 on the other two qemu-riscv presets, and 160 to 176 on the four
+ * esp32c6 ones. THE QEMU SIDE IS THE DEEPER ONE, which is the opposite of what the board
+ * families do elsewhere: its chain runs one frame further, kputs -> kconsole_write
+ * -> console_emit -> arch_console_write -> console_tx_insert_line -> console_write_line_sync
+ * -> arch_console_write_sync[32], where the esp32c6 chain stops at console_write_line_sync.
+ * 448 IS ENFORCED ABOVE THAT: a byte here costs one shared array rather than one per thread
+ * slot, and the enforced figure is what a future change is measured against.
  * KICKOS_PANIC_STACK_SIZE (Kconfig) is what the array is cut to and what the gate compares
  * this against; arch_rv32imac.cc static_asserts the two agree. */
 #define KICKOS_RV_PANIC_FRAME 0

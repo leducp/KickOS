@@ -55,6 +55,13 @@ add_library(kickos_x86_64_nokernel OBJECT "${KICKOS_X86_64_DIR}/nokernel_x86_64.
 kickos_apply_freestanding(kickos_x86_64_nokernel)
 target_include_directories(kickos_x86_64_nokernel PRIVATE ${KICKOS_X86_64_INCLUDES})
 
+# The switch accumulator's two symbols. Under KICKOS_BENCH switch.S brackets the swap and
+# reaches the kernel for both, and the three images below carry the arch archive with no
+# kernel behind it.
+add_library(kickos_x86_64_nobench OBJECT "${KICKOS_X86_64_DIR}/nobench_x86_64.cc")
+kickos_apply_freestanding(kickos_x86_64_nobench)
+target_include_directories(kickos_x86_64_nobench PRIVATE ${KICKOS_X86_64_INCLUDES})
+
 # X2's subset: the tables, the report and the declining interrupt fallback.
 add_library(kickos_x86_64_x2 OBJECT
   "${KICKOS_X86_64_DIR}/desc_x86_64.cc"
@@ -130,6 +137,7 @@ add_custom_command(
   COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
@@ -137,6 +145,7 @@ add_custom_command(
           -o "${KICKOS_X3_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           --start-group
           "$<TARGET_FILE:kickos_chip_q35>"
@@ -145,6 +154,7 @@ add_custom_command(
   # See the per-class link above for why the OBJECTS and not the targets.
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
@@ -167,18 +177,21 @@ add_custom_command(
   COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
   COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
           -o "${KICKOS_X4_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           --start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           --end-group
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"
@@ -202,12 +215,14 @@ add_custom_command(
   COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
   COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
           -o "${KICKOS_X5_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           --start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
@@ -215,6 +230,7 @@ add_custom_command(
   # See the per-class link above for why the OBJECTS and not the targets.
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"

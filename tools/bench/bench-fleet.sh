@@ -15,9 +15,8 @@
 # works in bash and silently does NOT in zsh, which does not word-split: the whole
 # string arrives as one board name, the cmake preset is malformed, and bench.sh exits
 # at its configure line BEFORE printing anything. Two boards then look skipped rather
-# than failed. That is exactly how it bit on 2026-08-06. Here the serial is resolved
-# INSIDE the script and passed as its own quoted argument, so there is no pair for a
-# caller to mis-split.
+# than failed. Here the serial is resolved INSIDE the script and passed as its own
+# quoted argument, so there is no pair for a caller to mis-split.
 #
 # Serials are resolved LIVE from the bus, never taken from a note: there is more than
 # one physical XMC and K64F in rotation and the serials are not desk facts. In remote
@@ -31,6 +30,8 @@ set -u
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 BENCH="$HERE/bench.sh"
 . "$HERE/rig.sh"
+. "$HERE/bench-host.sh"
+. "$HERE/board-rows.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
@@ -52,41 +53,22 @@ two_image() {
   esac
 }
 
-# One enumeration of the bus, taken once, wherever the boards are. Every presence and
-# serial question below reads THIS, so the local and the remote answer come from the
-# same code rather than from two implementations that can drift.
-ENUM_SCRIPT='
-for d in /sys/bus/usb/devices/*/; do
-  [ -r "$d/idVendor" ] && [ -r "$d/idProduct" ] || continue
-  s=""
-  [ -r "$d/serial" ] && s=$(cat "$d/serial")
-  printf "%s:%s %s\n" "$(cat "$d/idVendor")" "$(cat "$d/idProduct")" "$s"
-done
-'
-if [ -n "${BENCH_HOST:-}" ]; then
-  echo "=== bench host ${BENCH_HOST}:${BENCH_PORT:-${RIG_BENCH_PORT:-22}}"
-  # bash -s with the script on stdin: the remote login shell is zsh, which aborts on an
-  # unmatched glob, and /sys/bus/usb/devices/*/ is exactly that on a box with no bus.
-  BUS=$(ssh -p "${BENCH_PORT:-${RIG_BENCH_PORT:-22}}" -o BatchMode=yes "$BENCH_HOST" bash -s <<< "$ENUM_SCRIPT") || {
-    echo "REFUSING: could not enumerate the bus on $BENCH_HOST" >&2
-    exit 2
-  }
-else
-  BUS=$(bash -c "$ENUM_SCRIPT")
+# ONE enumeration of the bus, taken once, wherever the boards are.
+bench_host_select "${BENCH_HOST:-}"
+# Selecting the mode is BENCH_HOST's job and not the rig config's: a key must not move a
+# flashing run from one machine to another.
+if [ -z "${BENCH_HOST:-}" ] && [ -n "${RIG_BENCH_HOST:-}" ]; then
+  echo "NOTE: BENCH_HOST is unset, so this pass reads THIS BOX, while $RIG_CONF names"
+  echo "  $RIG_BENCH_HOST as the bench. tools/bench/bench-present.sh says where the boards are."
 fi
-[ -n "$BUS" ] || { echo "REFUSING: the bus enumeration came back empty" >&2; exit 2; }
-
-usb_present() {
-  printf '%s\n' "$BUS" | grep -q "^$1 "
-}
-
-# Echo the serial of the first device matching vid:pid, or fail if it has none.
-usb_serial_of() {
-  local s
-  s=$(printf '%s\n' "$BUS" | awk -v k="$1:$2" '$1 == k && $2 != "" { print $2; exit }')
-  [ -n "$s" ] || return 1
-  echo "$s"
-}
+echo "=== $BENCH_WHERE"
+bench_bus_read
+case $? in
+  1) echo "REFUSING: could not enumerate the bus on $BENCH_WHERE. Run tools/bench/bench-present.sh reach." >&2
+     exit 2 ;;
+  2) echo "REFUSING: the bus enumeration came back empty" >&2
+     exit 2 ;;
+esac
 
 RESULTS=""
 # THE SERVICE LISTS A BOARD OWES A FULL PASS, derived from the tree rather than listed here:
@@ -95,8 +77,7 @@ RESULTS=""
 # "whatever the preset defaults to") then every variant.
 #
 # This exists because a fleet pass that runs only the default list reports a clean sweep while
-# saying nothing about the lists it never ran, and a scheduler regression lived in exactly that
-# silence: green on every default-list board, broken only under an IRQ-driven UART.
+# saying nothing about the lists it never ran.
 lists_for() { # <board>
   local board=$1 key stem
   # TWO spellings, because the providers use both: the board with its dash removed
@@ -162,35 +143,37 @@ bench_one() {
 }
 
 FAILED=0
+ABSENT=0
 COVERED=""
 for board in $WANT; do
   SN=""
-  case $board in
-    xmc4800-relax)
-      SN=$(usb_serial_of 1366 1024) || { record "$board" "ABSENT (no J-Link idProduct 1024)"; continue; }
-      ;;
-    frdmk64f)
-      SN=$(usb_serial_of 1366 1015) || { record "$board" "ABSENT (no J-Link idProduct 1015)"; continue; }
-      ;;
-    rx72m)
-      usb_present 045b:82a0 || { record "$board" "ABSENT (no E2 Lite)"; continue; }
-      usb_present 0403:6001 || { record "$board" "ABSENT (no FTDI for the SCI6 console)"; continue; }
-      ;;
-    f302nucleo)
-      usb_present 0483:374b || { record "$board" "ABSENT (no ST-Link V2.1)"; continue; }
-      ;;
-    esp32c6-wroom)
-      usb_present 1a86:55d3 || { record "$board" "ABSENT (no CH343P)"; continue; }
-      ;;
-    esp32-wroom)
-      usb_present 1a86:7523 || { record "$board" "ABSENT (no CH340)"; continue; }
-      ;;
-    *)
-      record "$board" "REFUSED (no row; add one rather than guessing its probe)"
-      FAILED=1
-      continue
-      ;;
+  ROWS=$(board_probe_rows "$board")
+  case $? in
+    1) record "$board" "REFUSED (no row; add one to tools/bench/board-rows.sh rather than guessing its probe)"
+       FAILED=1
+       continue ;;
+    2) record "$board" "REFUSED ($ROWS)"
+       FAILED=1
+       continue ;;
   esac
+  MISS=""
+  while IFS='|' read -r id flag what; do
+    [ -n "$id" ] || continue
+    if ! usb_present "$id"; then
+      MISS="$id is not on the bus: $what"
+      break
+    fi
+    if [ "$flag" = "sn" ]; then
+      SN=$(usb_serial_of "${id%%:*}" "${id##*:}") || { MISS="$id carries no serial descriptor: $what"; break; }
+    fi
+  done <<EOF
+$ROWS
+EOF
+  if [ -n "$MISS" ]; then
+    record "$board" "ABSENT ($MISS)"
+    ABSENT=1
+    continue
+  fi
 
   echo "=== $board${SN:+  SN $SN}"
   # EVERY LIST THE BOARD OWES, not just the default. A pass that ran only the default list is
@@ -220,10 +203,13 @@ echo
 echo "=== fleet pass, TAG=$TAG"
 printf '%s' "$RESULTS"
 echo "logs: $OUTDIR/$TAG*-*.log"
+if [ "$ABSENT" -ne 0 ]; then
+  echo "an ABSENT board is absent from $BENCH_WHERE, and nowhere else was asked."
+  echo "  tools/bench/bench-present.sh reports the whole bus, probe serials and consoles."
+fi
 
 # COVERAGE, stated rather than assumed. A pass that skipped a list is not a pass over that
-# board, and the whole reason this section exists is that the skip used to be SILENT: the
-# summary above reported green boards while saying nothing about the lists never run.
+# board.
 echo
 echo "=== service-list coverage"
 UNCOVERED=0

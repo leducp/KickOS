@@ -199,7 +199,7 @@ extern "C"
 
 // CMSIS core clock, defined + maintained by the chip at PLL bring-up.
 extern uint32_t SystemCoreClock;
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
     return SystemCoreClock;
 }

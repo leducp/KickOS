@@ -47,6 +47,11 @@ struct alignas(64) armv8a_percpu_block
     // VEC_SLOT (vectors.S) seats no TPIDR_EL1, so on the slots that report a privileged fault
     // the register carries no promise.
     uint32_t report_depth;
+
+#if KICKOS_BENCH
+    // PMCCNTR_EL0 at the switch window's open, read back at its close by the same core.
+    uint32_t bench_sw_start;
+#endif
 };
 
 extern struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES];

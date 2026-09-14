@@ -11,9 +11,10 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # Nothing in this list links a library another directory defines. One that does belongs
   # under its provider below.
   foreach(_unit IN ITEMS
-      ampwindow capreply captable consoleline consoleown consoletx consoletxsmp deathspace
-      drvbringup fastrefuse faultline frame grantnocache irqquiesce kstring ktime mapexec
-      placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass vrange)
+      ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
+      consoletxsmp
+      deathspace drvbringup fastrefuse faultline frame grantnocache irqquiesce kstring ktime
+      mapexec placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass vrange)
     add_subdirectory(${_unit})
   endforeach()
 

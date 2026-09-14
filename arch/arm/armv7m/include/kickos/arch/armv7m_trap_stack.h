@@ -123,8 +123,9 @@
  *
  *   _PENDSV   0  handler mode uses SP_main.
  *   _SVC    448  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
- *                PSP. Measured 444 on f302nucleo, the deepest of the four presets that
- *                enforce this class, rounded up to the next multiple of 64. At
+ *                PSP. Measured 444 on all SIX presets that enforce this class
+ *                (bluepill-c8, bluepill-c8-st, due, due-st, f302nucleo, f302nucleo-st),
+ *                rounded up to the next multiple of 64. At
  *                KICKOS_KERNEL_STACKS 1 it goes unspent, and is not zeroed because the gate
  *                scrapes it for the SVC class on every preset, the call graph being unable
  *                to see which design linked.
@@ -132,7 +133,7 @@
  *
  * trap_redzone_roots.txt marks this class kstacks=0, so the gate skips it on every preset
  * whose KICKOS_KERNEL_STACKS is 1. Without that marker the figure would have to dominate all
- * 34 presets, including a bench bracket and a telemetry tail that only a CONVERTED board
+ * 38 presets, including a bench bracket and a telemetry tail that only a CONVERTED board
  * compiles. 448 is the next multiple of 64 above 444 and of 16 as well; the next 64-byte step
  * is 512, so the 4 bytes over the measurement are rounding and not slack to spend.
  *
@@ -141,9 +142,8 @@
  * call site and nothing under it, and no assertion firing at the bottom of a thread's red zone
  * puts the console writer below stack_lo.
  *
- * The winning chain runs through an INDIRECT call, the SchedPolicy hook table:
- * tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
- * reaches, and the gate refuses to answer while a reachable site is unbound. */
+ * tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
+ * that call reaches, and the gate refuses to answer while a reachable site is unbound. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 448
 
@@ -154,17 +154,16 @@
  * KICKOS_THREAD_SLOTS blocks of a tail its image does not contain: bluepill-c8 has 3 slots
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
- * 768 enforced against 704 measured at xmc4800-relax-bench, whose bench arm prints through
- * the deepest console backend in the armv7m fleet, so it is still a console reading and not a
- * dispatch one; every other non-telemetry preset reads 444 to 616. 1240 enforced against 960
- * measured at qemu-telem through arch_shutdown's telemetry tail, and 1224 against 984 at the
- * two partition nodes through the window scaffolding. qemu/telem is the only telemetry variant
- * of any armv7m board: a second one is where that figure gets re-measured, not assumed.
+ * 768 enforced against 696 measured, tied by the two bench presets f411disco-bench and
+ * xmc4800-relax-bench, whose bench arm prints; the 33 ordinary presets read 444 to 616. 1240
+ * enforced against 944 measured at qemu-telem through arch_shutdown's telemetry tail, and 1224
+ * against 984 at the two partition nodes through the window scaffolding, which is the deepest
+ * reading of any armv7m preset off telemetry. qemu-telem is the only telemetry variant of any
+ * armv7m board: a second one is where that figure gets re-measured, not assumed.
  *
  * The panic reporter is on none of the three: kpanic leaves the block before it prints, so
  * each figure is what the dispatch itself descends. ALL THREE ARE ENFORCED ABOVE THEIR
- * MEASUREMENT, as headroom a future change is measured against; cutting them to it returns the
- * block falling from 1008 to 960 and from 1472 and 1456 to 1216, per KICKOS_THREAD_SLOTS.
+ * MEASUREMENT, as headroom a future change is measured against.
  *
  * NO FALLBACK #define, on purpose. KICKOS_TELEMETRY is an add_compile_definitions knob and
  * reaches out-of-tree consumers through kickos_core's INTERFACE definitions, so with
@@ -211,14 +210,11 @@
  * all three converge on arch_shutdown's drain.
  *
  * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the six presets
- * that enforce it have neither a telemetry nor a bench variant and all six measure 400.
+ * that enforce it have neither a telemetry nor a bench variant and all six measure 320.
  * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
  * is RET.
  *
- * 448 IS THAT MEASUREMENT ROUNDED UP TO THE NEXT MULTIPLE OF 64, the convention a
- * thread-stack figure carries here (_SVC above is 448 over 444 on the same terms). At exactly
- * the measurement, one added assert anywhere in the three stubs is a gate failure on all six
- * presets at once. It COSTS NOTHING: nothing allocates at
+ * 448 IS ENFORCED OVER THE 320 MEASURED. It COSTS NOTHING: nothing allocates at
  * KICKOS_MIN_STACK_SIZE, and 208 + 448 = 656 still fits the 960 floor. What it does move is
  * which class the floor's headroom is measured against, EXIT displacing _SVC's 632 as the
  * arch's largest thread-stack requirement on those six presets, 304 under the floor. */
@@ -233,9 +229,9 @@
  * IT NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block
  * figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
  * byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
- * every registered preset, so the reason for that convention does not reach it. Off
- * telemetry 448 is the 408 measured rounded up to the next multiple of 64; on it, 952 was
- * already enforced over 808 measured.
+ * every registered preset, so the reason for that convention does not reach it. Off telemetry
+ * it measures 320, and 360 on the two bench presets, under an enforced 448; on telemetry 952
+ * stands over 792.
  *
  * 208 + 448 = 656 against 1004 usable off telemetry, 208 + 952 = 1160 against 1468 on, where
  * SVCK asks 992 and 1464. rxv3 is the arch with least room for that to change, its EXITK
@@ -250,12 +246,18 @@
  * and no redirect to relocate it, so it runs on the thread's own stack under BOTH designs.
  * Relocating it needs an arch trampoline of its own.
  *
- * 312 is xmc4800-relax-bench, 304 is f302nucleo, f302nucleo-st, bluepill-c8 and
- * bluepill-c8-st, and 296 the other 31 non-telemetry presets. Under telemetry it is 800, so
- * this root and not the two that moved is what carries the KICKOS_MIN_STACK_SIZE pressure on
- * qemu-telem. */
+ * 352 is BOTH armv7m bench presets, f411disco-bench and xmc4800-relax-bench: the IrqLock
+ * bracket samples the outermost masked window inline and that costs a stack slot on the chain.
+ * THAT PAIR SITS EXACTLY ON ITS ENFORCED 352, so the next thing that deepens the teardown fails
+ * the build there with no warning first. 304 is f302nucleo, f302nucleo-st, bluepill-c8 and
+ * bluepill-c8-st, and 296 the other 31 non-telemetry presets, under the enforced 312 below. A
+ * fleet-wide 352 would make every non-bench board's floor reserve for a bracket its image does
+ * not contain. Under telemetry it measures 784 under an enforced 800, so this root is what
+ * carries the KICKOS_MIN_STACK_SIZE pressure on qemu-telem. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 800
+#elif KICKOS_BENCH
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 352
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 312
 #endif
@@ -321,9 +323,9 @@
  * through the compiler by check_trap_redzone.sh for the same reason rv32imac's KICKOS_BENCH
  * ladder is.
  *
- * NEITHER IS THE MEASUREMENT: 304 is the deepest non-telemetry reading, at f302nucleo and
- * bluepill-c8, and 776 the telemetry one at qemu-telem. 320 and 832 are the next multiple of 64
- * strictly above each, which is the rule every arch's PANIC figure follows. */
+ * NEITHER IS THE MEASUREMENT: 144 is the deepest non-telemetry reading, at
+ * xmc4800-relax-bench, and 760 the telemetry one at qemu-telem, under an enforced 320 and
+ * 832. */
 #define KICKOS_ARMV7M_PANIC_FRAME 100
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_PANIC_DEPTH 832

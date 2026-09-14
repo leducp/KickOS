@@ -1894,7 +1894,7 @@ not a skip list:
 
 A third fact belongs with them because it was nearly a silent hole. The eleven `irq_*` arms are the
 only exercise the GIC gets from the suite at all, and they hung until the board pointed
-`KICKOS_SELFTEST_IRQ_BASE` away from its default of 6: on a GIC everything below 32 is an SGI or a
+`KICKOS_IRQ_FREE_BASE` away from its default of 6: on a GIC everything below 32 is an SGI or a
 PPI, whose pending state `GICD_ISPENDR` does not set, so an inject took no effect and the arm waited
 forever. A default that is merely inconvenient elsewhere is unusable here.
 
@@ -6489,10 +6489,10 @@ re-taken across the ten models at either figure.)
 *TWO HYPOTHESES WERE FIXED BLIND because they are cheap and unmeasurable here.* The measured timer
 and timestamp-counter frequencies were `uint32_t`, so any part above 4.295 GHz wrapped and a 4.5 GHz
 processor would have reported a clock about 22 times fast; TCG ignores `tsc-frequency`, so nothing on
-this bench can produce one. Both fields are 64 bits now, and the two places that must narrow,
-`arch_cpu_clock_hz` and `SystemCoreClock`, CLAMP rather than truncate: a rate low by whatever the part
-exceeds the width is wrong in a direction a caller can reason about, where a wrapped one is not. The
-seam's own 32-bit width is the residual and is in `TODO.md`. And the firmware vendor string's loop
+this bench can produce one. Both fields are 64 bits now, and so is `arch_cpu_clock_hz`, which
+reports the measured rate exactly. Nothing on the x86_64 path narrows a rate any more: the
+`arch_cpu_clock_set` seam answers a u64 too, and the q35 backend's CMSIS `SystemCoreClock`, which
+no code on this chip ever read, is gone. And the firmware vendor string's loop
 tested `vendor[n] != 0` before `n < 64`, so it read element 64 before deciding it was out of range;
 the bound goes first.
 

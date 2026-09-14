@@ -23,7 +23,7 @@ namespace kickos
     // fallback (K64F fail_to_fei) moved the clock too and must be plumbed exactly like a
     // success. The syscall has already gated on privilege; this owns the console-ownership
     // refusal and the masked transition.
-    uint32_t cpu_clock_set(kos_pstate_t target)
+    uint64_t cpu_clock_set(kos_pstate_t target)
     {
         // A userspace driver owns the UART -> the kernel cannot re-derive or
         // relocate its baud across a peripheral-clock move, so REFUSE before any
@@ -35,7 +35,7 @@ namespace kickos
         }
 
         IrqLock lock; // single-core: masks the one timer, quiescing time across the change
-        uint32_t const previous = arch_cpu_clock_hz();
+        uint64_t const previous = arch_cpu_clock_hz();
 
         // Stop SysTick + clear g_armed_deadline_ns + drop a pended SysTick, so
         // nothing fires mid-transition at the stale rate AND the trailing ktime_rearm
@@ -52,7 +52,7 @@ namespace kickos
         // The backend does flash-WS/voltage, the divider/PLL staircase, the re-anchor
         // at the rate edge, and writes SystemCoreClock; it returns the landed Hz. The
         // seam carries the pstate as a plain u32 (arch.h stays ABI-neutral).
-        uint32_t const hz = arch_cpu_clock_set(static_cast<uint32_t>(target));
+        uint64_t const hz = arch_cpu_clock_set(static_cast<uint32_t>(target));
 
         // COHERENCE TAIL: run on ANY actual change (success OR staged fallback), never
         // on a success flag (B1). ns deadlines + the RR slice are clock-invariant and

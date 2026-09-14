@@ -82,17 +82,29 @@ xtensa_switch:
     /* Bench: bank the PREVIOUS switch's cost (end-start), then stamp this switch's
        start. Done here in `from`'s windowed context, where a call is safe; the windowed
        exit below cannot host a call, so the cost lands one switch late. a2=from/a3=to
-       survive the call4 (they sit below the callee window). */
-    movi    a7, g_bench_sw_end
-    l32i    a7, a7, 0
-    beqz    a7, .Lbench_prime         /* no previous switch yet */
-    movi    a6, g_bench_sw_start
+       survive the call4 (they sit below the callee window).
+
+       THE END CELL IS CONSUMED ON READ. Only the COOP exit below refreshes it: the
+       IRQ-frame resume leaves it holding a stamp OLDER than the start written a few
+       instructions further down, and the next entry would subtract the two and bank a
+       delta near 2^32 as a switch cost. Cleared here, a switch that resumed a preempted
+       thread contributes no sample rather than a wrong one.
+
+       BOTH CELLS ARE THIS CORE'S. CCOUNT is per core on this die, so a pair read across
+       cores is not a duration at all, and a shared cell would also bank one core's switch
+       onto the other's row. */
+    PERCPU_CELL a6, g_bench_sw_end, a5
+    l32i    a4, a6, 0
+    beqz    a4, .Lbench_prime         /* no previous switch yet */
+    movi    a7, 0
+    s32i    a7, a6, 0
+    PERCPU_CELL a6, g_bench_sw_start, a5
     l32i    a6, a6, 0
-    sub     a6, a7, a6                /* a6 = delta = end - start (call4 arg0) */
+    sub     a6, a4, a6                /* a6 = delta = end - start (call4 arg0) */
     call4   kickos_bench_switch_done
 .Lbench_prime:
     rsr.ccount a7
-    movi    a6, g_bench_sw_start
+    PERCPU_CELL a6, g_bench_sw_start, a5
     s32i    a7, a6, 0                 /* stamp this switch's start */
 #endif
 #if KICKOS_TELEMETRY
@@ -139,10 +151,10 @@ xtensa_switch:
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
 #if KICKOS_BENCH
-    /* Stamp this switch's END (COOP path). a5/a6 are dead here (retw discards this
+    /* Stamp this switch's END (COOP path). a5/a6/a7 are dead here (retw discards this
        window); the next switch entry banks (end - start). */
     rsr.ccount a5
-    movi    a6, g_bench_sw_end
+    PERCPU_CELL a6, g_bench_sw_end, a7
     s32i    a5, a6, 0
 #endif
     wsr.ps  a4

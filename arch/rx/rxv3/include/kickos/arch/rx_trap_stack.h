@@ -152,10 +152,13 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 440, the fault stub the deeper through kprintf_fault's console
- * chain, identical on all three registered presets. kprintf_fault formats into
- * KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets, so its array no longer
- * dominates the console tail below it.
+ * kickos_thread_slay_exit. 380, identical on all three registered presets: what the fault stub
+ * descends is the reschedule its teardown performs, the same chain _RET walks from the other
+ * stub.
+ *   kickos_thread_fault_exit[40] -> exit_current[40] -> cap_teardown[32] -> teardown_entry[44]
+ *   -> obj_close_protocol[32] -> mutex_force_unlock[20] -> wake[20] -> resched_after_wake[12]
+ *   -> reschedule[28] -> the SchedPolicy hook -> policy_on_switch_in[24] -> arm_slice[20]
+ *   -> ktime_now[4] -> arch_clock_now[32] -> __divdi3[32]
  *
  * IT NEVER BINDS, and this is the arch with least room for that to change: 308 + 448 = 756
  * against 1116 usable, where SYSK asks 1104, so EXITK would have to grow 348 bytes before it
@@ -164,8 +167,7 @@
  * THAT IS ALSO WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure is
  * normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
  * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, so the reason for that
- * convention does not reach it. 448 is the 440 measured rounded up to the next multiple
- * of 64. */
+ * convention does not reach it. 448 is enforced over the 380 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
@@ -257,8 +259,10 @@
  * there on and an exception, which RX accepts on the ISP, lands on a stack this array does not
  * share.
  *
- * 308 MEASURED on all three presets, and 320 is the next multiple of 64 strictly above it,
- * which is the rule every arch's PANIC figure follows.
+ * 156 MEASURED on all three presets, under an enforced 320, and what the reporter descends is
+ * the UART RECLAIM's baud arithmetic:
+ *   kickos_panic_report[8] -> kfault_terminate[28] -> kpanic_enter[4] -> arch_console_reclaim[8]
+ *   -> rx::reg::sci::baud_select[76] -> __divdi3[32]
  * KICKOS_PANIC_STACK_SIZE (Kconfig) cuts the array and is what the gate compares this against;
  * arch_rxv3.cc static_asserts the two agree. */
 #define KICKOS_RX_PANIC_FRAME 0

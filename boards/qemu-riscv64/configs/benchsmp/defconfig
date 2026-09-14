@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_RISCV64=y
+
+# The `smp` posture with the microbench on. Four harts because that is the count the doorbell
+# and the kernel lock are built against, and the accumulators are indexed by kernel core.
+# BASE posture rather than a relaxed one, as the one-hart bench variant is: protection here is
+# the page tables and not a knob, so there is nothing to turn off.
+CONFIG_KICKOS_CORES_FOUR=y
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y
+
+# No service list is pinned because this board declares none and the default is already
+# kickos_services_none: a console driver is a thread and its device is an interrupt source,
+# and both would compete with the bench peers for the window being timed.

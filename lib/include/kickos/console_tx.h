@@ -93,6 +93,18 @@ void console_tx_write(char const* buf, size_t n);
 // reports as a short write.
 int console_tx_insert_line(char const* buf, size_t n, int crlf);
 
+#if KICKOS_BENCH
+// Bytes queued in the ring, 0 while it is not armed.
+uint32_t console_tx_used(void);
+
+// Bounded spin, UNMASKED and holding no lock, until the drain has taken bytes out of the ring.
+// It reports nothing: a caller offering a refused line again wants the progress made across its
+// WHOLE attempt, the mask gaps of the offer itself included, so it reads console_tx_used either
+// side of the attempt. Returns at once on a backend with no TX interrupt, where the ring is
+// empty by the time a producer leaves it.
+void console_tx_wait_drain(void);
+#endif
+
 // The synchronous line writer, in console.cc. Takes RAW bytes and expands '\n' to CR+LF
 // itself where the build asks for it, under one IrqLock held across the device writes.
 void console_write_line_sync(char const* buf, size_t n);
