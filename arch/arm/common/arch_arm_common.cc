@@ -125,7 +125,7 @@ int arch_in_isr(void)
     return exc != 0;
 }
 
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
     return SystemCoreClock;
 }

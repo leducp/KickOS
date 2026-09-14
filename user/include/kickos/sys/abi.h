@@ -19,8 +19,8 @@
 // Return-encoding contract (see errno.h). A syscall that can fail returns its error as
 // -KOS_Exxx (negative); success is a non-negative byte-count / count, so the two are
 // collision-free. Exceptions, all outside the scheme: ram_alloc returns a pointer, 0/NULL on
-// ANY failure, and cpu_clock_hz / cpu_clock_set / periph_clock_hz return a u32 Hz with a
-// 0 == cannot/unknown sentinel.
+// ANY failure, cpu_clock_hz / cpu_clock_set return a u64 Hz and periph_clock_hz a u32 Hz,
+// each with a 0 == cannot/unknown sentinel.
 
 // A capability handle. 16 index bits + 16 generation bits, so a live handle spends the
 // WHOLE 32-bit word and may have bit 31 set: `h < 0` is not an error test on a capability,
@@ -102,7 +102,7 @@ enum kos_syscall_nr
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
     KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
-    KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown (NO KOS_E*)
+    KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*)
     KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
                                 //   caller's cap table, EOVERFLOW task's mutex budget,
                                 //   EINVAL/EFAULT)
@@ -126,7 +126,7 @@ enum kos_syscall_nr
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
                                   //   -KOS_EBADF (bad cap), -KOS_EOVERFLOW (endpoint
                                   //   refcount at its ceiling)
-    KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
+    KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u64); 0 == cannot-change
     KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
@@ -214,9 +214,20 @@ enum kos_syscall_nr
                                //   caller is itself a member, which would wait on its own
                                //   death).
     KOS_SYS_BENCH = 55,        // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
-                               //   or -KOS_EINVAL (bad op). UNGATED by authority; the
+                               //   -KOS_EINVAL (bad op, bad line, no span open, or an
+                               //   argument outside what the op admits), -KOS_ENOSYS (an op
+                               //   this image's core count leaves nothing to measure),
+                               //   -KOS_EBUSY (the end-to-end waiter is not parked yet, or
+                               //   the span that closed was not a wake), -KOS_EBADF (the arm's
+                               //   handle names no live IRQ cap) or -KOS_EPERM (an op that
+                               //   reaches the controller or the doorbell issued without
+                               //   KOS_AUTH_IRQ, an arm whose cap carries no KOS_CAP_WAIT, or
+                               //   a thread that is not the armed waiter closing or taring a
+                               //   span). The counted ops refuse a count above
+                               //   KOS_BENCH_SAMPLES_MAX / KOS_BENCH_ROUNDS_MAX. The
                                //   dispatch arm is compiled out unless KICKOS_BENCH, so a
-                               //   normal image returns -KOS_EINVAL.
+                               //   normal image returns -KOS_EINVAL for every op. THE RESULT
+                               //   IS READ AS A SIGNED 64-BIT WORD.
     KOS_SYS_CALL_REG = 56,     // (ep_cap, kos_call_lens_pack(send_len, recv_cap), payload in
                                //   the remaining argument registers) -> as KOS_SYS_CALL, with
                                //   the reply delivered in registers too. INTERNAL:
@@ -352,25 +363,72 @@ enum kos_mem_flags
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
 
-// `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). Values are a frozen
-// contract: append, never reorder. A BAD op returns -KOS_EINVAL.
+// `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). A BAD op returns -KOS_EINVAL.
+// Values are append-only WITHIN A TREE.
 //
-// The two PRINT ops make the KERNEL write the line, so they land on the kernel console
+// Every PRINT op makes the KERNEL write the line, so they land on the kernel console
 // (kickos_services_none) alone.
+//
+// An op marked AUTH_IRQ below reaches the interrupt controller or the inter-core doorbell and
+// is refused -KOS_EPERM without KOS_AUTH_IRQ, exactly as KOS_SYS_IRQ_ATTACH and
+// KOS_SYS_IRQ_CLAIM are. The rest read kernel .data or write a line.
 enum kos_bench_op
 {
-    KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Switch AND phase accumulators.
+    KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Every distribution AND every phase.
     KOS_BENCH_OP_CYCCNT_HZ = 1,   // ()          -> rate of the counter the cycle ops read,
-                                  //   which is not always the core clock. 0 = no rate
-                                  //   converts a reading, so report cycles alone.
-    KOS_BENCH_OP_SWITCH_PRINT = 2, // ()         -> switch sample count (kernel prints the line)
-    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0
-    KOS_BENCH_OP_IRQ_ONCE = 4,    // (line)      -> best-case inject->entry cycles, 0 = did
-                                  //   not fire (no injectable line, or no cycle counter)
-    KOS_BENCH_OP_IRQ_MASKED_ONCE = 5, // (line, span_bytes) -> worst-case inject->entry
-                                  //   cycles across a masked span, 0 = did not fire
-    KOS_BENCH_OP_PHASE_PRINT = 6  // ()          -> 0 (kernel prints the phase table)
+                                  //   which is not always the core clock, as a 64-BIT Hz
+                                  //   count. 0 = no rate converts a reading, so report
+                                  //   cycles alone.
+    KOS_BENCH_OP_DIST_PRINT = 2,  // ()          -> switch sample count (the kernel prints one
+                                  //   line per workload-fed distribution; a SWEPT one is
+                                  //   printed by the op that filled it)
+    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0. AUTH_IRQ: it attaches a tier-2 handler.
+                                  //   Names the line every IRQ op below uses.
+    KOS_BENCH_OP_IRQ_SWEEP = 4,   // (samples)   -> samples taken (the kernel prints the
+                                  //   inject->entry row). 0 = the controller never raised it.
+                                  //   AUTH_IRQ; samples above KOS_BENCH_SAMPLES_MAX refused.
+    KOS_BENCH_OP_IRQ_WCASE = 5,   // (span_index, samples) -> samples taken (the kernel prints
+                                  //   the worst-case row for that masked span). AUTH_IRQ;
+                                  //   samples above KOS_BENCH_SAMPLES_MAX refused. The masked
+                                  //   span is the kernel's own table entry.
+    KOS_BENCH_OP_PHASE_PRINT = 6, // ()          -> 0 (kernel prints the phase table)
+    KOS_BENCH_OP_LOCK_PROBE = 7,  // ()          -> 0 (kernel prints one line: how far the
+                                  //   lock distributions moved across three nested IrqLocks,
+                                  //   and on which core)
+    KOS_BENCH_OP_WCASE_SPANS = 8, // ()          -> how many masked spans the sweep above walks
+    KOS_BENCH_OP_DOORBELL_PROBE = 9, // (core, rounds) -> rounds run, 0 where the calling
+                                  //   thread may not run on that core, -KOS_EINVAL for a core
+                                  //   this kernel does not schedule, which is how a caller
+                                  //   walks the cores without being told how many there are.
+                                  //   -KOS_ENOSYS at one kernel core, where a raise has no
+                                  //   peer to answer it. The kernel prints one line. AUTH_IRQ;
+                                  //   rounds above KOS_BENCH_ROUNDS_MAX refused, the rounds
+                                  //   running under one IrqLock.
+    // The end-to-end span, raise to the woken userspace thread's first device read. ARM,
+    // TARE and CLOSE are the WAITER's and RAISE is the raiser's; the kernel refuses a close
+    // from any thread but the armed waiter.
+    //
+    // RAISE injects on the line the ARM named and takes no authority of its own.
+    KOS_BENCH_OP_E2E_ARM = 10,    // (irq_cap)   -> 0, -KOS_EBADF (no such cap) or -KOS_EPERM
+                                  //   (the cap carries no KOS_CAP_WAIT). The span's line is
+                                  //   the one that cap names.
+    KOS_BENCH_OP_E2E_RAISE = 11,  // ()          -> 0, or -KOS_EBUSY until the waiter has
+                                  //   published its own park, which the caller retries.
+    KOS_BENCH_OP_E2E_TARE = 12,   // ()          -> 0. Opens a span with no raise, so the
+                                  //   close prices the instrument's own tail.
+    KOS_BENCH_OP_E2E_CLOSE = 13,  // ()          -> 0, or -KOS_E* for a span that was not a
+                                  //   wake (counted as dropped and reported)
+    KOS_BENCH_OP_E2E_PRINT = 14   // (asked)     -> 0 (kernel prints the probe line, the pass
+                                  //   denominator and the two locality rows). `asked` is the
+                                  //   sweep size the CALLER ran; the kernel echoes it beside
+                                  //   the raises it let through and acts on it in no other
+                                  //   way.
 };
+
+// The largest count the counted ops admit. Raising either raises what a caller can make the
+// kernel do in one syscall, the rounds under an IrqLock.
+#define KOS_BENCH_SAMPLES_MAX 100u
+#define KOS_BENCH_ROUNDS_MAX 64u
 
 // KOS_SYS_RECV's out-pointer: 8 bytes, 4-aligned. A plain kos_send arrival delivers
 // reply_cap == KOS_CAP_NONE; a kos_call arrival delivers a one-shot reply cap handle the

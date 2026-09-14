@@ -5,6 +5,7 @@
 
 #if KICKOS_KERNEL_CORES > 1
 
+#include <kickos/bench.h>
 #include <kickos/instance.h>
 #include <kickos/sys/atomic.h>
 
@@ -52,7 +53,11 @@ namespace kickos
         KlockRow& r = g_row[kickos_kernel_core()];
         if (r.depth == 0 and r.owed == 0)
         {
+            // The WAIT sample, and it is charged to the HOLD span enclosing it: the
+            // accumulator call sits inside the masked window the IrqLock bracket is timing.
+            KICKOS_BENCH_MARK(bw);
             arch_kernel_lock();
+            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
         }
         r.depth = r.depth + 1u;
     }
@@ -90,7 +95,9 @@ namespace kickos
         // acquire here would spin on a word it holds itself.
         if (r.owed == 0)
         {
+            KICKOS_BENCH_MARK(bw);
             arch_kernel_lock();
+            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
         }
         r.depth = depth;
     }

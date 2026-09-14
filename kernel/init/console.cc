@@ -321,6 +321,9 @@ namespace kickos
 #endif
     }
 
+    // Nonzero when the ring TOOK the line; a refused line does not go out at all. kputs and
+    // kvprintf_route below drop that answer on purpose. Do not grow a retry here:
+    // kprintf_paced is the one caller that can afford to wait, and it already does.
     int kconsole_write(char const* buf, size_t n)
     {
         return kconsole_write_impl(buf, n, false);
@@ -363,6 +366,40 @@ namespace kickos
         kvprintf_route(buf, sizeof(buf), fmt, ap, false);
         va_end(ap);
     }
+
+#if KICKOS_BENCH
+    // It does NOT route to a published console: a report belongs on the wire the bench is
+    // captured from.
+    //
+    // The progress test spans the WHOLE attempt, not console_tx_wait_drain alone: the offer
+    // itself opens mask gaps, and on a backend whose drain lands in one of them that is where
+    // the bytes leave. The attempt bound is the ring's own size because one attempt that makes
+    // progress frees at least one byte and no line needs more than the ring to fit.
+    void kprintf_paced(char const* fmt, ...)
+    {
+        char buf[KICKOS_DIAG_LINE_MAX];
+        va_list ap;
+        va_start(ap, fmt);
+        kfmt_vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        size_t const n = kstrlen(buf);
+        uint32_t queued = console_tx_used();
+        for (uint32_t attempt = 0; attempt < KICKOS_CONSOLE_TX_SIZE; attempt++)
+        {
+            if (kconsole_write(buf, n) != 0)
+            {
+                return;
+            }
+            console_tx_wait_drain();
+            uint32_t const now = console_tx_used();
+            if (now >= queued)
+            {
+                return; // a dead or unread channel: drop the line rather than hang the run
+            }
+            queued = now;
+        }
+    }
+#endif
 
     // KDIAG_FAULT_LINE_MAX and not 256: this runs on the dying thread's block below the exit
     // red zone, where the array is the largest term of the whole descent. A line past the

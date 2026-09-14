@@ -14,8 +14,10 @@
 > This note is the decision record behind them.
 
 The READ side landed first: `kos_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ`,
-`user/include/kickos/sys.h`) returns `arch_cpu_clock_hz()`, each backend reporting its CMSIS
-`SystemCoreClock`. This note settles the WRITE side.
+`user/include/kickos/sys.h`) returns `arch_cpu_clock_hz()`, a u64 Hz. The Cortex-M, rv32, RX and
+LX6 backends answer it with their CMSIS `SystemCoreClock`; x86_64 answers with the measured
+timestamp-counter rate, and a backend with no silicon core clock answers 0. This note settles the
+WRITE side, whose seam `arch_cpu_clock_set` answers a u64 Hz to match.
 
 ---
 

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_X86_64=y
+
+# The context-switch microbench. Base posture, this board having no other: it carries one
+# config variant and its protection is the page tables rather than a knob.
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y
+
+# No service list is pinned because this board declares none and the default is already
+# kickos_services_none: a console driver is a thread and its device is an interrupt source,
+# and both would compete with the bench peers for the window being timed.

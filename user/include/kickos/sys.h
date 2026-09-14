@@ -23,8 +23,11 @@ extern "C"
 // Debug console: unbuffered, polling, straight at the kernel console, so it works in boot
 // and panic. NOT stdout: ordinary output is libc stdio over a userspace console driver.
 // Returns bytes written (a len-0 write is a legitimate 0), or -KOS_EFAULT for a buffer the
-// caller cannot read. THE COUNT CAN BE SHORT: the buffer is streamed in chunks with no lock
-// spanning them, so a page unmapped mid-write stops the walk. kos_print discards both.
+// caller cannot read. THE COUNT CAN BE SHORT, and the usual cause is a FULL TRANSMIT RING
+// rather than a bad buffer: the walk stops at the first chunk the console refuses, which is
+// whatever an earlier burst has not drained yet. A page unmapped mid-write stops it too, the
+// chunks spanning no lock. kos_print discards both, so a line that has to survive a burst
+// goes through kickos::emit (sys/emit.h), which retries the remainder.
 int32_t kos_kconsole_write(void const* buf, size_t len);
 void kos_print(char const* s);
 
@@ -409,7 +412,7 @@ int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Running core clock in Hz. 0 if the backend has no silicon core clock (host sim, QEMU virt).
-uint32_t kos_cpu_clock_hz(void);
+uint64_t kos_cpu_clock_hz(void);
 
 // The branch (peripheral) clock in Hz feeding the register block at `base`, which is the
 // peripheral register-BLOCK base (e.g. UART0 @ 0x4006A000). Returns 0 when the chip does not
@@ -461,7 +464,7 @@ int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // must compare against what the requested point implies. Needs KOS_AUTH_PSTATE. Returns 0
 // when the chip cannot change its clock, the caller lacks that authority, or a userspace
 // driver owns the console (a retune would garble a baud the kernel cannot relocate).
-uint32_t kos_cpu_clock_set(kos_pstate_t pstate);
+uint64_t kos_cpu_clock_set(kos_pstate_t pstate);
 
 // Set the Unix-epoch wall clock: unix_ns is the current time, and the offset
 // stored is unix_ns - kos_clock_now(). Backs newlib's _gettimeofday (see
@@ -535,7 +538,7 @@ void kos_kernel_diag_led_toggle(void);
 // The microbenchmark's own scaffolding, and the ONLY way an app reaches it. `op` is an enum
 // kos_bench_op (abi.h); the meaning of a0/a1 and of the return is per-op and documented
 // there. Returns -KOS_EINVAL for an unknown op or a bad IRQ line.
-int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
+int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 #endif
 
 #ifdef __cplusplus

@@ -62,11 +62,11 @@ int main(int, char**)
 
     emit("[clocksoak] START clock-hardening soak harness\n");
 
-    uint32_t const hz = kos::cpu_clock_hz();
+    uint64_t const hz = kos::cpu_clock_hz();
     uint64_t const t0 = kos::clock_now();
     ksnprintf(s, sizeof(s),
-              "[clocksoak] boot: cpu_clock_hz = %u  wrap_period = %u ms  wraps = %u  t0 = %llu ns\n",
-              static_cast<unsigned>(hz), static_cast<unsigned>(KICKOS_CLOCKSOAK_WRAP_MS),
+              "[clocksoak] boot: cpu_clock_hz = %llu  wrap_period = %u ms  wraps = %u  t0 = %llu ns\n",
+              static_cast<unsigned long long>(hz), static_cast<unsigned>(KICKOS_CLOCKSOAK_WRAP_MS),
               static_cast<unsigned>(WRAPS), static_cast<unsigned long long>(t0));
     emit(s);
 

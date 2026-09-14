@@ -434,6 +434,48 @@ void console_tx_write(char const* buf, size_t n)
     write_unbuffered(buf + off, n - off);
 }
 
+#if KICKOS_BENCH
+uint32_t console_tx_used(void)
+{
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
+    {
+        return 0;
+    }
+    return r.used();
+}
+
+void console_tx_wait_drain(void)
+{
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
+    {
+        return;
+    }
+    // A backend with no TX interrupt is drained by its own producer, so the ring is empty by
+    // the time an insert returns and nothing will happen here however long it spins.
+    if (r.irq_line < 0)
+    {
+        return;
+    }
+    uint32_t const before = r.used();
+    if (before == 0)
+    {
+        return;
+    }
+    // NO LOCK AND NO MASK. Waiting is the whole point, and the drain ISR is what has to run:
+    // a wait that masked would stall the thing it waits for. Bounded like every other poll
+    // in this file, so a wedged channel costs one window and not a hang.
+    for (uint32_t i = 0; i < DRAIN_POLL_CAP; i++)
+    {
+        if (r.used() < before)
+        {
+            return;
+        }
+    }
+}
+#endif
+
 // console_tx_deinit detaches the handler and NVIC-masks the TX line under the same IrqLock
 // that enters HANDING_OFF, strictly before kos_console_publish flips to USER_OWNED, so this
 // ISR has already stopped by the time a driver owns the console. That ordering is what stands

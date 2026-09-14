@@ -1493,7 +1493,10 @@ inside the tree.
       unmodified, the dispatch arm casts it, `ampdiag` prints it, and the two clock apps print it.
       `t_cpu_clock_hz` already accepted 0 for the host sim and passes unchanged on a board now
       answering it. `esp32c6` is untouched at a real 160 MHz, its counter reading a CLINT MTIME that
-      IS core-clocked, so its two rates legitimately agree.
+      IS core-clocked, so its two rates legitimately agree. The rv64 definition itself is gone in
+      M8.7: `arch/sim/system_core_clock_default.cc` makes a missing definition a link failure only
+      on the arches whose `arch_cpu_clock_hz` reads the symbol, which rv64imac is not, so only
+      `virt_rv32` publishes 0 now.
 
 - [ ] **THE BENCH CALIBRATION PAIR INFLATES WHAT IT CALIBRATES.** `PH_NULL` and `PH_NEST` sit
       inside `bm_locked`/`bm_total` (`kernel/syscall/syscall_ipc.cc`), so every `CALL_TOTAL` sample
@@ -2697,7 +2700,7 @@ measures; `roadmap.md`'s M8 section freezes a second measurement at M8.12, taken
 land, and the two are not interchangeable -- M9 is judged against M8.12 and never against this
 one.
 
-- [ ] **THREE ARCHES HAVE NO CYCLE FIGURE AT ALL, AND EVERY PUBLISHED FIGURE PREDATES FIVE
+- [x] **THREE ARCHES HAVE NO CYCLE FIGURE AT ALL, AND EVERY PUBLISHED FIGURE PREDATES FIVE
       LANDED CHANGES.** No cycle figure exists anywhere in the tree for A53 (arm64/SMP), rv64 or
       x86_64. The one full phase table that does exist, `docs/design-m5-ipc-fastpath.md` section
       3.0.4 (locked round trip 3651 cycles, `f = 0.53`), was taken 2026-08-18 and predates trusted
@@ -2709,7 +2712,7 @@ one.
       first figures for A53, rv64 and x86_64 where none exist today. Nothing sized in M8.8 through
       M8.11 is comparable across boards until this runs.
 
-- [ ] **NO INSTRUMENT MEASURES THE FULL PATH FROM A PHYSICAL IRQ ASSERTION THROUGH THE FIRST
+- [x] **NO INSTRUMENT MEASURES THE FULL PATH FROM A PHYSICAL IRQ ASSERTION THROUGH THE FIRST
       USERSPACE MMIO, OR THE OUTERMOST LOCK'S HOLD-TIME DISTRIBUTION.** `kernel/bench/bench.cc`
       today has an IRQ-entry-latency probe (`bench_irq_handler`, `g_irq_entry`/`g_irq_seen`) and a
       masked-span byte-copy model (`g_lat_src`/`g_lat_dst`, `BENCH_LAT_SPAN_MAX`), but nothing chains
@@ -2720,7 +2723,7 @@ one.
       sample around the outermost lock acquire/release in `klock.cc`; report p50/p99/max per board,
       per the MIN-vs-distribution change M8.4 makes to the instrument's headline statistic.
 
-- [ ] **THE INSTRUMENT OWES M9 FIVE CONSTANTS IT DOES NOT PRODUCE, AND THE BENCH REFUSES MORE THAN
+- [x] **THE INSTRUMENT OWES M9 FIVE CONSTANTS IT DOES NOT PRODUCE, AND THE BENCH REFUSES MORE THAN
       ONE KERNEL CORE OUTRIGHT.** `CMakeLists.txt` 962-975 makes `KICKOS_BENCH` above one kernel
       core a configure `FATAL_ERROR`, and `kernel/bench/bench.cc` reports min, average and maximum
       with no percentile, no lock-wait metric and no per-core accumulator -- so nothing measured
@@ -2734,6 +2737,96 @@ one.
       urgency**: these instrument spans M8.7 is already opening, so they are nearly free in that pass
       and a campaign of their own afterwards. A constant missed here is re-measured later, which
       costs a run and settles nothing else.
+
+
+**LANDED. The measurements are `docs/archive/M8.7_rebaseline_meas.md`; `STATE.md`'s M8.7 section
+carries what a green run does not say.** Four findings that change what a later pass may assume:
+the 2026-08-18 leaves were almost all still valid and only `MPU_APPLY` had really moved, so the
+rebaseline's value is the disproof rather than a new table; the locked fraction is measured
+directly off the lock instrument now, not derived from composites; a composite is not a cost
+on an inline-swap arch, which is why the phase table carries a saturation count and why arm64,
+rv64 and x86_64 publish leaves only; and a subtraction across two cores' cycle counters reads as
+a plausible six-digit figure three separate times in this milestone, so it is the first thing to
+suspect in any figure taken above one core.
+
+**The silicon half is re-taken and the percentile walk moved no published row.** The per-row
+comparison, and the two commits that DID move a row, are in the rebaseline record.
+
+- [ ] **A SWEPT ROW'S `p99` IS ITS MAXIMUM, AND THE INSTRUMENT LABELS IT THE SAME AS A REAL ONE.**
+      `e2e-local` carries n = 50, whose 99th nearest rank is rank 50; `irq`, every `wcase-irq` and
+      `e2e-cross` put one sample above their rank. The workload-fed `switch` and `lock-hold` carry
+      tens of thousands and mean what they say. Every row already prints its own `n`, so the
+      rebaseline record states the rule rather than moving the instrument mid-baseline. Decide for
+      M8.12 whether a `p99` below some `n` should be refused or printed as `max` outright.
+
+### Carried decisions: four questions each audit pass re-raises, ruled here
+
+Each of these was found, ruled on, and found again by the next pass, because the ruling lived in
+a commit message or nowhere. They are RULED, not open. Re-deriving one is the waste; re-opening
+one needs a new fact, not a new reading.
+
+- [ ] **RULED, target M9: the SMP peer-row reads stay as they are.** A report thread reads every
+      core's row while those cores keep writing, so `dist_print_fmt` is reader-versus-writer above
+      one kernel core. It is not reader-versus-READERS, and that is what bounds it: `row()` is
+      always the current core's, so every cell has exactly one writer. Of what the SMP build
+      publishes, `p50` and `p99` come from a histogram SNAPSHOT whose rank is that snapshot's own
+      total, so a count that moved during the walk cannot put the rank on a different population;
+      `max`, `n` and `SAT` are single loads of single-writer cells. **`avg` IS exposed and an earlier
+      form of this ruling denied it** -- it claimed `avg` and `min` print only under
+      `BENCH_HEADLINE_MIN`, and that is false. `dist_print_rows` copies a peer's `Acc` field by
+      field (`snap[i] = g_row[i].dist[d].acc`) and prints `sum / count` per core above one kernel
+      core, and `bench_phase_print` merges every core's live phase row before dividing, on EVERY
+      posture. Both can divide a `sum` and a `count` read at different instants.
+      What holds is narrower and is the actual ground of the ruling: **no figure this record
+      publishes is one of them.** The silicon boards are one core each, so their phase tables and
+      per-core rows have no peer. The emulator table publishes `p50`s, which come from the
+      histogram snapshot, plus wall clock, which is host time. The four-core extras -- `lock-wait`,
+      `doorbell`, `e2e-local` and `e2e-cross` -- are `p50`s too. A skewed `avg` is therefore visible
+      to a READER OF AN SMP CAPTURE and enters no published cell; `docs/reference/bench.md` says so
+      beside the row rather than leaving it to be re-derived.
+      RESET is the second half and has its own bound, stated in the code at `bench_reset`: the lock
+      it takes is THIS core's, so a peer's in-flight sample can land in a row the pass has already
+      cleared. That is at most one sample per peer, fewer than the core count, arriving in a window
+      of tens of thousands; the fields are word-sized and aligned, so nothing tears. It cannot move
+      a `p50`. **It CAN move a `max`**, by admitting one pre-window sample -- and every board this
+      reaches is an emulator, where this file already rules that `max` is a statement about the box
+      and not a figure to difference. Said plainly rather than left to the reader: the reset race is
+      real, its whole reach is the one statistic already withheld from attribution.
+      **There is no contained fix**, which is the other half of the ruling. The obvious one, moving
+      the bracket inside `klock_leave()`, changes what `lock-hold` measures, so it may not land
+      inside a baseline; M9 is where the lock is reworked and the instrument can move with it.
+
+- [ ] **RULED, target M9: the end-to-end protocol keeps its read-then-write transitions, and the
+      safety stays in the caller.** Three transitions change state before or without establishing
+      that the caller owns the span: `arm` releases ARMED whatever the state was, so a second armer
+      overwrites a live span; `raise` tests PARKED and then stores RAISED with nothing between, so
+      two raisers can both consume one PARKED; `close` stores IDLE as its second statement, ahead
+      of the test that the closer IS the armed waiter. Every one is real AS A PROPERTY and none is
+      reachable in this posture: the app runs ONE armer, ONE raiser, ONE closer and ONE reporter,
+      serialised by the `go`/`pass` handshake in `user/apps/common/bench/main.cc`, so no two of
+      those calls are ever in flight. **Nothing in the kernel enforces that**, and that is the part
+      to carry forward rather than the race: the protocol is safe by the caller's shape, so the
+      day a second thread takes any of the four roles the shape is gone and nothing refuses it.
+      The alternative buys a compare-and-swap on the sample path for a race the instrument's own
+      structure excludes. `docs/reference/bench.md` states the behaviour; this is the ruling that
+      it stays. Revisit in M9, where a second kernel-side raiser would be the new fact.
+
+- [ ] **RULED, target M8.12: the inline-switch composites stay PUBLISHED, with the caveat stated
+      beside them.** On `arm64`, `rv64`, `x86_64`, the LX6 and the sim the switch swaps inline, so
+      a switch-enclosing composite closes only when the thread is next resumed, which is unbounded,
+      and above one kernel core it can close on a core whose cycle counter shares no zero with the
+      opening core's. The maintainer's ruling is ACCEPT AND STATE IT, not withhold: the rows are
+      printed, a 64-bit-tick board carries its `SAT` column beside them, and
+      `docs/reference/bench.md` says which rows are composites, which are leaves, and that the LX6
+      is the one the column cannot cover. Withholding them would leave the reader with no
+      figure and no record that one was declined. Re-read at M8.12, when the exit table is taken.
+
+- [ ] **RULED, standing, re-confirmed at each capture pass: the emulator logs stay UNTRACKED.**
+      They cost no bench time and regenerate from this tree, which is exactly the test
+      `docs/README.md` states for what `docs/archive/` holds: a measurement is archived because it
+      cost bench time and some are permanently unreproducible, and prose or a rerunnable log is
+      not. Tracking them would put a regenerable artifact under the rule written for the one kind
+      that is not. The SILICON captures are the other side of the same test and stay archived.
 
 ## M8.8 -- per-switch and per-wake plumbing
 
@@ -3194,6 +3287,39 @@ rather than defended.
       **Not implemented on purpose.** Recorded with its precedent so the decision is taken on the
       cost, and so the next reader does not spend another pass looking for a gate-side answer that
       does not exist.
+
+## Two polled console drivers discard a refused byte, and nothing anywhere counts it
+
+- [ ] **ORDINARY CONSOLE OUTPUT VANISHES A BYTE AT A TIME AND NO COUNTER MOVES.**
+      `system/driver/mk64f/k64uart/k64uart.cc:140` and
+      `system/driver/xmc4800/xmcuart/xmcuart.cc:156` are the real client-data serve loops of the
+      two polled console drivers, and both spell the write `(void)poll_put(&dev, ...)`.
+      `poll_put` spins the transmitter for a bounded budget and returns FALSE when the budget
+      expires with the byte still unsent, which the cast discards. The bound is deliberate and
+      right -- without it a mis-configured baud wedges the driver thread and every stdout client
+      parked on a send behind it -- so the defect is not the drop, it is that the drop is
+      unobservable. A line reaches the wire with a hole in it and the client, the driver and the
+      report all read as successful.
+      **Both drivers already have the honest version in front of them.** The same cast in
+      `win_puts` is a direct-to-device diagnostic and is a different case; the client-data loop is
+      not. And `user/include/kickos/sys/console_service.h` gets this right for the drivers wired
+      into it: a short take increments `stats.tx_dropped`, so a byte lost there is a figure
+      somebody can read. Neither of these two is wired into that framework.
+      **THE OPEN QUESTION IS WHICH ANSWER, AND IT IS NOT A DETAIL.** A dropped-byte counter in
+      each driver is small and keeps both drivers standalone; porting them onto the console
+      service framework removes the second copy of the whole serve loop along with the
+      accounting, and is the larger change. Not M8.7's, and recorded rather than picked up so
+      that whoever owns this driver family decides once for both files instead of patching one.
+
+## `ampping`'s serve loop reads the first payload byte without checking a byte arrived
+
+- [ ] **A ZERO-LENGTH DATAGRAM WOULD BE ANSWERED FROM UNINITIALISED STACK.**
+      `user/apps/common/ampping/main_serve.c` takes `kos_recv_timed`'s result into `got`, tests it
+      only for negativity, and then builds its reply out of `msg[0]` -- which for a zero-length
+      arrival is whatever the frame held. The reply and the line it prints are then both a stale
+      byte, and nothing distinguishes that from a real answer.
+      **Low priority, and the premise is unverified**: whether this protocol can produce a
+      zero-length datagram at all was not established, only that the loop does not survive one.
 
 ## The file:line:column indirect-call binding is fragile, and replacing it is its own piece
 
@@ -10022,12 +10148,18 @@ caveats and its validation status are in `docs/reference/boards.md`.
       adopted stands for the life of the image. That is an UNSTATED PREMISE rather than an enforced
       one. Nothing asserts it, and the first code that frees boot-services memory pulls the live
       root out from under the map editor.
-- [ ] **`arch_cpu_clock_hz` is 32 bits wide in the seam, so a part above 4.295 GHz is reported
+- [x] **`arch_cpu_clock_hz` is 32 bits wide in the seam, so a part above 4.295 GHz is reported
       CLAMPED rather than exactly.** The measured timestamp-counter rate is 64 bits
       (`apic_tsc_hz`), and `arch/x86/x86_64/arch_x86_64.cc` clamps to `0xffffffff` rather than
       truncating, which is wrong in the direction a caller can reason about. **Widening it is a
       seam change**: `arch_cpu_clock_hz` is declared in `arch/include/kickos/arch/arch.h` and every
       backend and every caller moves with it, so it does not belong to this board.
+      **DONE in M8.7.** The seam, `kickos::cpu_clock_set`, `KOS_SYS_CPU_CLOCK_HZ`,
+      `KOS_SYS_CPU_CLOCK_SET` and `kos::cpu_clock_hz` are all u64, the x86_64 clamp is gone, and
+      the bench takes its fallback rate from the seam instead of `SystemCoreClock`. The
+      `arch_cpu_clock_set` seam is u64 too now, so the landed Hz reaches a caller whole and the
+      coherence tail's `hz != previous` gate compares at one width. One narrowing remains and is
+      a carried decision below: the AMP diagnostic's one shared 32-bit cell.
 - [ ] **The i8254 reference timebase is MANDATORY on this board and its rate is HARDCODED.**
       `calibrate` (`arch/x86/x86_64/apic_x86_64.cc`) measures both the local APIC timer and the
       timestamp counter against it, because no CPUID leaf on this processor model reports either
@@ -11672,3 +11804,84 @@ follows is what survived that.
       a reviewer's. What it would take: a list of operands per utility rather than per name, the
       same both-directions self-test the awk gate carries, and an answer for the scripts that
       legitimately require GNU tools.
+
+## The IRQ-entry rows subtracted two cores' cycle counters (M8.7 external audit, High 1)
+
+- [x] **`irq:` AND `wcase-irq[..]` OPENED ON THE RAISING CORE'S CYCLE COUNTER AND CLOSED ON THE
+      HANDLER'S.** Per-core counters have no common zero, so the difference was an offset and
+      not a latency, and it read as a perfectly plausible figure: `qemu-arm64-benchsmp` reported
+      `irq: 589824/589824/706441` and `wcase-irq[0B]: 589824/589824/651939` against 36 cycles on
+      one-core armv7m silicon. `g_irq_seen` was relaxed as well, so observing it published
+      neither the stamp nor anything else the handler wrote. This is the THIRD instance of the
+      class in this milestone, after the phase composites and the IRQ-to-userspace span.
+
+      **FIXED BY MAKING THE READING STATE ITS OWN DOMAIN, not by moving to `arch_clock_now`.**
+      The cycle counter is the finer instrument and the one every good figure in the campaign
+      was taken with, and the cross-core case already HAS an instrument in the same report: the
+      end-to-end span, in `arch_clock_now` nanoseconds, one clock for the image. So the entry
+      rows keep the cycle counter and refuse what they cannot mean. Each sample is now accepted
+      only if the handler names the raising core AND its stamp falls inside the
+      raise-to-observation window the raiser itself bracketed; the two fail independently, and
+      the window is the one a classifier stuck on "local" cannot satisfy. The sweep first tries
+      each core it may run on and keeps the first that takes its own raise, which is all the
+      placement a kernel can do: the routing belongs to the controller.
+
+      **WHERE THE CORE ID IS PUBLISHED, AND WHAT IT COST BETWEEN ENTRY AND STAMP: nothing.** The
+      handler's stamp is still its first statement. The core id is stored AFTER it and before
+      the seen flag, where the sample is already fixed and only the raiser's spin waits longer,
+      and the spin feeds no statistic. The seen flag carries ACQUIRE|RELEASE and is what
+      publishes both cells.
+
+      **THE WINDOW ARM IS COMPILED OUT WHERE THE COUNTER GLITCHES**, the XMC4800's DWT being
+      the only such part. A glitched read can only inflate, so there the arm would discard good
+      samples on every glitch rather than catch an offset, and MIN is the statistic on that part
+      for exactly that reason. The core arm stands, and at one core it compares 0 against 0, so
+      nothing is refused on a single-core board with a live counter.
+
+      **RED ZONE, MEASURED ON THE MERGED TREE AND NOT DERIVED.** rv32imac SYS and SYSPRIV read
+      720 against a recorded 688, on both bench presets, the sweep's own frame having gone from
+      80 to 112; armv7m SVCK reads 696 against a recorded 680, on both bench presets. Both sit
+      under their enforced figures and both records are updated to the readings.
+
+- [x] **THE RETRACTION IS WIDER THAN THE AUDIT SAID, AND THE ONE-CORE BOARDS PROVE IT.**
+      `qemu-arm64-bench` at ONE core reports `hcore=none foreign=0 raised=100`: the line never
+      fires at all, because armv8a enters EL1 with `PSTATE.I` set. So the four-core arm64 rows
+      were not mis-scaled, they were measuring an interrupt that board cannot deliver to the
+      measuring core at any core count, and every one of their samples came from a peer. The
+      GIC routes the free SPI to one core and a raise from any other reaches only that one, so
+      no placement recovers them. `docs/reference/bench.md` had recorded the opposite as a
+      property ("above one core they fill again, because a peer takes the line while the raiser
+      spins"); that sentence is what let the figure be published, and it is corrected.
+
+- [x] **rv64imac IS THE SAME STORY, AND `qemu-riscv64-bench` AT ONE HART PROVES IT.** That
+      capture reports `hcore=none foreign=0 raised=100` beside fifty closed end-to-end spans, so
+      the line delivers and it is the syscall that runs masked, exactly as on armv8a. Above one
+      hart the rows filled by a path of this arch's own: `raise_line` does set `sip.SSIP` on the
+      calling hart as the brief said, but `sip.SSIP` is double-booked with the kernel doorbell
+      and the raised set the dispatch drains is ONE word for the image, so whichever hart next
+      takes a doorbell swallows the bit and runs the handler there. The probe reports
+      `hcore=mixed`. The offsets are small there, the harts' counters starting together under
+      this emulator, which is why the contaminated rv64 rows looked plausible where the arm64
+      ones did not -- and why the window arm alone does not catch them.
+
+      **SO OF THE FOUR EMULATOR VEHICLES MEASURED HERE, ONLY `qemu-riscv-bench` CARRIES A
+      READING**, and the campaign's other good figure is the armv7m silicon one. Both are one
+      core, and both are unchanged by this work. `rxv3`, the LX6 and x86_64 were built and not
+      booted here, so nothing is claimed about them.
+
+- [ ] **NO CI JOB RUNS `*_bench_irqspan` ON ANY PRESET, SO THIS ARM IS REGISTERED AND UNRUN.**
+      The string `irqspan` does not appear in `.github/workflows/ci.yml`. Its `bench:` job boots
+      only `*_bench_lock` and `*_bench_cyccnt`, on the one-core presets; the benchsmp presets and
+      `qemu-riscv-bench` get `ctest -L host -LE tree`, which is link surface alone. That predates
+      this work and covers the gate's EXISTING arms too, not only the ones added here. The gate
+      allows itself 400 seconds of emulator per board, and the job's own comment gives the runner
+      being slower than a developer box as why the four-core arms were left out. **THIS IS A
+      DECISION FOR THE MAINTAINER, NOT A DEFECT TO FIX HERE**: what the tree owes is either that
+      cost in CI or a written statement that the IRQ block is witnessed by hand at rebaseline
+      time and not by CI.
+
+- [ ] **TWO ARCH QUESTIONS THE INSTRUMENT NOW ASKS AND CANNOT ANSWER.** Whether `arch_irq_unmask`
+      on armv8a should route a global line to the core that unmasks it rather than leaving it
+      where the first unmask put it, and whether rv64imac's raised set should be per hart rather
+      than one word. Neither is the bench's to change. Recorded because the refusals name them:
+      an `irq-probe` reading `on=3 hcore=0` is the first and `hcore=mixed` is the second.

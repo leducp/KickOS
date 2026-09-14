@@ -20,11 +20,25 @@
       "cacheVariables": { "KICKOS_BOARD": "qemu-arm64" }
     },
     {
+      "name": "qemu-arm64-bench",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) + KICKOS_BENCH - context-switch microbench",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-bench",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
+    },
+    {
       "name": "qemu-arm64-smp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores",
       "inherits": "qemu-arm64",
       "binaryDir": "${sourceDir}/build/qemu-arm64-smp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp" }
+    },
+    {
+      "name": "qemu-arm64-benchsmp",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + KICKOS_BENCH",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-benchsmp",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     },
     {
       "name": "qemu-arm64-smpiso",
@@ -92,7 +106,9 @@
   ],
   "buildPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64" },
+    { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench" },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" },
+    { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp" },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso" },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3" },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp" },
@@ -105,7 +121,9 @@
   ],
   "testPresets": [
     { "name": "qemu-arm64", "configurePreset": "qemu-arm64", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-gicv3", "configurePreset": "qemu-arm64-gicv3", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-amp", "configurePreset": "qemu-arm64-amp", "output": { "outputOnFailure": true } },

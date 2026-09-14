@@ -9,12 +9,6 @@
 # makes the constant right, and the gate refuses an entry that names no live site, so a waiver
 # cannot outlive the code it was written for.
 
-# The 16550 divisor latch runs off the UART's own 1.8432 MHz reference crystal, which is part
-# of the PC serial controller and has no relation to any clock this port programs or degrades.
-# Divisor 1 IS 115200 baud, and there is no rate for it to track.
-arch/x86/chip/q35/com1_q35.cc:reg_divisor_lo
-arch/x86/chip/q35/com1_q35.cc:reg_divisor_hi
-
 # UART0 is clocked from the fixed 80 MHz APB, not from the CPU PLL that clock_init_240mhz
 # moves, so SystemCoreClock is the wrong number here and following it would be the defect.
 # The reclaim also runs on the panic path, where SystemCoreClock is writable state a faulted

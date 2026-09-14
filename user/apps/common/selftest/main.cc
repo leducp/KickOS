@@ -175,7 +175,7 @@ namespace
     // --- Core clock read syscall -----------------------------------------------
     void t_cpu_clock_hz()
     {
-        uint32_t hz = kos_cpu_clock_hz();
+        uint64_t hz = kos_cpu_clock_hz();
         TAP_CHECK(hz == kos_cpu_clock_hz());
         // 0 == the backend has no silicon core clock (host sim, QEMU virt); a real core
         // reports a plausible rate (>= 1 MHz, below every board's post-init clock).
@@ -210,9 +210,9 @@ namespace
     // really retune on a chip with a real backend (XMC/K64F) and leave the core clock
     // moved for the rest of the suite. The accepting arm is covered by the clockretune
     // harness.
-    uint32_t g_clkset_low = 1;
-    uint32_t g_clkset_mid = 1;
-    uint32_t g_clkset_max = 1;
+    uint64_t g_clkset_low = 1;
+    uint64_t g_clkset_mid = 1;
+    uint64_t g_clkset_max = 1;
     kos_cap_t g_clkset_done = KOS_CAP_NONE;
     void clkset_unpriv_worker(void*) // UNPRIVILEGED; caps: g_clkset_done@1 (CH_DONE)
     {
@@ -223,7 +223,7 @@ namespace
     }
     void t_cpu_clock_set()
     {
-        uint32_t const before = kos_cpu_clock_hz();
+        uint64_t const before = kos_cpu_clock_hz();
         uint64_t const t0 = kos_clock_now();
         g_clkset_low = 1;
         g_clkset_mid = 1;
@@ -258,7 +258,7 @@ namespace
 #if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
     constexpr int IRQ_CTX_LINE = KICKOS_IRQ_SOFT_ONLY_BASE + 1;
 #else
-    constexpr int IRQ_CTX_LINE = KICKOS_SELFTEST_IRQ_BASE + 10;
+    constexpr int IRQ_CTX_LINE = KICKOS_IRQ_FREE_BASE + 10;
 #endif
     void irq_waiter(void*)
     {
@@ -483,7 +483,7 @@ namespace
     // as its domain grant, so it is a task and an address space of its own and an app global
     // it wrote would be its own copy of one; the block root handed it is what carries the
     // reading back, at the address root named.
-    constexpr int IRQ_LINE = KICKOS_SELFTEST_IRQ_BASE + 1;
+    constexpr int IRQ_LINE = KICKOS_IRQ_FREE_BASE + 1;
 
     void irq_driver(void*)
     {
@@ -563,7 +563,7 @@ namespace
     // and root posts it to release each ack. Strictly alternating and root-driven, so the two
     // senses never overlap.
     int g_mask_serviced = 0;
-    constexpr int MASK_LINE = KICKOS_SELFTEST_IRQ_BASE + 0;
+    constexpr int MASK_LINE = KICKOS_IRQ_FREE_BASE + 0;
 
     void mask_driver(void*)
     {
@@ -655,14 +655,14 @@ namespace
 #if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
     constexpr int DISCARD_LINE = KICKOS_IRQ_SOFT_ONLY_BASE;
 #else
-    constexpr int DISCARD_LINE = KICKOS_SELFTEST_IRQ_BASE + 9;
+    constexpr int DISCARD_LINE = KICKOS_IRQ_FREE_BASE + 9;
 #endif
 
-    static_assert(DISCARD_LINE < KICKOS_SELFTEST_IRQ_BASE
-                      or DISCARD_LINE > KICKOS_SELFTEST_IRQ_BASE + 8,
+    static_assert(DISCARD_LINE < KICKOS_IRQ_FREE_BASE
+                      or DISCARD_LINE > KICKOS_IRQ_FREE_BASE + 8,
                   "the discard line falls inside the selftest's nine-line IRQ block");
-    static_assert(IRQ_CTX_LINE < KICKOS_SELFTEST_IRQ_BASE
-                      or IRQ_CTX_LINE > KICKOS_SELFTEST_IRQ_BASE + 8,
+    static_assert(IRQ_CTX_LINE < KICKOS_IRQ_FREE_BASE
+                      or IRQ_CTX_LINE > KICKOS_IRQ_FREE_BASE + 8,
                   "the irq-context line falls inside the selftest's nine-line IRQ block");
     static_assert(IRQ_CTX_LINE != DISCARD_LINE,
                   "the irq-context and discard arms would share a line");
@@ -752,7 +752,7 @@ namespace
     // still receives every subsequent IRQ. Driver MUST run above root, so it reaches its
     // next wait before root injects again.
     int g_autorearm_seen = 0;
-    constexpr int AUTO_REARM_LINE = KICKOS_SELFTEST_IRQ_BASE + 2;
+    constexpr int AUTO_REARM_LINE = KICKOS_IRQ_FREE_BASE + 2;
 
     void autorearm_driver(void*)
     {
@@ -794,7 +794,7 @@ namespace
     // wait-return unmasks early and phantom-posts. Driver MUST run below root so root
     // sequences each step, and every inject below must target an ARMED line.
     int g_phantom_seen = 0;
-    constexpr int PHANTOM_LINE = KICKOS_SELFTEST_IRQ_BASE + 4;
+    constexpr int PHANTOM_LINE = KICKOS_IRQ_FREE_BASE + 4;
 
     void phantom_driver(void*)
     {
@@ -1773,7 +1773,7 @@ namespace
     {
         // This arm POISONS the line (below), so it must not be shared with any other arm
         // whatever the registration order.
-        constexpr int LINE = KICKOS_SELFTEST_IRQ_BASE + 5;
+        constexpr int LINE = KICKOS_IRQ_FREE_BASE + 5;
         kos_cap_t sem = KOS_CAP_NONE;
         kos_sem_create(0, &sem);
         TAP_CHECK(kos_irq_attach(LINE, sem) == 0);
@@ -1792,7 +1792,7 @@ namespace
     // Keep this to ONE new static: on a 16 KiB part .bss added here shrinks the arena for
     // every later arm.
     int g_claimgate_rc = 0;
-    constexpr int CLAIM_GATE_LINE = KICKOS_SELFTEST_IRQ_BASE + 7;
+    constexpr int CLAIM_GATE_LINE = KICKOS_IRQ_FREE_BASE + 7;
 
     void claimgate_worker(void*) // UNPRIVILEGED, authority 0; caps: g_done@1 (CH_DONE)
     {
@@ -1824,7 +1824,7 @@ namespace
     // --- A line comes back when its holder dies --------------------------------
     // A dying thread's line cap is dropped and the binding slot freed, so the SAME line is
     // claimable again. Without that release the line returns -KOS_EBUSY forever.
-    constexpr int RECLAIM_LINE = KICKOS_SELFTEST_IRQ_BASE + 8;
+    constexpr int RECLAIM_LINE = KICKOS_IRQ_FREE_BASE + 8;
 
     // Do NOT rewrite this as wait-then-inject: a claim leaves the line masked and spawn
     // does not preempt, so root's inject lands masked, the worker's own first arm discards
@@ -1876,7 +1876,7 @@ namespace
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
-        constexpr int FREE_LINE = KICKOS_SELFTEST_IRQ_BASE + 3; // no driver bound to this line
+        constexpr int FREE_LINE = KICKOS_IRQ_FREE_BASE + 3; // no driver bound to this line
         // Enable the line so the injected raise reaches the default handler: ARM NVIC and RX
         // are masked by default, sim/riscv are not.
         kos_irq_unmask(FREE_LINE);
@@ -1905,7 +1905,7 @@ namespace
     // wakes on garbage. This is the ONE tier-1 arm where root must NOT pre-arm the line:
     // pre-arming moves the discard into root and stops testing the driver's own first arm.
     int g_stale_seen = 0;
-    constexpr int STALE_LINE = KICKOS_SELFTEST_IRQ_BASE + 6;
+    constexpr int STALE_LINE = KICKOS_IRQ_FREE_BASE + 6;
 
     void stale_driver(void*)
     {

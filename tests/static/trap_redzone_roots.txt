@@ -87,8 +87,10 @@
 # only thing that bounds it.
 #
 # SYSPRIV is the SYS entry reached from M-mode: same FRAME_SYS, same roots, but the frame stays
-# on the sp it interrupted, that thread's own stack, so it takes the depth macro with the panic
-# tail excluded. With EXIT it is what sets KICKOS_MIN_STACK_SIZE on this arch. Its depth macro
+# on the sp it interrupted, that thread's own stack, so it takes its own depth macro. The panic
+# tail is off this class and every other one STRUCTURALLY and not by an exclusion: the reporter
+# is reached only through kickos_panic_stack_enter, which is assembly and has no .ci entry, so
+# the walk cannot pass through it. With EXIT it is what sets KICKOS_MIN_STACK_SIZE on this arch. Its depth macro
 # is the one posture-dependent figure in this file, resolving per KICKOS_BENCH in
 # rv_trap_stack.h.
 #
@@ -304,6 +306,7 @@ preset  armv7m xmc4800-relax-bench
 preset  armv7m f411disco
 preset  armv7m f411disco-flat
 preset  armv7m f411disco-st
+preset  armv7m f411disco-bench
 preset  armv7m blackpill
 preset  armv7m blackpill-flat
 preset  armv7m blackpill-st
@@ -349,7 +352,7 @@ class   armv7m RET    frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
 class   armv7m PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME \
                       depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
 
-root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv7-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the trace/bench hooks all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it. THE RP2350 NODE'S DOORBELL BODY IS A THIRD SUCH DESCENT AND IS UNROOTED FOR THE SAME REASON: kickos_rp2350_doorbell_service, entered from node_vectors.S, reaches kickos_amp_node_service and measures 740 bytes on pizero2350-amp2-n0 and -n1 with the panic-tail exclusions not applied, 524 with them, against the 8 KiB _kernel_stack_size rp2350.ld reserves. Rooting it under this class would compare that 740 against KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV, which is 0 by handler mode, and against the spawn floor of every armv7m preset; a class of its own would still price ONE spender of an MSP that PendSV, the SVC fastpath arm and every device ISR also spend, so it would read as a bound the tree does not have. doorbell_rp2350.cc says the same at the body.
+root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv7-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the trace/bench hooks all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it. THE RP2350 NODE'S DOORBELL BODY IS A THIRD SUCH DESCENT AND IS UNROOTED FOR THE SAME REASON: kickos_rp2350_doorbell_service, entered from node_vectors.S, reaches kickos_amp_node_service and measures 524 bytes on pizero2350-amp2-n0 and -n1, against the 8 KiB _kernel_stack_size rp2350.ld reserves. ONE figure and not a pair: the panic tail is off every walk structurally, this file declaring no exclusion for any arch. Rooting it under this class would compare that 740 against KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV, which is 0 by handler mode, and against the spawn floor of every armv7m preset; a class of its own would still price ONE spender of an MSP that PendSV, the SVC fastpath arm and every device ISR also spend, so it would read as a bound the tree does not have. doorbell_rp2350.cc says the same at the body.
 
 # svc_trampoline's only call, and the SAME ROOT SET serves both classes: what differs is which
 # stack the descent lands on. The fastpath is reached with lr still an EXC_RETURN, in handler
@@ -444,6 +447,7 @@ arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
 preset  lx6 esp32-wroom
 preset  lx6 esp32-wroom-st
 preset  lx6 esp32-wroom-smp
+preset  lx6 esp32-wroom-bench
 
 # --- the corpus floor ----------------------------------------------------------
 # SECONDARY, and exactly one record per arch. WHICH units a run measures is settled against
@@ -460,11 +464,11 @@ preset  lx6 esp32-wroom-smp
 # EVERY RECORD NAMES ITS SCOPE. A minimum is only a minimum over the presets actually swept,
 # and a reason that does not say which they were cannot be told from one measured on a single
 # board that happened to be handy.
-floor   armv7m   files=85 nodes=600 reason: all 37 declared armv7m presets swept 2026-09-12; smallest 107 files on teensy41-flat and 815 nodes on bluepill-c8 and due, largest 158 files/1034 nodes on xmc4800-relax-bench
-floor   armv6m   files=85 nodes=600 reason: all 4 declared armv6m presets swept 2026-09-12; smallest 109 files/836 nodes on picopi-flat, largest 138 files/888 nodes on microbit
-floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swept 2026-09-12; smallest 99 files/830 nodes on esp32c6-wroom-flat, largest 134 files/969 nodes on esp32c6-wroom-st
+floor   armv7m   files=85 nodes=600 reason: all 38 declared armv7m presets swept 2026-09-12; smallest 107 files on teensy41-flat and 815 nodes on bluepill-c8 and due, largest 158 files on xmc4800-relax-bench and 1067 nodes on pizero2350-amp2-n0
+floor   armv6m   files=85 nodes=600 reason: all 4 declared armv6m presets swept 2026-09-12; smallest 109 files/836 nodes on picopi-flat, largest 138 files on microbit and 974 nodes on picopi-st
+floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swept 2026-09-12; smallest 99 files/830 nodes on esp32c6-wroom-flat, largest 134 files on esp32c6-wroom-st and 971 nodes on qemu-riscv-bench
 floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-09-12; smallest 99 files/852 nodes on rx72m-flat, largest 123 files/979 nodes on rx72m-st
-floor   lx6      files=75 nodes=650 reason: all 3 declared lx6 presets swept 2026-09-12; smallest 103 files/909 nodes on esp32-wroom, largest 123 files/1035 nodes on esp32-wroom-smp
+floor   lx6      files=75 nodes=650 reason: all 4 declared lx6 presets swept, the first three 2026-09-12 and esp32-wroom-bench 2026-09-13; smallest 103 files/909 nodes on esp32-wroom, largest 124 files/1042 nodes on esp32-wroom-bench
 class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
 class   lx6 PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic
 root    lx6 PREEMPT kickos_lx6_dispatch_l1

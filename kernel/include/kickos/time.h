@@ -23,7 +23,7 @@ namespace kickos
     // in a future userspace power manager). Returns the LANDED core Hz, or 0 if the chip
     // cannot change its clock or a userspace driver owns the console. Privileged, thread
     // context. See kernel/time/clock_select.cc.
-    uint32_t cpu_clock_set(kos_pstate_t target);
+    uint64_t cpu_clock_set(kos_pstate_t target);
     uint64_t ktime_now(); // monotonic nanoseconds
 
     // Sleep the current thread until absolute `deadline_ns` (monotonic). Blocks.

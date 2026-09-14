@@ -31,7 +31,7 @@ strongest claims against the code afterwards.
 - **Finding 1 (the top BLOCKER) does NOT hold against the landed code.** `clock_select.cc:32`
   early-returns `if (console_owner_is_kernel() == 0) return arch_cpu_clock_hz();` BEFORE any
   masking or console touch -- the S4 refusal is landed and guards the whole retune, including
-  the `console_tx_flush_sync()` / `arch_console_retune()` at lines 49-62 the reviewer flagged.
+  the `console_tx_flush_sync()` / `arch_console_retune()` below it that the reviewer flagged.
   The reviewer saw the unconditional-looking calls but missed the line-32 gate above them. So
   the M3 clock-select code is correct as shipped.
   - BUT the underlying M4 concern survives: "refuse while USER_OWNED" is the right M3 policy for

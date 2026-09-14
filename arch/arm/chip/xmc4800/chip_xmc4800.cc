@@ -395,7 +395,7 @@ uint64_t arch_clock_now(void)
 // generic coherence tail (baud re-derive, SysTick re-arm) runs in cpu_clock_set. Called
 // privileged, IRQs already masked (single-core: the timer is quiesced). fCCU=fSYS and
 // fPERIPH=fCPU/2 both follow SystemCoreClock, so the CCU40 clock AND the USIC baud move.
-uint32_t arch_cpu_clock_set(uint32_t target)
+uint64_t arch_cpu_clock_set(uint32_t target)
 {
     uint32_t const previous = SystemCoreClock;
     uint32_t want_hz;

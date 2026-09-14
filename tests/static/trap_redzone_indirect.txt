@@ -219,6 +219,23 @@ site armv8a qemu-arm64 console_tx_insert_line@2/4 chip_virt_arm64.cc:pl011_tx_sl
 site armv8a qemu-arm64 console_tx_insert_line@3/4 chip_virt_arm64.cc:pl011_tx_push
 site armv8a qemu-arm64 console_tx_insert_line@4/4 chip_virt_arm64.cc:pl011_tx_push
 
+site armv8a qemu-arm64-bench console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-bench console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-bench console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-bench console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-bench console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-bench console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-bench console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-bench console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-bench console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-bench console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-bench console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-bench console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-bench console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-bench console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-bench console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-bench console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
 site armv8a qemu-arm64-smp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smp console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
 site armv8a qemu-arm64-smp console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
@@ -235,6 +252,23 @@ site armv8a qemu-arm64-smp console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011
 site armv8a qemu-arm64-smp console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smp console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
 site armv8a qemu-arm64-smp console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-benchsmp console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
 
 site armv8a qemu-arm64-smpiso console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smpiso console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
@@ -406,6 +440,23 @@ site rv64imac qemu-riscv64 console_tx_insert_line@2/4 chip_virt_rv64.cc:ns16550_
 site rv64imac qemu-riscv64 console_tx_insert_line@3/4 chip_virt_rv64.cc:ns16550_tx_push
 site rv64imac qemu-riscv64 console_tx_insert_line@4/4 chip_virt_rv64.cc:ns16550_tx_push
 
+site rv64imac qemu-riscv64-bench console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-bench console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-bench console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-bench console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-bench console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-bench console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-bench console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-bench console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-bench console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-bench console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-bench console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-bench console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-bench console_tx_insert_line@1/4   chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-bench console_tx_insert_line@2/4   chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-bench console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-bench console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
+
 site rv64imac qemu-riscv64-sv48 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
 site rv64imac qemu-riscv64-sv48 console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
 site rv64imac qemu-riscv64-sv48 console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
@@ -440,6 +491,23 @@ site rv64imac qemu-riscv64-smp console_tx_insert_line@2/4   chip_virt_rv64.cc:ns
 site rv64imac qemu-riscv64-smp console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
 site rv64imac qemu-riscv64-smp console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
 
+site rv64imac qemu-riscv64-benchsmp console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-benchsmp console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@1/4   chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@2/4   chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
+
 site x86_64 qemu-x86_64 console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
 site x86_64 qemu-x86_64 console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
 site x86_64 qemu-x86_64 console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
@@ -456,6 +524,23 @@ site x86_64 qemu-x86_64 console_tx_insert_line@1/4 console_q35.cc:q35_tx_irq_ena
 site x86_64 qemu-x86_64 console_tx_insert_line@2/4 console_q35.cc:q35_tx_slot_free
 site x86_64 qemu-x86_64 console_tx_insert_line@3/4 console_q35.cc:q35_tx_push
 site x86_64 qemu-x86_64 console_tx_insert_line@4/4 console_q35.cc:q35_tx_push
+
+site x86_64 qemu-x86_64-bench console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64-bench console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64-bench console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
+site x86_64 qemu-x86_64-bench console_tx_write@2/5         console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64-bench console_tx_write@3/5         console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64-bench console_tx_write@4/5         console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64-bench console_tx_write@5/5         console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64-bench console_tx_isr@1/3           console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64-bench console_tx_isr@2/3           console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64-bench console_tx_isr@3/3           console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64-bench console_tx_flush_sync@1/1    console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64-bench console_tx_deinit@1/1        console_q35.cc:q35_tx_irq_disable
+site x86_64 qemu-x86_64-bench console_tx_insert_line@1/4   console_q35.cc:q35_tx_irq_enable
+site x86_64 qemu-x86_64-bench console_tx_insert_line@2/4   console_q35.cc:q35_tx_slot_free
+site x86_64 qemu-x86_64-bench console_tx_insert_line@3/4   console_q35.cc:q35_tx_push
+site x86_64 qemu-x86_64-bench console_tx_insert_line@4/4   console_q35.cc:q35_tx_push
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
 # CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
@@ -886,6 +971,23 @@ site armv7m f411disco-st console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_
 site armv7m f411disco-st console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
 site armv7m f411disco-st console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
 site armv7m f411disco-st console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
+
+site armv7m f411disco-bench console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-bench console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-bench console_tx_write@1/5         chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-bench console_tx_write@2/5         chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-bench console_tx_write@3/5         chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-bench console_tx_write@4/5         chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-bench console_tx_write@5/5         chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-bench console_tx_isr@1/3           chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-bench console_tx_isr@2/3           chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-bench console_tx_isr@3/3           chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-bench console_tx_flush_sync@1/1    chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-bench console_tx_deinit@1/1        chip_stm32f411.cc:f4_tx_irq_disable
+site armv7m f411disco-bench console_tx_insert_line@1/4 chip_stm32f411.cc:f4_tx_irq_enable
+site armv7m f411disco-bench console_tx_insert_line@2/4 chip_stm32f411.cc:f4_tx_slot_free
+site armv7m f411disco-bench console_tx_insert_line@3/4 chip_stm32f411.cc:f4_tx_push
+site armv7m f411disco-bench console_tx_insert_line@4/4 chip_stm32f411.cc:f4_tx_push
 
 site armv7m blackpill console_tx.cc:wait_slot@1/1  chip_stm32f411.cc:f4_tx_slot_free
 site armv7m blackpill console_tx.cc:drain_sync@1/1 chip_stm32f411.cc:f4_tx_push

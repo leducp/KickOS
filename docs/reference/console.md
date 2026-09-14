@@ -158,6 +158,19 @@ around the fallback fixes that, because the interleaving is between the fallback
 drain that is not holding the lock. Waiting instead is a decision for the caller, not
 one the kernel takes on its behalf.
 
+**The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file,
+under `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time
+at 115200, so the ring fills a dozen rows in and the rest are refused; three silicon captures
+of one campaign carried 6, 9 and 7 of 40. It offers a refused line again rather than losing
+it, waiting between attempts with **interrupts open and no lock held** (`console_tx_wait_drain`),
+which is what lets the drain ISR run at all. It gives up once a whole attempt passes with
+nothing leaving the ring, so a dead or unread console costs one bounded poll window per line
+and never a hang: a board that gets itself back through `KICKOS_SHUTDOWN_TO_BOOTLOADER` must
+not need a button press because nobody had a terminal open. Every multi-line printer in
+`kernel/bench/bench.cc` uses it, not the forty-row table alone: the ring holds about eleven
+lines at the default 256-byte bound and about five on a board that lowers it, which is inside
+the length of the shorter blocks.
+
 The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing
 counts it. The USER path is different and already settled: `kos_kconsole_write` splits
 a write into chunks, and the syscall STOPS at the first chunk the ring refused and

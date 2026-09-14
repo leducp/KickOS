@@ -6,6 +6,7 @@
 // sim, where host glibc already provides these symbols.
 
 #include <kickos/sys.h>
+#include <kickos/sys/emit.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -49,7 +50,7 @@ int _write(int fd, char const* buf, int len)
             // the chunks already delivered to the driver. Return the FULL len even so,
             // because a short write would make newlib retry and re-send the bytes IPC
             // already accepted.
-            kos_kconsole_write(buf + sent, total - sent);
+            kickos::kconsole_write_all(buf + sent, total - sent);
             return len;
         }
         sent += static_cast<size_t>(r);

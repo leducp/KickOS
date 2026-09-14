@@ -364,6 +364,25 @@ _start:
     j       .Lm_refuse
 1:
 
+#if KICKOS_BENCH
+    /* mcounteren.CY: S-mode may read the cycle CSR, which is the bench cycle source
+       (kickos/bench.h). Read back for the same reason as TM above, and louder: a hart that
+       keeps the bit clear takes an illegal-instruction trap on the first bracket, which sits
+       INSIDE the switch path, so it would surface as a kernel fault and not as a missing
+       counter. */
+    li      t0, 1
+    csrs    mcounteren, t0
+    csrr    t1, mcounteren
+    andi    t2, t1, 1
+    bnez    t2, 1f
+    la      a0, .Lcy_refused
+    la      a1, .Llbl_mcounteren
+    mv      a2, t1
+    li      a3, 0
+    j       .Lm_refuse
+1:
+#endif
+
     /* The DRAM the layout claims, probed while a fault still has a vector: the landing pad
        stores through _estack, and on a machine with less DRAM that store faults in SUPERVISOR
        mode with stvec still zero. Machine mode over physical addresses here.
@@ -825,6 +844,10 @@ _start:
     .asciz  "\r\nKickOS: menvcfg.STCE did not stick: a supervisor write of stimecmp traps and the timer never arms"
 .Ltm_refused:
     .asciz  "\r\nKickOS: mcounteren.TM did not stick: a supervisor read of the time CSR traps and the clock has no source"
+#if KICKOS_BENCH
+.Lcy_refused:
+    .asciz  "\r\nKickOS: mcounteren.CY did not stick: a supervisor read of the cycle CSR traps and the bench has no counter"
+#endif
 .Lram_refused:
     .asciz  "\r\nKickOS: the top word of the DRAM this layout claims does not read back: the machine has less than KICKOS_RV64_DRAM_SIZE"
 #if KICKOS_NUM_CORES > 1

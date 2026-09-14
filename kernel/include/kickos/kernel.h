@@ -26,6 +26,16 @@ namespace kickos
     void kputs(char const* s);
     void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+#if KICKOS_BENCH
+    // kprintf that OFFERS A REFUSED LINE AGAIN rather than losing it. The console takes a whole
+    // line or none, so a burst longer than the ring outruns the wire and every line past the
+    // fill is dropped; this one waits for the drain between attempts. THREAD CONTEXT ONLY, and
+    // never under a lock: it spins with interrupts open so the drain ISR can run. It gives up,
+    // and loses the line as kprintf would, once a whole attempt passes with nothing leaving
+    // the ring.
+    void kprintf_paced(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+#endif
+
     // kprintf for the thread-fault record ONLY: it additionally hands the line to the console
     // driver when a userspace driver owns the device. Widening it to kprintf would relight the
     // kernel debug console post-handover, which check_sim_published.sh asserts is dark.

@@ -71,6 +71,7 @@
 #define PERCPU_CTX_CURRENT 0
 #define PERCPU_SWITCH_TO   8
 #define PERCPU_ISR_DEPTH   16
+#define PERCPU_BENCH_SW_START 24
 
 /* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
    sp already names the incoming one: the call frame then lands on the incoming thread's own
@@ -97,6 +98,34 @@
     .option pop
 #endif
     .endm
+
+#if KICKOS_BENCH
+/* The switch window (kernel/bench/bench.cc). It encloses the SOFTWARE REGISTER SAVE and the
+   stack-pointer swap, and NOT the software restore: .Lrestore reloads t0-t2 near its top and
+   leaves nothing free at the sret, and it is shared with every non-switch trap return.
+
+   THE STAMP IS THIS HART'S CELL. A word shared with a peer subtracts one hart's open from
+   another's close, which wraps near 2^32 whenever the peer opened later.
+
+   The cycle CSR is 64 bits and the accumulator is 32: `sw`/`lw`/`subw` keep the low word
+   alone, which is exact for any delta shorter than 2^32 ticks. */
+    .macro  BENCH_SW_OPEN
+    rdcycle t0
+    PERCPU_CELL t1, PERCPU_BENCH_SW_START
+    sw      t0, 0(t1)
+    .endm
+
+/* CALL ONLY where SWITCH_UNLOCK may be called, and ABOVE it so the kernel lock's release
+   falls outside the window: sp already names the incoming frame, and .Lrestore reloads every
+   register this clobbers. */
+    .macro  BENCH_SW_CLOSE
+    rdcycle t0
+    PERCPU_CELL t1, PERCPU_BENCH_SW_START
+    lw      t1, 0(t1)
+    subw    a0, t0, t1
+    call    kickos_bench_switch_done
+    .endm
+#endif
 
 /* Its own section so a W^X split of the kernel's half has a boundary here; virt_rv64.ld places
  * it with kernel text.
@@ -372,6 +401,9 @@ kickos_rv64_stvec:
  */
     .global kickos_rv64_switch_now
 kickos_rv64_switch_now:
+#if KICKOS_BENCH
+    BENCH_SW_OPEN
+#endif
     addi    sp, sp, -FRAME
     sd      ra,  F_RA(sp)
     sd      ra,  F_SEPC(sp)         /* resume where our caller expects to continue */
@@ -416,6 +448,9 @@ kickos_rv64_switch_now:
     sd      t0,  F_SSTATUS(sp)
     sd      sp, CTX_SP(a0)
     ld      sp, CTX_SP(a1)          /* stand on the incoming thread's frame */
+#if KICKOS_BENCH
+    BENCH_SW_CLOSE
+#endif
     SWITCH_UNLOCK
     j       .Lrestore
 

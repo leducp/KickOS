@@ -28,19 +28,46 @@
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/emit.h>
+#include <kickos/sys/irq_free.h>
+#include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
+
+#ifndef KICKOS_KERNEL_CORES
+#define KICKOS_KERNEL_CORES 1
+#endif
 
 namespace
 {
     using kickos::Atomic;
     using kickos::Order;
 
-    // Any line the bench does not otherwise use (NOT a console TX drain line).
-    constexpr int BENCH_IRQ_LINE = 20;
-    constexpr int IRQ_SAMPLES = 100;
+    // A line below the board's free block injects as a silent no-op and reports a clean zero.
+    constexpr int BENCH_IRQ_LINE = KICKOS_IRQ_FREE_BASE + 0;
+    constexpr int BENCH_E2E_LINE = KICKOS_IRQ_FREE_BASE + 1;
+    constexpr int IRQ_SAMPLES = KOS_BENCH_SAMPLES_MAX;
+    // Per PASS, and the sweep runs two passes per kernel core.
+    constexpr int E2E_SAMPLES = 25;
+    // Two waiter placements per raiser placement: the raiser's own core, and the next one.
+    constexpr uint32_t E2E_PAIRS_PER_CORE = 2;
+    // What e2e_sweep runs, and the denominator the kernel echoes beside the raises it let
+    // through.
+    constexpr uint32_t E2E_SWEEP_PASSES =
+        KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE * static_cast<uint32_t>(E2E_SAMPLES);
+    // Yields this thread will spend waiting for the waiter to park, and then for it to close.
+    constexpr int E2E_TRIES = 2000;
+    // The instrument's own tail, measured once per run: the return to userspace, the device
+    // read, and the trap back in.
+    constexpr int E2E_TARE_SAMPLES = 64;
+    // An MPU rounds a grant up to what it can describe and the rounded window must still lie
+    // inside the block that was reserved.
+    constexpr uint32_t E2E_DEV_BYTES = 4096;
     // Rounds the players run before waking the reporter: a throughput window of a
     // fraction of a second on fast silicon, a few seconds on a slow M0.
     constexpr uint32_t ROUNDS_PER_REPORT = 20000;
+    // Rounds the doorbell probe runs per core per window.
+    constexpr uint32_t DOORBELL_ROUNDS = KOS_BENCH_ROUNDS_MAX;
+    // An upper bound on the walk alone: a core set is a 32-bit mask everywhere KickOS runs.
+    constexpr uint32_t CORE_WALK_MAX = 32;
     // Bounded so main RETURNS: root's exit reaches kickos_terminate, and a board built
     // with KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader instead of needing a
     // physical button press for the next capture.
@@ -62,7 +89,7 @@ namespace
     // refusal must collapse to 0 for a caller's `!= 0` fired-check to hold.
     uint32_t bench_u32(uint32_t op, uint32_t a0, uint32_t a1)
     {
-        int32_t const rc = kos_bench(op, a0, a1);
+        int64_t const rc = kos_bench(op, a0, a1);
         if (rc < 0)
         {
             return 0;
@@ -93,21 +120,232 @@ namespace
         }
     }
 
-    // Reached only past a non-zero hz; the guard is the divisor's own.
-    uint32_t to_ns(uint32_t cyc, uint32_t hz)
+    // --- the end-to-end span ---------------------------------------------------
+    // BOTH ENDS ARE SPAWNED THREADS OF ROOT'S OWN TASK, so root can place either.
+    // Root itself holds no handle on itself and so cannot be the raiser.
+    // The waiter holds the line, so nothing else in the image may.
+    constexpr int CH_E2E_IRQ = 1;   // waiter: the claimed line, WAIT only
+    constexpr int CH_E2E_READY = 2; // waiter: posted once, after the tare, before the first park
+    constexpr int CH_E2E_GO = 1;    // raiser: one post per pass
+    constexpr int CH_E2E_PASS = 2;  // raiser: posted when a pass has run its samples
+
+    void* g_e2e_dev = nullptr;
+    kos_thread_t g_e2e_tid = KOS_THREAD_NONE;
+    kos_thread_t g_e2e_rid = KOS_THREAD_NONE;
+    kos_cap_t g_e2e_ready = KOS_CAP_NONE;
+    kos_cap_t g_e2e_go = KOS_CAP_NONE;
+    kos_cap_t g_e2e_pass = KOS_CAP_NONE;
+    Atomic<uint32_t, Order::RELAXED> g_e2e_stop{0};
+    // Bumped by the waiter AFTER its close, so the handshake is outside every span.
+    Atomic<uint32_t, Order::RELAXED> g_e2e_done{0};
+    // 0 until the waiter reaches its loop; negative says why it did not.
+    Atomic<int32_t, Order::RELAXED> g_e2e_grant_rc{0};
+
+    void e2e_waiter(void*)
     {
-        if (hz == 0)
+        auto irq = kos::Irq::adopt(CH_E2E_IRQ);
+        // Under an MPU reachability is per THREAD, so root's own grant of this block does not
+        // carry here; under translation it already does and this answers 0 again.
+        g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
+        if (g_e2e_grant_rc != 0)
         {
-            return 0;
+            kos_sem_post(CH_E2E_READY);
+            return;
         }
-        return static_cast<uint32_t>((static_cast<uint64_t>(cyc) * 1000000000ull) / hz);
+        volatile uint32_t* const dev = static_cast<volatile uint32_t*>(g_e2e_dev);
+        for (int i = 0; i < E2E_TARE_SAMPLES; i++)
+        {
+            (void)kos_bench(KOS_BENCH_OP_E2E_ARM, CH_E2E_IRQ, 0);
+            (void)kos_bench(KOS_BENCH_OP_E2E_TARE, 0, 0);
+            dev[1] = dev[0];
+            (void)kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
+        }
+        kos_sem_post(CH_E2E_READY);
+        while (g_e2e_stop == 0)
+        {
+            (void)kos_bench(KOS_BENCH_OP_E2E_ARM, CH_E2E_IRQ, 0);
+            if (irq.wait() != 0)
+            {
+                break; // cancelled, or the binding died: nothing left to wake for
+            }
+            // THE CLOSING STAMP IS THE NEXT INSTRUCTION AFTER THIS READ, so the span carries
+            // the read and one trap and nothing else of this thread's.
+            dev[1] = dev[0];
+            (void)kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
+            g_e2e_done = g_e2e_done + 1;
+        }
     }
 
-    // The reporter is the ROOT thread, so the two players are the only slots the bench
-    // adds to root's own: a 3-slot pool carries it.
-    void reporter_loop(uint32_t hz)
+    // Ranks BELOW the waiter, so every raise runs to the waiter's close before this thread is
+    // scheduled again at one kernel core; above one the done counter is what orders it. Ends
+    // only by cancellation, which is what unblocks its wait.
+    void e2e_raiser(void*)
     {
-        (void)kos_bench(KOS_BENCH_OP_IRQ_SETUP, BENCH_IRQ_LINE, 0); // no-op if refused
+        while (true)
+        {
+            if (kos_sem_wait(CH_E2E_GO) != 0)
+            {
+                break;
+            }
+            for (int i = 0; i < E2E_SAMPLES; i++)
+            {
+                uint32_t const before = g_e2e_done;
+                int t = 0;
+                while (t < E2E_TRIES and kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0) != 0)
+                {
+                    kos_yield();
+                    t++;
+                }
+                if (t >= E2E_TRIES)
+                {
+                    continue; // the waiter never parked; the probe line reports the shortfall
+                }
+                for (t = 0; t < E2E_TRIES and g_e2e_done == before; t++)
+                {
+                    kos_yield();
+                }
+            }
+            kos_sem_post(CH_E2E_PASS);
+        }
+    }
+
+    // Root claims the line and hands a WAIT-only copy to the waiter, which outranks both root
+    // and the raiser.
+    bool e2e_start()
+    {
+        g_e2e_dev = kos_ram_alloc(E2E_DEV_BYTES);
+        if (g_e2e_dev == nullptr or kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0) != 0)
+        {
+            kickos::emit("  e2e: SKIP (no device window: allocation or grant refused)\n");
+            return false;
+        }
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            static_cast<volatile uint32_t*>(g_e2e_dev)[i] = 0;
+        }
+        kos_cap_t irq = KOS_CAP_NONE;
+        int const crc = kos_irq_claim(BENCH_E2E_LINE, KOS_IRQ_EDGE, &irq);
+        if (crc != 0)
+        {
+            char cs[96];
+            ksnprintf(cs, sizeof(cs), "  e2e: SKIP (line %u claim refused, rc=%d)\n",
+                      static_cast<unsigned>(BENCH_E2E_LINE), static_cast<int>(crc));
+            kickos::emit(cs);
+            return false;
+        }
+        // The claim leaves the line MASKED and the waiter's first arm happens after the ready
+        // handshake, so a raise before that would land on a masked line and be discarded.
+        kos_irq_ack(irq);
+        if (kos_sem_create(0, &g_e2e_ready) != 0)
+        {
+            kos_handle_close(irq);
+            return false;
+        }
+        kos_cap_grant caps[] = {{irq, KOS_CAP_WAIT}, {g_e2e_ready, CH_FULL}};
+        auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 2,
+                                          KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                                          KOS_AUTH_MEMORY);
+        kos_handle_close(irq); // the waiter is the sole holder: its exit frees the line
+        if (not w.valid())
+        {
+            kos_sem_destroy(g_e2e_ready);
+            kickos::emit("  e2e: SKIP (thread pool too small for the waiter)\n");
+            return false;
+        }
+        g_e2e_tid = w.id();
+        kos_sem_wait(g_e2e_ready);
+        if (g_e2e_grant_rc != 0)
+        {
+            // It already returned. Left named, the sweep below would raise into a line whose
+            // owner is gone and report a shortfall instead of this refusal.
+            (void)kos_thread_join(g_e2e_tid, KOS_TIMEOUT_NONE);
+            g_e2e_tid = KOS_THREAD_NONE;
+            kos_sem_destroy(g_e2e_ready);
+            kickos::emit("  e2e: SKIP (the waiter cannot reach the device window)\n");
+            return false;
+        }
+        if (kos_sem_create(0, &g_e2e_go) != 0 or kos_sem_create(0, &g_e2e_pass) != 0)
+        {
+            kickos::emit("  e2e: SKIP (no semaphore for the raiser handshake)\n");
+            return false;
+        }
+        kos_cap_grant rcaps[] = {{g_e2e_go, CH_FULL}, {g_e2e_pass, CH_FULL}};
+        auto r = kos::thread::create_caps(e2e_raiser, nullptr, "e2erais", 3, rcaps, 2);
+        if (not r.valid())
+        {
+            kickos::emit("  e2e: SKIP (thread pool too small for the raiser)\n");
+            return false;
+        }
+        g_e2e_rid = r.id();
+        return true;
+    }
+
+    // The raiser on each core in turn, and for each of those the waiter on that same core and
+    // then on the next one. THE SAME-CORE PASS IS WHAT CONSTRUCTS A LOCAL WAKE, and it has to
+    // be constructed on both delivery models: where the line follows its injector every
+    // same-core pass is local and every next-core pass is cross, and where the controller picks
+    // a fixed core one waiter placement of each kind matches it.
+    void e2e_sweep()
+    {
+        if (g_e2e_tid == KOS_THREAD_NONE or g_e2e_rid == KOS_THREAD_NONE)
+        {
+            return;
+        }
+        for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+        {
+            for (uint32_t d = 0; d < E2E_PAIRS_PER_CORE; d++)
+            {
+                uint32_t const w = (c + d) % KICKOS_KERNEL_CORES;
+                (void)kos_thread_set_affinity(g_e2e_rid, 1u << c); // -KOS_ENOSYS at one core
+                (void)kos_thread_set_affinity(g_e2e_tid, 1u << w);
+                kos_sem_post(g_e2e_go);
+                kos_sem_wait(g_e2e_pass);
+            }
+        }
+    }
+
+    void e2e_stop()
+    {
+        g_e2e_stop = 1;
+        // Both are parked on something only cancellation ends.
+        if (g_e2e_rid != KOS_THREAD_NONE)
+        {
+            (void)kos_thread_kill(g_e2e_rid);
+            (void)kos_thread_join(g_e2e_rid, KOS_TIMEOUT_NONE);
+            g_e2e_rid = KOS_THREAD_NONE;
+        }
+        if (g_e2e_tid != KOS_THREAD_NONE)
+        {
+            (void)kos_thread_kill(g_e2e_tid);
+            (void)kos_thread_join(g_e2e_tid, KOS_TIMEOUT_NONE);
+            g_e2e_tid = KOS_THREAD_NONE;
+        }
+        if (g_e2e_go != KOS_CAP_NONE)
+        {
+            kos_sem_destroy(g_e2e_go);
+            kos_sem_destroy(g_e2e_pass);
+            g_e2e_go = KOS_CAP_NONE;
+        }
+        if (g_e2e_ready != KOS_CAP_NONE)
+        {
+            kos_sem_destroy(g_e2e_ready);
+            g_e2e_ready = KOS_CAP_NONE;
+        }
+    }
+
+    // The reporter is the ROOT thread; the two players and the end-to-end pair are the only
+    // slots the bench adds to root's own.
+    void reporter_loop()
+    {
+        int64_t const setup_rc = kos_bench(KOS_BENCH_OP_IRQ_SETUP, BENCH_IRQ_LINE, 0);
+        if (setup_rc != 0)
+        {
+            char ss[96];
+            ksnprintf(ss, sizeof(ss), "  irq: SKIP (line %u attach refused, rc=%d)\n",
+                      static_cast<unsigned>(BENCH_IRQ_LINE), static_cast<int>(setup_rc));
+            kickos::emit(ss);
+        }
+        (void)e2e_start();
         uint32_t prev_rounds = g_rounds;
         uint64_t prev_ns = kos::clock_now();
         g_a->post();
@@ -143,9 +381,20 @@ namespace
                       static_cast<unsigned>(d_ns / 1000000ull));
             kickos::emit(s);
 
-            // Cycles only where switch.S bracketed them. The kernel writes the switch
-            // line itself and hands back the sample count.
-            uint32_t const scnt = bench_u32(KOS_BENCH_OP_SWITCH_PRINT, 0, 0);
+            // The kernel places this thread before each burst and refuses a core it does not
+            // schedule, which is what ends the walk; at one kernel core the first call is
+            // refused and no round runs.
+            for (uint32_t c = 0; c < CORE_WALK_MAX; c++)
+            {
+                if (kos_bench(KOS_BENCH_OP_DOORBELL_PROBE, c, DOORBELL_ROUNDS) < 0)
+                {
+                    break;
+                }
+            }
+
+            // Cycles only where switch.S bracketed them. The kernel writes one line per
+            // named distribution and hands back the SWITCH sample count.
+            uint32_t const scnt = bench_u32(KOS_BENCH_OP_DIST_PRINT, 0, 0);
             if (scnt == 0)
             {
                 // no cycle counter on this arch; throughput is the metric
@@ -154,98 +403,24 @@ namespace
                 continue;
             }
 
-            uint32_t imin = 0xFFFFFFFFu, imax = 0, icnt = 0;
-            uint64_t isum = 0;
-            for (int i = 0; i < IRQ_SAMPLES; i++)
+            // Every row below is a NAMED DISTRIBUTION the kernel fills and prints. The
+            // worst-case slot is ONE accumulator re-reported per span, so each row's n is
+            // that span's.
+            (void)kos_bench(KOS_BENCH_OP_IRQ_SWEEP, IRQ_SAMPLES, 0);
+            uint32_t const nspans = bench_u32(KOS_BENCH_OP_WCASE_SPANS, 0, 0);
+            for (uint32_t si = 0; si < nspans; si++)
             {
-                uint32_t c = bench_u32(KOS_BENCH_OP_IRQ_ONCE, BENCH_IRQ_LINE, 0);
-                if (c != 0)
-                {
-                    if (c < imin) { imin = c; }
-                    if (c > imax) { imax = c; }
-                    isum += c;
-                    icnt++;
-                }
+                (void)kos_bench(KOS_BENCH_OP_IRQ_WCASE, si, IRQ_SAMPLES);
             }
-            uint32_t iavg = 0;
-            if (icnt != 0)
-            {
-                iavg = static_cast<uint32_t>(isum / icnt);
-            }
-            else
-            {
-                imin = 0;
-            }
-
-            if (hz == 0)
-            {
-                ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  (min/avg/max, n=%u)\n",
-                          static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
-                          static_cast<unsigned>(imax), static_cast<unsigned>(icnt));
-            }
-            else
-            {
-                ksnprintf(s, sizeof(s),
-                          "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                          static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
-                          static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
-                          static_cast<unsigned>(to_ns(iavg, hz)),
-                          static_cast<unsigned>(to_ns(imax, hz)), static_cast<unsigned>(icnt));
-            }
-            kickos::emit(s);
-
-            // Worst-case inject->entry: the line is raised at the START of a masked span
-            // of the given size (0 = fixed cost; 256 = endpoint-copy max). A frozen counter
-            // reports ~1 cyc on mps2 DWT, same as the best-case line above.
-            static const uint32_t wspans[] = {0, 64, 256, 1024};
-            for (unsigned si = 0; si < sizeof(wspans) / sizeof(wspans[0]); si++)
-            {
-                uint32_t wmin = 0xFFFFFFFFu, wmax = 0, wcnt = 0;
-                uint64_t wsum = 0;
-                for (int k = 0; k < IRQ_SAMPLES; k++)
-                {
-                    uint32_t c =
-                        bench_u32(KOS_BENCH_OP_IRQ_MASKED_ONCE, BENCH_IRQ_LINE, wspans[si]);
-                    if (c != 0)
-                    {
-                        if (c < wmin) { wmin = c; }
-                        if (c > wmax) { wmax = c; }
-                        wsum += c;
-                        wcnt++;
-                    }
-                }
-                if (wcnt == 0)
-                {
-                    continue;
-                }
-                uint32_t wavg = static_cast<uint32_t>(wsum / wcnt);
-                if (hz == 0)
-                {
-                    ksnprintf(s, sizeof(s),
-                              "  wcase-irq[%uB]: %u/%u/%u cyc  (inject->entry, n=%u)\n",
-                              static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
-                              static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
-                              static_cast<unsigned>(wcnt));
-                }
-                else
-                {
-                    ksnprintf(s, sizeof(s),
-                              "  wcase-irq[%uB]: %u/%u/%u cyc  %u/%u/%u ns"
-                              "  (inject->entry, n=%u)\n",
-                              static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
-                              static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
-                              static_cast<unsigned>(to_ns(wmin, hz)),
-                              static_cast<unsigned>(to_ns(wavg, hz)),
-                              static_cast<unsigned>(to_ns(wmax, hz)), static_cast<unsigned>(wcnt));
-                }
-                kickos::emit(s);
-            }
+            e2e_sweep();
+            (void)kos_bench(KOS_BENCH_OP_E2E_PRINT, E2E_SWEEP_PASSES, 0);
 
             // AFTER the report: the next window excludes this report's own sampling
             // and print time.
             prev_rounds = g_rounds;
             prev_ns = kos::clock_now();
         }
+        e2e_stop();
     }
 
     // Call/reply round-trip: the same 2-switches-per-round handoff as the sem ping-pong
@@ -408,7 +583,26 @@ namespace
 
     // One size only: the D1 cost does not scale with the message.
     constexpr uint32_t CR_DONATE_SPAN = 32;
+
+    // THE BOUNDED-RUN INVARIANT.
+    // A distribution bucket counts in uint32_t (kernel/include/kickos/bench_hist.h), so a run
+    // posting 2^32 samples to one slot wraps and every percentile read off it is wrong with
+    // nothing on the wire saying so. Each call/reply rep and each ping-pong round drives two
+    // switches and a switch posts one sample to each slot on the switch path, so this product
+    // is the busiest slot to an order of magnitude; the margin below carries the rest.
+    constexpr uint64_t BENCH_BUSIEST_SLOT =
+        2ull * (static_cast<uint64_t>(CALLREPLY_REPS)
+                    * (2ull * (sizeof(CR_SPANS) / sizeof(CR_SPANS[0])) + 1ull)
+                + static_cast<uint64_t>(THROUGHPUT_REPORTS) * ROUNDS_PER_REPORT);
+    static_assert(BENCH_BUSIEST_SLOT < (1ull << 31),
+                  "these rep counts drive a distribution slot towards a 32-bit wrap; the "
+                  "percentiles under it would be wrong and no row would say so");
 }
+
+// KOS_AUTH_IRQ for the end-to-end span's line mint, KOS_AUTH_MEMORY for the device window
+// root reserves and grants, and KOS_AUTH_SYSTEM because main returns and root's exit is a
+// shutdown.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
 
 int main(int, char**)
 {
@@ -416,13 +610,20 @@ int main(int, char**)
     kickos::emit("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
     kickos::emit("workload, not a timer. Telemetry OFF for clean numbers.\n");
 
-    uint32_t const hz = bench_u32(KOS_BENCH_OP_CYCCNT_HZ, 0, 0);
+    int64_t const hz_rc = kos_bench(KOS_BENCH_OP_CYCCNT_HZ, 0, 0);
+    uint64_t hz = 0;
+    if (hz_rc > 0)
+    {
+        hz = static_cast<uint64_t>(hz_rc);
+    }
     char hzline[96];
     ksnprintf(hzline, sizeof(hzline),
-              "cycle counter: %u Hz (0 = no rate converts a reading; cycles only)\n\n",
-              static_cast<unsigned>(hz));
+              "cycle counter: %llu Hz (0 = no rate converts a reading; cycles only)\n\n",
+              static_cast<unsigned long long>(hz));
     kickos::emit(hzline);
 
+    // BEFORE the reset: the probe's own three brackets are then not in the sweep's numbers.
+    (void)kos_bench(KOS_BENCH_OP_LOCK_PROBE, 0, 0);
     (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0); // the phase table below covers the sweep only
 
     // Each step joins BOTH its peers before the next starts, so two pool slots beside
@@ -466,7 +667,7 @@ int main(int, char**)
         return 1;
     }
 
-    reporter_loop(hz);
+    reporter_loop();
     kickos::emit("bench: done\n");
     return 0;
 }

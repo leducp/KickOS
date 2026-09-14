@@ -56,10 +56,23 @@ RIG_CONSOLE_F411DISCO=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ZZZZZZZZ*
 # whichever board happens to be wired. Re-point the row when the cable moves.
 
 # --- the bench host, when the boards are not on this box -----------------------
-# BENCH_HOST in the environment is what SELECTS remote mode; leave it unset and the
-# boards are taken to be here. These say only how to reach the host once selected; the
-# host name stays out of the tree and lives in the environment.
-RIG_BENCH_PORT=22
+# WHICH box is the bench. tools/bench/bench-present.sh takes the host from here when the
+# caller names none, so asking the rig what is plugged in never depends on somebody
+# remembering a hostname.
+#
+# AN SSH ALIAS IS PREFERRED, and then no port and no user belong here: a Host block in
+# ~/.ssh/config already carries HostName, Port and User, and how to reach a machine has
+# one authority. A bare address works too.
+RIG_BENCH_HOST=
+
+# BENCH_HOST in the environment is what SELECTS remote mode for bench.sh and
+# bench-fleet.sh. The key above does not move a flashing run to another machine; it says
+# which machine that would be, and bench-present.sh reports the two separately.
+
+# The ssh port, ONLY where ssh_config does not answer it already. Leave it empty and no
+# -p is passed at all. There is deliberately no fallback to 22: a defaulted port overrides
+# the Port an alias carries, and the run then reaches a different machine, or none.
+RIG_BENCH_PORT=
 
 # The remote directory holding the shipped tree and the run outputs, relative to the
 # remote $HOME. Required in remote mode.
@@ -77,3 +90,14 @@ RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 # the serials next to the chip each one is attached to.
 #RIG_STLINK_F411DISCO=30FF6C065647373735081143
 #RIG_STLINK_F302NUCLEO=0675FF494849887767183343
+
+# --- which unit a probe vid:pid means -----------------------------------------
+# Only needed once MORE THAN ONE DEVICE shares a vid:pid, which is what makes the serial a
+# guess: more than one XMC and more than one K64F are in rotation, every unit of a kind
+# presents the same vid:pid, and a first-match hands the capture to the wrong board -- a
+# complete, plausible, wrong log. tools/bench/ refuses that bus instead and names this key.
+# Key is RIG_PROBE_<VID>_<PID>, the vid:pid upper-cased with ':' as '_'. The pin is checked
+# against what is actually enumerated, so a stale one is refused rather than believed.
+# tools/bench/bench-present.sh bus names every serial and by-id path on the bus right now.
+#RIG_PROBE_1366_1024=XXXXXXXXXXXX
+#RIG_PROBE_1366_1015=YYYYYYYYYYYY

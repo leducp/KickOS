@@ -17,6 +17,7 @@
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/abi_probe.h>
+#include <kickos/sys/irq_free.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
 
@@ -26,14 +27,6 @@
 // anything read from here needs a fallback.
 #if defined(__has_include) and __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
-#endif
-
-// Base of the IRQ arms' nine-line block, BASE+0 through BASE+8, claimed by no other holder
-// in this image. A board that defines no KICKOS_IRQ_SOFT_ONLY_BASE also takes BASE+9 and
-// BASE+10 for the discard and irq-context arms, so eleven lines in all. A chip whose own
-// drivers sit in that span must move the base.
-#ifndef KICKOS_SELFTEST_IRQ_BASE
-#define KICKOS_SELFTEST_IRQ_BASE 6
 #endif
 
 // Which region of the registration list at the bottom of this file to register: 0 (the

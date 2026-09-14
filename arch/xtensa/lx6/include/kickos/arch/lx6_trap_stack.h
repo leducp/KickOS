@@ -9,11 +9,9 @@
  * PREEMPT and not a syscall class: a KickOS syscall on this part is a plain call, so the only
  * involuntary descent is the interrupt.
  *
- * THE PANIC TAIL IS EXCLUDED, as it is on rv32imac and armv7m: counting kpanic takes the depth
- * to 608 and the zone to 864, sizing this board's idle stack for a chain that ends in a halt
- * rather than in a resume. RESIDUAL: a panic reached from a level-1 interrupt on a thread at the
- * floor descends past the zone. check_trap_redzone.sh prints the without-exclusions figure on
- * every run so the number cannot go quiet.
+ * THE PANIC TAIL IS OFF THIS CLASS STRUCTURALLY. kpanic and kpanic_at reach the reporter only
+ * through kickos_panic_stack_enter, which is assembly and has no .ci entry, so the walk cannot
+ * pass through it and the console is priced in the PANIC class below instead.
  *
  * SPILL_ALL_WINDOWS ADDS NOTHING HERE. It flushes each ancestor frame to that frame's OWN base
  * save area, which sits below the ancestor's sp and therefore ABOVE the interruptee's, so the
@@ -31,11 +29,13 @@
 /* What kickos_lx6_dispatch_l1 and everything it reaches descend BELOW that frame, measured by
  * tests/static/check_trap_redzone.sh.
  *
- * PER KERNEL-CORE COUNT. Above one core the deepest descent leaves the scheduler through the
- * kernel lock and keeps going: klock_enter -> arch_kernel_lock -> doorbell_poll ->
+ * PER KERNEL-CORE COUNT, AND THE TWO POSTURES WIN DOWN DIFFERENT CHAINS. Above one core the
+ * deepest descent leaves the scheduler through the kernel lock and keeps going, 592 measured on
+ * esp32-wroom-smp: ktime_rearm -> klock_enter -> arch_kernel_lock -> doorbell_poll ->
  * kickos_lx6_doorbell_service -> kickos_irq_route_service -> arch_irq_mask ->
  * kickos_lx6_hw_mask -> phys_int_disable. At one core arch_kernel_lock is an empty macro
- * (arch/arch.h) and the chain ends at klock_enter.
+ * (arch/arch.h), so klock_enter is on no chain at all and the winner instead runs
+ * reschedule -> arch_switch -> xtensa_switch[128], 432 on both one-core presets.
  *
  * THE LAST FOUR FRAMES ARE CHARGED WHETHER OR NOT AN ASK IS PENDING. Freeze N2 puts the route
  * drain in the doorbell SERVICE BODY, that body is reached from arch_kernel_lock's acquire
@@ -44,10 +44,11 @@
  * pays the same way.
  *
  * MARGIN: KICKOS_LX6_TRAP_FRAME 256 + 608 = 864 against a KICKOS_MIN_STACK_SIZE of 896, so 32
- * bytes. The next thing that deepens the lx6 interrupt path fails the BUILD in
- * tests/static/check_trap_redzone.sh. The two ways out are shortening the chain named above,
- * whose last three frames are this backend's own gating path and used everywhere, or raising
- * KICKOS_MIN_STACK_SIZE, which is fleet-wide. */
+ * bytes. AT ONE CORE THE ENFORCED FIGURE IS THE MEASUREMENT, 432 against 432, so the next
+ * thing that deepens that path fails the BUILD in tests/static/check_trap_redzone.sh with no
+ * warning first; above one core there are 16 bytes of give, 592 against 608. The two ways out
+ * are shortening the chain named above, whose last three frames are this backend's own gating
+ * path and used everywhere, or raising KICKOS_MIN_STACK_SIZE, which is fleet-wide. */
 #if KICKOS_KERNEL_CORES > 1
 #define KICKOS_LX6_TRAP_DEPTH 608
 #else
@@ -63,8 +64,7 @@
  * both build their frame on the stack in a1. A plain integer because check_trap_redzone.sh
  * scrapes it as an immediate; arch_xtensa.cc asserts it against KICKOS_LX6_TRAP_FRAME.
  *
- * 736 MEASURED on esp32-wroom-smp and 464 on the two one-core presets; 768 is the next
- * multiple of 64 strictly above that, which is the rule every arch's PANIC figure follows.
+ * 528 MEASURED on esp32-wroom-smp and 272 on the two one-core presets, under an enforced 768.
  *
  * THIS ARCH IS THE ONE WHERE THE ENTRY IS NOT FREE. The windowed ABI gives it no way to write
  * the incoming a1 without opening a frame first, so kickos_panic_stack_enter spends 32 bytes on

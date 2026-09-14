@@ -109,9 +109,8 @@
    return address arriving in LR and no incoming slot, so a frameless leaf is 0 and a chain is
    not missing a per-level 4.
 
-   The winning chain runs through an INDIRECT call, the SchedPolicy hook table:
-   tests/static/trap_redzone_indirect.txt binds each such site to the one slot that call
-   reaches, and the gate refuses to answer while a reachable site is unbound.
+   tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
+   that call reaches, and the gate refuses to answer while a reachable site is unbound.
 
    ONE RESIDUAL, picopi's alone: arch_reboot calls the RP2040 bootrom through two pointers
    read out of ROM, which no call graph can follow and the datasheet gives no stack figure
@@ -136,10 +135,14 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 432 on picopi, the fault stub the deeper of the two through
-   kprintf_fault, which formats into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary
-   kprintf gets. NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench
-   variant, so one figure covers every registered preset. This arch selects
+   kickos_thread_slay_exit. 408, identical on all four presets: what the fault stub descends is
+   the reschedule its teardown performs, ending in the 64-bit divide arch_timer_arm needs.
+     kickos_thread_fault_exit[32] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
+     -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
+     -> reschedule[24] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96]
+
+   NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench variant, so one
+   figure covers every registered preset. This arch selects
    ARCH_KERNEL_STACKS_MANDATORY, so no kstacks=0 fallback class stands beside it the way one
    does on armv7m.
 
@@ -147,7 +150,7 @@
    figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
    byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
    every registered preset, so the reason for that convention does not reach it. 448 is the
-   432 measured rounded up to the next multiple of 64: 68 + 448 = 516 against 892 usable,
+   408 measured rounded up to the next multiple of 64: 68 + 448 = 516 against 892 usable,
    where SVCK asks 892 exactly, so this would have to grow 376 more before it bound. */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 448
 
@@ -196,8 +199,7 @@
  * the reporter is on. A plain integer because check_trap_redzone.sh scrapes it as an immediate;
  * arch_armv6m.cc asserts it against KICKOS_ARMV6M_TRAP_FRAME.
  *
- * 304 MEASURED on the three picopi presets and 224 on microbit; 320 is the next multiple of 64
- * strictly above that, which is the rule every arch's PANIC figure follows. */
+ * 152 MEASURED on the three picopi presets and 144 on microbit, under an enforced 320. */
 #define KICKOS_ARMV6M_PANIC_FRAME 32
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
 

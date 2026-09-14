@@ -5,15 +5,18 @@
 # Silicon pass. ONE board per invocation, on the tree as committed. TAG names the
 # milestone and keys both the build dir and the log, so two milestones never share either.
 #
-#   tools/bench/bench.sh xmc4800-relax <jlink-sn>
-#   tools/bench/bench.sh frdmk64f      <jlink-sn>
+#   tools/bench/bench.sh xmc4800-relax [jlink-sn]
+#   tools/bench/bench.sh frdmk64f      [jlink-sn]
 #   tools/bench/bench.sh f302nucleo
 #   tools/bench/bench.sh rx72m
 #   tools/bench/bench.sh esp32c6-wroom
 #   tools/bench/bench.sh esp32-wroom
 #
-# Serials are never quoted from a note: there is more than one physical XMC and K64F in
-# rotation, so resolve the SN live, or let tools/bench/bench-fleet.sh do it.
+# THE SERIAL ARGUMENT IS OPTIONAL and exists only to override: with none, a board whose
+# flasher needs one has it read off the bus here. Serials are never quoted from a note,
+# there being more than one physical XMC and K64F in rotation, and no caller should ever
+# pair a board with a serial by hand. tools/bench/bench-present.sh shows the same live
+# answer without flashing anything.
 #
 # REMOTE MODE. Set BENCH_HOST and the build happens here, the flashing and capturing
 # happen there:
@@ -34,7 +37,9 @@
 # improvises.
 #
 # The rig values, meaning the session directory, the default tree and the bench host's
-# port and paths, come from .session/rig.conf. See tools/bench/rig.conf.example.
+# paths, come from .session/rig.conf. See tools/bench/rig.conf.example. How to REACH that
+# host is ssh_config's: a port is passed only where the rig names one, so an ssh alias
+# carrying its own Port and User works as itself.
 #
 # The -st variant states the enforcing posture itself; there is no posture flag.
 set -u
@@ -46,6 +51,8 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # is worse than a failure. The rig assets stay where rig.conf points either way; only the
 # tree under build/ and the sources move.
 . "$HERE/rig.sh"
+. "$HERE/bench-host.sh"
+. "$HERE/board-rows.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory holding env.sh and receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
@@ -61,6 +68,30 @@ TAG="${TAG:-m475}"
 BOARD="${1:?usage: bench.sh <board> [jlink-sn]}"
 SN="${2:-}"
 APP="${APP:-selftest}"
+
+# Where the boards are, decided once, so the serial below is read off the right bus.
+bench_host_select "${BENCH_HOST:-}"
+
+# THE PROBE SERIAL IS READ OFF THE BUS when the caller passes none. It is never paired with
+# a board by hand: more than one XMC and more than one K64F are in rotation, so a serial is
+# not a desk fact. A serial given as an argument still wins.
+if [ -z "$SN" ]; then
+  PROBE_ID=$(board_probe_rows "$BOARD" 2>/dev/null | awk -F '|' '$2 == "sn" { print $1; exit }')
+  if [ -n "$PROBE_ID" ]; then
+    bench_bus_read || {
+      echo "REFUSING: could not read the bus on $BENCH_WHERE, so $BOARD's probe serial" >&2
+      echo "  cannot be resolved. tools/bench/bench-present.sh reach says whether that" >&2
+      echo "  machine answers at all." >&2
+      exit 2
+    }
+    SN=$(usb_serial_of "${PROBE_ID%%:*}" "${PROBE_ID##*:}") || {
+      echo "REFUSING: no $PROBE_ID on $BENCH_WHERE, so $BOARD has no probe to flash." >&2
+      echo "  tools/bench/bench-present.sh $BOARD says what that bus carries." >&2
+      exit 2
+    }
+    echo "=== $BOARD  SN $SN, read off $BENCH_WHERE"
+  fi
+fi
 # The preset variant. `st` states the enforcing posture and the selftest syscalls; `bench`
 # states the same posture plus the microbench. The variant is part of the BUILD DIR so a
 # bench capture and a selftest capture at one TAG cannot share a tree.
@@ -127,9 +158,9 @@ fi
 
 # A TAG can COLLIDE with a build dir an earlier session left behind, and then the generator loads
 # that dir's stale generated/.config and refuses a symbol this tree does not declare. It reads as a
-# broken preset. Measured 2026-08-10: TAG=m481r hit a 2026-08-07 dir whose .config still carried a
-# knob since removed. That knob is deliberately not spelled here, because this file is tracked and
-# doc_names would take a dead name from it into its valid set and stop reporting it in the docs.
+# broken preset. A removed knob's name is deliberately not spelled here, because this file is
+# tracked and doc_names would take a dead name from it into its valid set and stop reporting it
+# in the docs.
 if ! CFGOUT=$(cmake --preset "$BOARD-$VARIANT" -B "$BUILD" "${EXTRA[@]+"${EXTRA[@]}"}" 2>&1); then
   printf '%s\n' "$CFGOUT" | tail -20 >&2
   if printf '%s\n' "$CFGOUT" | grep -q 'no such symbol'; then
@@ -141,13 +172,23 @@ fi
 printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
 cmake --build "$BUILD" -j8 --target "$APP" > /dev/null || exit 1
 
+# THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
+# asked of git here. The two answer differently the moment the tree is touched between the
+# build and the capture, and the capture chain compares the board's banner against this: asking
+# git would call a good image stale, and on the bench host there is no tree of ours to ask.
+STAMP="$BUILD/kickos_build_stamp.cc"
+EXPECT_COMMIT=$(sed -n 's|.*kickos_build_commit\[\] = "\(.*\)";.*|\1|p' "$STAMP" | tail -1)
+[ -n "$EXPECT_COMMIT" ] || { echo "REFUSING: no commit label in $STAMP, so the capture would
+  have nothing to check the board's banner against" >&2; exit 1; }
+export EXPECT_COMMIT
+
 # The emitted image base, without extension. Board-specific apps are searched FIRST, the
 # same order tools/flash-common.sh uses, so a name collision resolves the same way here.
 #
 # The last two candidates are the two-image split: `selftest_p2` is declared by
 # user/apps/common/selftest/CMakeLists.txt, so CMake emits it into the SELFTEST directory and
 # there is no selftest_p2/ directory to find. tools/flash-common.sh's _app_base has the same
-# blind spot, which is why the old f302nucleo branch hardcoded its .bin path.
+# blind spot.
 BASE=${APP%_p[0-9]}
 IMG=""
 for d in "$PWD/$BUILD/user/apps/$BOARD/$APP" "$PWD/$BUILD/user/apps/common/$APP" \
@@ -169,6 +210,13 @@ fi
 
 # --- boards here ---------------------------------------------------------------
 if [ -z "${BENCH_HOST:-}" ]; then
+  # Selecting the mode is BENCH_HOST's job and not the rig config's: a key must not move a
+  # flashing run from one machine to another.
+  if [ -n "${RIG_BENCH_HOST:-}" ]; then
+    echo "NOTE: BENCH_HOST is unset, so this run flashes on THIS BOX, while $RIG_CONF"
+    echo "  names $RIG_BENCH_HOST as the bench. tools/bench/bench-present.sh says where"
+    echo "  the boards are."
+  fi
   # KICKOS_RIG is passed explicitly rather than left to the capture script's own
   # discovery: TREE may be a worktree, which has no .session/ to discover.
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
@@ -178,27 +226,39 @@ fi
 
 # --- boards on the bench host --------------------------------------------------
 rig_need RIG_REMOTE_ROOT "the directory on the bench host holding the shipped tree and the run outputs"
-PORT="${BENCH_PORT:-${RIG_BENCH_PORT:-22}}"
 RROOT="${RIG_REMOTE_ROOT}/tree"
 RRUN="${RIG_REMOTE_ROOT}/run/$TAG-$BOARD-$APP"
 RLOG="$RRUN/$TAG-$BOARD-$APP.log"
-echo "=== bench host $BENCH_HOST:$PORT"
+echo "=== $BENCH_WHERE"
 
-SSH=(ssh -p "$PORT" -o BatchMode=yes "$BENCH_HOST")
-RSH="ssh -p $PORT -o BatchMode=yes"
+SSH=("${BENCH_SSH[@]}")
+RSH="$BENCH_RSH"
 
 # rsync will not create an intermediate destination directory, and .session/ over there
 # holds nothing but the shipped rig config.
-"${SSH[@]}" "mkdir -p $RROOT/.session $RRUN" || { echo "REFUSING: cannot create $RRUN on $BENCH_HOST" >&2; exit 1; }
+#
+# ssh joins the command and its arguments into ONE string and hands that whole string to
+# the remote login shell (zsh) to parse, so an unquoted path carrying a space or a glob
+# character would be re-split, or glob-expanded and the whole command aborted, there
+# instead of naming the one directory it was given. printf %q quotes each path for that
+# remote parse; the operation itself stays in the same bash-on-stdin shape as below.
+"${SSH[@]}" bash -s -- "$(printf '%q' "$RROOT/.session")" "$(printf '%q' "$RRUN")" \
+    <<'REMOTE' || { echo "REFUSING: cannot create $RRUN on $BENCH_HOST" >&2; exit 1; }
+mkdir -p "$1" "$2"
+REMOTE
 
 # tools/ and boards/ are the flash recipes, not a second copy of them: the backends read
 # boards/<board>/board.cmake for the chip and take the image through FLASH_IMAGE, so the
 # bench host runs the same recipe this tree ships. rsync means only the delta travels.
 # The capture chain rides along inside tools/bench/, so it is the same tree's copy too.
-rsync -a --delete -e "$RSH" tools boards "$BENCH_HOST:$RROOT/" || { echo "REFUSING: could not ship tools/ and boards/" >&2; exit 1; }
+#
+# -s (--secluded-args/--protect-args) sends the remote-side path over rsync's own
+# protocol instead of a shell command line, so the destination is never re-parsed by the
+# remote login shell.
+rsync -a -s --delete -e "$RSH" tools boards "$BENCH_HOST:$RROOT/" || { echo "REFUSING: could not ship tools/ and boards/" >&2; exit 1; }
 # The rig config is the one thing tools/ cannot carry: it is gitignored, and the console
 # cable it names is a property of the CABLE, so it is valid wherever that cable is plugged.
-rsync -a -e "$RSH" "$RIG_CONF" "$BENCH_HOST:$RROOT/.session/rig.conf" || { echo "REFUSING: could not ship the rig config" >&2; exit 1; }
+rsync -a -s -e "$RSH" "$RIG_CONF" "$BENCH_HOST:$RROOT/.session/rig.conf" || { echo "REFUSING: could not ship the rig config" >&2; exit 1; }
 
 # Every sibling the flashers may want: JLinkExe loads the .hex, st-flash the .bin, esptool
 # the .app.bin. Ship whichever exist rather than deciding per board twice.
@@ -207,7 +267,7 @@ for f in "$IMG" "$IMG.hex" "$IMG.bin" "$IMG.app.bin"; do
   [ -e "$f" ] && IMGS+=("$f")
 done
 [ "${#IMGS[@]}" -gt 0 ] || { echo "REFUSING: no image files to ship for $APP" >&2; exit 1; }
-rsync -a -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: could not ship the image" >&2; exit 1; }
+rsync -a -s -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: could not ship the image" >&2; exit 1; }
 
 # The remote login shell is zsh, which does not word-split and ABORTS on an unmatched
 # glob, so a command line assembled here would be re-parsed there under different rules.
@@ -218,9 +278,18 @@ rsync -a -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: could 
 # the remote shell re-splits it, so an EMPTY argument does not arrive at all and every
 # later positional shifts up one. SN is empty on four of the six boards, so passing it raw
 # would hand the capture script a shifted argument list on exactly those boards.
+#
+# AND `bash -s --` DOES NOT REACH THE SPLIT, ONLY THE PARSE: the bench host's zsh parses the
+# joined command string before any `bash` in it runs. printf %q is what survives that parse,
+# as for the mkdir above.
 ROUT=$(mktemp)
-"${SSH[@]}" bash -s -- "$BOARD" "$APP" "$RRUN/$APP" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
-    "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" <<'REMOTE' 2>&1 | tee "$ROUT"
+RARGS=()
+for _ra in "$BOARD" "$APP" "$RRUN/$APP" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
+           "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT"; do
+  RARGS+=("$(printf '%q' "$_ra")")
+done
+"${SSH[@]}" bash -s -- "${RARGS[@]}" \
+    <<'REMOTE' 2>&1 | tee "$ROUT"
 set -u
 # uv's esptool and the rfp-cli wrapper live in ~/.local/bin, which a non-interactive ssh
 # does not put on PATH. The Espressif capture needs a python carrying pyserial, and the
@@ -236,17 +305,19 @@ PYBIN=$8
 [ "$CAP" != "-" ] && export CAP_SECS="$CAP"
 [ "$PYBIN" != "-" ] && export PYBIN
 export CONSOLE_USB_CDC="$9"
+# The tree shipped here is a copy with no .git, so the capture cannot derive this and the
+# label the image was built with travels with the image.
+export EXPECT_COMMIT="${10}"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}
-# THE LOG IS THE ARTIFACT, THE VERDICT IS SEPARATE, SO THE FETCH RUNS EITHER WAY. Exiting on
-# a nonzero verdict here used to strand the capture on the bench host, where a later hand
-# rsync was the only way to read a run that had in fact completed. Nothing about a refusal
-# makes the bytes less real, and the refusals most worth reading are the ones with a log.
+# THE LOG IS THE ARTIFACT, THE VERDICT IS SEPARATE, SO THE FETCH RUNS EITHER WAY. Nothing about
+# a refusal makes the bytes less real, and the refusals most worth reading are the ones with a
+# log.
 RBYTES=$(sed -n 's/^bytes: *//p' "$ROUT" | head -1)
 rm -f "$ROUT"
 FETCHED=0
-if rsync -a -e "$RSH" "$BENCH_HOST:$RLOG" "$LOG" 2>/dev/null; then
+if rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG" "$LOG" 2>/dev/null; then
   FETCHED=1
   LBYTES=$(wc -c < "$LOG")
 fi

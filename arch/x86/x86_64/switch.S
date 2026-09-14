@@ -9,6 +9,10 @@
 
 #include <kickos/arch/ring3.h>
 
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
+    .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
+#endif
+
     .equ KOS_F_R15,    0
     .equ KOS_F_R14,    8
     .equ KOS_F_R13,    16
@@ -54,6 +58,20 @@
     .balign 16
     .globl kickos_x86_64_switch_now
 kickos_x86_64_switch_now:
+#if KICKOS_BENCH
+/* The switch window (kernel/bench/bench.cc) opens here. It encloses the SOFTWARE REGISTER
+ * SAVE and the stack swap, and NOT the software restore: kickos_x86_64_resume has popped
+ * all 15 GPRs by its iretq and leaves none free to close a window on, and it is shared with
+ * the syscall and interrupt returns.
+ *
+ * NOTHING HERE MAY WRITE RFLAGS: the pushfq below must capture the caller's flags, and
+ * lfence, rdtsc and mov set none. rdtsc's edx:eax are both dead at this point.
+ * The TSC is 64 bits and the accumulator is 32, so only eax is kept, which is exact for any
+ * delta shorter than 2^32 ticks. */
+    lfence
+    rdtsc
+    movl    %eax, g_bench_sw_start(%rip)
+#endif
     pushfq
     subq    $KOS_FRAME_SIZE, %rsp
     movq    %rax, KOS_F_RAX(%rsp)
@@ -91,6 +109,16 @@ kickos_x86_64_switch_now:
 
     movq    %rsp, KOS_CTX_SP(%rdi)
     movq    KOS_CTX_SP(%rsi), %rsp
+#if KICKOS_BENCH
+/* Closed where rsp already names the incoming frame and the resume below reloads every
+ * register this clobbers, rdi included. That frame base is 16-byte aligned, so the call
+ * meets the psABI. */
+    lfence
+    rdtsc
+    subl    g_bench_sw_start(%rip), %eax
+    movl    %eax, %edi
+    call    kickos_bench_switch_done
+#endif
     jmp     kickos_x86_64_resume
 
 /* void kickos_x86_64_start(struct arch_context* first): enters the first thread. The boot

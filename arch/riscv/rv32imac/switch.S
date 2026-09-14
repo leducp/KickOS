@@ -38,6 +38,10 @@
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/arch/rv_trap_stack.h>
 
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
+    .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
+#endif
+
     .equ F_MEPC,     0
     .equ F_MSTATUS,  4
     .equ F_RA,       8

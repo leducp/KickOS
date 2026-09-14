@@ -139,6 +139,10 @@ endif()
 
 if(KICKOS_BENCH)
   add_subdirectory(bench)
+  # The authority and bound arms on the bench syscall.
+  if(KICKOS_HAVE_LIBC)
+    add_subdirectory(benchauth)
+  endif()
 endif()
 
 # --- Bring-up LED blink -------------------------------------------------------------------

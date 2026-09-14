@@ -20,12 +20,6 @@
 
 #include <stdint.h>
 
-extern "C"
-{
-    // Nominal core clock (Hz). Measured at arch_init, this processor reporting none.
-    uint32_t SystemCoreClock = 0;
-}
-
 namespace
 {
     using namespace kickos::q35;
@@ -159,14 +153,6 @@ void arch_init(void)
     // table the firmware owns.
     aspace_init(arch_ram_base(), arch_ram_size());
     apic_init();
-    // Clamped: the measured figure is 64 bits wide and this global is 32, so a part above
-    // 4.295 GHz would wrap and report a clock tens of times fast.
-    uint64_t const tsc_hz = apic_tsc_hz();
-    SystemCoreClock = 0xffffffffu;
-    if (tsc_hz < 0xffffffffull)
-    {
-        SystemCoreClock = static_cast<uint32_t>(tsc_hz);
-    }
 }
 
 // --- Console ----------------------------------------------------------------

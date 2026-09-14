@@ -49,9 +49,6 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // Nominal core clock (Hz).
-    uint32_t SystemCoreClock = 0;
-
     void kfault_terminate(void) __attribute__((noreturn));
 
 #if KICKOS_NUM_CORES > 1
@@ -382,7 +379,6 @@ void arch_init(void)
         arch_console_write(BAD_CNTFRQ, sizeof(BAD_CNTFRQ) - 1);
         kfault_terminate();
     }
-    SystemCoreClock = static_cast<uint32_t>(freq);
 
     // The distributor is the machine's and not the node's, so under one image per node the
     // partition primary writes it and no peer does: GICD_CTLR and every register at or above

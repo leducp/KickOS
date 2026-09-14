@@ -307,16 +307,9 @@ void arch_timer_disarm(void)
 
 // The MEASURED timestamp-counter rate (apic_init), which is this processor's only reported
 // core clock: no CPUID leaf on this model answers it.
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
-    // Clamped: the seam's width is 32 bits and the measured figure is 64, so a part above
-    // 4.295 GHz would wrap and report a clock tens of times fast.
-    uint64_t const hz = kickos::x86_64::apic_tsc_hz();
-    if (hz >= 0xffffffffull)
-    {
-        return 0xffffffffu;
-    }
-    return static_cast<uint32_t>(hz);
+    return kickos::x86_64::apic_tsc_hz();
 }
 
 // --- Region descriptors: none on this arch ----------------------------------

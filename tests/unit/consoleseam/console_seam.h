@@ -36,6 +36,10 @@ namespace consoleseam
     // Nonzero from the mock's slot_free(). Zero models a wedged TX channel.
     void set_slot_free(int free);
 
+    // Bytes the mock TX edge will take inside ONE drain window, 0 for unlimited. Scoped to the
+    // drain ISR, so the prime, flush and synchronous paths are never stalled by it.
+    void set_gap_budget(uint32_t bytes);
+
     // Whether the drain ISR may run in a mask gap. False models a handler the NVIC can no
     // longer reach, which is what irq_detach plus the line mask leaves behind.
     void set_isr_runs_in_gap(bool runs);

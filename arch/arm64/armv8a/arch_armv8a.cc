@@ -74,6 +74,10 @@ static_assert(offsetof(struct armv8a_percpu_block, ctx_current) == 8,
               "switch.S spells PERCPU_CTX_CURRENT as 8");
 static_assert(offsetof(struct armv8a_percpu_block, switch_to) == 16,
               "switch.S spells PERCPU_SWITCH_TO as 16");
+#if KICKOS_BENCH
+static_assert(offsetof(struct armv8a_percpu_block, bench_sw_start) == 32,
+              "switch.S spells PERCPU_BENCH_SW_START as 32");
+#endif
 static_assert(sizeof(struct armv8a_percpu_block) == 64,
               "the block must fill its line, and secondary.S spells PERCPU_SIZE as 64");
 
@@ -477,7 +481,7 @@ int arch_in_isr(void)
 }
 
 // --- Clocks -----------------------------------------------------------------
-uint32_t arch_cpu_clock_hz(void)
+uint64_t arch_cpu_clock_hz(void)
 {
     return 0;
 }

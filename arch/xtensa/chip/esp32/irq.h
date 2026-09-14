@@ -51,8 +51,8 @@ namespace kickos::esp32::irq
         CONSOLE_CORE = 0, // the console is the primary's: kmain's own output path
     };
 
-    // Logical kernel IRQ lines. Kept clear of the selftest's injected lines (6..16, from
-    // KICKOS_SELFTEST_IRQ_BASE) and the bench line (20).
+    // Logical kernel IRQ lines. Kept clear of the block an app may inject into, 6..16 from
+    // KICKOS_IRQ_FREE_BASE.
     enum kernel_line
     {
         CONSOLE_TX_LINE = 30, // UART0 TX-empty drain ISR binding
