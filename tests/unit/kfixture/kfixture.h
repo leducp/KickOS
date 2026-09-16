@@ -103,8 +103,8 @@ namespace kickos
         extern uint32_t g_redirects;
         void note_park();
 #if KICKOS_HAVE_ASPACE
-        // Defined by the ONE gate that compiles these sources with a translating backend
-        // (tests/unit/deathspace): the domain release task_release performs, traced.
+        // Defined by every gate that compiles these sources with a translating backend: the
+        // domain release task_release performs. Only tests/unit/deathspace reads it.
         void note_member_release();
 #endif
         void note_irq_save();

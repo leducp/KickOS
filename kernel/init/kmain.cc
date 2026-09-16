@@ -323,7 +323,10 @@ namespace kickos
         // Idle is created first, so it MUST be trace id 0: the telemetry decoder keys CPU%
         // off tid 0 == idle.
         KICKOS_ASSERT(kernel().idle_tcb.id == KICKOS_TID_IDLE);
-        sched::add(&kernel().idle_tcb);
+        {
+            IrqLock lock;
+            sched::add(&kernel().idle_tcb);
+        }
 
         // Root runs at a low priority so a worker's completion post never preempts it.
         // Spawn order is not a barrier: any interrupt between two spawns reschedules onto the
@@ -406,7 +409,10 @@ namespace kickos
         // them positionally, and the seating panics rather than boot past a shifted slot.
         amp_ports_seat(root_tcb);
 #endif
-        sched::add(root_tcb);
+        {
+            IrqLock lock;
+            sched::add(root_tcb);
+        }
 
 #if KICKOS_KERNEL_CORES > 1
         // AFTER ROOT IS SEATED AND ADDED: a peer released here can pick root at once.

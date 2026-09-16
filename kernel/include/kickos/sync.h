@@ -115,11 +115,12 @@ namespace kickos
     bool sem_post(Semaphore* s);
 
     // Priority-inheritance mutex, thread context only. THE LOCKING CONTRACT DIFFERS BY
-    // CALL. mutex_unlock and mutex_force_unlock do their whole job under an IrqLock and
-    // nest fine under a caller-held one. mutex_lock MUST NOT be called with a caller-held
-    // IrqLock spanning it: it takes its own lock for the acquire/park only, then RELEASES
-    // it and runs the resume barrier and wait_result read outside any lock. A spanning
-    // caller lock keeps BASEPRI raised past that read (see wq_confirm_resume).
+    // CALL. mutex_unlock does its whole job under an IrqLock and nests fine under a
+    // caller-held one. mutex_force_unlock takes none of its own: caller holds the
+    // exclusion. mutex_lock MUST NOT be called with a caller-held IrqLock spanning it: it
+    // takes its own lock for the acquire/park only, then RELEASES it and runs the resume
+    // barrier and wait_result read outside any lock. A spanning caller lock keeps BASEPRI
+    // raised past that read (see wq_confirm_resume).
     void mutex_init(Mutex* m);
     // Returns 0 when locked; -KOS_EOWNERDEAD when handed the mutex by a dying owner, where
     // the lock IS held and this is NOT a failed acquire; or -KOS_EDEADLK when the acquire

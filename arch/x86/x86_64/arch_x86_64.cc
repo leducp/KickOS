@@ -552,7 +552,6 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     g_isr_depth++;
     if (vector == kickos::x86_64::vector_timer)
     {
-        kickos::x86_64::timer_expired();
         kickos_isr_timer();
     }
     else

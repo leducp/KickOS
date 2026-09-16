@@ -382,8 +382,9 @@ enum kos_bench_op
     KOS_BENCH_OP_DIST_PRINT = 2,  // ()          -> switch sample count (the kernel prints one
                                   //   line per workload-fed distribution; a SWEPT one is
                                   //   printed by the op that filled it)
-    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0. AUTH_IRQ: it attaches a tier-2 handler.
-                                  //   Names the line every IRQ op below uses.
+    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0, or -KOS_EBUSY if irq_attach refuses the
+                                  //   line. AUTH_IRQ: it attaches a tier-2 handler. Names the
+                                  //   line every IRQ op below uses.
     KOS_BENCH_OP_IRQ_SWEEP = 4,   // (samples)   -> samples taken (the kernel prints the
                                   //   inject->entry row). 0 = the controller never raised it.
                                   //   AUTH_IRQ; samples above KOS_BENCH_SAMPLES_MAX refused.

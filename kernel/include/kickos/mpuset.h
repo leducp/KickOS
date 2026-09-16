@@ -27,8 +27,9 @@ namespace kickos
     static_assert(KICKOS_MPU_MAX_REGIONS <= ARCH_MPU_ENCODED_SLOTS,
                   "the encoded image carries fewer descriptor slots than the kernel hands it");
 #endif
-    static_assert(KICKOS_MPU_MAX_REGIONS <= 32,
-                  "the seating bitmask is a uint32_t, and the no-MPU encode shifts by the count");
+    static_assert(KICKOS_MPU_MAX_REGIONS < 32,
+                  "the seating bitmask is a uint32_t, and the no-MPU encode shifts by a count "
+                  "that reaches the maximum, so 32 is already the undefined shift");
 
     class MpuSet
     {
@@ -148,8 +149,6 @@ namespace kickos
         {
 #if KICKOS_HAVE_MPU
             arch_mpu_apply(regions_, count_, &image_);
-#else
-            arch_mpu_apply(regions_, count_, nullptr);
 #endif
         }
 

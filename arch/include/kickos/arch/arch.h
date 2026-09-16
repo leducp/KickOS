@@ -453,8 +453,11 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 // region / SYSMPU RGD0).
 //
 // `image` is what the hardware is programmed from and is `regions` already encoded; the raw set
-// travels beside it for the backends that need the addresses themselves (sim mprotect, RX
-// same-set skip). It is null only where KICKOS_HAVE_MPU is 0.
+// travels beside it for the backend that needs the addresses themselves (sim mprotect). It is
+// null only where KICKOS_HAVE_MPU is 0.
+//
+// NOT CALLED AT ALL where KICKOS_HAVE_MPU is 0: MpuSet::apply is empty there, so a translating
+// board pays no out-of-line call per switch for a set it never programs.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image);
 

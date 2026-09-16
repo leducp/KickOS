@@ -215,6 +215,78 @@ namespace kickos
         return arch_user_data_writable(ptr, len);
     }
 
+    // BOTH HALVES, NEVER EITHER: a read-or-write answer here would hand a caller a reply
+    // destination it may only read. The verdict must stay exactly user_readable_ok(ptr,
+    // read_len) AND user_writable_ok(ptr, write_len), the arch fallbacks and their order
+    // included; tests/unit/rangecheck holds the two against each other.
+    bool user_readable_and_writable_ok(uintptr_t ptr, size_t read_len, size_t write_len)
+    {
+        Thread* const c = sched::current();
+        bool read_seen = false;
+        bool write_seen = false;
+        if (c != nullptr)
+        {
+            if (c->privileged)
+            {
+                return true;
+            }
+            read_seen = (read_len == 0);
+            write_seen = (write_len == 0);
+            // A wrapping extent asks the set nothing and is still offered to the arch hook.
+            bool read_asks = (not read_seen and ptr + read_len >= ptr);
+            bool write_asks = (not write_seen and ptr + write_len >= ptr);
+            for (arch_mpu_region const& r : c->mpu)
+            {
+                if (not read_asks and not write_asks)
+                {
+                    break;
+                }
+                uintptr_t const rend = r.base + r.size;
+                if (rend < r.base or ptr < r.base)
+                {
+                    continue;
+                }
+                if (read_asks and (r.attr & ARCH_MPU_R) == ARCH_MPU_R and ptr + read_len <= rend)
+                {
+                    read_seen = true;
+                    read_asks = false;
+                }
+                if (write_asks and (r.attr & ARCH_MPU_W) == ARCH_MPU_W
+                    and ptr + write_len <= rend)
+                {
+                    write_seen = true;
+                    write_asks = false;
+                }
+            }
+#if KICKOS_HAVE_ASPACE
+            if (read_asks or write_asks)
+            {
+                VirtualRanges const* const ranges = current_ranges(c);
+                if (ranges != nullptr)
+                {
+                    if (read_asks and ranges->covers(ptr, read_len, map_rights_of(ARCH_MPU_R)))
+                    {
+                        read_seen = true;
+                    }
+                    if (write_asks and ranges->covers(ptr, write_len, map_rights_of(ARCH_MPU_W)))
+                    {
+                        write_seen = true;
+                    }
+                }
+            }
+#endif
+        }
+        if (not read_seen and not arch_user_text_readable(ptr, read_len))
+        {
+            return false;
+        }
+        if (not write_seen and not arch_user_data_writable(ptr, write_len))
+        {
+            return false;
+        }
+        return true;
+    }
+
     // Callers MUST validate first (user_range_ok / user_readable_ok / user_writable_ok): this
     // is the access, never the check. Each user end names its owner; a null space means the
     // address is directly kernel-dereferenceable. Overlapping ranges are not copied, the

@@ -70,9 +70,6 @@ namespace kickos::x86_64
         uint64_t g_timer_hz = 0;
         uint64_t g_tsc_hz = 0;
 
-        uint64_t g_armed_deadline = 0;
-        bool g_armed = false;
-
         // LFENCE first: the counter read is a measurement boundary, and rdtsc is not itself
         // ordered against the instructions around it.
         uint64_t rdtsc(void)
@@ -315,10 +312,6 @@ namespace kickos::x86_64
     // and the dedup stops a repeated arm of one deadline from restarting it.
     void timer_arm(uint64_t deadline_ns)
     {
-        if (g_armed and g_armed_deadline == deadline_ns)
-        {
-            return;
-        }
         uint64_t const now = clock_now();
         uint64_t delta_ns = 0;
         if (deadline_ns > now)
@@ -336,8 +329,6 @@ namespace kickos::x86_64
         {
             count = 0xffffffffull;
         }
-        g_armed_deadline = deadline_ns;
-        g_armed = true;
         apic_write(reg_lvt_timer, vector_timer);
         apic_write(reg_ticr, static_cast<uint32_t>(count));
     }
@@ -348,11 +339,5 @@ namespace kickos::x86_64
     {
         apic_write(reg_ticr, 0);
         apic_write(reg_lvt_timer, lvt_masked | vector_timer);
-        g_armed = false;
-    }
-
-    void timer_expired(void)
-    {
-        g_armed = false;
     }
 }

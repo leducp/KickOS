@@ -727,22 +727,12 @@ uint32_t arch_trace_now(void)
 }
 
 
-// Last absolute deadline programmed into CMTW0 (UINT64_MAX == disarmed). Touched only from
-// arch_timer_arm/disarm, which run under the kernel IrqLock.
-static uint64_t g_rx_armed_ns = ~0ull;
-
+// REPROGRAMS UNCONDITIONALLY, AND THE SKIP IS THE KERNEL'S. Resetting CMWCNT to 0 on every
+// context switch means the compare is never reached and a far deadline starves whenever
+// threads ping-pong faster than it; what keeps that from happening is kickos::ktime_rearm
+// skipping the call when the deadline it holds is already the one programmed.
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    // The re-arm must be idempotent, being entered on EVERY context switch: resetting
-    // CMWCNT to 0 each switch means the compare is never reached and a far deadline
-    // starves whenever threads ping-pong faster than it. Tracked in software and
-    // NOT read back from CMWSTR.STR, which races at full switch speed. The timer ISR sets
-    // g_rx_armed_ns = ~0 before it re-arms, so its own re-arm is never skipped.
-    if (deadline_ns == g_rx_armed_ns)
-    {
-        return;
-    }
-    g_rx_armed_ns = deadline_ns;
     uint64_t now = arch_clock_now();
     uint64_t delta_ns = 0;
     if (deadline_ns > now)
@@ -784,7 +774,6 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
-    g_rx_armed_ns = ~0ull;
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // drop a pending compare-match request
 }
@@ -848,22 +837,13 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return seated;
 }
 
-// The raw set travels beside the image because the same-set skip below compares region
-// extents, and an image POINTER cannot answer that: a self-grant re-encodes in place and
-// leaves the pointer unchanged.
-static struct arch_mpu_region const* g_pend_regions = nullptr;
-static size_t g_pend_count = 0;
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
-    if (n > MPU_REGION_COUNT)
-    {
-        n = MPU_REGION_COUNT;
-    }
-    g_pend_regions = regions;
-    g_pend_count = n;
+    (void)regions;
+    (void)n;
     g_pend_image = image;
 }
 
@@ -873,8 +853,6 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 void kickos_arch_mpu_commit(void)
 {
     arch_irq_state_t const irq = arch_irq_save();
-    struct arch_mpu_region const* const regions = g_pend_regions;
-    size_t const n = g_pend_count;
     struct arch_mpu_encoded const* const img = g_pend_image;
     if (img == nullptr)
     {
@@ -896,49 +874,27 @@ void kickos_arch_mpu_commit(void)
         reg32(MPU_MPEN) = MPU_MPEN_MPEN;
         mpu_ready = true;
     }
-    // Skipped when the incoming set matches the last applied one: RR ping-pong between
-    // privileged threads would otherwise reprogram the identical kernel-domain region from
-    // the timer ISR on every tick.
-    static struct arch_mpu_region s_last[MPU_REGION_COUNT];
-    static size_t s_last_n = ~static_cast<size_t>(0);
-    bool same = (n == s_last_n);
-    for (size_t i = 0; same and i < n and i < MPU_REGION_COUNT; i++)
+    // Write RSPAGEn (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is
+    // never momentarily valid with a stale end/attr.
+    for (size_t i = 0; i < MPU_REGION_COUNT; i++)
     {
-        if (s_last[i].base != regions[i].base or s_last[i].size != regions[i].size
-            or s_last[i].attr != regions[i].attr)
+        uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
+        uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
+        if (i < ARCH_MPU_ENCODED_SLOTS and (img->repage[i] & MPU_REPAGE_V))
         {
-            same = false;
+            reg32(rsp) = img->rspage[i];
+            reg32(rep) = img->repage[i];
+        }
+        else
+        {
+            reg32(rep) = 0; // clears V -> slot inactive
         }
     }
-    if (not same)
-    {
-        // Write RSPAGEn (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot
-        // is never momentarily valid with a stale end/attr.
-        for (size_t i = 0; i < MPU_REGION_COUNT; i++)
-        {
-            uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
-            uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
-            if (i < ARCH_MPU_ENCODED_SLOTS and (img->repage[i] & MPU_REPAGE_V))
-            {
-                reg32(rsp) = img->rspage[i];
-                reg32(rep) = img->repage[i];
-            }
-            else
-            {
-                reg32(rep) = 0; // clears V -> slot inactive
-            }
-        }
-        // UM sec.17.4.3: read back an MPU register so the writes are in effect before the
-        // scheduler's RTE drops into user mode. The asm consumes the value so the load is
-        // really issued and is not reordered past here.
-        uint32_t const mpu_sync = reg32(MPU_MPEN);
-        __asm volatile("" ::"r"(mpu_sync) : "memory");
-        s_last_n = n;
-        for (size_t i = 0; i < n and i < MPU_REGION_COUNT; i++)
-        {
-            s_last[i] = regions[i];
-        }
-    }
+    // UM sec.17.4.3: read back an MPU register so the writes are in effect before the
+    // scheduler's RTE drops into user mode. The asm consumes the value so the load is really
+    // issued and is not reordered past here.
+    uint32_t const mpu_sync = reg32(MPU_MPEN);
+    __asm volatile("" ::"r"(mpu_sync) : "memory");
     if (g_in_isr)
     {
         rx_mpu_mark(']');
@@ -1152,11 +1108,11 @@ void arch_idle_wait(void)
 __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 {
     rx_mpu_mark('T');
-    reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0;
-    reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;  // one-shot: stop until re-armed
-    g_rx_armed_ns = ~0ull;                // invalidate so kickos_isr_timer's re-arm reprograms
     g_in_isr = g_in_isr + 1;
-    kickos_isr_timer(); // re-arms the next deadline
+    // No stop-and-clear here: ktime_on_timer disarms before it reads the queue, and
+    // arch_timer_disarm stops CMTW0 BEFORE dropping the IR flag, so no match can re-latch
+    // behind the clear the way it can when the flag is dropped first.
+    kickos_isr_timer(); // disarms, then re-arms the next deadline
     g_in_isr = g_in_isr - 1;
 }
 

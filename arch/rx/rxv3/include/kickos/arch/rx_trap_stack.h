@@ -152,12 +152,12 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 380, identical on all three registered presets: what the fault stub
- * descends is the reschedule its teardown performs, the same chain _RET walks from the other
+ * kickos_thread_slay_exit. 356, identical on all three registered presets: what the fault stub
+ * descends is the pick its teardown's wake performs, the same chain _RET walks from the other
  * stub.
  *   kickos_thread_fault_exit[40] -> exit_current[40] -> cap_teardown[32] -> teardown_entry[44]
  *   -> obj_close_protocol[32] -> mutex_force_unlock[20] -> wake[20] -> resched_after_wake[12]
- *   -> reschedule[28] -> the SchedPolicy hook -> policy_on_switch_in[24] -> arm_slice[20]
+ *   -> pick_and_seat[24] -> the SchedPolicy hook -> policy_on_switch_in[24] -> arm_slice[20]
  *   -> ktime_now[4] -> arch_clock_now[32] -> __divdi3[32]
  *
  * IT NEVER BINDS, and this is the arch with least room for that to change: 308 + 448 = 756
@@ -167,20 +167,20 @@
  * THAT IS ALSO WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure is
  * normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
  * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, so the reason for that
- * convention does not reach it. 448 is enforced over the 380 measured. */
+ * convention does not reach it. 448 is enforced over the 356 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
  * and no redirect, so it runs at whatever depth the entry returned from on the thread's own
- * stack. 480 enforced, 344 measured, identical on all three registered presets. 308 + 480 =
+ * stack. 480 enforced, 320 measured, identical on all three registered presets. 308 + 480 =
  * 788 against a 1024-byte KICKOS_MIN_STACK_SIZE, so this figure buys nothing until it reaches
- * 716: it is the one the floor HOLDS, not the one the floor is cut to, and its 136 of headroom
+ * 716: it is the one the floor HOLDS, not the one the floor is cut to, and its 160 of headroom
  * costs nothing at all here.
  *
- * The panic reporter is not under it. What the 344 measures is the reschedule the teardown
+ * The panic reporter is not under it. What the 320 measures is the pick the teardown's wake
  * performs: kickos_thread_return[4] -> exit_current[40] -> cap_teardown[32]
  * -> teardown_entry[44] -> obj_close_protocol[32] -> mutex_force_unlock[20] -> wake[20]
- * -> resched_after_wake[12] -> reschedule[28] -> the SchedPolicy hook
+ * -> resched_after_wake[12] -> pick_and_seat[24] -> the SchedPolicy hook
  * -> policy_on_switch_in[24] -> arm_slice[20] -> ktime_now[4] -> arch_clock_now[32]
  * -> __divdi3[32]. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 480

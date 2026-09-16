@@ -163,7 +163,6 @@ void kickos_arch_mpu_commit(void)
     {
         return;
     }
-
     uint32_t primask;
     __asm volatile("mrs %0, primask" : "=r"(primask));
     __asm volatile("cpsid i" ::: "memory");

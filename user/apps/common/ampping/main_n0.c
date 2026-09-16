@@ -90,52 +90,18 @@ int main(int argc, char** argv)
         printf("ampping: node %u was handed no far port\n", (unsigned)KOS_AMP_SELF_NODE);
         return 1;
     }
-    printf("ampping: node %u calls node %u port %u\n", (unsigned)KOS_AMP_SELF_NODE,
-           (unsigned)peer, (unsigned)port);
-
-    int round;
-    for (round = 1; round <= AMPPING_ROUNDS; round++)
-    {
-        // One buffer, in and out: kos_call sends from it and writes the reply back into it.
-        unsigned char msg[4];
-        msg[0] = (unsigned char)round;
-        msg[1] = 0xA1u;
-        msg[2] = 0xA2u;
-        msg[3] = 0xA3u;
-        int32_t n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
-        // Retry is the application's and not the kernel's (N6e): the peer is released after
-        // this node and parks in its own time, so the first call can find no receiver.
-        //
-        // ZERO IS A REFUSAL HERE AND NOT AN ANSWER. A serving node that refuses a call past
-        // the point it took the slot publishes an EMPTY reply carrying the tag, which is the
-        // only thing that can wake a caller its receiver never served; this app asked for four
-        // bytes back, so a reply of none is that refusal and not a peer with nothing to say.
-        int tries = 1;
-        while (n <= 0 and tries < AMPPING_TRIES)
-        {
-            kos_sleep_ns(AMPPING_SETTLE_NS);
-            n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
-            tries++;
-        }
-        if (n <= 0)
-        {
-            printf("ampping: round %d refused after %d attempt(s), rc %ld\n", round, tries,
-                   (long)n);
-            return 1;
-        }
-        if (tries > 1)
-        {
-            printf("  (node %u answered on attempt %d)\n", (unsigned)peer, tries);
-        }
-        printf("  ping %d -> pong %u from node %u (%ld byte(s))\n", round, (unsigned)msg[0],
-               (unsigned)peer, (long)n);
-    }
-    printf("ampping: node %u done, %d round(s) across the partition\n",
-           (unsigned)KOS_AMP_SELF_NODE, AMPPING_ROUNDS);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // --- Which nodes' APPS ran, reported by this node ---------------------------------------
-    // The rounds above witness the FIRST peer's app and nothing else: this app calls that one
+    // NOTHING A GATE READS MAY BE PRINTED ABOVE THIS BLOCK, and that is what keeps those lines
+    // out of the banner storm. Every node queues its whole BOOT output, its kernel banner and
+    // its app's one announcement, before it publishes the mark swept here, so a sweep that has
+    // read every node's mark has read past every byte a peer writes while booting. It does not
+    // make the peers silent afterwards: a serving node prints once for every round it answers.
+    // Two kernels share one console and no lock spans them (N6h): a line printed above this
+    // block lands among the peers' banners and arrives cut in half.
+    //
+    // The rounds below witness the FIRST peer's app and nothing else: this app calls that one
     // crossing and no other, so a wider partition holds nodes no crossing ever reaches and not
     // one window counter moves for them. Each node's app declares itself into its own row of
     // the shared record instead, and THIS node reports what it reads, because a line a quieter
@@ -190,9 +156,56 @@ int main(int argc, char** argv)
         // reads a node that is still booting rather than one that failed.
         kos_sleep_ns(AMPPING_SETTLE_NS);
     }
+    // The sweep says every node has QUEUED its boot output, not that the bytes have drained;
+    // no run has ever shown a tear from that gap, so nothing waits for it here.
     printf("ampping: %u of %u node app(s) alive on the port the partition names, own row %u\n",
            alive, (unsigned)KICKOS_AMP_NODES, own_row);
+#endif
 
+    printf("ampping: node %u calls node %u port %u\n", (unsigned)KOS_AMP_SELF_NODE,
+           (unsigned)peer, (unsigned)port);
+
+    int round;
+    for (round = 1; round <= AMPPING_ROUNDS; round++)
+    {
+        // One buffer, in and out: kos_call sends from it and writes the reply back into it.
+        unsigned char msg[4];
+        msg[0] = (unsigned char)round;
+        msg[1] = 0xA1u;
+        msg[2] = 0xA2u;
+        msg[3] = 0xA3u;
+        int32_t n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
+        // Retry is the application's and not the kernel's (N6e): the peer is released after
+        // this node and parks in its own time, so the first call can find no receiver.
+        //
+        // ZERO IS A REFUSAL HERE AND NOT AN ANSWER. A serving node that refuses a call past
+        // the point it took the slot publishes an EMPTY reply carrying the tag, which is the
+        // only thing that can wake a caller its receiver never served; this app asked for four
+        // bytes back, so a reply of none is that refusal and not a peer with nothing to say.
+        int tries = 1;
+        while (n <= 0 and tries < AMPPING_TRIES)
+        {
+            kos_sleep_ns(AMPPING_SETTLE_NS);
+            n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
+            tries++;
+        }
+        if (n <= 0)
+        {
+            printf("ampping: round %d refused after %d attempt(s), rc %ld\n", round, tries,
+                   (long)n);
+            return 1;
+        }
+        if (tries > 1)
+        {
+            printf("  (node %u answered on attempt %d)\n", (unsigned)peer, tries);
+        }
+        printf("  ping %d -> pong %u from node %u (%ld byte(s))\n", round, (unsigned)msg[0],
+               (unsigned)peer, (long)n);
+    }
+    printf("ampping: node %u done, %d round(s) across the partition\n",
+           (unsigned)KOS_AMP_SELF_NODE, AMPPING_ROUNDS);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
     // The ring is the authority and a raise is a hint (docs/design-multicore.md N6f): a peer
     // that cannot yet be poked is published to anyway, and a skipped raise costs latency and
     // never a message. The peer's own counter, read out of the shared window, is what says the
@@ -201,6 +214,11 @@ int main(int argc, char** argv)
     // Every node's counter is taken AHEAD of the publication and one row afterwards: which node
     // the kernel published at is reported only once the probe returns, so a single row taken
     // after it would be read across the publication it is measuring.
+    // THE PEER MUST BE BACK ON ITS RECEIVE BEFORE THE NOTICE CALL BELOW. A far call finding
+    // nothing parked on the port is refused on the spot rather than held (N6f), and a serving
+    // app is off its receive between answering the last round and parking again. The notice
+    // would come back empty and this arm would report a loss it never saw.
+    kos_sleep_ns(AMPPING_SETTLE_NS);
     unsigned long took0[KICKOS_AMP_NODES];
     uint32_t row;
     for (row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)

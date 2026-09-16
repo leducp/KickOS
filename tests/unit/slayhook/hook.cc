@@ -60,7 +60,10 @@ namespace kickos
             Thread* running_thread()
             {
                 Thread* const r = spawn(SLOT_RUNNER, PRIO_LOW);
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 EXPECT_EQ(kernel().current[kickos_kernel_core()], r) << "fixture: the runner is current";
                 g_switches = 0;
                 g_redirects = 0;
@@ -78,7 +81,10 @@ namespace kickos
             Thread* const v = victim_at(PRIO_HIGH);
             v->cancel_kind = CANCEL_SLAY;
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: the higher-priority victim was picked";
             EXPECT_EQ(g_redirects, 1u) << "its resume was claimed";
@@ -93,7 +99,10 @@ namespace kickos
             Thread* const v = victim_at(PRIO_HIGH);
             v->cancel_kind = CANCEL_SLAY;
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             char expect[64];
             snprintf(expect, sizeof(expect), "redirect%u switch%u>%u", v->id, r->id, v->id);
@@ -112,7 +121,10 @@ namespace kickos
             r->cancel_kind = CANCEL_SLAY;
             Thread* const v = victim_at(PRIO_HIGH);
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: the switch happened";
             EXPECT_EQ(g_redirects, 0u)
@@ -128,7 +140,10 @@ namespace kickos
             Thread* const v = victim_at(PRIO_HIGH);
             v->cancel_kind = CANCEL_SLAY;
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(reinterpret_cast<void*>(g_redirect_entry),
                       reinterpret_cast<void*>(&kickos_thread_slay_exit))
@@ -148,7 +163,10 @@ namespace kickos
             Thread* const v = victim_at(PRIO_HIGH);
             v->cancel_kind = CANCEL_KILL;
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
@@ -161,7 +179,10 @@ namespace kickos
             running_thread();
             victim_at(PRIO_HIGH);
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(g_redirects, 0u) << "the hot path costs two tests and nothing else";
         }
@@ -178,7 +199,10 @@ namespace kickos
             v->cancel_kind = CANCEL_SLAY;
             v->dying = true;
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
@@ -194,11 +218,17 @@ namespace kickos
             Thread* const v = victim_at(PRIO_HIGH);
             v->cancel_kind = CANCEL_SLAY;
 
-            sched::reschedule();       // switch to the victim, rebuild #1
+            {
+                IrqLock lock;
+                sched::reschedule();       // switch to the victim, rebuild #1
+            }
             kernel().current[kickos_kernel_core()] = r;      // the fixture never switches, so put the runner back
             r->state = ThreadState::RUNNING;
             v->state = ThreadState::READY;
-            sched::reschedule();       // pick the victim again, rebuild #2
+            {
+                IrqLock lock;
+                sched::reschedule();       // pick the victim again, rebuild #2
+            }
 
             EXPECT_EQ(g_redirects, 2u)
                 << "an absolute entry and an absolute stack top make a second rebuild a "

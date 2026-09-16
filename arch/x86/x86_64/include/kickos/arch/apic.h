@@ -38,9 +38,6 @@ namespace kickos::x86_64
     uint64_t clock_now(void);
     void timer_arm(uint64_t deadline_ns);
     void timer_disarm(void);
-
-    // The one-shot has expired, so the next arm must reprogram whatever deadline it holds.
-    void timer_expired(void);
 }
 
 // The chip's reference timebase, which apic_init measures against. kickos_x86_ref_spin blocks

@@ -40,6 +40,10 @@ namespace kickos
     // no static-data region rely on.
     bool user_writable_ok(uintptr_t ptr, size_t len);
 
+    // The CONJUNCTION of the two above over one base: readable across `read_len` AND writable
+    // across `write_len`, in one walk. For a buffer the kernel reads and then writes back.
+    bool user_readable_and_writable_ok(uintptr_t ptr, size_t read_len, size_t write_len);
+
     // kos_mem_flags -> the ARCH_MPU_* memory-type bits, ORed into *attr. False on an
     // undefined bit: refused (-KOS_EINVAL), never masked off.
     inline bool mem_flags_to_attr(uintptr_t flags, uint32_t* attr)

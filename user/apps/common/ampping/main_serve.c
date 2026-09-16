@@ -58,6 +58,10 @@ int main(int argc, char** argv)
     // and N6h rules the stream interleaves at byte granularity. So this app declares itself
     // into its own row of the shared record, which node 0 reads and reports.
     //
+    // AND THE ANNOUNCEMENT ABOVE IS ALREADY QUEUED WHEN THIS MARK APPEARS, which is what lets
+    // node 0 read a completed sweep as every node having finished its BOOT output. Publish the
+    // mark above that line and node 0 can print while a peer's banner is still arriving.
+    //
     // The port travels as a CLAIM and is not what gets stored: the kernel checks it against the
     // partition list and publishes its own derivation, so nothing this app says reaches the
     // region two kernels share. A refusal means the two derivations disagree, which is worth a

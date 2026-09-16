@@ -15,6 +15,7 @@
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/list.h>
 #include <kickos/sched.h>
@@ -388,7 +389,10 @@ namespace kickos
             sched::init();
             g_fx.idle.base_prio = KICKOS_PRIO_IDLE;
             g_fx.idle.prio = KICKOS_PRIO_IDLE;
-            sched::add(&g_fx.idle);
+            {
+                IrqLock lock;
+                sched::add(&g_fx.idle);
+            }
             sched::start();
         }
 
@@ -404,7 +408,10 @@ namespace kickos
             th->base_prio = prio;
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
-            sched::add(th);
+            {
+                IrqLock lock;
+                sched::add(th);
+            }
             return th;
         }
 
@@ -433,7 +440,10 @@ namespace kickos
             {
                 k.threads.next = slot + 1;
             }
-            sched::add(w);
+            {
+                IrqLock lock;
+                sched::add(w);
+            }
             return w;
         }
 

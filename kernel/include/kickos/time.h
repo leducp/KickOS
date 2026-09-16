@@ -44,7 +44,19 @@ namespace kickos
 
     // Recompute and (re)arm the one-shot timer. Call after any change that can
     // affect the earliest deadline (new sleeper, context switch/RR slice, wake).
-    void ktime_rearm();
+    // `incoming` is the thread this core is about to run, which the switch path holds
+    // BEFORE it is seated; every other caller passes the thread already running.
+    //
+    // CALLER HOLDS THE KERNEL'S EXCLUSION (see kickos/sched.h for the one form of this
+    // precondition). The sleep queue is global and the timer ISR mutates it, so an unmasked
+    // read here can arm for a thread the queue no longer holds.
+    void ktime_rearm(Thread const* incoming);
+
+    // Program the one-shot to fire for nothing, and forget what it held. The kernel is the
+    // sole authority for that value, so every path that leaves the comparator describing
+    // something other than what was last armed comes through here. Caller holds the kernel's
+    // exclusion.
+    void ktime_disarm();
 
     // The timer-expiry ISR body.
     void ktime_on_timer();

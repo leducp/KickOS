@@ -59,6 +59,12 @@ run_image "$ART"
 # The peer is witnessed through node 0's own reading and not through the peer's banner: both
 # nodes write one console with no lock across the two kernels, interleaved at byte granularity
 # by ruling, so a single line from the quieter node can be cut in half by the other's traffic.
+#
+# AND NODE 0'S OWN LINE IS SAFE HERE BECAUSE THE PEERS STOP WRITING EARLY, not because it is
+# node 0's. A peer of this artefact writes its kernel banner and one line naming the port it
+# echoes on, then nothing for the rest of the run, and every arm read below reports far past
+# that. Give a peer a print in its serving loop, or move one of these arms to the front of the
+# selftest order, and its line is back among the banners where it is cut in half on a draw.
 printf '%s\n' "$OUT" | grep -qE 'amp window: [1-9][0-9]* of [0-9]+ peer node\(s\) answered' \
     || fail "no peer answered node 0 over the doorbell: the arms below would skip and mean
   nothing. This is node 0's own reading of the peer's counters, not a line the peer printed."

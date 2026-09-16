@@ -94,7 +94,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_arch_current`, `g_arch_next` (every backend) | **per-core** | the switch hand-off pair, and the prerequisite that gates even AMP |
 | `g_isr_depth` / `g_in_isr` | **per-core** | interrupt nesting is a per-CPU property |
 | `g_pend_regions`, `g_pend_count`, `g_fixed_count`, `mpu_ready`, `rgd0_ready` | **per-core** | the MPU/PMP is per-CPU hardware |
-| `g_armed_deadline_ns` / `g_rx_armed_ns`, and the conversion caches beside them | **per-core** | follows the per-core tickless timer |
+| `timer_armed_ns`, and the conversion caches beside them | **per-core** | follows the per-core tickless timer |
 | `g_irq_masked`, `g_irq_pending`, `g_inject_line` | global | a SOFTWARE interrupt controller, one per image: `arch/riscv/rv32imac/arch_rv32imac.cc` declares all three at file scope and nothing keys them. Per-core is the wrong answer here, and wrong in a way that hangs rather than reddens; see ruling 1 |
 | the clock-extender pairs (`g_cyc_high`/`g_cyc_last` and the ten chip variants) | global data, broken exclusion | see ruling 3 |
 | `SystemCoreClock`, `g_clint_msip`, the baud and clock-divider caches | global | set once at bring-up, read-mostly device facts |

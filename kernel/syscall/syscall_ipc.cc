@@ -362,8 +362,8 @@ namespace kickos
                 return -KOS_EINVAL; // load-bearing for the privileged read below
             }
             // IN-OUT here, so readable as well as writable; plain recv reads nothing.
-            if (not user_readable_ok(badge_out, sizeof(kos_recv_timed_opts))
-                or not user_writable_ok(badge_out, sizeof(kos_recv_timed_opts)))
+            if (not user_readable_and_writable_ok(badge_out, sizeof(kos_recv_timed_opts),
+                                                  sizeof(kos_recv_timed_opts)))
             {
                 return -KOS_EFAULT;
             }
@@ -617,7 +617,7 @@ namespace kickos
         KICKOS_BENCH_MARK(bm_validate);
         // The one buffer is read (request) then written (reply): validate both here,
         // in caller context, once.
-        if (not user_readable_ok(buf, send_len) or not user_writable_ok(buf, recv_cap))
+        if (not user_readable_and_writable_ok(buf, send_len, recv_cap))
         {
             return -KOS_EFAULT;
         }

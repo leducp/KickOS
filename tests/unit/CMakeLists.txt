@@ -24,8 +24,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # the translation unit is compiled under both.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capprobe capsweep faultband parkresult rootslot schedwake slayhook
-      taskdeath wildstack)
+      cancelkind capprobe capsweep faultband parkresult priodonor rangecheck rootslot schedwake
+      slayhook taskdeath wildstack)
     add_subdirectory(${_unit})
   endforeach()
 
