@@ -136,7 +136,10 @@ namespace kickos
                 p.victim->stack_base = STACK_BASE;
                 p.victim->stack_size = STACK_SIZE;
                 p.peer_idle = seat_peer_idle();
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
 
                 p.victim->state = ThreadState::RUNNING;
                 kernel().current[CORE_PEER] = p.victim;
@@ -151,7 +154,10 @@ namespace kickos
             {
                 uint32_t const was = g_core;
                 g_core = CORE_PEER;
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 g_core = was;
             }
 
@@ -400,7 +406,10 @@ namespace kickos
             drain(CORE_PEER);
 
             pass_as_peer();
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[CORE_PEER], p.peer_idle)
                 << "the peer re-picked its own slain current";
@@ -426,7 +435,10 @@ namespace kickos
             EXPECT_EQ(g_redirect_stack_top, reinterpret_cast<uintptr_t>(STACK_BASE) + STACK_SIZE)
                 << "the peer's victim was redirected onto a stack that is not its own";
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
 
             EXPECT_EQ(kernel().current[CORE_ME], p.slayer)
                 << "the pass the slayer's core owed itself did not claim its own victim";
@@ -477,7 +489,10 @@ namespace kickos
                                           "picked the victim";
             EXPECT_EQ(p.victim->state, ThreadState::READY) << "fixture: the victim still waits";
 
-            sched::set_prio(hog, PRIO_HOG_STEPPED);
+            {
+                IrqLock lock;
+                sched::set_prio(hog, PRIO_HOG_STEPPED);
+            }
             pass_as_peer();
 
             EXPECT_EQ(kernel().current[CORE_PEER], p.victim)

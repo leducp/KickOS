@@ -203,7 +203,8 @@ namespace kickos
     // whatever it is parked on, so it reaches its own death point. Cooperative at CANCEL_KILL only
     // in that a member which never enters the kernel again never dies; at CANCEL_SLAY every
     // member's resume is claimed instead. The group dies by ONE rule: there is no exception
-    // argument, and thread_cancel_kind already refuses a dying thread.
+    // argument, and thread_cancel_kind already refuses a dying thread. Caller holds the
+    // exclusion.
     void task_cancel_group(Task* t, uint8_t kind);
 }
 

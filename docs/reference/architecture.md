@@ -206,8 +206,9 @@ declarations ever disagree -- rather than becoming a silent no-op.
 
 1. **One porting layer.** All arch-specific behavior sits behind a small `arch::` interface.
    Adding a target = implementing that interface; kernel/lib/user code is arch-agnostic.
-2. **Scheduling funnels through one function.** `sched::reschedule()` is the *only* place a
-   switch is decided; every trigger just calls it. The tick is one optional caller among many.
+2. **Scheduling funnels through one function.** `pick_and_seat()` is the *only* place a switch
+   is decided; `sched::reschedule()` and `sched::resched_after_wake()` are its two callers and
+   every trigger goes through one of them. The tick is one optional caller among many.
 3. **Tickless by default.** No mandatory periodic interrupt; a single "next-event" timer is
    armed for the earliest deadline. Pure-FIFO idle arms nothing.
 4. **Identical userspace across arches (on target).** On an MCU, a plain userspace app links the
@@ -463,9 +464,11 @@ arms the incoming thread and `next_timed_event()` reports the earliest policy de
 in later without touching `reschedule()`, IPC, or the arch layer. Runqueues are kept **SMP-ready**
 (per-core) for RP2040 core1 later.
 
-**`sched::reschedule()`** -- the single decision point: ask the active policy for `pick_next()`;
-if != current, call `arch_switch(from, to)` (which may defer). No caller is privileged over another -- **the tick
-is not special.**
+**`pick_and_seat()`** -- the single decision point: ask the active policy for `pick_next()`;
+if != current, call `arch_switch(from, to)` (which may defer). `sched::reschedule()` is the bare
+entry to it and `sched::resched_after_wake()` the one that also carries the woken thread, so the
+cross-core ask can be dropped where this core takes that thread itself. No caller is privileged
+over another -- **the tick is not special.**
 
 **Triggers (all equal):**
 1. `thread_yield()` -- voluntary.
@@ -575,9 +578,9 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   is the next syscall ENTRY in `kernel/syscall/syscall.cc`, and `kernel/irq/irq.cc` refuses to
   re-block an already-cancelled thread). Five syscalls
   stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
-  negated errno cast to a pointer would be non-NULL); `cpu_clock_hz`/`cpu_clock_set` and
-  `KOS_SYS_PERIPH_CLOCK_HZ` return a u32 Hz whose 0 already means unknown / no-silicon-clock; and
-  the selftest-only `KOS_SYS_GUARD_ADDR` returns a raw address.
+  negated errno cast to a pointer would be non-NULL); `cpu_clock_hz`/`cpu_clock_set` answer a u64
+  Hz and `KOS_SYS_PERIPH_CLOCK_HZ` a u32 Hz, 0 already meaning unknown / no-silicon-clock at
+  either width; and the selftest-only `KOS_SYS_GUARD_ADDR` returns a raw address.
 - **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
   region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
   programs the hardware after the physical swap). A thread touching a domain

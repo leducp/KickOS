@@ -210,11 +210,11 @@
  * all three converge on arch_shutdown's drain.
  *
  * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the six presets
- * that enforce it have neither a telemetry nor a bench variant and all six measure 320.
+ * that enforce it have neither a telemetry nor a bench variant and all six measure 296.
  * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
  * is RET.
  *
- * 448 IS ENFORCED OVER THE 320 MEASURED. It COSTS NOTHING: nothing allocates at
+ * 448 IS ENFORCED OVER THE 296 MEASURED. It COSTS NOTHING: nothing allocates at
  * KICKOS_MIN_STACK_SIZE, and 208 + 448 = 656 still fits the 960 floor. What it does move is
  * which class the floor's headroom is measured against, EXIT displacing _SVC's 632 as the
  * arch's largest thread-stack requirement on those six presets, 304 under the floor. */
@@ -230,8 +230,9 @@
  * figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
  * byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
  * every registered preset, so the reason for that convention does not reach it. Off telemetry
- * it measures 320, and 360 on the two bench presets, under an enforced 448; on telemetry 952
- * stands over 792.
+ * it measures 296, and 320 on the two bench presets, under an enforced 448; on telemetry 952
+ * stands over 792, that posture's chain descending arch_shutdown's drain rather than the
+ * teardown's own pick.
  *
  * 208 + 448 = 656 against 1004 usable off telemetry, 208 + 952 = 1160 against 1468 on, where
  * SVCK asks 992 and 1464. rxv3 is the arch with least room for that to change, its EXITK
@@ -246,14 +247,16 @@
  * and no redirect to relocate it, so it runs on the thread's own stack under BOTH designs.
  * Relocating it needs an arch trampoline of its own.
  *
- * 352 is BOTH armv7m bench presets, f411disco-bench and xmc4800-relax-bench: the IrqLock
+ * 312 is BOTH armv7m bench presets, f411disco-bench and xmc4800-relax-bench: the IrqLock
  * bracket samples the outermost masked window inline and that costs a stack slot on the chain.
- * THAT PAIR SITS EXACTLY ON ITS ENFORCED 352, so the next thing that deepens the teardown fails
- * the build there with no warning first. 304 is f302nucleo, f302nucleo-st, bluepill-c8 and
- * bluepill-c8-st, and 296 the other 31 non-telemetry presets, under the enforced 312 below. A
- * fleet-wide 352 would make every non-bench board's floor reserve for a bracket its image does
- * not contain. Under telemetry it measures 784 under an enforced 800, so this root is what
- * carries the KICKOS_MIN_STACK_SIZE pressure on qemu-telem. */
+ * THAT PAIR SAT EXACTLY ON ITS ENFORCED 352 until the wake and switch paths stopped
+ * re-acquiring an exclusion their callers already hold, and the 40 bytes that freed are margin
+ * nothing has claimed.
+ * 272 is f302nucleo, f302nucleo-st, bluepill-c8 and bluepill-c8-st, and 264 the other 31
+ * non-telemetry presets, under the enforced 312 below. A fleet-wide 352 would make every
+ * non-bench board's floor reserve for a bracket its image does not contain. Under telemetry it
+ * measures 784 under an enforced 800, that posture descending arch_shutdown's drain instead, so
+ * this root is what carries the KICKOS_MIN_STACK_SIZE pressure on qemu-telem. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 800
 #elif KICKOS_BENCH

@@ -8,6 +8,7 @@
 // is load-bearing: refuse, mask, disarm, flush to shift-idle, retune, re-derive baud, re-arm.
 
 #include <kickos/time.h>
+#include <kickos/sched.h>
 #include <kickos/arch/arch.h>
 #include <kickos/irqlock.h>
 #include <kickos/console_tx.h>
@@ -37,10 +38,10 @@ namespace kickos
         IrqLock lock; // single-core: masks the one timer, quiescing time across the change
         uint64_t const previous = arch_cpu_clock_hz();
 
-        // Stop SysTick + clear g_armed_deadline_ns + drop a pended SysTick, so
-        // nothing fires mid-transition at the stale rate AND the trailing ktime_rearm
-        // cannot be no-op'd by the arm-dedup guard (it always reloads after a disarm).
-        arch_timer_disarm();
+        // Stop the comparator, drop a pend it latched, and forget the deadline, so nothing
+        // fires mid-transition at the stale rate AND the trailing rearm cannot be skipped as
+        // a repeat of what is no longer programmed.
+        ktime_disarm();
 
         // Flush console TX to SHIFT-IDLE: drain the software ring into the UART
         // (polled, the TX IRQ being masked here), then wait for the shift register to
@@ -64,7 +65,7 @@ namespace kickos
 
         // (e) Always re-arm: we disarmed above. Reloads SysTick against the current
         // SystemCoreClock (unchanged if hz == 0), so a re-arm is never skipped.
-        ktime_rearm();
+        ktime_rearm(sched::current());
 
         return hz; // truthful landed Hz; 0 == cannot-change / unsupported
     }

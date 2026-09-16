@@ -207,6 +207,15 @@ those swaps enters the distribution. A sweep of `qemu-riscv-bench`'s call/reply 
 40000 times, twice `CALLREPLY_REPS` for the two spans inside `KOS_CALL_REG_BYTES`, and the
 switch row's `n` counts none of them.
 
+ON `armv7m` THE ROW'S `max` IS AN INTERRUPT INDICATOR AND NOT A SWITCH COST. PendSV runs at
+the lowest exception priority and does not mask until its `cpsid i`, about the first thirty
+cycles of an eighty-cycle sample, so any NVIC line above it preempts inside the bracket and its
+whole handler is charged to that sample. An interrupt-driven console is enough to do it on every
+report window. The `rv32imac` and `rv64imac` brackets do not have this: they span a trap entry
+where the hardware has already cleared `MIE`, which is why those boards print a stable `max`
+across every window while an `armv7m` board's moves with what the console was doing. Read the
+`p50` there, and read a moved `max` as a question about the window rather than about the swap.
+
 IT IS REPORTED AS AN EXCLUSION AND NOT STAMPED, and the reason is the accumulator and not the
 effort. A bracket at the fastpath site would enclose the whole IPC leaf -- the resolve, the
 copy, the mint and the handoff -- and one accumulator cannot carry two enclosures, so the row

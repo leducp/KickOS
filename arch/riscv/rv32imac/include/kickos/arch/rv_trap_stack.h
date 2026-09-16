@@ -56,12 +56,13 @@
  * so it is not re-derived as a new opportunity: the block falls from 1184 to 1104, 80 bytes
  * per KICKOS_THREAD_SLOTS.
  *
- *   _TRAP  480 enforced, 224 measured on the five non-bench presets and 256 on the two
+ *   _TRAP  480 enforced, 176 measured on the five non-bench presets and 192 on the two
  *              bench ones, one chain for the whole arch: kickos_isr_timer[0]
  *              -> ktime_on_timer[64] -> endpoint_wait_abort[32] -> sched::wake[16]
- *              -> resched_after_wake[32] -> reschedule[32] -> the SchedPolicy hook
- *              -> policy_on_switch_in[16] -> arm_slice[32]. The 32 KICKOS_BENCH adds is its
- *              IrqLock bracket taking a slot in sched::wake and one in reschedule.
+ *              -> resched_after_wake[32] -> pick_and_seat[16] -> the SchedPolicy hook
+ *              -> policy_on_switch_in[16] -> arm_slice[32]. The 32 KICKOS_BENCH adds is one
+ *              slot in sched::wake for its IrqLock bracket and one in pick_and_seat for the
+ *              phase marks.
  *   _SYS   912 enforced, 720 measured on BOTH bench presets, the dispatch that prints, and
  *              the two reach that figure down different tails:
  *              syscall_dispatch[80] -> bench_irq_sweep[112] -> dist_print_fmt[32]
@@ -144,34 +145,36 @@
 
 /* The two death-path stubs that relocate, on the thread's own KERNEL BLOCK: .Lfault moves sp
  * to kickos_fault_stack_top and arch_ctx_redirect fabricates a frame there, both answering
- * with ctx.kernel_sp. 432 on both bench presets and 384 on the five that are not, the
+ * with ctx.kernel_sp. 368 on both bench presets and 352 on the five that are not, the
  * CAPABILITY TEARDOWN winning and not the fault reporter:
  *   kickos_thread_fault_exit[16] -> sched::exit_current[80] -> cap_teardown[32]
  *   -> teardown_entry[64] -> obj_close_protocol[32] -> mutex_force_unlock[32]
- *   -> sched::wake[16] -> resched_after_wake[32] -> reschedule[32]
+ *   -> sched::wake[16] -> resched_after_wake[32] -> pick_and_seat[16]
  *   -> the SchedPolicy hook -> policy_on_switch_in[16] -> arm_slice[32]
- * The 48 KICKOS_BENCH adds is its IrqLock bracket taking a slot in cap_teardown, sched::wake
- * and reschedule.
+ * The 48 KICKOS_BENCH adds is a slot in cap_teardown and one in sched::wake for its IrqLock
+ * bracket, plus one in pick_and_seat for the phase marks.
  * NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block figure
  * is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a byte
  * there costs KICKOS_THREAD_SLOTS; this class sizes nothing, _SYS winning the block on every
  * registered preset, so the reason for that convention does not reach it. 576 stands above
- * the 432 measured: 128 + 576 = 704 against 1180 usable, where _SYS asks 1168, so this would
+ * the 368 measured: 128 + 576 = 704 against 1180 usable, where _SYS asks 1168, so this would
  * have to grow 464 more before it bound. */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
 
 /* kickos_thread_return ALONE: a PRIVILEGED thread's entry-return stub, a user thread's being
  * the kickos_user_thread_return syscall instead, so no fault and no redirect relocates it and
- * it runs at the depth the entry returned from on the thread's own stack. 384 on every
+ * it runs at the depth the entry returned from on the thread's own stack. 336 on every
  * registered non-bench preset; KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV and not by this
  * class, so the 128 + 384 red zone is checked against the floor rather than setting it.
  *
  * TWO FIGURES FOR THE SAME REASON _SYSPRIV CARRIES TWO. Under KICKOS_BENCH the IrqLock bracket
- * samples the outermost masked window inline, which costs one stack slot in sched::wake,
- * sched::reschedule and cap_teardown: 432 measured on BOTH rv32 bench presets, down the same
- * teardown chain _EXITK walks, entered from kickos_thread_return. One fleet-wide figure would
- * make every non-bench board's floor reserve for a bracket its image does not contain. This is
- * the one class sitting exactly on its bound off KICKOS_BENCH. */
+ * samples the outermost masked window inline, which costs one stack slot in sched::wake and
+ * one in cap_teardown, and the phase marks cost a third in pick_and_seat: 368 measured on BOTH
+ * rv32 bench presets, down the same teardown chain _EXITK walks, entered from
+ * kickos_thread_return. One fleet-wide figure would make every non-bench board's floor reserve
+ * for a bracket its image does not contain. This class SAT EXACTLY ON ITS NON-BENCH BOUND
+ * until the wake and switch paths stopped re-acquiring an exclusion their callers already
+ * hold, and the 48 bytes that freed are margin nothing has claimed. */
 #if KICKOS_BENCH
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 448
 #else

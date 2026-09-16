@@ -61,6 +61,13 @@ extern "C"
     {
     }
 
+    // Every region seated, which is honest only because nothing here enforces: an arm calling
+    // add_enforced would be reading this description as a guarantee.
+    uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded*)
+    {
+        return (static_cast<uint32_t>(1) << n) - 1u;
+    }
+
     // The interrupt controller. What a gate reads is the DISPATCH TABLE irq.cc keeps in
     // Kernel: a line is free iff it holds the null-object default.
     void arch_irq_mask(int)
@@ -284,7 +291,7 @@ namespace kickos
         return testfix::g_now_ns;
     }
 
-    void ktime_rearm()
+    void ktime_rearm(Thread const*)
     {
     }
 

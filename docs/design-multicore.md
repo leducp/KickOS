@@ -1198,6 +1198,19 @@ about one run in ten, on a gate whose only fault was reading the peer's own bann
 peer through a counter the OTHER node reads** -- the window's per-node rows exist for exactly
 that -- and never through what the peer printed.
 
+**AND READING THIS NODE'S OWN LINE IS NOT SUFFICIENT EITHER: A LINE IS SAFE BY WHEN IT PRINTS AND
+NOT BY WHO PRINTED IT.** The reading node writes the same console, so a line IT prints while the
+peers are still booting is cut by their banners exactly as a peer's line would be. What separates an
+exposed line from a safe one is whether any ordering exists between the writers. A line printed
+after a peer's reply has one, that peer having queued its own line before it replied, and measured
+zero tears in 300 runs under load. The BOOT window has none, the banners being queued by kernels
+that have exchanged nothing yet, and the one assertion printed at app entry tore 7 times in those
+same 300 runs. **So a gate reads only lines printed after a barrier that says every node has queued
+its whole boot output** -- each node publishes its per-node row once its banner and its app's
+announcement are queued, so a sweep that has read every row has read past every byte a peer writes
+while booting -- and the gate ASSERTS that ordering in the capture rather than trusting the app to
+keep it.
+
 **AND A GREEN RUN OF A TWO-KERNEL GATE WITNESSES LESS THAN A GREEN RUN OF A ONE-KERNEL GATE.**
 The interleaving, the order the two kernels reach their first publication, and which of them is
 inside a masked handler when the other rings are a fresh draw every run. Repetition is therefore
@@ -1832,12 +1845,36 @@ so a core can never owe itself a reschedule. Self-migration therefore cannot tra
 at all, and `set_affinity` takes its own scheduler pass directly, calling `reschedule()` when the
 running thread it is re-masking is on the calling core.
 
-**`switch_book` is where a re-masked thread becomes available to its new cores.** Until the store
-that moves it out of RUNNING it IS running, and every peer's `pick_next` refuses a thread another
-core is running, so a poke sent any earlier is consumed against a thread nobody could have taken.
-`switch_book` therefore tests placement once on the outgoing thread and, when that test fails,
-issues the poke on the far side of the store that makes the thread takeable. One mask test on the
-switch path, and the call it guards is reached only by an actual migration.
+**`switch_book` is where the outgoing thread becomes available to a peer, and it is the only place
+any thread does.** Until the store that moves it out of RUNNING it IS running, and every peer's
+`pick_next` refuses a thread another core is running, so a poke sent any earlier is consumed
+against a thread nobody could have taken. Every switch that reaches that store owes the ask, at
+the outgoing thread's own priority, whatever brought the switch there: an ordinary reschedule, a
+re-mask off this core and a wake this core seats differ in what caused the pick and in nothing the
+store made available. The one mask test left on the path skips a thread whose affinity holds no
+peer bit at all, which decides nothing `poke_peers_below`'s own placement walk would not decide;
+it is cost and one trace record, never correctness.
+
+**What is NOT the rule: that the displaced thread rides the announcement of the thread it swaps
+with.** `pick_next` cannot pick below the outgoing thread's priority, so the incoming thread's own
+announcement does reach every peer below the outgoing one IN PRIORITY. It does not reach them in
+PLACEMENT: an incoming thread carrying a narrower mask never named the cores the outgoing mask
+admits, and an idle thread carries exactly its own core's bit and so names none of them. Worse, a
+peer that answered that announcement would have TAKEN the incoming thread, it being the higher
+priority of the two, so where such a peer is still running beneath it the announcement has already
+been spent. The inheritance is empty in the case it was relied on. A thread that widens its
+affinity and then yields is READY, placeable on a peer running beneath it, with no wake and no
+re-mask left to carry an ask, and under FIFO with no later event nothing corrects it. So the ask
+is raised on the state transition and never inferred from a comparison between the two threads.
+
+**The general rule, which quantifies over the pass and not over what caused it:** the ask names
+whatever the pass made takeable by a peer, at that thread's own priority, and only two threads on
+any pass can have become takeable. The WOKEN one, readied by the waker before the pick: asked for
+in `pick_and_seat` where the pick declines it, and owed nothing where the pick takes it, since
+`switch_book` publishes it RUNNING before this core releases the lock. The DISPLACED one, readied
+by `switch_book`'s own store: asked for there. A pass that seats nothing never reaches that store,
+and an outgoing thread that parked or exited never passes through it, so both make nothing takeable
+and ask nobody. That is the whole of what not asking unconditionally saves, and it survives.
 
 `available_to` is the other half of the same seam: for the thread a core is CURRENTLY running it
 returns the placement test rather than a bare true. That is what stops a core re-picking the thread

@@ -206,14 +206,13 @@ namespace kickos
             arm_slice(t);
         }
 
-        uint64_t policy_next_timed_event()
+        uint64_t policy_next_timed_event(Thread const* t)
         {
-            Thread* c = kernel().current[kickos_kernel_core()];
-            if (c == nullptr or c->policy != Policy::RR or c->quantum_ns == 0)
+            if (t == nullptr or t->policy != Policy::RR or t->quantum_ns == 0)
             {
                 return UINT64_MAX;
             }
-            return c->slice_deadline_ns;
+            return t->slice_deadline_ns;
         }
 
         constinit SchedPolicy const g_fifo_rr = {

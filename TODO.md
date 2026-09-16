@@ -2828,14 +2828,74 @@ one needs a new fact, not a new reading.
       not. Tracking them would put a regenerable artifact under the rule written for the one kind
       that is not. The SILICON captures are the other side of the same test and stay archived.
 
+## M8.7 review residue: what the milestone review raised and did not fix
+
+Found by mutating real captures and real gate inputs during the review, which is the only thing
+that finds this class. None is an M8.7 regression; the first two are in checks M8.7 itself added.
+
+- [ ] **SIX OF THE SEVEN NEW RUNTIME BENCH GATES CARRY NO PLANTED CONTROL, WHILE THE SEVENTH AND
+      ALL FOUR STATIC ONES DO.** `tests/integration/check_bench_lock.sh`,
+      `check_bench_cyccnt.sh`, `check_bench_saturate.sh`, `check_bench_phase_table.sh`,
+      `check_bench_percore.sh`, `check_bench_doorbell.sh`. Each parses real console output with a
+      dense one-pass awk block into fields it then asserts on, and none has ever been run against
+      a deliberately broken report. `check_bench_irqspan.sh` in the same directory carries about
+      twenty planted arms, and so do all four `tests/static/check_bench_*.sh`, so the convention
+      is the tree's own and these six are the exception. A parsing regression -- an off-by-one, or
+      a field-order assumption that breaks when the kernel's print format moves -- makes such a
+      gate always-pass or always-fail and nothing here would say so. Direction: plant one
+      mutation per arm the way the irqspan gate's controls already do. Target M8.12, when the
+      instrument is re-pointed anyway.
+
+- [x] **FOUR ARMS OF `check_bench_irqspan.sh` ARE SATISFIED BY THEIR OWN FIELD'S ABSENCE, AND
+      THE SPAN LABEL IS STILL NOT TIED TO THE SPAN ITS ROW MEASURED.** Demonstrated by deleting
+      one token at a time from a passing capture and re-running the gate. Deleting `foreign=`,
+      deleting `win=`, corrupting `tare=`, and relabelling `wcase-irq[1024B]` to `[4096B]` all
+      pass green; deleting `raised=`, `hcore=`, `asked=` or a whole `wcase-probe:` line are all
+      refused. The three value-gated arms (`iwin > 0` at the entry bound, `wpwin > 0` at the
+      masked bound, and the tare comparisons) disable themselves when their field coerces to
+      zero -- each verified live by setting the field to a bad value instead of deleting it, at
+      which point the arm fires. `foreign=` is worse: the identity `n + foreign == raised` that
+      would catch it is gated on the entry row carrying samples, and no capture in the corpus has
+      both a populated entry row and a non-zero `foreign`, so that arm is unreachable by it -- a
+      four-core capture with the token deleted passes while the gate's own verdict text changes
+      its claim about the hardware. The label arm checks only that the four spans ascend, so a
+      relabel that keeps the order is invisible. **The `+ 0` coercion is not the defect and must
+      not be changed**: where the token was matched against `^field=[0-9]+$` first the coercion
+      is exact, `hcore` already uses explicit sentinels rather than a coerced zero, and awk has
+      no other way to force numeric context. FIXED: every field the parser reads now carries a
+      flag saying it parsed, and a field that did not is refused by name rather than left to
+      disable the arm written for it; the coercion is untouched. The label is now bound to its
+      own row by the arithmetic of the sweep, every pair of rows bounding one per-byte cost and
+      the four labels being consistent exactly when one cost fits all six pairs, so a row
+      renamed to a wider or a narrower span is refused where the order arms see nothing. Both
+      carry planted controls, one per field and one per direction of the relabel. **All 36
+      baseline captures carry every one of these tokens**, and all 36 are still accepted.
+
+- [ ] **THE END-TO-END ISR STAMP IS WRITTEN BY THE GENERIC TRAMPOLINE, NOT SCOPED TO THE ARMED
+      LINE.** `kernel/irq/irq.cc`, `irq_event_isr` calls the bench stamp unconditionally, and it
+      is the ISR bound to every driver-style claim. `bench_e2e_close` accepts the stamp on a
+      sentinel test plus a switch-count test, neither of which asks which line fired. A foreign
+      line's ISR landing between the armed line's wake and the close overwrites the stamp, and
+      above one kernel core that flips a sample's local/cross classification. Identical on one
+      core, where both stamps name the same core. Reachability is unproven: it needs a second
+      claimed line live during a sweep, and the bench image runs one app. Distinct from the
+      carried e2e ruling above, which covers the arm/raise/close transitions and not this cell.
+      Direction: pass the binding through to the stamp so a foreign line cannot write it. Target
+      M9, with the rest of the protocol.
+
+- [ ] **`docs/reference/boards.md`'s CI-COVERAGE COLUMN DOES NOT CARRY THE BENCH JOB.** The armv8a
+      and LX6 rows still describe the coverage that existed before the bench job was added, so
+      every cell is true and the picture is short. An omission rather than drift; anytime.
+
+
 ## M8.8 -- per-switch and per-wake plumbing
 
-External audit, itemised into `roadmap.md` M8.8. The P2 item below is a two-line quick win
-alongside the region-board same-set MPU skip already recorded in this file under "Pre-M4 perf:
-caches / flash accelerators" (line ~6458, "Skip-if-unchanged MPU-commit optimization"); land both
-in the same pass rather than duplicating the region-board item here.
+External audit, itemised into `roadmap.md` M8.8. The P2 item below was paired with the
+region-board same-set MPU skip recorded under "Pre-M4 perf: caches / flash accelerators"
+("Skip-if-unchanged MPU-commit optimization"); only the stub-guard half survived measurement, and
+the skip half is closed refuted there.
 
-- [ ] **PERF-1: EVERY WAKE BUILDS FOUR TO FIVE NESTED `IrqLock`s, AND THE DOCUMENT ITSELF PRICES
+- [x] **PERF-1: EVERY WAKE BUILDS FOUR TO FIVE NESTED `IrqLock`s, AND THE DOCUMENT ITSELF PRICES
       THIS AT ~17% OF THE LOCKED ROUND TRIP WITH NO PLAN ITEM ATTACKING IT.** `sched.cc` (`wake`)
       495-502, (`wake_no_resched`) 438-465, (`resched_after_wake`) 467-493, (`reschedule`) 385-399;
       `time.cc` (`ktime_rearm`) 93-131; `klock.cc` 52-75, 137-148. Each of the nested locks is an irq
@@ -2847,7 +2907,7 @@ in the same pass rather than duplicating the region-board item here.
       already-held lock instead of re-acquiring, one `IrqLock` per syscall entry rather than one per
       internal call; an inline depth fast path for `klock_enter`/`klock_enter`.
 
-- [ ] **PERF-4: THE TIMER REARM RUNS ON EVERY SWITCH UNDER ITS OWN `IrqLock`, EVEN WHEN THE
+- [x] **PERF-4: THE TIMER REARM RUNS ON EVERY SWITCH UNDER ITS OWN `IrqLock`, EVEN WHEN THE
       DEADLINE DID NOT CHANGE.** `time.cc` (`ktime_rearm`) 93-131; `policy_fifo_rr.cc` 201-209.
       Every switch reads the sleep queue, calls `next_timed_event` through the policy table, and
       calls `arch_timer_arm` unconditionally, dedup left to each backend. `KTIME_REARM` costs 67
@@ -2855,7 +2915,7 @@ in the same pass rather than duplicating the region-board item here.
       armed deadline and skip the `arch_timer_arm` call when it is unchanged; for a FIFO-only
       workload the answer is `UINT64_MAX` every time, so that path skips the queue read entirely.
 
-- [ ] **PERF-5: THE MPU/ASPACE ACCESS-RANGE CHECK WALKS ITS SET LINEARLY, TWICE PER CALL PLUS
+- [x] **PERF-5: THE MPU/ASPACE ACCESS-RANGE CHECK WALKS ITS SET LINEARLY, TWICE PER CALL PLUS
       ONCE PER RECV AND ONCE PER REPLY.** `syscall_mem.cc` (`user_range_ok`) 54-93; `syscall_ipc.cc`
       552-557. `user_range_ok` walks the `MpuSet` with an attribute compare, run separately for
       readable and for writable; on translating boards it also walks the (unpopulated) `MpuSet` and
@@ -2863,37 +2923,356 @@ in the same pass rather than duplicating the region-board item here.
       a trip, outside the lock. Severity Medium. Direction: one combined read-or-write check instead
       of two separate walks; skip the `MpuSet` walk entirely under `KICKOS_HAVE_ASPACE`, where
       `VirtualRanges::covers` is already the real answer.
+      **RESOLVED, AND BOTH HALVES OF THE DIRECTION ABOVE WERE WRONG.**
+      `user_readable_and_writable_ok` (`syscall_mem.cc`) answers both questions in one pass: one
+      `sched::current()`, one privileged arm, one walk of the set carrying a containment test per
+      half, and each arch fallback offered only the half the set left unanswered.
+      `endpoint_call` and the timed `endpoint_recv` take it.
+      **A COMBINED READ-OR-WRITE CHECK WOULD BE A PRIVILEGE BUG.** Every site that runs both walks
+      demands BOTH. `endpoint_call` reads the one buffer across `send_len` and then writes it across
+      `recv_cap`, two different lengths over one base, and the timed recv's opts struct is in-out.
+      An OR would make a read-only buffer a legal reply destination, and a single length would admit
+      a write past the readable extent. The merged walk is therefore the CONJUNCTION, each half
+      measured on its own length, and its equivalence to the two separate checks is gated by
+      `tests/unit/rangecheck` (arms for the OR and the one-length mutation, plus a sweep over every
+      region-set, length, offset and fallback combination).
+      **THE `MpuSet` IS NOT UNPOPULATED UNDER `KICKOS_HAVE_ASPACE`.** `thread_create` seats the
+      thread's own stack region unconditionally, so an unprivileged thread on a translating board
+      carries exactly that one region, and `VirtualRanges::covers` answers FALSE for it: the stack
+      is mapped task-wide and is not a granted range. Skipping the walk there would turn every
+      stack-buffer validation into `-KOS_EFAULT`. Witnessed on all three boards shipping an
+      `aspace.cmake`: `qemu-arm64`, `qemu-riscv64` and `imx8mp-evk` each report one region, the
+      20 KiB stack at `ARCH_MPU_R | ARCH_MPU_W`, with `covers` false over it.
+      Under `qemu -icount shift=0`, where the phase table is an instruction count and reproducible
+      to the unit, `CALL_VALIDATE` falls from 129 to 83 on `qemu-riscv-bench` and from 114 to 83 on
+      `qemu-arm64-bench` (`NULL` is 1 on both), and every leaf the change does not touch is
+      unchanged. Free-running, the same pair reads about 480 to 220 and about 120 to 60 corrected
+      cycles. Text cost is 216 bytes on rv32, 192 on a Cortex-M3, 8 on arm64; no `.bss`, no `.data`.
 
-- [ ] **PERF-7: TWENTY READS OF `kickos_kernel_core()` PER TRIP ON ARM64 ARE EACH AN
-      OUT-OF-LINE `mrs mpidr_el1` PLUS A BOUND CHECK, WHILE THE VALUE ALREADY SITS IN
-      `TPIDR_EL1`.** `sched.cc`, 20 call sites, 4 inside `switch_book` alone (86, 98, 104, 235);
-      `arch_armv8a.cc` 257-263. Severity Low. Direction: read the core id once per function and pass
-      it down, or expose the id directly from the per-core block that `TPIDR_EL1` already addresses
-      instead of re-deriving it from `mpidr_el1` each time.
+- [x] **PERF-7: EVERY READ OF `kickos_kernel_core()` ON ARM64 IS AN OUT-OF-LINE `mrs mpidr_el1`
+      PLUS A BOUND CHECK, WHILE THE VALUE ALREADY SITS IN `TPIDR_EL1`.** Severity Low.
+      **AS AUDITED**: `kernel/sched/sched.cc` carried 20 reads, three of them inside `switch_book`,
+      which read the core id afresh for the outgoing thread, for the placement test and for the
+      `current[]` store. The item as filed said four and listed a line that is a CALL of
+      `switch_book` rather than a read inside it, so take three as the figure.
+      **AS LANDED**: 14 reads in that file, and none at all inside `switch_book`, which now takes
+      the core id as a parameter from the one caller that read it. The count is what a `grep -c`
+      over `kernel/sched/sched.cc` answers, so do not quote either figure from here without
+      re-running it.
+      **ONLY THE FIRST HALF OF THE DIRECTION WAS TAKEN.** The id is read once per pass and handed
+      down; `arch_cpu_id` (`arch/arm64/armv8a/arch_armv8a.cc`) still decodes `mpidr_el1` and
+      bound-checks the result on every remaining read, and its own comment says why it reads
+      hardware rather than per-core software state: a secondary needs an identity before its block
+      pointer is seated. Exposing the id from the block `TPIDR_EL1` already addresses would have to
+      keep that boot-order property, and it is untouched.
+      **AND THE BENEFIT CARRIES NO FIGURE, DELIBERATELY.** The archived silicon captures were taken
+      before this landed and say so, and no emulator run prices it either: a hoist that removes
+      calls from a path whose enclosing bracket also spans a park cannot be separated from the park
+      on this bench. The next silicon pass is where a number comes from. Read that as unmeasured
+      and not as no benefit.
 
-- [ ] **PERF-6: EVERY REPLY WALKS HELD MUTEXES, `reply_waiters` AND EVERY SERVED ENDPOINT'S
-      `send_waiters` TO RECOMPUTE EFFECTIVE PRIORITY, EVEN WHEN NOTHING WAS DONATED.** `sync.cc`
-      (`thread_effective_prio`) 302-340, called from `REPLY_FUNNEL` 85. A replier that never received
-      a priority donation still pays the full walk on every reply. Severity Low. Direction: a cheap
-      pre-test (a donation-count or high-water flag) before the walk, so the common undonated case
-      returns without scanning anything.
+- [ ] **RULED, PERF-6 REFUSED: THE REPLY FUNNEL KEEPS ITS WALK, AND NOTHING CHEAP MAY STAND IN
+      FRONT OF IT.** `sync.cc` (`thread_effective_prio`) 308-352, called from the `REPLY_FUNNEL`
+      span in `syscall_ipc.cc` 937. The cost is real: a replier that received no donation does
+      walk its held mutexes, its `reply_waiters` and every served endpoint's `send_waiters`. The
+      proposed pre-test was a donation count or a high-water flag; both are a second truth beside
+      the funnel, and the flagless form derived from state the kernel already keeps,
+      `t->prio == t->base_prio`, is unsound for the same single reason. **A donor's priority can
+      RISE after it donated, and the kernel forwards such a raise along a mutex-to-mutex chain
+      only.** `mutex_lock`'s second pass walks `wait_mutex()->owner` and stops at the first wait
+      that is not a mutex, so a raise landing on a donor parked in `CALL_REPLY_WAIT` or
+      `CALL_SEND_WAIT` (D2 boosting a thread that serves an endpoint of its own, or a mutex chain
+      ending on one) moves nothing on the donee. A donee's seated `prio` is therefore not an upper
+      bound on its effective priority, and every cheap form of the pre-test reads exactly that
+      bound. The walk's live re-derivation is what repairs the miss at the next recompute; a
+      pre-test in front of it makes the miss permanent, which is a priority inversion no
+      functional arm can see.
+      **Witnessed, not argued.** `tests/unit/priodonor` builds the state once per donor term.
+      With the pre-test installed those arms fail and the whole rest of the sim suite passes.
+      What was on offer: 23 armv7m instructions for a one-endpoint replier with nothing queued on
+      it, of which a pre-test returns after about seven, against a `REPLY_FUNNEL` span of 103 LX6
+      cycles in a round trip of ~4818 (`docs/design-m5-ipc-fastpath.md`), and that span also
+      carries the `sched::set_prio` a pre-test does not remove.
+      **Re-opening this needs the donation chain completed first**, not a cheaper flag: forward a
+      raise through the donee edge the wait kind already names, and the pre-test follows from it
+      for nothing. That is a change to donation semantics on the donation path, not a perf item.
 
-- [ ] **P2: THE MPU-APPLY SKIP ON MMU BOARDS IS A TWO-LINE WIN, NOT A PLAN ITEM ON ITS OWN --
+- [x] **P2: THE MPU-APPLY SKIP ON MMU BOARDS IS A TWO-LINE WIN, NOT A PLAN ITEM ON ITS OWN --
       THE PRIOR SIZING WAS TAKEN FROM THE STALE 886-CYCLE FIGURE.** The `KICKOS_HAVE_MPU` stub
       that MMU-board switches pay is an out-of-line call of ~5-10 cycles; the real remaining MPU cost
-      on region boards is 94 cycles a switch after the PMP precompute (M8.4's doc-drift item), and
-      the real lever there is the same-set skip already recorded at line ~6458 of this file.
-      Direction: guard the stub call under `KICKOS_HAVE_MPU` in `switch_book` 113 and `sched::start`
-      364; do the same-set skip as the existing region-board item, not as a second one here.
+      on region boards is 94 cycles a switch after the PMP precompute (M8.4's doc-drift item).
+      `MpuSet::apply` is now empty without an MPU, which took a translating board's switch from 10
+      instructions to 1. The region-board half of this item, the same-set skip, is closed refuted;
+      its successor is the per-descriptor write in the attribution-residue section below.
 
-- [ ] **SM-5: A WAKE POKES EVERY LOWER-PRIORITY PEER BEFORE CHECKING WHETHER THIS CORE ITSELF
-      IS ABOUT TO SWITCH TO THE WOKEN THREAD.** `sched.cc` (`resched_after_wake`) 467-473.
-      `poke_peers_below(t)` runs ahead of every refusal, including the common IPC shape where a
+- [x] **SM-5: A WAKE POKED EVERY LOWER-PRIORITY PEER BEFORE CHECKING WHETHER THIS CORE ITSELF
+      WAS ABOUT TO SWITCH TO THE WOKEN THREAD.** `sched.cc` (`pick_and_seat`, `switch_to`).
+      `poke_peers_below(t)` ran ahead of every refusal, including the common IPC shape where a
       client wakes a higher-priority server and THIS core then switches to it: every peer running
-      below `t`'s priority takes an SGI, enters the dispatcher, contends the kernel lock and re-picks
-      what it was already running, for nothing. Severity Medium (perf on SMP). Direction: poke only
-      when this core declines to switch to `t`; safe because a thread this core is switching to is
-      RUNNING and no peer can take it regardless.
+      below `t`'s priority took an SGI, entered the dispatcher, contended the kernel lock and
+      re-picked what it was already running, for nothing. Severity Medium (perf on SMP).
+      **The first landing skipped the ask outright when this core took the woken thread, and that
+      skip was a cross-core priority inversion.** Its argument was sound about the woken thread,
+      which is published RUNNING before the lock is released and so can be taken by nobody, and
+      silent about the thread taking it COSTS: the displaced thread goes READY, it outranks every
+      peer the woken thread outranked, and the unconditional poke had been covering it by
+      accident. With FIFO, an empty sleep queue and no later event, a peer then runs below a
+      ready higher-priority thread indefinitely.
+      What stands now is one rule: the ask names whichever thread the pick put within a peer's
+      reach. This core declines the woken thread, so the woken thread is asked for; this core
+      takes it, so the DISPLACED thread is asked for at ITS priority, which is a strictly
+      narrower set of peers than the old unconditional ask reached; the outgoing thread parked or
+      exited rather than going ready, so nobody is asked. **That rule was still half a rule and
+      the ordinary switch was the other half; it is closed in the audit section below, and the
+      ask no longer decides anything by comparing the two threads.**
+
+## M8.8 attribution residue: what the silicon pass could not close
+
+The M8.8 silicon pass priced PERF-4 cleanly and left four deltas needing an account. Two are
+attributed, one is benign, one is open. Everything below rests on object code read across both
+trees unless it says otherwise.
+
+- [ ] **`arch_irq_save` AND `arch_irq_restore` ARE OUT-OF-LINE CALLS IN EVERY BUILD, AND THEY
+      DOMINATE WHAT AN `IrqLock` COSTS.** `IrqLock` is `always_inline` and says why, but its two
+      seam calls live in another translation unit and these presets carry no LTO, so every
+      acquisition pays two real call/return pairs on both armv7m and rv32. That is the largest
+      REAL term in the 44 cycles PERF-1 removed from the switch path, and PERF-1 did not take it.
+      Direction: inline the two seam bodies, or give the presets LTO and measure what it does to
+      the callgraph gates first. Severity Medium, and it is measurement-justified: target M8.11.
+
+- [ ] **`arch_timer_arm` ON `esp32c6` RUNS A SOFTWARE 64-BIT DIVIDE INSIDE THE MASKED WINDOW, AND
+      ITS COST GROWS WITH UPTIME.** `mtime_ns_to_ticks` is `ns * 4 / 25`, which compiles to
+      `__udivdi3` on rv32, and the dividend grows as the machine runs. This is an ISR-latency
+      hazard on its own account. **It is NOT the cause of the lock-hold tail below** -- that was
+      refuted by class, a uptime-dependent quantity being unable to repeat bit-exactly across two
+      independent boots. Direction: a reciprocal multiply, or ticks carried in the unit the
+      comparator wants. Severity Medium, target M8.11.
+
+- [ ] **THE `lock-hold` ROW NAMES NO SITE, SO ITS `max` CANNOT BE CHASED.** The row is a bare
+      scalar and nothing records which acquisition opened the window that produced it. Stash
+      `__builtin_return_address(0)` into the per-core row when depth reaches 0, carry it beside
+      the max and print it. Bench-only, and on a board this deterministic one run names the path.
+      Target M8.12, with the rest of the instrument work.
+
+- [ ] **NO CALIBRATION ROW PRICES A NESTED `IrqLock`, SO PART OF EVERY PERF-1 FIGURE IS
+      INSTRUMENT-ONLY AND NOBODY CAN SAY HOW MUCH.** Each removed nested lock also removes a
+      `bench_lock_open`/`bench_lock_close` pair, and `bench_lock_close` takes its cycle stamp
+      unconditionally BEFORE the depth test, so every nested acquisition paid a counter read that
+      bought nothing. Hand-counting puts the real share somewhat over half on armv7m, and it
+      cannot be pinned closer than about ten cycles, because `PH_NULL` measures issue-to-issue
+      distance between two reads and not what those reads charge an enclosing span. Direction: a
+      phase exactly analogous to `PH_NEST` but siting an empty NESTED `IrqLock` inside an
+      enclosing span, which prices the removed quantity directly on each board. Target M8.12.
+
+- [ ] **OPEN: `esp32c6`'s `lock-hold` max grew by exactly 173 cycles and nothing accounts for
+      it.** 2013 to 2186, bit-exact in all three windows of both runs on both trees, so six
+      samples a side. `n` is bit-identical, so the population and the lock structure are
+      unchanged and one outermost window's body grew. Refuted by object code: the deleted backend
+      timer caches (the C6 never had one), the MMIO cost (removing a whole `arch_timer_disarm`
+      from the switch path is worth five cycles on that board, measured), the four sites that
+      gained an acquisition (two boot-only, two covering the same scope `set_prio`'s own lock
+      covered, one dead at one core), and the uptime-dependent divide above. The only outermost
+      body that gained instructions gained about twenty. A deterministic relink floor of one to
+      four cycles is independently visible on byte-identical bodies but is three times too small.
+      **Experiment order, and the layout control comes first**: rebuild with kernel text perturbed
+      and semantics untouched and re-capture, which both tests placement and calibrates what any
+      future lock-hold delta on that board is worth; then the return-address probe above; the
+      single-change timer A/B is a poor fit and the layout control would confound it anyway.
+
+- [ ] **PROGRAM ONLY THE DESCRIPTORS WHOSE WORDS CHANGED, NOT THE WHOLE SET.** The all-or-nothing
+      same-set skip that shipped here was removed: it fired 5 times in about a million commits and
+      zero times in 640366 commits of the IPC-heavy workload, against a compare plus a 16-word
+      record write-back on every commit. The reason it never fires is the same thing that says
+      what to do instead: **every near miss differs in exactly the last-appended region**, all
+      640044 of them on the bench workload and every one on every other board and app, and
+      `kernel/thread/thread.cc` makes that last append the thread's own stack descriptor. So a
+      switch between two threads of one domain has one descriptor to rewrite and the rest already
+      stand. Direction: compare and write per descriptor. Severity Medium, measurement-justified:
+      target M8.11.
+      - **It TIGHTENS `mpu-apply-on-every-switch-in` rather than living under it.** Today a commit
+        is total, so any disagreement between a record and the hardware is erased by the next
+        commit whatever caused it. Writing only the changed slots makes such a disagreement
+        PERMANENT, which is a new obligation on every path that can touch a descriptor outside the
+        commit: the PMSAv7 fixed rows, `kickos_arm_mpu_fixed_init`, the one-time MPEN/RGD0/PMP
+        bring-up each backend does on its first commit, and anything a fault handler may do.
+      - **RV32 PMP is the awkward backend.** Its cfg bytes pack four to a CSR, so a single changed
+        descriptor is still one `pmpaddr` CSR plus one whole `pmpcfg` CSR, and three untouched
+        neighbours ride along inside it. The saving there is a fraction of the ARM saving and
+        wants its own figure before the work is sized.
+      - **Two shapes carry NO measurement and must not be read as zero.** RX silicon was not
+        sampled, and neither was the SMP-migration shape, where a thread lands on a core whose
+        descriptors are a peer's: no emulatable board in the fleet has both an MPU and more than
+        one shared-memory kernel core. Those are gaps in the evidence, not near-miss counts of 0.
+
+- [ ] **OPEN: two once-per-run excursions in the M8.7 captures vanished in M8.8 from code neither
+      touched.** `CALL_VALIDATE` read `261/2645` with avg equal to min over 220000 samples, and
+      `REPLY_TOTAL` carried a 2487-cycle excess outside every one of its children; both are gone
+      and the M8.8 composites close on the message-copy spread exactly. PERF-5 is worth 97 cycles
+      and explains the call-validate AVERAGE and none of the max: its negative control is
+      `REPLY_VALIDATE`, which runs the identical unchanged walk and reads a constant 134 over
+      260000 samples in both trees. So a once-per-run excursion left unmodified code, which wants
+      a cause before either max is quoted. Target M8.12.
+
+
+## M8.8 review residue: what the audit and the ten-angle pass left open
+
+Each was found by planting a mutation or by an external read, and each is deliberately not fixed in
+M8.8. None is a regression this milestone introduced unless it says so.
+
+- [ ] **THE ARM TIMER ISR DISARMS TWICE, EXACTLY AS RX DID.** `SysTick_Handler` in
+      `arch/arm/common/arch_arm_common.cc` writes `SYST_CSR = 0` before `kickos_isr_timer`, and the
+      ARM `arch_timer_disarm` then repeats that write plus the ICSR pend-clear. The RX twin was
+      removed this milestone on the argument that the kernel owns the comparator state and
+      `arch_timer_disarm` stops before it clears, which closes a re-latch window the ISR's
+      clear-then-stop leaves open. The same argument applies here. **It was deliberately left**:
+      it moves a per-arch trap-stack figure, and unlike RX there ARE ARM boards on this bench, so it
+      deserves a witness rather than riding along build-only. Anytime, with a bench run.
+
+- [ ] **NO GATE ENFORCES "THE CALLER HOLDS THE EXCLUSION".** Ten scheduler and timer bodies lost
+      their own `IrqLock` this milestone and state the precondition in prose; roughly thirty-five
+      call sites now have to be individually correct forever with no backstop. On the host fixture
+      `IrqLock` is a no-op, so the brackets added to the unit arms prove nothing about a target.
+      Every current site was checked by hand, twice, and holds. The tree already owns the right
+      reader: `tests/static/check_irq_syscall_locked.sh` is a brace-depth scan asserting a lock is
+      in scope at a call, and its corpus is three arms. The stronger form is a callgraph gate taking
+      the de-locked set as roots and asserting every in-edge either constructs the lock or sits in a
+      declared masked-context allowlist. Target M9, with the lock rework. **The header now states
+      the three classes and names the five that acquire for themselves, so such a gate has a
+      written source for its roots instead of re-deriving them.**
+
+- [x] **A TEAR ON THE AMP BARRIER LINE REDDENS THE GATE OUTRIGHT.** `check_amp_partition.sh`'s
+      app-alive sweep line was matched anchored, in both the clause and the ordering loop,
+      consistently -- so unlike the other clauses it had no tolerance for the byte-level
+      interleaving the same file rules expected. Same class as the anchor mismatch the ordering
+      fix removed, and closed the same way: both matches drop the anchor, the clause's `sed`
+      taking a leading `.*` so a prepend cannot survive into the fields it extracts, and the
+      ordering loop reading a line NUMBER, which a prepend does not move. The deferred-publication
+      clause, the one sibling in the file carrying the same two-site shape, was closed with it, so
+      no pattern in that gate anchors at line start any more.
+
+- [ ] **`wq_pop_highest` MUTATES A LIST AND NAMES NO EXCLUSION.** `kernel/include/kickos/sync.h`
+      says "ISR-callable. Pure select+unlink" where its neighbour `wq_peek_highest` says "Under the
+      same IrqLock". It always runs under a caller's lock and never had an internal one, so its
+      contract did not change this milestone -- it is the surface being uneven rather than a defect.
+      One line, anytime.
+
+- [x] **THE ORDINARY SWITCH ANNOUNCED NOTHING, AND THAT IS AN UNBOUNDED CROSS-CORE INVERSION.**
+      `sched.cc`. SM-5's successor rule asked for the displaced thread only where this core took a
+      wake, leaving the ordinary reschedule to the argument that the displaced thread inherits the
+      announcement of the thread leaving the ready set. **A thread that widens its affinity and
+      yields becomes READY and placeable on a peer running beneath it with nothing left to carry
+      the ask**, and under FIFO with no later event nothing corrects it. Rated High with a
+      reachable path by an external pass, and the decision to leave it is overturned.
+      **THE INHERITANCE WAS NOT MERELY PLACEMENT-INCOMPLETE, IT WAS EMPTY WHERE IT MATTERED**: a
+      peer that answered the incoming thread's announcement would have taken that thread outright,
+      so a peer still beneath it has already spent the ask. Closed by keying the ask on the state
+      transition instead: `switch_book`'s RUNNING -> READY store is the one point a thread becomes
+      takeable by a peer, and every switch reaching it asks at the outgoing thread's own priority.
+      One site now serves the ordinary reschedule, the taken wake, the declined wake and the slay
+      case alike; a pass that seats nothing and an outgoing thread that parked or exited never
+      reach the store and still ask nobody. `switch_to` loses its second ask and its `woken`
+      parameter with it. The `(prev->affinity & ~next->affinity)` term the previous pass proposed
+      was evaluated and refused: it keeps the premise, costs an extra mask read and still misses
+      the slay case. Details in `STATE.md`'s M8.8 section.
+
+- [x] **THE STATED LOCKING RULE HAD FOUR EXCEPTIONS AND CLAIMED NONE.** `kickos/sched.h`. "No body
+      below re-acquires what its caller already holds" is false for `set_affinity`, `add_idle`,
+      `yield` and `exit_current`, and `set_affinity` and `exit_current` are each reached BOTH
+      holding the exclusion and holding nothing. Not a missing lock -- `IrqLock` nests in both
+      halves by construction -- but the contract a reviewer audits the call sites against was not
+      true as written, which is worse than an unstated one. The header now sorts every declaration
+      into held, acquires and neither, names the five that acquire as the whole of that class, and
+      says for each which callers reach it holding what.
+      **THAT HEADER WAS ITSELF WRONG TWICE AND A LATER PASS FIXED IT**, so a reader finding the two
+      at odds is looking at a corrected file and not at drift: it claimed THREE of the five were
+      reached both ways where its own list and this entry name two, and it credited every
+      cancellation point with holding the exclusion where the cancel check `syscall_dispatch` makes
+      on syscall entry holds nothing at all.
+
+- [x] **AN ARCHIVED CAPTURE RECORD RESTED ON A COMMIT THE SQUASH DESTROYS.** `docs/archive/`. The
+      four M8.8 silicon captures named their source tree by a hash that is in no remote ref and no
+      squashed ancestry, so it resolves to nothing after a merge. The record now identifies the
+      tree by the items it carries and the two it does not, argues from the two bench presets'
+      own config why neither later item can move a figure on those boards, and names the annotated
+      tag as the convenience while saying that a tag reaches a reader only if it was pushed.
+      **Pushing that tag is the maintainer's.** The commit strings inside the captures are raw
+      evidence and were left alone.
+
+- [x] **THE RANGE-CHECK EQUIVALENCE SWEEP OMITTED TWO EDGES.** `tests/unit/rangecheck`. Privileged
+      mode had one named case beside the combinatorial sweep rather than being a dimension of it,
+      and the merged walk's wrapping-descriptor overflow branch had no arm at all, so a later
+      refactor could bypass either without reddening anything.
+
+- [ ] **AN API SHAPE FOR THE CALLER-HELD CONTRACT IS THE MAINTAINER'S CALL.** The external audit
+      recommends giving caller-held scheduler operations one unmistakable form, `_locked` names or
+      an exclusion token, keeping only thin acquisition wrappers at true entry points, so that an
+      unlocked call is harder to express. The M8.8 design explicitly refused a `_locked` suffix on
+      the grounds that there is no unlocked twin, so the suffix would name a distinction that does
+      not exist. Both positions are defensible; this is a design decision and not a defect. Decide
+      before M9 reworks the lock, since that is where either shape would land.
+
+- [ ] **A CANCELLED PARK RUNS `cap_teardown` MASKED, AGAINST THAT FUNCTION'S OWN DECLARED
+      PRECONDITION.** `kernel/syscall/cap.cc` states in as many words that its caller must NOT hold
+      `IrqLock`: the sweep drops and retakes one every `KCAP_TEARDOWN_CHUNK` slots so that a walk as
+      wide as the capability table stays preemptible, and above one kernel core those gaps are also
+      the only points at which the cross-core lock is released. `sched::exit_current` honours it,
+      calling teardown between its two brackets rather than inside either. Its own callers do not.
+      Every park prologue whose `park_cancel_pending` finds a cancel reaches `exit_current` with an
+      `IrqLock` constructed and never destroyed, that function being noreturn, so the nested retakes
+      restore the masked state they found, the per-core depth never returns to zero, and a
+      deliberately preemptible sweep becomes ONE masked window as wide as the table with the kernel
+      lock held across the whole of it. The callers are `sem_wait` and `mutex_lock` (`sync.cc`),
+      `ktime_sleep_until` (`time.cc`), `thread_slay`, `task_slay`, `thread_join` and
+      `thread_wait_last` (`syscall_thread.cc`), and `endpoint_send`, `endpoint_recv` and
+      `endpoint_call` (`syscall_ipc.cc`). The return, fault and slay trampolines, the `kos_exit`
+      arm and the syscall-entry death point hold nothing and are unaffected.
+      **THIS PREDATES M8.8 AND IS NOT A REGRESSION IT INTRODUCED.** What this milestone owed was
+      the record: `kickos/sched.h` now states the precondition and says these paths break it,
+      instead of reading as though the arrangement were intended.
+      **CLOSING IT IS ITS OWN CHANGE** and has to answer what a cancelled park does with the bracket
+      it is standing in. Dropping it explicitly before the death point puts an unmasked window
+      between the cancel being seen and the thread being marked dying; giving `exit_current` a form
+      that unwinds to depth zero before the sweep moves that window inside it instead. Both land on
+      the `dying` restart guard `switch_book` reads, so neither is a local edit.
+
+- [ ] **THE AMP GATE'S TOLERANCE RESTS ON ITS PATTERNS AND NOT ON THE PEERS BEING QUIET.**
+      `tests/integration/check_amp_partition.sh` reads lines node 0 prints after its app-alive
+      sweep. That sweep proves every node has queued its BOOT output and nothing beyond it:
+      `user/apps/common/ampping/main_serve.c` publishes the mark being swept and then prints one
+      line for every round it answers, ahead of its `kos_reply`, and those bytes leave that node's
+      own ring under that node's own interrupt, so a peer can be writing the shared UART while node
+      0 writes what the clauses read. Both files' headers now say that rather than claiming the
+      sweep silences the peers. The clauses survive it because not one counts a peer's lines and not
+      one anchors at line start, which covers a prepend and NOT a peer's bytes landing inside a
+      clause's own matched text; nothing measures that residue's rate.
+      **TEXT ONLY THIS PASS. THE REAL FIX IS APP AND GATE DESIGN, AND IT IS DELIBERATELY DEFERRED.**
+      Three options, none free. Witness the rounds through the shared record the app-alive sweep
+      already reads, the way the per-node marks are witnessed, so node 0 reports a count and the
+      gate parses no crossing off the console. Drop the serving loop's per-round print, which costs
+      a human debugging a hang the only line saying a peer answered at all. Or serialise the console
+      across the two kernels, which N6h refuses outright as an unbounded cross-kernel claim. Decide
+      before anything else is added to this gate.
+
+
+## M8.8 accepted cost, to be made cheaper in M9
+
+- [ ] **THE PEER ASK WALKS EVERY CORE ON AN ORDINARY RESCHEDULE, AND THE MAINTAINER ACCEPTED THAT
+      PRICE RATHER THAN ABSORBING IT.** Announcing a displaced thread closes an unbounded
+      cross-core priority inversion, and the ask keys on the `RUNNING -> READY` store so it now
+      runs wherever the outgoing thread has any peer affinity. Priced from object code at four
+      kernel cores: a pass that decides to ask nobody went from 11 instructions to 72, so
+      **+61 a switch**, which is larger than either `SWITCH_BOOK` or `MPU_APPLY` on the same path.
+      Single-core boards compile the body out and pay nothing. **The bench cannot see this and a
+      green phase table is not evidence about it**: its workload is a call/reply ping-pong, so
+      every switch is a wake this core took, and the parent already ran the same walk on exactly
+      those switches -- the shape that pays is the ordinary reschedule, which that app never takes.
+      Direction, for the milestone that reworks the lock and the scheduler together: a maintained
+      set of the cores running below a given priority, so the common answer of "nobody" costs a
+      test rather than a walk; or an early-out cheaper than the per-core current/prio/placeability
+      read. Either wants its own correctness argument, since the walk is what makes the
+      announcement total. **Do not reopen the correctness fix to buy this back** -- the inversion
+      it closes is unbounded, and that trade was made deliberately.
+
 
 ## M8.9 -- IPC structure
 
@@ -9091,13 +9470,15 @@ Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/ar
           `MPU_TYPE.DREGION`, do not hard-code 8; fail loud if the budget does not fit).
       (D) **Comment nit** `arch_arm_pmsav8.cc:45-46` / `regs_v8m.h:36-37` -- the PRIVDEFENA-background
           note overstates: a MATCHED region's AP also bounds privileged access.
-- [ ] **Skip-if-unchanged MPU-commit optimization (post-M3, fleet-wide perf).** The per-switch
+- [x] **Skip-if-unchanged MPU-commit optimization (post-M3, fleet-wide perf)** -- REFUTED BY
+      MEASUREMENT, and the all-or-nothing form is not to be reattempted. The per-switch
       `kickos_arch_mpu_commit` reprograms the MPU + issues DSB;ISB UNCONDITIONALLY every switch
-      (measured ~2.3x throughput cost on RP2350 enforce vs mpu-off). Skip the reprogram + barriers
-      when the next thread's region set is unchanged (same-domain switch / region-set generation
-      compare). Helps EVERY enforce board. Note the SMP caveat already flagged in
-      `docs/design-rp2350-mpu-armv8m.md`: any such cache must be per-core (or omitted) under M6, not
-      a shared static.
+      (measured ~2.3x throughput cost on RP2350 enforce vs mpu-off), so skipping the reprogram when
+      the whole region set is unchanged looked free. It was built per-core, as the SMP caveat in
+      `docs/design-rp2350-mpu-armv8m.md` required, and then counted: it fires 5 times in about a
+      million commits and never in an IPC-heavy run, because the incoming thread's own stack
+      descriptor almost always differs. The per-descriptor successor is the M8.8 attribution
+      residue item above.
 - [ ] **ESP32-C6 enforce-bench ns-scaling** (measurement-only, not M3). `cyc` counts correct; ns
       ~8x high because `rdcycle` traps on the C6 so the bench samples an MMIO counter whose rate
       differs from `SystemCoreClock`. Also RP2350 bench `irq` reads a bogus 1 cyc (irq-probe not

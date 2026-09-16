@@ -17,6 +17,7 @@
 #include <kickos/cap.h>
 #include <kickos/diag.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/sched.h>
 
 #include "kseam_test.h"
@@ -36,7 +37,10 @@ namespace
     Thread* running_thread()
     {
         Thread* c = spawn(0, PRIO_DYING);
-        sched::reschedule();
+        {
+            IrqLock lock;
+            sched::reschedule();
+        }
         EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the spawned thread is current";
         g_switches = 0;
         trace_reset();
@@ -68,7 +72,10 @@ TEST_F(SchedWake, a_higher_priority_peer_preempts_a_live_thread)
     Thread* c = running_thread();
     Thread* p = blocked_peer(1, PRIO_DYING + 1);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 1u) << "a live thread yields to a higher-priority wake";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], p) << "the woken peer is current";
@@ -80,7 +87,10 @@ TEST_F(SchedWake, an_equal_priority_peer_does_not_preempt_a_live_thread)
     running_thread();
     Thread* p = blocked_peer(1, PRIO_DYING);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "an equal-priority wake does not preempt";
     EXPECT_EQ(p->state, ThreadState::READY) << "the peer is READY all the same";
@@ -91,7 +101,10 @@ TEST_F(SchedWake, a_lower_priority_peer_does_not_preempt_a_live_thread)
     running_thread();
     Thread* p = blocked_peer(1, PRIO_DYING - 1);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "a lower-priority wake does not preempt";
 }
@@ -103,7 +116,10 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
     c->dying = true;
     Thread* p = blocked_peer(1, PRIO_DYING);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "a dying sweep is not interrupted by an equal-priority peer";
     EXPECT_EQ(p->state, ThreadState::READY) << "the deferred peer is still made READY";
@@ -122,7 +138,10 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_wo
     kernel().policy->on_slice_expire(c); // rotates c behind `ahead`
     c->dying = true;
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "the sweep keeps the CPU even when it is not the ready head";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "the dying thread keeps the CPU";
@@ -138,7 +157,10 @@ TEST_F(SchedWake, a_dying_thread_defers_a_lower_priority_peer)
     c->dying = true;
     Thread* p = blocked_peer(1, PRIO_DYING - 1);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "a dying sweep is not interrupted by a lower-priority peer";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "the dying thread keeps the CPU";
@@ -150,7 +172,10 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
     c->dying = true;
     Thread* p = blocked_peer(1, PRIO_DYING + 1);
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 1u) << "a higher-priority peer preempts the sweep";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], p) << "the woken peer is current";
@@ -178,8 +203,14 @@ TEST_F(SchedWake, a_second_wake_under_the_pended_peer_does_not_switch_again)
     kernel().policy->on_slice_expire(c);
     c->dying = true;
 
-    sched::wake(first);
-    sched::wake(under);
+    {
+        IrqLock lock;
+        sched::wake(first);
+    }
+    {
+        IrqLock lock;
+        sched::wake(under);
+    }
 
     EXPECT_STREQ(trace(), "switch1>2") << "the pended switch is not superseded from below it";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], first) << "the peer published first is still what will run";
@@ -196,8 +227,14 @@ TEST_F(SchedWake, a_second_wake_above_the_pended_peer_supersedes_it)
     Thread* above = blocked_peer(2, PRIO_DYING + 2);
     c->dying = true;
 
-    sched::wake(first);
-    sched::wake(above);
+    {
+        IrqLock lock;
+        sched::wake(first);
+    }
+    {
+        IrqLock lock;
+        sched::wake(above);
+    }
 
     // The outgoing side of the second switch is the peer, not the sweep whose stack this runs
     // on, so the token below is not a lost context.
@@ -220,8 +257,14 @@ TEST_F(SchedWake, a_superseded_peer_keeps_the_switch_in_it_never_ran)
     Thread* above = blocked_peer(2, PRIO_DYING + 2);
     c->dying = true;
 
-    sched::wake(first);
-    sched::wake(above);
+    {
+        IrqLock lock;
+        sched::wake(first);
+    }
+    {
+        IrqLock lock;
+        sched::wake(above);
+    }
 
     EXPECT_EQ(first->switch_count.load(), 1u) << "charged a switch-in it never ran";
     EXPECT_EQ(first->slice_deadline_ns, g_now_ns + first->quantum_ns)
@@ -238,7 +281,10 @@ TEST_F(SchedWake, an_already_ready_peer_is_left_alone_but_loses_its_deadline)
 
     // READY, not BLOCKED: the funnel drops the deadline BEFORE it tests the state, so a
     // wake that races the timer cannot leave a stale deadline behind.
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_FALSE(p->on_timer) << "the deadline is dropped before the state test";
     EXPECT_EQ(g_switches, 0u) << "an already-ready peer is not re-readied and does not switch";
@@ -253,7 +299,10 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
     // pointer and this funnel must too.
     kernel().current[kickos_kernel_core()] = nullptr;
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(p->state, ThreadState::READY) << "the peer becomes READY with no current thread";
     EXPECT_EQ(g_switches, 0u) << "a pre-start wake does not switch";
@@ -271,7 +320,10 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     kernel().policy->on_remove(dead);
     dead->state = ThreadState::EXITED;
 
-    sched::wake(dead);
+    {
+        IrqLock lock;
+        sched::wake(dead);
+    }
 
     EXPECT_EQ(dead->state, ThreadState::EXITED) << "an exited thread is not made READY";
     EXPECT_EQ(kernel().ready_bitmap & (1u << dead->prio), 0u) << "and no ready list holds it";
@@ -294,7 +346,10 @@ TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
     kernel().policy->on_slice_expire(c);
     c->dying = true;
 
-    sched::wake(p);
+    {
+        IrqLock lock;
+        sched::wake(p);
+    }
 
     EXPECT_EQ(g_switches, 0u) << "a peer under the boost is deferred, not compared to the anchor";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "the boosted dying thread keeps the CPU";
@@ -544,5 +599,10 @@ TEST_F(SchedWakeDeathTest, blocking_from_isr_context_panics)
     running_thread();
     g_in_isr = true;
 
-    KICKOS_EXPECT_PANIC(sched::detach_current(), diag::kBlockInIsr);
+    KICKOS_EXPECT_PANIC(
+        {
+            IrqLock lock;
+            sched::detach_current();
+        },
+        diag::kBlockInIsr);
 }

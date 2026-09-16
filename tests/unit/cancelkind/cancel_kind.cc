@@ -72,7 +72,10 @@ namespace kickos
             {
                 Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
                 Thread* const waiter = seat_pool(SLOT_VICTIM, PRIO_HIGH);
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 EXPECT_EQ(kernel().current[kickos_kernel_core()], waiter) << "fixture: the waiter is current";
                 EXPECT_NE(peer, nullptr);
                 g_switches = 0;
@@ -87,7 +90,10 @@ namespace kickos
                 parked->wait_queue->unlink(&parked->link);
                 parked->clear_wait_edge();
                 parked->wait_result = 0;
-                sched::wake(parked);
+                {
+                    IrqLock lock;
+                    sched::wake(parked);
+                }
             }
 
             // Every TCB the kernel can reach, so an assertion of ABSENCE is over the whole

@@ -13,6 +13,7 @@
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -128,7 +129,10 @@ namespace kickos
             Thread* dying_sweeper(int slot, uint32_t width)
             {
                 Thread* const c = spawn(slot, PRIO_SWEEPER);
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the sweeper is current";
                 c->dying = true;
                 attach_caps(c, width);
@@ -399,7 +403,10 @@ namespace kickos
             Thread* const sender = spawn(2, PRIO_ABOVE_CLOSER);
             park_plain_sender(sender, kernel().endpoints.resolve(handle));
 
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
             EXPECT_EQ(kernel().current[kickos_kernel_core()], g_closer) << "fixture: the closer holds the CPU";
             EXPECT_FALSE(g_closer->dying) << "fixture: a voluntary close, not a teardown";
 

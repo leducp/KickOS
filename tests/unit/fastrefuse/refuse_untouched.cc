@@ -31,6 +31,7 @@
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -241,7 +242,10 @@ namespace kickos
                               reinterpret_cast<uintptr_t>(&g_scratch.info));
 
                 // Last, so the caller holds the CPU with both receivers already parked.
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 if (kernel().current[kickos_kernel_core()] != s.c)
                 {
                     printf("FIXTURE FAIL: the caller does not hold the CPU\n");
@@ -422,7 +426,10 @@ namespace kickos
             Stage s = stage();
             // Through the funnel: prio is not a field a caller may write, and a bare store
             // would leave the ready lists indexed by the old value.
-            sched::set_prio(s.c, PRIO + 1);
+            {
+                IrqLock lock;
+                sched::set_prio(s.c, PRIO + 1);
+            }
             g_switches = 0;
             trace_reset();
 

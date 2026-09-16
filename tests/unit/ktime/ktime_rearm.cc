@@ -5,19 +5,22 @@
 // deadline ktime_rearm hands arch_timer_arm must be a function of what is
 // pending, and of nothing else; in particular, not of when the call happens.
 //
-// A backend either dedups an arm by comparing the requested deadline against the one
-// already programmed (arch/arm/common: g_armed_deadline_ns; arch/rx/rxv3:
-// g_rx_armed_ns), or writes an absolute compare that is idempotent (CLINT mtimecmp,
-// POSIX TIMER_ABSTIME), or converts a delta from the clock it reads on the spot
-// (arch/xtensa/lx6: CCOMPARE0). A rearm that re-derives its value from the current
-// clock defeats every one of those: ktime_rearm runs on EVERY context switch, so a
-// moving value restarts the countdown before it can reach the compare and the sleeper
-// is held off for as long as the switches keep coming.
+// No backend dedups an arm any more: arch_timer_arm reprograms whatever it is handed, and
+// the kernel is the sole authority for what each comparator holds. A rearm that re-derives
+// its value from the current clock defeats that: ktime_rearm runs on EVERY context switch,
+// so a moving value never matches what is already programmed, the countdown restarts before
+// it can reach the compare, and the sleeper is held off for as long as the switches keep
+// coming.
+//
+// The other half is that a comparator which has FIRED no longer holds what the kernel
+// recorded. A backend that clamps a far deadline into a narrow counter fires early and is
+// re-armed for the same absolute deadline, so a skip there starves the sleeper for good.
 //
 // The armed deadline is arch-internal, and this gate links the REAL kernel/time/time.cc
 // against a fake clock and a recording timer, so it reads the exact value handed to
 // arch_timer_arm.
 
+#include <kickos/irqlock.h>
 #include <kickos/time.h>
 #include <kickos/sched.h>
 #include <kickos/instance.h>
@@ -115,7 +118,7 @@ namespace kickos
 
         // The seam reports "no timed event" and parking is a no-op, which leaves the
         // sleeper on the sleepq for an arm to read.
-        uint64_t next_timed_event() { return UINT64_MAX; }
+        uint64_t next_timed_event(Thread const*) { return UINT64_MAX; }
         Thread* current()
         {
             return kernel().current[kickos_kernel_core()];
@@ -147,6 +150,9 @@ namespace
         g_armed = UINT64_MAX;
         g_arms = 0;
         g_disarms = 0;
+        // What boot leaves: a value no computation can produce, so the first rearm of an arm
+        // always programs.
+        kernel().timer_armed_ns[kickos_kernel_core()] = 0;
     }
 
     void park(uint64_t deadline_ns)
@@ -167,7 +173,10 @@ TEST(KTime, deadline_is_stable_inside_the_window)
     park(deadline);
 
     g_now = deadline - KICKOS_TIMER_MIN_DELTA_NS / 4; // well inside the window
-    ktime_rearm();
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
     uint64_t const first = g_armed;
     EXPECT_EQ(first, deadline) << "first arm inside the window is the parked deadline";
 
@@ -176,7 +185,10 @@ TEST(KTime, deadline_is_stable_inside_the_window)
     for (uint32_t i = 0; i < 8; i++)
     {
         g_now += KICKOS_TIMER_MIN_DELTA_NS / 8;
-        ktime_rearm();
+        {
+            IrqLock lock;
+            ktime_rearm(sched::current());
+        }
         EXPECT_EQ(g_armed, first) << "rearm inside the window moved the deadline";
     }
 }
@@ -190,11 +202,17 @@ TEST(KTime, due_deadline_is_not_pushed_into_the_future)
     uint64_t const deadline = 1000000;
     park(deadline);
     g_now = deadline + 1;
-    ktime_rearm();
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
     EXPECT_EQ(g_armed, deadline) << "a due deadline was rearmed into the future";
 
     g_now += 5 * KICKOS_TIMER_MIN_DELTA_NS;
-    ktime_rearm();
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
     EXPECT_EQ(g_armed, deadline) << "a due deadline drifted with the clock";
 }
 
@@ -285,7 +303,62 @@ TEST(KTime, empty_disarms)
 {
     reset();
     g_now = 1234;
-    ktime_rearm();
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
     EXPECT_EQ(g_disarms, 1u) << "an empty sleepq did not disarm";
     EXPECT_EQ(g_arms, 0u) << "an empty sleepq armed instead of disarming";
+}
+
+// The dedup itself: what a switch burst costs the comparator once nothing pending has moved.
+TEST(KTime, a_repeated_rearm_programs_the_comparator_once)
+{
+    reset();
+    uint64_t const deadline = 1000000;
+    park(deadline);
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
+    ASSERT_EQ(g_arms, 1u) << "the first rearm did not program the comparator";
+
+    for (uint32_t i = 0; i < 8; i++)
+    {
+        g_now += KICKOS_TIMER_MIN_DELTA_NS;
+        {
+            IrqLock lock;
+            ktime_rearm(sched::current());
+        }
+    }
+    EXPECT_EQ(g_arms, 1u) << "a switch burst reprogrammed a comparator already holding the "
+                             "only deadline anything pending has";
+    EXPECT_EQ(g_disarms, 0u) << "a rearm with a sleeper still parked disarmed the comparator";
+}
+
+// The other half, and the whole correctness of the dedup: a comparator that has FIRED holds
+// nothing, so the same deadline must be programmed again rather than recognised as a repeat.
+// This is what a clamped backend does on every wrap of a deadline wider than its counter.
+TEST(KTime, a_fired_comparator_is_reprogrammed_for_the_same_deadline)
+{
+    reset();
+    uint64_t const deadline = 1000000;
+    park(deadline);
+    {
+        IrqLock lock;
+        ktime_rearm(sched::current());
+    }
+    ASSERT_EQ(g_arms, 1u) << "the first rearm did not program the comparator";
+
+    // The counter ran out before the deadline: the one-shot fires early and the handler finds
+    // nothing due, so what it re-arms is the same absolute deadline for its remainder.
+    g_now = deadline / 2;
+    ktime_on_timer();
+
+    EXPECT_EQ(kernel().sleepq, &g_sleeper) << "an early fire woke a sleeper that is not due";
+    EXPECT_EQ(g_armed, deadline) << "the remainder was armed for something other than the "
+                                    "deadline that is still pending";
+    EXPECT_EQ(g_arms, 2u) << "a fired comparator was left holding nothing: the rearm behind "
+                             "the fire was skipped as a repeat of a deadline no longer "
+                             "programmed, and the sleeper never wakes";
 }

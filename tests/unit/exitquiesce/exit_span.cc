@@ -17,6 +17,7 @@
 // in for at the next arch_idle_wait.
 
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
@@ -41,7 +42,10 @@ namespace
     {
         Thread* c = seat_pool(SLOT_DYING, PRIO_DYING);
         seat_pool(SLOT_PEER, PRIO_DYING - 1);
-        sched::reschedule();
+        {
+            IrqLock lock;
+            sched::reschedule();
+        }
         EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the seated thread is current";
         g_switches = 0;
         g_parks_committed = 0;

@@ -30,12 +30,14 @@
  * tests/static/check_trap_redzone.sh.
  *
  * PER KERNEL-CORE COUNT, AND THE TWO POSTURES WIN DOWN DIFFERENT CHAINS. Above one core the
- * deepest descent leaves the scheduler through the kernel lock and keeps going, 592 measured on
- * esp32-wroom-smp: ktime_rearm -> klock_enter -> arch_kernel_lock -> doorbell_poll ->
- * kickos_lx6_doorbell_service -> kickos_irq_route_service -> arch_irq_mask ->
- * kickos_lx6_hw_mask -> phys_int_disable. At one core arch_kernel_lock is an empty macro
- * (arch/arch.h), so klock_enter is on no chain at all and the winner instead runs
- * reschedule -> arch_switch -> xtensa_switch[128], 432 on both one-core presets.
+ * deepest descent leaves the scheduler through a cross-core ask and keeps going, 608 measured
+ * on esp32-wroom-smp: resched_after_wake -> pick_and_seat -> poke_peers_below ->
+ * klock_resched_ask -> arch_ipi_send -> kickos_doorbell_poll -> kickos_lx6_doorbell_service ->
+ * kickos_irq_route_service -> arch_irq_mask -> kickos_lx6_hw_mask -> phys_int_disable. At one
+ * core arch_kernel_lock is an empty macro (arch/arch.h) and no ask exists, so neither
+ * klock_enter nor poke_peers_below is on any chain and the winner instead runs
+ * resched_after_wake -> pick_and_seat -> arch_switch -> xtensa_switch[128], 416 on both
+ * one-core presets.
  *
  * THE LAST FOUR FRAMES ARE CHARGED WHETHER OR NOT AN ASK IS PENDING. Freeze N2 puts the route
  * drain in the doorbell SERVICE BODY, that body is reached from arch_kernel_lock's acquire
@@ -43,12 +45,20 @@
  * kernel lock charges the deepest gating operation. A cross-core action added near a lock path
  * pays the same way.
  *
+ * ABOVE ONE CORE THE ENFORCED FIGURE IS THE MEASUREMENT, 608 against 608, and the whole switch
+ * path is inside pick_and_seat's own frame: switch_to and switch_book inline into it, so one
+ * more value held live across the ask buys that frame another 16 bytes. That is what the ask
+ * being raised from switch_book alone GAVE BACK: switch_to no longer carries the woken thread
+ * to compare against, the chain is the same chain, and pick_and_seat's frame went 48 to 32.
+ * THE MAXIMUM IS A TIE BETWEEN ROUTES here, the acquire poll and the ask reaching the doorbell
+ * service body down three frames of equal cost, so a flat reading after a change is not
+ * evidence the change cost nothing.
+ *
  * MARGIN: KICKOS_LX6_TRAP_FRAME 256 + 608 = 864 against a KICKOS_MIN_STACK_SIZE of 896, so 32
- * bytes. AT ONE CORE THE ENFORCED FIGURE IS THE MEASUREMENT, 432 against 432, so the next
- * thing that deepens that path fails the BUILD in tests/static/check_trap_redzone.sh with no
- * warning first; above one core there are 16 bytes of give, 592 against 608. The two ways out
- * are shortening the chain named above, whose last three frames are this backend's own gating
- * path and used everywhere, or raising KICKOS_MIN_STACK_SIZE, which is fleet-wide. */
+ * bytes. At one core there are 16 bytes of give the same way, 416 against 432, that posture
+ * compiling none of the ask. The two ways out are shortening the chain named above, whose last
+ * three frames are this backend's own gating path and used everywhere, or raising
+ * KICKOS_MIN_STACK_SIZE, which is fleet-wide. */
 #if KICKOS_KERNEL_CORES > 1
 #define KICKOS_LX6_TRAP_DEPTH 608
 #else

@@ -132,24 +132,13 @@ uint64_t arch_cpu_clock_hz(void)
 
 // --- One-shot timer (SysTick). Clock (arch_clock_now) is a per-CHIP contract on
 // every ARM arch; there is no arch-level fallback. --------------------------
-// Absolute deadline the running SysTick was last programmed for (UINT64_MAX ==
-// disarmed / fired). arch_timer_arm is entered on EVERY reschedule with the
-// same pending deadline; blindly reloading SYST_CVR each time resets the
-// countdown, so a far deadline reached only while lower-prio threads switch
-// faster than it can expire (e.g. a bench reporter's 0.5 s sleep behind two
-// CPU-bound players) starves forever. Guard: if the same deadline is already
-// counting (SysTick still enabled), leave it running. The one-shot ISR disables
-// SysTick before it re-arms, so its own re-arm (this exact deadline, remainder of
-// a clamped wait) is never skipped. Touched only under the kernel IrqLock.
-static uint64_t g_armed_deadline_ns = ~0ull;
-
+// RELOADS UNCONDITIONALLY, AND THE SKIP IS THE KERNEL'S. Blindly reloading SYST_CVR resets
+// the countdown, so a far deadline reached only while lower-prio threads switch faster than
+// it can expire (e.g. a bench reporter's 0.5 s sleep behind two CPU-bound players) would
+// starve forever; what keeps that from happening is kickos::ktime_rearm skipping the call
+// when the deadline it holds is already the one programmed.
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    if (deadline_ns == g_armed_deadline_ns and (reg32(SYST_CSR) & SYST_CSR_ENABLE) != 0)
-    {
-        return;
-    }
-    g_armed_deadline_ns = deadline_ns;
     uint64_t now = arch_clock_now();
     uint64_t delta_ns = 0;
     if (deadline_ns > now)
@@ -200,7 +189,6 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
-    g_armed_deadline_ns = ~0ull;
     reg32(SYST_CSR) = 0;
     // "disarm" must mean no callback: clear a SysTick that pended while the line
     // was masked, else it fires once on lock release after we disarmed.

@@ -135,11 +135,11 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 408, identical on all four presets: what the fault stub descends is
-   the reschedule its teardown performs, ending in the 64-bit divide arch_timer_arm needs.
+   kickos_thread_slay_exit. 384, identical on all four presets: what the fault stub descends is
+   the pick its teardown's wake performs, ending in the 64-bit divide arch_timer_arm needs.
      kickos_thread_fault_exit[32] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
      -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
-     -> reschedule[24] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96]
+     -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96]
 
    NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench variant, so one
    figure covers every registered preset. This arch selects
@@ -149,18 +149,18 @@
    IT NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block
    figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
    byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
-   every registered preset, so the reason for that convention does not reach it. 448 is the
-   408 measured rounded up to the next multiple of 64: 68 + 448 = 516 against 892 usable,
+   every registered preset, so the reason for that convention does not reach it. 448 stands
+   over the 384 measured: 68 + 448 = 516 against 892 usable,
    where SVCK asks 892 exactly, so this would have to grow 376 more before it bound. */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 448
 
 /* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
    and no redirect to relocate it, so it runs at whatever depth the entry returned from on the
-   thread's own stack. 504 enforced, 384 measured on picopi: the reschedule the teardown
+   thread's own stack. 504 enforced, 360 measured on picopi: the pick the teardown's wake
    performs, and no longer the panic reporter under it.
      kickos_thread_return[8] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
      -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
-     -> reschedule[24] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96] */
+     -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96] */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET 504
 
 /* What each guarded site enforces, in bytes below the live PSP: a class's structural half

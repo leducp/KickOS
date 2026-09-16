@@ -2627,6 +2627,207 @@ margin is the runner having four cores to itself and is not large, so an arm the
 failing on its own time bound is read as the runner and not as the kernel. The x86_64 image
 rides the firmware job at one core.
 
+## M8.8: the per-switch and per-wake plumbing, and what these green runs do NOT say
+
+**THE PLAN'S OWN SEVERITIES WERE INVERTED, AND THE HEADLINE FIGURE CAME FROM A SUPERSEDED
+DOCUMENT.** PERF-1 was ranked High at about 17 percent of a round trip; that number is from
+`docs/design-m5-ipc-fastpath.md`, which `docs/archive/M8.7_rebaseline_meas.md` supersedes and which
+carries no such figure. Priced from object code a nested `IrqLock` is about 2 percent of a round
+trip at one kernel core, and five to six times that per lock above one, where each pair is four
+out-of-line calls of which two call `arch_cpu_id` again. PERF-4, ranked Medium, is worth five to
+eight times more. **Re-deriving the 17 percent next pass is the waste this paragraph exists to
+stop.**
+
+**WHAT THE SILICON PASS PRICED, AND THE CONTROL IS WHY IT IS BELIEVABLE.** Taken at `2bbea107`,
+which carries SM-5, PERF-4, PERF-1 and PERF-5 and NOT PERF-7 or P2 -- so those two are outside
+every figure below. Two boards, two flash-and-capture cycles each, all four agreeing from the
+banner onward. `KTIME_REARM` fell 93 to 59 on `f411disco` against 61 to 56 on `esp32c6-wroom`: the
+clamping SysTick gives up a whole `arch_timer_disarm` of two strongly-ordered PPB writes, the
+absolute CLINT comparator gives up two posted stores. **The sevenfold gap is the result**, not the
+34 -- it is what the control board was chosen to show, and one backend class cannot be quoted for
+the other. **The round-trip figures are TWO quantities and a reader will difference the wrong
+pair**: the `CALL_TOTAL` phase row fell 390 and 392 cycles, while the 8 B round trip's wall clock
+fell 11.9 and 11.4 percent, which at 84 and 160 MHz is roughly 925 and 836 cycles. The 256 B round
+trip fell only 7.9 and 7.7 percent, the large message carrying a copy this milestone did not touch.
+**`n` is bit-identical between trees on all forty phase rows on both boards**, not only on
+`lock-hold`, which is the strongest single statement in the comparison. The captures, the manifest
+and the per-board tables are `docs/archive/M8.8_meas.md`.
+
+**FOUR LIMITS BOUND EVERY NUMBER ABOVE, and each one nearly produced a wrong table.** `p50` and
+`p99` are log-linear histogram BUCKET LOW EDGES at eight buckets per octave while `min`, `avg` and
+`max` come from the exact accumulator -- so `lock-hold`'s p50 falling by "exactly 192" on both
+boards is three buckets each and not a physical agreement, and the p99 deltas duly disagree.
+`avg == min` over a large `n` means the `max` is a SINGLE sample. A deterministic RELINK FLOOR of
+one to four cycles sits on small rows, measurable on bodies whose source did not change, so a leaf
+delta at or under it is layout and not work. And **part of every PERF-1 row delta exists only in a
+bench build**: each removed nested lock also removes a `bench_lock_open`/`bench_lock_close` pair
+whose close stamps the counter BEFORE the depth test, so a nested acquisition paid a read that
+bought nothing. The real share is somewhat over half on armv7m and cannot be pinned closer than
+about ten cycles until a nested-lock calibration row exists.
+
+**SM-5'S RULE WAS HALF A RULE, AND THE HALF IT LEFT OUT WAS A CROSS-CORE PRIORITY INVERSION.**
+The skip argued from the WOKEN thread: this core seats it RUNNING before releasing the lock, no
+peer's `pick_next` can take it, so a poke would only make peers re-pick what they already run.
+True, and silent about what seating it COSTS. Taking the woken thread displaces the thread this
+core was running; that thread goes READY, and since the woken thread outranked it, every peer
+below the woken thread's priority is also below the displaced thread's. The unconditional poke
+the item removed had been covering that by accident. With FIFO, an empty sleep queue and no later
+event, the displaced thread then sits ready above a running peer with nothing owed to end it.
+**The rule that stands is one sentence: the ask names whichever thread the pick put within a
+peer's reach, and the pick decides which thread that is.** Declined, it is the woken thread.
+Taken, the woken thread never entered anyone's reach and the DISPLACED thread did, so the ask
+goes out at the displaced thread's priority, which reaches a strictly narrower set of peers than
+the old unconditional ask did. Outgoing thread parked or exited rather than going ready, so
+nothing entered and nobody is asked. That last clause is the only part of SM-5's saving that
+survives, and it is what `switch_to` reads the post-`switch_book` state for rather than deciding
+again.
+
+**AND THAT RULE WAS ITSELF HALF A RULE. THE ORDINARY SWITCH WAS THE OTHER HALF, RATED HIGH BY A
+LATER AUDIT, AND IT IS NOW CLOSED.** The version above still decided the ask by COMPARING the two
+threads, so an ordinary reschedule -- one whose incoming thread is not a wake this core took --
+sent nothing, on the argument that the displaced thread inherits the announcement of the thread
+leaving the ready set. **That argument is not merely placement-incomplete, it is EMPTY in the case
+it was relied on.** A peer that had answered the incoming thread's announcement would have TAKEN
+that thread, it being the higher priority of the two, so a peer still running beneath it has
+already spent the ask; and in placement the incoming thread's mask need never have named that peer
+at all, an idle thread carrying exactly its own core's bit. The reachable shape is a thread that
+widens its affinity and yields, and under FIFO with no later event nothing ends it.
+
+**WHAT THE ASK KEYS ON NOW IS A STATE TRANSITION AND NOT A COMPARISON.** `switch_book`'s
+RUNNING -> READY store is the one point at which any thread becomes takeable by a peer, and every
+switch reaching it asks, at the outgoing thread's own priority. That is one site for all four pass
+shapes, so `switch_to`'s second ask and its `woken` parameter are gone with it. **The proposed
+`(prev->affinity & ~next->affinity)` term was evaluated and NOT taken**: it preserves the
+inheritance premise, reads two masks instead of one, and still misses the SLAY case, where
+`available_to` refuses the outgoing thread so the pick can land BELOW it and it goes READY above
+the incoming thread with no peer told. That case is now covered by the same store rather than
+resting on `klock_resched_self` owing this core a pass. The mask test that survives skips a thread
+whose affinity holds no peer bit at all; it removes no ask `poke_peers_below`'s own walk would have
+sent, so it is cost and one trace record rather than meaning, and an arm proving it has to disable
+BOTH tests to see a difference.
+
+**AND THE SCAN THAT CLOSES IT COSTS 61 INSTRUCTIONS A SWITCH AT FOUR CORES, WHICH IS NOT
+NEGLIGIBLE AND IS THE MAINTAINER'S TO ACCEPT.** Vehicle: `qemu-arm64-benchsmp` under
+`-icount shift=0`, four kernel cores, this tree against `31dd26f1`. **THE BENCH ITSELF PRICES
+NOTHING HERE, AND THAT IS THE FIRST FINDING.** Its workload is a call/reply ping-pong, so every
+switch is a wake this core took, and the PARENT already ran the same scan on exactly those switches
+out of `switch_to`'s taken-wake arm. The trigger rate did not move on this workload, and duly no
+switch-path row moved beyond the relink floor: `SWITCH_BOOK` 42, `MPU_APPLY` 33, `KTIME_REARM` 34,
+`PICK_NEXT` 45 and `WAKE_UNPARK` 32 are identical on both trees, `SWITCH_TO` reads 9661 against
+9648, and with `ARCH_SWITCH` subtracted, which is where the park lives, its own work reads 815
+against 811. `lock-hold` is 960/1792 at p50/p99 on both. **That is a gap and not a zero**: the shape
+this fix added is the ordinary reschedule and this bench never takes one.
+What prices that shape is the object code, which under `icount` IS the unit. A four-core pass of
+`poke_peers_below` that finds nobody is 58 instructions, plus 4 at the call site, and the mask test
+selecting it costs one more than the placement call it replaced. So an ordinary reschedule that
+spent 11 instructions deciding to ask nobody now spends 72, against a `SWITCH_BOOK` of 42 and
+an `MPU_APPLY` of 33: larger than either leaf of the switch path. The same accounting on the
+taken-wake shape reads 7 instructions CHEAPER, which is the sign and the size the composite
+rows show, so the two methods agree where they overlap. **What neither vehicle prices**: a scan
+whose mask is not empty tail-calls `klock_resched_ask`, whose doorbell write is an MMIO store, one
+instruction to `icount` and nothing at all to a free-running tick.
+
+**A FOUR-CORE `icount` CAPTURE IS NOT REPRODUCIBLE TO THE UNIT, WHICH THE ONE-CORE EMULATOR WORK
+ABOVE NEVER HAD TO KNOW.** Each tree was run twice. The avg column, the `min` of every leaf that
+spans no park, and `lock-hold`'s p50/p99 came back identical; `n`, every `max`, the `min` of every
+row that does span a park, and the per-core sample split all moved, the last by orders of magnitude. So quote the avg column off such a run and nothing else, and read a
+moved `max` at four cores as the vehicle rather than as a finding.
+
+**THE ASK NOW SPENDS A TRACE SLOT ON EVERY SWITCH, AND THE RING IS 512 RECORDS PER CORE.**
+`KOS_TR_ASK` is written even where the mask is empty, on purpose: it is the one record that tells a
+target owed a core and asked nobody from one asked and not answered. What changed is its RATE. It
+used to be written on a migration or a taken wake; it is written on essentially every switch now,
+beside the `KOS_TR_RUN` that already cost one per switch. On a workload whose switches are ordinary
+reschedules that doubles what a switch produces, so the ring reaches back about half as far. No kind
+a reader wants is displaced by another, the history is simply shorter, and `seq` is what says the
+ring wrapped. `KICKOS_SMP_TRACE` is off in every preset; it was built here only to confirm it still
+links on this board, so no run on this bench observes any of it.
+
+**THE LX6 TRAP RED ZONE'S 16 BYTES WENT AND CAME BACK, AND THE HEADER'S MARGIN WAS WRONG BEFORE
+EITHER PASS TOUCHED IT.** `switch_to` and `switch_book` inline wholly into `pick_and_seat`, so the
+whole switch path lives in that one frame, and holding the woken thread live across the ask buys
+it another 16 bytes on the windowed ABI. Measured on `esp32-wroom-smp`: 608 before SM-5's
+successor, 624 with it, and 608 again now that the ask is raised from `switch_book` alone and
+`switch_to` takes no woken thread to compare against. `KICKOS_LX6_TRAP_DEPTH` is re-derived to 608
+and the margin to `KICKOS_MIN_STACK_SIZE` is 32 bytes. **The winning chain is the same chain
+across all three**, which is the point: this figure tracks one frame's live set and not the route.
+The header's prose once claimed 592 with 16 bytes of give and named the acquire poll as the
+winner; it was already 608 with none, down the ASK chain, which is the tie between routes that
+header warns about, so a flat reading there still proves nothing. Nothing moves at one core: the
+body is all `#if KICKOS_KERNEL_CORES > 1` and `esp32-wroom` still measures 416 against 432. The
+M8.8 silicon figures are untouched for the same reason, both priced boards running one kernel
+core.
+
+**NEITHER EMULATOR VEHICLE CAN PRICE A PERIPHERAL STORE**, which is why the two biggest items
+needed silicon at all: under `-icount shift=0` an MMIO store is one instruction, and a free-running
+TCG tick is instruction-path length. Free-running also drifts about five percent across builds on
+EVERY leaf including ones a change cannot touch, so every emulator comparison in this milestone was
+taken under `-icount shift=0` and any free-running figure is quoted only beside one.
+
+**THE TIMER DEDUP'S HIT RATE IS A PROPERTY OF THE WORKLOAD.** The bench players are FIFO with
+quantum 0 and the sleep queue is empty, so `next` is `UINT64_MAX` on every switch by construction
+and the dedup hits essentially always. An RR mix arms a fresh slice deadline at most switch-ins and
+hits far less. Any attribution must name the workload it quotes.
+
+**DE-LOCKING THE TIMER ALONE BUYS NOTHING ON THE RED ZONE, AND THE REASON IS STRUCTURAL.** It was
+measured as its own step and every trap-stack figure was flat on five presets. The lock does leave
+the callgraph; what defeats the measurement is that a second route into the same doorbell body
+costs the same three frames, so the maximum is a tie. The lx6 header already states the general
+form -- every chain that can spin on the kernel lock charges the deepest gating operation -- and a
+falsifier assuming the winning chain is UNIQUE is wrong there. **That step was never committed; do
+not re-derive it as a separate win.** The COMPLETE de-locking is a different measurement and did
+buy 24 to 48 bytes on every class that walks a wake, and lx6 at one core no longer sits exactly on
+its enforced bound.
+
+**THE `lock-hold` POPULATION DID NOT MOVE, WHICH IS WHAT KEEPS M8.7 COMPARABLE.** `n` bit-identical
+before and after on both boards, 2.0004 outermost spans per switch either way, `fastpath-swaps`
+still zero. Only the value fell. The fastpath is NOT in that population: the published row comes
+from the throughput window and `check_bench_lock.sh` refuses any window holding a fastpath swap, so
+de-locking `wake_no_resched` was never the baseline hazard it first looked like.
+
+**TWO ITEMS WERE REFUSED, AND BOTH REFUSALS ARE WORTH MORE THAN THE CODE WOULD HAVE BEEN.** PERF-6's
+pre-test is unsound because a donee's seated priority is NOT an upper bound on its effective
+priority -- a donor's priority can rise after it donated and the kernel forwards such a raise along
+a mutex-to-mutex chain only, which `docs/reference/ipc-call-reply.md` already carries as
+"Single-level donation only". Proved rather than argued: with the pre-test installed the four new
+donation arms fail and the whole rest of the suite passes, which is the tree having had no guard
+against it. **And the same-set MPU skip was cut after it landed**: it fires 5 times in about a
+million commits and ZERO times in 640366 commits of the bench workload, while paying a compare and
+an unconditional sixteen-word record write-back on essentially every commit. Its inherited
+justification described a tickful design; this kernel is tickless. What the measurement found
+instead is the real item: **100 percent of near-misses differ in exactly the last-appended region**,
+which `kernel/thread/thread.cc` makes the thread's own stack descriptor, so the optimisation was
+never all-or-nothing. That is filed for M8.11 with its caveats.
+
+**THE AMP CONSOLE INTERLEAVES BY DESIGN AND THE GATE WAS WRONG, NOT THE KERNEL.** Two kernels write
+one UART with no lock between them; the whole-lines-or-nothing contract is per kernel and the UART
+is shared hardware. `amp_partition` asserted on a line node 0 prints at app entry, inside the
+peers' banner storm, and that line tore 7 times in 300 loaded boots while every line printed after
+a peer's reply tore 0 -- a reply carries a real happens-before, the boot window has no ordering
+between the writers at all. **N6f/N6h said only that a gate may not read a QUIETER node's line;
+that is necessary and not sufficient**, and the design page now says so. The demo reports after
+every node's app is up, and the gate asserts that ordering in the capture rather than trusting it.
+**A gate loop could not see any of this**: 30 runs on the unfixed tree found nothing at a 2 percent
+per-run rate, so the 300-boot census is the evidence and the gate loop is not.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.** No figure here covers PERF-7 or P2, both of which landed
+after the capture. **PERF-7 HAS NO FIGURE AT ALL, AND CLAIMS NONE.** It is verified CORRECT, on
+the presets and full suites it was landed against and with every hoisted read argued on its own,
+and that is the whole of what is known about it: no target-side delta, the archived captures
+having been taken before it on purpose, and unlike P2 not even a static instruction count to
+stand in for one meanwhile. Read that as UNMEASURED and not as no benefit -- nothing here says
+the hoist bought anything and nothing here says it bought nothing, and the next silicon pass is
+where it gets a number. P2's surviving half, the protection-seam stub guard, is measured only as 10
+instructions a switch down to 1 on a translating board; its region-board value is a peripheral
+store and is UNSIZED, and no shipped preset runs the bench workload under emulation with
+enforcement on. The skip's hit rate was never sampled on RX silicon, and the SMP-migration shape
+was never sampled at all because no emulatable board has both an MPU and more than one
+shared-memory kernel core -- those are gaps, not zeros. `esp32c6`'s `lock-hold` max grew by 173
+cycles reproducibly and nothing accounts for it. Two once-per-run excursions vanished from code
+this milestone did not touch. Both are open in `TODO.md` with the experiment that would settle
+them.
+
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

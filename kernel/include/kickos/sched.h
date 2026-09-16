@@ -89,11 +89,65 @@ namespace kickos
 
         // Timed-event seam (RR today): the core owns the clock, the policy the
         // deadline. on_switch_in arms the incoming thread; next_timed_event is the
-        // earliest policy deadline for the tickless timer (UINT64_MAX = none).
+        // earliest policy deadline for the tickless timer (UINT64_MAX = none), answered for
+        // the thread NAMED rather than for whatever currently[] holds: the switch path knows
+        // the incoming thread before it is seated.
         void (*on_switch_in)(Thread*);
-        uint64_t (*next_timed_event)();
+        uint64_t (*next_timed_event)(Thread const*);
     };
 
+    // THE EXCLUSION, AND HOW EVERY DECLARATION BELOW IS READ AGAINST IT.
+    //
+    // A function marked "caller holds the exclusion" runs with it ALREADY HELD: an IrqLock the
+    // caller constructed, or the mask a trap or doorbell body was entered with, which IS the
+    // exclusion on a kernel configured to one core. Above one core that mask alone is NOT
+    // enough, the cross-core kernel lock being the other half, so a masked-context caller
+    // there constructs the object like anyone else.
+    //
+    // EVERY DECLARATION FALLS IN ONE OF THREE CLASSES AND THE NOTE IS WHAT NAMES IT, so a
+    // call site is settled by reading the one declaration it names and nothing further.
+    //   HELD      carries the note, and never acquires. Most of this file.
+    //   ACQUIRES  constructs its own IrqLock. start, yield, add_idle, set_affinity and
+    //             exit_current, which are the whole of the class.
+    //   NEITHER   init, set_policy, default_policy, current, idle, is_idle, live_count and
+    //             next_timed_event, which install or read one pointer or word.
+    //
+    // TWO OF THE FIVE ARE REACHED BOTH WAYS, SO "NOTHING RE-ACQUIRES WHAT ITS CALLER HOLDS"
+    // IS NOT THE RULE AND AN AUDIT MADE ON IT MISREADS THEM. IrqLock nests in both halves
+    // (kickos/irqlock.h): each instance restores the interrupt state it found, and the kernel
+    // lock is taken and released as the per-core depth crosses zero. What each is reached by:
+    //   start         boot alone, holding nothing, and does not return.
+    //   yield         the yield syscall arm, a zero-length sleep, and the console-publish
+    //                 drain, which leaves the exclusion around each pass on purpose. All three
+    //                 hold nothing.
+    //   add_idle      bring-up alone, holding nothing. Its sibling `add` is HELD, and the same
+    //                 boot path brackets that one by hand.
+    //   set_affinity  HOLDING IT from the routed-core pin (kernel/irq/irq.cc) and from the
+    //                 kos_thread_set_affinity arm, both of which resolve and authority-check
+    //                 under their own bracket; holding nothing from the bench harness.
+    //   exit_current  holding nothing from the return trampoline, the fault stub, the slay
+    //                 trampoline, the kos_exit arm, and the cancel check syscall_dispatch
+    //                 makes on syscall entry, which is a death point reached with no bracket
+    //                 at all (tests/static/check_park_death_point.sh states why it reads
+    //                 there); HOLDING IT from every park prologue whose park_cancel_pending
+    //                 finds a cancel. It never returns, so such a caller's bracket is
+    //                 abandoned rather than destroyed and the depth leaves this core with the
+    //                 frame, not with that object.
+    //
+    // AND AN ABANDONED BRACKET BREAKS A PRECONDITION exit_current ITSELF HONOURS. cap_teardown
+    // (kernel/syscall/cap.cc) declares that its caller must NOT hold IrqLock: it drops and
+    // retakes one every chunk so that a sweep as wide as the capability table stays
+    // preemptible, and above one core those gaps are also where the cross-core lock is
+    // released. exit_current calls it outside its own brackets and satisfies that. A caller
+    // that reached exit_current holding one does not: the nested retakes restore the masked
+    // state they found, the per-core depth never returns to zero, and the whole sweep runs
+    // masked with the kernel lock held. Every park prologue above is such a caller. That is a
+    // known defect and not the intent; it is recorded in TODO.md under the M8.8 review
+    // residue, with what closing it takes.
+    //
+    // The one form is prose, as it is for cap_resolve and switch_prepare; there is no runtime
+    // check, because the caller's IrqLock is the authority and a second one beside it would be
+    // a second truth.
     namespace sched
     {
         void init();
@@ -103,7 +157,7 @@ namespace kickos
         // installed by init(). Other policies swap in via set_policy().
         SchedPolicy const* default_policy();
 
-        // Register a fully-initialized thread as READY.
+        // Register a fully-initialized thread as READY. Caller holds the exclusion.
         void add(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
@@ -125,28 +179,34 @@ namespace kickos
         // scheduler ends the process via arch_shutdown (never unwinds to boot).
         void start();
 
-        // The single decision point. Safe to call from thread or ISR context.
+        // The bare entry to the single decision point, which is pick_and_seat. Safe to call
+        // from thread or ISR context; caller holds the exclusion.
         void reschedule();
 
-        // Voluntary yield: rotate within priority, then reschedule.
+        // Voluntary yield: rotate within priority, then reschedule. ACQUIRES, and the
+        // console-publish drain calls it from outside a bracket it left on purpose.
         void yield();
 
         // Remove `current` from the run set (state must already be set to the reason,
-        // e.g. BLOCKED), then reschedule. Returns when the thread is resumed.
+        // e.g. BLOCKED), then reschedule. Returns when the thread is resumed. Caller holds the
+        // exclusion.
         void block_current();
 
         // Remove `current` from the ready list WITHOUT rescheduling. A blocking
         // primitive must call this BEFORE parking the thread on a wait queue,
-        // since the ready list and wait queues share the TCB link node.
+        // since the ready list and wait queues share the TCB link node. Caller holds the
+        // exclusion.
         void detach_current();
 
-        // Make a previously-removed thread runnable again; preempts if warranted.
+        // Make a previously-removed thread runnable again; preempts if warranted. Caller
+        // holds the exclusion.
         void wake(Thread* t);
 
         // A reschedule leaves `current` naming the woken thread while this caller still
         // runs, so a caller that reads sched::current() again after waking must ready with
         // wake_no_resched (true iff it readied t) and defer one resched_after_wake, for the
         // HIGHEST-priority thread it woke, to every path that does not itself park.
+        // Both hold the exclusion as their precondition.
         [[nodiscard]] bool wake_no_resched(Thread* t);
         void resched_after_wake(Thread const* t);
 
@@ -167,7 +227,9 @@ namespace kickos
         // Does NOT reschedule; the caller decides. NOT BOUNDED BY THE TASK'S PRIORITY
         // CEILING: every caller here is priority inheritance or the console-publish temporary,
         // which are the kernel's own and not a task asking for priority. The ceiling is
-        // enforced where a task asks, at the spawn boundary.
+        // enforced where a task asks, at the spawn boundary. Caller holds the exclusion, and
+        // the console-publish drain re-enters it around each of its two calls rather than
+        // spanning the wait between them.
         void set_prio(Thread* t, uint8_t p);
 
         // What this death is, which is the one thing exit_current cannot derive: a fault
@@ -200,12 +262,13 @@ namespace kickos
         // Live non-idle thread count (0 => nothing left to run).
         unsigned live_count();
 
-        // The active policy's earliest timed event (ns), or UINT64_MAX for none.
+        // The active policy's earliest timed event for `t` (ns), or UINT64_MAX for none.
         // Consumed by the time subsystem when arming the tickless timer (RR slice
-        // expiry today; the core carries no notion of a "slice").
-        uint64_t next_timed_event();
+        // expiry today; the core carries no notion of a "slice"). `t` may be null.
+        uint64_t next_timed_event(Thread const* t);
         // Runs in the timer ISR on every expiry: if the active policy has a
-        // timed event due at `now` (an RR slice), let it act, then reschedule.
+        // timed event due at `now` (an RR slice), let it act, then reschedule. Caller holds
+        // the exclusion; the expiry body takes it before reading the queue.
         void tick_rr(uint64_t now);
     }
 }

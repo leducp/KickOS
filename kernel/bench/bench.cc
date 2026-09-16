@@ -201,6 +201,22 @@ namespace
     // KOS_EP_MSG_MAX, the endpoint copy this models.
     constexpr uint32_t WCASE_SPANS[] = {0, 64, 256, 1024};
 
+    constexpr bool wcase_spans_fit(uint32_t max)
+    {
+        for (uint32_t i = 0; i < sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]); i++)
+        {
+            if (WCASE_SPANS[i] > max)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    // irq_masked_once clamps span_bytes to BENCH_LAT_SPAN_MAX, so an entry above it would
+    // measure a narrower body than its label names.
+    static_assert(wcase_spans_fit(BENCH_LAT_SPAN_MAX),
+                  "a WCASE_SPANS entry exceeds BENCH_LAT_SPAN_MAX");
+
     // --- Accumulator ----------------------------------------------------------
     // count is the validity, so a row needs no sentinel and lands in .bss.
     //

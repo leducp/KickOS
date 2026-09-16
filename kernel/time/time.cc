@@ -90,12 +90,9 @@ namespace kickos
         return arch_clock_now();
     }
 
-    void ktime_rearm()
+    void ktime_rearm(Thread const* incoming)
     {
-        IrqLock lock;
 #if KICKOS_BENCH
-        // AFTER the lock, so it is destroyed BEFORE it: a span outliving the release would
-        // include whatever the unmask lets in.
         BenchScope const bench_body(PH_KTIME_REARM);
 #endif
         uint64_t next = UINT64_MAX;
@@ -104,7 +101,7 @@ namespace kickos
             next = kernel().sleepq->deadline_ns;
         }
 
-        uint64_t event = sched::next_timed_event();
+        uint64_t event = sched::next_timed_event(incoming);
         if (event < next)
         {
             next = event;
@@ -118,17 +115,33 @@ namespace kickos
         }
 #endif
 
+        // NO min-delta floor here, deliberately: this runs on EVERY context switch, and a
+        // floor re-derived from the clock would change `next` on every call, which is the
+        // quantity this dedup rests on. The floor belongs where the deadline is BORN, against
+        // ONE clock reading (ktime_sleep_until, arm_slice).
+        uint64_t& armed = kernel().timer_armed_ns[kickos_kernel_core()];
+        if (next == armed)
+        {
+            return;
+        }
+        armed = next;
         if (next == UINT64_MAX)
         {
             arch_timer_disarm();
             return;
         }
-
-        // NO min-delta floor here, deliberately: this runs on EVERY context switch, and a
-        // floor re-derived from the clock would change `next` on every call, which is the
-        // quantity the backends dedup their arm on. The floor belongs where the deadline is
-        // BORN, against ONE clock reading (ktime_sleep_until, arm_slice).
         arch_timer_arm(next);
+    }
+
+    // THE ONE PLACE A FIRED OR ABANDONED COMPARATOR IS FORGOTTEN, and the whole correctness of
+    // the dedup above. A backend that clamps a far deadline into its counter fires early and
+    // is re-armed for the SAME absolute deadline; skipping that re-arm starves the sleeper
+    // for good. An LX6 goes further: its pending CCOMPARE0 match is cleared only by the next
+    // write to that register, so a skipped re-arm leaves a raise standing.
+    void ktime_disarm()
+    {
+        kernel().timer_armed_ns[kickos_kernel_core()] = UINT64_MAX;
+        arch_timer_disarm();
     }
 
     void ktime_sleep_until(uint64_t deadline_ns)
@@ -159,7 +172,7 @@ namespace kickos
         c->wait_kind = WAIT_SLEEP;
         c->wait_obj = nullptr; // the delta list is rooted in the Kernel, not in an object
         sleepq_insert(c);
-        ktime_rearm();
+        ktime_rearm(c);
         sched::block_current(); // returns on wake
     }
 
@@ -211,6 +224,9 @@ namespace kickos
     void ktime_on_timer()
     {
         IrqLock lock;
+        // BEFORE anything reads the queue: the comparator has fired, so what the kernel
+        // recorded for it no longer describes the hardware.
+        ktime_disarm();
         uint64_t now = ktime_now();
 
         // MUST precede the wake loop: sched::wake reassigns kernel().current and tick_rr
@@ -272,7 +288,7 @@ namespace kickos
             }
         }
 
-        ktime_rearm();
+        ktime_rearm(sched::current());
     }
 
 }

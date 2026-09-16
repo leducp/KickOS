@@ -521,7 +521,13 @@ uint64_t syscall_body(uintptr_t nr,
             // hence the drop to the minimum real priority plus a yield each pass.
             Thread* pub = sched::current();
             uint8_t const saved_prio = pub->prio;
-            sched::set_prio(pub, KICKOS_PRIO_MIN);
+            // RE-ENTERED for the re-seat alone. The lock above was released on purpose and
+            // must stay released across the yield below, so the bracket covers the ready-list
+            // move and nothing else.
+            {
+                IrqLock lock;
+                sched::set_prio(pub, KICKOS_PRIO_MIN);
+            }
             uint32_t guard = 0;
             while (console_chip_writers() != 0)
             {
@@ -532,7 +538,10 @@ uint64_t syscall_body(uintptr_t nr,
                     kpanic(diag::kPublishNoDrain);
                 }
             }
-            sched::set_prio(pub, saved_prio);
+            {
+                IrqLock lock;
+                sched::set_prio(pub, saved_prio);
+            }
             console_owner_set_user(); // must be LAST, and strictly after the drain
             return 0;
         }
@@ -1327,10 +1336,11 @@ uint64_t syscall_body(uintptr_t nr,
             // peripheral, so an app calling them directly runs them at ITS privilege and faults.
             // Both prints run here, in thread context and holding no IrqLock.
             //
-            // BEING A BENCH IMAGE GRANTS NO THREAD ANYTHING. An op that attaches, injects or
-            // rings a doorbell carries the AUTH_IRQ its non-bench counterpart carries, and every
-            // caller-supplied count is bounded here rather than inside the helper, so a sweep
-            // body stays a measurement and not a gate.
+            // BEING A BENCH IMAGE GRANTS NO THREAD ANYTHING. An op that attaches or rings a
+            // doorbell carries the AUTH_IRQ its non-bench counterpart carries. RAISE injects
+            // too, but carries none: the arm already chose its line from a cap, so RAISE takes
+            // no line of its own to guard. Every caller-supplied count is bounded here rather
+            // than inside the helper, so a sweep body stays a measurement and not a gate.
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:

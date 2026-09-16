@@ -265,7 +265,10 @@ namespace kickos
             Mutex* const m = own_mutex(owner, &handle);
             park_mutex_waiter(peer, m);
             // The donation the real mutex_lock would have made.
-            sched::set_prio(owner, PRIO_HIGH);
+            {
+                IrqLock lock;
+                sched::set_prio(owner, PRIO_HIGH);
+            }
             kernel().current[kickos_kernel_core()] = c;
 
             run_exit_faulted(0);

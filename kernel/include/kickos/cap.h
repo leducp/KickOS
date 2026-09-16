@@ -591,6 +591,7 @@ namespace kickos
     // Type-agnostic close: bump the slot's cap-gen (stale the handle), empty the entry,
     // then drop one reference to the named object (freeing it at refs -> 0). Returns 0,
     // or -KOS_EBADF if the handle does not resolve. Succeeds while other holders remain open.
+    // Caller holds the exclusion.
     int handle_close(Thread* c, uint32_t cap_handle);
 
     // Slots released per IrqLock hold in cap_teardown: the cap on the interrupt-masked window.

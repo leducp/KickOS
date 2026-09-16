@@ -9,6 +9,7 @@
 // compiles.
 
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -63,7 +64,10 @@ namespace kickos
             {
                 parked->wait_queue->unlink(&parked->link);
                 parked->clear_wait_edge();
-                sched::wake(parked);
+                {
+                    IrqLock lock;
+                    sched::wake(parked);
+                }
             }
 
             // The waiter is CURRENT, because a blocking primitive parks whoever calls it,
@@ -73,7 +77,10 @@ namespace kickos
             {
                 Thread* const holder = spawn(0, PRIO_HOLDER);
                 Thread* const waiter = spawn(1, PRIO_WAITER);
-                sched::reschedule();
+                {
+                    IrqLock lock;
+                    sched::reschedule();
+                }
                 EXPECT_EQ(kernel().current[kickos_kernel_core()], waiter) << "fixture: the waiter is current";
                 g_switches = 0;
                 trace_reset();
@@ -163,7 +170,10 @@ namespace kickos
         {
             spawn(0, PRIO_HOLDER);
             spawn(1, PRIO_HOLDER);
-            sched::reschedule();
+            {
+                IrqLock lock;
+                sched::reschedule();
+            }
             trace_reset();
             g_switches = 0;
 
