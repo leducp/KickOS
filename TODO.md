@@ -3444,6 +3444,23 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       each switch, and seat the reentrancy word through the kernel window rather than
       `kaccess_to_user`, since the frame is already known at prime time.
 
+- [ ] **THE DRIVER-FACING MAPPING API HAS A SKETCH, AND ITS MCU ARM IS THE INTERESTING HALF.** The
+      maintainer's target shape for a driver taking a 4 KiB MMIO window, an i.MX8MP SPI module being
+      the worked example:
+
+          void* va = kos_vmem_alloc(4096);
+          int rc = kos_memmap(spi1_phys_address, va, 4096);
+
+      On a translating board both calls mean what they say: reserve address space, then place a
+      physical window in it. **On an MCU there is no address space to reserve** -- the window is
+      already at its physical address and what grants access is an MPU descriptor, not a
+      translation. So `kos_vmem_alloc` reserves something that is not memory and has nothing to do
+      on a region board. Recorded direction: make it a no-op there that answers the physical address
+      itself, so one driver source compiles and runs on both classes and the difference stays in the
+      kernel. `kos_memmap` then becomes the grant on a region board and a real mapping on a
+      translating one. **It is not only a driver API**: anything wanting a window in an address
+      space calls it, so the MCU arm cannot be specified from the driver case alone.
+
 - [ ] **P1: ASID/PCID IS A DESIGN ITEM, NOT A BUG FIX -- THE LEVER IS PROBED BUT NEVER
       WRITTEN, AND IT NOW OWES A PEER-TLB IPI TOO.** ASID support is probed at boot but never
       programmed; every root switch pays a full `tlbi vmalle1`. The same lever exists on rv64
