@@ -163,7 +163,10 @@ jobs:
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh "$POLLED" \
+          # NOT $POLLED: an385 is soft-float and never registers fp_switch, so the shared
+          # list would name a test that cannot exist here. Named separately rather than
+          # filtered out of $POLLED, which is shared so the four boards cannot drift apart.
+          tests/ci/ctest_named.sh 'hello|mpu_fault|rootfault|rootgone|reclaimwit_park' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
           # Posture pin, as on the an386: this board carries its own base defconfig.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
@@ -177,11 +180,21 @@ jobs:
       # ringppb assert against: the privilege ring holds on its own.
       - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
+          # NOT $POLLED: a flat variant resolves KICKOS_HAVE_MPU off, which is the posture
+          # itself, so mpu_fault, rootfault and rootgone register on none of the four. Named
+          # per board rather than filtered out of $POLLED, which is shared so the enforcing
+          # boards cannot drift apart.
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
+            # an385 is soft-float and never registers fp_switch, as in its enforcing step above.
+            if [ "$b" = qemu-m3 ]; then
+              flat_polled='hello|reclaimwit_park'
+            else
+              flat_polled='hello|fp_switch|reclaimwit_park'
+            fi
             cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build --preset "$b-flat"
             ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
-            tests/ci/ctest_named.sh "$POLLED" \
+            tests/ci/ctest_named.sh "$flat_polled" \
               --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:2
             # The terse-column arm is keyed on the BOARD and the knob and not on the variant,
             # so this posture carries a registration of its own, which the pin in the step
@@ -195,7 +208,11 @@ jobs:
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
           ctest --preset microbit -E "$POLLED" -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh "$POLLED" \
+          # NOT $POLLED: the nRF51 is a Cortex-M0 with no FPU and no MPU, and arch/arm/chip/nrf51
+          # ships no mpu.cmake, so fp_switch, mpu_fault, rootfault and rootgone cannot exist on
+          # this board at all. Named separately rather than filtered out of $POLLED, which is
+          # shared so the enforcing boards cannot drift apart.
+          tests/ci/ctest_named.sh 'hello|reclaimwit_park' \
             --preset microbit --no-tests=error --output-on-failure --repeat until-pass:2
           # Pins the REGISTRATION, not just the result. microbit is the only CI board that
           # carves kernel blocks without enforcing, so it is the only one where the block

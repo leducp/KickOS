@@ -1054,6 +1054,14 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(amp_slot_snapshot PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  # The workflow's name lists against the helper that refuses a dead one. It drives
+  # tests/ci/ctest_named.sh through a planted ctest, so it says nothing about whether a name
+  # is registered on the preset that names it: only configuring that preset decides that.
+  _add_test(NAME ci_named_lists
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ci_named_lists.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(ci_named_lists PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # No gawk-only extension in an awk program this tree runs: a non-gawk awk REFUSES such a
   # program, which leaves the calling gate reporting its own clause instead of the awk.
   _add_test(NAME awk_portable
