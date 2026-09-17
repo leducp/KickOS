@@ -28,6 +28,7 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
     reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
     call_donation call_donation_hold call_donation_slow call_donation_pending
+    reply_recv_notify reply_recv_notify_park
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
     mutex_owner_died_nowaiter aspace_two_spaces_same_grant
     parked_frame_hostile)
@@ -232,9 +233,15 @@ endif()
 # One image per board, at the arm count that image recorded, under the derived
 # <board tag>_selftest name. microbit is the exception and it is the FLASH size, not the board:
 # 64 KiB parts build the suite as three images, so that board runs three gates below.
+#
+# THE TIMEOUT IS ABOVE THE SCRIPT'S OWN HANG BACKSTOP and is not a bound on the suite. The
+# backstop is 180 s (check_qemu_selftest.sh), and it is the one that can name what happened;
+# at the 60 s this defaulted to, ctest would kill the script first and the reader would get a
+# bare ctest timeout instead. Raise this one first whenever that backstop moves.
 if(NOT KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(TARGET selftest
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
+    TIMEOUT 240
     ARGS ${_selftest_arms})
   if(TEST ${_tag}_selftest)
     set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
@@ -271,6 +278,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
     kickos_add_qemu_test(TARGET ${_img}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
+      TIMEOUT 240
       ARGS ${_mb_arms})
     set_property(TEST microbit_${_img} APPEND PROPERTY ENVIRONMENT
       "EXPECT_SKIPS=${_mb_skips_${_img}}"

@@ -98,7 +98,18 @@ jobs:
     # QEMU-only chips to keep the clock advancing (see arch_idle_wait). This timeout
     # is failure headroom on a loaded runner; passing gates exit early.
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and runs on all nine presets of this job; the next
+      # largest here is check_fault_dump.sh at 30.
+      QEMU_TIMEOUT: "180"
       # The gates whose image never exits, so they go through poll_image (tests/lib/gate.sh).
       POLLED: "hello|fp_switch|mpu_fault|rootfault|rootgone|reclaimwit_park"
     steps:
@@ -228,7 +239,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered here, above check_aspace_fault.sh,
+      # check_fault_dump.sh, check_kernel_half.sh and check_stack_guard.sh at 30.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -264,7 +286,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered in both postures here, above
+      # check_smp_threads.sh at 120, check_smp_doorbell.sh at 60 and check_smp_arrival.sh at 45.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -309,7 +342,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered here, above check_smp_threads.sh at
+      # 120, check_smp_doorbell.sh at 60 and check_smp_arrival.sh at 45.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -352,7 +396,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "90"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered in the shared-image posture, above
+      # check_amp_peer_arms.sh at 120 and check_amp_partition.sh at 90.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -420,7 +475,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered here, above check_fault_dump.sh at 30.
+      # check_bench_irqspan.sh sets 400, and of its two entries this job selects only the
+      # --controls one, which boots no image and reaches neither run_image nor poll_image, so
+      # that figure is not a bound this job has to clear.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -461,7 +529,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered here, above check_fault_dump.sh at 30
+      # and check_reclaimwit.sh at 20.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -496,9 +575,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Above the rv32 jobs' 30: the four-hart gates sample until both channels complete
-      # rather than waiting a fixed span, so this is headroom on a loaded runner.
-      QEMU_TIMEOUT: "60"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and runs on all three presets here, above
+      # check_smp_threads.sh at 120. The four-hart gates sample until both channels complete
+      # rather than waiting a fixed span, so neither figure is a measured run time.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -553,7 +642,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # RAISED AND NOT REMOVED. tests/lib/gate.sh falls back to 20 s in run_image and 8 s in
+      # poll_image, and 28 of the 54 tests/integration/check_*.sh set no bound of their own, so
+      # for those gates this pin IS the hang backstop and deleting it moves them DOWN to those
+      # two defaults. The bench job at the bottom of this file sets none for the opposite
+      # reason: every gate it runs carries its own bound, so a pin there could only cut.
+      # THE VALUE IS THE LARGEST OWN-BOUND ANY GATE THIS JOB RUNS SETS, AND NO MORE. A job
+      # value overrides a script's `:=`, so below that figure the gate's own backstop never
+      # reaches CI, and above it every unbounded gate in the job gets a looser backstop than it
+      # needs. The way out is a bound in each script and then no pin at all, which is filed.
+      # check_qemu_selftest.sh sets 180 and is registered here, above check_fault_dump.sh at 30.
+      # The bench step below restates QEMU_TIMEOUT=240 on its own command line, so this value
+      # never reaches the gates it names.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
