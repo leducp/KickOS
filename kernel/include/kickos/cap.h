@@ -476,19 +476,20 @@ namespace kickos
 
     // Put `index` back at the TAIL (see the release note above). Reserved indices stay out
     // of the list, so closing the kernel's stdout slot leaves it empty and unreachable to
-    // an own create.
-    inline void cap_run_free_release(CapRun const& run, uint32_t index, uint16_t* head)
+    // an own create. `e` is `index`'s own entry, which every caller is already holding: it
+    // writes the free-list links OVER `obj`, so nothing may read that word afterwards.
+    inline void cap_run_free_release(CapRun const& run, uint32_t index, CapEntry* e,
+                                     uint16_t* head)
     {
         if (index < KICKOS_CAP_FIRST_DYNAMIC)
         {
             // Out of the list, but still a DEAD entry, so it must not keep the object handle
             // it named: leave the null link pair a zeroed run carries. That keeps "a dead
             // entry's obj holds the free-list links" true of every dead entry.
-            kcap_free_link(cap_slot(run, index), KCAP_FREE_NONE, KCAP_FREE_NONE);
+            kcap_free_link(e, KCAP_FREE_NONE, KCAP_FREE_NONE);
             return;
         }
         uint16_t const self = kcap_free_ref(index);
-        CapEntry* e = cap_slot(run, index);
         if (*head == KCAP_FREE_NONE)
         {
             kcap_free_link(e, self, self);
@@ -554,8 +555,9 @@ namespace kickos
     // Install a cap at a SPECIFIC index: delegation's deterministic placement (B1: delegated
     // cap i -> child index i+1). Does NOT touch the refcount. The slot must be EMPTY, and it
     // is asserted: writing over a live entry would leak its reference, and unlinking a slot
-    // the free list does not hold would cut the list in two.
-    void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights);
+    // the free list does not hold would cut the list in two. Answers the seated entry, or
+    // nullptr for an index it refuses, which no free-list index can be.
+    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights);
 
     // Mint a one-shot CAP_REPLY into c's table naming parked caller `caller`: its whole
     // 32-bit generational thread handle in the entry's obj, its call_seq low byte in the
@@ -659,7 +661,7 @@ namespace kickos
     // zero and still wakes it.
     //
     // `len` is NOT range-checked; the bound is the receiver's, the copy being min(len, w->ipc.len)
-    // over a capacity endpoint_recv clamps to KOS_EP_MSG_MAX.
+    // over a capacity endpoint_reply_recv clamps to KOS_EP_MSG_MAX.
     //
     // Takes its own IrqLock and may wake a strictly higher-priority receiver, so the caller must
     // tolerate being switched out mid-record, in ordinary thread context with no IrqLock held.

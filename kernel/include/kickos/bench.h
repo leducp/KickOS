@@ -113,13 +113,19 @@ namespace kickos
         PH_CALL_SLOW_LOCKED,
         PH_CALL_SLOW_DONATE,
         PH_CALL_SLOW_PARK,
-        // The round trip's THIRD locked leg: the server's own recv. These close only on the
-        // PARKING arm; the arm that serves a queued sender returns from inside the scan,
-        // before the spans.
+        // The round trip's THIRD locked leg: the server's own recv. LOCKED is bracketed
+        // inside endpoint_recv_locked, the body the standalone recv and the fused
+        // reply-receive share, so both forms feed it. These close only on the PARKING arm;
+        // the arm that serves a queued sender returns from inside the scan, before the spans.
         PH_RECV_LOCKED,
         PH_RECV_RESOLVE,
         PH_RECV_SCAN,
         PH_RECV_PARK,
+        // TOTAL is the standalone KOS_SYS_REPLY entry and closes there alone: a fused
+        // reply-receive puts ONE validate and ONE lock over both halves, and the envelope
+        // for that entry is REPLY_RECV_TOTAL. LOCKED is bracketed inside
+        // endpoint_reply_locked, the body both forms share, so it feeds from both and reads
+        // as the fused composite's reply leg. Both close only on the answered arm.
         PH_REPLY_TOTAL,
         PH_REPLY_VALIDATE,
         PH_REPLY_LOCKED,
@@ -127,6 +133,34 @@ namespace kickos
         PH_REPLY_COPY,
         PH_REPLY_FUNNEL,
         PH_REPLY_WAKE,
+        // The FUSED reply-receive's one composite, which is what REPLY_TOTAL and RECV_LOCKED
+        // are together on a loop that has adopted it: a server answering and waiting again
+        // under one entry produces one span where the pair produced two. REPLY_TOTAL closes
+        // in the standalone reply alone and says nothing about such a loop; REPLY_LOCKED and
+        // RECV_LOCKED are the two shared bodies' own brackets and read as this composite's
+        // two legs.
+        //
+        // IT CLOSES INSIDE THE BODY'S LOCK AND NOT AT THE RETURN, so that a receive which
+        // parked reports the work it did and not the time it waited for a client. Where
+        // arch_switch PENDS, the switch takes at that lock's release, so the close is the
+        // last point before this thread can lose the CPU; where it swaps INLINE it has
+        // already taken inside wq_block and this row carries the suspension exactly as every
+        // other inline-switch composite does. Skipped on a reply refusal, which served no
+        // request.
+        //
+        // IT ALSO CLOSES PAST THE DEFERRED WAKE'S SEAT, which is the same boundary the
+        // standalone REPLY_TOTAL takes: an arm that never parks discharges the seat at the
+        // brace above this close, so the ready-queue selection and the peer announcement an
+        // answered caller owes are inside the row rather than after it.
+        PH_REPLY_RECV_TOTAL,
+        // The same body's POST-RESUME segment, this composite's CALL_RESUME: the barrier, the
+        // wait_result read and the notification take a parked receive runs once the CPU comes
+        // back. Named TAIL and not RESUME only because the printed column is sixteen
+        // characters wide. Closes on the PARKING arm alone, a shared accumulator with the arms
+        // that never left giving this row their much shorter tail as its min. Neither row
+        // covers the closing write-back of the consumed mask, which runs on every arm and is
+        // skipped where the caller accepted no line.
+        PH_REPLY_RECV_TAIL,
         // The wake path, in execution order. Every phase below is fed by BOTH sides of a
         // round trip and by every other wake and reschedule in the system, so n is what says
         // whether a min came from the path being measured. SWITCH_TO is the composite over the

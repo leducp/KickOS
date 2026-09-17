@@ -983,7 +983,10 @@ namespace selftest
         for (int i = 0; i < seated; i++)
         {
             uint32_t id = 0;
-            if (kos_recv(ep, &id, sizeof(id), nullptr) != static_cast<int32_t>(sizeof(id)))
+            struct kos_reply_recv_opts idopts;
+            kos_reply_recv_opts_init(&idopts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            if (kos_reply_recv(KOS_CAP_NONE, &id, kos_call_lens_pack(0, sizeof(id)), &idopts)
+                != static_cast<int32_t>(sizeof(id)))
             {
                 break;
             }
@@ -1450,7 +1453,10 @@ namespace selftest
         volatile uint64_t* const blk = static_cast<volatile uint64_t*>(arg);
         char msg[sizeof(DxReport)] = {};
         struct kos_recv_info info = {0u, KOS_CAP_NONE};
-        int32_t const got = kos_recv(DX_EP, msg, sizeof(msg), &info);
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, DX_EP, 0, KOS_TIMEOUT_NONE);
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
+        info = opts.info;
         DxReport r = {};
         r.seen = blk[0];
         blk[0] = DX_BORROW_WORD; // and WRITES it: a stale mapping is writable, not only readable
@@ -1702,7 +1708,9 @@ namespace selftest
         }
         // The member parks in its send until this receive arrives, so the report is read
         // while the reservation is still out.
-        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * RT_WORDS, nullptr)
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * RT_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * RT_WORDS);
         bool const joined = m.join(CHURN_JOIN_US) == 0;
         // EMPTIED IS NOT DEAD: root's creator hold is what still holds the space open.
@@ -1799,7 +1807,9 @@ namespace selftest
         }
         // The member parks in its send until this receive arrives, and the frames go back
         // only once the group is reaped below.
-        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * FS_WORDS, nullptr)
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * FS_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * FS_WORDS);
         bool const joined = m.join(CHURN_JOIN_US) == 0;
         bool const reaped = kos_task_kill(t) == 0;
@@ -1919,7 +1929,9 @@ namespace selftest
             (void)kos_task_kill(t);
             return false;
         }
-        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * LR_WORDS, nullptr)
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * LR_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * LR_WORDS);
         bool const joined = m.join(CHURN_JOIN_US) == 0;
         bool const reaped = kos_task_kill(t) == 0;
@@ -2027,7 +2039,9 @@ namespace selftest
             tap::skip("thread pool too small");
             return;
         }
-        bool const heard = kos_recv(ep, rep, sizeof(uint64_t) * LD_WORDS, nullptr)
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * LD_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * LD_WORDS);
         bool const joined = m.join(CHURN_JOIN_US) == 0;
         // The member's group dies here, and its domain with it unless something still
@@ -2237,8 +2251,11 @@ namespace selftest
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, '\0');
-        int32_t const n = kos_recv(2, const_cast<char*>(&g_pi_msg[0]), PI_MSG,
-                                  const_cast<kos_recv_info*>(&g_pi_info));
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, 2, 0, KOS_TIMEOUT_NONE);
+        int32_t const n = kos_reply_recv(KOS_CAP_NONE, const_cast<char*>(&g_pi_msg[0]),
+                                         kos_call_lens_pack(0, PI_MSG), &o);
+        *const_cast<kos_recv_info*>(&g_pi_info) = o.info;
         pi_report(out, n, 'A');
         kos_sem_post(CH_DONE);
     }
@@ -2256,8 +2273,11 @@ namespace selftest
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, '\0');
-        int32_t const n = kos_recv(2, const_cast<char*>(&g_pi_msg[0]), PI_MSG,
-                                  const_cast<kos_recv_info*>(&g_pi_info));
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, 2, 0, KOS_TIMEOUT_NONE);
+        int32_t const n = kos_reply_recv(KOS_CAP_NONE, const_cast<char*>(&g_pi_msg[0]),
+                                         kos_call_lens_pack(0, PI_MSG), &o);
+        *const_cast<kos_recv_info*>(&g_pi_info) = o.info;
         pi_report(out, n, 'A');
         // The reply leaves the server's OWN copy of the buffer and must land in the parked
         // caller's copy, at the same number.
@@ -2688,10 +2708,11 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_ru_got{99};
     void ru_receiver(void* arg) // caps: done@1, E(WAIT)@2
     {
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = RU_RECV_US;
         opts.info.reply_cap = KOS_CAP_NONE;
-        g_ru_got = kos_recv_timed(CH_RU_EP, arg, RU_LEN, &opts);
+        opts.ep = CH_RU_EP;
+        g_ru_got = kos_reply_recv(KOS_CAP_NONE, arg, kos_call_lens_pack(0, RU_LEN), &opts);
         kos_sem_post(CH_DONE);
     }
     void ru_puller(void* arg) // caps: done@1, E(SIGNAL)@2, frame@3, space@4
@@ -2925,8 +2946,14 @@ namespace selftest
         for (uint32_t i = 0; i <= KICKOS_CAP_REPLY_MAX; i++)
         {
             kos_sem_wait(CH_LU_GATE);
-            int32_t const got = kos_recv(CH_LU_EP, g_lu_rx, LU_LEN,
-                                         reinterpret_cast<struct kos_recv_info*>(g_lu_info));
+            // THE OPTS STRUCT ITSELF SITS ON THE MAPPED PAGE, the nested info being the
+            // out-pointer the kernel writes: that is what puts the disclosure on the page
+            // root unmaps under this park.
+            struct kos_reply_recv_opts* const o =
+                reinterpret_cast<struct kos_reply_recv_opts*>(g_lu_info);
+            kos_reply_recv_opts_init(o, CH_LU_EP, 0, KOS_TIMEOUT_NONE);
+            int32_t const got =
+                kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN), o);
             g_lu_got[i] = got;
             g_lu_rounds = i + 1u;
             // KEYED ON THE ROUND AND NEVER ON `got`: which round left the page mapped is a
@@ -2935,9 +2962,7 @@ namespace selftest
             // any regression that stopped refusing, and the arm would die instead of failing.
             if (i == KICKOS_CAP_REPLY_MAX)
             {
-                struct kos_recv_info const* const info =
-                    reinterpret_cast<struct kos_recv_info const*>(g_lu_info);
-                g_lu_reply = kos_reply(info->reply_cap, g_lu_rx, LU_LEN);
+                g_lu_reply = kos_reply(o->info.reply_cap, g_lu_rx, LU_LEN);
             }
         }
     }
@@ -2975,7 +3000,7 @@ namespace selftest
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
 
         // --- SITE A IS NOT DRIVEN HERE, AND THIS RECORDS WHY -------------------------------
-        // endpoint_recv's CALL arm validates the out-pointer and writes it inside ONE syscall,
+        // The receive's CALL arm validates the out-pointer and writes it inside ONE syscall,
         // under IrqLock, with no park in between. user_range_ok wants a GRANTED range and
         // access_copy then walks that range's translation, so the only state where the first
         // passes and the second refuses is a leaf a peer core removed between them. That
@@ -2984,8 +3009,11 @@ namespace selftest
         // its sibling site is the one under test rather than asserting an outcome it cannot
         // reach. The retraction itself is witnessed at site B and in tests/unit/capprobe.
         bool spawned = true;
-        int32_t const a_entry = kos_recv(ep, g_lu_rx, LU_LEN,
-                                         reinterpret_cast<struct kos_recv_info*>(va));
+        // The opts struct on the vanished page, as at site B: the boundary refusal is over
+        // the struct the kernel reads and writes, which is where the info now lives.
+        int32_t const a_entry =
+            kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN),
+                           reinterpret_cast<struct kos_reply_recv_opts*>(va));
 
         // AND THE ORDINARY PATH THROUGH THAT SAME ARM, whose one refusal now covers the copy
         // and the info write together: a caller parked as a CALL, taken by the scan.
@@ -3001,7 +3029,10 @@ namespace selftest
         {
             if (await_pinned_park())
             {
-                a_ctl = kos_recv(ep, g_lu_rx, LU_LEN, &a_info);
+                struct kos_reply_recv_opts opts;
+                kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
+                a_ctl = kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN), &opts);
+                a_info = opts.info;
                 if (a_info.reply_cap != KOS_CAP_NONE)
                 {
                     a_reply = kos_reply(a_info.reply_cap, g_lu_rx, LU_LEN);

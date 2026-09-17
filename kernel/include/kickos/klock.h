@@ -14,12 +14,19 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/debug.h>
 
 namespace kickos
 {
 #if KICKOS_KERNEL_CORES > 1
     void klock_enter(void);
     void klock_leave(void);
+
+#if KICKOS_DEBUG
+    // Answers for the SWITCH WINDOW too: klock_detach takes the depth off the core without
+    // releasing, so a zero depth there is still this core holding the lock.
+    bool klock_exclusion_held(void);
+#endif
 
     // detach takes the depth off the core and LEAVES THE LOCK HELD: kickos_switch_unlock
     // releases it once the swap has parked the outgoing frame. attach puts the depth back,
@@ -66,5 +73,17 @@ namespace kickos
     }
 #endif
 }
+
+// What a "caller holds the exclusion" body checks of its caller (kickos/sched.h sorts every
+// scheduler declaration against that note).
+//
+// AT ONE KERNEL CORE IT CHECKS NOTHING. The exclusion there is the interrupt mask itself, no
+// depth is kept, and no arch seam reports whether the mask is applied, so a green single-core
+// run witnesses none of these and a missing bracket only shows above one core.
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
+#define KICKOS_ASSERT_EXCLUSION_HELD() KICKOS_DEBUG_ASSERT(::kickos::klock_exclusion_held())
+#else
+#define KICKOS_ASSERT_EXCLUSION_HELD() ((void)0)
+#endif
 
 #endif

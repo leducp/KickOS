@@ -20,8 +20,7 @@ SRC="kernel/syscall/syscall.cc"
 
 # <case label>:<seam call> pairs. Each arm must carry an IrqLock enclosing that call.
 ARMS='KOS_SYS_IRQ_INJECT:arch_irq_inject
-KOS_SYS_IRQ_UNMASK:irq_line_op
-KOS_SYS_IRQ_ATTACH:irq_line_op'
+KOS_SYS_IRQ_UNMASK:irq_line_op'
 
 [ -f "$ROOT/$SRC" ] || fail "no $SRC under $ROOT: the syscall dispatch moved, and an absent
   corpus below would read as a clean one"
@@ -256,7 +255,7 @@ done
 # The subshell above cannot export its count, so the corpus is re-derived here.
 narms="$(printf '%s\n' "$ARMS" | grep -c ':' || true)"
 require_number "$narms" "the declared arm count"
-if [ "$narms" -lt 3 ]; then
+if [ "$narms" -lt 2 ]; then
     fail "this gate declares $narms arm(s). The list was narrowed, and an arm dropped from it is
   an arm nothing checks"
 fi

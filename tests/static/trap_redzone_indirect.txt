@@ -543,22 +543,19 @@ site x86_64 qemu-x86_64-bench console_tx_insert_line@3/4   console_q35.cc:q35_tx
 site x86_64 qemu-x86_64-bench console_tx_insert_line@4/4   console_q35.cc:q35_tx_push
 # --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
 # The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
-# CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
-# installs the fixed kernel thunk irq_sem_post. bench_irq_handler exists only in a KICKOS_BENCH
-# build.
+# CLOSED: user code cannot register a function pointer. bench_irq_handler exists only in a
+# KICKOS_BENCH build.
 #
-# irq_event_isr and irq_sem_post reach kickos::sem_post -> sched::wake -> resched_after_wake ->
+# irq_event_isr reaches kickos::sem_post -> sched::wake -> resched_after_wake ->
 # reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the
 # switch (msip / ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this
 # stack. An arch whose arch_switch swaps inline needs this binding changed with it.
 site rv32imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   syscall.cc:irq_sem_post \
                                    console_tx.cc:console_tx_isr_trampoline \
                                    ?bench.cc:bench_irq_handler
 site rxv3     * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   syscall.cc:irq_sem_post \
                                    console_tx.cc:console_tx_isr_trampoline \
                                    ?bench.cc:bench_irq_handler
 
@@ -586,7 +583,6 @@ site armv7m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick
 # re-enter the scheduler on this stack.
 site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 syscall.cc:irq_sem_post \
                                  console_tx.cc:console_tx_isr_trampoline \
                                  ?bench.cc:bench_irq_handler
 
@@ -1287,7 +1283,6 @@ site armv6m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick
 # re-enter the scheduler on this stack.
 site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 syscall.cc:irq_sem_post \
                                  console_tx.cc:console_tx_isr_trampoline \
                                  ?bench.cc:bench_irq_handler
 
@@ -1513,7 +1508,6 @@ site lx6 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slic
 site lx6 * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
 site lx6 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                               irq.cc:irq_event_isr \
-                              syscall.cc:irq_sem_post \
                               console_tx.cc:console_tx_isr_trampoline \
                               ?bench.cc:bench_irq_handler
 # The console ring's TX backend, one static ConsoleTxBackend per chip (chip_esp32.cc:306).

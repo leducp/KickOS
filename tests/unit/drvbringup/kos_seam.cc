@@ -289,6 +289,15 @@ extern "C"
     }
 
     // edge_relay_thread's two, present so the TU carrying bring_up links.
+    int kos_irq_attach(kos_cap_t, uint32_t* out_mask)
+    {
+        if (out_mask != nullptr)
+        {
+            *out_mask = 1u;
+        }
+        return 0;
+    }
+
     int kos_irq_wait(kos_cap_t)
     {
         return -KOS_EBADF;

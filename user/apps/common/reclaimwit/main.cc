@@ -39,9 +39,13 @@ namespace
     void console_sink(void*)
     {
         uint8_t buf[KOS_EP_MSG_MAX];
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, KOS_SPAWN_DELEGATED_CAP0, KOS_RECV_NO_INFO,
+                                 KOS_TIMEOUT_NONE);
         while (true)
         {
-            int32_t const n = kos_recv(KOS_SPAWN_DELEGATED_CAP0, buf, sizeof(buf), nullptr);
+            int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf,
+                                             kos_call_lens_pack(0, sizeof(buf)), &opts);
             if (n < 0)
             {
                 break;

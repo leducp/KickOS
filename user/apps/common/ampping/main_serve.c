@@ -76,14 +76,15 @@ int main(int argc, char** argv)
     while (true)
     {
         unsigned char msg[16];
-        struct kos_recv_timed_opts opts = {0};
+        struct kos_reply_recv_opts opts = {0};
         int32_t got;
         opts.timeout_us = AMPPING_RECV_US;
         // NOT the zero the initialiser leaves: KOS_CAP_NONE is all-ones and zero is a real
         // capability index, KOS_CAP_STDOUT. A path where the kernel never reaches the info
         // write, an expiry among them, leaves exactly what is here.
         opts.info.reply_cap = KOS_CAP_NONE;
-        got = kos_recv_timed(ep, msg, sizeof(msg), &opts);
+        opts.ep = ep;
+        got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
         if (got < 0)
         {
             // A REPLY CAPABILITY CAN OUTLIVE A REFUSED ARRIVAL, and <kickos/sys.h> asks this

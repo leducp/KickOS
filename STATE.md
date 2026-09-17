@@ -2561,7 +2561,7 @@ it is now validated AS a bench report: the banner's commit compared against the 
 in that image, five mandatory markers, the phase table's arrived rows reconciled against the count
 its header declares, and a dead or frozen counter refused. A bench image granted its threads IRQ
 authority the ordinary syscall would have refused, making the instrument the CHEAPER route to the
-hardware than the path it measures; the bench ops carry the same authority as `KOS_SYS_IRQ_ATTACH`
+hardware than the path it measures; the bench ops carry the same authority as `KOS_SYS_IRQ_CLAIM`
 now, under twenty-two arms. The end-to-end raise read the waiter's `Thread::state`, which is the
 scheduler's word and not the protocol's, so the waiter publishes its own park under the lock the
 waking post takes -- the window is zero rather than small, and DELETING the check instead was
@@ -2826,6 +2826,119 @@ shared-memory kernel core -- those are gaps, not zeros. `esp32c6`'s `lock-hold` 
 cycles reproducibly and nothing accounts for it. Two once-per-run excursions vanished from code
 this milestone did not touch. Both are open in `TODO.md` with the experiment that would settle
 them.
+
+## M8.9: one park for an endpoint and a line, and what these green runs do NOT say
+
+**THE MILESTONE IS JUSTIFIED BY CAPABILITY AND NOT BY SPEED, AND M8's OWN ADMISSION TEST IS WHY
+THAT HAS TO BE WRITTEN DOWN.** M8 admits what takes instructions off a call path and nothing else,
+so the fused reply-receive's 7 to 10 percent would not have earned it on its own: that is the size
+of item this milestone series declines routinely. What earns it is that one thread can now wait on
+its endpoint and on its interrupt line in a SINGLE park, which the tree could not express at all
+before. An item failing the admission test belongs in M8 only where it rides an ABI change that is
+independently necessary, and this is that case, which is why the fusion and the bound notification
+moved the ABI once rather than twice. The rule beside it is one API and not two: the fused call
+becomes the server loop primitive and the narrow receives fold into it, rather than a fast twin
+sitting beside a slow one for a reader to choose wrongly between.
+
+**THE RESERVED REPLY SLOT WAS REFUSED, AND THAT REFUSAL IS WORTH MORE THAN THE CYCLES WERE.**
+Reserving one inbound `CAP_REPLY` per thread fixes that bound at exactly one PERMANENTLY, makes
+`KICKOS_CAP_REPLY_MAX > 1` unrepresentable, and so ratifies the fleet's current configuration as
+the design. Two of the filed item's three premises were wrong against the tree besides, and the
+one that made it look large is the one to name: the per-call scan it would have removed is a
+single counter load on every board that carries a bench preset, the scan arm compiling only where
+the handle table is small enough to hold one chunk, which is one board, and that board has no
+bench preset and its reply path has never been measured at all. A design page in this tree already
+said so and the audit that filed the item did not carry it across. **Read a filed
+cycles-per-effort ranking as a claim ABOUT the tree that has to be checked against the tree.**
+
+**THE NOTIFICATION BIND IS PERFORMED BY THE SERVING THREAD AND CANNOT BE MOVED TO THE CLAIM.** The
+claimer is usually not the server: the claim runs in the spawner, which delegates the capability
+and closes its own copy, so the claiming thread is afterwards neither the waiter nor a holder and
+cannot stand in for one. And one line is routinely delegated to two threads with different rights,
+which is the shape the UART service is already built on. The kernel had refused to pin affinity at
+claim for exactly this reason, so this is the second instance of one rule rather than a property
+of interrupts.
+
+**THE RISK THIS SESSION GUARDED AGAINST WAS THE MIRROR OF THE DEFECT IT SHIPPED.** Every brief
+framed the fusion's hazard as an EAGER wake, the server waking its caller before parking and
+losing the handoff fastpath, and the acceptance test was specified to prove the wake is DEFERRED.
+It proved it. A test of that shape is structurally incapable of noticing a deferral that never
+COMPLETES, which is what a cross-core reply then did, the caller readied with no peer told. The
+instrument confirmed exactly what it was built to confirm. **The fix is ONE OWNER for completion
+and not a guard per exit path**, and the later audit found the same defect one level in:
+completion made total over a set still truncated to its highest-priority member, which is right
+for the local pick and wrong for the peer announcement, every readied thread needing an ask at its
+own priority and affinity.
+
+**TWO INSTRUMENT FACTS OUTLIVE THIS MILESTONE.** The PMSAv7 descriptor write sat in no bracket on
+any ARM backend: what was bracketed is the deferred stash, the hardware program was not, and the
+armv7m switch distribution closes its span before the RBAR/RASR pairs are written. So every ARM
+per-switch figure this project has published UNDERSTATES the switch. A consistently blind
+instrument still yields a valid DELTA, so the like-for-like against M8.7 survives and it is the
+ABSOLUTE that was wrong; what does not survive is the acceptance test for the per-descriptor skip
+filed against M8.11, which could land, work and move no row on the arch it most affects. The
+second fact is the same shape one size down: `PH_REPLY_TOTAL` has exactly one feed site, so once
+the services adopt the fused call a ping-pong workload barely reaches it, and **a row reading near
+zero is indistinguishable from an instrument that stopped firing.** Moving such a bracket into the
+shared body is the obvious repair and it collides with an exit measurement's own contract of one
+instrument over two trees, so it is decided BEFORE that run and never during it.
+
+**THE IMAGE-LAYOUT CLIFF IS THE EMULATOR'S, AND IT WAS MEASURED RATHER THAN ASSUMED.** One QEMU
+machine has a contiguous band of selftest image sizes inside which the whole suite runs 3.5x
+slower. Inert padding on an otherwise unmodified tree reproduces it in full, which is what makes
+any change that merely grows the image into the band INNOCENT, and the band is gone with
+enforcement off. On silicon a pad sweep over the same range of image shift found no band at all,
+and it REFUTES the emulator's mechanism rather than failing to find it: the MPU program loop gave
+the same figures at two different addresses and different figures at one address, so its own
+position does not drive the cost there. **What that leaves is a rule about the suite and not about
+the kernel: a selftest arm may not decide correctness on a DURATION**, because inside the band
+every span is multiplied at once and the arm then reports the emulator. Two priority-inheritance
+arms were re-expressed on a rendezvous handoff for that reason. An arm resting on one span
+outlasting another also fails in directions that do not look like a failure at all, a hang that
+eats the whole gate and a vacuous pass where the staging never formed, so a flake hunt looking for
+reds does not find them.
+
+**WHAT TWO BLIND EXTERNAL AUDIT PASSES FOUND, AND WHAT NEITHER OF THEM FOUND.** Both ran against
+the finished branch with no access to this session's own record, a primed auditor confirming the
+priors it is handed. Between them they surfaced defects in code written the same week, the second
+pass four that stood on no withheld list, among them a ruling of mine left half-stated: an OUT
+field whose write-back is skipped on the ground that the caller's IN value is already the answer
+is sound only where that holds on EVERY exit, and it did not hold on the reply half's early
+return. Neither pass independently surfaced the one-core-only notification witness, the AMP arms
+never run against a peer, or the refusal arms that were never mutated. **So a second pass reads
+code and not coverage: it will tell you what is wrong and it will never tell you what is
+untested**, which makes a written coverage record more load-bearing rather than less.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.** The notification mechanism is exercised at ONE kernel core
+only, both its arms, the standing bit and the parked wait, resting on spawn order against
+priority, so a multicore kernel ships a notification path no multicore run has ever entered. The
+AMP far arms are verified by compile and object code on one preset and have never been run against
+a peer. **And NO SILICON RAN IN THIS MILESTONE AT ALL**, so every figure that would stand beside
+M8.8's two boards is owed, and the fusion's own acceptance test is an emulator count sweep from
+which no timing was read, by design and not by omission.
+
+**ONE COUNTING SEMAPHORE CAN CARRY BOTH DIRECTIONS OF A HANDSHAKE ONLY WHERE THE CHILD PARKS IN
+BETWEEN.** Three IRQ arms here do exactly that and are sound, because each one waits on its line
+between posting readiness and waiting to be released, and that park is what stops it reaching its
+own token. The handover arm had no park there, so above one core it could post, consume what it
+had just posted, and exit, leaving root waiting for a token nobody would write again. The arm
+hung a four-core run into its backstop and passed on a rerun, which is what an interleaving
+defect looks like from the outside. **The tell is not the semaphore, it is the absence of a
+blocking point between the two calls**, and it is invisible when read beside three neighbours
+that look identical and are not.
+
+**AND THE THING THAT FOUND THE LAST DEFECT WAS THE FLEET SWEEP, NOT THE AUDITOR.** Four external
+passes read this code. None reached the end-to-end publication gate, because none of them ever
+CONFIGURED a preset that is bench and SMP at once, and neither did any suite run of this
+milestone. The sweep did, on its first pass, on two architectures. What it found is worth more
+than the defect: the gate names the kernel body it inspects by MANGLED SYMBOL, this milestone
+split that body into a forwarder over a timed one, and the gate then read two instructions, found
+nothing and reported the property broken. **The property was intact.** A gate that resolves its
+subject by name prints the same red whether the subject moved or the property died, and its
+message argues for the second. Read that beside the five instrument findings above: they are one
+family, an instrument whose blindness and whose alarm are the same output. The repair here was to
+name the body that does the work; the repair to the CLASS is filed, and it is to refuse when the
+body handed to the reader contains neither end of the bracket it was asked to look inside.
 
 
 ## Where to go next

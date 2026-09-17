@@ -223,9 +223,10 @@ under one SPI byte time -- so no dirty-tracking of the live slot is worth its st
 / `nseg`, segment lengths exceeding the message, a reply that would not fit the wire, a
 `region_cap != -1`) gets an immediate `kos_reply` carrying `status = -KOS_EINVAL` (or
 `-KOS_ENOSYS` for the region path). A leaked reply cap parks the client forever (until the
-driver dies). The service loop is: `kos_recv` a request with a `kos_recv_info`; if
-`reply_cap < 0` it is a plain send (not this protocol) -- ignore; otherwise run the class
-transaction under the MMIO grant and `kos_reply` a `kos_bus_rsp`.
+driver dies). The service loop is: `kos_reply_recv` a request, reading the `kos_recv_info`
+nested in its opts; if `reply_cap < 0` it is a plain send (not this protocol) -- ignore;
+otherwise run the class transaction under the MMIO grant and answer a `kos_bus_rsp` on the
+next pass.
 
 ## The transport (`<kickos/sys/spi_service.h>`)
 
@@ -233,9 +234,12 @@ The service is a THIN TRANSPORT over the SPI class and there is no engine interf
 template: `kickos::spi::serve_loop(bus)` blocks on the delegated WAIT recv cap
 (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and hands every call to
 `serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces the inline budget,
-routes `req.device` to its slot, calls the class, and ALWAYS consumes the reply cap (the
-invariant above), returning when the endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can
-exit and let root respawn. It owns the slot store (`kickos::spi::SlotTable`, a `serve_loop`
+routes `req.device` to its slot, calls the class, and builds the `kos_bus_rsp` reply OVER the
+request in the loop's one buffer, ALWAYS answering a length (the invariant above: an arm
+answering zero would leak the reply capability). The LOOP completes the call, on the
+`KOS_SYS_REPLY_RECV` that takes the next request, and returns when the endpoint dies
+(`n < 0` -> `EPIPE`) so the driver thread can exit and let root respawn. **The wire is
+unchanged**: the same `kos_bus_rsp` and the same payload, composed in a different buffer. It owns the slot store (`kickos::spi::SlotTable`, a `serve_loop`
 local, so per-slot state costs driver STACK and no `.bss`) and nothing else.
 
 The slot store holds one `kos_spi_device` HANDLE per slot, and every transfer names its handle:

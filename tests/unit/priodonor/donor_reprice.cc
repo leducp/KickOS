@@ -10,7 +10,7 @@
 // seated `prio` can sit at its `base_prio` while a donor above it waits. Each arm below builds
 // that state and then asks the funnel, once per donor term.
 //
-// The raise is applied through the same two lines park.cc and endpoint_recv's bounce arms use
+// The raise is applied through the same two lines park.cc and endpoint_recv_locked's bounce arms use
 // (`sched::set_prio(t, thread_effective_prio(t))`), so no arm invents a priority the kernel
 // would not have written itself.
 

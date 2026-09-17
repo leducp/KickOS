@@ -142,6 +142,11 @@ namespace
         volatile uint32_t* tbuf0 = reinterpret_cast<volatile uint32_t*>(win + off::TBUF0);
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // the only delegated cap: the line
+        // This thread serves the line, so it binds the notification the ISR sets.
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[xmcspi] irq_attach refused the delegated line");
+        }
 
         // The line must be owned before bring_up's last act arms CCR.RIEN/AIEN and the
         // first receive event can fire; root claimed it before this thread existed.

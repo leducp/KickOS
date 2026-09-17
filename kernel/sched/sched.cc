@@ -329,6 +329,7 @@ namespace kickos
 
         void add(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             uint32_t const me = kickos_kernel_core();
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
@@ -448,14 +449,16 @@ namespace kickos
             arch_start(&kernel().boot[me], &first->ctx);
         }
 
-        void reschedule()
+        void reschedule(Thread const* woken)
         {
-            pick_and_seat(nullptr);
+            KICKOS_ASSERT_EXCLUSION_HELD();
+            pick_and_seat(woken);
         }
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
         struct arch_context* switch_prepare(Thread* next)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             switch_book(next, kickos_kernel_core());
             return &next->ctx;
         }
@@ -470,6 +473,7 @@ namespace kickos
 
         void detach_current()
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Blocking is legal only from thread context: from an ISR the switch defers and
             // the supposedly blocked thread keeps running.
             if (arch_in_isr())
@@ -481,6 +485,7 @@ namespace kickos
 
         void block_current()
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Caller must already have set current->state and linked it onto its queue.
             // Timer path only: sleepq uses the separate tnext link. A wait-queue caller
             // shares the ready/wait link node and must detach before linking (wq_block).
@@ -490,6 +495,7 @@ namespace kickos
 
         bool wake_no_resched(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Spans the readying path only: the refusals below do no ready-queue work.
             KICKOS_BENCH_MARK(bm_unpark);
             // The unpark funnel, and so the one place a timed wait's deadline is dropped.
@@ -518,6 +524,7 @@ namespace kickos
 
         void resched_after_wake(Thread const* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // `current` is null between sched::init and sched::start. A switch from an EXITED
             // current would abandon the rest of exit_current and leave its remaining waiters
             // unwoken; that thread's own final reschedule is the switch. And an RR slice expiry
@@ -536,8 +543,17 @@ namespace kickos
             pick_and_seat(t);
         }
 
+#if KICKOS_KERNEL_CORES > 1
+        void announce_ready(Thread const* t)
+        {
+            KICKOS_ASSERT_EXCLUSION_HELD();
+            poke_peers_below(t, t->prio, kickos_kernel_core());
+        }
+#endif
+
         void wake(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             if (wake_no_resched(t))
             {
                 resched_after_wake(t);
@@ -546,6 +562,7 @@ namespace kickos
 
         void set_prio(Thread* t, uint8_t p)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             if (t->prio == p)
             {
                 return;
@@ -772,6 +789,7 @@ namespace kickos
 
         void tick_rr(uint64_t now)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             Thread* c = current();
             if (c == nullptr)
             {

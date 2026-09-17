@@ -31,8 +31,8 @@
 
 using kickos::emit;
 
-// KOS_AUTH_IRQ is what the fallback mask lacks, and kos_irq_attach is refused without it, which
-// leaves the line MASKED and every inject latched instead of delivered.
+// KOS_AUTH_IRQ is what the fallback mask lacks, and kos_irq_claim is refused without it, which
+// leaves the line unowned and every inject latched instead of delivered.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
 
 namespace
@@ -86,6 +86,9 @@ namespace
                   "would fault before reaching the arm");
 
     uintptr_t g_tn_stack_lo = 0;
+
+    // The line capability in the WORKER's own table: root claims and delegates it first.
+    constexpr kos_cap_t TN_CAP = KOS_SPAWN_DELEGATED_CAP0;
 
     // Nothing may touch memory between the sp move and the trap. a0 is the syscall number and
     // a1..a4 the arguments (sys/abi.h); the unused ones are ZEROED, as the arch_syscall stub
@@ -145,9 +148,20 @@ namespace
                   static_cast<unsigned>(low), static_cast<unsigned>(g_tn_stack_lo),
                   static_cast<unsigned>(TN_PARK_ROOM));
         emit(msg);
+        // This thread serves the line, and without the bind its waits are refused and every
+        // inject past the first lands on a line the ISR left masked.
+        if (kos_irq_attach(TN_CAP, nullptr) != 0)
+        {
+            emit("[trapnest] ERROR: irq_attach refused the delegated line\n");
+            return;
+        }
         for (uint32_t i = 0; i < TN_INJECTS; i++)
         {
             inject_from(low, KOS_SYS_IRQ_INJECT, static_cast<uint32_t>(TN_LINE));
+            // The first-level ISR masks the line, so without consuming the event and
+            // unmasking here every inject past the first would latch and deliver nothing.
+            kos_irq_wait(TN_CAP);
+            kos_irq_ack(TN_CAP);
         }
         // Real switches and timer ticks too, so the tally also covers a tick taken in the idle
         // thread, which is privileged and so also arrives with MPP=M.
@@ -194,19 +208,16 @@ int main(int, char**)
     g_tn_params.mem_base = reinterpret_cast<void*>(0x1000u);
     g_tn_params.mem_size = 64;
 
-    // MUST be checked: a refused attach leaves the line MASKED, kos_irq_inject then latches the
+    // MUST be checked: a refused claim leaves the line MASKED, kos_irq_inject then latches the
     // raise, no trap is taken, and the arm reports traps=0 while looking like it ran.
-    kos_cap_t sem = KOS_CAP_NONE;
-    if (kos_sem_create(0, &sem) != 0)
+    kos_cap_t line = KOS_CAP_NONE;
+    if (kos_irq_claim(TN_LINE, KOS_IRQ_EDGE, &line) != 0)
     {
-        emit("[trapnest] ERROR: sem_create refused\n");
+        emit("[trapnest] ERROR: irq_claim refused, so the line stays masked\n");
         return 1;
     }
-    if (kos_irq_attach(TN_LINE, sem) != 0)
-    {
-        emit("[trapnest] ERROR: irq_attach refused, so the line stays masked\n");
-        return 1;
-    }
+    kos_irq_ack(line); // a claim leaves the line masked, and the worker injects into it
+    kos_cap_grant const wcaps[] = {{line, KOS_CAP_WAIT}};
 
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "tntick", 20);
     if (not tk.valid())
@@ -214,10 +225,10 @@ int main(int, char**)
         emit("[trapnest] ERROR: ticker spawn refused\n");
         return 1;
     }
-    kos::thread::Handle const w =
-        kos::thread::create(worker, nullptr, "tnwork", 10, KOS_POLICY_FIFO, 0,
-                            /*privileged=*/false, nullptr, 0,
-                            reinterpret_cast<void*>(lo), TN_STACK_SIZE);
+    kos::thread::Handle const w = kos::thread::create_caps(
+        worker, nullptr, "tnwork", 10, wcaps, 1, KOS_POLICY_FIFO, 0,
+        /*privileged=*/false, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+        reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())
     {
         emit("[trapnest] ERROR: worker spawn refused\n");

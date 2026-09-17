@@ -18,6 +18,7 @@
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/abi_probe.h>
 #include <kickos/sys/irq_free.h>
+#include <kickos/sys/serve.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
 
@@ -83,6 +84,8 @@ namespace selftest
     constexpr int CH_AUX = 3;
     constexpr int CH_READY = 2; // IRQ-driver tests
     constexpr int CH_IRQ = 3;   // IRQ-driver tests
+    constexpr int CH_REL = 4;   // root-to-child release, where the child has no other park
+                                // between signalling readiness and waiting to be let go
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
@@ -207,6 +210,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_affinity_zero_defaults();
     KICKOS_SELFTEST_LOCAL void t_affinity_undriven_refused();
     KICKOS_SELFTEST_LOCAL void t_migrate_running();
+    KICKOS_SELFTEST_LOCAL void t_resched_reaches_pinned_caller();
     KICKOS_SELFTEST_LOCAL void t_pin_same_task_ok();
     KICKOS_SELFTEST_LOCAL void t_pin_cross_task_refused();
     KICKOS_SELFTEST_LOCAL void t_grant_narrows();

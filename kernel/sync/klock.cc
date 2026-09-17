@@ -79,6 +79,14 @@ namespace kickos
         }
     }
 
+#if KICKOS_DEBUG
+    bool klock_exclusion_held(void)
+    {
+        KlockRow const& r = g_row[kickos_kernel_core()];
+        return r.depth != 0 or r.owed != 0;
+    }
+#endif
+
     uint32_t klock_detach(void)
     {
         KlockRow& r = g_row[kickos_kernel_core()];

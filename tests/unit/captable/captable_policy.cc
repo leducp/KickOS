@@ -124,7 +124,7 @@ namespace
     {
         cap_slot(run, index)->gen++;
         set_type(run, index, CapType::CAP_EMPTY);
-        cap_run_free_release(run, index, head);
+        cap_run_free_release(run, index, cap_slot(run, index), head);
     }
     // cap_install: the head free slot, then the write above. KCAP_NO_SLOT on a full table.
     uint32_t take(CapRun const& run, uint16_t* head)

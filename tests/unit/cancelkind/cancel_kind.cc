@@ -55,6 +55,9 @@ namespace kickos
             static_assert(CANCEL_NONE == 0,
                           "the thread_create memset must leave a fresh TCB un-cancelled");
 
+            // The notification bit the bind below hands back, which the event side sets.
+            uint32_t g_line_note = 0;
+
             // The line cap the arms below wait on, owned by `owner` and current.
             uint32_t claim_the_line(Thread* owner)
             {
@@ -62,6 +65,9 @@ namespace kickos
                 uint32_t cap = 0;
                 EXPECT_EQ(irq_claim(owner, CONSOLE_LINE, 0, &cap), 0)
                     << "fixture: the waiter owns the line";
+                g_line_note = 0;
+                EXPECT_EQ(irq_notify_bind(owner, cap, &g_line_note), 0)
+                    << "fixture: the waiter serves the line it waits on";
                 return cap;
             }
 
@@ -87,7 +93,10 @@ namespace kickos
             // what irq_wait reads as a raise rather than a cancel.
             void hand_the_waiter_its_event(Thread* parked)
             {
-                parked->wait_queue->unlink(&parked->link);
+                // The queue-less shape irq_wait parks in: the binding names its one server,
+                // so there is no list to unlink from, and the bit is what the waiter reads
+                // as a raise rather than a cancel.
+                parked->notify_pending = parked->notify_pending | g_line_note;
                 parked->clear_wait_edge();
                 parked->wait_result = 0;
                 {

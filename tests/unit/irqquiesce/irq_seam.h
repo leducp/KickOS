@@ -100,8 +100,6 @@ namespace kickos
         // word another core holds. An arm waits on this to know its peer is wedged inside the
         // dispatch entry rather than merely started.
         extern std::atomic<bool> g_lock_blocked;
-        // How many times sem_post reached its body, which is past the lock it takes.
-        extern std::atomic<unsigned> g_posts;
 
         // Clears the doorbell cells and the blocked flag between arms; every arm must leave
         // the lock word balanced itself.

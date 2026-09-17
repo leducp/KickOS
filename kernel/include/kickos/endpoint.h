@@ -111,7 +111,7 @@ namespace kickos
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Arm ONE far delivery to refuse the disclosure of the capability it just installed. NO
-    // SYSCALL REACHES THAT STATE: endpoint_recv proves the out-ptr writable and aligned before
+    // SYSCALL REACHES THAT STATE: endpoint_reply_recv proves the out-ptr writable and aligned before
     // the park, so only a buffer that went away under a parked receiver presents it, and the
     // scaffolding is what an arm has instead. Consumed by the next delivery, armed or not.
     //

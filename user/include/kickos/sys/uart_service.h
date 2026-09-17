@@ -141,6 +141,13 @@ inline void dev_shutdown(Uart*)
 template <typename Uart>
 void irq_loop(Uart& dev, Shared* sh)
 {
+    // Before ready, and before the first wait: the doorbell the service thread rings is
+    // delivered by this bind where it arrives ahead of it, and lost where it does not.
+    if (kos_irq_attach(KOS_UART_CAP_LINE, nullptr) != 0)
+    {
+        dev_shutdown(&dev);
+        return;
+    }
     sh->ready = 1;
     while (true)
     {
@@ -223,8 +230,7 @@ struct Transport
 //
 // `mode` is null for a service with no unframed console arm, which is what makes
 // KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
-int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const* msg, size_t n,
-              kos_cap_t reply_cap);
+size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n);
 
 // Recv/dispatch loop with no console arm. Returns only when the endpoint dies, which is the
 // respawn signal.

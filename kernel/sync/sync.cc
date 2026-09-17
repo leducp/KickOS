@@ -32,7 +32,7 @@ namespace kickos
         {
             q.unlink(&best->link);
             best->clear_wait_edge();
-            // No deadline cancel here: a pop is not an unpark, since endpoint_recv pops a
+            // No deadline cancel here: a pop is not an unpark, since endpoint_recv_locked pops a
             // CALL_SEND_WAIT caller straight into reply_donor_park and the deadline must
             // span both call phases. sched::wake_no_resched owns the cancel.
         }
@@ -76,7 +76,7 @@ namespace kickos
     }
 
     // Returns when woken.
-    void wq_block(List& q, WaitKind kind, void* obj)
+    void wq_block(List& q, WaitKind kind, void* obj, Thread const* woken)
     {
         Thread* c = sched::current();
         // BLOCKED before the detach: on_remove reads `state` to tell a park from a
@@ -91,7 +91,7 @@ namespace kickos
         q.push_back(&c->link);
         // BEFORE the reschedule, which on a stall never returns.
         KOS_TRACE(::kickos::KOS_TR_PARK, KOS_TRACE_ID(c), KOS_TRACE_ID(&q));
-        sched::reschedule();
+        sched::reschedule(woken);
     }
 
     void park_queueless(Thread* c, WaitKind kind, void* obj)
@@ -231,7 +231,7 @@ namespace kickos
     void reply_donor_park(Thread* server, Thread* caller)
     {
         server->reply_waiters.push(&caller->link);
-        // The server is the ONLY edge back from a queue-less reply park; endpoint_recv
+        // The server is the ONLY edge back from a queue-less reply park; endpoint_recv_locked
         // re-parks a just-popped SEND_WAIT caller here, so this must run after that pop
         // cleared the endpoint edge.
         caller->wait_kind = WAIT_EP_REPLY;

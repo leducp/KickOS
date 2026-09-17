@@ -20,9 +20,10 @@ ABI's return-register pair or written through a caller-supplied **out-pointer**:
 a local, passes its address, and the kernel stores the result there.
 
 The receive path is the canonical example, because its result is a STRUCT and no register pair can
-carry it. `kos_recv` takes a `struct kos_recv_info*`, and the kernel, running privileged, stores
-the badge and the reply capability through it. Likewise a struct-TAKING syscall, thread spawn,
-copies the caller's struct into kernel memory before reading its fields. In both directions the
+carry it. `kos_reply_recv` takes a `struct kos_reply_recv_opts*` with a `struct kos_recv_info`
+nested in it, and the kernel, running privileged, stores the badge and the reply capability
+through that nested member. Likewise a struct-TAKING syscall, thread spawn, copies the caller's
+struct into kernel memory before reading its fields. In both directions the
 kernel issues a **typed memory access** through a pointer the caller chose. A typed access has an
 alignment precondition, and the kernel did not pick the pointer.
 

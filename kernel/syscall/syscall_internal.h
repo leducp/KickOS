@@ -132,12 +132,12 @@ namespace kickos
     int mutex_create(uint32_t* out_cap);
 
     // --- IPC endpoints (syscall_ipc.cc) ----------------------------------------
-    // endpoint_send/recv/call MUST be called with no caller-held IrqLock: they take their
-    // own for the resolve/deliver/park and release it before the resume barrier, and a
+    // endpoint_send/call/reply_recv MUST be called with no caller-held IrqLock: they take
+    // their own for the resolve/deliver/park and release it before the resume barrier, and a
     // spanning caller lock livelocks ARM.
     //
     // ONE implementation per operation serves both the timed and the untimed syscall
-    // number; the untimed dispatch arm passes KOS_TIMEOUT_NONE (recv: timed == false).
+    // number; the untimed dispatch arm passes KOS_TIMEOUT_NONE.
     int endpoint_create(uint32_t* out_cap);
     // The receiver runs in another node's kernel. Privileged, and -KOS_ENOSYS where the
     // image runs one kernel over one core.
@@ -147,15 +147,14 @@ namespace kickos
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint32_t* out_cap);
 #endif
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
-    // `timed` selects KOS_SYS_RECV_TIMED, and then `badge_out` names a kos_recv_timed_opts
-    // rather than a bare kos_recv_info: the deadline is read out of that struct before this
-    // parks, and `badge_out` is rewritten to the kos_recv_info NESTED in it.
-    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out,
-                          bool timed);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us);
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len);
+    // KOS_SYS_REPLY_RECV. `lens` is kos_call_lens_pack(reply_len, recv_cap) and `opts` names a
+    // kos_reply_recv_opts the kernel reads and writes back.
+    int32_t endpoint_reply_recv(uint32_t reply_cap, uintptr_t buf, uintptr_t lens,
+                                uintptr_t opts);
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
     // Same minting shape as the cap creators above: *out_thread is written on EVERY path

@@ -18,6 +18,7 @@
     X(KOS_ESRCH,      "reply target gone: the caller is stale",                       "ESRCH")    \
     X(KOS_EIO,        "the device did not play its part in the transfer",             "EIO")      \
     X(KOS_EBADF,      "handle names nothing valid",                                   "EBADF")    \
+    X(KOS_ENOTIFY,    "an interrupt notification ended the wait, no message",         "ENOTIFY")  \
     X(KOS_ENOMEM,     "a pool, arena or descriptor budget could not allocate",        "ENOMEM")   \
     X(KOS_EFAULT,     "buffer not owned by the caller",                               "EFAULT")   \
     X(KOS_EBUSY,      "resource held or in use",                                      "EBUSY")    \
@@ -29,6 +30,7 @@
     X(KOS_EOVERFLOW,  "a bounded counter is at its ceiling",                          "EOVERFLOW")\
     X(KOS_ENOTSUP,    "well formed, but this backend cannot express it",             "ENOTSUP")  \
     X(KOS_ETIMEDOUT,  "the deadline passed and nothing happened",                     "ETIMEDOUT")\
+    X(KOS_EALREADY,   "already in that state, so the call changed nothing",           "EALREADY") \
     X(KOS_ECANCELED,  "this thread was cancelled and is expected to exit",            "ECANCELED")\
     X(KOS_EOWNERDEAD, "mutex ACQUIRED but the prior owner died holding it",           "EOWNERDEAD")
 

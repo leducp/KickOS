@@ -896,7 +896,7 @@ is the next one's baseline.
 | M8.6.2 | the static gate corpus audited: the suspicion that it was mostly dead weight, measured and answered |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
-| M8.9 | the IPC structure: the reserved reply slot, and the fused reply-receive |
+| M8.9 | the IPC structure: the fused reply-receive, and the notification bound to the same wait |
 | M8.10 | translating boards and SMP: the reent seat, ASIDs |
 | M8.11 | what only a measurement can justify |
 | M8.12 | the M8 exit measurement, frozen |

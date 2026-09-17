@@ -61,6 +61,11 @@ namespace
         volatile uint32_t* tflg2 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
+        // This thread serves the line, so it binds the notification the ISR sets.
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[k64drv] irq_attach refused the delegated line");
+        }
 
         // kos_irq_wait auto-re-arms the consumed line on return, so no explicit kernel
         // ack. The peripheral W1C must still clear the TIF level BEFORE the next

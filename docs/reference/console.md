@@ -409,10 +409,10 @@ whether the message arrived with a reply capability:
   stdout on), and
 - a **`kos_call`** is a `struct kos_uart_req` frame from `<kickos/sys/uart.h>`.
 
-A driver must therefore `kos_recv` with a `struct kos_recv_info` and branch on
-`info.reply_cap`. **A driver that drains the endpoint without separating them writes the
-request frame to the wire as though it were text AND never replies, so the caller parks
-forever on a reply that cannot come.** An unimplemented op is refused, never ignored:
+A driver must therefore receive with `kos_reply_recv` asking for a `struct kos_recv_info`,
+and branch on `info.reply_cap`. **A driver that drains the endpoint without separating them
+writes the request frame to the wire as though it were text AND never replies, so the caller
+parks forever on a reply that cannot come.** An unimplemented op is refused, never ignored:
 refusing costs the caller an error, ignoring costs it the system.
 
 | op | answer |

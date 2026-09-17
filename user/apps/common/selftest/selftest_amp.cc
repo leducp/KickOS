@@ -602,9 +602,12 @@ namespace selftest
                   == -KOS_EPERM);
         TAP_CHECK(refused == KOS_CAP_NONE);
         // CAP_SIGNAL alone, so the receive side refuses it at the resolve and no branch of
-        // endpoint_recv had to learn about locality.
+        // the receive had to learn about locality.
         char rbuf[AMP_FAR_LEN];
-        TAP_CHECK(kos_recv(ep, rbuf, sizeof(rbuf), nullptr) == -KOS_EPERM);
+        struct kos_reply_recv_opts fo;
+        kos_reply_recv_opts_init(&fo, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, rbuf, kos_call_lens_pack(0, sizeof(rbuf)), &fo)
+                  == -KOS_EPERM);
 
         // The call FIRST, and the order is load-bearing where the peer is a THREAD. A far call
         // that finds nothing parked on the port is refused ON THE SPOT rather than held
@@ -985,9 +988,10 @@ namespace selftest
 
         // The ordinary receive. This thread does not know its caller is in another kernel.
         char buf[16] = {};
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = AMP_FAR_US;
-        int32_t const got = kos_recv_timed(listen, buf, sizeof(buf), &opts);
+        opts.ep = listen;
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         // Answered before anything is asserted, and that order is load-bearing: a failing check
         // returns from the arm, so an arm that asserted first would abandon a live reply
         // capability and the next arm's caller would be refused one against
@@ -1057,10 +1061,11 @@ namespace selftest
             return;
         }
         char buf[16] = {};
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = AMP_FAR_US;
         opts.info.reply_cap = KOS_CAP_NONE;
-        int32_t const got = kos_recv_timed(listen, buf, sizeof(buf), &opts);
+        opts.ep = listen;
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         (void)b.join(AMP_FAR_US);
         uint32_t const blind = g_amp_forged.load();
         int64_t const sent2 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
@@ -1253,7 +1258,7 @@ namespace selftest
         int32_t c_unmap = 1;
         int32_t c_mapped = -1;
         int c_reply = -1;
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.info.reply_cap = KOS_CAP_NONE;
         if (listen != KOS_CAP_NONE)
         {
@@ -1271,7 +1276,8 @@ namespace selftest
                         .valid())
             {
                 opts.timeout_us = AMP_FAR_US;
-                c_recv = kos_recv_timed(listen, reinterpret_cast<void*>(va), AMP_FAR_LEN, &opts);
+                opts.ep = listen;
+                c_recv = kos_reply_recv(KOS_CAP_NONE, reinterpret_cast<void*>(va), kos_call_lens_pack(0, AMP_FAR_LEN), &opts);
                 // ANSWERED FIRST WHATEVER THE BYTE COUNT WAS, which is the shape a server
                 // loop owes: a reply capability this arm dropped would hold the far caller's
                 // ring slot. NONE is what this delivery must leave, and the check below is
@@ -1381,12 +1387,13 @@ namespace selftest
                 return;
             }
             char buf[16] = {};
-            struct kos_recv_timed_opts opts = {};
+            struct kos_reply_recv_opts opts = {};
             opts.timeout_us = AMP_FAR_US;
             // The kernel reads the deadline out of this struct and writes nothing else into
             // it, so a handle still reading NONE afterwards is one that was never disclosed.
             opts.info.reply_cap = KOS_CAP_NONE;
-            int32_t const got = kos_recv_timed(listen, buf, sizeof(buf), &opts);
+            opts.ep = listen;
+            int32_t const got = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             (void)b.join(AMP_FAR_US);
             uint32_t const forged = g_amp_forged.load();
             if (KOS_AMP_PEER_CALL_VERDICT(forged) != KOS_AMP_V_TOOK)
@@ -1426,10 +1433,11 @@ namespace selftest
             return;
         }
         char buf[16] = {};
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = AMP_FAR_US;
         opts.info.reply_cap = KOS_CAP_NONE;
-        int32_t const got = kos_recv_timed(listen, buf, sizeof(buf), &opts);
+        opts.ep = listen;
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         // Answered before anything is asserted, for the reason amp_far_service gives.
         char answer[4] = {0x6A, 0x6B, 0x6C, 0x6D};
         int reply_rc = -1;
@@ -1484,12 +1492,13 @@ namespace selftest
             return;
         }
         char buf[16] = {};
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = AMP_FAR_US;
         // The delivery reads an out-ptr of zero, which is the whole of this arm.
         opts.flags = KOS_RECV_NO_INFO;
         opts.info.reply_cap = KOS_CAP_NONE;
-        int32_t const got = kos_recv_timed(listen, buf, sizeof(buf), &opts);
+        opts.ep = listen;
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         g_amp_infoless_served = 1;
         (void)w.join(AMP_FAR_US);
         uint32_t const forged = g_amp_forged.load();
@@ -1614,10 +1623,11 @@ namespace selftest
             return;
         }
         char buf[16] = {};
-        struct kos_recv_timed_opts opts = {};
+        struct kos_reply_recv_opts opts = {};
         opts.timeout_us = AMP_FAR_US;
         // The payload is amp_far_service's claim: this arm asserts the capability alone.
-        (void)kos_recv_timed(listen, buf, sizeof(buf), &opts);
+        opts.ep = listen;
+        (void)kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (opts.info.reply_cap == KOS_CAP_NONE)
         {
             TAP_CHECK(false); // no capability to spend: amp_far_service owns that claim
@@ -1664,17 +1674,22 @@ namespace selftest
                 TAP_CHECK(kos_amp_port_is_local(node, port) == 1);
                 // The capability resolves WITH the wait right, so the receive genuinely parks
                 // and comes back on its own deadline.
-                struct kos_recv_timed_opts opts = {};
+                struct kos_reply_recv_opts opts = {};
                 opts.timeout_us = AMP_SEAT_PROBE_US;
-                TAP_CHECK(kos_recv_timed(cap, probe, sizeof(probe), &opts) == -KOS_ETIMEDOUT);
+                opts.ep = cap;
+                TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe, kos_call_lens_pack(0, sizeof(probe)), &opts) == -KOS_ETIMEDOUT);
                 local++;
             }
             else
             {
                 TAP_CHECK(kos_amp_port_is_local(node, port) == 0);
                 // CAP_SIGNAL alone on a far endpoint, so the resolve is what refuses the
-                // receive and no branch of endpoint_recv had to learn about locality.
-                TAP_CHECK(kos_recv(cap, probe, sizeof(probe), nullptr) == -KOS_EPERM);
+                // receive and no branch of it had to learn about locality.
+                struct kos_reply_recv_opts po;
+                kos_reply_recv_opts_init(&po, cap, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+                TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe,
+                                         kos_call_lens_pack(0, sizeof(probe)), &po)
+                          == -KOS_EPERM);
                 far++;
             }
         }
@@ -1720,7 +1735,10 @@ namespace selftest
         // And every call on that answer is refused by name.
         char body[4] = {};
         TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body)) == -KOS_EBADF);
-        TAP_CHECK(kos_recv(KOS_CAP_NONE, body, sizeof(body), nullptr) == -KOS_EBADF);
+        struct kos_reply_recv_opts uo;
+        kos_reply_recv_opts_init(&uo, KOS_CAP_NONE, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, body, kos_call_lens_pack(0, sizeof(body)), &uo)
+                  == -KOS_EBADF);
         tap::diag("unnamed crossing: port %u is named for no node, and its capability is none",
                   static_cast<unsigned>(unnamed));
     }

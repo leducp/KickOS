@@ -83,9 +83,8 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, -KOS_EINVAL, or -KOS_EPERM
                                 //   for a line the kernel dispatches itself (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
-    KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY;
-                                //   EBUSY also for a line the arch dispatches to a kernel
-                                //   vector of its own, which reaches no binding)
+    KOS_SYS_IRQ_ATTACH = 11,    // (irq_cap, uint32_t* out_mask) -> 0, or -KOS_E*
+                                //   (EBADF/EPERM/EINVAL/EFAULT/EBUSY)
     KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
     KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
@@ -118,11 +117,6 @@ enum kos_syscall_nr
                                 //   EPIPE (dead endpoint, or the last receiver left while
                                 //   parked). Parks indefinitely otherwise. EFAULT also answers
                                 //   a rendezvous copy refused at either end (sys.h)
-    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or
-                                //   -KOS_E*: EINVAL (misaligned out-ptr), EFAULT (bad buffer or
-                                //   out-ptr), EBADF/EPERM (bad cap / no WAIT right).
-                                //   A parked receiver is WOKEN -KOS_EFAULT where the copy
-                                //   into its buffer was refused, never with a count of 0
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
                                   //   -KOS_EBADF (bad cap), -KOS_EOVERFLOW (endpoint
                                   //   refcount at its ceiling)
@@ -156,9 +150,11 @@ enum kos_syscall_nr
                                //   window at that base), -KOS_EINVAL (base+offset is not on
                                //   this chip's allowlist), -KOS_ENOSYS (no backend). Gated on
                                //   possession of the block at `base`, not on an authority bit.
-    KOS_SYS_IRQ_NOTIFY = 43,   // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks SIGNAL).
-                               //   Software-posts the binding WITHOUT touching the
-                               //   controller.
+    KOS_SYS_IRQ_NOTIFY = 43,   // (irq_cap) -> 0, -KOS_EALREADY (the bit was already set and the
+                               //   post changed nothing, which is the doorbell working and the
+                               //   consumer behind, never a fault), or -KOS_EBADF / -KOS_EPERM
+                               //   (cap lacks SIGNAL). Software-posts the binding WITHOUT
+                               //   touching the controller.
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
@@ -171,10 +167,6 @@ enum kos_syscall_nr
                                //   timeout_us) -> as KOS_SYS_CALL, plus -KOS_ETIMEDOUT. Both
                                //   lengths share one argument slot so the fourth can carry
                                //   the deadline.
-    KOS_SYS_RECV_TIMED = 47,   // (cap, buf, cap_len, kos_recv_timed_opts* in-out) -> as
-                               //   KOS_SYS_RECV, plus -KOS_ETIMEDOUT, and -KOS_EINVAL for a
-                               //   null opts, which carries the deadline, or for a flags
-                               //   word holding a bit this kernel does not define.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
                                //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
@@ -263,7 +255,7 @@ enum kos_syscall_nr
                                //   -KOS_EPERM for a range this space did not take through
                                //   KOS_SYS_FRAME_MAP, which is what stops one holder
                                //   revoking another's mapping. It asks nothing about what
-                               //   NAMES the range: a thread parked in KOS_SYS_RECV with its
+                               //   NAMES the range: a thread parked in a receive with its
                                //   buffer inside it is woken -KOS_EFAULT.
     KOS_SYS_AMP_ENDPOINT_CREATE = 62, // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
                                //   image running one kernel, -KOS_EPERM for an unprivileged
@@ -305,10 +297,18 @@ enum kos_syscall_nr
                                //   unless KICKOS_ENABLE_SELFTEST AND the image is a node of a
                                //   partition, so every other image returns -KOS_EINVAL for
                                //   every op).
-    KOS_SYS_DOORBELL_PROBE = 67 // (op, a1) -> per-op (see enum kos_doorbell_op), or -KOS_EINVAL
-                               //   for a bad op (self-test only). Answers on every posture:
-                               //   an image whose doorbell folds out reads a real zero rather
-                               //   than a refusal.
+    KOS_SYS_DOORBELL_PROBE = 67, // (op, a1) -> per-op (see enum kos_doorbell_op), or
+                               //   -KOS_EINVAL for a bad op (self-test only). Answers on every
+                               //   posture: an image whose doorbell folds out reads a real
+                               //   zero rather than a refusal.
+    KOS_SYS_REPLY_RECV = 68,   // (reply_cap, buf, kos_call_lens_pack(reply_len, recv_cap),
+                               //   kos_reply_recv_opts* in-out) -> received bytes, or
+                               //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
+                               //   -KOS_EFAULT, -KOS_EPERM, -KOS_EBADF, -KOS_ESRCH,
+                               //   -KOS_EMFILE, -KOS_ENOSYS, -KOS_EPIPE, -KOS_ETIMEDOUT,
+                               //   -KOS_ECANCELED
+    KOS_SYS_IRQ_WAIT_TIMED = 69 // (irq_cap, timeout_us) -> as KOS_SYS_IRQ_WAIT, plus
+                               //   -KOS_ETIMEDOUT
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
@@ -370,8 +370,7 @@ enum kos_mem_flags
 // (kickos_services_none) alone.
 //
 // An op marked AUTH_IRQ below reaches the interrupt controller or the inter-core doorbell and
-// is refused -KOS_EPERM without KOS_AUTH_IRQ, exactly as KOS_SYS_IRQ_ATTACH and
-// KOS_SYS_IRQ_CLAIM are. The rest read kernel .data or write a line.
+// is refused -KOS_EPERM without KOS_AUTH_IRQ, exactly as KOS_SYS_IRQ_CLAIM is. The rest read kernel .data or write a line.
 enum kos_bench_op
 {
     KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Every distribution AND every phase.
@@ -431,7 +430,7 @@ enum kos_bench_op
 #define KOS_BENCH_SAMPLES_MAX 100u
 #define KOS_BENCH_ROUNDS_MAX 64u
 
-// KOS_SYS_RECV's out-pointer: 8 bytes, 4-aligned. A plain kos_send arrival delivers
+// The receive out-pointer: 8 bytes, 4-aligned. A plain kos_send arrival delivers
 // reply_cap == KOS_CAP_NONE; a kos_call arrival delivers a one-shot reply cap handle the
 // receiver must eventually kos_reply or kos_handle_close. A null out-ptr REJECTS calls, and
 // the caller's kos_call fails -KOS_ENOSYS.
@@ -448,34 +447,64 @@ static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byte
 _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
 #endif
 
-// kos_recv_timed_opts::flags. An unknown bit is -KOS_EINVAL, never masked.
+// kos_reply_recv_opts::flags. An unknown bit is -KOS_EINVAL, never masked.
 //
-// KOS_RECV_NO_INFO asks for the info-less receive a plain kos_recv spells with a null
-// out-pointer: the kernel writes nothing to `info` and the receiver rejects calls
-// (-KOS_ENOSYS to the caller). Without it a timed receive can never present a null
-// out-pointer, so the deadline and the info-less posture would be mutually exclusive.
+// KOS_RECV_NO_INFO is how a receive spells the info-less posture: the kernel writes nothing
+// to `info` and the receiver REJECTS calls (-KOS_ENOSYS to the caller), which is the DoS
+// closure a service every task can reach depends on. It is a flag and not a null out-pointer
+// because an opts struct always has an address, so without it the info-less posture and every
+// other thing the struct carries would be mutually exclusive.
 #define KOS_RECV_NO_INFO 0x1u
 
-// KOS_SYS_RECV_TIMED's argument struct: the inputs plus, NESTED, the out-struct above.
-// The kernel's write-back is a WHOLE-struct copy of the nested kos_recv_info, so it
-// preserves no input word in it.
-struct kos_recv_timed_opts
+// KOS_SYS_REPLY_RECV's argument struct. `ep` is where the receive half listens, the reply
+// capability naming the CALLER and never the endpoint, so the endpoint has to be passed.
+//
+// `notify` is IN-OUT and is the WHOLE opt-in to interrupt delivery, there being no flag beside
+// it. The call takes no IRQ capability, so with an OUT-only field nothing at the call site
+// would say the wait can be ended by a line at all: the link would be the per-thread bind and
+// nothing else. An input mask puts it where the call is written, and it also lets a thread
+// bound to several lines wait on one of them.
+//
+// It nests kos_recv_info rather than widening it: a plain receive caller then has
+// no input field to leave uninitialised, and the kernel's write-back stays a whole-struct
+// copy. `notify` sits OUTSIDE that nesting because only this syscall reads or writes it.
+struct kos_reply_recv_opts
 {
-    uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
+    kos_cap_t ep;              // IN: the endpoint to receive on (needs CAP_WAIT)
     uint32_t flags;            // IN: KOS_RECV_NO_INFO, or 0
-    struct kos_recv_info info; // OUT: written exactly as a plain kos_recv writes it
+    uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
+    uint32_t notify;           // IN:  the notification bits this wait accepts, each as
+                               //      kos_irq_attach answered it; 0 accepts none.
+                               // OUT: the bits it consumed. A bit NOT accepted is left
+                               //      standing for a later wait, never consumed and dropped.
+    struct kos_recv_info info; // OUT: the arrival, whole-struct
 };
 #ifdef __cplusplus
-static_assert(sizeof(struct kos_recv_timed_opts) == 16,
-              "kos_recv_timed_opts must stay 16 bytes (ABI)");
-static_assert(offsetof(struct kos_recv_timed_opts, info) == 8,
-              "the nested kos_recv_info must sit at offset 8 (ABI)");
+static_assert(sizeof(struct kos_reply_recv_opts) == 24,
+              "kos_reply_recv_opts must stay 24 bytes (ABI)");
+static_assert(offsetof(struct kos_reply_recv_opts, info) == 16,
+              "the nested kos_recv_info must sit at offset 16 (ABI)");
 #else
-_Static_assert(sizeof(struct kos_recv_timed_opts) == 16,
-               "kos_recv_timed_opts must stay 16 bytes (ABI)");
-_Static_assert(offsetof(struct kos_recv_timed_opts, info) == 8,
-               "the nested kos_recv_info must sit at offset 8 (ABI)");
+_Static_assert(sizeof(struct kos_reply_recv_opts) == 24,
+               "kos_reply_recv_opts must stay 24 bytes (ABI)");
+_Static_assert(offsetof(struct kos_reply_recv_opts, info) == 16,
+               "the nested kos_recv_info must sit at offset 16 (ABI)");
 #endif
+
+// Seat the IN half of a kos_reply_recv_opts and clear the OUT half. The struct is the one
+// argument the one receive primitive takes, so this is its packer, as kos_call_lens_pack is
+// the packer for the lengths. `notify` is left 0, which accepts no line; a caller that serves
+// one seats it per call, the return overwriting it.
+static inline void kos_reply_recv_opts_init(struct kos_reply_recv_opts* o, kos_cap_t ep,
+                                            uint32_t flags, uint32_t timeout_us)
+{
+    o->ep = ep;
+    o->flags = flags;
+    o->timeout_us = timeout_us;
+    o->notify = 0u;
+    o->info.badge = 0u;
+    o->info.reply_cap = KOS_CAP_NONE;
+}
 
 // P-state selector for KOS_SYS_CPU_CLOCK_SET, NOT a raw Hz: the landed Hz is the syscall's
 // return value. Carried as a plain u32 in the syscall register, so the width is the stable
@@ -590,7 +619,7 @@ enum kos_cap_authority
     KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, the spawn-time MMIO grant, kos_mem_self_grant
     KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
-    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_attach, kos_irq_unmask
+    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
     KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
     KOS_AUTH_CONSOLE = 1 << 5  // kos_console_publish
 };

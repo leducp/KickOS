@@ -57,8 +57,11 @@ SYM_ARM=_ZN6kickos13bench_e2e_armEi
 SYM_PARK=_ZN6kickos19bench_e2e_park_markEv
 SYM_RAISE=_ZN6kickos15bench_e2e_raiseEv
 SYM_CLOSE=_ZN6kickos15bench_e2e_closeEv
-# The kernel body the park mark has to sit inside, and not a bench one.
-SYM_WAIT=_ZN6kickos8irq_waitEPNS_6ThreadEj
+# The kernel body the park mark has to sit inside, and not a bench one. It is the TIMED body
+# and not the entry: kos_irq_wait's untimed form is a forwarder, and a forwarder takes no lock
+# and blocks on nothing, so a gate aimed at it reads a clean two-instruction body and reports
+# the park mark missing when it is the reader that cannot see it.
+SYM_WAIT=_ZN6kickos14irq_wait_timedEPNS_6ThreadEjj
 
 # The calls that bracket each body's ordering. Mangled for the same reason.
 C_CURRENT='<_ZN6kickos5sched7currentEv>'

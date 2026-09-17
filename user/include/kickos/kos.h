@@ -29,10 +29,6 @@ namespace kos
     {
         return kos_irq_inject(irq);
     }
-    inline int irq_attach(int irq, kos_cap_t sem_cap)
-    {
-        return kos_irq_attach(irq, sem_cap);
-    }
     inline uint64_t clock_now()
     {
         return kos_clock_now();
@@ -262,9 +258,25 @@ namespace kos
         {
             close();
         }
+        // Serve this line from the calling thread. Answers the notification bit through
+        // `out_mask` when one is asked for.
+        int attach(uint32_t* out_mask = nullptr)
+        {
+            uint32_t mask = 0;
+            int const rc = kos_irq_attach(h_, &mask);
+            if (out_mask != nullptr)
+            {
+                *out_mask = mask;
+            }
+            return rc;
+        }
         int wait()
         {
             return kos_irq_wait(h_);
+        }
+        int wait_timed(uint32_t timeout_us)
+        {
+            return kos_irq_wait_timed(h_, timeout_us);
         }
         int ack()
         {

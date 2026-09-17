@@ -31,6 +31,7 @@
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/libc/string.h>
 
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
@@ -144,6 +145,7 @@ namespace
     void e2e_waiter(void*)
     {
         auto irq = kos::Irq::adopt(CH_E2E_IRQ);
+        irq.attach(); // this thread serves the line
         // Under an MPU reachability is per THREAD, so root's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
@@ -446,17 +448,33 @@ namespace
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
         unsigned char buf[KOS_EP_MSG_MAX];
-        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        struct kos_reply_recv_opts opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.ep = 1;
+        opts.timeout_us = KOS_TIMEOUT_NONE;
+        // Carried from one pass to the next: the answer to request k rides the syscall that
+        // receives request k+1, which is the whole of what this loop is here to measure.
+        kos_cap_t reply_cap = KOS_CAP_NONE;
+        size_t reply_len = 0;
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
         {
-            long n = kos_recv(1, buf, sizeof(buf), &info);
-            if (n < 0 or info.reply_cap == KOS_CAP_NONE)
+            opts.info.reply_cap = KOS_CAP_NONE;
+            long const n = kos_reply_recv(reply_cap, buf,
+                                          kos_call_lens_pack(reply_len, sizeof(buf)), &opts);
+            reply_cap = KOS_CAP_NONE;
+            if (n < 0 or opts.info.reply_cap == KOS_CAP_NONE)
             {
                 // A reply-less message is measure_callreply's stop sentinel: a parked
                 // receiver pins its own WAIT cap, so nothing but a message ends that park.
                 break;
             }
-            kos_reply(info.reply_cap, buf, static_cast<size_t>(n));
+            reply_cap = opts.info.reply_cap;
+            reply_len = static_cast<size_t>(n);
+        }
+        // The terminal answer, which no receive follows: the last caller is parked on it.
+        if (reply_cap != KOS_CAP_NONE)
+        {
+            kos_reply(reply_cap, buf, reply_len);
         }
         kos_sem_post(2);
     }

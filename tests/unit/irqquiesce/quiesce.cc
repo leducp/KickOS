@@ -292,7 +292,7 @@ namespace
             g_cyc.handoff_ok.store(false);
             return;
         }
-        kickos_isr_irq(line); // irq_event_isr -> sem_post -> IrqLock -> blocked on core zero
+        kickos_isr_irq(line); // irq_event_isr -> notify_post -> IrqLock -> blocked on core zero
         g_cyc.peer_done.store(true);
     }
 
@@ -301,6 +301,10 @@ namespace
         int obj = -1;
         int idx = -1;
         uint32_t cap = 0;
+        // The slot the peer's dispatch holds as its pre-bound argument. Its `pending` flag is
+        // what a completed post writes with no server bound, and a SlotPool address is stable
+        // for the slot's life, so a retirement does not move it.
+        kickos::IrqBinding* target = nullptr;
 
         void SetUp() override
         {
@@ -321,6 +325,8 @@ namespace
             ASSERT_GE(obj, 0);
             idx = index_of(obj);
             ASSERT_GE(idx, 0);
+            target = kickos::kernel().irq_bindings.at(idx);
+            ASSERT_NE(target, nullptr);
             ASSERT_EQ(kickos::kernel().irq_refs[idx], 1u);
         }
 
@@ -369,8 +375,7 @@ namespace
         EXPECT_TRUE(g_cyc.peer_done.load())
             << "the peer never left the dispatch entry, so the teardown did not release the "
                "lock its post needs";
-        EXPECT_EQ(kickos::irqfix::g_posts.load(), 1u)
-            << "the peer's post never completed";
+        EXPECT_TRUE(target->pending) << "the peer's post never completed";
     }
 
     // CLAIM TWO: the binding is not freed while a dispatch that could observe it is in flight.
@@ -752,8 +757,12 @@ namespace
                 g_stale.rebind_rc.store(rc);
                 if (rc == 0)
                 {
-                    // The arm the new owner takes: rearm_locked unmasks in the first wait.
-                    g_stale.rebind_armed.store(kickos::irq_wait(&g_claim_thread, again) == 0);
+                    // The arm the new owner takes: it binds its notification, and
+                    // rearm_locked unmasks in the first wait.
+                    uint32_t mask = 0;
+                    g_stale.rebind_armed.store(
+                        kickos::irq_notify_bind(&g_claim_thread, again, &mask) == 0
+                        and kickos::irq_wait(&g_claim_thread, again) == 0);
                 }
             }
             kickos::irqfix::release_mask_hold();
@@ -781,7 +790,7 @@ namespace
         ASSERT_TRUE(g_stale.peer_done.load());
         // The stale dispatch RAN its retired pair. The claim below is about ordering the rebind
         // against it, not about stopping it.
-        ASSERT_EQ(kickos::irqfix::g_posts.load(), 1u)
+        ASSERT_TRUE(target->pending)
             << "the retired handler never posted, so it never reached the controller either";
 
         EXPECT_TRUE(g_stale.rebind_rc.load() != 0

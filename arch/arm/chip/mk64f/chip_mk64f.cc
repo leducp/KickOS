@@ -17,7 +17,8 @@
 
 #include <stdint.h>
 
-#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+#include "bench_mpu.h" // arch/arm/common: the deferred commit's bench bracket
+#include "regs.h"      // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/aips.h"
@@ -570,6 +571,9 @@ extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_
 // otherwise preempt a half-written (VLD-cleared) descriptor set.
 extern "C" void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
+#endif
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
     if (img == nullptr)
     {
@@ -622,6 +626,9 @@ extern "C" void kickos_arch_mpu_commit(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
+#endif
 }
 #endif
 

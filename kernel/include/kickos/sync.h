@@ -51,7 +51,13 @@ namespace kickos
     // the pair must name the list this call parks on; thread_kill and the timed unwind reach
     // that list through the tag and nothing else. wq_pop_highest clears both, so a re-park
     // onto another list has to re-state them.
-    void wq_block(List& q, WaitKind kind, void* obj);
+    //
+    // `woken` is how a caller that readied somebody with sched::wake_no_resched hands that
+    // thread to THIS park's reschedule instead of issuing one of its own. It is not an
+    // optimisation: the outgoing thread parks, so it makes nothing takeable and the switch
+    // announces nothing, and a woken thread this core's pick declines would reach no peer
+    // at all.
+    void wq_block(List& q, WaitKind kind, void* obj, Thread const* woken = nullptr);
 
     // Park `current` on NO list at all: the wait edge is then the ONLY thing that can find it
     // again, so `kind` must be a kind some waker sweeps for (thread.h). Detaches from the

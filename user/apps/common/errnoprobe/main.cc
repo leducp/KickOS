@@ -323,7 +323,10 @@ namespace
         unsigned char buf[KOS_CALL_REG_BYTES];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         kos_sem_post(FAST_READY);
-        g_fast.recv_rc = kos_recv(FAST_EP, buf, sizeof(buf), &info);
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, FAST_EP, 0, KOS_TIMEOUT_NONE);
+        g_fast.recv_rc = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
+        info = opts.info;
         // The first thing this thread does after the fastpath put it back on the CPU.
         g_fast.server_in_dispatch = errno;
         if (info.reply_cap != KOS_CAP_NONE)

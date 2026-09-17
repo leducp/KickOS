@@ -629,6 +629,12 @@ private:
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
+    // Before ready, and before the first wait: the doorbell the service thread rings is
+    // delivered by this bind where it arrives ahead of it, and lost where it does not.
+    if (kos_irq_attach(KOS_USB_CAP_LINE, nullptr) != 0)
+    {
+        exit(0);
+    }
     sh->ready = 1;
     while (true)
     {

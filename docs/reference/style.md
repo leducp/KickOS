@@ -114,8 +114,8 @@ further down: it binds every tracked file.
     no `++`, no `+=`, no bare read and no bare write from an integer: every one of those is a
     COMPILE error in C11 and C++20 alike, so the rule cannot be violated by a call site that
     simply did not know it. Aggregate initialisation still works. This is the same
-    make-it-unrepresentable move as nesting `kos_recv_info` inside `kos_recv_timed_opts` so a
-    plain recv has no timeout field to reach.
+    make-it-unrepresentable move as nesting `kos_recv_info` inside `kos_reply_recv_opts` so a
+    receive has no output field to seat and the kernel's write-back stays a whole-struct copy.
     **The helper BODIES are the only place a mechanism is spelled**, and they use
     `__atomic_load_n` / `__atomic_store_n` at `__ATOMIC_RELAXED`, which are the same single
     instruction as a plain access at 4 bytes aligned on every backend but leave a reader

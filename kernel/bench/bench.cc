@@ -309,7 +309,8 @@ namespace
         "RECV_LOCKED     ", "RECV_RESOLVE    ", "RECV_SCAN       ", "RECV_PARK       ",
         "REPLY_TOTAL     ", "REPLY_VALIDATE  ",
         "REPLY_LOCKED    ", "REPLY_LOOKUP    ", "REPLY_COPY      ", "REPLY_FUNNEL    ",
-        "REPLY_WAKE      ", "WAKE_UNPARK     ", "PICK_NEXT       ", "SWITCH_TO       ",
+        "REPLY_WAKE      ", "REPLY_RECV_TOTAL", "REPLY_RECV_TAIL ",
+        "WAKE_UNPARK     ", "PICK_NEXT       ", "SWITCH_TO       ",
         "SWITCH_BOOK     ", "MPU_APPLY       ", "MPU_COMMIT      ", "KTIME_REARM     ",
         "ARCH_SWITCH     "};
     static_assert(sizeof(PHASE_NAME) / sizeof(PHASE_NAME[0]) == kickos::PH_COUNT,

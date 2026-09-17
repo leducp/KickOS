@@ -77,9 +77,10 @@ int kos_mutex_lock(kos_cap_t mtx);
 int kos_mutex_unlock(kos_cap_t mtx);
 
 // Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-THREAD CAPABILITY, as
-// above. Create grants a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the peer arrives; the kernel copies
-// min(sent, capacity) bytes and receiver-side truncation is NOT an error. A send above
-// KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
+// above. Create grants a full-rights cap (a send needs SIGNAL, a receive needs WAIT). Both
+// block until the peer arrives; the kernel copies min(sent, capacity) bytes and
+// receiver-side truncation is NOT an error. A send above KOS_EP_MSG_MAX is rejected
+// (-KOS_EINVAL); a receive clamps its capacity.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
 // The same endpoint, with its receiver in the kernel running on `node`: locality is settled
 // at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
@@ -99,29 +100,16 @@ int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeo
 // (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the last
 // receiver went away while parked). n == 0 is a valid zero-length signal, not an error.
 //
-// EFAULT ALSO COVERS THE PEER'S BUFFER, on send, recv, call and reply alike: the bound-check
-// runs at the call and the copy at the rendezvous, so a parked receiver's page can be
-// unmapped in between, and the two ends may be the same memory (one static array named by two
-// threads of one task). Both parties are answered EFAULT, a receiver already off its queue
-// WOKEN with it rather than with a byte count. AND THE TRANSFER IS NOT UNDONE: the copy stops
-// at the granule refused, so a buffer answered EFAULT may hold a head of the new bytes over a
-// tail of the old, up to KOS_EP_MSG_MAX (docs/reference/ipc-call-reply.md).
+// EFAULT ALSO COVERS THE PEER'S BUFFER, on send, receive, call and reply alike: the
+// bound-check runs at the call and the copy at the rendezvous, so a parked receiver's page
+// can be unmapped in between, and the two ends may be the same memory (one static array named
+// by two threads of one task). Both parties are answered EFAULT, a receiver already off its
+// queue WOKEN with it rather than with a byte count. AND THE TRANSFER IS NOT UNDONE: the copy
+// stops at the granule refused, so a buffer answered EFAULT may hold a head of the new bytes
+// over a tail of the old, up to KOS_EP_MSG_MAX (docs/reference/ipc-call-reply.md).
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
-// Receive up to `cap_len` bytes into buf; `info` (if non-null) receives the sender badge
-// and reply cap (kos_recv_info: reply_cap == KOS_CAP_NONE for a plain kos_send, a real
-// one-shot CAP_REPLY handle for a kos_call). info == NULL is an INFO-LESS recv: it REJECTS
-// calls, and the caller's kos_call fails -KOS_ENOSYS.
-// -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad buffer / out-ptr), EINVAL
-// (misaligned out-ptr), EBADF/EPERM (bad cap / no WAIT right).
-int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info);
-// The same receive, giving up after opts->timeout_us RELATIVE microseconds (or never, if
-// that is KOS_TIMEOUT_NONE). `opts` is in-out: it must be non-null, and readable as well as
-// writable. The kernel writes only opts->info, so opts->timeout_us survives and a recv loop
-// may reuse one struct.
-// -> as kos_recv, plus -KOS_ETIMEDOUT (the deadline passed with no sender: nothing was
-// received) and -KOS_EINVAL for opts == NULL.
-int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
-                       struct kos_recv_timed_opts* opts);
+// RECEIVING IS kos_reply_recv WITH NOTHING TO REPLY TO. There is no plain receive syscall:
+// one entry serves a server loop, and a first pass or a pure listener passes KOS_CAP_NONE.
 
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
@@ -141,12 +129,21 @@ int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_c
 // consumed there. Nothing is retried and no bytes land in the buffer after this returns.
 int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
                        uint32_t timeout_us);
+
 // Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
 // bytes to the parked caller and wake it. The cap is ONE-SHOT, consumed here; a server loop
 // must reply or kos_handle_close it on EVERY path, else the caller parks forever.
 // -> 0, or a negative -KOS_E*: EBADF (bad / non-reply cap), EFAULT (bad reply buffer),
 // ESRCH (the caller is already gone, aborted or its slot reused; cap consumed anyway).
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
+// Reply and receive in ONE trap: `buf` carries the reply out and the next request back, and
+// `lens` is kos_call_lens_pack(reply_len, recv_cap). `reply_cap` of KOS_CAP_NONE is the first
+// pass, which only receives. Answers the received byte count, -KOS_ENOTIFY where an accepted
+// IRQ notification ended the wait with no message, or another -KOS_E*. A reply that fails
+// -KOS_EBADF or -KOS_EFAULT ABORTS the receive; -KOS_ESRCH does not, the transaction it names
+// being over either way.
+int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
+                   struct kos_reply_recv_opts* opts);
 
 // Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
 // Needs KOS_AUTH_CONSOLE. After this the kernel chip path drops (RTT, if built, still
@@ -379,13 +376,6 @@ uintptr_t kos_sched_probe(uintptr_t op);
 int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)
 #endif
 
-// Bind device line `irq` so that firing it posts the semaphore `sem_cap` names, from ISR
-// context (tier-2, privileged in-kernel handler). Needs KOS_AUTH_IRQ. Returns 0, or
-// -KOS_EPERM (no KOS_AUTH_IRQ, or the cap lacks SIGNAL), -KOS_EINVAL (bad irq line),
-// -KOS_EBADF (bad / non-sem / stale cap), -KOS_EBUSY (the line is already bound: no
-// stealing).
-int kos_irq_attach(int irq, kos_cap_t sem_cap);
-
 // Tier-1 IRQ-as-event. The line IS a capability: claiming it needs KOS_AUTH_IRQ, and the
 // resulting cap is delegable to an unprivileged driver at spawn. The first-level ISR masks
 // the line and posts the bound notification; the holder waits in thread context and unmasks
@@ -395,14 +385,34 @@ int kos_irq_attach(int irq, kos_cap_t sem_cap);
 // caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
 // having slots); the cap lands in *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
-// Block until the line fires. 0, or -KOS_EBADF/-KOS_EPERM, or -KOS_ECANCELED where the caller
-// was cancelled before or during the park.
+// Serve this line from THIS thread: bind its notification to the calling thread's word and
+// answer, in *out_mask, the single bit it will arrive in. Call it once, on the delegated cap,
+// before the first wait; the claiming thread is normally the spawner and cannot stand in.
+// A doorbell rung before the bind is delivered by it rather than lost.
+// -> 0, or -KOS_EBADF (bad cap), -KOS_EPERM (no CAP_WAIT), -KOS_EINVAL/-KOS_EFAULT (out-ptr),
+// -KOS_EBUSY (another thread already serves the line).
+int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask);
+// Block until the line fires. 0, or -KOS_EBADF/-KOS_EPERM (bad cap, no CAP_WAIT, or this
+// thread does not hold the bind), or -KOS_ECANCELED where the caller was cancelled before or
+// during the park.
 int kos_irq_wait(kos_cap_t irq_cap);
+// kos_irq_wait with a deadline of `timeout_us` RELATIVE microseconds (KOS_TIMEOUT_NONE is
+// exactly kos_irq_wait). Adds -KOS_ETIMEDOUT, which says the deadline passed with no raise.
+int kos_irq_wait_timed(kos_cap_t irq_cap, uint32_t timeout_us);
+// Unmask the line EARLY, which is the whole of what this is for: it lets the line fire again
+// while the driver does slow work after servicing the last event. It is OPTIONAL, because a
+// wait rearms on entry, so an ack placed immediately before returning to the wait does nothing
+// the wait would not do. Idempotent: a second ack, or an ack after a wait already rearmed, is
+// a no-op. Service the device BEFORE it, as a wait's own rearm requires.
 int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
 // Post the binding WITHOUT touching the controller: the doorbell a service thread rings so
 // the IRQ thread, sole owner of the peripheral registers, primes a transfer. The woken
 // waiter must tolerate finding nothing asserted. Needs KOS_CAP_SIGNAL.
-int kos_irq_notify(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+// -KOS_EALREADY SAYS THE DOORBELL IS WORKING AND THE CONSUMER HAS NOT DRAINED, never that
+// anything broke: the bit was already set, one wake still covers both posts, and a caller
+// that treats it as fatal is misreading it. It is the only signal a producer gets that its
+// server has stopped draining, so it is worth counting and it is not worth retrying.
+int kos_irq_notify(kos_cap_t irq_cap); // 0, -KOS_EALREADY, or -KOS_EBADF/-KOS_EPERM
 // Drop the controller's latched pending for the line. An EDGE binding's rearm deliberately
 // KEEPS that latch, and the controller is a reserved block no grant can reach, so this is
 // the only way to retire a pending the driver knows is stale. Neither masks nor unmasks: use
@@ -552,7 +562,7 @@ int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags);
 
 // The inverse, and only for a range that arrived through kos_frame_map. IT DOES NOT ASK
-// WHAT NAMES THE RANGE: a thread of that space parked in kos_recv with its buffer inside it
+// WHAT NAMES THE RANGE: a thread of that space parked in a receive with its buffer inside it
 // is woken -KOS_EFAULT, and so is whoever was sending to it.
 int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
 

@@ -13,8 +13,9 @@ if(KICKOS_BUILD_UNIT_TESTS)
   foreach(_unit IN ITEMS
       ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
-      deathspace drvbringup fastrefuse faultline frame grantnocache irqquiesce kstring ktime
-      mapexec placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass vrange)
+      deathspace drvbringup fastrefuse faultline frame fusedwake grantnocache irqquiesce kstring
+      ktime mapexec placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass
+      vrange)
     add_subdirectory(${_unit})
   endforeach()
 
@@ -24,13 +25,13 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # the translation unit is compiled under both.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capprobe capsweep faultband parkresult priodonor rangecheck rootslot schedwake
-      slayhook taskdeath wildstack)
+      cancelkind capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
+      schedwake slayhook taskdeath wildstack)
     add_subdirectory(${_unit})
   endforeach()
 
   add_subdirectory(exitquiesce)
-  foreach(_unit IN ITEMS migrateask slaypeer)
+  foreach(_unit IN ITEMS heldassert migrateask slaypeer)
     add_subdirectory(${_unit})
   endforeach()
 endif()

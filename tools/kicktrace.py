@@ -67,19 +67,20 @@ SYSCALL_NAME = {
     15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
     19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",
     23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
-    27: "send", 28: "recv", 29: "console_publish", 30: "cpu_clock_set",
+    27: "send", 29: "console_publish", 30: "cpu_clock_set",
     31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
     35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "reboot",
     39: "periph_enable", 40: "cap_narrow", 41: "panic",
     42: "periph_reg_write", 43: "irq_notify", 44: "irq_discard",
-    45: "thread_kill", 46: "call_timed", 47: "recv_timed",
+    45: "thread_kill", 46: "call_timed",
     48: "thread_join", 49: "wait_last", 50: "send_timed",
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
     58: "nest_witness", 59: "aspace_probe", 60: "frame_map",
     61: "frame_unmap", 62: "amp_endpoint_create",
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "sched_probe",
-    66: "amp_probe", 67: "doorbell_probe",
+    66: "amp_probe", 67: "doorbell_probe", 68: "reply_recv",
+    69: "irq_wait_timed",
 }
 
 TRACE_MAGIC = 0x4B545243

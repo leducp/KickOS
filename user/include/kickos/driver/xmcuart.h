@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 userspace polled UART TX console driver. An UNPRIVILEGED thread owns the granted USIC0 CH0 register window and
-// serves a console endpoint: it kos_recv()s byte batches from stdout clients and
+// serves a console endpoint: it kos_reply_recv()s byte batches from stdout clients and
 // POLL-writes each byte to the USIC transmit buffer. It does NOT clock/pin/baud
 // the USIC: the kernel's kickos_xmc_usic_init() already did that at boot, and
 // console_tx_deinit() left the channel TX-capable in a polled state. The driver
@@ -33,8 +33,8 @@ extern "C"
 
     // The unprivileged driver thread entry. `arg` is the granted USIC0 CH0 window
     // BASE, passed as the thread-arg VALUE (never dereferenced as memory). The
-    // delegated recv cap lands at child table index 1. Loops kos_recv() ->
-    // poll-write each byte to TBUF0; exits cleanly when kos_recv returns < 0
+    // delegated recv cap lands at child table index 1. Loops kos_reply_recv() ->
+    // poll-write each byte to TBUF0; exits cleanly when the receive returns < 0
     // (endpoint dead / EPIPE). Spawned by xmcuart_console_start(), or directly by
     // a consumer that wants its own orchestration.
     void xmcuart_console_driver(void* arg);

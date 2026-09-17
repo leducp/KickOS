@@ -6,11 +6,12 @@ The exact contract for the L4-style call/reply fastpath layered on the endpoint
 rendezvous (`../book/endpoints-synchronous-ipc-by-rendezvous.md` narrates the endpoint;
 `../book/synchronous-call-and-reply.md` narrates the why of this layer). Code source of
 truth: `kernel/syscall/syscall_ipc.cc` (`endpoint_call` / `endpoint_reply` /
-`endpoint_recv`),
+`endpoint_reply_recv` / `endpoint_recv_locked`),
 `kernel/syscall/cap.cc` (the `CAP_REPLY` arm + `cap_reply_thread` / `cap_reply_caller`),
 `kernel/sync/sync.cc` (`thread_effective_prio`), `kernel/thread/park.cc`
 (`endpoint_wait_abort`), `kernel/amp/ampwindow.cc` (the far reply's route),
-`user/include/kickos/sys/abi.h` (numbers + `kos_recv_info`),
+`kernel/irq/irq.cc` (the notification word, its bind and its post),
+`user/include/kickos/sys/abi.h` (numbers + `kos_recv_info` + `kos_reply_recv_opts`),
 `user/include/kickos/sys.h` (the C stubs). If a page and the code disagree, the page is
 the bug.
 
@@ -114,7 +115,7 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
   `kos_recv_info`, repurpose the caller's `ipc` to the reply target, park the caller
   queue-less in `CALL_REPLY_WAIT`, donate (D1), and wake the server (switches to it now).
 - **Slowpath** (no receiver parked): park on `send_waiters` in `CALL_SEND_WAIT`; the mint
-  + transfer + donation happen later in server context inside `endpoint_recv`. Boost the
+  + transfer + donation happen later in server context inside `endpoint_recv_locked`. Boost the
   conventional server now (D2) if this caller outranks it.
 
 ## `KOS_SYS_CALL_TIMED = 46`
@@ -146,46 +147,6 @@ deadline, which is exactly `kos_call`). Same returns as `KOS_SYS_CALL`, plus:
   would reach across a containment boundary, so it is left alone; the residue is bounded by
   `KICKOS_CAP_REPLY_MAX` against `Thread::cap_reply_live`.
 
-## `KOS_SYS_RECV_TIMED = 47`
-
-    kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
-                   struct kos_recv_timed_opts* opts)
-        -> int32_t
-
-`kos_recv` with a deadline. It travels in a struct because `kos_recv` also spends all four
-argument slots and a 9-bit `cap_len` has no packing partner. Same returns as
-`KOS_SYS_RECV`, plus `-KOS_ETIMEDOUT`, and `-KOS_EINVAL` when `opts == NULL` (there is
-nowhere else to state a deadline) or when `flags` holds a bit this kernel does not define.
-`opts` is IN-OUT, so it is checked readable as well as writable; plain `kos_recv` keeps its
-writable-only check.
-
-**`kos_recv_info` did NOT grow a timeout field; a separate type appeared that NESTS it**,
-and that separation is the load-bearing part:
-
-    struct kos_recv_timed_opts {
-        uint32_t timeout_us;        // IN
-        uint32_t flags;             // IN: KOS_RECV_NO_INFO, or 0
-        struct kos_recv_info info;  // OUT, written exactly as a plain recv writes it
-    };                              // 16 bytes, info at offset 8
-
-`KOS_RECV_NO_INFO` is how a timed receive spells the info-less posture a plain `kos_recv`
-spells with a null out-pointer: the dispatch passes 0 as the out-pointer, so nothing is
-written to `info` and the receiver rejects calls exactly as the plain form does. Without it
-the two are mutually exclusive -- an opts struct always has an address, so a timed receive
-could never present a null out-pointer -- and a receiver that wanted both had to give up
-its deadline, which on a board is an unbounded park with nothing behind it.
-
-A third member on `kos_recv_info` would have put an *input* field inside the struct every
-plain recv loop declares uninitialised (`struct kos_recv_info info;` in `uart_service.h`
-and `usb_cdc_service.h`), so a stack-garbage deadline would have been one line away, and
-the rule against it would have been a comment anyone could violate. Nesting makes it
-unrepresentable: a `kos_recv` caller has no timeout field to reach. It also keeps the
-kernel's write-back a WHOLE-struct copy of `kos_recv_info` -- the dispatch passes
-`opts + offsetof(struct kos_recv_timed_opts, info)` as the ordinary out-pointer, so
-`write_recv_info` is unchanged, has no uninitialised tail to leak into user memory, and has
-no input word to preserve. `opts->timeout_us` therefore survives every call, and a recv
-loop may reuse one struct.
-
 ## `KOS_SYS_REPLY = 35`
 
     kos_reply(kos_cap_t reply_cap, void const* buf, size_t len) -> int
@@ -209,29 +170,253 @@ stale-resolve in `cap_reply_caller` is what makes that safe: it rejects on four 
 grounds (index out of pool range, thread-slot generation mismatch, the `CALL_REPLY_WAIT`
 test, and a rolled `call_seq`) before anything is consumed.
 
-## `KOS_SYS_RECV = 28` -- widened out-pointer
+## `KOS_SYS_REPLY_RECV = 68`
 
-The recv out-pointer is a `struct kos_recv_info`:
+    kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
+                   struct kos_reply_recv_opts* opts)
+        -> int32_t
+
+A `kos_reply` and the receive that follows it, under ONE kernel entry. Nine server loops in
+the tree open-code that adjacency; the fused form pays one trap, one `IrqLock`, one
+`sched::current()` and one buffer validate where the pair pays two of each.
+
+- `lens` is `kos_call_lens_pack(reply_len, recv_cap)`, the nine-bits-each pack
+  `KOS_SYS_CALL_TIMED` established. Both halves CLAMP to `KOS_EP_MSG_MAX` rather than being
+  refused, which is what the two syscalls this one replaced did: an over-length reply was
+  clamped by the parked caller's own capacity anyway, and an over-length receive capacity was
+  harmless. The pack SATURATES at 511 rather than masking, so a wild argument arrives above
+  the bound and clamps there instead of wrapping to a silent zero.
+- `buf` is ONE buffer used IN PLACE: the reply goes out of it and the next request comes back
+  into it. Safe for the reason `kos_call`'s in-place buffer is: the reply is fully copied into
+  the caller before this body parks, so nothing in flight reads `buf` afterwards.
+- `reply_cap == KOS_CAP_NONE` is the first pass of a loop, and the notify-only pass: nothing to
+  answer, receive only.
+
+**`struct kos_reply_recv_opts`**, 24 bytes with the nested info at offset 16:
+
+    struct kos_reply_recv_opts {
+        kos_cap_t ep;              // IN:  endpoint to receive on (CAP_WAIT)
+        uint32_t  flags;           // IN:  KOS_RECV_NO_INFO, or 0
+        uint32_t  timeout_us;      // IN:  relative us, or KOS_TIMEOUT_NONE
+        uint32_t  notify;          // IN:  the notification bits this wait accepts
+                                   // OUT: the bits it consumed
+        struct kos_recv_info info; // OUT: the arrival, whole-struct
+    };
+
+It is IN-OUT, so it is checked readable AND writable, and it NESTS `kos_recv_info` rather than
+widening it: a caller then has no input field to leave uninitialised, and the kernel's
+write-back stays a whole-struct copy at
+`opts + offsetof(..., info)`, so `write_recv_info` is unchanged. `notify` sits OUTSIDE that
+nesting because only this syscall reads or writes it.
+
+**`notify` is IN-OUT, and the input half is the WHOLE opt-in**: there is no flag beside it, and
+a zero mask accepts nothing. The call takes an endpoint and no IRQ capability, so with an
+OUT-only field nothing at the call site would say the wait can be ended by a line at all, the
+link being the per-thread bind and nothing else. The input mask puts the link where the call is
+written, and it lets a thread bound to several lines wait on one of them. **A bit the caller did
+not accept is LEFT STANDING** for a later wait, never consumed and dropped.
+
+**The endpoint has to be passed, and that is not redundant.** A `CAP_REPLY` names the CALLER
+and not the endpoint (see the death matrix: an endpoint destroyed under an outstanding reply
+changes nothing), so the receive half has no way to derive where to listen from the reply
+capability. `RECV_RESOLVE` is not elided by the fusion.
+
+**THE REPLY HALF'S FAILURES ARE NOT SYMMETRIC, and this is the one place the fused form is not
+the concatenation of its two halves.**
+
+| reply-half return | the receive half |
+|---|---|
+| `-KOS_EBADF` | does NOT run: the server's own argument is wrong, and receiving on top of it would hide the fault behind a park |
+| `-KOS_EFAULT` | does NOT run, but for a DIFFERENT reason: the code has to reach the server, and a receive on top of it would overwrite the code with its own. The cap is consumed either way |
+| `-KOS_ESRCH` | DOES run: the transaction the cap named is already over, which says nothing about this server's ability to receive and nothing a caller has to be told |
+
+**A REPLY-HALF `-KOS_EFAULT` NAMES THE CLIENT AND NOT THE SERVER**, so it ends a transaction
+and not a service. `buf` was proved readable and writable in the server's own context before
+anything was copied, which leaves the caller's side of the reply copy as the only one that can
+still be gone. A loop that leaves on any negative result therefore lets one client take a
+shared service away from every other client, and that is what
+`<kickos/sys/serve.h>`'s `serve_transaction_failed` exists to refuse: `-KOS_EFAULT` drops the
+transaction and receives again, and every other code ends the loop. `-KOS_ETIMEDOUT` is
+deliberately not on that list, a deadline being the server's own policy rather than anything a
+client did.
+
+Receive-half returns, the whole set a receive can answer:
+
+| Return | Meaning |
+|---|---|
+| `>= 0` | received byte count |
+| `-KOS_ENOTIFY` | no message; an accepted notification ended the wait and `opts->notify` carries its bits. NOT spelled EAGAIN: a code reading as "try again" invites a loop that never services the device |
+| `-KOS_EINVAL` | `opts` null or misaligned, or an undefined `flags` bit. NOT a length: both halves of `lens` clamp |
+| `-KOS_EFAULT` | `opts` or `buf` not accessible, or a copy was refused |
+| `-KOS_EBADF` / `-KOS_EPERM` | bad endpoint cap, missing `CAP_WAIT`, or no caller context |
+| `-KOS_ETIMEDOUT` | `opts->timeout_us` passed |
+| `-KOS_ECANCELED` | the caller was cancelled before or during the park |
+
+**`opts->notify` IS WRITTEN BACK ON EVERY EXIT THAT PROVED THE FIELD WRITABLE**, the error
+exits included, and a reply refusal that ends the call before the receive half runs writes
+zero. That is the whole of the in-out rule: IN is the mask the caller ACCEPTS and OUT is the
+mask this call CONSUMED, so an exit that wrote nothing would report every accepted line as
+consumed and the caller would service lines that never fired. Zero is an answer, not an
+absence. Only the exits that refuse `opts` itself, the null or misaligned pointer and the
+inaccessible struct, leave the field alone: they never proved it writable, and they are out of
+reach of a caller passing the address of a real one, so the loop below may read the field on
+any code it can actually receive.
+
+The write is skipped where the caller ACCEPTED no line, and the input half is what makes that
+sound: such a caller wrote 0 in, so leaving the field alone leaves 0, which is the true count
+of what the wait consumed. The observable contract is the same either way, the field holding
+the consumed bits after the call, and a caller must re-seat the accepted mask before each call
+because the return overwrites it. THE SKIP DIES WITH THE INPUT HALF: make `notify` OUT-only
+again and it starts leaving a stale value behind. Where a line WAS accepted, a refused write
+answers `-KOS_EFAULT` even though a message may have arrived, the bits otherwise being lost
+with nothing saying so.
+
+**THE RULE IS STRUCTURAL AND NOT A CONVENTION EACH EXIT KEEPS.** Everything past the point
+where the options snapshot succeeds is one callable, and the write-back is the statement after
+its single call, so an exit added anywhere inside that region lands on the write-back rather
+than stepping over it. A destructor would not serve: the write-back can be refused in its own
+right and the contract owes the caller `-KOS_EFAULT` for that, which a destructor running after
+the return value is already fixed cannot answer.
+
+**CONSUMING A NOTIFICATION REARMS ITS LINE, and that is not bookkeeping.** The first-level ISR
+masks the line, and only a `needs_rearm` flag set in thread context lets a later `kos_irq_ack`,
+or the next accepting wait's own entry, lift that mask. So this call does both of the things a
+`kos_irq_wait` does around a line: on ENTRY it rearms each accepted line a previous pass
+consumed, which is what keeps `kos_irq_ack` OPTIONAL exactly as it is for a per-line wait, and
+on consuming a bit it flags that line so a later ack can lift the mask early. Without the
+second, a driver takes exactly ONE interrupt per line and then goes silent with no error on any
+path.
+
+**THE WAKE IS DEFERRED, and a green suite does not say whether it was.** `sched::wake` reaches
+`resched_after_wake` and then `pick_and_seat`, and on arm64, rv64, x86_64, the LX6 and the sim
+`arch_switch` swaps INLINE. A fused body that woke the answered caller eagerly would therefore
+switch away BEFORE reaching its own park on those backends, the caller would find no receiver
+parked, and its next call would take the slowpath. The reply half uses `wake_no_resched` and
+hands the woken thread to the receive half's own deferred-wake bookkeeping, so the one
+reschedule is the park's. **The park's reschedule has to be TOLD which thread**, because the
+server goes BLOCKED and the switch that follows stores nothing and announces nothing: a caller
+placeable only on a peer core is owed an ask that no later pass re-derives.
+**The witness is a COUNT and not a time**: the bench's slowpath share is entirely the donating
+arm, so `CALL_SLOW_TOTAL`'s n falls toward zero once a server loop adopts this and
+`CALL_TOTAL`'s n rises by the same amount. On a backend where the eager wake
+was left in, neither moves.
+
+## The IRQ notification, and which waits admit one
+
+An interrupt is delivered as ONE BIT PER LINE in the SERVING thread's own
+`Thread::notify_pending`, not as a per-line notification object.
+
+- **The bind is explicit and it is the SERVER's.** `kos_irq_attach(irq_cap, &mask)` says "this
+  thread serves this line" and answers the single-bit mask the line will arrive in. It cannot
+  be done at the claim: a driver's lines are claimed by the SPAWNER, which needs `KOS_AUTH_IRQ`,
+  delegated into the threads it spawns, and then closed, so the claiming thread is neither the
+  waiter nor a holder afterwards. One binding is also routinely delegated twice, `CAP_WAIT` to
+  the thread that parks on the line and `CAP_SIGNAL` to the peer that rings it as a doorbell.
+- **A second thread binding the same line is refused `-KOS_EBUSY`**, as a second claim of the
+  line is: one server per line, as one owner per line.
+- **A raise arriving before any bind LATCHES on the binding** and the bind delivers it. That is
+  what keeps a `kos_irq_notify` doorbell rung before the server's first wait from being
+  dropped, which is the startup race the doorbell exists to win.
+- **A post onto a bit already set answers `-KOS_EALREADY`.** The post is absorbed, as it must
+  be, one bit per line carrying no count; the code says the doorbell is working and the
+  consumer has not drained it yet, never that the ring was lost. A poster that treats it as a
+  failure and retries is reading it backwards.
+- **A raise the server never consumed goes BACK to that latch when its bind ends**, which is
+  the same startup race read from the other end: another capability can keep the binding alive
+  across a server's death, and the ISR has already masked the line. Dropped instead of handed
+  back, the event is nowhere and the line is masked with no wait return left to flag it for
+  rearm, so the replacement server is silent for good.
+- **`kos_irq_wait` refuses `-KOS_EPERM` from a thread that does not hold the bind**, there
+  being no word for the line to arrive in. A pending cancel still answers `-KOS_ECANCELED`
+  first: a killed thread is owed that code from every later wait.
+- **Which waits ACCEPT a notification**: `KOS_SYS_IRQ_WAIT` and its timed form, for the one
+  line they name, and `KOS_SYS_REPLY_RECV` for the lines its `notify` mask names. Nothing else.
+  A bit set on a thread parked in a mutex, a plain `sem_wait` or a call's reply wait is NOT a
+  wake: those parks have no result channel for it, and the bits are collected by the thread's
+  next accepting wait.
+- **A mask naming a line the caller does not serve is DROPPED, not honoured.** The bit is a
+  binding's pool index, which is not a capability, so the bind is what authorises the wait to
+  touch that line and the mask is narrowed to it.
+- **A message and a notification are additive, not alternative.** `opts->notify` is non-zero
+  iff at least one accepted bit fired and was consumed by this wait, and the return value says
+  separately whether a message arrived. A notification-only return is `-KOS_ENOTIFY`, which
+  keeps a zero-length arrival meaning a zero-length arrival.
+
+The resulting server loop:
+
+    while (true)
+    {
+        opts.notify = my_lines; // IN, and overwritten by the OUT on return
+        long n = kos_reply_recv(reply_cap, buf, lens, &opts);
+        // BEFORE the return code is classified. Every exit that could have consumed a bit
+        // writes the bits it really took, zero included, so a negative code carries no stale
+        // accepted mask. The two exits that leave the field alone refuse `opts` itself, which
+        // the address of a real struct cannot provoke.
+        if (opts.notify != 0)
+        {
+            service_lines(opts.notify);
+        }
+        if (n == -KOS_ENOTIFY)
+        {
+            reply_cap = KOS_CAP_NONE;
+            continue;
+        }
+        if (n < 0)
+        {
+            if (serve_transaction_failed(n)) // <kickos/sys/serve.h>
+            {
+                reply_cap = KOS_CAP_NONE;
+                continue;
+            }
+            break;
+        }
+        reply_cap = serve(buf, n, opts.info.reply_cap);
+    }
+
+**WITNESSED AT ONE KERNEL CORE ONLY, and that is a coverage statement and not a caveat about
+the mechanism.** Both arms that exercise the notification, the one whose bits are already
+standing and the one that wakes a server parked in the wait, rest on one thread's progress
+against another's and so carry `TAP_SKIP_ONE_CORE_ORDER()`. A multicore image therefore ships
+this path with no multicore run behind it. What IS witnessed above one core is that the word
+costs nothing there: the binding, the bind and the post all compile and link on every preset,
+and the rest of the IPC suite is green on four cores.
+
+**The notification bound and the reply bound do not interact.** `cap_can_take_reply` gates on a
+free dynamic slot and on `cap_reply_live(c) < KICKOS_CAP_REPLY_MAX`. A notification is not a
+capability and consumes no slot, so a wait that returns one alone mints nothing and leaves the
+table as it found it.
+
+## The receive out-struct
+
+**There is no plain receive syscall.** A receive is `KOS_SYS_REPLY_RECV` with nothing to reply
+to. The split forms, plain and timed, are gone rather than kept beside it: one entry serves a
+server loop, a first pass and a pure listener alike, and keeping the split pair would have left
+them a call frame slower than the fused form for no reason but that they existed. The
+out-struct they carried survives, nested in `kos_reply_recv_opts`:
 
     struct kos_recv_info { uint32_t badge; kos_cap_t reply_cap; };   // 8 bytes, 4-aligned
-
-It is PURELY an out-struct, and stays that way: the timed recv carries its deadline in its
-own `kos_recv_timed_opts`, which nests this one (see `KOS_SYS_RECV_TIMED` above).
 
 - A plain `kos_send` arrival delivers `reply_cap == KOS_CAP_NONE`.
 - A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle in the receiver's
   table; the receiver must eventually `kos_reply` it or `kos_handle_close` it. Test it
   against `KOS_CAP_NONE`: a handle fills all 32 bits, so no sign test works.
-- **Info-less recv** (`out == NULL`, i.e. `badge_out == 0`, or `KOS_RECV_NO_INFO` on the
-  timed form): the receiver is NOT minted a reply cap and REJECTS calls -- the caller's
-  `kos_call` fails `-KOS_ENOSYS`. Plain sends are unaffected. `endpoint_recv`
-  validates 8 writable bytes at a 4-aligned out-ptr (misalignment `-KOS_EINVAL`, unowned
-  `-KOS_EFAULT`); alignment is load-bearing for the privileged store.
+- **Info-less receive** (`KOS_RECV_NO_INFO`): the receiver is NOT minted a reply cap and
+  REJECTS calls, so the caller's `kos_call` fails `-KOS_ENOSYS`. Plain sends are unaffected.
+  It is a FLAG and not a null out-pointer because an opts struct always has an address, so
+  without one the info-less posture and every other thing that struct carries would be
+  mutually exclusive.
 
 This is a deliberate DoS closure: a service that must not have its handle table filled by
-untrusted callers (the console, which every task holds a `SIGNAL` cap on) uses a plain
-info-less recv, so hostile `kos_call`s bounce with `ENOSYS` instead of burning cap slots
-and pinning the server's priority.
+untrusted callers (the console, which every task holds a `SIGNAL` cap on) receives info-less,
+so hostile `kos_call`s bounce with `ENOSYS` instead of burning cap slots and pinning the
+server's priority.
+
+**`kos_recv_info` never grew an input field, and the nesting is what keeps it that way.** A
+timeout member on it would have put an *input* inside the struct every receive loop declares,
+so a stack-garbage deadline would have been one line away and the rule against it would have
+been a comment anyone could violate. Nested, the kernel's write-back stays a WHOLE-struct copy
+at `opts + offsetof(struct kos_reply_recv_opts, info)`, with no uninitialised tail to leak and
+no input word to preserve, and the input words above it survive every call.
 
 ## A copy the boundary check cannot promise
 
@@ -239,7 +424,7 @@ Both buffer bound-checks run at the syscall boundary, once. The COPY happens lat
 receiver, arbitrarily later, because it parked in between -- and two things can refuse it
 then. `access_copy` reaches every granule through its own `arch_aspace_acquire`, which
 answers null once that page is unmapped, so a sibling holding `AUTH_MEMORY` + `CAP_FRAME` +
-`CAP_ASPACE` can `KOS_SYS_FRAME_UNMAP` the page under a thread parked in `kos_recv`. And
+`CAP_ASPACE` can `KOS_SYS_FRAME_UNMAP` the page under a thread parked in a receive. And
 `ep_copy` refuses a copy whose two ends are the same memory under one owner, the primitive
 under it being the ascending-only `kmemcpy`; two threads of ONE task share a space, so one
 static array is one address for both ends of a rendezvous, and that route needs no
@@ -250,7 +435,7 @@ a sender whose copy into a parked receiver is refused answers `-KOS_EFAULT`, and
 receiver is WOKEN with `-KOS_EFAULT` rather than a byte count, because it is already off
 `recv_waiters` and nothing else would ever wake it. The same holds in the other direction
 (a receiver's scan over parked senders), for the fastpath call, and for `kos_reply`, whose
-cap is consumed regardless. `endpoint_recv`'s scan STOPS at the refusal instead of
+cap is consumed regardless. `endpoint_recv_locked`'s scan STOPS at the refusal instead of
 continuing to the next sender, unlike the `ENOSYS`/`EMFILE` bounces: a bool does not say
 which end went away, so a scan that continued could pop and fault every queued sender on the
 receiver's own lost buffer.
@@ -259,7 +444,8 @@ receiver's own lost buffer.
 arm mints the one-shot `CAP_REPLY` into the receiver's table and only then writes the handle out,
 so a refused `write_recv_info` would leave a capability installed whose holder was never told the
 number of it: nothing can ever spend it, and the caller it names parks to its deadline or, untimed,
-forever. `endpoint_recv`'s `CALL_SEND_WAIT` arm and `endpoint_call`'s fastpath each undo the mint
+forever. `endpoint_recv_locked`'s `CALL_SEND_WAIT` arm and `endpoint_call`'s fastpath each undo the
+mint
 with `cap_uninstall_reply` and then answer both ends `-KOS_EFAULT`. That retraction is SILENT,
 unlike `handle_close`'s `CAP_REPLY` arm, which answers the parked caller as a
 close-instead-of-reply: here the minter is itself the one answering that caller, and a second
@@ -268,7 +454,8 @@ ambiguity than there: the out-pointer is the RECEIVER's own, so every sender que
 would meet the same fault.
 
 An info-less receive has nothing to retract. `write_recv_info` answers true for `out == 0` and
-moves no byte, and `endpoint_recv` bounces a `CALL_SEND_WAIT` sender `-KOS_ENOSYS` ahead of any
+moves no byte, and `endpoint_recv_locked` bounces a `CALL_SEND_WAIT` sender `-KOS_ENOSYS` ahead of
+any
 mint, so the retraction above is reached only where a real out-pointer was named.
 
 **A refusal is not a no-op.** The copy stops at the first granule refused, so a prefix has
@@ -280,9 +467,9 @@ buffer as an empty arrival. The residue is documented rather than engineered awa
 party is told a transfer succeeded over a buffer in that state, not that the transaction was
 undone.
 
-The `kos_recv_timed` deadline and flag reads are outside this: each is one 4-aligned word,
-which cannot straddle a granule, and both happen before anything is committed, so a refusal
-there is a plain `-KOS_EFAULT` with nothing moved and nothing to unwind.
+The receive's own input words are outside this: the IN prefix of `kos_reply_recv_opts` is read
+in one copy of 4-aligned words before anything is committed, so a refusal there is a plain
+`-KOS_EFAULT` with nothing moved and nothing to unwind.
 
 On a board that describes regions instead of translating, `access_copy` is a bare `kmemcpy`
 and cannot fail -- the unmap route does not exist there, the frame syscalls being
@@ -369,9 +556,9 @@ somebody else is affected by breaking it. A node that only CALLS may return as a
 
 **Which capability a node gets is its own reading of the same entry.** An entry naming this node
 is a LOCAL endpoint carrying `CAP_WAIT | CAP_SIGNAL`, with the port bound to it, so a call
-arriving on that port reaches a thread parked in an ordinary `kos_recv`. An entry naming another
-node is a FAR endpoint carrying `CAP_SIGNAL` alone, which is what refuses it at `kos_recv`'s
-resolve with no branch of `endpoint_recv` having to learn about locality.
+arriving on that port reaches a thread parked in an ordinary receive. An entry naming another
+node is a FAR endpoint carrying `CAP_SIGNAL` alone, which is what refuses it at that receive's
+resolve with no branch of `endpoint_recv_locked` having to learn about locality.
 
 **A pooled slot keeps its last occupant's fields**, so a far endpoint that is closed would
 leave its route standing for whatever local endpoint lands on that slot next. Both fields
@@ -620,7 +807,7 @@ in order:
    refused ON THE SPOT rather than held for a service that may arrive. Once popped, that receiver
    is COMPLETED whatever follows: it is off its queue, so an early return would park it on nothing.
 3. a record is seated for the held slot (`amp::inbound_seat`) and a `CAP_REPLY` installed for it
-   (`cap_install_far_reply`), gated on the receiver's `kos_recv` having asked for info -- an
+   (`cap_install_far_reply`), gated on the receiver having asked for info -- an
    info-less recv has nowhere to be handed a capability, so the seat is never taken rather than
    taken and undone. A seat or an install that fails FORGETS the record (`amp::inbound_forget`)
    and the slot stays the taker's to release.

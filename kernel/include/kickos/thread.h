@@ -25,9 +25,10 @@
 
 namespace kickos
 {
-    struct Endpoint; // kickos/endpoint.h
-    struct Mutex;    // kickos/sync.h
-    struct Task;     // kickos/task.h
+    struct Endpoint;   // kickos/endpoint.h
+    struct IrqBinding; // kickos/irq.h
+    struct Mutex;      // kickos/sync.h
+    struct Task;       // kickos/task.h
 
     enum class ThreadState : uint8_t
     {
@@ -64,7 +65,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ,       // wait_obj: the IrqBinding. A sem queue; this park reads wait_result.
+        WAIT_IRQ,       // wait_obj: the IrqBinding; queue-less, it naming its one server
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -188,6 +189,15 @@ namespace kickos
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
+        // IRQ notifications delivered to this thread and not yet consumed by a wait, ONE BIT
+        // PER LINE: the bit is the binding's own pool index, seated by irq_notify_bind. Set
+        // from ISR context and from the doorbell syscall, cleared by the wait that takes it,
+        // both under IrqLock.
+        //
+        // HERE for the reason `affinity` is here: where uint64_t aligns to 8 this pair of
+        // words is the padding slice_deadline_ns leaves anyway, so at one kernel core the
+        // field is free. Moving it costs every TCB four bytes or eight.
+        uint32_t notify_pending = 0;
         uint64_t slice_deadline_ns = 0;
 
         void* stack_base = nullptr;
@@ -345,6 +355,14 @@ namespace kickos
             }
             return static_cast<Thread*>(wait_obj);
         }
+        IrqBinding* wait_irq_binding() const
+        {
+            if (wait_kind != WAIT_IRQ)
+            {
+                return nullptr;
+            }
+            return static_cast<IrqBinding*>(wait_obj);
+        }
         Task* wait_task_target() const
         {
             if (wait_kind != WAIT_TASK_EMPTY)
@@ -404,6 +422,28 @@ namespace kickos
         if (alignof(uint64_t) == 4)
         {
             bytes = bytes + sizeof(uint32_t);
+        }
+#endif
+        // Thread::notify_pending competes for that same padding word. Measured 0 on the host,
+        // armv7m, armv6m, rv32imac and one-core armv8a, and four on RXv3, which has no such
+        // padding.
+        if (alignof(uint64_t) == 4)
+        {
+            bytes = bytes + sizeof(uint32_t);
+        }
+#if KICKOS_KERNEL_CORES > 1
+        // Above one core affinity already holds the word, so the pair rounds
+        // slice_deadline_ns up a whole quantum: measured 8 on armv8a and on the LX6. A TCB
+        // aligned wider than that quantum rounds once more at the tail, and a 16-aligned host
+        // fixture is the only thing in the fleet that is.
+        if (alignof(uint64_t) == 8)
+        {
+            size_t const pair = 2 * sizeof(uint32_t);
+            bytes = bytes + pair;
+            if (alignof(Thread) > pair)
+            {
+                bytes = bytes + alignof(Thread) - pair;
+            }
         }
 #endif
         // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside

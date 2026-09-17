@@ -56,7 +56,10 @@ int main(int argc, char** argv)
         // capability index, KOS_CAP_STDOUT. A path where the kernel never reaches the info
         // write leaves exactly what is here.
         info.reply_cap = KOS_CAP_NONE;
-        got = kos_recv(ep, msg, sizeof(msg), &info);
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
+        got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
+        info = opts.info;
         if (got < 0)
         {
             // A REPLY CAPABILITY CAN OUTLIVE A REFUSED ARRIVAL, and <kickos/sys.h> asks this

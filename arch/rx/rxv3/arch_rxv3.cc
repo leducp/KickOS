@@ -839,6 +839,22 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
+#if KICKOS_BENCH
+// Declared rather than included: this TU is below <kickos/bench.h>.
+extern "C" void kickos_bench_mpu_commit(uint32_t delta);
+
+// THE SHIFT MUST TRACK bench_cyccnt() in <kickos/bench.h>. CMTW1 counts at PCLKB/8 and the
+// rest of the phase table is in ICLK cycles, so a commit read without the scaling would put
+// PH_MPU_COMMIT on another clock and nothing in the table would say so.
+//
+// always_inline: an out-of-line copy charges two call/ret pairs to a delta PH_NULL prices as
+// two bare counter reads.
+static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
+{
+    return reg32(CMTW1_BASE + CMTW_CMWCNT) << 5;
+}
+#endif
+
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -852,8 +868,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // bracket keeps the seam callable from anywhere else.
 void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = mpu_bench_cyc();
+#endif
     arch_irq_state_t const irq = arch_irq_save();
     struct arch_mpu_encoded const* const img = g_pend_image;
+    // Returns BEFORE the bench bracket below closes: an empty stash writes no descriptor,
+    // and a sample of the mask pair alone would sit under every real one as that row's min.
     if (img == nullptr)
     {
         arch_irq_restore(irq);
@@ -900,6 +921,9 @@ void kickos_arch_mpu_commit(void)
         rx_mpu_mark(']');
     }
     arch_irq_restore(irq);
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
+#endif
 }
 #else
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,

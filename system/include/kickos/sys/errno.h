@@ -26,6 +26,12 @@ enum kos_errno
                          //   about the request is malformed and no deadline passed; the peer
                          //   did not play its part.
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
+    KOS_ENOTIFY = 11,    // an IRQ NOTIFICATION ended the wait and no message arrived. The
+                         //   caller is expected to SERVICE THE LINE, which is why this is not
+                         //   spelled EAGAIN: a code that reads as "try again" invites a loop
+                         //   that never touches the device. Not a failure and not a deadline.
+                         //   Zero bytes has to keep meaning a zero-length message, which is
+                         //   the whole reason the case needs a return of its own.
     KOS_ENOMEM = 12,     // something had to be ALLOCATED and could not be: an object pool, the
                          //   thread pool, the RAM arena, the capability-chunk slab, the caller's
                          //   MPU descriptor budget. A full capability table is KOS_EMFILE, which
@@ -48,6 +54,13 @@ enum kos_errno
     KOS_ETIMEDOUT = 110, // a caller-supplied deadline passed before the operation could
                          //   complete, and NOTHING happened: a timed send that expires
                          //   delivered no bytes and left no state behind
+    KOS_EALREADY = 114,  // the state asked for was ALREADY there and the call changed nothing:
+                         //   an irq doorbell rung onto a bit its server has not drained yet.
+                         //   The mechanism is working; what the code reports is that the
+                         //   consumer is behind, which is the only way a producer can see it.
+                         //   Not spelled EAGAIN for the reason KOS_ENOTIFY is not: a code
+                         //   reading as "try again" invites a retry loop, and a repost cannot
+                         //   set a bit that is already set.
     KOS_ECANCELED = 125, // this thread was cancelled: the wait it was in (or was about to
                          //   enter) is abandoned, and the thread is expected to exit
     KOS_EOWNERDEAD = 130 // mutex ACQUIRED but the prior owner died holding it (state may be torn)

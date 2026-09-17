@@ -148,7 +148,10 @@ int main(int, char**)
                                                 KOS_AUTH_MEMORY, nullptr, group);
         if (c.valid())
         {
-            int32_t const got = kos_recv(held[0], &child_rc, sizeof(child_rc), nullptr);
+            struct kos_reply_recv_opts opts;
+            kos_reply_recv_opts_init(&opts, held[0], KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            int32_t const got = kos_reply_recv(KOS_CAP_NONE, &child_rc,
+                                               kos_call_lens_pack(0, sizeof(child_rc)), &opts);
             (void)c.join(KOS_TIMEOUT_NONE);
             child_ok = got == static_cast<int32_t>(sizeof(child_rc)) and child_rc == 0;
         }

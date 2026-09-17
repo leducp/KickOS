@@ -3,7 +3,7 @@
 //
 // K64F/UART0 userspace polled UART TX console driver (console handover). An
 // UNPRIVILEGED thread owns the granted UART0 register window and serves a console
-// endpoint: it kos_recv()s byte batches from stdout clients and POLL-writes each
+// endpoint: it kos_reply_recv()s byte batches from stdout clients and POLL-writes each
 // byte to the UART0 data register. It does NOT clock/pin/baud the UART: the
 // kernel's uart0_init() already did that at boot, and console_tx_deinit() left it
 // TX-capable in a polled state. The driver only drives TX inside its window; SIM
@@ -38,8 +38,8 @@ extern "C"
 
     // The unprivileged driver thread entry. `arg` is the granted UART0 window BASE,
     // passed as the thread-arg VALUE (never dereferenced as memory). The delegated
-    // recv cap lands at child table index 1. Loops kos_recv() -> poll-write each byte
-    // to UART0_D; exits cleanly when kos_recv returns < 0 (endpoint dead / EPIPE).
+    // recv cap lands at child table index 1. Loops kos_reply_recv() -> poll-write each
+    // byte to UART0_D; exits cleanly when the receive returns < 0 (endpoint dead / EPIPE).
     // Spawned by k64uart_console_start(), or directly by a consumer.
     void k64uart_console_driver(void* arg);
 

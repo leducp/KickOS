@@ -299,6 +299,13 @@ namespace kickos
     {
         t->on_timer = false;
     }
+
+    // No clock drives these fixtures, so an armed deadline is recorded and never expires: an
+    // arm that wants the expiry drives thread_abort_park itself.
+    void ktime_deadline_arm(Thread* t, uint32_t)
+    {
+        t->on_timer = true;
+    }
 }
 
 namespace kickos

@@ -210,7 +210,9 @@ namespace selftest
         {
             return false;
         }
-        bool const heard = kos_recv(g_pl_ep, rep, sizeof(int32_t) * XS_WORDS, nullptr)
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(int32_t) * XS_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(int32_t) * XS_WORDS);
         bool const joined = m.join(PLACE_JOIN_US) == 0;
         return heard and joined;
@@ -502,7 +504,9 @@ namespace selftest
         int mj = -1;
         if (seated)
         {
-            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+            struct kos_reply_recv_opts opts;
+            kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
             mj = m.join(PLACE_JOIN_US);
         }
@@ -567,7 +571,9 @@ namespace selftest
         int mj = -1;
         if (seated)
         {
-            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+            struct kos_reply_recv_opts opts;
+            kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
             mj = m.join(PLACE_JOIN_US);
         }
@@ -679,7 +685,9 @@ namespace selftest
         bool heard = false;
         if (seated)
         {
-            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+            struct kos_reply_recv_opts opts;
+            kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
             (void)m.join(PLACE_JOIN_US);
         }
@@ -771,7 +779,9 @@ namespace selftest
         int mj = -1;
         if (seated)
         {
-            heard = kos_recv(g_pl_ep, rep, sizeof(rep), nullptr)
+            struct kos_reply_recv_opts opts;
+            kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
             mj = m.join(PLACE_JOIN_US);
         }
@@ -1163,6 +1173,158 @@ namespace selftest
         // A crowd the kernel had pinned would satisfy the union below with no choice made.
         TAP_CHECK(unpinned == PL_CROWD);
         TAP_CHECK((reached & want) == want);
+    }
+
+    // --- A DEFERRED WAKE MUST REACH A CALLER PINNED TO ANOTHER CORE ---------------
+    // The fused reply-receive answers its caller and then PARKS, so the switch that follows
+    // stores nothing and announces nothing: the outgoing thread left the run set. A caller
+    // placeable only on a peer is then owed the ask the park itself carries, and nothing
+    // later re-derives one.
+    //
+    // THIS CLAIM DOES NOT EXIST AT ONE CORE. There the same pick simply takes the caller, so
+    // the whole file is compiled out below one core rather than the arm skipping.
+    //
+    // The spinner is what makes a missing ask observable: FIFO and never blocking, it holds
+    // the caller's only core until something takes it away, and only an ask can.
+    constexpr uint8_t XC_SPIN_PRIO = 14;   // above root, below the caller
+    constexpr uint8_t XC_CALLER_PRIO = 20; // the thread the reply readies
+    constexpr uint8_t XC_SERVER_PRIO = 12;
+    constexpr uint32_t XC_JOIN_US = 400000;
+    kos_cap_t g_xc_ep = KOS_CAP_NONE;
+    kos_cap_t g_xc_gate = KOS_CAP_NONE;
+    Atomic<uint32_t, Order::RELAXED> g_xc_stop{0};
+    Atomic<uint32_t, Order::RELAXED> g_xc_spins{0};
+    Atomic<int32_t, Order::RELAXED> g_xc_call_rc{-99};
+    Atomic<int32_t, Order::RELAXED> g_xc_serve_rc{-99};
+
+    void xc_server(void*) // caps: E(WAIT)@1, gate@2
+    {
+        char buf[16];
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
+        int32_t const got =
+            kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
+        if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
+        {
+            g_xc_serve_rc = -1;
+            return;
+        }
+        // The reply cap in hand IS the reading that the caller is parked awaiting it, and
+        // the gate is the reading that the spinner owns the caller's core. Both have to hold
+        // before the answer goes out or the arm proves nothing.
+        kos_sem_wait(2);
+        kos_cap_t const reply = opts.info.reply_cap;
+        kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
+        memcpy(buf, "pong!", 5);
+        g_xc_serve_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
+    }
+    void xc_caller(void*) // caps: E(SIGNAL)@1
+    {
+        char buf[16];
+        memcpy(buf, "ping", 4);
+        g_xc_call_rc = kos_call(1, buf, 4, sizeof(buf));
+    }
+    void xc_spinner(void*) // caps: gate@1
+    {
+        kos_sem_post(1); // the core is ours; the server may answer now
+        uint32_t n = 0;
+        while (g_xc_stop.load() == 0)
+        {
+            n = n + 1;
+            g_xc_spins = n;
+        }
+    }
+    void t_resched_reaches_pinned_caller()
+    {
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        uint32_t away = 0;
+        unsigned found = 0;
+        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((iso & (1u << c)) != 0)
+            {
+                continue;
+            }
+            away = c;
+            found = 1;
+            break;
+        }
+        if (found == 0)
+        {
+            tap::skip("a cross-core wake needs a non-isolated core beside the boot core");
+            return;
+        }
+        g_xc_stop = 0;
+        g_xc_spins = 0;
+        g_xc_call_rc = -99;
+        g_xc_serve_rc = -99;
+        if (kos_endpoint_create(&g_xc_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        if (kos_sem_create(0, &g_xc_gate) != 0)
+        {
+            (void)kos_handle_close(g_xc_ep);
+            tap::skip("semaphore pool too small");
+            return;
+        }
+        kos_cap_grant vcaps[] = {{g_xc_ep, KOS_CAP_WAIT}, {g_xc_gate, CH_FULL}};
+        kos_cap_grant ccaps[] = {{g_xc_ep, KOS_CAP_SIGNAL}};
+        kos_cap_grant pcaps[] = {{g_xc_gate, CH_FULL}};
+        auto sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 2,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_TASK_NONE, nullptr, 0, 1u << PL_HOME);
+        kos::thread::Handle cl;
+        kos::thread::Handle sp;
+        if (sv.valid())
+        {
+            kos_sleep_ns(3000000ull); // let the server park in its receive
+            cl = kos::thread::create_caps(xc_caller, nullptr, "xcC", XC_CALLER_PRIO, ccaps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << away);
+        }
+        if (cl.valid())
+        {
+            kos_sleep_ns(3000000ull); // let the caller park awaiting its reply
+            sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, pcaps, 1,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << away);
+        }
+        if (not sv.valid() or not cl.valid() or not sp.valid())
+        {
+            g_xc_stop = 1;
+            if (sp.valid())
+            {
+                (void)sp.join(XC_JOIN_US);
+            }
+            (void)kos_handle_close(g_xc_ep);
+            kos_sem_destroy(g_xc_gate);
+            tap::skip("pool too small for 3 threads");
+            return;
+        }
+        // THE WHOLE WITNESS. A DEADLINE and not a park: a caller nobody asked for stays READY
+        // behind the spinner and this returns a refusal instead of hanging the suite.
+        int const cjoined = cl.join(XC_JOIN_US);
+        g_xc_stop = 1;
+        int const sjoined = sp.join(XC_JOIN_US);
+        // Releases the server's own park, which has nothing else coming.
+        (void)kos_send(g_xc_ep, "", 0);
+        int const vjoined = sv.join(XC_JOIN_US);
+        (void)kos_handle_close(g_xc_ep);
+        kos_sem_destroy(g_xc_gate);
+        tap::diag("caller pinned to core %u under a spinner: join %d, call %d, spins %u",
+                  static_cast<unsigned>(away), cjoined,
+                  static_cast<int>(g_xc_call_rc.load()),
+                  static_cast<unsigned>(g_xc_spins.load()));
+        TAP_CHECK(sjoined == 0);
+        TAP_CHECK(vjoined == 0);
+        // The precondition: the spinner really did hold the caller's core for the answer.
+        TAP_CHECK(g_xc_spins.load() > 0u);
+        TAP_CHECK(cjoined == 0);
+        // Read the VALUE too: a caller that ran for some other reason than its answer
+        // arriving would not carry the reply.
+        TAP_CHECK(g_xc_call_rc.load() == 5);
     }
 #endif
 }

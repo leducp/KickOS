@@ -145,9 +145,12 @@ namespace kickos
     // known defect and not the intent; it is recorded in TODO.md under the M8.8 review
     // residue, with what closing it takes.
     //
-    // The one form is prose, as it is for cap_resolve and switch_prepare; there is no runtime
-    // check, because the caller's IrqLock is the authority and a second one beside it would be
-    // a second truth.
+    // The one form is prose, as it is for cap_resolve and switch_prepare, and above one core a
+    // debug build checks it at the body: KICKOS_ASSERT_EXCLUSION_HELD (kickos/klock.h) reads
+    // the per-core lock state the caller's IrqLock already maintains, so nothing stands beside
+    // the lock as a second truth. AT ONE KERNEL CORE IT CHECKS NOTHING, the exclusion
+    // there being the interrupt mask and no seam reporting it, so a green single-core run
+    // witnesses no bracket at all and the note is the whole of what holds.
     namespace sched
     {
         void init();
@@ -181,7 +184,12 @@ namespace kickos
 
         // The bare entry to the single decision point, which is pick_and_seat. Safe to call
         // from thread or ISR context; caller holds the exclusion.
-        void reschedule();
+        //
+        // `woken` names a thread this pass readied and owes a core to. Above one core a pick
+        // that DECLINES it is the only thing that can announce it to a peer, at ITS priority
+        // and not the caller's, so a pass that readied somebody and passes nullptr strands a
+        // thread pinned elsewhere. Null where the pass readied nobody.
+        void reschedule(Thread const* woken = nullptr);
 
         // Voluntary yield: rotate within priority, then reschedule. ACQUIRES, and the
         // console-publish drain calls it from outside a bracket it left on purpose.
@@ -207,8 +215,20 @@ namespace kickos
         // wake_no_resched (true iff it readied t) and defer one resched_after_wake, for the
         // HIGHEST-priority thread it woke, to every path that does not itself park.
         // Both hold the exclusion as their precondition.
+        //
+        // THAT DEFERRAL COVERS THE LOCAL SEAT AND NOTHING ELSE. A caller readying several
+        // threads still owes announce_ready for each of the others: see below.
         [[nodiscard]] bool wake_no_resched(Thread* t);
         void resched_after_wake(Thread const* t);
+
+#if KICKOS_KERNEL_CORES > 1
+        // Tell the peers that could take READY thread `t` to look, at ITS priority, with no
+        // local pick and no switch. One seat can hold only one thread, so a caller readying
+        // several and deferring ONE reschedule reaches every peer for one of them and none
+        // for the rest, and a thread whose affinity excludes this core is then reachable by
+        // nothing at all. Announcing costs no local decision, so it need not be deferred.
+        void announce_ready(Thread const* t);
+#endif
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
         // The bookkeeping half of switch_to, for the IPC fastpath, which runs inside the

@@ -128,6 +128,11 @@ namespace
         }
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
+        // This thread serves the line, so it binds the notification the ISR sets.
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[f411spi] irq_attach refused the delegated line");
+        }
 
         // SSM|SSI must hold internal NSS high or the master takes a MODF. Configure with
         // SPE=0, then enable.
