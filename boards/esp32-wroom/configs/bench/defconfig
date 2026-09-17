@@ -3,13 +3,11 @@
 
 CONFIG_BOARD_ESP32_WROOM=y
 
-# The switch distribution on the fleet's only Xtensa part, at one kernel core. The LX6 swaps
-# inline, so every composite here closes on the next resume and is not a cost; BD_SWITCH is
-# stamped at both ends inside xtensa_switch and is what this image publishes.
-#
-# This board has no MPU, so there is no enforcing posture to mirror and the memory model is
-# the flat one the other variants use.
+# Single-core LX6 switch benchmark with flat memory. BD_SWITCH measures
+# the switch itself; composite intervals include time until resume.
 CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_MAX_TASKS=10
+CONFIG_KICKOS_MAX_DOMAINS=10
 CONFIG_KICKOS_USER_STACK_SIZE=4096
 CONFIG_KICKOS_IDLE_STACK_SIZE=768
 CONFIG_KICKOS_ROOT_STACK_SIZE=4096

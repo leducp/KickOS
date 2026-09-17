@@ -1,32 +1,26 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The host gates.
-
-# Two host programs and a python checker, no GTest, so this one sits outside the unit-test
-# knob.
+# These standalone programs and Python checks do not require GTest.
 add_subdirectory(telemetry)
 
 if(KICKOS_BUILD_UNIT_TESTS)
-  # Nothing in this list links a library another directory defines. One that does belongs
-  # under its provider below.
+  # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
       ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
       deathspace drvbringup fastrefuse faultline frame fusedwake grantnocache irqquiesce kstring
-      ktime mapexec placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass
+      ktime mapexec mapfence placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass
       vrange)
     add_subdirectory(${_unit})
   endforeach()
 
-  # kickos_add_unit_test reads KICKOS_POSTURE off each library it is handed, at the moment
-  # the call runs. A consumer added before its provider finds no target, keeps the preset's
-  # own posture macros and takes the library's PUBLIC ones on top: the configure succeeds and
-  # the translation unit is compiled under both.
+  # Define providers first so kickos_add_unit_test can read their configuration
+  # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
       cancelkind capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
-      schedwake slayhook taskdeath wildstack)
+      schedwake slayhook taskdeath taskpool wildstack)
     add_subdirectory(${_unit})
   endforeach()
 

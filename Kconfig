@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS configuration. Symbols are declared without a prefix, as in every Kconfig
-# dialect; the tooling adds CONFIG_ when it writes .config and the generated header.
+# Kconfig adds CONFIG_ when writing configuration symbols.
 
 mainmenu "KickOS configuration"
 
-# --- Capability facts -------------------------------------------------------
-# Never prompted: a chip or an arch selects them. A fact is declared here only when
-# some option's availability or default depends on it.
+# Capabilities selected by chips/architectures, without user prompts.
 
 config HAS_MPU
 	bool
@@ -148,7 +145,7 @@ config KICKOS_ISOLATED_CORES
 	  the boot core and a latency-critical thread is pinned alone onto the isolated
 	  one.
 
-# --- The AMP posture --------------------------------------------------------
+# AMP configuration.
 
 choice
 	prompt "AMP node posture"
@@ -219,10 +216,7 @@ config KICKOS_AMP_NODE_ID
 	  learn it: on the CV1800B mhartid is hardwired to zero in the openc906 release
 	  and customised per integrator, so there is no register to stand on.
 
-# --- The AMP partition's geometry -------------------------------------------
-# Nothing per-node is stated here: every image derives its own base from its index
-# and the three facts below. Two images cannot disagree about a value neither of
-# them states.
+# Derive each AMP node's memory range from common partition geometry.
 
 config KICKOS_AMP_PARTITION_BASE
 	hex "Physical base of the whole AMP partition"
@@ -249,10 +243,8 @@ config KICKOS_AMP_SHARED_SIZE
 	  cells and the per-node counts. Sized so a part whose protection unit can
 	  describe the partition has one region to name.
 
-# A second span, for a part that executes from an aperture separate from the one it
-# keeps data in. The pair below divides the TEXT span; the three above keep dividing
-# the span carrying the shared window, which is read-modify-written and so cannot sit
-# in execute-in-place memory. Left at zero they mean "one span".
+# Optional separate text span for XIP targets. Shared writable data stays
+# in the data span. Zero selects a single span.
 
 config KICKOS_AMP_TEXT_BASE
 	hex "Base of the separate aperture each node's TEXT is linked into"
@@ -366,12 +358,8 @@ config KICKOS_HAVE_MPU
 	default 1 if MEMORY_MODEL_MPU
 	default 0
 
-# --- Paging mode ------------------------------------------------------------
-# The level count is DERIVED from the selection
-# (arch/riscv/rv64imac/include/kickos/arch/rv64_paging.h).
-#
-# satp.MODE is WARL, so a hart handed a mode it does not implement keeps the field it had;
-# the prologue reads it back and refuses by name.
+# Derive page-table depth from paging mode. Boot code checks satp readback
+# because unsupported WARL modes may be ignored.
 
 choice
 	prompt "RV64 paging mode"
@@ -401,13 +389,8 @@ config KICKOS_RV64_SATP_MODE
 	  level count is derived from. Unprompted, the choice above being what a board
 	  states.
 
-# --- Interrupt controller ---------------------------------------------------
-# The version is DERIVED from the selection: arch/CMakeLists.txt links one backend on it
-# and cmake/kickos.cmake spells the emulated machine's gic-version from it.
-#
-# The two are different address maps: a GICv3 CPU interface is reached through ICC_* system
-# registers instead of a memory-mapped frame, and the banked registers move to a per-core
-# redistributor.
+# Select the matching GIC backend and emulator version. GICv3 uses
+# ICC_* registers and per-core redistributors.
 
 choice
 	prompt "arm64 interrupt controller"
@@ -495,6 +478,44 @@ config KICKOS_MAX_THREADS
 	int "Static thread pool"
 	range 2 64
 	default 16
+
+config KICKOS_MAX_TASKS
+	int "Task pool"
+	range 2 256
+	default 18
+	help
+	  Slots in the task pool (task.h). A task is ONE memory domain and the threads that
+	  joined it, so this is a count of process-like groups and NOT of threads: nothing
+	  relates it to KICKOS_MAX_THREADS, and a board with many threads in few groups states
+	  a small figure here on purpose.
+
+	  A plain spawn joins the spawner's task and takes no slot. A spawn bringing its own
+	  data grant or changing privilege gets a task of its own, and kos_task_create reserves
+	  one before any thread joins it, so what this bounds is DISTINCT GROUPS live at once.
+
+	  Two of the slots are boot's: idle's task and root's. Past those, a spawn that finds
+	  the pool full answers -KOS_ENOMEM, the same code thread-pool exhaustion answers, and
+	  it is refused before any thread slot is claimed.
+
+config KICKOS_MAX_DOMAINS
+	int "Memory-domain pool"
+	range 3 256
+	default 20 if HAS_ASPACE
+	default 18
+	help
+	  Slots in the memory-domain pool (domain.h). TWO OF THEM ARE THE IMMORTAL SINGLETONS,
+	  the kernel domain and the default unprivileged one: domain_init pins them to the
+	  first two slots and free_slot never hands either out.
+
+	  A count of DOMAINS, not of descriptors: nothing here is paid out of
+	  KICKOS_MPU_MAX_REGIONS, which bounds how much ONE domain describes.
+
+	  THE TWO BACKENDS SPEND THEM DIFFERENTLY, which is why the default differs. A region
+	  backend reaches at most one distinct domain per thread, every no-grant task resolving
+	  to the shared singleton. A translating one spends one per TASK: a domain carries an
+	  address space there, so no two tasks may share one and the singleton is a template
+	  rather than a domain to join. Size a translating board for a domain per live task
+	  plus the two singletons; short of that a spawn answers -KOS_ENOMEM.
 
 config KICKOS_MAX_SEMAPHORES
 	int "CAP_SEM pool"
@@ -935,9 +956,7 @@ config KICKOS_TLS
 config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M
-	# A model ceiling and not an observed overrun: at this depth the chain runs inside
-	# the IrqLock exit_current holds, so the frame term cannot be spent.
-	# armv7m_trap_stack.h.
+	# This chain holds IrqLock, so the model excludes another interrupt frame.
 	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3

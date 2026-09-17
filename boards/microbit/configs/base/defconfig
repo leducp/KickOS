@@ -3,40 +3,19 @@
 
 CONFIG_BOARD_MICROBIT=y
 
-# The RECOMMENDED tier: 4 or more threads, thread_local, the fleet-default cap tables and
-# a self-test that fits as one image. The per-board arithmetic below is what this part
-# pays for it.
-#
-# 32 KiB of SRAM, a departure from the real device's 16 KiB (arch/arm/chip/nrf51/nrf51.ld
-# carries the reason): the fleet's only executable armv6m target, provisioned like the
-# rest of the fleet rather than at its floor.
-#
-# 2048 AND NOT 1408: KICKOS_TLS strides every arena block by a power of two, the armv6m
-# thread pointer being SP masked down to the block, and 1408 would round the stride to
-# 2048 anyway and waste the difference as padding rather than stack.
-#
-# FOUR AND NOT EIGHT: a slot costs a KICKOS_KERNEL_STACK_SIZE block (896 on armv6m) in
-# kernel .bss AND a struct _reent in the app window, both below the arena, so raising the
-# thread count shrinks the arena while growing the demand.
-#
-# Its CI gate is the TAP suite, so the self-test syscalls are part of the base posture
-# rather than a variant of it.
+# Use 32 KiB SRAM for the emulated target; hardware has 16 KiB.
+# Four threads leave room for kernel stacks and libc state.
+# Use 2048-byte stacks for power-of-two TLS strides. Enable self-test
+# syscalls in the base configuration used by CI.
 CONFIG_KICKOS_MAX_THREADS=4
+CONFIG_KICKOS_MAX_TASKS=6
+CONFIG_KICKOS_MAX_DOMAINS=6
 CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048
 CONFIG_KICKOS_ENABLE_SELFTEST=y
 
-# 128 AND NOT THE FLEET'S 256, which is 32 KiB of SRAM paying for itself rather than the
-# fleet paying for it: the console TX ring is derived at twice this rounded to a power of
-# two, so 256 costs 512 bytes of kernel .bss here and 128 costs 256, out of the same arena
-# the selftest allocates from. The longest diagnostic this board can emit measures 86
-# characters (the wild-PSP report at a 20-character reason and a 15-character thread name),
-# so nothing in the catalogue truncates at 128.
-#
-# 128 IS THE FLOOR AND IT IS NOT LOW ENOUGH FOR EVERY ARM. Measured: at a 256-byte ring the
-# selftest's irq_as_event still cannot allocate its 4 KiB MMIO page and skips itself; at 128
-# it runs. A 128-byte ring needs a 64-byte line bound, and the fault reporter's own
-# KDIAG_FAULT_LINE_MAX is 96, so its records would no longer fit the ring CRLF-expanded and
-# would silently take the locked writer. That trade is not this knob's to make.
+# A 128-byte line limit keeps the derived TX ring at 256 bytes and covers
+# the board's diagnostics. Further reduction conflicts with fault-record sizing.
+# The irq_as_event test can still skip when its 4 KiB allocation does not fit.
 CONFIG_KICKOS_DIAG_LINE_MAX=128

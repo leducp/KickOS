@@ -1,18 +1,10 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The PE32+ section layout for every x86_64 image on this board.
- *
- * WITHOUT THIS FILE A FULL IMAGE LINKS CLEAN AND FIRMWARE REFUSES TO LOAD IT. `ld -m i386pep`
- * collects *(.text.*) but names no wildcard for .data.*, .rodata or .bss.*, and this arch
- * compiles -ffunction-sections -fdata-sections, so each becomes a page-aligned PE section of
- * its own; past about seventy sections SizeOfHeaders passes 0x1000 and EDK II's loader refuses
- * a section whose virtual address lies inside the headers. It presents as `failed to load ...:
- * Unsupported` with nothing on the serial line. --strip-debug does not fix it.
- *
- * Everything but three wildcards (.data.* into .data, .rodata and .rodata.* into .rdata,
- * .bss.* into .bss) is `ld -m i386pep --verbose` VERBATIM, so a binutils whose own layout
- * moves is a diff against a regenerated dump.
+ * PE32+ layout based on ld -m i386pep. Collect .data.*, .rodata.* and .bss.*
+ * to avoid a separate PE section for each compiler-generated input section.
+ * Too many sections extend headers beyond 0x1000 and EDK II rejects the image.
+ * Keep kernel and app constructors in separate ranges.
  */
 
 /* Default linker script, for normal executables */
@@ -24,8 +16,7 @@ OUTPUT_FORMAT(pei-x86-64)
 SEARCH_DIR("=/usr/local/lib/x86_64-linux-gnu"); SEARCH_DIR("=/lib/x86_64-linux-gnu"); SEARCH_DIR("=/usr/lib/x86_64-linux-gnu"); SEARCH_DIR("=/usr/local/lib"); SEARCH_DIR("=/lib"); SEARCH_DIR("=/usr/lib"); SEARCH_DIR("=/usr/x86_64-pep/lib");
 SECTIONS
 {
-  /* Make the virtual address and file offset synced if the alignment is
-     lower than the target page size. */
+  /* Keep virtual and file offsets aligned when section alignment is below page size. */
   . = SIZEOF_HEADERS;
   . = ALIGN(__section_alignment__);
   .text  __image_base__ + ( __section_alignment__ < 0x1000 ? . : __section_alignment__ ) :
@@ -39,16 +30,11 @@ SECTIONS
     *(.glue_7)
     . = ALIGN(8);
     KEEP (*(SORT_NONE(.fini)))
-    /* ??? Why is .gcc_exc here?  */
      *(.gcc_exc)
     PROVIDE (etext = .);
      KEEP (*(.gcc_except_table))
   }
-  /* The Cygwin32 library uses a section to avoid copying certain data
-     on fork.  This used to be named ".data".  The linker used
-     to include this between __data_start__ and __data_end__, but that
-     breaks building the cygwin32 dll.  Instead, we name the section
-     ".data_cygwin_nocopy" and explicitly include it after __data_end__. */
+  /* Keep Cygwin noncopy data after __data_end__ so fork does not copy it. */
   .data BLOCK(__section_alignment__) :
   {
     __data_start__ = . ;
@@ -60,14 +46,10 @@ SECTIONS
     __data_end__ = . ;
     *(.data_cygwin_nocopy)
   }
-  /* The global-ctor split. The section name is EIGHT characters: a PE image stores a section
-     name inline in eight bytes, and a longer one needs a string table an image may not carry.
-
-     .init_array keeps ONLY the closed KickOS-owned archive set, which the boot tail
-     (arch/x86/x86_64/landed_kernel_x86_64.cc) walks before kmain; everything else lands in
-     the app window and runs from kickos_root_entry with the kernel live.
-     tests/static/check_kernel_ctor_placement.sh is the gate on the same rule for the enforced
-     armv7m boards. */
+  /* PE section names must fit in eight bytes without an image string table.
+   * Run constructors from KickOS-owned archives before kmain; put the rest
+   * in the app range for kickos_root_entry.
+   */
   .kosinit BLOCK(__section_alignment__) :
   {
     . = ALIGN(8);
@@ -114,24 +96,10 @@ SECTIONS
     KEEP (SORT(*)(.didat$7))
     /* .ctors & .dtors */
     . = ALIGN(8);
-       /* Note: we always define __CTOR_LIST__ and ___CTOR_LIST__ here,
-          we do not PROVIDE them.  This is because the ctors.o startup
-	  code in libgcc defines them as common symbols, with the
-          expectation that they will be overridden by the definitions
-	  here.  If we PROVIDE the symbols then they will not be
-	  overridden and global constructors will not be run.
-	  See PR 22762 for more details.
-
-	  This does mean that it is not possible for a user to define
-	  their own __CTOR_LIST__ and __DTOR_LIST__ symbols; if they do,
-	  the content from those variables are included but the symbols
-	  defined here silently take precedence.  If they truly need to
-	  be redefined, a custom linker script will have to be used.
-	  (The custom script can just be a copy of this script with the
-	  PROVIDE() qualifiers added).
-	  In particular this means that ld -Ur does not work, because
-	  the proper __CTOR_LIST__ set by ld -Ur is overridden by a
-	  bogus __CTOR_LIST__ set by the final link.  See PR 46.  */
+       /* Define constructor-list symbols directly to override libgcc common symbols;
+        * PROVIDE would leave those symbols unresolved to this list (binutils PR 22762).
+        * These definitions also override user lists and ld -Ur output (PR 46).
+        */
        ___CTOR_LIST__ = .;
        __CTOR_LIST__ = .;
        LONG (-1); LONG (-1);
@@ -139,8 +107,7 @@ SECTIONS
        KEEP (*(.ctor));
        KEEP (*(SORT_BY_NAME(.ctors.*)));
        LONG (0); LONG (0);
-       /* See comment about __CTOR_LIST__ above.  The same reasoning
-          applies here too.  */
+       /* Destructor lists require the same direct definitions as constructor lists. */
        ___DTOR_LIST__ = .;
        __DTOR_LIST__ = .;
        LONG (-1); LONG (-1);
@@ -228,10 +195,9 @@ SECTIONS
 	See pep.em:sort_sections.  */
     SORT(*)(.didat$5)
   }
-  /* Windows TLS expects .tls$AAA to be at the start and .tls$ZZZ to be
-     at the end of the .tls section.  This is important because _tls_start MUST
-     be at the beginning of the section to enable SECREL32 relocations with TLS
-     data.  */
+  /* Keep .tls$AAA first and .tls$ZZZ last. _tls_start must begin the section
+   * for SECREL32 TLS relocations.
+   */
   .tls BLOCK(__section_alignment__) :
   {
     ___tls_start__ = . ;
@@ -248,10 +214,10 @@ SECTIONS
     PROVIDE (end = .);
     PROVIDE ( _end = .);
      __end__ = .;
-    /* Every window is STATED here: `ld -m i386pep` builds no global offset table, so a
-       weak-undefined reference survives as an indirect LOAD whose displacement resolves to
-       the symbol itself. The kernel declares each of these strong
-       (kernel/include/kickos/klink.h), and an empty window is start == end. */
+    /* Define all window symbols strongly: PE has no GOT, so unresolved weak
+     * references can become indirect loads from the symbol itself. Empty windows
+     * have start == end. See include/kickos/klink.h.
+     */
     . = ALIGN(8);
     _kickos_heap_start = . ;
     _kickos_heap_limit = . ;
@@ -277,10 +243,9 @@ SECTIONS
   {
     *(.stabstr)
   }
-  /* DWARF debug sections.
-     Symbols in the DWARF debugging sections are relative to the beginning
-     of the section.  Unlike other targets that fake this by putting the
-     section VMA at 0, the PE format will not allow it.  */
+  /* DWARF symbols are section-relative. PE forbids the zero section VMA
+   * used by some other targets.
+   */
   /* DWARF 1.1 and DWARF 2.  */
   .debug_aranges BLOCK(__section_alignment__) (NOLOAD) :
   {

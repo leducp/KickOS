@@ -161,7 +161,7 @@ overwrite each other.
 
 Every line the kernel side of the report prints goes out through `kprintf_paced`, which offers
 a line the console TX ring refused again instead of losing it (see
-[console.md](console.md), "Overflow policy"). The phase table is forty back-to-back lines and
+[console.md](console.md), "Overflow policy"). The phase table is one back-to-back line per phase and
 the ring holds about eleven of them, so a plain `kprintf` loses the rest whole: three silicon
 captures of the M8.7 campaign carried 6, 9 and 7 rows of 40, with the report continuing
 afterwards as though the table were that short.

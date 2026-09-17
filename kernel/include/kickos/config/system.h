@@ -10,9 +10,8 @@
 
 #include <kickos/units.h>
 
-// The selected board's provisioning (MAX_THREADS + the stack sizes) comes from
-// board_config.h. Absent (sim/standalone), the defaults below apply; they are
-// sized for the generous-RAM sim, not for a small-SRAM board.
+// Use board_config.h provisioning when available; standalone defaults target
+// the simulator rather than small-RAM boards.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif
@@ -34,91 +33,50 @@
 #define KICKOS_MAX_ENDPOINTS 4
 #endif
 
-// Threads the syscall thread_create_call can seat CONCURRENTLY (+ their kernel stacks). This is
-// what every defconfig states and what the boot arena backs one default stack per; it does
-// NOT count root, which holds a slot of its own.
+// Maximum spawned threads and their kernel stacks, excluding root.
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
-// Slots in the thread pool (thread.h). Root takes one at boot and never reaches EXITED, so
-// it is never reclaimed and a spawn can still draw KICKOS_MAX_THREADS of them. Size a TCB
-// array or a cap-run count from THIS; size a user stack or the boot arena from
-// KICKOS_MAX_THREADS.
+// ThreadPool includes root's permanent slot. Use this count for TCB arrays
+// and capability runs; use MAX_THREADS for spawned-stack provisioning.
 #define KICKOS_THREAD_SLOTS (KICKOS_MAX_THREADS + 1)
-// What this board can BACK: the widest per-thread capability table its RAM can spare, and
-// the only capability figure a board may state. The width itself is summed from declared demand
-// (cmake/cap_table.cmake) and refused if it exceeds this. It prices ROOT's table alone: the
-// slab backs one CHILD-width run per holder plus root's own widening (KCAP_SLAB_CHUNKS,
-// cap.h), so a slot here does not cost (KICKOS_THREAD_SLOTS + KCAP_RUN_OFF_POOL) of itself.
+// RAM limit for root's derived capability-table width. Child tables use
+// separately sized slab runs; this limit does not multiply every table.
 #ifndef KICKOS_CAP_TABLE_SUPPLY
 #define KICKOS_CAP_TABLE_SUPPLY 16
 #endif
-// Caps one spawn may delegate. NOT tied to KICKOS_MAX_HANDLES: thread_create_call stages the
-// grant list in CALLER-stack arrays (16 bytes per entry) and root's stack can be 1 KiB,
-// so raising this costs caller stack, not .bss, and tying it to the table ceiling would
-// turn every ceiling lift into a stack overflow. Grants land at child indices
-// 1..cap_count; cap.h static_asserts that they fit.
+// Maximum delegated capabilities per spawn. Staging costs 16 bytes per entry
+// on the caller's stack, so this limit is independent of table width.
 #ifndef KICKOS_MAX_SPAWN_GRANTS
 #define KICKOS_MAX_SPAWN_GRANTS 6
 #endif
-// Virtual ranges one address space can name (see vrange.h): its process image, whatever it
-// has reserved, the frame capabilities it has mapped, and its threads' stacks. A page table
-// has no describable-extent ceiling, so nothing here is paid out of
-// KICKOS_MPU_MAX_REGIONS and no hardware bounds it.
-//
-// THREE KINDS OF CLAIM SHARE THESE SLOTS AND THEY ARE SPENT DIFFERENTLY, so a figure sized
-// against one of them is wrong for the others:
-//   reservation      A LIFETIME cost. There is no user-facing free, so this is how many
-//                    distinct blocks one process may allocate over its life, over and above
-//                    the two the image spends. A figure mirrored from the descriptor bound
-//                    left an app with six.
-//   framecap mapping A LIVE-SET cost. aspace_cap_unmap releases the slot, so it comes back.
-//   thread stack     A PER-THREAD cost, taken where the stack is mapped and returned at
-//                    thread exit, which is what makes the figure scale with the thread count.
+// Virtual-range records per address space, independent of MPU descriptors.
+// Image and reservation records persist; capability mappings release their
+// records on unmap, and thread stacks release theirs at exit.
 #ifndef KICKOS_ASPACE_RANGES
 #define KICKOS_ASPACE_RANGES 40
 #endif
-// Arena blocks whose owner the kernel records (see ramown.h): one per block kos_ram_alloc
-// has handed out, so a caller naming a block is checked against what it reserved and not
-// only against the arena's bounds.
-//
-// A LIFETIME bound: nothing frees a record, so this is how many distinct blocks the WHOLE
-// IMAGE may reserve over its life. A full table answers NULL from kos_ram_alloc, which is
-// what an exhausted arena answers too, that call carrying no route out for an errno.
-//
-// Only a board with live REGION descriptors builds the table.
+// Lifetime arena ownership records for region backends. Exhaustion makes
+// kos_ram_alloc return null; records are not individually freed.
 #ifndef KICKOS_RAM_OWNER_SLOTS
 #define KICKOS_RAM_OWNER_SLOTS 48
 #endif
-// Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
-// the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads
-// a spawn may seat) plus idle, which holds a TCB outside the pool. There is no immortal
-// task, so this needs neither of the two extra slots KICKOS_MAX_DOMAINS spends on its
-// singletons. A slot short and task_for would refuse a spawn the thread pool would still
-// have seated (task.cc static_asserts the floor).
+// Task groups, independent of thread count. Idle and root each use one slot.
+// Plain spawns join an existing task; explicit tasks and separate grants need a slot.
 #ifndef KICKOS_MAX_TASKS
-#define KICKOS_MAX_TASKS (KICKOS_THREAD_SLOTS + 1)
+#define KICKOS_MAX_TASKS 18
 #endif
-// Memory-domain pool (see domain.h), plus the two immortal singletons (the kernel domain
-// and the default unprivileged one).
-//
-// THE TWO BACKENDS COUNT DIFFERENTLY, and it is a count of DOMAINS: nothing here is paid
-// out of KICKOS_MPU_MAX_REGIONS, which bounds how much ONE domain describes. A region
-// backend reaches at most one distinct domain per thread, every no-grant task resolving to
-// the shared singleton. A translating one spends one per TASK instead: a domain carries an
-// address space there, so no two tasks may share one and the singleton is a template
-// rather than a domain to join.
+// Domain slots, including the two permanent kernel/default-user domains.
+// Region backends can share the default domain; MMU tasks need separate domains.
 #ifndef KICKOS_MAX_DOMAINS
 #if KICKOS_HAVE_ASPACE
-#define KICKOS_MAX_DOMAINS (KICKOS_MAX_TASKS + 2)
+#define KICKOS_MAX_DOMAINS 20
 #else
-#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+#define KICKOS_MAX_DOMAINS 18
 #endif
 #endif
-// Independent kernels co-resident in ONE address space (instance.h). One on a chip, and
-// one per emulated MCU under the multi-instance sim. It is a provisioning bound, not a
-// preference: every instance-scoped object is this many copies, so raising it costs .bss
-// linearly. At 1 the index folds to a literal and the image carries none of it.
+// Maximum kernel instances in one address space. Storage grows per instance;
+// a count of one compiles out instance lookup.
 #ifndef KICKOS_MAX_INSTANCES
 #define KICKOS_MAX_INSTANCES 1
 #endif
@@ -128,13 +86,9 @@
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE (64 * 1024)
 #endif
-// Floor and alignment for a caller-provided thread stack. The floor is the arch's DEEPEST
-// thread-exit dispatch (exit_current -> reschedule -> switch_to -> timer rearm, all on the
-// caller's own stack): a stack below it passes the spawn check and then silently overflows
-// on exit. The real value is forwarded per arch as a -D from the top-level CMakeLists;
-// this default is the conservative MAX across arches, so a build that bypasses that ladder
-// is wasteful, never too low. Undersized or misaligned makes the spawn FAIL rather than
-// overflow. The idle stack is exempt: it only spins and never runs the exit dispatch.
+// Minimum caller-supplied stack, sized for the deepest thread-exit path.
+// CMake supplies an architecture-specific value; this fallback is conservative.
+// Reject undersized or misaligned stacks. Idle is exempt because it never exits.
 #ifndef KICKOS_MIN_STACK_SIZE
 #define KICKOS_MIN_STACK_SIZE 1024
 #endif
@@ -161,9 +115,8 @@
 #define KICKOS_MAX_FRAME_RUNS 8
 #endif
 
-// The most slots of one charged pool a single TASK may hold live, one figure per pool. Each
-// must sit strictly below its own pool's width, which cap.h asserts at build time; that
-// relation is the whole of "no task can take a pool's last slot".
+// Per-task limits for charged pools. Each must leave at least one slot
+// available in its corresponding global pool.
 #ifndef KICKOS_TASK_SEMAPHORE_BUDGET
 #define KICKOS_TASK_SEMAPHORE_BUDGET 15
 #endif

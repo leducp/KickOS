@@ -1610,8 +1610,8 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_MUTEXES` | 8 (`system.h`) | `instance.h` (`mutexes`) | >= 2 | 4 (c8) |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
-| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h`) | `instance.h` (`domains`) | derived | 4 |
-| `KICKOS_MAX_TASKS` | `THREAD_SLOTS + 1` (`system.h`) | `instance.h` (`tasks`) | derived | one per live thread under the implicit default, so the floor is `KICKOS_THREAD_SLOTS + 1`; a `static_assert` in `kernel/task/task.cc` refuses less. An EXPLICIT task (`kos_task_create`) that holds no thread is a slot this floor does NOT budget, so an app that creates groups and never populates them makes a spawn answer -KOS_ENOMEM one earlier. A group with N members repays N-1 |
+| `KICKOS_MAX_DOMAINS` | 20 translating / 18 region (`system.h`) | `instance.h` (`domains`) | a domain per live task plus the two immortal singletons on a translating board; one per thread at most on a region one | 4 |
+| `KICKOS_MAX_TASKS` | 18 (`system.h`) | `instance.h` (`tasks`) | one per DISTINCT GROUP live at once, plus idle's and root's; nothing ties it to the thread count. A plain spawn joins the spawner's task and spends none, a spawn with its own grant or a privilege change spends one, and `kos_task_create` reserves one before any thread joins. A full pool makes the spawn answer -KOS_ENOMEM before any thread slot is claimed, which is the same code thread-pool exhaustion answers. `kernel/task/task.cc` asserts only boot's floor of 2 | 4 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides semaphores to 6 and threads to **3** -- not 4: it was

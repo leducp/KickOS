@@ -2614,13 +2614,26 @@ the switch away but the capability sweep: `cap_teardown` releases the kernel loc
 a thread that has already left its group is still running, and on rv64 the kernel's own top-level
 entries live in the space's ROOT page, which the destroy frees and the frame pool reissues. What
 holds afterwards is that a space installed anywhere implies a live member, so the peer loop is
-bookkeeping. It rests on `arch_aspace_activate` being a full untagged flush on both translating
-backends: the moment translations carry an identifier, an edit performed after the install stops
-being covered by it and this has to be re-read.
+bookkeeping. That sentence is about the KERNEL's own cell and holds whatever the hardware tags.
 
-Identifier reuse is VACUOUS here rather than witnessed: nothing in the tree allocates an
-address-space identifier, section 3.1 having said so, and `write_ttbr0` sweeps the whole local TLB on
-every root change precisely because no translation is tagged.
+**THE BACKENDS' HALF RESTED ON SOMETHING ELSE AND HAS BEEN RE-READ.** Their maintenance decisions
+need to know which cores' TLB may hold this space's entries, and what they measured was which
+cores' root register NAMES it. A full untagged flush on every root change makes the two one fact;
+an identifier makes them two, and a core that switched away then keeps entries no set would
+report. So each translating backend now keeps a RESIDENCY record beside the space, set where the
+root register is written and cleared only at destroy, and the three decisions that asked the
+register -- the per-page elision, the rendezvous mask and the destroy's own peer set -- read it.
+`g_installed_root` stays as the ACTIVE-CORE SET the `no core holds a root it is not running`
+invariant is read off, and decides no maintenance.
+
+Identifier reuse is now REAL and is handled structurally: each translating backend allocates an
+identifier into the same record that carries residency, and frees it only after the destroy has
+invalidated it everywhere the record says it is resident, so a reissued identifier can name no
+entry. The sweep on a root change survives in one case and one only, and it is owed by the root
+being LEFT rather than the one arriving: identifier 0 is shared by the boot root and by any space
+the record could spare none for, so leaving such a root sweeps and leaving a tagged one does not.
+Deciding on the incoming root instead is not sufficient on armv8a, whose boot identity map carries
+no `nG` and is therefore global under every identifier.
 
 **T9. The multicore seams, compiled to nothing, and the cache seam that is not.** The per-core
 pointer, the doorbell as empty macros, and the TLB maintenance INSIDE `map` and `unmap` staying a
@@ -2781,13 +2794,15 @@ document records rather than a behaviour it asserts, so each carries its measure
 below is the `qemu-arm64` `selftest` link, and the two text figures are `.text.init` plus `.text` of
 that ELF and the text totals of the three archives holding kernel text.
 
-*T11a. Seeding a space installed on no core costs no TLB maintenance, and that is a DECISION resting
-on a property section 5 already records.* Nothing tags a translation, so `write_ttbr0` sweeps the
-whole local TLB on every root change; a space whose root this core has never installed therefore
-holds neither a cached entry nor a cached negative translation, and a per-page invalidate during its
-seed drops nothing. `invalidate_page_if` takes that answer from `installed_here`, which reads
-TTBR0_EL1 and compares it against the space's own root, and `arch_aspace_map` and `arch_aspace_unmap`
-each ask once per call rather than once per page.
+*T11a. Seeding a space no core has run costs no TLB maintenance, and that is a DECISION resting on
+a property that has since been replaced without moving the figure.* As measured, the property was
+that nothing tags a translation, so `write_ttbr0` swept the whole local TLB on every root change and
+a space whose root this core had never installed held neither a cached entry nor a cached negative
+translation. Tagging ends that sweep for a tagged root, so the decision now rests on RESIDENCY
+instead: a space no core has installed is resident nowhere, which is the same answer by a record
+rather than by a flush, and the seed figure is unchanged on every preset. `invalidate_page_if` takes
+that answer from `resident_anywhere`, and `arch_aspace_map` and `arch_aspace_unmap` each ask once per
+call rather than once per page.
   - **Measured inside the `IrqLock` of ONE `kos_task_create`:** 62 page-invalidation sequences before
     (248 synchronising instructions, four per page across the image's text and data extents), 0
     after. What remains masked is the image data copy, 32 pages of it, unchanged.
@@ -3387,12 +3402,13 @@ permissions key on.
     silicon witness is such a part, a self-grant that allocates a fresh level-1 or level-0 table
     leaves the new pages invisible, the app's first access to its own granted range faults, and F5
     kills the thread. **The remedy is the section's own and there is no narrower one:** "If software
-    modifies a non-leaf PTE, it should execute SFENCE.VMA with rs1=x0", with rs2 at x0 too because
-    nothing here tags a translation. `invalidate_nonleaf` issues it, gated on `installed` the way
-    the per-page one is, so a space installed nowhere still pays nothing.
+    modifies a non-leaf PTE, it should execute SFENCE.VMA with rs1=x0", with rs2 at x0 too: the
+    all-identifier form stays while narrowing is held, and it covers a tagged space as well as an
+    untagged one. `invalidate_nonleaf` issues it, gated on `resident` the way
+    the per-page one is, so a space no hart has run still pays nothing.
     *The cost, stated:* a whole-hart flush, once per FRESH TABLE and never once per page, so a newly
     touched 2 MiB span costs one and a newly touched 1 GiB span one more. No operand names the
-    non-leaf entries for a single address, so the `installed` gate and the once-per-table placement
+    non-leaf entries for a single address, so the residency gate and the once-per-table placement
     are the whole of the narrowing available.
     *UNWITNESSABLE HERE, AND THE ARMS SAY SO RATHER THAN THE PROSE.* Four isolated single-site
     mutations over a rebuilt TU, each with the build log naming `aspace_rv64imac`, against a
@@ -3433,8 +3449,8 @@ permissions key on.
     no translation survives into kernel context and no invalidate the editor issues can be observed
     to matter. **R2.2 deleted both instructions:** `switch.S` writes no root and fences at no
     privilege transition. The conclusion survives, by an argument that is not a patch of that one.
-    `installed_here` asks `satp` about the single running root, so an edit to the RUNNING space
-    issues its invalidates FOR REAL, and a space installed nowhere is covered by
+    The residency record holds every hart that has run the space, so an edit to one this hart is
+    on issues its invalidates FOR REAL, and a space nothing has run is covered by
     `arch_aspace_activate`'s own full fence at the moment it becomes the running one. Measured off
     `map_tlbi_elided`'s own diagnostics: the image seed issues 0 and elides 47, a running-space
     widening issues 1. Under the OLD regime `installed_here` was always false from kernel context,
@@ -4314,8 +4330,10 @@ English. **One of the original nine is DELETED rather than patched**, and the re
     `startup.S` 17, `rv64_paging.h` 8, `arch_rv64imac.cc` 5, `Kconfig` 4, then one each in the `sv48`
     defconfig, `switch.S`, `virt_rv64.ld` and `chip_virt_rv64.cc`. Sums to 87. The three WRITES:
     `startup.S` writes `PPN | MODE`, activate writes `satp_of()` which is `PPN | MODE`, and the probe
-    writes ones and restores. So `satp.ASID` is 0 in every root the port installs and the only
-    non-zero identifier the hardware ever sees is the probe's, under a mask with a fence each side.
+    writes ones and restores. So `satp.ASID` was 0 in every root the port installed, and the only
+    non-zero identifier the hardware saw was the probe's. **That is the pre-tagging reading.** Every
+    space now carries its own identifier there, the probe runs once at boot rather than per call,
+    and the count above is the audit as it stood when it was taken.
     (The original 64 was a LINE count over the same 9 files.)
   - *`asid`, case-INSENSITIVE, 47 hits in 7 files.* `aspace_rv64imac.cc` 24, `aspace_armv8a.cc` 10,
     the selftest's `main.cc` 4, `syscall_aspace.cc` 4, `abi.h` 2, `arch.h` 2, `sys.h` 1. Sums to 47.
@@ -5580,7 +5598,7 @@ a different answer and three of them are worth carrying:
   onto the same `KOS_SYS_EXIT` dispatch the other two postures reach.
 - *The seven weak references are fixed at COMPILE time and the linker script is the other half.*
   Hidden visibility does not help a WEAK undefined symbol, measured both ways: gcc reaches it
-  GOT-indirect at any visibility. So `KICKOS_LINK_OPTIONAL` (`kernel/include/kickos/klink.h`) drops
+  GOT-indirect at any visibility. So `KICKOS_LINK_OPTIONAL` (`include/kickos/klink.h`) drops
   the `weak` on a target whose linker resolves no weak undefined, and `pe_image.ld` STATES all six
   windows as empty, exactly as the sim states an empty ctor window. `kickos_root_entry` is the
   eighth and needed only hidden visibility, its reference already being strong.

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// See aspace_seam.h. Every definition here stands in for a kernel/mem translation unit the
-// host arch has no board for; each one that exit_current reaches writes the ordered trace,
-// because the claim this gate carries is about ORDER.
+// Host address-space hooks for exit_current. Record calls in order.
 
 #include <stdint.h>
 #include <string.h>
@@ -26,9 +24,8 @@ namespace kickos
     {
         namespace
         {
-            // Opaque to the kernel, so a distinct address per slot is a whole space. One extra
-            // for the boot root.
-            uint8_t g_spaces[KICKOS_MAX_TASKS + 1] = {};
+            // Use a distinct address per space, plus one for the boot root.
+            uint8_t g_spaces[FIXTURE_DOMAIN_SLOTS + 1] = {};
 
             struct arch_aspace* g_installed[KICKOS_NUM_CORES] = {};
 
@@ -44,7 +41,7 @@ namespace kickos
 
         struct arch_aspace* boot_space()
         {
-            return as(&g_spaces[KICKOS_MAX_TASKS]);
+            return as(&g_spaces[FIXTURE_DOMAIN_SLOTS]);
         }
 
         struct arch_aspace* installed_on(uint32_t core)
@@ -96,8 +93,7 @@ namespace kickos
         return testfix::space_of(d);
     }
 
-    // cap.cc's CAP_ASPACE arms resolve through these two. No arm here mints such a capability,
-    // so a handle answering nothing is the right answer rather than an unreached one.
+    // No test creates CAP_ASPACE capabilities; all handles are invalid.
     Domain* domain_resolve(int)
     {
         return nullptr;
@@ -110,9 +106,7 @@ namespace kickos
 
     void ustack_free(Domain* d, uintptr_t base, size_t bytes)
     {
-        // The space must still be installed here: the maintenance this call pays on a
-        // translating backend is against the running root, which is why the install below
-        // follows it rather than preceding it.
+        // This maintenance requires the old root to remain installed.
         char const* seating = "unseated";
         if (testfix::installed_on(arch_cpu_id()) == testfix::space_of(d))
         {
@@ -124,23 +118,24 @@ namespace kickos
         (void)bytes;
     }
 
-    void aspace_activate_for(Thread const* t)
+    struct arch_aspace* aspace_activate_for(Thread const* t)
     {
         if (t == nullptr)
         {
-            return;
+            return nullptr;
         }
-        struct arch_aspace* space = domain_space(task_domain(t->task));
+        struct arch_aspace* const own = domain_space(task_domain(t->task));
+        struct arch_aspace* space = own;
         if (space == nullptr)
         {
             space = testfix::boot_space();
         }
-        if (testfix::installed_on(arch_cpu_id()) == space)
+        if (testfix::installed_on(arch_cpu_id()) != space)
         {
-            return;
+            testfix::install_here(space);
+            testfix::trace_add("activate_for(t%u)", static_cast<unsigned>(t->id));
         }
-        testfix::install_here(space);
-        testfix::trace_add("activate_for(t%u)", static_cast<unsigned>(t->id));
+        return own;
     }
 
     bool aspace_seated_for(Thread const* t)
@@ -168,9 +163,7 @@ namespace kickos
 
 extern "C"
 {
-    // KICKOS_HAVE_ASPACE turns the kmem* family from macros over libc into real symbols the
-    // kernel image provides itself (kickos/kruntime.h), so this hosted program has to answer
-    // for the ones the compiled sources reach.
+    // Provide runtime symbols required by KICKOS_HAVE_ASPACE.
     void* kmemset(void* dst, int c, size_t n)
     {
         return memset(dst, c, n);

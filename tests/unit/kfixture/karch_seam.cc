@@ -25,8 +25,7 @@
 
 extern "C"
 {
-    // Counted: the moment the count reaches zero inside a capability sweep IS the chunk gap,
-    // where run_in_chunk_gap seats an interleaving.
+    // A zero lock count marks a capability-sweep gap for injected actions.
     arch_irq_state_t arch_irq_save(void)
     {
         kickos::testfix::note_irq_save();
@@ -51,15 +50,13 @@ extern "C"
     {
     }
 
-    // Every region seated, which is honest only because nothing here enforces: an arm calling
-    // add_enforced would be reading this description as a guarantee.
+    // This fixture describes MPU regions but does not enforce them.
     uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded*)
     {
         return (static_cast<uint32_t>(1) << n) - 1u;
     }
 
-    // The interrupt controller. What a gate reads is the DISPATCH TABLE irq.cc keeps in
-    // Kernel: a line is free iff it holds the null-object default.
+    // IRQ tests inspect Kernel::irq_table; the default handler marks a free line.
     void arch_irq_mask(int)
     {
     }
@@ -68,15 +65,13 @@ extern "C"
     {
     }
 
-    // The routed core the irq_claim pin admits against. -1 is no constraint, so a test that
-    // does not set it sees no placement.
+    // Routed core for irq_claim; -1 imposes no placement constraint.
     int g_karch_irq_line_core = -1;
     int arch_irq_line_core(int)
     {
         return g_karch_irq_line_core;
     }
 
-    // No line here is dispatched around irq_table, so every line stays claimable.
     bool arch_irq_line_kernel_owned(int)
     {
         return false;
@@ -111,7 +106,6 @@ extern "C"
         kickos::testfix::note_klock_release();
     }
 
-    // The raise a release restores an owed reschedule with.
     void arch_ipi_resched_self(void)
     {
         kickos::testfix::g_ipi_self_raises++;
@@ -129,7 +123,6 @@ extern "C"
 #endif
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // ktrace.h is header-inline and reaches BOTH of these from kernel/irq/irq.cc.
     uint32_t arch_trace_now(void)
     {
         return static_cast<uint32_t>(kickos::testfix::g_now_ns);
@@ -141,22 +134,21 @@ extern "C"
     }
 #endif
 
-    // RETURNS, where the real one does not, into a sched::start bracket that still owes a
-    // leave to the lock and the depth. Re-taking both is what lets that bracket unwind: short
-    // of it the depth wraps and every later acquire in the process is silently skipped.
+    // The stub returns, so restore the lock and depth that sched::start
+    // will release when its scope exits.
     void arch_start(struct arch_context*, struct arch_context*)
     {
         kickos::klock_enter();
     }
 
-    // Returns without switching; see kfixture.h for what that costs an arm.
+    // Record a switch without changing machine context.
     void arch_switch(struct arch_context* from, struct arch_context* to)
     {
         kickos::testfix::note_switch(kickos::testfix::thread_of_context(from),
                                      kickos::testfix::thread_of_context(to));
     }
 
-    // Records rather than rebuilds; kfixture.h has what an arm reads.
+    // Record context rebuilds without performing them.
     void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                            void* stack_base, size_t stack_size)
     {
@@ -174,8 +166,7 @@ extern "C"
     {
     }
 
-    // Traced as well as counted: the reclaim runs after the whole sweep, so its position in
-    // the trace is what dates a switch relative to the sweep.
+    // Trace reclamation after the full sweep to check its order relative to switches.
     void console_note_driver_death(void)
     {
         kickos::testfix::g_console_noted++;
@@ -188,9 +179,8 @@ extern "C"
         kickos::testfix::trace_add("reclaim");
     }
 
-    // LOUD, and never with the status it was handed: on the last-thread-out path an exit(0)
-    // would end the gate green with failures already printed and later arms never run. An
-    // arm that wants that path keeps a spare thread live.
+    // Always fail shutdown so exit(0) cannot hide unrun tests.
+    // Tests of last-thread exit must keep another thread live.
     void kickos_terminate(int status)
     {
         printf("FIXTURE FAIL: kickos_terminate(%d) ended the arm\n", status);
@@ -221,16 +211,12 @@ namespace kickos
     {
     }
 
-    // The domain pool: store the pointer, count references, free at zero, which is what
-    // task.cc asks of it.
-    //
-    // NO DEDUP: every call hands back a distinct domain, where the real domain_for returns the
-    // shared default-user singleton for a no-grant unprivileged task, so an arm reads one
-    // task's reference count clear of another task's holds.
+    // Use a distinct domain per task so reference counts can be tested independently.
+    // The production default-user singleton is not shared in this fixture.
     Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
     {
         *err = 0;
-        for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+        for (int i = 0; i < testfix::FIXTURE_DOMAIN_SLOTS; i++)
         {
             if (testfix::g_domain_refs[i] == 0 and not testfix::g_domain_live[i])
             {
@@ -261,8 +247,15 @@ namespace kickos
         }
         if (testfix::g_domain_refs[i] == 0)
         {
-            printf("FIXTURE FAIL: domain_release below zero\n");
-            exit(1);
+            // Admission can be abandoned before taking a reference. Free that live slot
+            // without decrementing; releasing an already-free slot is an error.
+            if (not testfix::g_domain_live[i])
+            {
+                printf("FIXTURE FAIL: domain_release below zero\n");
+                exit(1);
+            }
+            testfix::g_domain_live[i] = false;
+            return;
         }
         testfix::g_domain_refs[i]--;
         if (testfix::g_domain_refs[i] == 0)
@@ -270,8 +263,7 @@ namespace kickos
             testfix::g_domain_live[i] = false;
         }
 #if KICKOS_HAVE_ASPACE
-        // task_release drops the members' hold through here, so this is the trace position of
-        // the call past which a thread is no longer a member of the space it was running in.
+        // Trace when task_release drops the thread's domain reference.
         testfix::note_member_release();
 #endif
     }
@@ -299,8 +291,7 @@ namespace kickos
 
 namespace kickos
 {
-    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
-    // what keeps each arm's recorded trace unchanged.
+    // All IRQ lines are local on this single-core fixture.
     void irq_line_op(int line, LineOp op)
     {
         switch (op)

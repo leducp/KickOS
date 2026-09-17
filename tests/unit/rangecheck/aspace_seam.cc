@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// See aspace_seam.h. domain_ranges below answers exactly what kernel/domain/domain.cc
-// answers, keyed on the space the domain holds, so an arm that takes the space away puts the
-// checks through their no-list arm rather than a different one.
+// Host address-space hooks for range validation. Removing a domain's space
+// also removes its range list, matching domain_ranges.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -29,8 +28,8 @@ namespace kickos
     {
         namespace
         {
-            // Opaque to the kernel, so a distinct address per domain slot is a whole space.
-            uint8_t g_spaces[KICKOS_MAX_TASKS] = {};
+            // Use a distinct address per simulated space.
+            uint8_t g_spaces[FIXTURE_DOMAIN_SLOTS] = {};
         }
 
         VirtualRanges* seat_space(Domain* d)
@@ -74,9 +73,7 @@ namespace kickos
         return &d->ranges;
     }
 
-    // cap.cc's CAP_ASPACE arms resolve through these two. No arm here mints such a
-    // capability, so a handle answering nothing is the right answer rather than an unreached
-    // one.
+    // No test creates CAP_ASPACE capabilities; all handles are invalid.
     Domain* domain_resolve(int)
     {
         return nullptr;
@@ -89,7 +86,7 @@ namespace kickos
 
     void ustack_free(Domain*, uintptr_t, size_t) {}
 
-    void aspace_activate_for(Thread const*) {}
+    struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
 
     bool aspace_seated_for(Thread const*)
     {
@@ -103,9 +100,7 @@ namespace kickos
 
 extern "C"
 {
-    // KICKOS_HAVE_ASPACE turns the kmem* family from macros over libc into real symbols the
-    // kernel image provides itself (kickos/kruntime.h), so this hosted program has to answer
-    // for the ones the compiled sources reach.
+    // Provide runtime symbols required by KICKOS_HAVE_ASPACE.
     void* kmemset(void* dst, int c, size_t n)
     {
         return memset(dst, c, n);
@@ -121,8 +116,7 @@ extern "C"
         return 4096u;
     }
 
-    // No arm here copies across a space: every range the checks answer is named and never
-    // dereferenced, so a window that resolved would only hide a check that should have refused.
+    // Tests validate ranges without dereferencing them; acquisition must fail.
     void* arch_aspace_acquire(struct arch_aspace*, uintptr_t)
     {
         return nullptr;

@@ -30,13 +30,13 @@ namespace kickos
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
 
-        Domain g_domains[KICKOS_MAX_TASKS] = {};
-        uint16_t g_domain_refs[KICKOS_MAX_TASKS] = {};
-        bool g_domain_live[KICKOS_MAX_TASKS] = {};
+        Domain g_domains[FIXTURE_DOMAIN_SLOTS] = {};
+        uint16_t g_domain_refs[FIXTURE_DOMAIN_SLOTS] = {};
+        bool g_domain_live[FIXTURE_DOMAIN_SLOTS] = {};
 
         int domain_index(Domain const* d)
         {
-            for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+            for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
             {
                 if (&g_domains[i] == d)
                 {
@@ -168,9 +168,7 @@ namespace kickos
             g_trace_len = 0;
         }
 
-        // Advances the cursor by what was WRITTEN, never by snprintf's return: that return is
-        // the length it WOULD have written, so the first truncation walks the cursor past the
-        // buffer and the next call writes past the end.
+        // Advance by bytes written, not snprintf's potentially larger return value.
         void trace_add(char const* fmt, ...)
         {
             if (TRACE_CAP - g_trace_len <= 1)
@@ -210,9 +208,7 @@ namespace kickos
             void resolve_park(Thread* w)
             {
                 w->wait_result = WAIT_RESULT_POISON;
-                // switch_to credits the INCOMING thread, which under a returning stub is
-                // never the one that parked, so wq_confirm_resume would spin to
-                // KICKOS_POLL_SPIN_MAX and panic.
+                // Credit the parked thread explicitly; the returning switch stub cannot resume it.
                 w->switch_count.store(w->switch_count.load() + 1u);
                 if (g_park_waker == nullptr)
                 {
@@ -235,8 +231,7 @@ namespace kickos
             g_switches++;
             trace_add("switch%u>%u", from->id, to->id);
 #if KICKOS_KERNEL_CORES > 1
-            // Before resolve_park below: the outgoing frame is parked and the span ended
-            // before the incoming thread runs a single instruction.
+            // Commit the outgoing park before resolving the incoming wake.
             if (g_swap_mode == SwapMode::IMMEDIATE)
             {
                 commit_park(from);
@@ -246,8 +241,7 @@ namespace kickos
                 g_pending_from = from;
             }
 #endif
-            // BLOCKED names a thread that parked itself: switch_to demotes a RUNNING
-            // outgoing thread to READY and leaves every other state alone.
+            // Only RUNNING threads become READY on switch-out; blocked threads stay blocked.
             if (from->state == ThreadState::BLOCKED)
             {
                 resolve_park(from);
@@ -319,8 +313,7 @@ namespace kickos
 
         void reset()
         {
-            // Before trace_reset below, and before sched::init's own locks: an armed watch
-            // would otherwise write this arm's first gap into the next arm's trace.
+            // Disable gap injection before resetting traces or taking scheduler locks.
             g_gap_watch = false;
             g_in_gap_action = false;
             g_gap_action = nullptr;
@@ -334,8 +327,7 @@ namespace kickos
             }
             g_irq_depth = 0;
 #if KICKOS_KERNEL_CORES > 1
-            // klock.cc keeps its per-core row out of reach, so a row left with a swap still
-            // owing the release would make the next arm's acquire silently a no-op.
+            // Clear pending switch state so later lock acquisition cannot be skipped.
             if (g_klock_held)
             {
                 printf("FIXTURE FAIL: the kernel lock survived the arm\n");
@@ -362,7 +354,7 @@ namespace kickos
             new (&g_fx) Fixture{};
             g_in_isr = false;
             g_now_ns = 0;
-            for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+            for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
             {
                 g_domains[i] = Domain{};
                 g_domain_refs[i] = 0;
@@ -378,13 +370,10 @@ namespace kickos
             g_parked = 0;
             trace_reset();
 
-            // cap.cc's own constinit state, out of reach of the Kernel re-construction above;
-            // kfixture.h note 4 has what a stale one costs an arm.
+            // Reset capability state stored outside Kernel.
             cap_slab_init();
             cap_console_reset();
-            // Every dispatch slot back to the null-object default. The Kernel assignment
-            // above zeroed the table, and a NULL handler is not what irq_claim reads as a
-            // free line: without this every claim answers -KOS_EBUSY.
+            // Install the default handler: irq_claim does not treat a null handler as free.
             irq_init();
             sched::init();
             g_fx.idle.base_prio = KICKOS_PRIO_IDLE;
@@ -415,9 +404,8 @@ namespace kickos
             return th;
         }
 
-        // Ids start at 10 so no trace token reads ambiguously against a spawn() thread. Seats
-        // the TCB and `next` only, NOT the pool's gen[] or claim state: an arm that wants a
-        // thread resolvable by HANDLE (cap_reply_caller reads gen) needs the real alloc.
+        // Fixture IDs start at 10 to distinguish them from spawned threads.
+        // Use the real pool allocator when a test needs a resolvable thread handle.
         Thread* seat_pool(int slot, uint8_t prio)
         {
             if (slot < 0 or slot >= KICKOS_THREAD_SLOTS)
@@ -431,9 +419,7 @@ namespace kickos
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
 #if KICKOS_KERNEL_CORES > 1
-            // thread_create is what normally seats this from the thread's task, and this
-            // fixture bypasses it exactly as it bypasses prio and id above. A zero mask is
-            // placeable on no core at all, so pick_next would answer idle for every arm.
+            // Supply the placement mask normally set by thread_create; zero is unschedulable.
             w->affinity = KICKOS_CORE_SET_ALL;
 #endif
             if (k.threads.next <= slot)
@@ -453,19 +439,12 @@ namespace kickos
             w->state = ThreadState::BLOCKED;
             w->wait_kind = WAIT_JOIN;
             w->wait_obj = target;
-            // POISONED: a fresh TCB already reads 0, so an arm asserting 0 would pass on a
-            // waker that never wrote it.
+            // Poison wait_result so tests cannot pass without a waker writing it.
             w->wait_result = WAIT_RESULT_POISON;
         }
 
-        // From the REAL pool: the served-endpoint chain is a pool INDEX biased by one
-        // (endpoint.h), which thread_effective_prio resolves through kernel().endpoints, so a
-        // stack-local Endpoint cannot be named by that chain at all.
-        //
-        // The whole-aggregate reset below MIRRORS endpoint_slot_claim rather than calling it:
-        // that funnel is file-local to syscall_ipc.cc and no host fixture can reach it. Keep
-        // the two in step: a slot handed out with a previous occupant's fields standing is
-        // the defect the funnel exists to prevent.
+        // Use the real pool because served-endpoint links are pool indices.
+        // Keep initialization consistent with endpoint_slot_claim.
         Endpoint* endpoint()
         {
             Endpoint* ep = kernel().endpoints.at(kernel().endpoints.alloc());
@@ -487,9 +466,8 @@ namespace kickos
             }
         }
 
-        // Mirrors wq_block's ORDER, which is load-bearing: BLOCKED before the detach because
-        // on_remove reads `state` to tell a park from a set_prio re-seat, and the ready-list
-        // removal reads `link` before the queue push re-uses that same node.
+        // Match wq_block: set BLOCKED before on_remove, then unlink the ready node
+        // before reusing it in the wait queue.
         void park_plain_sender(Thread* w, Endpoint* ep)
         {
             w->state = ThreadState::BLOCKED;
@@ -502,8 +480,7 @@ namespace kickos
             ep->send_waiters.push_back(&w->link);
         }
 
-        // held_push is TU-local to sync.cc, so the held_list link is made by hand; the
-        // sweep's own held_remove unlinks it.
+        // Link manually because held_push is private to sync.cc; held_remove unlinks it.
         Mutex* own_mutex(Thread* owner, int* out_handle)
         {
             int const i = kernel().mutexes.alloc();
@@ -589,8 +566,7 @@ namespace kickos
             w->wait_kind = WAIT_SLEEP;
             w->wait_obj = nullptr;
             w->wait_result = WAIT_RESULT_POISON;
-            // The delta list itself, so ktime_deadline_cancel has something to unlink. A head
-            // push: one sleeper per arm.
+            // Insert into the timer delta list so cancellation has an entry to remove.
             w->deadline_ns = deadline_ns;
             w->tnext = kernel().sleepq;
             kernel().sleepq = w;
@@ -625,8 +601,7 @@ namespace kickos
                 g_park_armed = true;
                 sched::exit_current(code, cause);
             }
-            // Cleared on BOTH paths: a stale arm would let a later stray arch_idle_wait
-            // longjmp into this dead frame.
+            // Clear on both paths to prevent longjmp into an expired frame.
             g_park_armed = false;
         }
 

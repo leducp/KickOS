@@ -3,11 +3,10 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
-# The MINIMUM tier: 2 threads, no thread_local, and a self-test that only fits as three
-# images. The per-board arithmetic below is what this part pays for it.
-#
-# 20 KiB of SRAM, so the pools are cut.
+# 20 KiB SRAM: two threads, no TLS, and three self-test images.
 CONFIG_KICKOS_MAX_THREADS=2
+CONFIG_KICKOS_MAX_TASKS=4
+CONFIG_KICKOS_MAX_DOMAINS=4
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
@@ -17,9 +16,8 @@ CONFIG_KICKOS_TASK_SEMAPHORE_BUDGET=3
 CONFIG_KICKOS_TASK_MUTEX_BUDGET=3
 CONFIG_KICKOS_TASK_IRQ_HANDLE_BUDGET=3
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
-# selftest_p2 is the binding image here: it leaves 3232 bytes of arena past idle plus
-# root plus two pool stacks. A thread keeps 2048 - 180 of usable stack, the entry's red
-# zone being what armv7m reserves on a chip with no MPU (armv7m_trap_stack.h).
+# selftest_p2 leaves 3232 arena bytes after boot and pool stacks.
+# Each 2048-byte thread stack reserves 180 bytes for the trap red zone.
 CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048

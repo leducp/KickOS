@@ -643,10 +643,12 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The model's OWN report now agrees with the manuals, and that is all it says.** `aspace_model`
   reads `ID_AA64MMFR0_EL1` and gets the A53's reset value: 4 KiB and 64 KiB supported, **16 KiB
   not**, 16 identifier bits, a 40-bit physical range. So S2's clause is discharged and there is no
-  divergence to record. What it still does not say: nothing tags a translation, so `TCR_EL1.AS`
-  stays at an 8-bit identifier and the 16 the machine offers is a figure nobody spends; and a
-  granule arm that re-reads `arch_aspace_granule`'s own constant is still beside it, which is why
-  that arm was never the confirmation.
+  divergence to record. **The figure was the machine's CAPABILITY and not the width in force**: at
+  the time `TCR_EL1.AS` stayed at 8 bits and the 16 the machine offered was a figure nobody spent.
+  M8.10 programs `AS` and the same line now reports the width actually in force, which is the only
+  reason the two readings can be told apart at all. Beside it a granule arm that re-reads
+  `arch_aspace_granule`'s own constant still sits, which is why that arm was never the
+  confirmation.
 - **F10's REAL CONSUMER never runs on the translating board.** F10 makes the driver framework the
   gate for the allocation ABI, in terms saying no selftest arm substitutes for it -- but
   `qemu-arm64` declares no service list, so `drv::bring_up` runs only on region boards and against
@@ -2940,6 +2942,83 @@ family, an instrument whose blindness and whose alarm are the same output. The r
 name the body that does the work; the repair to the CLASS is filed, and it is to refuse when the
 body handed to the reader contains neither end of the bracket it was asked to look inside.
 
+
+## M8.10: a space is maintained where its entries are, and what these green runs do NOT say
+
+**THE MILESTONE IS ONE REPLACEMENT AND EVERYTHING ELSE FOLLOWS FROM IT.** The tree relied on an
+implication that an untagged flush made free: no core's root register names this space (S1) implies
+no TLB anywhere holds its translations (S2). Three backend decisions needed S2 and all three tested
+S1. Tagging breaks the implication, so it had to be replaced BEFORE tagging, not alongside it, and
+the replacement is a per-space residency record set where the root register is written and cleared
+only at destroy. That ordering is the whole shape of the milestone: the correctness step lands
+first and is behaviour-preserving except that the three decisions become conservative.
+
+**THE COST LANDED WHERE THE DESIGN SAID IT WOULD, AND ONLY THERE.** A release of a space that ran
+now pays what it used to elide: 39 to 40 page-invalidation sequences per dying process on
+`qemu-arm64`, 33 to 34 on `qemu-riscv64`, on 43 of 130 releases. T11a's published seeding win is
+UNTOUCHED, 0 issued against 71 elided before and after, because a space from `kos_task_create` has
+never been installed and so is resident nowhere. That asymmetry is worth keeping in mind: residency
+costs nothing at birth and everything the elision was worth at death. The alternative the design
+kept in reserve, dropping the record and making reclaim unconditional, would pay the death cost AND
+give back the birth elision, so it is the more expensive of the two and was not taken.
+
+**THE DESIGN WAS WRONG ABOUT WHEN A TAGGED PORT MAY STOP FLUSHING, AND THE MUTATION THAT PROVES IT
+IS THE MILESTONE'S BEST ARTEFACT.** "`arch_aspace_activate` stops flushing" is unsafe on armv8a: the
+boot identity map sets no `nG` on any block, so its low-half entries are GLOBAL, match under every
+identifier, and are cached because the fault reporter reaches device addresses through that root.
+The rule that is correct is that **the sweep is owed by the root being LEFT, not by the one
+arriving** -- leaving an untagged root sweeps, and two tagged spaces switching between each other
+sweep nothing, which is the entire win. Deciding on the INCOMING root looks equivalent, is not, and
+passes a naive arm; there is a mutation whose only job is to kill that mistake.
+**rv64 reaches the same rule for a different reason and that difference is the record worth
+keeping.** Its boot root maps nothing in the low half at all, so the armv8a hazard cannot be
+constructed there and the incoming-root rule would also be sufficient today. The outgoing rule was
+taken anyway, because rv64's sufficiency rests on a boot-table layout a chip port can change
+silently. **So on rv64 the arm pins the RULE and witnesses no fault**, and a reader must not take it
+for the armv8a proof.
+
+**A PROBE ON A USER-REACHABLE PATH STOPS BEING FREE THE DAY TAGGING LANDS.** rv64's
+`measure_asid_field` writes `satp` and fences on both sides. Untagged that cost nothing that
+mattered; tagged, it drops every tagged entry the hart holds, and it sits under `arch_aspace_model`,
+which a syscall reaches. Transliterating armv8a's per-create probe would have flushed the whole TLB
+twice per space creation. It is measured once at boot instead. The generalisation: **a probe's cost
+is a function of what the port does around it, so a probe that was free before a mechanism landed
+has to be re-priced after it.**
+
+**WHAT THESE GREEN RUNS DO NOT SAY, AND THIS IS THE LONGEST SUCH LIST OF THE M8 SERIES.**
+NO VEHICLE HERE HAS EVER HELD A TAGGED TLB ENTRY. Not the emulators, which model no ASID-tagged
+TLB, and not the host seams, which record which operation was issued over which address and model
+no TLB at all. So "a tagged entry is stored, honoured, and correctly invalidated" is asserted by
+reasoning on every arch and witnessed by nothing. NO TRANSLATING SILICON RAN, so every figure here
+is an emulator count. The narrow-field and zero-width arms are driven by the host seams presenting
+a machine, because no emulator property on this bench narrows either identifier field -- they are
+real arms against a modelled part, not against a real one. And the maintenance forms are still
+ALL-IDENTIFIER by ruling: narrowing them is the one change whose failure mode is a stale entry
+nothing here can see, and it is held.
+
+**ONE HAZARD IS CLOSED ONLY BY THE BIG LOCK, AND M9 IS THE MILESTONE THAT OPENS IT.** rv64's
+`arch_aspace_map` samples the resident set, edits, and on failure frees the tables it allocated
+against that sample. A hart installing the space in between is not in the mask and could cache a
+walk into a table the unwind then frees. It is unreachable today because the edit arrives under
+`IrqLock` and the install happens in `switch_to` under the kernel lock. That is the only thing
+holding it, and per-core ready queues are exactly what removes it.
+
+**THE INSTRUMENT GAINED A SECOND HOST VEHICLE, AND IT WITNESSES A CLASS THE FIRST CANNOT.** rv64 now
+has `mapfence` beside armv8a's `mapexec`: the backend's inline system operations lifted into a seam,
+the frame pool and the kernel window made one host array so every page-table walk runs for real, and
+arms that assert the OPERAND of each fence rather than that one was issued. The class only it can
+reach is RISC-V's own: a hart may cache a PTE whose valid bit is clear, so the ABSENCE of a table
+caches like a presence and the by-address form does not reach it. One mutation there freezes the
+fence address to zero, leaves every count intact, and reddens five arms purely on operand
+assertions -- which is the direct evidence that an operand-blind arm would pass a narrowing change
+while it was wrong. **That is why step 8 is held and not merely deferred.**
+
+**AND ONE VERDICT THE BENCH CANNOT REFUSE.** Folding the new TAGGED bit into the model's `ALL` mask
+leaves all three architectures green, because x86_64 never runs the selftest arm that reads it. The
+bit is kept out of `ALL` on the semantic ground instead: a part whose identifier field is hardwired
+to 0 is one both backends deliberately keep booting, and `ALL` may not contradict the degraded arm
+that keeps it booting. **A green suite was the wrong instrument for that question and saying so is
+the finding.**
 
 ## Where to go next
 

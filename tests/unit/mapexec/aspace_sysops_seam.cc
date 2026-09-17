@@ -15,11 +15,22 @@ namespace
 
     kickos::testfix::SysOp g_ops[OPS_CAP] = {};
     size_t g_ops_count = 0;
-    // Overflow is a lost record, and a record with a hole in it is not an order.
+    // Treat trace overflow as a test failure.
     bool g_ops_overflow = false;
 
     uint32_t g_cpu = 0;
     uint64_t g_ttbr0[KICKOS_NUM_CORES] = {};
+
+    // TCR_EL1 as startup.S programs it: T0SZ 25, so a 39-bit low half whose walk starts at
+    // level 1, IPS 0b010 for a 40-bit output, and AS for a 16-bit identifier.
+    constexpr uint64_t TCR_AS = 1ull << 36;
+    constexpr uint64_t TCR_DEFAULT = 25ull | (2ull << 32) | TCR_AS;
+    // ID_AA64MMFR0_EL1 as the A53 reports it: PARange 0b0010 (40 bits), ASIDBits 0b0010 (16),
+    // and 0 in each of the three granule fields, whose senses differ (arch_aspace_model).
+    constexpr uint64_t MMFR0_DEFAULT = 2ull | (2ull << 4);
+
+    uint64_t g_tcr = TCR_DEFAULT;
+    uint64_t g_mmfr0 = MMFR0_DEFAULT;
 
     size_t g_next_frame = 1; // frame 0 is never handed out: 0 is the pool's failure answer
     uint32_t g_frames_allocated = 0;
@@ -54,9 +65,8 @@ namespace
 
 extern "C"
 {
-    // The chip's physical window (arch/arm64/chip/virt_arm64/virt_arm64.ld). The array IS the
-    // window: the backend reads a table at `pa + va_base`, so a frame's physical address is its
-    // byte offset into this object and offset 0 is reserved by the pool above.
+    // The array models the physical RAM window; PA is its byte offset.
+    // Frame zero is reserved.
     alignas(SEAM_GRANULE) unsigned char __kickos_arm64_va_base[SEAM_FRAMES * SEAM_GRANULE] = {};
 
     arch_phys_addr_t kickos_frame_alloc(void)
@@ -75,8 +85,7 @@ extern "C"
 
     void kickos_frame_free(arch_phys_addr_t)
     {
-        // A bump pool that never reissues: a reissued frame would give two spaces one root and
-        // the active-core set is derived from that root.
+        // Do not reuse frames; residency is keyed by root address.
         g_frames_freed++;
     }
 
@@ -85,10 +94,7 @@ extern "C"
         record(kickos::testfix::OP_RENDEZVOUS, peers);
     }
 
-// THE GUARD SPELLING IS LOAD-BEARING AND MUST STAY EXACTLY THIS. check_cpu_id_fold.sh scans
-// every tracked C or C++ file for a definition of arch_cpu_id and skips only a block opened by
-// this literal line, so any other spelling makes this fixture a finding on every single-core
-// preset in the fleet.
+// Keep this guard spelling for check_cpu_id_fold.sh.
 #if KICKOS_NUM_CORES > 1
     uint32_t arch_cpu_id(void)
     {
@@ -105,18 +111,14 @@ extern "C"
     {
     }
 
-    // TCR_EL1 as startup.S programs it: T0SZ 25, so a 39-bit low half whose walk starts at
-    // level 1, and IPS 0b010 for a 40-bit output.
     uint64_t kickos_armv8a_read_tcr_el1(void)
     {
-        return 25ull | (2ull << 32);
+        return g_tcr;
     }
 
-    // ID_AA64MMFR0_EL1 as the A53 reports it: PARange 0b0010 (40 bits), ASIDBits 0b0010 (16),
-    // and 0 in each of the three granule fields, whose senses differ (arch_aspace_model).
     uint64_t kickos_armv8a_read_mmfr0_el1(void)
     {
-        return 2ull | (2ull << 4);
+        return g_mmfr0;
     }
 
     uint64_t kickos_armv8a_read_ttbr0_el1(void)
@@ -241,6 +243,31 @@ namespace kickos
             }
         }
 
+        void set_tcr(uint64_t tcr)
+        {
+            g_tcr = tcr;
+        }
+
+        void set_mmfr0(uint64_t mmfr0)
+        {
+            g_mmfr0 = mmfr0;
+        }
+
+        uint64_t tcr_a53()
+        {
+            return TCR_DEFAULT;
+        }
+
+        uint64_t tcr_a53_without_as()
+        {
+            return TCR_DEFAULT & ~TCR_AS;
+        }
+
+        uint64_t mmfr0_with_asid_bits(uint64_t field)
+        {
+            return (MMFR0_DEFAULT & ~(0xFull << 4)) | ((field & 0xFull) << 4);
+        }
+
         uint32_t cpu()
         {
             return g_cpu;
@@ -265,6 +292,8 @@ namespace kickos
             g_frames_freed = 0;
             g_frame_budget = SEAM_FRAMES;
             g_mid_edit = nullptr;
+            g_tcr = TCR_DEFAULT;
+            g_mmfr0 = MMFR0_DEFAULT;
         }
 
         uint32_t frames_allocated()

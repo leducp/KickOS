@@ -60,22 +60,17 @@ namespace kickos
         }
     }
 
-    // task_for must never be the refusal a caller sees first: thread_create_call resolves the
-    // task BEFORE it claims a thread slot, so a pool one slot short would turn a thread-pool
-    // exhaustion into a task-pool exhaustion one spawn earlier. The +1 is idle, which holds a TCB
-    // outside the pool and so a task outside KICKOS_THREAD_SLOTS. An EXPLICIT task holding no
-    // thread is a slot this floor does not budget.
-    static_assert(KICKOS_MAX_TASKS >= KICKOS_THREAD_SLOTS + 1,
-                  "the task pool must cover every TCB that can be live at once, or "
-                  "task_for refuses a spawn the thread pool would still have seated");
+    // idle and root each resolve a task at boot (thread.cc, kmain.cc) and neither call carries
+    // a route out of a refusal.
+    static_assert(KICKOS_MAX_TASKS >= 2,
+                  "the task pool must seat idle's task and root's, which boot cannot refuse");
 
     static_assert(KICKOS_THREAD_SLOTS + 1 <= UINT8_MAX,
                   "Task::refcount is uint8_t and counts live threads: every TCB that can be "
                   "live at once must fit it");
 
-    // creator_tag is a kill tag TRUNCATED to a byte. KILL_TAG_NONE is 0 and survives that;
-    // every other tag must stay distinct from every other AND from idle's KILL_TAG_BOOT,
-    // whose low byte is 0xFF.
+    // Kill tags must remain distinct after truncation to a byte, including
+    // KILL_TAG_NONE (0) and the idle tag (0xFF).
     static_assert(KICKOS_THREAD_SLOTS < UINT8_MAX,
                   "a pool slot's kill tag would alias another, or idle's boot tag, once "
                   "truncated into Task::creator_tag");
@@ -244,9 +239,8 @@ namespace kickos
             return;
         }
         t->creator_tag = ThreadPool::KILL_TAG_NONE;
-        // The ONLY site that clears a LIVE creator tag, which is what keeps the count in step
-        // with the pool: free_task's clear is reached from here, where the tag is already
-        // NONE, and from task_release, which takes that arm only when there was no hold.
+        // Clear live creator tags only here to keep the count consistent.
+        // free_task sees an already-cleared tag or a task that never held one.
         Kernel& k = kernel();
         KICKOS_DEBUG_ASSERT(k.task_holds > 0);
         k.task_holds--;
@@ -263,9 +257,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
     void task_discard(Task* t)
     {
-        // THE TASK'S OWN STATE IS THE PREDICATE, and no caller carries a second one: a task
-        // with a member or a creator hold is somebody's, and free_task below would release
-        // a domain reference that is not this call's to spend.
+        // Release only tasks with no members or creator hold.
         if (t == nullptr or t->refcount != 0
             or t->creator_tag != ThreadPool::KILL_TAG_NONE)
         {
