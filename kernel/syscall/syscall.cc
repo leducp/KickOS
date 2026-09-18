@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The arch-independent syscall table + dispatch. The arch entry (sim
-// trampoline / ARM SVC handler) reads the number + args and calls
-// syscall_dispatch(); the result is delivered back to the caller frame.
-// Kernel objects addressable from userspace (semaphores, threads) live in
-// static pools referenced by small integer handles: no pointers cross the
-// boundary.
+// Architecture-independent syscall dispatch. Architecture entry code passes
+// the number and arguments; dispatch returns the result to the caller frame.
+// Kernel objects are accessed through handles rather than kernel pointers.
 
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
@@ -42,7 +39,7 @@ namespace kickos
     // to a fixed 4, so the byte-count producers must already be 4 bytes here. Matching
     // static_assert in user/src/syscall_stubs.cc.
     static_assert(sizeof(endpoint_send(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
-    static_assert(sizeof(endpoint_recv(0, 0, 0, 0, false)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_reply_recv(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
     static_assert(sizeof(endpoint_call(0, 0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 
     namespace
@@ -50,19 +47,6 @@ namespace kickos
         // Max yield passes kos_console_publish waits for the in-flight chip-writer count
         // to reach 0 before declaring a stuck writer.
         constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
-
-        // Bound by KOS_SYS_IRQ_ATTACH and run in ISR context. arg is the GLOBAL sem handle
-        // irq_attach stored, NOT a cap: an ISR must never resolve a cap, current() being a
-        // random interrupted thread's table.
-        void irq_sem_post(void* arg)
-        {
-            int handle = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-            Semaphore* s = kernel().sems.resolve(handle);
-            if (s != nullptr)
-            {
-                sem_post(s);
-            }
-        }
 
         // A minting syscall's out-pointer, checked BEFORE the object is created: a mint
         // that cannot deliver its handle leaves an object nothing can name or close. The
@@ -98,16 +82,9 @@ namespace kickos
             return static_cast<uint64_t>(rc);
         }
 
-        // The console's user buffer, moved through the funnel a chunk at a time.
-        // kconsole_write streams privileged whatever it is handed, so a user pointer
-        // reaching it names whatever the RUNNING process holds at that address.
-        //
-        // Answers the bytes that REACHED the console. No lock spans the chunks, so a granule
-        // the entry proved readable can be unmapped before a later chunk reaches it, and the
-        // walk stops there.
-        //
-        // noinline is load-bearing for user_panic's reason below: the chunk must not widen
-        // syscall_dispatch's frame.
+        // Copy user data to the privileged console in chunks, returning bytes written.
+        // Stop if a later chunk becomes inaccessible between lock scopes.
+        // Keep out of line so the chunk buffer does not enlarge syscall_dispatch's frame.
         __attribute__((noinline)) size_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[64];
@@ -434,20 +411,6 @@ uint64_t syscall_body(uintptr_t nr,
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<uint32_t>(a3)));
         }
-        case KOS_SYS_RECV:
-        {
-            return static_cast<uint64_t>(
-                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
-                              /*timed=*/false));
-        }
-        case KOS_SYS_RECV_TIMED:
-        {
-            // The deadline is not an argument: a3 names a kos_recv_timed_opts holding it,
-            // with the ordinary kos_recv_info nested inside.
-            return static_cast<uint64_t>(
-                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
-                              /*timed=*/true));
-        }
         case KOS_SYS_CALL:
         {
             // No dispatch IrqLock, as for SEND/RECV: a spanning caller lock would keep
@@ -472,6 +435,11 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
                               kos_call_lens_recv(a2), static_cast<uint32_t>(a3)));
+        }
+        case KOS_SYS_REPLY_RECV:
+        {
+            return static_cast<uint64_t>(endpoint_reply_recv(static_cast<uint32_t>(a0), a1, a2,
+                                                             a3));
         }
         case KOS_SYS_REPLY:
         {
@@ -954,51 +922,6 @@ uint64_t syscall_body(uintptr_t nr,
             return 0;
         }
 #endif
-        case KOS_SYS_IRQ_ATTACH:
-        {
-            // Tier-2 installs a privileged in-kernel handler, so AUTH_IRQ: a thread without
-            // it cannot bind, or steal, a line's dispatch.
-            if (not cap_check_authority(sched::current(), AUTH_IRQ))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            // Resolve, attach and unmask under one lock: a concurrent close between the
-            // resolve check and the attach could otherwise bind the line to a dead handle.
-            IrqLock lock;
-            int irq = static_cast<int>(a0);
-            uint32_t const cap_handle = static_cast<uint32_t>(a1);
-            if (irq < 0 or irq >= KICKOS_MAX_IRQ)
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
-            }
-            // The binding stores the GLOBAL sem handle, not the cap, and irq_sem_post
-            // re-resolves that global per fire: an ISR must NEVER resolve a cap. CAP_SIGNAL
-            // is required here because an ISR posts. The binding holds no reference, so a
-            // last-close leaves a dead binding that fails safe, not a wrong post.
-            CapEntry* e = cap_lookup(sched::current(), cap_handle);
-            if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_SEM)
-                or kernel().sems.resolve(e->obj) == nullptr)
-            {
-                return static_cast<uint64_t>(-KOS_EBADF); // bad / non-sem / stale cap
-            }
-            if ((e->rights & CAP_SIGNAL) != CAP_SIGNAL)
-            {
-                return static_cast<uint64_t>(-KOS_EPERM); // cap lacks SIGNAL (an ISR posts)
-            }
-            int const sem_handle = e->obj;
-            // irq_attach fails if the line is already owned: no stealing (EBUSY).
-            if (not irq_attach(irq, irq_sem_post,
-                               reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))
-            {
-                return static_cast<uint64_t>(-KOS_EBUSY);
-            }
-            // Required on default-masked controllers (ARM NVIC, RX): a userspace tier-2
-            // binding has no separate unmask syscall (tier-1 unmasks via register/irq_ack),
-            // so attach must arm the line. In-kernel irq_attach (console) unmasks on its own
-            // schedule.
-            irq_line_op(irq, LineOp::UNMASK);
-            return 0;
-        }
         case KOS_SYS_CLOCK_NOW:
         {
             // No user pointer and no way to fail: every value in the u64 range is a valid
@@ -1218,15 +1141,9 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM); // never reserved by this task
             }
-            // Full budget, or a region this backend seats no descriptor for, is a returned
-            // error: truncating the set or carrying the grant unenforced would fault the thread
-            // on memory it was told it had. The knob here is KICKOS_MPU_MAX_REGIONS, so the code
-            // is not -KOS_EMFILE.
-            //
-            // A block this thread already names with another memory type is RETYPED in place;
-            // two descriptors over one block would leave the range checks and the hardware
-            // reading different ones. It sits inside MpuSet because a `prior` region held across
-            // the call here is caller stack the SVC red zone is measured on.
+            // Return an error if the descriptor budget or backend cannot enforce the grant.
+            // Retype an existing block in place to avoid conflicting overlapping descriptors.
+            // Keep the temporary region in MpuSet to limit syscall stack use.
             if (not c->mpu.add_enforced_retyping(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
@@ -1293,12 +1210,21 @@ uint64_t syscall_body(uintptr_t nr,
             user_panic(a0); // noreturn
             return 0;
         }
+        case KOS_SYS_IRQ_ATTACH:
+        {
+            // CAP_WAIT authorizes binding. Validate out_mask before changing the binding.
+            int rc = cap_out_check(a1);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t mask = 0;
+            rc = irq_notify_bind(sched::current(), static_cast<uint32_t>(a0), &mask);
+            return cap_out_deliver(a1, rc, mask);
+        }
         case KOS_SYS_IRQ_CLAIM:
         {
-            // AUTH_IRQ, like IRQ_ATTACH and IRQ_UNMASK: the tier-1 mint takes a bare line
-            // number out of the namespace and makes it owned. USING an already-claimed line
-            // needs no authority; possession of the cap is the authorisation, checked in
-            // cap_resolve_e.
+            // Claiming a raw line requires AUTH_IRQ. Later use is authorized by cap rights.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
@@ -1312,6 +1238,12 @@ uint64_t syscall_body(uintptr_t nr,
             rc = irq_claim(sched::current(), static_cast<int>(a0),
                            static_cast<unsigned int>(a1), &h);
             return cap_out_deliver(a2, rc, h);
+        }
+        case KOS_SYS_IRQ_WAIT_TIMED:
+        {
+            return static_cast<uint64_t>(irq_wait_timed(sched::current(),
+                                                        static_cast<uint32_t>(a0),
+                                                        static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_IRQ_WAIT:
         {
@@ -1332,15 +1264,10 @@ uint64_t syscall_body(uintptr_t nr,
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:
         {
-            // The ONLY route to the bench helpers from an app: each reads kernel .data or a
-            // peripheral, so an app calling them directly runs them at ITS privilege and faults.
-            // Both prints run here, in thread context and holding no IrqLock.
-            //
-            // BEING A BENCH IMAGE GRANTS NO THREAD ANYTHING. An op that attaches or rings a
-            // doorbell carries the AUTH_IRQ its non-bench counterpart carries. RAISE injects
-            // too, but carries none: the arm already chose its line from a cap, so RAISE takes
-            // no line of its own to guard. Every caller-supplied count is bounded here rather
-            // than inside the helper, so a sweep body stays a measurement and not a gate.
+            // Benchmark helpers require kernel privilege. Print without IrqLock held.
+            // Operations that claim or ring IRQs require AUTH_IRQ. RAISE uses the line
+            // already selected through a capability. Validate counts here to keep checks
+            // out of the measured helpers.
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:

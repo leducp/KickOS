@@ -15,11 +15,9 @@ extern "C"
 static_assert(sizeof(kos_kconsole_write(nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send(0, nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send_timed(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_recv(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call_timed(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_recv_timed(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
 
 // arch_syscall returns at REGISTER width, so the narrowing casts below truncate. They are
 // exact: a transferred count is bounded by KOS_EP_MSG_MAX / the kernel's 4096-byte console
@@ -124,25 +122,6 @@ int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeo
                                              reinterpret_cast<uintptr_t>(buf),
                                              static_cast<uintptr_t>(len),
                                              static_cast<uintptr_t>(timeout_us)));
-}
-
-int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info)
-{
-    return static_cast<int32_t>(arch_syscall(KOS_SYS_RECV,
-                                             static_cast<uintptr_t>(ep),
-                                             reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(cap_len),
-                                             reinterpret_cast<uintptr_t>(info)));
-}
-
-int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
-                       struct kos_recv_timed_opts* opts)
-{
-    return static_cast<int32_t>(arch_syscall(KOS_SYS_RECV_TIMED,
-                                             static_cast<uintptr_t>(ep),
-                                             reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(cap_len),
-                                             reinterpret_cast<uintptr_t>(opts)));
 }
 
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
@@ -416,13 +395,6 @@ uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1)
 }
 #endif
 
-int kos_irq_attach(int irq, kos_cap_t sem_cap)
-{
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_ATTACH, static_cast<uintptr_t>(irq),
-                     static_cast<uintptr_t>(sem_cap), 0, 0));
-}
-
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
 {
     cap_out_clear(out_cap);
@@ -432,10 +404,40 @@ int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
                      reinterpret_cast<uintptr_t>(out_cap), 0));
 }
 
+int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
+                   struct kos_reply_recv_opts* opts)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_REPLY_RECV, static_cast<uintptr_t>(reply_cap),
+                     reinterpret_cast<uintptr_t>(buf), lens,
+                     reinterpret_cast<uintptr_t>(opts)));
+}
+
+int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask)
+{
+    // Supply a writable output even when the caller does not need the mask.
+    uint32_t local = 0;
+    if (out_mask == nullptr)
+    {
+        out_mask = &local;
+    }
+    *out_mask = 0;
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_IRQ_ATTACH, static_cast<uintptr_t>(irq_cap),
+                     reinterpret_cast<uintptr_t>(out_mask), 0, 0));
+}
+
 int kos_irq_wait(kos_cap_t irq_cap)
 {
     return static_cast<int>(
         arch_syscall(KOS_SYS_IRQ_WAIT, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+}
+
+int kos_irq_wait_timed(kos_cap_t irq_cap, uint32_t timeout_us)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_IRQ_WAIT_TIMED, static_cast<uintptr_t>(irq_cap),
+                     static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
 int kos_irq_ack(kos_cap_t irq_cap)

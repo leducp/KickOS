@@ -561,7 +561,7 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
   `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
-  and it promises that NOTHING happened for the caller: `KOS_SYS_SEND_TIMED`, `KOS_SYS_RECV_TIMED`,
+  and it promises that NOTHING happened for the caller: `KOS_SYS_SEND_TIMED`, `KOS_SYS_REPLY_RECV`,
   `KOS_SYS_CALL_TIMED` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other than
   `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, and leave the joined
   thread running. `kernel/time/time.cc` decides only THAT a deadline
@@ -1157,8 +1157,8 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   WHOLE list is validated before the child slot is claimed (no half-populated child, no dangling
   ref bumps).
 - **Resolution is cold-path.** A handle is bound to its target at arm time; an ISR **never**
-  resolves a cap -- `irq_attach` resolves the cap ONCE (requires `CAP_SIGNAL`) and stores the
-  GLOBAL object handle in the binding, which `irq_sem_post` re-resolves from the pool per fire
+  resolves a cap -- `irq_claim` allocates the `IrqBinding` ONCE and hands `irq_event_isr` that
+  binding's own address as its pre-bound argument, so the ISR reaches it with no lookup at all
   (an ISR runs on a random interrupted thread's table, so `cap_resolve` from ISR context is
   meaningless). Capabilities are an arm-path concern only.
 - **Authenticated grant ownership** is the memory-side twin: a task may grant/share only a

@@ -29,10 +29,6 @@ namespace kos
     {
         return kos_irq_inject(irq);
     }
-    inline int irq_attach(int irq, kos_cap_t sem_cap)
-    {
-        return kos_irq_attach(irq, sem_cap);
-    }
     inline uint64_t clock_now()
     {
         return kos_clock_now();
@@ -262,9 +258,24 @@ namespace kos
         {
             close();
         }
+        // Bind IRQ delivery to this thread; optionally return the notification mask.
+        int attach(uint32_t* out_mask = nullptr)
+        {
+            uint32_t mask = 0;
+            int const rc = kos_irq_attach(h_, &mask);
+            if (out_mask != nullptr)
+            {
+                *out_mask = mask;
+            }
+            return rc;
+        }
         int wait()
         {
             return kos_irq_wait(h_);
+        }
+        int wait_timed(uint32_t timeout_us)
+        {
+            return kos_irq_wait_timed(h_, timeout_us);
         }
         int ack()
         {
@@ -382,21 +393,13 @@ namespace kos::thread
         int err_ = -KOS_EBADF;
     };
 
-    // Start a thread (not a process: KickOS has one address space, isolation is
-    // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
-    // thread a domain data region (threads sharing one region share a domain).
-    // Creating a thread does NOT preempt the caller, even for a higher-priority thread:
-    // the new thread runs once the caller next blocks or yields.
-    // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
-    // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
-    // `mmio`/`mmio_size` grant a device register block (R|W|DEV); the caller needs
-    // AUTH_MEMORY (privilege implies every authority). It is the new thread's ALONE, whatever
-    // group it joins.
-    // `task` names a group from kos_task_create for the thread to JOIN, coupling its shared
-    // memory to its peers'; the DEFAULT makes the thread a member of the CALLER's task, as
-    // pthread_create makes a thread of the calling process. Passing a named task is therefore
-    // the only way to give a thread a group of its OWN, which is what an arm witnessing fault
-    // containment needs: a fault ends the faulting thread's whole task.
+    // Create an unprivileged thread by default. Creation does not preempt the
+    // caller; the new thread runs after it blocks or yields.
+    // mem/mem_size grants domain data; stack/stack_size optionally supplies a
+    // caller-owned stack, otherwise KICKOS_USER_STACK_SIZE is used.
+    // mmio/mmio_size grants a device window to this thread and requires AUTH_MEMORY.
+    // By default the thread joins the caller's task. Supply a separate task for
+    // independent fault containment: a fault terminates the whole task.
     inline Handle create(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                         uint32_t quantum_ns = 0, bool privileged = false,

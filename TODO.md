@@ -2820,6 +2820,11 @@ one needs a new fact, not a new reading.
       `docs/reference/bench.md` says which rows are composites, which are leaves, and that the LX6
       is the one the column cannot cover. Withholding them would leave the reader with no
       figure and no record that one was declined. Re-read at M8.12, when the exit table is taken.
+      **`REPLY_RECV_TOTAL` JOINED THIS RULING'S SCOPE RATHER THAN SITTING OUTSIDE IT** (owner,
+      2026-09-17). Its close sat past the resume barrier, which put the parked interval in the
+      row on the PENDING-switch backends too, where no other composite carries one. The close is
+      inside the body's lock now, so what remains on that row is the inline-switch suspension
+      this ruling accepts and states, and the M8.12 section carries the rest.
 
 - [ ] **RULED, standing, re-confirmed at each capture pass: the emulator logs stay UNTRACKED.**
       They cost no bench time and regenerate from this tree, which is exactly the test
@@ -2927,7 +2932,7 @@ the skip half is closed refuted there.
       `user_readable_and_writable_ok` (`syscall_mem.cc`) answers both questions in one pass: one
       `sched::current()`, one privileged arm, one walk of the set carrying a containment test per
       half, and each arch fallback offered only the half the set left unanswered.
-      `endpoint_call` and the timed `endpoint_recv` take it.
+      `endpoint_call` and `endpoint_reply_recv` take it.
       **A COMBINED READ-OR-WRITE CHECK WOULD BE A PRIVILEGE BUG.** Every site that runs both walks
       demands BOTH. `endpoint_call` reads the one buffer across `send_len` and then writes it across
       `recv_cap`, two different lengths over one base, and the timed recv's opts struct is in-out.
@@ -3089,6 +3094,9 @@ trees unless it says otherwise.
       switch between two threads of one domain has one descriptor to rewrite and the rest already
       stand. Direction: compare and write per descriptor. Severity Medium, measurement-justified:
       target M8.11.
+      - **Its acceptance test is the ARM `MPU_COMMIT` row, which reached `n=0` on every ARM board
+        until the bracket landed** (see the M8.12 section). Take an ARM capture before starting,
+        or the change lands, works, and moves nothing the table can show.
       - **It TIGHTENS `mpu-apply-on-every-switch-in` rather than living under it.** Today a commit
         is total, so any disagreement between a record and the hardware is erased by the next
         commit whatever caused it. Writing only the changed slots makes such a disagreement
@@ -3223,8 +3231,8 @@ M8.8. None is a regression this milestone introduced unless it says so.
       deliberately preemptible sweep becomes ONE masked window as wide as the table with the kernel
       lock held across the whole of it. The callers are `sem_wait` and `mutex_lock` (`sync.cc`),
       `ktime_sleep_until` (`time.cc`), `thread_slay`, `task_slay`, `thread_join` and
-      `thread_wait_last` (`syscall_thread.cc`), and `endpoint_send`, `endpoint_recv` and
-      `endpoint_call` (`syscall_ipc.cc`). The return, fault and slay trampolines, the `kos_exit`
+      `thread_wait_last` (`syscall_thread.cc`), and `endpoint_send`, `endpoint_reply_recv`
+      and `endpoint_call` (`syscall_ipc.cc`). The return, fault and slay trampolines, the `kos_exit`
       arm and the syscall-entry death point hold nothing and are unaffected.
       **THIS PREDATES M8.8 AND IS NOT A REGRESSION IT INTRODUCED.** What this milestone owed was
       the record: `kickos/sched.h` now states the precondition and says these paths break it,
@@ -3279,24 +3287,144 @@ M8.8. None is a regression this milestone introduced unless it says so.
 External audit, itemised into `roadmap.md` M8.9. P4 and P10 are designed together on purpose so
 the ABI moves once rather than twice.
 
-- [ ] **P3: THE RESERVED REPLY SLOT IS THE HIGHEST CYCLES-PER-EFFORT ITEM IN THE PLAN, AT
-      6-7% OF A ROUND TRIP.** `cap_install_reply` 903-930 pays `index_of`, `handle_for`,
-      `cap_install` (free-list unlink plus a generation bump) and a sequence seat on every call;
-      `cap_reply_live` 980-999 is an O(capacity) scan run TWICE per call and once per recv;
-      `endpoint_reply` separately pays `cap_lookup` plus `cap_reply_caller` plus a release. Roughly
-      400-500 of ~6900 measured cycles. Direction: reserve one capability slot per server thread at
-      thread creation, installed once rather than allocated fresh per call; `cap_install_far_reply`
-      935-953 must take the same slot, and the stale-resolve and teardown caveats from the M4.6
-      capability work carry over unchanged.
+- [x] **P3, AND THE RESERVED SLOT IN IT WAS REFUSED.** The filed item read "the highest
+      cycles-per-effort item in the plan, at 6-7% of a round trip", and two of its three
+      premises were wrong. **Ruled: NO SLOT RESERVATION**, on the maintainer's grounds that it
+      is a shortcut that would bite later: it fixes the inbound reply bound at exactly one
+      permanently, making `KICKOS_CAP_REPLY_MAX > 1` unrepresentable, and it ratifies the
+      current fleet configuration as the design. On-demand allocation stays, and with it the
+      free-list unlink and relink that were the item's headline.
+      **And `cap_reply_live` is NOT an O(capacity) scan on any board that has a bench preset**:
+      it is a single `ldrh` off a counter, the scan arm compiling only where
+      `KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET`, which of the twelve presets configured for the
+      design pass is `bluepill-c8-st` alone. That board has no bench preset and its reply path
+      has never been measured. `docs/design-m5-ipc-fastpath.md` 757-766 already said so and the
+      audit that produced this item did not carry it across. That premise is what made P3 look
+      larger than it is.
+      What survived and LANDED is the redundant work alone: the mint seats its slot directly
+      instead of building a handle and decoding it back, on the local and the far arm together,
+      and the release reuses the entry its caller is already holding. A typed resolve beside the
+      plain one was written, measured at a whole second body of kernel text for two or three
+      instructions, and REVERTED.
 
-- [ ] **P4 + P10, DESIGNED TOGETHER: `kos_reply_recv` FUSES REPLY AND RECEIVE, AND AN IRQ
-      NOTIFICATION BINDS TO THE SAME RECEIVE WAIT.** P4: `kos_reply_recv` today costs two traps,
-      two `IrqLock`s (772, 394), two validates and a full `RECV_RESOLVE` of the endpoint the server
-      just used, at 7-10% of a trip, switch count unchanged. P10: `irq.cc` 589, 222-227, 629-680 --
-      a driver cannot wait on its own endpoint and its own IRQ line inside one park; `sem_post`
-      refuses at `COUNT_MAX` and the ISR discards the refusal silently. Both items touch the same
-      recv-wait ABI surface, so they are designed as one change: a fused reply-plus-receive that can
-      also return a pending IRQ notification through the same wait, landing once rather than twice.
+- [x] **P4 + P10: `KOS_SYS_REPLY_RECV` FUSES REPLY AND RECEIVE, AND AN IRQ NOTIFICATION IS
+      ACCEPTED BY THE SAME WAIT.** Landed as one ABI move. The fused call pays one trap, one
+      `IrqLock`, one `sched::current()` and one buffer validate where the adjacency paid two of
+      each, and **its wake is DEFERRED**: the answered caller is held off the CPU until the
+      server has parked, which is what moves the donating arm off the slowpath and is invisible
+      to every result-reading arm. `RECV_RESOLVE` is NOT elided, a `CAP_REPLY` naming the caller
+      and not the endpoint. The bench, the bus service and the console service have adopted it.
+      P10 landed as a per-thread `notify_pending` word, ONE BIT PER LINE, with an explicit bind
+      the SERVING thread makes on its delegated capability: the claim runs in the spawner, which
+      delegates and closes its own copy, so the claiming thread is neither the waiter nor a
+      holder afterwards and cannot stand in for it. The accepted-mask is IN-OUT on the opts
+      struct so the call site says the wait can be ended by a line at all.
+      **Two premises of the filed item were wrong and are recorded so no later pass re-derives
+      them.** A saturating counter could NOT lose a hardware interrupt: `irq_event_isr` masks the
+      line before it posts and the matching unmask runs on wait return, so the per-line count is
+      0 or 1 by construction. And the coalescing that exists is at the CONTROLLER, which the word
+      does not touch.
+
+- [x] **`kos_recv` AND `kos_recv_timed` ARE FOLDED INTO THE FUSED CALL AND GONE.** Every plain
+      and timed receive now reaches the kernel through `KOS_SYS_REPLY_RECV`, and the two
+      receive syscalls, their stubs and their wrappers are removed: a first pass or a pure
+      listener passes `KOS_CAP_NONE` where a server loop passes the reply capability it is
+      holding. The info-less posture is a flag, `KOS_RECV_NO_INFO`, rather than a null
+      out-pointer, so a deadline and that posture are no longer mutually exclusive. An
+      over-length reply length or receive capacity CLAMPS where the fused call used to refuse
+      it, which is what the two calls it replaces did; `reply_recv_lens_clamp` witnesses both
+      fields, each offered over-length with the other in range. The notification mask is
+      written back only where the caller accepted a line, which is sound only while its IN half
+      exists. `docs/reference/ipc-call-reply.md` describes the one receive primitive.
+      **The reverted attempt's armv7m cost did not come back.** `qemu_selftest` runs in 7.21 s
+      at the landed fold against the 7.5 s that attempt started from and the 26 s it produced,
+      and the selftest image carries 124748 bytes of text, outside the [120560, 121540] band
+      the layout-cliff item below measures. That attempt also turned `mutex_pi_donation` and
+      `mutex_multi_held` red and its patch never entered the tree; both arms are green here on
+      every preset that runs the suite. Nothing of its diagnosis is carried forward, the fold
+      it was diagnosing not being the one that landed.
+
+- [x] **`kos_irq_notify` ANSWERS `-KOS_EALREADY` WHERE ITS BIT WAS ALREADY SET.** A doorbell
+      rung onto a bit the server has not drained yet is absorbed, which is correct: the server
+      wakes once and drains, and coalescing is userspace's concern. What was wrong is that the
+      caller could not tell the two cases apart, so a producer could not see a consumer that had
+      stopped draining and the sticky notification's overflow accounting had nothing to read.
+      Landed as a new code in the family, 114 as POSIX spells EALREADY, with its own row in
+      `lib/strerror.cc`, whose switch has no default and would have refused it otherwise. An
+      error code in this tree means the call could not do what was asked, not that the system
+      broke, and the call literally cannot set a bit that is already set; `irq_notify_bind`
+      already reports the same shape of normal outcome through `-KOS_EBUSY`. `kos_irq_notify`'s
+      header says in as many words that the code means the doorbell is WORKING and the consumer
+      has not drained, and that it is worth counting and not worth retrying. The three in-tree
+      callers already discard the return, so nothing changed for them. Covered by
+      `irq_notify_already`: two posts and one wait, the second post answering the new code, then
+      a drained repost answering 0 again so the arm cannot pass on a call that answers the code
+      for good.
+      - **DONE with it: `kos_irq_ack`'s contract was misleading.** It is OPTIONAL, because a
+        wait rearms the line on entry, so an ack immediately before returning to the wait does
+        nothing the wait would not do. What ack is for is unmasking EARLY, so the line can fire
+        again while the driver does slow work after servicing. The kernel header and
+        `docs/reference/invariants.md` both said so; the header every driver reads did not, and
+        drivers copy the ack from the one beside them. Comment only, and the behaviour was
+        confirmed to be exactly this before it was written down.
+
+- [ ] **`kos_irq_notify` IS A SPECIAL CASE OF A NOTIFICATION THAT SHOULD BE GENERIC, AND THE NAME
+      RECORDS THE CONFLATION.** Milestone unassigned; `roadmap.md` is the only file that assigns
+      one. Today a thread can be notified only through a `CAP_IRQ`, because the bit IS a binding's
+      pool index and the bind takes an IRQ capability. The mechanism underneath is general: a
+      per-thread bitmask of pending notifications delivered to a wait, which is a notification
+      object with an interrupt line as one possible source. The tree already carries the general
+      half of it, `CAP_SIGNAL` being a right rather than an IRQ concept. Direction: a first-class
+      notification object and `kos_notify` over it, with an IRQ binding as one signaller among
+      others; seL4's Notification and its `TCB_BindNotification` are the prior art and are readable
+      on this box (GPL-2.0, so cite by path and never copy). **Renaming without generalising would
+      be the opposite lie**, so the name stays accurate to what exists until the object does.
+
+- [ ] **THE PMSAv7 DESCRIPTOR WRITE IS IN NO BRACKET ON ANY ARM BACKEND, SO THE PHASE TABLE
+      UNDERSTATES PER-SWITCH COST THERE AND NO GATE NOTICES.** `kickos_bench_mpu_commit` is called
+      from exactly one site in the tree, `arch/riscv/rv32imac/arch_rv32imac.cc:475`. Nothing under
+      `arch/arm` feeds it, so `PH_MPU_COMMIT` reads `n=0` on every ARM board by construction and
+      always will. `MPU_APPLY` is only the deferred stash in `kernel/sched/sched.cc`, not the
+      hardware program. And in `arch/arm/armv7m/switch.S` the switch distribution's bracket closes
+      at `bl kickos_bench_switch_done` on line 194 while `bl kickos_arch_mpu_commit` runs on line
+      220, so the eight RBAR/RASR pairs are written AFTER the bracket has closed.
+      **THE CONSEQUENCE WITH TEETH IS M8.11's.** The per-descriptor write filed there is justified
+      on near-miss counts, which stand, but its EFFECT would be invisible to this instrument on
+      every ARM board: the optimisation could land, work, and move no row. Its acceptance test
+      would be blind. Fix the bracket BEFORE M8.11 rather than after, or that milestone cannot
+      show its own result on the arch it most affects.
+      **And it bears on M8.12 asymmetrically**: a consistently blind instrument still yields a
+      valid DELTA against M8.7, which was equally blind, so the like-for-like survives. What is
+      wrong is the absolute per-switch figure, on every ARM capture the project has ever taken.
+
+- [x] **THE IMAGE-LAYOUT CLIFF IS AN EMULATOR ARTEFACT, MEASURED ON SILICON AND NOT ASSUMED.**
+      Preset `qemu` (mps2-an386, PMSAv7) has a contiguous band of selftest text sizes, roughly
+      [120560, 121540], inside which the whole suite runs 3.5x slower; inert padding reproduces it
+      on an unmodified tree and the band vanishes on `qemu-flat`. **It does not exist on hardware.**
+      A pad sweep over 2 KiB of image shift on `f411disco` moved every cycle figure by about 1
+      percent with no discontinuity, three pad-0 captures at three tags reading byte-identical.
+      The QEMU mechanism is not merely absent but refuted: `kickos_arm_mpu_program` produced the
+      SAME figures at two different addresses and DIFFERENT figures at one address, so its position
+      does not drive the cost. The residual is a pure function of the padded body's own flash-line
+      phase, `(bytes inserted) mod 16`, the ART accelerator's 128-bit line; shifts of one and two
+      whole 1 KiB periods, the analogue of QEMU's page, change nothing.
+      **So the cliff is a CI nuisance and not a kernel property.** What it still costs is a
+      `qemu_selftest` that runs 3.5x slower inside the band, which is tolerable once the arms in it
+      stop deciding correctness on a timing margin.
+
+- [ ] **A CALLGRAPH GATE THAT NAMES ITS SUBJECT BY SYMBOL REPORTS A MOVED SYMBOL AS A BROKEN
+      PROPERTY.** `tests/static/check_bench_e2e_publish.sh` reads the kernel body that must reach
+      the end-to-end park mark between taking the kernel lock and blocking, and names that body by
+      its mangled symbol. This milestone split the untimed IRQ wait into a forwarder over a timed
+      body, and the gate then read two instructions, found no lock, no block and no mark, and
+      printed that the park mark was missing. **The property was intact.** Found by the fleet
+      sweep on `qemu-arm64-benchsmp` and `qemu-riscv64-benchsmp`, presets no audit pass and no
+      suite run of this milestone ever configured; the fix pointed the gate at the timed body and
+      is mutation-proved both ways on both architectures. Direction, and it is the CLASS and not
+      this gate: the reader is handed an opening call and a closing call, so make it REFUSE when
+      the body it was given contains neither, and say that it cannot see the bracket rather than
+      that the bracket is empty. A gate whose blindness and whose alarm are the same output is
+      the defect family this milestone already met five times in the bench instrument.
 
 ## M8.10 -- translating boards and SMP
 
@@ -3315,6 +3443,23 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       Severity Medium. Direction: cache the space once in `switch_book` instead of re-deriving it
       each switch, and seat the reentrancy word through the kernel window rather than
       `kaccess_to_user`, since the frame is already known at prime time.
+
+- [ ] **THE DRIVER-FACING MAPPING API HAS A SKETCH, AND ITS MCU ARM IS THE INTERESTING HALF.** The
+      maintainer's target shape for a driver taking a 4 KiB MMIO window, an i.MX8MP SPI module being
+      the worked example:
+
+          void* va = kos_vmem_alloc(4096);
+          int rc = kos_memmap(spi1_phys_address, va, 4096);
+
+      On a translating board both calls mean what they say: reserve address space, then place a
+      physical window in it. **On an MCU there is no address space to reserve** -- the window is
+      already at its physical address and what grants access is an MPU descriptor, not a
+      translation. So `kos_vmem_alloc` reserves something that is not memory and has nothing to do
+      on a region board. Recorded direction: make it a no-op there that answers the physical address
+      itself, so one driver source compiles and runs on both classes and the difference stays in the
+      kernel. `kos_memmap` then becomes the grant on a region board and a real mapping on a
+      translating one. **It is not only a driver API**: anything wanting a window in an address
+      space calls it, so the MCU arm cannot be specified from the driver case alone.
 
 - [ ] **P1: ASID/PCID IS A DESIGN ITEM, NOT A BUG FIX -- THE LEVER IS PROBED BUT NEVER
       WRITTEN, AND IT NOW OWES A PEER-TLB IPI TOO.** ASID support is probed at boot but never
@@ -3561,6 +3706,109 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
       trip are the exact entry metrics `roadmap.md`'s M9 section names, so this item's output is
       not a report but M9's own precondition.
 
+- [ ] **ROWS WHOSE SPAN CHANGED ON THE WAY INTO M8.12, SO THE RE-RUN ABOVE IS LIKE FOR LIKE ON
+      EVERY OTHER ROW AND NOT ON THESE.** Each is named here so the published delta excludes it
+      by name rather than by a reader noticing a figure that grew out of nowhere.
+      - **`MPU_COMMIT` on every ARM board.** `kickos_bench_mpu_commit` had one caller in the
+        tree, `arch/riscv/rv32imac`, so `PH_MPU_COMMIT` read `n=0` on every ARM capture the
+        project has ever taken, by construction. `MPU_APPLY` measures the deferred stash and not
+        the hardware program, and the armv7m switch bracket closes at `kickos_bench_switch_done`
+        while the epilogue calls `kickos_arch_mpu_commit` after it, so the descriptor writes sat
+        outside both. All three ARM commits now carry the bracket rv32imac already had. A
+        consistently blind instrument still yields a valid DELTA against M8.7, which was equally
+        blind, so the like-for-like on that row survives; what was wrong is the ABSOLUTE
+        per-switch figure on every ARM capture, and it moves here. Read the M8.12 ARM
+        `MPU_COMMIT` row as a new row and never as M8.7's grown.
+      - **`RECV_LOCKED`, and `REPLY_RECV_TOTAL`'s bracket count with it.** The fused
+        reply-receive reaches `endpoint_recv_locked` directly, so the bracket in the standalone
+        wrapper never fired for it and the row read `n=0` while the fused form carried all the
+        traffic. The bracket now sits in the shared body, which changes two things at once. The
+        row's own span loses the call and the `parked` test the wrapper's bracket enclosed, so
+        it is not M8.7's span. And `REPLY_RECV_TOTAL` encloses one MORE nested bracket on the
+        parking arm, which is the pass that sets the min. Counted over the whole fused body
+        and not the receive leg alone: a pass carrying a reply cap goes from M8.7's 7 to 8,
+        and the loop's first pass, which carries none, from 3 to 4. A composite corrected at
+        the old `k` reads high by one `NEST - NULL`.
+      - **`MPU_COMMIT` on rxv3, for the reason the ARM bullet above gives.** The RX deferred
+        commit is programmed from the SWINT switch epilogue, past anything a
+        `KICKOS_BENCH_SPAN` reaches, and it carried no bracket either, so the row was zero by
+        construction there too. It now feeds `kickos_bench_mpu_commit` as the ARM and rv32imac
+        commits do. NO IN-TREE PRESET BUILDS RX WITH `KICKOS_BENCH`, so there is no RX phase
+        table at M8.7 and none at M8.12: the bracket is in place for whenever the first RX
+        capture is taken, and it is a delta against nothing.
+        - **An rxv3 bench preset owes the trap red zone a re-measurement before it is used.**
+          `kickos_arch_mpu_commit` is a hard PENDSW root and now carries the
+          `kickos_bench_mpu_commit` tail below it under the bench knob, while
+          `trap_redzone_roots.txt` declares no rxv3 preset that turns that knob on. So
+          `KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW` is measured over a graph that cannot reach it.
+          armv7m has `f411disco-bench` declared and is covered.
+      - **`REPLY_LOCKED`, and two bracket counts with it.** The bracket sat in the standalone
+        reply wrapper, which a fused reply-receive never enters, so the row counted only the
+        one terminal answer a server loop sends and missed every fused reply. It now sits in
+        `endpoint_reply_locked`, the body both forms share. The row's own span loses the
+        reschedule and the wrapper's call, so it is not M8.7's span, and its population grows
+        from a handful of standalone entries to every answered reply. `REPLY_TOTAL` encloses
+        one FEWER nested bracket, `k` going from 6 to 5, so a composite corrected at the old
+        `k` reads LOW by one `NEST - NULL`. `REPLY_RECV_TOTAL` encloses one more again, 8 to 9
+        on a pass carrying a reply cap and unchanged at 4 on a pass carrying none.
+      - **`REPLY_WAKE` narrowed to the readying alone, and `REPLY_TOTAL` was restored around
+        the reschedule after an audit caught it outside.** M8.8 ran `sched::wake(caller)`
+        inside both, so the ready-queue selection, the peer announcement and the switch were
+        in the reply row. The deferred-wake guard split those: the readying stays where it
+        was and the reschedule moved to the guard's destructor, which the standalone wrapper
+        was letting run on the way OUT of the function, past the point `REPLY_TOTAL` closed.
+        The wrapper now completes the guard in a scope of its own before the close, because
+        nothing on the standalone path parks and it had no reason to defer at all, so
+        `REPLY_TOTAL` is M8.8's span again and the M8.12 delta on that row IS like for like.
+        Two things are not. `REPLY_WAKE` and `REPLY_LOCKED` keep only the readying, so both
+        are narrower than M8.8 and neither is a comparable row. And `REPLY_TOTAL`'s `k` grows
+        by the brackets the reschedule carries, `PICK_NEXT` always and `SWITCH_TO` on the
+        passes that switch, so it is one of the rows whose `k` differs between its own min and
+        its own max. **The general rule the audit leaves behind: work that leaves a bracket
+        makes the row IMPROVE, so a faster row is a finding to explain before it is a result
+        to publish.**
+      - **`REPLY_RECV_TOTAL` CLOSES INSIDE THE BODY'S LOCK NOW, AND `REPLY_RECV_TAIL` IS THE
+        REST OF IT.** The row opened on syscall entry and closed after `wq_confirm_resume`, so
+        on the backends where `arch_switch` only PENDS -- armv7m, rv32imac, rxv3 -- it held the
+        whole interval the server spent parked waiting for its next client: the switch takes at
+        the body lock's release and the resume barrier sits between that and the close, so the
+        wait was inside the bracket. Client interarrival time moved the row with no kernel work
+        changing. An audit demonstrated it rather than arguing it, replacing the translation
+        unit's timestamp macros with a synthetic counter advanced only while the receiver was
+        off the CPU and taking a sample of exactly that advance. The close is now the last
+        statement inside the lock, which is the last point before a pended switch can take, and
+        the post-resume segment, the barrier and the `wait_result` read and the notification
+        take, is `REPLY_RECV_TAIL`, closing on the parking arm alone. So the M8.12 row is the
+        fused call's WORK where M8.7's was its work plus its wait, and no delta between them
+        means anything. It is `CALL_TOTAL`'s shape, which has always closed inside its own lock
+        for this reason, with `CALL_RESUME`'s counterpart beside it. Neither row covers the
+        closing write-back of the consumed mask, which is conditional on the caller having
+        accepted a line at all.
+        - **THE NEW BRACKET RAISES EVERY OTHER ROW ON `qemu-riscv`, AND THAT IS THE INSTRUMENT
+          AND NOT THE KERNEL.** `REPLY_RECV_TAIL` is one counter read and one accumulator update
+          per fused call, 260000 of them in the sweep, and `rdcycle` on
+          `qemu-system-riscv32 -M virt` is answered from the HOST tick source, which the M8.7
+          ledger above already establishes: the board's rows measure emulation effort. So work
+          added ANYWHERE in the loop inflates rows it is not inside. Measured rather than
+          argued, three runs each: `CALL_TOTAL`'s min sits at 11240 to 11520 on the tree before
+          this change, at 11080 to 11140 with the span moved and the new bracket taken back out,
+          and at 12020 to 12160 with the bracket in. A row moving because a bracket OUTSIDE it
+          was added is the tell, and it is impossible on a counter that counts guest cycles.
+          Take the silicon captures for the absolute figures on this row; the emulated ones say
+          which way it moved and nothing about by how much.
+        - **WHAT THIS DOES NOT REACH IS THE INLINE-SWITCH BACKENDS**, and that is the standing
+          ruling above rather than a residue of this change. On arm64, rv64, x86_64, the LX6 and
+          the sim the swap happens inside `wq_block`, so the suspension is in the row before any
+          close can be reached. What changed is that the row used to be worse than that ruling
+          on every backend and now is exactly it.
+      - **`REPLY_TOTAL` is deliberately NOT made to close on the fused path.** It is the
+        standalone `KOS_SYS_REPLY` envelope, one validate and one lock over the reply alone.
+        The fused entry puts one validate and one lock over BOTH halves and its envelope is
+        `REPLY_RECV_TOTAL`, so a fused sample landing in `REPLY_TOTAL` would mix two
+        populations, and a bracket around the fused reply leg alone would just be
+        `REPLY_LOCKED` twice. A near-empty `REPLY_TOTAL` in an M8.12 capture is the server
+        loop having adopted the fused call, not a blind instrument.
+
 ## M9 -- kernel concurrency, and what the big kernel lock actually costs
 
 `roadmap.md`'s M9 section owns the shape: the milestone is named for a question and a measured
@@ -3693,7 +3941,7 @@ rather than defended.
 ## `ampping`'s serve loop reads the first payload byte without checking a byte arrived
 
 - [ ] **A ZERO-LENGTH DATAGRAM WOULD BE ANSWERED FROM UNINITIALISED STACK.**
-      `user/apps/common/ampping/main_serve.c` takes `kos_recv_timed`'s result into `got`, tests it
+      `user/apps/common/ampping/main_serve.c` takes `kos_reply_recv`'s result into `got`, tests it
       only for negativity, and then builds its reply out of `msg[0]` -- which for a zero-length
       arrival is whatever the frame held. The reply and the line it prints are then both a stale
       byte, and nothing distinguishes that from a real answer.
@@ -6222,7 +6470,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
 - [ ] **`kos_cap_narrow` narrows authority but not endpoint rights, so there is no driver-death
       story.** `docs/design-m4-fable-review.md` finding 5's residual API gap, recorded nowhere else.
       **Sharpened 2026-07-31 by building the death gate**, which needed a driver to die and could
-      not get one this way: there is NO kernel path that wakes a receiver parked in `kos_recv` when
+      not get one this way: there is NO kernel path that wakes a receiver parked in a receive when
       the last `SIGNAL` holder goes. Only the mirror exists (`recv_holders` -> 0 EPIPEs parked
       SENDERS, `obj_close_protocol`), so a console driver parked in `recv` blocks forever however
       its clients go away, and `system/init/sim/service_list.cc`'s own `n < 0` break is unreachable
@@ -6850,13 +7098,120 @@ coalesced drain reproduces the intended order instead of inverting it.
 
 **Why the remaining arms are safe, so the next reader can re-derive it rather than re-audit.**
 Every arm was checked against the inverting shape "a lower-priority worker establishes a
-precondition on an EARLIER deadline than the higher-priority worker that consumes it". None is
-left. Three structural facts do most of the work: `ktime_sleep_ns(0)` YIELDS instead of parking,
+precondition on an EARLIER deadline than the higher-priority worker that consumes it". None of
+THAT shape is left, which is narrower than it reads: see the correction under this paragraph.
+Three structural facts do most of the work: `ktime_sleep_ns(0)` YIELDS instead of parking,
 so a 0-unit stage holds no deadline at all; `wq_pop_highest` pops parked senders by priority and
 not by arrival, so "who parked first" never decides who is served; and in the sleep-staged arms
 that remain, the highest-priority sleeper always holds the earliest deadline, so coalescing
-reproduces the intended order. The two-sleeper arms with equal priorities (`sleep_order`) are
-saved instead by the ready list being FIFO and the sleep queue deadline-sorted.
+reproduces the intended order.
+
+**CORRECTED 2026-09-17: `sleep_order` is NOT cleared, and the argument that cleared it answered
+only half the question.** This entry used to say the two-sleeper arms with equal priorities were
+saved by the ready list being FIFO and the sleep queue deadline-sorted. That is true and it
+covers exactly one failure mode, the coalesced-drain inversion above. It says nothing about
+whether the two deadlines are in the intended order in the first place, and in this arm they
+need not be.
+
+`t_sleep` (`user/apps/common/selftest/main.cc`) spawns the 40 ms sleeper FIRST and the 10 ms
+one second, so `log_eq("SL")` at `user/apps/common/selftest/main.cc:447` needs the interval
+between the two sleepers reaching `kos_sleep_ns` to stay under 30 ms. That interval is the
+second spawn's own cost and not a scheduling artefact: root runs at `KICKOS_PRIO_MIN + 1` and
+both sleepers at 10, so each create preempts root at the create itself and the sleeper arms its
+deadline before root returns to spawn the next one. A spawn is not free on a slow or loaded
+box, and nothing in the arm bounds it. Measured on this branch: `sleep_order` went red 1 time
+in 19 solo runs in the slow duration band and 6 times in 17 contended ones.
+
+**NOT REPAIRED HERE, and the reason is a missing observable rather than a missing fix.** A
+zero-margin expression of the claim needs the arm to know the deadline the kernel actually
+armed for each sleeper, which is kernel-side and does not exist today; adding one is a
+different piece of work. Two repairs ARE available without it, both leaving a residual margin
+rather than removing it, and the choice between them is open:
+- Each sleeper publishes its own pre-syscall clock read, and the arm asserts on the OBSERVED
+  deadline order (`read + requested`) instead of on the intended one. The residue is the gap
+  between the read and the syscall.
+- Both sleepers are staged on a rendezvous and released together, so the gap is a post plus a
+  switch instead of a whole spawn. The residue is that post and switch.
+
+## More arms a duration can decide, beyond the ones named above (2026-09-17)
+
+A sweep of every TAP-registering translation unit for the shape the section above describes, a
+pass or fail that can turn on one wall-clock span outlasting or undershooting another, found
+the arms below on top of the ones that entry already lists. **No milestone is assigned here:
+`roadmap.md` is the only file that assigns one.** **None is repaired**, deliberately: the
+section above already states what a repair has to look like, and a repair that only moves a
+margin is not one. Each was read against its own body before being filed.
+
+`call_timeout_reply`, `cap_reply_release_close`, `cap_reply_slot_reuse`, `dev_window_exclusive`,
+`thread_join`, `slice_preempts_every_core`, `threads_reach_every_core`, `migrate_running`,
+`amp_far_service`, `amp_inbound_reply`, `amp_far_undisclosed`, `amp_far_deliver_fault`, and
+`sleep_order`, corrected above.
+
+- [ ] **`call_timeout_reply` is the sharpest of them, because its failure is the only one that
+      does not stay inside the arm.** Its settle sleep must finish INSIDE the caller's call
+      deadline, so the recv pops a caller that is still parked. The constants' own comment in
+      `user/apps/common/selftest/main.cc` records the cost of a flip: the caller times out
+      first, the recv returns the report instead of the request, and the arm leaks its reply
+      capability into the census `cap_child_width` reads later in the run. So losing this race
+      reddens a DIFFERENT arm, and whoever reads that failure is looking at the wrong place.
+      Repair it ahead of the others whatever its flake rate turns out to be.
+      **An undershoot is a sub-class here and not unique to this arm**: `cap_reply_release_close`
+      and `cap_reply_slot_reuse` each need a caller's short sleep to beat the longer one root
+      takes before the plain send that ends the server loop, and `thread_join` needs its second
+      join, on an already-exited slot, to come back inside the same bound its first join had to
+      exceed.
+- [ ] **Two of them HANG rather than flip an assertion, which is the worse failure.**
+      `cap_reply_release_close` and `cap_reply_slot_reuse` both end the server's recv loop on a
+      plain send from root; lose the race and the server leaves before the caller's call lands,
+      the caller parks unserved, and the arm sits in its `wait_n` instead of reporting. A red
+      names itself in the TAP stream and a hang consumes the whole gate.
+- [ ] **One of them goes VACUOUS rather than red.** `amp_far_deliver_fault`
+      (`user/apps/common/selftest/selftest_amp.cc`) runs its reply half only if a bounded poll
+      sees the caller parked; a bound that runs out skips that half and the arm still reports
+      ok. Its call half does fail loudly, so the arm is half instrument and half hope.
+- [ ] **The three SMP arms are bounded POLLS against a placement latency, not sleep races.**
+      `slice_preempts_every_core`, `threads_reach_every_core` and `migrate_running`
+      (`user/apps/common/selftest/selftest_smp.cc`) each give the scheduler a wall-clock budget
+      to place or preempt a crowd and then assert on what was observed inside it. A loaded host
+      shortens what fits in the budget, not what the kernel did, and the arm reports the
+      scheduler failing to reach a core. `migrate_running` at least says so in its own comment,
+      having been written to fail rather than hang.
+- [ ] **`thread_slay_timeout` already implements the repair pattern, and it is the template for
+      every arm where a span genuinely is the subject.** `hog_window_open()` re-reads the clock
+      and refuses to proceed unless twice the timeout still remains in the hog's window, retries
+      the staging twice, and SKIPS BY NAME rather than asserting when the window is spent. The
+      shape to copy is the whole of it: detect the vacuity, and decline instead of asserting
+      through it.
+
+### Three the sweep could not rule, recorded as OPEN and not as cleared
+
+- [ ] **`sem_destroy_quiescent` loses its race into a hang, not a flip.** The arm sleeps to let
+      the waiter park before main closes its own capability, and the poster sleeps past that
+      close. Nothing establishes either ordering. A lost race does not flip an assertion; it
+      leaves the arm blocked in its `wait_n(2)`, which costs the gate rather than naming itself.
+      Whether the orderings can be lost in practice was not settled.
+- [ ] **The bounded-absence IRQ checks fail in the INVERTED direction, so a slow machine makes
+      them pass.** `irq_stale_register`, `irq_mask_coalesce` and `irq_discard` each sleep and
+      then read a counter to assert that a service did NOT happen. A service that has merely not
+      arrived yet is indistinguishable from one that will never arrive, so host slowness buys a
+      green run. That is the opposite failure direction from every arm above and it cannot be
+      caught by re-running: the arm is vacuous exactly when the box is loaded, and a flake
+      hunt looks for reds. Each already declines the half it cannot witness above one kernel
+      core, so the shape is understood; the one-core sleep is what is unbounded.
+- [ ] **Whether a CI posture boots an AMP peer that answers: it does, so these arms are live and
+      not dead weight.** The hypothesis that they skip by name where no peer runs is WRONG and
+      was checked: none of `amp_far_service`, `amp_inbound_reply` or `amp_far_undisclosed`
+      appears in any `KICKOS_EXPECT_SKIPS` list in `tests/integration/gates/selftest.cmake`,
+      which names only the far-call, reply-guard and reply-empty arms on the own-image posture.
+      The three take their inbound traffic from the forge probe, which stands in for a peer's
+      publication on a single-image run, so they run and pass with no second kernel anywhere.
+      Beyond that, `.github/workflows/ci.yml` runs the whole selftest verdict on a shared-image
+      AMP posture over four cores, where the peers are the image's own cores and always answer.
+      What IS still open is the enforcement gap one level up:
+      `tests/integration/check_amp_peer_arms.sh` covers the merged partition, and its own header
+      says its named set is the whole enforcement because it never reads the run's final
+      verdict, so an arm outside that set failing in a merged partition leaves the gate green.
+      Three of the four far arms filed here are outside it.
 
 ## M4.6.1 IRQ consoles on silicon: ALL FIVE run the whole suite (2026-08-02)
 
@@ -10902,6 +11257,30 @@ surface grows exponentially and may not be worth its size.
       entries rather than scripts. Re-derive the count when this pass runs; do not carry the old
       numbers forward as current.
 
+- [ ] **Give every image gate a `QEMU_TIMEOUT` bound of its own, then delete the nine job-level
+      pins in `ci.yml`.** That is the rule the `bench` job already states: a bound belongs in the
+      gate, and a job-level value overrides every script's `:=` at once. The pins are still there
+      because 28 of the 54 `tests/integration/check_*.sh` set no bound, and for those the pin is
+      the only backstop above `tests/lib/gate.sh`'s 20 s in `run_image` and 8 s in `poll_image`.
+      All nine are RAISED to 180 for that reason rather than dropped.
+      - **IT IS NOT A MECHANICAL SWEEP, because the scripts are shared across jobs.**
+        `check_qemu_panicgate.sh` runs in `qemu-arm`, `qemu-riscv64` and `qemu-x86_64`;
+        `check_qemu_hello.sh`, `check_rootgone.sh` and `check_fault_dump.sh` spread the same way.
+        All nine pins read 180 now, so every unbounded gate in all of them sits on one figure
+        nobody sized for it, and a default written into one of those scripts has to be the worst
+        of every job it runs in or it cuts that gate somewhere. Each bound has to come from what
+        that gate costs, measured, and not from the pin it happens to inherit today.
+      - **DISCHARGED: no pin cuts a gate it runs any more.** `check_qemu_selftest.sh` sets 180
+        and is registered in all nine pinned jobs, so `qemu-arm64`, `qemu-arm64-gicv3`,
+        `qemu-riscv`, `qemu-riscv-mpu` and `qemu-x86_64` were clamping it to 30 and
+        `qemu-arm64-amp` to 90. All six now read 180 and carry the same comment the other three
+        do. Each value was chosen from that job's own enumerated test list, and 180 is the
+        largest own-bound in all nine. The one figure above it that a job touches is
+        `check_bench_irqspan.sh`'s 400, and `qemu-riscv` selects only that gate's `--controls`
+        entry, which boots no image, so the 400 is not a bound that job has to clear. The
+        deletion this parent item asks for is still owed and still needs the per-gate bounds
+        first.
+
 ## RISC-V switch cost (M8.11) and two `Later` hardening items -- retagged after the M8 cut
 
 These three carried a shared `M8` tag from the era when "M8" meant "the last milestone".
@@ -11650,7 +12029,7 @@ which is the only reason they are filed rather than fixed:
 - [ ] **CDC console throughput is ~167 B/s** under many small writes (2008 bytes in 12 s). A console
       you cannot read a suite through is marginal.
 - [ ] **Blocking console mode makes the fault-record route LOSSY while the console is wedged**: a
-      driver sitting in an unbounded `push_all` is not in `kos_recv`, so `cap_console_deliver` finds
+      driver sitting in an unbounded `push_all` is not in a receive, so `cap_console_deliver` finds
       no parked receiver and drops the record. Bounded on a UART (a guaranteed consumer), which is
       why USB REQUIRES non-blocking and refuses `-KOS_ENOTSUP` to clear it.
 - [ ] **`docs/design-m4.8.2-host-unit-tests.md:435` says the K-seam is sixteen symbols; it is

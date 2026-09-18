@@ -110,14 +110,9 @@ namespace kickos
                                    void const* payload, uint32_t len, uint32_t slot);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Arm ONE far delivery to refuse the disclosure of the capability it just installed. NO
-    // SYSCALL REACHES THAT STATE: endpoint_recv proves the out-ptr writable and aligned before
-    // the park, so only a buffer that went away under a parked receiver presents it, and the
-    // scaffolding is what an arm has instead. Consumed by the next delivery, armed or not.
-    //
-    // THE PAYLOAD COPIES NEED NO SUCH ARM: a sibling holding the frame capability unmaps the
-    // page under the parked thread, which is the real route and what amp_far_deliver_fault
-    // drives.
+    // Make the next far delivery fail when writing back its new reply capability.
+    // The syscall validates this pointer before parking; this hook tests a failure
+    // at delivery time. Payload faults use real frame unmaps instead.
     void endpoint_far_blind_arm(void);
     bool endpoint_far_blind_take(void);
 #else

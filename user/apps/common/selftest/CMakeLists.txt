@@ -24,17 +24,11 @@ if(KICKOS_BOARD STREQUAL "microbit")
   list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
 endif()
 
-# The two 64 KiB FLASH parts (stm32f103 bluepill-c8, stm32f302), microbit (nrf51) and the
-# ENFORCING esp32c6 variants build the suite as THREE images: main.cc partitions its
-# registration list into three contiguous regions and KICKOS_SELFTEST_PART selects one. Each
-# part plans 1..N from its OWN registry, so the bench has to run all three to cover the suite.
-# Undefined elsewhere, where main.cc defaults it to 0 and registers everything.
-#
-# esp32c6's reason is a THIRD one, neither FLASH nor arena: its unprivileged code+rodata is ONE
-# pow2 PMP NAPOT window (esp32c6.ld `_code_size`, 128 KiB), so the whole suite in one image
-# overflows a window whose next step is 256 KiB and costs 128 KiB of thread arena. The flat
-# variant carves no such window, so it stays a single image, which is why this clause reads
-# KICKOS_HAVE_MPU and the other three read the chip alone.
+# Split the suite into three images on 64 KiB parts, microbit, and enforcing
+# ESP32-C6 variants. KICKOS_SELFTEST_PART selects a contiguous registry segment;
+# run all three for complete coverage. Zero registers the whole suite.
+# ESP32-C6 uses a 128 KiB PMP code window; doubling it for a single test image
+# would consume another 128 KiB of arena. Flat variants need no such window.
 set(_selftest_split 0)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302"
    OR KICKOS_CHIP STREQUAL "nrf51"
@@ -141,10 +135,10 @@ message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h,
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
 # expectation from OUTSIDE the image can see it. The conditions mirror the #if guards around the
 # registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 87) # unconditional, incl. ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms 93) # unconditional, incl. reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
-  math(EXPR _tap_arms "${_tap_arms} + 1") # call_reg_fastpath (region 2)
+  math(EXPR _tap_arms "${_tap_arms} + 16") # bus_device_slots, uart_service, reboot_priv, 13 x irq_*
+  math(EXPR _tap_arms "${_tap_arms} + 4") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout (region 2)
   math(EXPR _tap_arms "${_tap_arms} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
@@ -180,7 +174,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms "${_tap_arms} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms "${_tap_arms} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
+  math(EXPR _tap_arms "${_tap_arms} + 22") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
 endif()
 
 # The same count per region. The regions are separated by the `#undef TAP_ADD` lines in main.cc:
@@ -190,11 +184,11 @@ endif()
 # These MUST stay independent expressions, never derived from _tap_arms above: the equality
 # asserted below is only a check while both sides are stated separately, and a new arm has to
 # move a clause on each side.
-set(_tap_arms_p1 37) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*
+set(_tap_arms_p1 38) # region 1, unconditional, incl. endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*
 
-set(_tap_arms_p2 23) # region 2, unconditional, incl. reply_stale_caller, reply_abandoned_cap, call_infoless_revert, call_close_reply, call_happy, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, 4 x call_donation*, endpoint_crossdomain, 8 x cap_*
+set(_tap_arms_p2 28) # region 2, unconditional, incl. reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, reply_stale_caller, reply_abandoned_cap, call_infoless_revert, call_close_reply, call_happy, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, 4 x call_donation*, endpoint_crossdomain, 8 x cap_*
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # call_reg_fastpath, bus_device_slots, uart_service
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 6") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout, bus_device_slots, uart_service
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # endpoint_bound
@@ -202,7 +196,7 @@ endif()
 
 set(_tap_arms_p3 27) # region 3, unconditional, incl. ipc_one_buffer_both_ends, console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*, caller_stack, mem_self_grant_nonpow2, domain_share, mmio_grant, confused_deputy, mem_self_grant
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 12") # reboot_priv, 11 x irq_*
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 14") # reboot_priv, 13 x irq_*
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
@@ -233,7 +227,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 21") # pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
+  math(EXPR _tap_arms_p3 "${_tap_arms_p3} + 22") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
 endif()
 
 math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2} + ${_tap_arms_p3}")

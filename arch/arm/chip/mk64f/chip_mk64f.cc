@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// MK64FN1M0 (FRDM-K64F) chip backend. Register addresses/fields are from the K64
-// Sub-Family Reference Manual (K64P144M120SF5RM).
-//
-// Silicon-risk points to check against the K64 RM if bring-up misbehaves: the
-// 50 MHz source is an external CLOCK (EREFS0=0, RANGE0=2), not a crystal;
-// PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
+// MK64FN1M0 chip backend for FRDM-K64F. Register definitions follow
+// K64P144M120SF5RM. The 50 MHz input is an external clock
+// (EREFS0=0, RANGE0=2); check PRDIV, VDIV, and FRDIV /1536 encoding.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
@@ -17,7 +14,8 @@
 
 #include <stdint.h>
 
-#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+#include "bench_mpu.h" // arch/arm/common: MPU commit timing
+#include "regs.h"      // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/aips.h"
@@ -124,17 +122,11 @@ namespace
                   and UART0_C7816 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // --- PIT: the monotonic time base (K64 RM ch.44) ----------------------------
-    // DWT_CYCCNT reads are unreliable on this part: it lives in the core debug power
-    // domain and intermittently returns garbage (observed 0x40000001 == DWT_CTRL),
-    // which the software wrap-extension turns into a phantom 2^32 clock jump that
-    // strands every timed wait. Two chained 32-bit PIT channels form the free-running
-    // 64-bit down-counter behind arch_clock_now. arch_trace_now and the KICKOS_BENCH
-    // switch.S timestamps stay on raw DWT_CYCCNT, where a glitch costs one sample.
-    // CEILING: the kernel time base (ch0/ch1) and PIT_MCR share ONE AIPS peripheral
-    // slot, so a userspace PIT driver that opens that slot to U-mode (k64drv clears
-    // PACR55.SP) reaches ch0/ch1 and MCR; a rogue MCR=MDIS write freezes the kernel
-    // clock.
+    // Use chained PIT channels 0/1 as a 64-bit monotonic down-counter (RM ch.44).
+    // DWT_CYCCNT can return invalid values, making wrap extension jump forward.
+    // Trace and benchmark timestamps still use raw DWT reads.
+    // PIT channels and MCR share AIPS slot 55: opening it to userspace also
+    // exposes the kernel clock, including MCR.MDIS which can stop it.
     void pit_clock_init()
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is
@@ -315,25 +307,15 @@ namespace
     console_tx_backend const k64_console_backend = {
         k64_tx_slot_free, k64_tx_push, k64_tx_irq_enable, k64_tx_irq_disable};
 
-    // --- SYSMPU (K64 RM section 19); base 0x4000_D000 -------------------------
-    // NXP's byte/32-granular bus-master protection, NOT the ARM core MPU
-    // (__MPU_PRESENT=0 here): K64F replaces the PMSAv7 commit, not the shared stash.
-    // The Cortex-M4 core is TWO crossbar masters (RM 3.3.6.1): M0 = code bus
-    // (instruction fetch + flash literal/rodata reads), M1 = system bus (SRAM +
-    // peripheral data). RGD0 is the supervisor background; RGD1..11 are per-thread
-    // USER grants. An access is allowed if ANY valid descriptor grants it (union),
-    // so RGD0 (supervisor rwx everywhere) always covers privileged code. Register
-    // map is in regs/sysmpu.h.
+    // K64 SYSMPU (RM section 19), not the ARM core MPU.
+    // The core uses crossbar masters M0 (code bus) and M1 (system bus).
+    // RGD0 supplies supervisor access; RGD1..11 hold user regions. Permissions
+    // are the union of matching descriptors. See regs/sysmpu.h.
 #if KICKOS_HAVE_MPU
-    // WORD2 for the core's two crossbar masters (attr = the UNPRIVILEGED rights).
-    // The Cortex-M4 core reaches memory as M0 (code bus) OR M1 (system bus), chosen
-    // by ADDRESS: M0 serves flash AND SRAM_L (both < 0x2000_0000), M1 serves SRAM_U
-    // + peripherals. A thread's stack/data can sit in EITHER SRAM bank (this chip's
-    // RAM pool starts in SRAM_L @ 0x1FFF_0000), and an exception (un)stack to a
-    // SRAM_L stack is an M0 data access, so granting data only on M1 denies it.
-    // Grant the rights on BOTH masters: the RGD is address-bounded, so this widens
-    // only the bus a thread may use, not the range it reaches. Supervisor SM left
-    // 0 (=r/w/x) -> RGD0 background covers privileged; execute stays code-bus only.
+    // Grant data rights on both M0 and M1: flash and SRAM_L use M0, while
+    // SRAM_U and peripherals use M1. Stacks may be in either SRAM bank.
+    // Descriptors remain address-bounded, so this does not widen the region.
+    // Execute applies only to the code bus; supervisor access comes from RGD0.
     uint32_t sysmpu_word2(uint32_t attr)
     {
         uint32_t w = reg::sysmpu::WORD2_M0UM_R | reg::sysmpu::WORD2_M1UM_R; // read: M0 + M1
@@ -570,6 +552,9 @@ extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_
 // otherwise preempt a half-written (VLD-cleared) descriptor set.
 extern "C" void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
+#endif
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
     if (img == nullptr)
     {
@@ -622,6 +607,9 @@ extern "C" void kickos_arch_mpu_commit(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
+#endif
 }
 #endif
 
@@ -762,17 +750,11 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force UART0 back to a known polled-ready 8N1 TX
-// channel after a userspace driver may have garbled EVERY writable register in its granted
-// window. Runs with IRQs masked, privileged; MUST be idempotent + re-entrant, so it is
-// straight-line ABSOLUTE stores only, NO read-modify-write: an RMW on a garbled value is
-// not safe to repeat from a nested-fault re-entry.
-//
-// Reclaim depth = what uart0_init sets (BDH/BDL/C4/C1/C2) plus the registers init leaves
-// at reset default that a hostile driver can set to cause SILENT LOSS, each cleared to 0
-// below with the failure it prevents. The clock gates (SIM_SCGC4 UART0 / SCGC5 PORTB) and
-// pin mux (PORTB_PCR16/17) sit in privileged peripherals OUTSIDE the UART0 window, out of
-// the driver's reach.
+// Restore UART0 to polled 8N1 TX for panic output. Runs privileged with IRQs
+// masked and must tolerate nested re-entry. Use absolute stores rather than
+// read-modify-write on registers the driver may have changed.
+// Reset init settings and other writable fields that could suppress output.
+// Clock gates and pin mux are outside the driver's UART0 window.
 void arch_console_reclaim(void)
 {
     r8(UART0_C2) = 0;    // disable TX/RX/TIE so the driver stops; also lets the config

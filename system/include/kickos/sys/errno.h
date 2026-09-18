@@ -21,36 +21,23 @@ enum kos_errno
 {
     KOS_EPERM = 1,       // privilege denied / missing cap right / not the owner
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
-    KOS_EIO = 5,         // the DEVICE on the far side of a bus refused or failed the transfer:
-                         //   an I2C NACK, a peripheral reporting a wire-level error. Nothing
-                         //   about the request is malformed and no deadline passed; the peer
-                         //   did not play its part.
+    KOS_EIO = 5,         // device transfer failed, e.g. I2C NACK or a peripheral error
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
-    KOS_ENOMEM = 12,     // something had to be ALLOCATED and could not be: an object pool, the
-                         //   thread pool, the RAM arena, the capability-chunk slab, the caller's
-                         //   MPU descriptor budget. A full capability table is KOS_EMFILE, which
-                         //   allocates nothing.
+    KOS_ENOTIFY = 11,    // IRQ notification without a message; service the notified lines
+    KOS_ENOMEM = 12,     // allocation or MPU descriptor capacity exhausted
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
     KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
-    KOS_EMFILE = 24,     // ONE thread's capability table has no free slot; nothing was allocated.
-                         //   Table width is declared demand summed at configure
-                         //   (cmake/cap_table.cmake). From kos_call this names the SERVER's
-                         //   table, not the caller's: the reply cap is minted into the receiver.
+    KOS_EMFILE = 24,     // capability table full; kos_call refers to the server's table
     KOS_EPIPE = 32,      // endpoint has no receiver (dead), or the last one left while parked
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
-    KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)
+    KOS_ENOSYS = 38,     // syscall or architecture backend unavailable
     KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
-    KOS_ENOTSUP = 95,    // the request is well-formed and the backend simply cannot express it:
-                         //   a frame format this controller has no encoding for, a rate outside
-                         //   its divider's reach. Distinct from KOS_EINVAL, which blames the
-                         //   caller, and from KOS_ENOSYS, which says the arch arm is absent.
-    KOS_ETIMEDOUT = 110, // a caller-supplied deadline passed before the operation could
-                         //   complete, and NOTHING happened: a timed send that expires
-                         //   delivered no bytes and left no state behind
-    KOS_ECANCELED = 125, // this thread was cancelled: the wait it was in (or was about to
-                         //   enter) is abandoned, and the thread is expected to exit
-    KOS_EOWNERDEAD = 130 // mutex ACQUIRED but the prior owner died holding it (state may be torn)
+    KOS_ENOTSUP = 95,    // valid request unsupported by the device, e.g. frame format or rate
+    KOS_ETIMEDOUT = 110, // deadline expired before completion; effects depend on the operation
+    KOS_EALREADY = 114,  // requested state already present, e.g. an IRQ notification is pending
+    KOS_ECANCELED = 125, // wait cancelled; the thread is expected to exit
+    KOS_EOWNERDEAD = 130 // mutex acquired after owner death; protected state may be inconsistent
 };
 
 #endif

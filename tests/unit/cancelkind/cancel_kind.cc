@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The cancellation authority is ONE byte carrying a KIND. Two claims, and the second is
-// the one no other gate makes:
-//   * the authority is MONOTONIC over the enum's values (NONE < KILL < SLAY): a kill writes
-//     CANCEL_KILL, a slay escalates it, and a kill arriving afterwards never hands back the
-//     cleanup window the slay took away. A cooperative death still propagates KILL and never
-//     SLAY, so the two verbs cannot be conflated by a group.
-//   * every reader is TOTAL over the non-zero kinds: it asks "has this thread been asked to
-//     die", never "was it asked to die THIS way". A reader written against CANCEL_KILL would
-//     pass every arm in the tree today and silently stop honouring the kind added next.
-//
-// The reader this gate drives is the re-block refusal in kernel/irq/irq.cc, which the K-seam
-// compiles. The byte's other readers are the syscall death point (syscall.cc), the IPC
-// fastpath refusal (syscall_ipc_fast.cc) and the SLAY check at dispatch (sched.cc); the
-// sim_driver_death gate and the selftest's task_group_kill arm are what exercise the death
-// point.
+// Test monotonic cancellation (NONE < KILL < SLAY) and rejection of re-blocking
+// for every nonzero kind. KILL must not restore a cleanup window after SLAY.
+// Exercise irq_wait with the real IRQ code. Syscall death-point behavior is
+// covered by sim_driver_death and task_group_kill.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -55,6 +44,8 @@ namespace kickos
             static_assert(CANCEL_NONE == 0,
                           "the thread_create memset must leave a fresh TCB un-cancelled");
 
+            uint32_t g_line_note = 0;
+
             // The line cap the arms below wait on, owned by `owner` and current.
             uint32_t claim_the_line(Thread* owner)
             {
@@ -62,6 +53,9 @@ namespace kickos
                 uint32_t cap = 0;
                 EXPECT_EQ(irq_claim(owner, CONSOLE_LINE, 0, &cap), 0)
                     << "fixture: the waiter owns the line";
+                g_line_note = 0;
+                EXPECT_EQ(irq_notify_bind(owner, cap, &g_line_note), 0)
+                    << "fixture: the waiter serves the line it waits on";
                 return cap;
             }
 
@@ -87,7 +81,9 @@ namespace kickos
             // what irq_wait reads as a raise rather than a cancel.
             void hand_the_waiter_its_event(Thread* parked)
             {
-                parked->wait_queue->unlink(&parked->link);
+                // IRQ waits have no queue. The binding identifies the server; the bit
+                // distinguishes an event from cancellation.
+                parked->notify_pending = parked->notify_pending | g_line_note;
                 parked->clear_wait_edge();
                 parked->wait_result = 0;
                 {

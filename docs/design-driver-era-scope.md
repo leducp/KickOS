@@ -541,7 +541,8 @@ above where they differ.
   ABI break at M6 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
   ring implementation, into the call/reply contract.
 - **Timed / abortable IPC -> EARLY-M4: CLOSED.** The primitive ships: `KOS_SYS_SEND_TIMED`,
-  `KOS_SYS_RECV_TIMED` and `KOS_SYS_CALL_TIMED` (`user/include/kickos/sys/abi.h`), dispatched in
+  `KOS_SYS_CALL_TIMED` and the timed receive, since folded into `KOS_SYS_REPLY_RECV`
+  (`user/include/kickos/sys/abi.h`), dispatched in
   `kernel/syscall/syscall.cc`, with the park unwind in `kernel/thread/park.cc`
   (`endpoint_wait_abort`). **The two items this entry named as blocked on it are no longer blocked
   by it**: the clock-cascade quiesce-timeout (the deferred part 3 of the clock entry above) and the

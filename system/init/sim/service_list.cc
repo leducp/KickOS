@@ -179,6 +179,7 @@ namespace
     void simconsole_window_thread(void*)
     {
         wire_puts("[simcon] window thread holding the console registers\n");
+        (void)kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr);
         g_win_ready = 1;
         // kos_irq_wait returns non-zero once thread_kill cancels it, exactly as
         // uart_service.h's irq_loop expects. Exiting releases the DEV window, which is
@@ -199,6 +200,7 @@ namespace
     void simconsole_wedge_thread(void*)
     {
         wire_puts("[simcon] wedge irq thread parked, ready never set\n");
+        (void)kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr);
         while (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) == 0)
         {
         }
@@ -323,20 +325,23 @@ extern "C"
 #if defined(KICKOS_SIMCON_EXIT_AFTER) && KICKOS_SIMCON_EXIT_AFTER > 0
         unsigned served = 0;
 #endif
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
         while (true)
         {
-            struct kos_recv_info info;
-            int32_t const n = kos_recv(ep, buf, sizeof(buf), &info);
+            opts.info.reply_cap = KOS_CAP_NONE;
+            int32_t const n =
+                kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             if (n < 0)
             {
                 break;
             }
-            if (info.reply_cap != KOS_CAP_NONE)
+            if (opts.info.reply_cap != KOS_CAP_NONE)
             {
                 // A failed reply leaves a caller parked on one, so it is said rather than
                 // swallowed; the loop continues, one dead caller not being the console's end.
                 if (simcon_serve_one(&stats, &mode, buf, static_cast<size_t>(n),
-                                     info.reply_cap) < 0)
+                                     opts.info.reply_cap) < 0)
                 {
                     wire_puts("[simcon] reply failed\n");
                 }

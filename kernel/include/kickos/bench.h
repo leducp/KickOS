@@ -69,21 +69,13 @@ namespace kickos
         BD_COUNT
     };
 
-    // Declared outside the KICKOS_BENCH guard: KICKOS_BENCH_SPAN discards its arguments in a
-    // non-bench build, so a typo'd phase name would only fail in the bench build.
-    //
-    // A bracket's accumulator call runs after its own closing read: invisible to itself, but
-    // charged to any enclosing span. Hence two corrections, and neither is optional.
-    //   PH_NULL is an empty bracket pricing the two counter reads: a LEAF is (leaf - PH_NULL).
-    //   PH_NEST is that SAME empty bracket sited inside an enclosing span, so it carries two
-    //   things: one complete nested bracket, accumulator call included, which PH_NULL
-    //   understates by that whole call, AND the enclosing span's own PH_NULL residue. So one
-    //   nested bracket costs (PH_NEST - PH_NULL), and a COMPOSITE over k of them at any depth
-    //   is (composite - PH_NULL - k * (PH_NEST - PH_NULL)). Subtracting k * PH_NEST instead
-    //   removes the composite's single residue k times.
-    //   k IS PER SAMPLE, NOT PER ROW: a conditional arm adds or drops a bracket, an early
-    //   return skips its own SPAN and every SPAN under it, and where arch_switch swaps inline
-    //   k is unbounded. One row's min and its max can carry different k.
+    // Keep phase names available in non-benchmark builds.
+    // PH_NULL measures two counter reads. PH_NEST also includes the nested
+    // accumulator call, which runs after its own closing read. Corrections are:
+    //   leaf: leaf - PH_NULL
+    //   composite: composite - PH_NULL - k * (PH_NEST - PH_NULL)
+    // k is the number of nested brackets per sample, including deeper nesting.
+    // Conditional paths change k; inline context switches can make it unbounded.
     enum BenchPhase : uint32_t
     {
         PH_NULL = 0,
@@ -113,13 +105,14 @@ namespace kickos
         PH_CALL_SLOW_LOCKED,
         PH_CALL_SLOW_DONATE,
         PH_CALL_SLOW_PARK,
-        // The round trip's THIRD locked leg: the server's own recv. These close only on the
-        // PARKING arm; the arm that serves a queued sender returns from inside the scan,
-        // before the spans.
+        // Receive phases shared by plain and fused receives. Recorded only when parking;
+        // receiving a queued message returns before these measurements close.
         PH_RECV_LOCKED,
         PH_RECV_RESOLVE,
         PH_RECV_SCAN,
         PH_RECV_PARK,
+        // TOTAL measures standalone replies. LOCKED measures the shared reply body
+        // for both standalone and fused calls. Both require a local caller to be answered.
         PH_REPLY_TOTAL,
         PH_REPLY_VALIDATE,
         PH_REPLY_LOCKED,
@@ -127,6 +120,15 @@ namespace kickos
         PH_REPLY_COPY,
         PH_REPLY_FUNNEL,
         PH_REPLY_WAKE,
+        // Fused reply-receive total, including deferred wake completion. Closes before
+        // IrqLock releases, excluding the wait on deferred-switch architectures.
+        // Inline-switch architectures include suspension inside wq_block.
+        // Reply refusals are not recorded. REPLY_LOCKED and RECV_LOCKED measure its parts.
+        PH_REPLY_RECV_TOTAL,
+        // Post-resume work for parked receives: resume barrier, result read, and
+        // notification consumption. Nonparking paths do not contribute.
+        // Neither this phase nor TOTAL includes notification-mask write-back.
+        PH_REPLY_RECV_TAIL,
         // The wake path, in execution order. Every phase below is fed by BOTH sides of a
         // round trip and by every other wake and reschedule in the system, so n is what says
         // whether a min came from the path being measured. SWITCH_TO is the composite over the
@@ -312,22 +314,14 @@ namespace kickos
     void bench_e2e_print(uint32_t asked);
 }
 
-// A bracket is a MARK and a SPAN over the same variable name. Both vanish in a non-bench
-// build, so nothing but its SPAN may read the marked variable.
-//
-// A bracket must not contain a context switch, or it measures the rest of the round trip.
-// On armv7m, rv32imac and rxv3 a switch requested under IrqLock only PENDS (PendSV / msip /
-// SWINT), so a bracket closing before the lock does is safe. On the LX6 and the sim
-// arch_switch SWAPS INLINE, and a bracket spanning sched::wake, wq_block or switch_to there
-// closes only when this thread is next resumed. armv8a, rv64imac and x86_64 do BOTH: an
-// arch_switch called from an ISR books the swap and one called in thread context swaps
-// inline, and the syscall paths are thread context, so THEIR COMPOSITES READ AS
-// ELAPSED-UNTIL-RESUMED the way the LX6's do and are not a CPU cost.
-//
-// SUCH A SPAN HAS NO BOUND and, above one kernel core, no single clock either: the resume can
-// be on another core, whose counter shares no zero with the opening core's. Both land in the
-// saturation count rather than in the statistics. The LX6 counts 32 bits and swaps inline, so
-// there such a span still wraps into the row and reads as a huge cost.
+// MARK and SPAN must use the same variable; both disappear in non-benchmark builds.
+// Only SPAN may read the marked variable.
+// A span crossing an inline context switch includes suspension, not just CPU
+// work. ARMv7-M, RV32, and RXv3 defer switches until interrupts are restored.
+// LX6 and sim switch inline. ARMv8-A, RV64, and x86-64 defer ISR switches
+// but switch inline in thread context, including syscall paths.
+// Migration can also mix unsynchronized counters. Oversized intervals count
+// as saturated samples; LX6's 32-bit counter can instead wrap into statistics.
 #define KICKOS_BENCH_MARK(var) ::kickos::BenchTick const var = ::kickos::bench_cyccnt()
 #define KICKOS_BENCH_SPAN(phase, var) \
     ::kickos::bench_phase_add((phase), ::kickos::bench_cyccnt() - (var))

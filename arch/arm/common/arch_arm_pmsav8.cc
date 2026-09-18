@@ -1,30 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ARMv8-M (PMSAv8) MPU backend for Cortex-M33 chips (RP2350, and any future
-// nRF5340 / STM32U5 / STM32H5 M33 part). The M33 shares the whole armv7m arch
-// (BASEPRI crit, DWT, SysTick, NVIC, PendSV switch + SVC trampoline) and differs only
-// in the MPU, so this file is a STRONG override of exactly two shared arch-seam
-// symbols:
-//
-//   kickos_arch_mpu_commit: programs the running thread's regions into the PMSAv8
-//     RBAR/RLAR pair. The v7-M path writes RASR values to what is RLAR on v8-M, and
-//     clears the RBAR low bits that are now SH/AP/XN -> AP=priv-only, so an
-//     unprivileged thread faults on its own stack.
-//   arch_mpu_region_encodable: 32-byte-granular, PMSAv8 taking an arbitrary
-//     32-byte-aligned [base, base+size).
-//
-// The stash-only arch_mpu_apply (arch_arm_common.cc) is SHARED unchanged: it records
-// the incoming region set, and the armv7m PendSV epilogue calls
-// kickos_arch_mpu_commit AFTER the physical swap (the deferred-commit seam), which
-// lands here.
-//
-// This TU enters the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake
-// sets KICKOS_ARM_PMSAV8_SOURCE), so a PMSA board links the shared commit fallback
-// instead.
+// PMSAv8 MPU backend for Cortex-M33. Overrides the shared ARM commit and
+// region-encoding functions. PMSAv8 uses RBAR/RLAR with 32-byte-aligned
+// base/limit ranges; PMSAv7 RASR encoding is incompatible.
+// arch_mpu_apply stores the incoming set. PendSV commits it after switching.
+// Selected through KICKOS_ARM_PMSAV8_SOURCE in the chip's mpu.cmake.
 
 #include <kickos/arch/arch.h>
 
+#include "bench_mpu.h"
 #include "mpu.h"
 #include "regs_v8m.h"
 
@@ -158,6 +143,9 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 // grant, which is what makes the MPU_CTRL zeroing below sound.
 void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = kickos_arm_mpu_bench_cyc();
+#endif
     struct arch_mpu_encoded const* const img = kickos_arm_mpu_pending();
     if (img == nullptr)
     {
@@ -195,6 +183,9 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(kickos_arm_mpu_bench_cyc() - bench_start);
+#endif
 }
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and

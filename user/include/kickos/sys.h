@@ -34,23 +34,14 @@ void kos_print(char const* s);
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
-// EVERY capability-minting call below returns a status and writes the handle to `*out_cap`,
-// which is ALWAYS written, KOS_CAP_NONE on every failure. A handle spends the full 32-bit
-// word (abi.h, kos_cap_t), leaving no room for an errno.
-//
-// Counting semaphore. The handle is an OPAQUE per-THREAD CAPABILITY (index + generation in
-// THIS thread's table): it is not an array index, and it does NOT name the same object in
-// another thread, so a child gets it by delegation through kos_thread_params.caps (see
-// kos_cap_grant). Create grants WAIT|SIGNAL|TRANSFER.
-// THE THREE EXHAUSTION CODES ARE NOT INTERCHANGEABLE, and every create below can return any
-// of them: -KOS_ENOMEM is the object's own shared pool (here KICKOS_MAX_SEMAPHORES) with no
-// slot left, -KOS_EMFILE is THIS thread's capability table with no slot left, and
-// -KOS_EOVERFLOW is THIS TASK at its ceiling for that pool while the pool still has slots
-// (KICKOS_TASK_SEMAPHORE_BUDGET here, one such figure per charged pool, each set below its
-// pool's width so a slot of every pool stays out of any one task's reach).
-// -> 0; -KOS_ENOMEM; -KOS_EMFILE; -KOS_EOVERFLOW; -KOS_EINVAL (`initial` outside
-// [0, KOS_SEM_COUNT_MAX], or a null/misaligned out_cap); -KOS_EFAULT (out_cap is not writable
-// by the caller).
+// Capability creation returns status and writes out_cap (KOS_CAP_NONE on failure).
+// Handles use all 32 bits and are local to a thread; delegate them through
+// kos_thread_params.caps rather than copying their values to another thread.
+// Semaphore creation grants WAIT, SIGNAL, and TRANSFER.
+// Creation errors are -KOS_ENOMEM for pool exhaustion, -KOS_EMFILE for a full
+// capability table, and -KOS_EOVERFLOW for the task's pool budget.
+// Also returns EINVAL for initial outside [0, KOS_SEM_COUNT_MAX] or a null/
+// misaligned out_cap, and EFAULT if out_cap is not writable (negative codes).
 int kos_sem_create(int initial, kos_cap_t* out_cap);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL).
 int kos_sem_wait(kos_cap_t sem);
@@ -76,10 +67,10 @@ int kos_mutex_lock(kos_cap_t mtx);
 // 0, -KOS_EBADF (bad cap), or -KOS_EPERM (caller is not the owner). Only the owner unlocks.
 int kos_mutex_unlock(kos_cap_t mtx);
 
-// Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-THREAD CAPABILITY, as
-// above. Create grants a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the peer arrives; the kernel copies
-// min(sent, capacity) bytes and receiver-side truncation is NOT an error. A send above
-// KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
+// Synchronous IPC endpoint with per-thread capability handles. Create grants
+// full rights; send requires SIGNAL and receive requires WAIT. Both block for
+// a peer and copy min(sent, capacity) bytes. Truncation is allowed.
+// Sends above KOS_EP_MSG_MAX fail with EINVAL; receive capacities are clamped.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
 // The same endpoint, with its receiver in the kernel running on `node`: locality is settled
 // at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
@@ -94,34 +85,16 @@ int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 // -> as kos_send below, plus -KOS_ETIMEDOUT (the deadline passed with NO receiver: the send
 // did NOT happen and no bytes crossed).
 int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
-// No deadline: parks until a receiver arrives, however long that takes.
-// -> bytes transferred (>= 0), or a negative -KOS_E*: EINVAL (len > KOS_EP_MSG_MAX), EFAULT
-// (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the last
-// receiver went away while parked). n == 0 is a valid zero-length signal, not an error.
+// Wait indefinitely for a receiver. Returns bytes transferred or -KOS_E*:
+// EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer, EBADF/EPERM
+// for an invalid capability or missing SIGNAL right, EPIPE for a dead endpoint
+// or loss of its last receiver. A zero-length message is valid.
 //
-// EFAULT ALSO COVERS THE PEER'S BUFFER, on send, recv, call and reply alike: the bound-check
-// runs at the call and the copy at the rendezvous, so a parked receiver's page can be
-// unmapped in between, and the two ends may be the same memory (one static array named by two
-// threads of one task). Both parties are answered EFAULT, a receiver already off its queue
-// WOKEN with it rather than with a byte count. AND THE TRANSFER IS NOT UNDONE: the copy stops
-// at the granule refused, so a buffer answered EFAULT may hold a head of the new bytes over a
-// tail of the old, up to KOS_EP_MSG_MAX (docs/reference/ipc-call-reply.md).
+// For all IPC copies, either buffer may become inaccessible after validation.
+// Both parties receive EFAULT; any bytes already copied remain changed.
+// See docs/reference/ipc-call-reply.md for partial-copy behavior.
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
-// Receive up to `cap_len` bytes into buf; `info` (if non-null) receives the sender badge
-// and reply cap (kos_recv_info: reply_cap == KOS_CAP_NONE for a plain kos_send, a real
-// one-shot CAP_REPLY handle for a kos_call). info == NULL is an INFO-LESS recv: it REJECTS
-// calls, and the caller's kos_call fails -KOS_ENOSYS.
-// -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad buffer / out-ptr), EINVAL
-// (misaligned out-ptr), EBADF/EPERM (bad cap / no WAIT right).
-int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info);
-// The same receive, giving up after opts->timeout_us RELATIVE microseconds (or never, if
-// that is KOS_TIMEOUT_NONE). `opts` is in-out: it must be non-null, and readable as well as
-// writable. The kernel writes only opts->info, so opts->timeout_us survives and a recv loop
-// may reuse one struct.
-// -> as kos_recv, plus -KOS_ETIMEDOUT (the deadline passed with no sender: nothing was
-// received) and -KOS_EINVAL for opts == NULL.
-int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
-                       struct kos_recv_timed_opts* opts);
+// Receive through kos_reply_recv with KOS_CAP_NONE as the reply capability.
 
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
@@ -141,12 +114,19 @@ int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_c
 // consumed there. Nothing is retried and no bytes land in the buffer after this returns.
 int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
                        uint32_t timeout_us);
+
 // Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
 // bytes to the parked caller and wake it. The cap is ONE-SHOT, consumed here; a server loop
 // must reply or kos_handle_close it on EVERY path, else the caller parks forever.
 // -> 0, or a negative -KOS_E*: EBADF (bad / non-reply cap), EFAULT (bad reply buffer),
 // ESRCH (the caller is already gone, aborted or its slot reused; cap consumed anyway).
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
+// Reply and receive using one buffer. lens packs reply_len and recv_cap.
+// KOS_CAP_NONE skips the reply. Returns received bytes, -KOS_ENOTIFY for an
+// accepted IRQ without a message, or -KOS_E*. Reply errors EBADF and EFAULT
+// abort receiving; ESRCH allows it because that transaction has already ended.
+int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
+                   struct kos_reply_recv_opts* opts);
 
 // Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
 // Needs KOS_AUTH_CONSOLE. After this the kernel chip path drops (RTT, if built, still
@@ -180,87 +160,47 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
 // KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>) and panics without it.
 void kos_exit(int code) __attribute__((noreturn));
 
-// Cancel a thread YOU created, named by the handle kos_thread_create delivered. Returns 0,
-// -KOS_EBADF (bad / stale / already-exited handle, KOS_THREAD_NONE included), -KOS_EPERM
-// (you did not spawn it) or -KOS_EINVAL (naming yourself; that is kos_exit).
-//
-// ASYNCHRONOUS: 0 means the request was accepted, never that the thread is gone. The target
-// is broken out of WHATEVER it is parked on (irq_wait, recv, mutex, semaphore, sleep) with
-// -KOS_ECANCELED where the primitive has a code to carry one, gets one window to clean up,
-// and is ended by the KERNEL at its next syscall. A thread that never asks the kernel for
-// anything again is not reached at all. To OBSERVE the death, use kos_thread_join below.
+// Request cancellation of a thread created by the caller. Returns 0 or
+// -KOS_E*: EBADF for an invalid/exited handle, EPERM for a different parent,
+// EINVAL for self-cancellation (use kos_exit).
+// Success accepts the request; it does not confirm death. A parked target
+// is woken with ECANCELED where supported, then exits at its next syscall.
+// A target that makes no further syscalls is not reached. Use join to wait.
 int kos_thread_kill(kos_thread_t thread);
 
-// FORCIBLY end a thread YOU spawned, and wait up to `timeout_us` RELATIVE microseconds
-// (KOS_TIMEOUT_NONE: no bound; 0: arm and return) for it to be gone. Same handle, same
-// parenthood gate and same reach as kos_thread_kill above.
-//   0                  GONE. The target is EXITED, its capability table has been swept and
-//                      every name it held is released.
-//   -KOS_ETIMEDOUT     CONDEMNED, and irrevocably: the target will never execute another
-//                      unprivileged instruction, but its capability table is not yet swept,
-//                      so a name it holds is not yet released. Nothing is retryable; only
-//                      the cleanup is outstanding.
-//   -KOS_ECANCELED     the CALLER was cancelled while waiting. The target is still condemned.
-// Plus -KOS_EBADF (bad / stale / already-exited handle), -KOS_EPERM (you did not spawn it)
-// and -KOS_EINVAL (naming yourself, idle, or a privileged thread, refused and never masked).
-//
-// A slain DRIVER thread never gets the window in which it would have quieted its device;
-// kos_thread_kill is the call that leaves that window open. The wait can also be starved:
-// the target must be SCHEDULED to run its own teardown.
+// Forcibly end a thread created by the caller and wait timeout_us relative
+// microseconds for teardown (KOS_TIMEOUT_NONE: forever; zero: request only).
+// Returns 0 after exit, capability teardown, and name release.
+// ETIMEDOUT means termination is irreversible but cleanup remains pending.
+// ECANCELED means the waiting caller was cancelled; the target still terminates.
+// Other errors: EBADF for invalid/exited handles, EPERM for a different parent,
+// EINVAL for self, idle, or privileged targets. Error codes are negative.
+// The target gets no device-cleanup window and must be scheduled for teardown.
 int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 
-// Place a thread: `core_mask` names the cores it may run on, and the kernel intersects it with
-// the thread's task's core set. THE ONE PLACEMENT CALL; kos::thread::pin and kos::thread::unpin
-// in <kickos/kos.h> are spellings of it, not operations of their own.
-//
-// A thread may place any thread of its OWN TASK, itself included where it holds its own
-// handle. A task is one SCHEDULING DOMAIN: its threads share one grant, one priority ceiling
-// and one core set, and no placement inside it can raise that ceiling, widen that core set or
-// reach another task. Placing a thread of another task is privileged.
-//
-// `core_mask` of 0 asks for the task's DEFAULT set, its core set less the cores the image
-// isolates, which is the same resolution a spawn makes of a zero core_mask and is how unpin
-// is spelled. A NONZERO mask is a SET OF ACCEPTABLE CORES: it is intersected with the machine
-// and then with the grant, so all ones is an ordinary request rather than a magic value, and
-// it asks for the whole grant INCLUDING the isolated cores.
-//
-// An isolated core is named here like any other. Nothing arrives on one by default, and only
-// an explicit mask that names it reaches it; a mask naming it beside ordinary cores lets that
-// core's picker take the thread like any other core in the set.
-// Returns 0, -KOS_EPERM (the mask meets the task's core set nowhere, or a cross-task target),
-// -KOS_EINVAL (a nonzero mask naming no core this kernel schedules at all), -KOS_EBADF (a bad
-// handle, or one whose thread has exited), or -KOS_ENOSYS on an image whose kernel drives one
-// core.
+// Set allowed cores for a thread in the caller's task; cross-task changes
+// require privilege. Intersect nonzero masks with the machine and task grant.
+// Zero selects the task default set, excluding isolated cores. An explicit
+// mask may include isolated cores; a single bit pins the thread.
+// Returns 0 or -KOS_E*: EPERM for no permitted core or unauthorized cross-task
+// access, EINVAL for a nonzero mask with no machine core, EBADF for an invalid/
+// exited handle, ENOSYS on single-core kernels.
 int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
 
-// Narrow a task's SCHEDULING GRANT: the highest priority its threads may take, and the cores
-// they may run on. Narrowing-only against the caller's own grant, and 0 in either argument
-// leaves that half alone. Only the task's creator may call it, and only while the task is still
-// EMPTY, a grant that narrowed under a live thread having stranded it.
-//
-// The core set is intersected with the machine before it is weighed, so a bit naming a core
-// this kernel does not schedule is dropped rather than refused; what survives must be a subset
-// of the grant it narrows.
-//
-// Returns 0, -KOS_EPERM (wider than the caller's own grant, or not the creator), -KOS_EINVAL
-// (it names no core this kernel schedules at all, or the ceiling is out of range), -KOS_EBADF,
-// or -KOS_EBUSY (the task has a member).
+// Set a created task's priority ceiling and core grant while it is empty.
+// May only narrow the caller's grant. Zero leaves that field unchanged.
+// Ignore cores absent from the machine before checking the subset.
+// Returns 0 or -KOS_E*: EPERM for wider grants or a different creator, EINVAL
+// for invalid ceiling or no machine core, EBADF for an invalid handle,
+// EBUSY if the task has a member.
 int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
 
-// Create a TASK: a group of threads that share one data region and one fate. `mem_base` /
-// `mem_size` is the shared region, or 0/0 for a group that shares no memory and is only a
-// kill group; it is granted R|W to every member and is admitted exactly as a spawn-time
-// mem_base is (arena-confined, reserved-block-clear, KOS_AUTH_MEMORY where that applies).
-//
-// The task starts EMPTY: kos_thread_params::task is what seats a member, and only THIS
-// thread may seat one. Returns 0 with *out_task seated, or -KOS_EPERM / -KOS_EINVAL /
-// -KOS_ENOMEM / -KOS_EFAULT with *out_task == KOS_TASK_NONE.
-//
-// A member may bring NO mem_base of its own and may not be privileged; an mmio_base still
-// belongs to the one member that asks for it.
-//
-// `mem_flags` is kos_mem_flags, and MUST match the flags the same block was self-granted
-// with: a mismatch leaves the block with two live mappings that disagree.
+// Create an empty task with shared data and fault containment. mem_base/size
+// is a region granted read/write to each member, or 0/0 for no shared memory.
+// Apply the same memory checks as spawn. Only the creator may add members.
+// Members cannot be privileged or supply separate mem_base; MMIO is per thread.
+// mem_flags must match any existing self-grant for the block.
+// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/EFAULT with KOS_TASK_NONE.
 int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                     kos_task_t* out_task);
 
@@ -270,31 +210,20 @@ int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
 // not create it). Any MEMBER's death also ends the group.
 int kos_task_kill(kos_task_t task);
 
-// FORCIBLY end a task YOU created: every live member is SLAIN rather than cancelled, so not
-// one of them gets the cleanup window kos_task_kill leaves open. Waits up to `timeout_us`
-// RELATIVE microseconds (KOS_TIMEOUT_NONE: no bound; 0: arm and return) for the group to be
-// EMPTY, which is a different condition from any single member's death.
-//
-// Returns 0 (the group is empty and its slot released, so the handle names nothing),
-// -KOS_ETIMEDOUT (every member is condemned and irrevocably so, and the handle STILL names
-// the group so this can be asked again), -KOS_ECANCELED (the caller was cancelled while
-// waiting), -KOS_EBADF (bad / stale handle, or an implicit task, which is unnameable),
-// -KOS_EPERM (you did not create it) or -KOS_EINVAL (the caller is itself a member; kos_exit
-// is how a member ends its group).
-//
-// An EMPTY group returns 0 at once.
+// Forcibly terminate every member of a task created by the caller, without
+// a cleanup window. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
+// forever; zero: request only). An empty task succeeds immediately.
+// Returns 0 once empty and released. ETIMEDOUT leaves termination pending
+// and the handle valid for another wait. ECANCELED cancels only the wait.
+// Other errors: EBADF for invalid/implicit tasks, EPERM for a different
+// creator, EINVAL if the caller is a member. Error codes are negative.
 int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 
-// Wait for a thread YOU spawned to be gone, giving up after `timeout_us` RELATIVE
-// microseconds, or never if that is KOS_TIMEOUT_NONE. Returns 0 (the target is gone),
-// -KOS_ETIMEDOUT (it outlived the deadline and is still running), -KOS_ECANCELED (the
-// CALLER was cancelled while waiting), -KOS_EBADF (a handle naming no slot, or one
-// reclaimed under this handle, KOS_THREAD_NONE included), -KOS_EPERM (you did not spawn it)
-// or -KOS_EDEADLK (naming yourself).
-//
-// A target that had ALREADY exited returns 0, not -KOS_EBADF: a thread handle stays valid
-// until its slot is reused. Only a spawn that has since REUSED the slot invalidates the
-// handle, and then the answer is -KOS_EBADF. The parenthood gate is non-transferable.
+// Wait for a thread created by the caller, with a relative microsecond
+// timeout or KOS_TIMEOUT_NONE. Returns 0 if exited, including before this call.
+// Returns -KOS_E*: ETIMEDOUT if still running, ECANCELED if the caller is
+// cancelled, EBADF for an invalid/reused slot, EPERM for a different parent,
+// EDEADLK for self. Handles remain valid after exit until the slot is reused.
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 
 // Wait until the CALLING thread is the last live one (idle aside), then return 0. Returns
@@ -379,13 +308,6 @@ uintptr_t kos_sched_probe(uintptr_t op);
 int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)
 #endif
 
-// Bind device line `irq` so that firing it posts the semaphore `sem_cap` names, from ISR
-// context (tier-2, privileged in-kernel handler). Needs KOS_AUTH_IRQ. Returns 0, or
-// -KOS_EPERM (no KOS_AUTH_IRQ, or the cap lacks SIGNAL), -KOS_EINVAL (bad irq line),
-// -KOS_EBADF (bad / non-sem / stale cap), -KOS_EBUSY (the line is already bound: no
-// stealing).
-int kos_irq_attach(int irq, kos_cap_t sem_cap);
-
 // Tier-1 IRQ-as-event. The line IS a capability: claiming it needs KOS_AUTH_IRQ, and the
 // resulting cap is delegable to an unprivileged driver at spawn. The first-level ISR masks
 // the line and posts the bound notification; the holder waits in thread context and unmasks
@@ -395,14 +317,26 @@ int kos_irq_attach(int irq, kos_cap_t sem_cap);
 // caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
 // having slots); the cap lands in *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
-// Block until the line fires. 0, or -KOS_EBADF/-KOS_EPERM, or -KOS_ECANCELED where the caller
-// was cancelled before or during the park.
+// Bind this line to the calling thread before its first wait. Returns its
+// notification bit in out_mask and delivers any event pending before binding.
+// Returns 0, EBADF for a bad cap, EPERM without CAP_WAIT, EINVAL/EFAULT for
+// an invalid output pointer, or EBUSY if another thread serves the line
+// (errors are negative).
+int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask);
+// Wait for the line. Returns 0 or -KOS_E*: EBADF/EPERM for an invalid cap,
+// missing CAP_WAIT, or no binding to this thread; ECANCELED on cancellation.
 int kos_irq_wait(kos_cap_t irq_cap);
+// Wait with a relative timeout in microseconds; KOS_TIMEOUT_NONE waits forever.
+// Returns -KOS_ETIMEDOUT on expiry without an event.
+int kos_irq_wait_timed(kos_cap_t irq_cap, uint32_t timeout_us);
+// Rearm early after servicing the device, allowing IRQs during later work.
+// Optional: wait rearms on entry. Repeated acks have no effect.
 int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
-// Post the binding WITHOUT touching the controller: the doorbell a service thread rings so
-// the IRQ thread, sole owner of the peripheral registers, primes a transfer. The woken
-// waiter must tolerate finding nothing asserted. Needs KOS_CAP_SIGNAL.
-int kos_irq_notify(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+// Post a software notification without accessing the controller. Requires SIGNAL.
+// The waiter must allow for a wake with no device interrupt asserted.
+// Returns -KOS_EALREADY if already pending; the event remains pending and
+// retrying the post is unnecessary.
+int kos_irq_notify(kos_cap_t irq_cap); // 0, -KOS_EALREADY, or -KOS_EBADF/-KOS_EPERM
 // Drop the controller's latched pending for the line. An EDGE binding's rearm deliberately
 // KEEPS that latch, and the controller is a reserved block no grant can reach, so this is
 // the only way to retire a pending the driver knows is stale. Neither masks nor unmasks: use
@@ -429,29 +363,17 @@ uint32_t kos_periph_clock_hz(uintptr_t base);
 // that base, including bases the chip refuses), or -KOS_ENOSYS (no chip backend).
 int kos_periph_enable(uintptr_t base);
 
-// Write `value` to the register at `base + offset` PRIVILEGED, for the registers whose WRITE
-// side the bus classifies supervisor-only inside a window this thread legitimately holds
-// (XMC4800 USIC FDR/BRG/CCR). Such a store from an unprivileged thread is SILENTLY DISCARDED
-// by the bus.
-//
-// Authorised by possession, like kos_periph_enable: the caller must hold a live MMIO grant
-// whose base is exactly `base`. Not blanket write access: the chip carries an ALLOWLIST of
-// (base, offset) pairs and everything else is refused.
-// Returns 0, -KOS_EPERM (caller does not hold that window), -KOS_EINVAL (base+offset is
-// not on the allowlist), or -KOS_ENOSYS (no chip backend).
+// Write a chip-allowlisted register at base+offset with kernel privilege.
+// Requires a live MMIO grant whose base matches exactly. Needed for registers
+// whose unprivileged writes are ignored by the bus, such as XMC USIC FDR/BRG/CCR.
+// Returns 0, -KOS_EPERM without the grant, -KOS_EINVAL outside the allowlist,
+// or -KOS_ENOSYS without a backend.
 int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 
-// Drop authority: narrow the caller's authority word to `mask` (kos_cap_authority bits),
-// which can only CLEAR bits. A mask naming a bit it lacks does not add it. `cap` must be
-// KOS_CAP_AUTHORITY, a pseudo-handle: the authority word is TCB state, not a table entry.
-// Narrowing to 0 gives up every authority.
-//
-// Irreversible for the caller: nothing widens an authority word, and only a spawning parent
-// can seat one.
-//
-// Needs no authority itself. Returns 0, -KOS_EBADF (the caller holds no authority to give
-// up), or -KOS_EINVAL (cap is not an authority cap: narrowing object rights is not
-// supported).
+// Irreversibly intersect caller authority with mask. cap must be the
+// KOS_CAP_AUTHORITY pseudo-handle. Zero drops all authority; absent bits
+// cannot be added. Only a spawning parent can set initial authority.
+// Returns 0, -KOS_EBADF if no authority remains, or -KOS_EINVAL for another cap.
 int kos_cap_narrow(kos_cap_t cap, uint8_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
@@ -473,60 +395,27 @@ uint64_t kos_cpu_clock_set(kos_pstate_t pstate);
 // Does NOT affect kos_clock_now(): that stays a pure monotonic counter.
 void kos_clock_set_realtime(uint64_t unix_ns);
 
-// Allocate a page-aligned block of user RAM, to hand to a thread as its domain data region
-// (see kos_thread_params.mem_base) or to a task create as the group's. NULL if exhausted.
-//
-// Allocating RESERVES memory and grants nothing: reachability comes from handing the block
-// to a spawn or a task create, or from asking for it explicitly with kos_mem_self_grant.
-//
-// THE NUMBER IS AN ADDRESS IN THE CALLING TASK'S OWN NAMESPACE, and a reservation another
-// task made is nameable by this one nowhere: not here, not as a spawn's mem_base, not as a
-// caller-owned stack_base, not as a self-grant. Under translation it is an address in that
-// task's space, mapped nowhere until the self-grant maps it; on a region backend it is an
-// arena address the kernel records the reserving task against. Handing the block over reaches
-// the receiving task at the SAME address, so a pointer inside it still means the same thing.
-//
-// EXHAUSTION HAS TWO SOURCES ON EITHER ENFORCING BACKEND and NULL is both: the memory itself,
-// and how many distinct blocks may be reserved at all, a reservation costing a slot of a
-// bounded list that nothing frees (per address space under translation, per image over the
-// arena's ownership record). NOTHING TELLS THEM APART: this call answers a pointer.
+// Reserve page-aligned user RAM for this task; returns NULL on exhaustion.
+// Reservation alone grants no access. Pass it to spawn/task creation or
+// use kos_mem_self_grant. Other tasks cannot name this reservation directly.
+// On MMU systems the result is an unmapped task address; on MPU systems
+// it is an owned arena block. Delegation preserves its address.
+// NULL can mean exhausted memory or reservation records. Records are bounded
+// and not freed: per address space on MMU, per image on MPU.
 void* kos_ram_alloc(size_t size);
 
-// Make [base, base+size) reachable by the CALLER: kos_ram_alloc reserves, this grants, and
-// nothing grants implicitly.
-//
-// Requires AUTH_MEMORY. `base` must name a block the CALLING TASK reserved with
-// kos_ram_alloc, and an address some other task reserved is refused. Under an MPU the
-// reachability is one region of the calling THREAD's set, run through the same Rule 7
-// admission predicate as a spawn-time grant and rounded up to what the MPU can describe
-// (arch_ram_region_size), and THAT ROUNDED WINDOW must lie inside one block this task
-// reserved; under translation the whole reservation becomes a mapping in the calling task's
-// space, which every thread of that task then reaches (a grant guarantees access to its
-// HOLDER, never denial to a peer).
-//
-// BOUNDED, and by a different budget on each: the hardware region budget under an MPU, where
-// a thread already spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain
-// and its stack; the reservation list under translation. Either way the ALLOCATION above
-// spends the second budget, and not this call.
-//
-// `flags` is kos_mem_flags: the memory TYPE to commit the region with. Where the chip
-// PROGRAMS that type, asking for it spends a descriptor even on a block the caller can
-// already reach cacheably, a privileged caller's whole-arena background-map reach included.
-//
-// THE SAME MEMORY TYPE IS COMPARED IN BOTH DIRECTIONS. Where the mapping carries the type, a
-// request naming NO type over a block mapped non-cacheable is as much a change as the reverse
-// and is committed as one: that direction is the way back from a DMA buffer to ordinary memory,
-// and answering it on reachability alone would report a cacheability that was never restored.
-//
-// Returns 0 on success (including when the range is ALREADY reachable with the same memory
-// type, which costs no descriptor and no mapping), or:
-//   -KOS_EPERM   no AUTH_MEMORY, the range is inadmissible (outside the arena, or
-//                overlapping a reserved block), a range this task never reserved, or this
-//                chip cannot honour the memory type asked for
-//   -KOS_EINVAL  size 0, the range wraps, an undefined flag bit, or (under an MPU) the
-//                base is not naturally aligned to the rounded region size (a base from
-//                kos_ram_alloc never trips this)
-//   -KOS_ENOMEM  the budget is full
+// Grant access to RAM reserved by the caller's task. Requires AUTH_MEMORY.
+// On MPU systems, add a per-thread region rounded to arch_ram_region_size;
+// the rounded range must fit one owned reservation. On MMU systems, map
+// the whole reservation into the task's shared address space.
+// flags selects memory type. A type change must update the descriptor even
+// if the range is already accessible; identical grants consume no new entry.
+// MPU grants are limited by hardware region capacity. MMU reservations are
+// bounded at allocation.
+// Returns 0 or -KOS_E*:
+//   EPERM: missing authority, unowned/invalid range, or unsupported memory type.
+//   EINVAL: zero size, wraparound, unknown flags, or bad MPU region alignment.
+//   ENOMEM: descriptor budget exhausted.
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
@@ -551,9 +440,8 @@ int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 // memory. Returns 0 or a negative KOS_E*.
 int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags);
 
-// The inverse, and only for a range that arrived through kos_frame_map. IT DOES NOT ASK
-// WHAT NAMES THE RANGE: a thread of that space parked in kos_recv with its buffer inside it
-// is woken -KOS_EFAULT, and so is whoever was sending to it.
+// Unmap a range previously mapped with kos_frame_map. A receive using that
+// range fails with -KOS_EFAULT, as does its sender.
 int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
 
 #endif

@@ -28,6 +28,7 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
     reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
     call_donation call_donation_hold call_donation_slow call_donation_pending
+    reply_recv_notify reply_recv_notify_park
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
     mutex_owner_died_nowaiter aspace_two_spaces_same_grant
     parked_frame_hostile)
@@ -78,17 +79,10 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
   list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
 endif()
 
-# The two arms that need a peer running a kernel of its own. They are compiled on every AMP
-# posture and decide at RUNTIME off the peer's own serviced count, so this permission covers the
-# image run STANDALONE: the same binary in a merged partition finds a peer and reports ok, and
-# tests/integration/check_amp_peer_arms.sh asserts they are NOT skipped there. Under one image
-# the peers are this image's own cores and always answer.
-#
-# amp_far_reply_guard and amp_far_reply_empty both park a caller on a far port nobody answers,
-# which is a port the partition names a node MORE THAN ONCE: the node's kernel binds every port
-# it is named and its app receives on the first alone. That spare is a far entry for every other
-# node, and a far entry this node binds itself is not one it can park on, so the arms are
-# reachable on every node but the one holding the spare, at any width.
+# Allow peer-dependent tests to skip when an AMP image runs alone. The merged
+# partition gate requires them to run when a peer is available.
+# Far-reply guard tests need an unanswered port: a node binds all its ports but
+# serves only the first. Other nodes can use its spare; the owner cannot.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty)
 endif()
@@ -114,15 +108,9 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
        amp_far_answer_deferred)
 endif()
 
-# amp_deferred_doorbell needs a raise that can be WITHHELD, so it needs a doorbell that keeps a
-# per-core seat. The RP2350's raise is one write to SIO DOORBELL_OUT_SET naming the other core
-# of the pair, addressing it from reset with no publication behind it, so arch_ipi_seat_set
-# answers ARCH_IPI_SEAT_NONE, the probe refuses the scenario ahead of the publication and the
-# arm skips itself by name.
-#
-# NAMED BY CHIP because the seat is the chip backend's. This permission covers exactly the
-# parts whose backend answers ARCH_IPI_SEAT_NONE; a part whose doorbell does keep a seat runs
-# the arm and must not be added here, or the permission stops being evidence.
+# amp_deferred_doorbell requires a published per-core doorbell destination.
+# RP2350 uses a direct SIO write and returns ARCH_IPI_SEAT_NONE, so the test
+# skips. Keep this exception limited to backends without a destination slot.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
   list(APPEND KICKOS_EXPECT_SKIPS amp_deferred_doorbell)
 endif()
@@ -143,15 +131,10 @@ if(KICKOS_KERNEL_CORES GREATER 1)
   list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
                                irq_stale_register thread_slay_window)
 endif()
-# irq_kernel_line_reserved refuses a capability AND an inject over a line the arch dispatches to
-# a kernel vector of its own, and its ordinary-line control runs everywhere. A controller that
-# reserves NO line leaves that first leg no subject, so the arm reports PARTIAL there rather
-# than an unqualified ok.
-#
-# The doorbell's SGI or bell is the only such line in the tree, so the postures that CAN witness
-# it are those whose controller keeps one (the GIC backends, the RP2350's SIO bell) AND whose
-# image has a doorbell at all. Keyed on KICKOS_NUM_CORES and NOT on the kernel-core count: the
-# AMP posture drives four cores on one kernel and links the doorbell all the same.
+# irq_kernel_line_reserved tests both claim and injection rejection for a
+# kernel-reserved line. Report PARTIAL when none exists. GIC and RP2350 have
+# such a line when the image uses doorbells. Test KICKOS_NUM_CORES because
+# AMP images also need doorbells even with one kernel core.
 if(KICKOS_ENABLE_SELFTEST
    AND NOT ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_CHIP STREQUAL "rp2350")
             AND (KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)))
@@ -229,12 +212,14 @@ if(KICKOS_ARCH STREQUAL "sim")
 
 endif()
 
-# One image per board, at the arm count that image recorded, under the derived
-# <board tag>_selftest name. microbit is the exception and it is the FLASH size, not the board:
-# 64 KiB parts build the suite as three images, so that board runs three gates below.
+# Register each board's self-test image and expected test count. The 64 KiB
+# microbit splits the suite across three images.
+# Keep TIMEOUT above check_qemu_selftest.sh's 180-second limit so the script
+# can report the failure before CTest stops it.
 if(NOT KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(TARGET selftest
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
+    TIMEOUT 240
     ARGS ${_selftest_arms})
   if(TEST ${_tag}_selftest)
     set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
@@ -271,6 +256,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
     kickos_add_qemu_test(TARGET ${_img}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
+      TIMEOUT 240
       ARGS ${_mb_arms})
     set_property(TEST microbit_${_img} APPEND PROPERTY ENVIRONMENT
       "EXPECT_SKIPS=${_mb_skips_${_img}}"
@@ -483,15 +469,10 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
   kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()
 
-# The split-image boards carve TWO windows: the app's writable state, and the app's own
-# EL0/U-mode executable half, which is the one a kernel object landing app-side turns into
-# fetchable privileged code. Their scripts select kernel/arch/chip kernel-side and leave
-# libkickos_lib.a app-side by design, so the privileged set here is three and not four.
-#
-# x86_64 is out and stays out: arch/x86/x86_64/pe_image.ld carves no app window at all and
-# STATES each one as start == end, `ld -m i386pep` building no GOT so a weak-undefined window
-# symbol would resolve to itself. Dropping this exclusion does not make the gate vacuous
-# there, it makes it fail on the empty window, which is the loud end of that mistake.
+# Split-image boards separate writable app data and user executable code.
+# Keep kernel, arch, and chip archives outside both; libkickos_lib is app code.
+# Exclude x86-64: its PE linker script defines empty app windows, so this
+# gate cannot check placement there.
 if(KICKOS_HAVE_ASPACE AND NOT KICKOS_ARCH STREQUAL "x86_64")
   add_test(
     NAME    appdata_no_kernel

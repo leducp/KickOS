@@ -1,49 +1,25 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Per-call-site resolution of every indirect call a static callgraph walk goes through. TWO
-# gates read it: tests/static/trap_redzone.py, which measures the trap-path stack descent, and
-# tests/static/console_reach.py, which asks whether the fault-record console route can reach a
-# panic.
+# Indirect-call targets used by trap_redzone.py and console_reach.py.
+# GCC callgraphs name only __indirect_call, so these records supply targets.
 #
-# gcc's -fcallgraph-info emits one edge to the literal node `__indirect_call` per site and
-# nothing more, so the depth through a site is whatever this file says.
-#
-# THE KEY IS A CALLER AND AN ORDINAL. `<caller>@<n>/<count>` is the n'th of the <count> indirect
-# calls that caller makes, ranked by the basename, line and column gcc gave them. No source line
-# is part of it, so an edit above a bound call leaves it alone; what moves an ordinal is that
-# caller gaining or losing an indirect call, and <count> then disagrees with the graph and every
-# record of that caller is refused at once.
-#
-# THREE FAILURES, KEPT APART ON PURPOSE:
-#   UNBOUND INDIRECT SITE   a site reachable from a root that no record here names.
-#   ABSENT CALLEE           a record whose named callee is not in the graph.
-#   KEY DOES NOT RESOLVE    a record whose caller is gone, names two nodes, or no longer makes
-#                           <count> indirect calls.
-# All three are HARD FAILURES, and the third is never answered by renumbering an ordinal: a
-# moved count means every ordinal in that body moved, so renumbering would charge a measured
-# callee to a call that does not make it. Re-read the body and re-declare its sites.
-#
-# File format, one record per line, '#' starts a comment, a trailing '\' continues:
+# Format (# starts a comment; a trailing backslash continues a record):
 #   site <arch> <scope> <caller>@<n>/<count> <callee>...
 #   site <arch> <scope> <caller>@<n>/<count> NONE
 #   site <arch> <scope> <caller>@indirect <callee>...
-# The third form is for a caller whose indirect edges gcc emitted with NO location at all: it
-# stands for every one of them at once, so a body carrying one has to be re-read by hand when
-# it changes. <scope> is a configure-preset name, or '*' for every preset of the arch. A record
-# out of scope is not read at all. NONE declares a site with no reachable callee AT ALL; the
-# tool accepts it and charges 0.
 #
-# A <caller> and a <callee> are named the same way: a bare global symbol, a demangled name
-# carrying '::', or `<basename>:<name>` for a file-scoped one, where <name> is that function's
-# own identifier or its whole mangled tail. EVERY MATCH IS EXACT and must be UNIQUE; naming a
-# function by its identifier rather than its tail is what covers the two toolchains spelling
-# internal linkage differently, one emitting an L before the name length and the other not. A
-# '?' before a callee marks it OPTIONAL: compiled out under some option, so its absence is not
-# a stale binding.
+# Number sites by GCC basename, line, and column within each caller. count
+# is the caller's total indirect sites. If it changes, inspect all sites again;
+# do not simply renumber. @indirect covers all sites without GCC locations
+# and requires manual review when the caller changes. Inlining creates a
+# separate site in each caller.
 #
-# ONE SOURCE LINE CAN CARRY SEVERAL SITES: an inlined body puts its indirect call into each of
-# its callers, and each of those is a call of its own with a caller and an ordinal of its own.
+# Scope is a preset or * for the architecture. NONE declares no reachable
+# target and contributes zero stack use. Prefix optional callees with ?.
+# Names must match uniquely: global symbols, demangled C++ names, or
+# <basename>:<identifier-or-mangled-tail> for file-local functions.
+# Missing site bindings, required callees, or unresolvable keys are errors.
 
 # --- POINTER A: the SchedPolicy hook table, Kernel::policy ----------------------
 # Exactly one SchedPolicy exists in the tree, kickos::(anonymous)::g_fifo_rr in
@@ -541,24 +517,18 @@ site x86_64 qemu-x86_64-bench console_tx_insert_line@1/4   console_q35.cc:q35_tx
 site x86_64 qemu-x86_64-bench console_tx_insert_line@2/4   console_q35.cc:q35_tx_slot_free
 site x86_64 qemu-x86_64-bench console_tx_insert_line@3/4   console_q35.cc:q35_tx_push
 site x86_64 qemu-x86_64-bench console_tx_insert_line@4/4   console_q35.cc:q35_tx_push
-# --- POINTER C: Kernel::irq_table[irq].handler, one site -----------------------
-# The table is TOTAL (irq_init seeds every slot with irq_default_handler) and the callee set is
-# CLOSED: user code cannot register a function pointer, and the kos_irq_attach syscall only ever
-# installs the fixed kernel thunk irq_sem_post. bench_irq_handler exists only in a KICKOS_BENCH
-# build.
-#
-# irq_event_isr and irq_sem_post reach kickos::sem_post -> sched::wake -> resched_after_wake ->
-# reschedule -> switch_to -> arch_switch, and on rv32imac and rxv3 arch_switch only PENDS the
-# switch (msip / ICU.SWINTR) and returns, so the chain does not re-enter the scheduler on this
-# stack. An arch whose arch_switch swaps inline needs this binding changed with it.
+# POINTER C: Kernel::irq_table[irq].handler.
+# irq_init fills every entry with irq_default_handler. Userspace cannot install
+# handlers; bench_irq_handler exists only in benchmark builds.
+# On rv32imac and rxv3, arch_switch requests a deferred switch and returns,
+# so IRQ delivery does not re-enter the scheduler on this stack. Revisit this
+# binding if a backend changes to inline switching.
 site rv32imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   syscall.cc:irq_sem_post \
                                    console_tx.cc:console_tx_isr_trampoline \
                                    ?bench.cc:bench_irq_handler
 site rxv3     * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
-                                   syscall.cc:irq_sem_post \
                                    console_tx.cc:console_tx_isr_trampoline \
                                    ?bench.cc:bench_irq_handler
 
@@ -586,7 +556,6 @@ site armv7m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick
 # re-enter the scheduler on this stack.
 site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 syscall.cc:irq_sem_post \
                                  console_tx.cc:console_tx_isr_trampoline \
                                  ?bench.cc:bench_irq_handler
 
@@ -1287,7 +1256,6 @@ site armv6m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick
 # re-enter the scheduler on this stack.
 site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
-                                 syscall.cc:irq_sem_post \
                                  console_tx.cc:console_tx_isr_trampoline \
                                  ?bench.cc:bench_irq_handler
 
@@ -1513,7 +1481,6 @@ site lx6 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slic
 site lx6 * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
 site lx6 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                               irq.cc:irq_event_isr \
-                              syscall.cc:irq_sem_post \
                               console_tx.cc:console_tx_isr_trampoline \
                               ?bench.cc:bench_irq_handler
 # The console ring's TX backend, one static ConsoleTxBackend per chip (chip_esp32.cc:306).

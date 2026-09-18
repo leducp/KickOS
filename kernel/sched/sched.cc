@@ -94,22 +94,9 @@ namespace kickos
             {
                 prev->state = ThreadState::READY;
 #if KICKOS_KERNEL_CORES > 1
-                // THE ONE POINT WHERE THE OUTGOING THREAD BECOMES AVAILABLE TO A PEER, and
-                // the only one: until this store it is RUNNING and every peer's pick_next
-                // refuses it, so a poke sent any earlier is consumed against a thread nobody
-                // could take.
-                //
-                // EVERY SWITCH THAT STORES IT OWES THE ASK, whatever put the switch here.
-                // Reading the incoming thread's announcement as covering the outgoing one is
-                // wrong twice over: it names only the cores the INCOMING mask admits, and by
-                // the time a peer below it still runs, that announcement has already been
-                // taken and spent. Nothing later re-derives an ask a pick declined to send.
-                //
-                // THE TEST DECIDES NOTHING poke_peers_below WOULD NOT DECIDE: a mask holding
-                // no peer bit fails that walk's own placement test on every core, so this is
-                // cost and one trace record, never correctness. Asking instead whether THIS
-                // core still admits the thread would skip exactly the ordinary switch, which
-                // is the one that strands it within a peer's reach.
+                // Publish READY before notifying peers; until then they cannot select this
+                // thread. Notify for the outgoing thread independently of the incoming one
+                // because their affinities and priorities can differ. Skip when no peer is eligible.
                 if ((prev->affinity & ~(1u << me)) != 0)
                 {
                     displaced = prev;
@@ -271,19 +258,10 @@ namespace kickos
             klock_attach(klock_depth);
         }
 
-        // A PASS ANNOUNCES WHAT IT MADE TAKEABLE BY A PEER, AT THAT THREAD'S OWN PRIORITY,
-        // AND ONLY TWO THREADS ON ANY PASS CAN HAVE BECOME TAKEABLE.
-        //
-        // The woken one, readied by the caller before this runs. Declined by the pick, it is
-        // asked for here. Taken, switch_book publishes it RUNNING before this core releases
-        // the lock, so no peer's pick_next can reach it and it is owed nothing.
-        //
-        // The displaced one, readied by switch_book's RUNNING -> READY store, which asks for
-        // it there. That covers the ordinary reschedule, the declined wake that still
-        // switches, and the taken wake alike, because none of them differs in what the store
-        // made available. A pass that seats nothing never reaches the store, and an outgoing
-        // thread that parked or exited never passes through it, so both make nothing takeable
-        // and ask nobody: that is the whole of what is saved by not asking unconditionally.
+        // Notify peers for a woken thread this core did not select. If selected,
+        // switch_book marks it RUNNING before unlock, so peers cannot take it.
+        // switch_book separately announces the outgoing thread when it becomes READY.
+        // A parked or exiting thread does not become available and needs no announcement.
         void pick_and_seat(Thread const* woken)
         {
             uint32_t const me = kickos_kernel_core();
@@ -329,6 +307,7 @@ namespace kickos
 
         void add(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             uint32_t const me = kickos_kernel_core();
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
@@ -448,14 +427,16 @@ namespace kickos
             arch_start(&kernel().boot[me], &first->ctx);
         }
 
-        void reschedule()
+        void reschedule(Thread const* woken)
         {
-            pick_and_seat(nullptr);
+            KICKOS_ASSERT_EXCLUSION_HELD();
+            pick_and_seat(woken);
         }
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
         struct arch_context* switch_prepare(Thread* next)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             switch_book(next, kickos_kernel_core());
             return &next->ctx;
         }
@@ -470,6 +451,7 @@ namespace kickos
 
         void detach_current()
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Blocking is legal only from thread context: from an ISR the switch defers and
             // the supposedly blocked thread keeps running.
             if (arch_in_isr())
@@ -481,6 +463,7 @@ namespace kickos
 
         void block_current()
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Caller must already have set current->state and linked it onto its queue.
             // Timer path only: sleepq uses the separate tnext link. A wait-queue caller
             // shares the ready/wait link node and must detach before linking (wq_block).
@@ -490,6 +473,7 @@ namespace kickos
 
         bool wake_no_resched(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // Spans the readying path only: the refusals below do no ready-queue work.
             KICKOS_BENCH_MARK(bm_unpark);
             // The unpark funnel, and so the one place a timed wait's deadline is dropped.
@@ -518,6 +502,7 @@ namespace kickos
 
         void resched_after_wake(Thread const* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             // `current` is null between sched::init and sched::start. A switch from an EXITED
             // current would abandon the rest of exit_current and leave its remaining waiters
             // unwoken; that thread's own final reschedule is the switch. And an RR slice expiry
@@ -536,8 +521,17 @@ namespace kickos
             pick_and_seat(t);
         }
 
+#if KICKOS_KERNEL_CORES > 1
+        void announce_ready(Thread const* t)
+        {
+            KICKOS_ASSERT_EXCLUSION_HELD();
+            poke_peers_below(t, t->prio, kickos_kernel_core());
+        }
+#endif
+
         void wake(Thread* t)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             if (wake_no_resched(t))
             {
                 resched_after_wake(t);
@@ -546,6 +540,7 @@ namespace kickos
 
         void set_prio(Thread* t, uint8_t p)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             if (t->prio == p)
             {
                 return;
@@ -635,19 +630,9 @@ namespace kickos
                 // THIS death emptied the group.
                 left_task = c->task;
                 emptied_task = task_release(c->task);
-                // Retire the name with the reference ONLY where this death EMPTIED the
-                // group. The slot is free then and can be re-handed in the sweep's first
-                // chunk gap; membership is a pointer comparison, so a stale c->task would
-                // make this thread a phantom member of whatever group lands there next.
-                //
-                // WHERE A SIBLING REMAINS THE NAME MUST STAND until the sweep is done. The
-                // object budget derives what a task holds from its live members' capability
-                // tables (cap.h), and this thread's capabilities are STILL SEATED and their
-                // pool slots STILL ALLOCATED for the whole of cap_teardown below, which drops
-                // IrqLock every chunk. A member retired from the count while it still holds
-                // is a whole fresh ceiling handed to its own siblings, reserve included. The
-                // slot cannot be re-handed under us here: a remaining sibling holds the
-                // reference that keeps it.
+                // Clear the task pointer if this death empties the group, since its slot
+                // may be reused during teardown gaps. With surviving siblings, retain it
+                // until teardown finishes so still-open capabilities remain in the task budget.
                 if (emptied_task)
                 {
                     c->task = nullptr;
@@ -772,6 +757,7 @@ namespace kickos
 
         void tick_rr(uint64_t now)
         {
+            KICKOS_ASSERT_EXCLUSION_HELD();
             Thread* c = current();
             if (c == nullptr)
             {

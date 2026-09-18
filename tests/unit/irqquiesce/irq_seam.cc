@@ -1,20 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The WHOLE seam between kernel/irq/irq.cc and the rest of the image, re-derived with
-//
-//   nm --undefined-only <the object> | comm -23 - <its defined symbols>
-//
-// at two kernel cores.
-//
-// arch_ipi_send and arch_ipi_wait carry a real request/answer pair, and arch_kernel_lock
-// services a pending doorbell while it spins, as arch/arm64/armv8a/klock_armv8a.cc does. Both
-// halves are load-bearing for the threaded arms: a teardown that polls a peer's cell must
-// COMPLETE its rendezvous against a peer wedged in the acquire loop, or the arm hangs instead
-// of reddening.
-//
-// A doorbell's far side runs no dispatch entry and so advances no epoch: a teardown that
-// returned because the doorbell answered has proved nothing about the epochs.
+// Two-core test hooks for IRQ teardown. arch_ipi_send/wait perform a real
+// request/reply handshake; arch_kernel_lock services doorbells while spinning.
+// This allows a peer blocked on the lock to answer without leaving its
+// dispatch epoch. A doorbell reply alone does not prove dispatch completion.
 
 #include "irq_seam.h"
 
@@ -109,7 +99,6 @@ namespace kickos
         void (*g_probe_action)() = nullptr;
 
         std::atomic<bool> g_lock_blocked{false};
-        std::atomic<unsigned> g_posts{0};
 
         void reset()
         {
@@ -122,7 +111,6 @@ namespace kickos
             g_probe_arg = nullptr;
             g_probe_action = nullptr;
             g_lock_blocked.store(false);
-            g_posts.store(0);
             g_hold_line.store(-1);
             g_hold_reached.store(false);
             g_hold_timed_out.store(false);
@@ -227,25 +215,18 @@ namespace kickos
         abort();
     }
 
-    void sem_init(Semaphore* s, int count)
+    void wq_block(List&, WaitKind, void*, Thread const*)
     {
-        s->count = count;
-        s->waiters = List();
     }
 
-    // TAKES IrqLock FIRST, exactly as kernel/sync/sync.cc does. This is the whole of the cycle
-    // an arm reproduces: reached from inside a dispatch entry, it cannot get past this line
-    // while a teardown on another core holds the lock, so the calling core answers doorbells
-    // but never lowers its own dispatch epoch.
-    bool sem_post(Semaphore*)
+    void park_queueless(Thread*, WaitKind, void*)
     {
-        IrqLock lock;
-        irqfix::g_posts.store(irqfix::g_posts.load() + 1u);
-        return true;
     }
 
-    void wq_block(List&, WaitKind, void*)
+    // No clock runs here; deadlines are recorded but do not expire.
+    void ktime_deadline_arm(Thread* t, uint32_t)
     {
+        t->on_timer = true;
     }
 
     void wq_confirm_resume(Thread*, uint32_t)
@@ -264,6 +245,14 @@ namespace kickos
         void set_affinity(Thread*, uint32_t mask)
         {
             irqfix::g_pinned_mask = mask;
+        }
+
+        void reschedule(Thread const*)
+        {
+        }
+
+        void wake(Thread*)
+        {
         }
     }
 

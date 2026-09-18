@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 SPI1 loopback driver. On ARMv7-M the PMSA MPU is CPU-side and covers
-// peripheral space, so a granted DEV window IS a genuine per-thread capability
-// (reprogrammed every switch-in by arch_mpu_apply).
-//
-// main's only hardware access is kos_pinmux_set (PA5/6/7 to AF5, PE3 held high); it
-// touches no MMIO. The UNPRIVILEGED driver is granted ONLY the 32 B SPI1 register
-// window (0x4001_3000, DEV R|W no-X) and a cap on the SPI1 IRQ (35), calls
-// kos_periph_enable(SPI1) authorised by possession of that window, and configures SPI1
-// as a software-NSS master itself. The clock-enable (RCC) and pin-mux (GPIOA) registers
-// are the escalation surfaces and stay OUT of the window; keeping them out is what
-// makes the window a real capability. The loopback is PHYSICAL, so it needs a PA7->PA6
-// jumper on the board; the final poke at an UNGRANTED peripheral (GPIOB) MUST fault
-// MemManage.
-//
-// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes and validates on
-// silicon.
+// STM32F411 SPI1 loopback diagnostic; requires a PA7-to-PA6 jumper.
+// The unprivileged driver gets a 32-byte SPI1 window at 0x40013000 and IRQ 35.
+// It enables the peripheral through kos_periph_enable and configures SPI1.
+// Root sets pin mux through a syscall; RCC and GPIO windows stay ungranted.
+// A final GPIOB access must cause MemManage. Validate on hardware.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -128,6 +117,10 @@ namespace
         }
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[f411spi] irq_attach refused the delegated line");
+        }
 
         // SSM|SSI must hold internal NSS high or the master takes a MODF. Configure with
         // SPE=0, then enable.

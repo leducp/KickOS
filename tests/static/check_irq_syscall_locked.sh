@@ -2,15 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# For each named `case KOS_SYS_*` arm of kernel/syscall/syscall.cc, an `IrqLock` must be in
-# scope at the point the arm reaches the seam call.
-#
-# The scope test is textual: a lock taken inside a function the arm calls is not modelled, so an
-# arm that delegates its bracket that way must not be listed here.
-#
-# An arm that vanishes is a failure, not a pass.
-#
-# usage: check_irq_syscall_locked.sh [repo-root]
+# Check that each listed syscall holds IrqLock when calling its IRQ helper.
+# This is a textual scope check; omit calls whose helper takes its own lock.
+# Missing syscall cases fail the check.
+# Usage: check_irq_syscall_locked.sh [repo-root]
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -20,8 +15,7 @@ SRC="kernel/syscall/syscall.cc"
 
 # <case label>:<seam call> pairs. Each arm must carry an IrqLock enclosing that call.
 ARMS='KOS_SYS_IRQ_INJECT:arch_irq_inject
-KOS_SYS_IRQ_UNMASK:irq_line_op
-KOS_SYS_IRQ_ATTACH:irq_line_op'
+KOS_SYS_IRQ_UNMASK:irq_line_op'
 
 [ -f "$ROOT/$SRC" ] || fail "no $SRC under $ROOT: the syscall dispatch moved, and an absent
   corpus below would read as a clean one"
@@ -256,7 +250,7 @@ done
 # The subshell above cannot export its count, so the corpus is re-derived here.
 narms="$(printf '%s\n' "$ARMS" | grep -c ':' || true)"
 require_number "$narms" "the declared arm count"
-if [ "$narms" -lt 3 ]; then
+if [ "$narms" -lt 2 ]; then
     fail "this gate declares $narms arm(s). The list was narrowed, and an arm dropped from it is
   an arm nothing checks"
 fi

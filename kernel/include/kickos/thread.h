@@ -25,9 +25,10 @@
 
 namespace kickos
 {
-    struct Endpoint; // kickos/endpoint.h
-    struct Mutex;    // kickos/sync.h
-    struct Task;     // kickos/task.h
+    struct Endpoint;   // kickos/endpoint.h
+    struct IrqBinding; // kickos/irq.h
+    struct Mutex;      // kickos/sync.h
+    struct Task;       // kickos/task.h
 
     enum class ThreadState : uint8_t
     {
@@ -64,7 +65,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ,       // wait_obj: the IrqBinding. A sem queue; this park reads wait_result.
+        WAIT_IRQ, // wait_obj: IrqBinding; one server, no queue
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -167,18 +168,10 @@ namespace kickos
         uint8_t cap_irq_live = 0;
 
 #if KICKOS_KERNEL_CORES > 1
-        // THE CORES THIS THREAD MAY RUN ON, and the whole of placement: a single-bit mask is a
-        // pin and a multi-bit one is affinity, so there is no flag beside it saying which.
-        //
-        // INVARIANT: never empty, and always a subset of task_core_set(task). Seated at create
-        // from task_default_cores, restored to it by a zero mask, and every write intersects
-        // with the grant, so no narrowing can strand it. A task's grant cannot narrow out from
-        // under it either: the grant is refused once the task has a member.
-        //
-        // A NONZERO ThreadAttr::core_mask WAS ADMITTED BY sched_admit_mask AT THE SPAWN
-        // BOUNDARY, against this same grant, before thread_create stores it verbatim.
-        //
-        // 0 here means the thread was never seated, which only a slot no thread occupies is.
+        // Allowed cores: one bit pins the thread, multiple bits allow migration.
+        // Always nonempty and within task_core_set(task) for a live thread.
+        // Spawn validates through sched_admit_mask; zero at the ABI selects task defaults.
+        // A task grant cannot narrow once it has members. A zero field means an unused slot.
         uint32_t affinity = 0;
         static_assert(KICKOS_KERNEL_CORES <= 32,
                       "a core set is a 32-bit mask, as the doorbell's core mask is "
@@ -188,6 +181,10 @@ namespace kickos
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
+        // Unconsumed IRQ notifications, one bit per binding pool index.
+        // Set by ISRs or software posts and cleared by waits, under IrqLock.
+        // Placed here to reuse padding after slice_deadline_ns where available.
+        uint32_t notify_pending = 0;
         uint64_t slice_deadline_ns = 0;
 
         void* stack_base = nullptr;
@@ -345,6 +342,14 @@ namespace kickos
             }
             return static_cast<Thread*>(wait_obj);
         }
+        IrqBinding* wait_irq_binding() const
+        {
+            if (wait_kind != WAIT_IRQ)
+            {
+                return nullptr;
+            }
+            return static_cast<IrqBinding*>(wait_obj);
+        }
         Task* wait_task_target() const
         {
             if (wait_kind != WAIT_TASK_EMPTY)
@@ -404,6 +409,24 @@ namespace kickos
         if (alignof(uint64_t) == 4)
         {
             bytes = bytes + sizeof(uint32_t);
+        }
+#endif
+        // notify_pending uses this padding except on RXv3, where it adds four bytes.
+        if (alignof(uint64_t) == 4)
+        {
+            bytes = bytes + sizeof(uint32_t);
+        }
+#if KICKOS_KERNEL_CORES > 1
+        // On SMP, affinity already uses the padding; notify_pending adds eight bytes
+        // after alignment. A 16-byte-aligned host TCB also needs tail padding.
+        if (alignof(uint64_t) == 8)
+        {
+            size_t const pair = 2 * sizeof(uint32_t);
+            bytes = bytes + pair;
+            if (alignof(Thread) > pair)
+            {
+                bytes = bytes + alignof(Thread) - pair;
+            }
         }
 #endif
         // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside

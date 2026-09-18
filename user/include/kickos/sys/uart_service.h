@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Buffered-UART service over the raw UART class: the shared ring block, the wire ABI of
-// <kickos/sys/uart.h>, and the two loops the driver's two threads run.
-//
-// Every kos_uart_* call touches registers, so all of them may be made ONLY from the IRQ
-// thread. That thread owns every register plus TX `tail` and RX `head`; the service thread
-// owns TX `head` and RX `tail`. One writer per index is what keeps both rings SPSC with no
-// lock, which <byte_ring.h> requires and cannot check.
+// Buffered UART service with shared rings and the uart.h protocol.
+// Only the IRQ thread may call kos_uart_* or access registers. It owns TX
+// tail and RX head; the service thread owns TX head and RX tail. Each ring
+// index must have one writer to satisfy byte_ring.h's SPSC contract.
 
 #ifndef KICKOS_SYS_UART_SERVICE_H
 #define KICKOS_SYS_UART_SERVICE_H
@@ -141,6 +138,12 @@ inline void dev_shutdown(Uart*)
 template <typename Uart>
 void irq_loop(Uart& dev, Shared* sh)
 {
+    // Bind before signaling readiness and waiting; binding delivers pending doorbells.
+    if (kos_irq_attach(KOS_UART_CAP_LINE, nullptr) != 0)
+    {
+        dev_shutdown(&dev);
+        return;
+    }
     sh->ready = 1;
     while (true)
     {
@@ -223,8 +226,7 @@ struct Transport
 //
 // `mode` is null for a service with no unframed console arm, which is what makes
 // KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
-int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const* msg, size_t n,
-              kos_cap_t reply_cap);
+size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n);
 
 // Recv/dispatch loop with no console arm. Returns only when the endpoint dies, which is the
 // respawn signal.

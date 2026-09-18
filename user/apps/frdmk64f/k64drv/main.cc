@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F PIT driver run by an unprivileged thread granted the PIT ch2 window (32 B @
-// 0x4003_7120, spanning ch2+ch3 at the 0x10 stride) and a WAIT cap on the PIT ch2 IRQ.
-// ch2, not ch0/ch1: the kernel monotonic clock owns the chained ch0+ch1 pair.
-//
-// This app DEMONSTRATES the K64F peripheral ceiling: privilege is gated by the AIPS
-// bridge (PACR) rather than by SYSMPU, so an MMIO grant is not a per-thread peripheral
-// capability on this chip and this window grant feeds no kos_periph_* syscall. The slot
-// at issue here is PIT slot 55 in PACRG (RM 20.2.3). The PIT_MCR read at the end sits
-// outside the SYSMPU window and is EXPECTED to succeed; that success is the
-// demonstration.
-//
-// Diagnostic app (kickos_add_diagnostic_apps): the operator flashes and validates on
-// silicon.
+// K64F PIT diagnostic using ch2 (kernel clock owns ch0/ch1). The worker gets
+// a 32-byte window at 0x40037120 covering ch2/ch3 and a WAIT cap for ch2 IRQ.
+// K64F AIPS, not SYSMPU, controls peripheral access (PIT slot 55, PACRG).
+// The final PIT_MCR read is outside the window and is expected to succeed,
+// demonstrating the lack of per-thread MMIO isolation. Validate on hardware.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -61,6 +53,10 @@ namespace
         volatile uint32_t* tflg2 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[k64drv] irq_attach refused the delegated line");
+        }
 
         // kos_irq_wait auto-re-arms the consumed line on return, so no explicit kernel
         // ack. The peripheral W1C must still clear the TIF level BEFORE the next

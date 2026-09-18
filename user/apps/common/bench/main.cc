@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Context-switch microbenchmark (KICKOS_BENCH builds only). Two equal-priority
-// threads ping-pong via semaphores; the reporter prints throughput (ctx-switches/s via
-// kos::clock_now, works on every arch) plus per-switch cost + IRQ-entry latency (cycles,
-// where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1, rv32imac
-// rdcycle/MTIME, xtensa CCOUNT). Whether such a cycle converts to time is a separate fact,
-// KOS_BENCH_OP_CYCCNT_HZ, and a 0 from it leaves every ns column off.
-//
-// The call/reply sweep times the endpoint copy under the kernel's own IrqLock. The phase
-// table printed after it breaks that round trip's FIXED cost down by kernel phase
-// (kernel/bench/bench.cc).
-//
-// Every cycle metric goes through kos_bench, one syscall: the helpers behind it read kernel
-// .data and core peripherals, and root is unprivileged on every board except the LX6, which
-// has no privilege ring.
-//
-// The app's own lines go through kickos::emit, which reaches a published console driver
-// over IPC and falls back to the kernel console when index 0 is empty. kos_print alone
-// would be dropped outright once a service list publishes the UART (sys/emit.h).
-//
-// The switch line and the phase table are printed by the KERNEL from inside kos_bench,
-// straight at the kernel console, so an instrumented run wants kickos_services_none,
-// which the `bench` config variant pins.
+// Semaphore ping-pong and IPC microbenchmarks. Report throughput from the
+// monotonic clock and cycle metrics through kos_bench. Omit time conversion
+// when KOS_BENCH_OP_CYCCNT_HZ is zero.
+// The IPC sweep measures copying and kernel phases under IrqLock.
+// App output uses kickos::emit; kernel benchmark tables use the kernel
+// console, so benchmark variants select kickos_services_none.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -31,6 +15,7 @@
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/libc/string.h>
 
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
@@ -144,6 +129,7 @@ namespace
     void e2e_waiter(void*)
     {
         auto irq = kos::Irq::adopt(CH_E2E_IRQ);
+        irq.attach();
         // Under an MPU reachability is per THREAD, so root's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
@@ -446,17 +432,32 @@ namespace
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
         unsigned char buf[KOS_EP_MSG_MAX];
-        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        struct kos_reply_recv_opts opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.ep = 1;
+        opts.timeout_us = KOS_TIMEOUT_NONE;
+        // Send the previous reply while receiving the next request.
+        kos_cap_t reply_cap = KOS_CAP_NONE;
+        size_t reply_len = 0;
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
         {
-            long n = kos_recv(1, buf, sizeof(buf), &info);
-            if (n < 0 or info.reply_cap == KOS_CAP_NONE)
+            opts.info.reply_cap = KOS_CAP_NONE;
+            long const n = kos_reply_recv(reply_cap, buf,
+                                          kos_call_lens_pack(reply_len, sizeof(buf)), &opts);
+            reply_cap = KOS_CAP_NONE;
+            if (n < 0 or opts.info.reply_cap == KOS_CAP_NONE)
             {
                 // A reply-less message is measure_callreply's stop sentinel: a parked
                 // receiver pins its own WAIT cap, so nothing but a message ends that park.
                 break;
             }
-            kos_reply(info.reply_cap, buf, static_cast<size_t>(n));
+            reply_cap = opts.info.reply_cap;
+            reply_len = static_cast<size_t>(n);
+        }
+        // Send the final reply without receiving again.
+        if (reply_cap != KOS_CAP_NONE)
+        {
+            kos_reply(reply_cap, buf, reply_len);
         }
         kos_sem_post(2);
     }

@@ -116,7 +116,6 @@ namespace kickos
                 break;
             }
             case WAIT_SEM:
-            case WAIT_IRQ:
             {
                 // The count is untouched, so a later poster still hands its token to a
                 // genuine waiter.
@@ -124,13 +123,14 @@ namespace kickos
                 t->clear_wait_edge();
                 break;
             }
+            case WAIT_IRQ:
             case WAIT_SLEEP:
             case WAIT_JOIN:
             case WAIT_LIVE_LAST:
             case WAIT_TASK_EMPTY:
             {
-                // On no wait queue at all. A sleeper is on the timer delta list, and
-                // sched::wake below is what takes it off.
+                // Sleep and IRQ waits have no wait queue. wake removes the timer entry.
+                // An IRQ bit remains pending for the next wait if cancellation races delivery.
                 t->clear_wait_edge();
                 break;
             }

@@ -2,46 +2,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The end-to-end span's publication, read out of the LINKED IMAGE. Above one kernel core the
-# arm, the park, the raise and the close run on different cores over one state cell, and every
-# other cell of the protocol is ordinary data that cell carries: the arm RELEASES the armed
-# record, the waiter RELEASES the parked state from inside its own park, the raise ACQUIRES
-# that and then RELEASES the opening stamp, and the close ACQUIRES it before it subtracts.
-#
-# EVERY CLAIM HERE IS POSITIONAL, AND THAT IS NOT PEDANTRY. Each of these bodies reaches some
-# OTHER ordered field of the kernel's, the thread's switch count being acquire/release in its
-# own right, so a body-wide count of acquires stays at one with the protocol's own acquire
-# downgraded to a plain load. The bracket each check reads is the pair of calls the ordering
-# has to sit between.
-#
-# REFUSED: an arm that publishes nothing between naming its waiter and dropping the kernel
-# lock, a park mark that publishes nothing once it has named the parking thread, a park mark
-# the waiter does not reach between taking the kernel lock and blocking on it, a raise with no
-# acquire ahead of its stamp, a raise whose release does not sit between the stamp and the
-# injection, a close with no acquire between the closing stamp and the identity test, and a
-# body this reader cannot decode.
-#
-# THE PARK MARK'S PLACEMENT IS THE HALF THAT HOLDS THE MEASUREMENT UP. The raise refuses every
-# state but the parked one, so where that mark sits is what decides whether a delivered line
-# can reach a thread that is still running. Sited inside the kernel lock the waking post has
-# to take, it cannot; sited anywhere past the block, a raise may fire against a waiter that has
-# not left its core yet and the LOCALITY SPLIT then follows the accident instead of the sweep's
-# placement, with no refusal anywhere and a closed count that does not move. So the claim is
-# that one CALL SITE lies between the lock and the block, and not that the call exists.
-#
-# WHY THIS IS STRUCTURAL AND NOT A RUNTIME BOUND. QEMU's TCG retires one instruction stream at
-# a time and models no store buffer, so an image whose every publication is relaxed produces
-# the same closed count, the same locality split and the same nanosecond columns on
-# qemu-arm64-benchsmp and qemu-riscv64-benchsmp as a correct one. No arm in this tree can go
-# red on the defect. So the claim is the INSTRUCTIONS and not the readings.
-#
-# THE STAMP'S SIDE OF THE RELEASE IS HALF THE CLAIM. A release sited ahead of the clock read
-# publishes a stamp that is not yet written, and the closer then subtracts whatever t0 the
-# previous pass left: a plausible, larger nanosecond figure and no refusal anywhere.
-#
-# The per-arch pair is the whole model. AN ARCH THIS FILE DOES NOT CARRY IS A REFUSAL.
-#
-# usage: check_bench_e2e_publish.sh <elf> <objdump> <arch>
+# Check end-to-end benchmark publication ordering in the linked image.
+# ARM releases metadata, the waiter releases PARKED under the kernel lock,
+# RAISE acquires it then releases t0 before injection, and CLOSE acquires t0.
+# Check instruction positions between specific calls; other atomic fields
+# in the same functions must not satisfy these checks.
+# The park marker must follow locking and precede blocking, so delivery cannot
+# reach a waiter still running. Reject undecodable code and unsupported arches.
+# QEMU runtime results do not reliably expose missing memory ordering.
+# Usage: check_bench_e2e_publish.sh <elf> <objdump> <arch>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -57,8 +26,8 @@ SYM_ARM=_ZN6kickos13bench_e2e_armEi
 SYM_PARK=_ZN6kickos19bench_e2e_park_markEv
 SYM_RAISE=_ZN6kickos15bench_e2e_raiseEv
 SYM_CLOSE=_ZN6kickos15bench_e2e_closeEv
-# The kernel body the park mark has to sit inside, and not a bench one.
-SYM_WAIT=_ZN6kickos8irq_waitEPNS_6ThreadEj
+# Check the kernel's timed IRQ wait body; the untimed entry only forwards to it.
+SYM_WAIT=_ZN6kickos14irq_wait_timedEPNS_6ThreadEjj
 
 # The calls that bracket each body's ordering. Mangled for the same reason.
 C_CURRENT='<_ZN6kickos5sched7currentEv>'

@@ -9,6 +9,7 @@
 #include <kickos/cap.h>
 #include <kickos/console_tx.h> // console_note_driver_death
 #include <kickos/instance.h>
+#include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
@@ -263,6 +264,33 @@ namespace kickos
             }
         }
 
+        // Check for another CAP_WAIT alias to this IRQ in closer's table, excluding
+        // the closing entry by address. The one-cap case avoids a scan.
+        // Keep this out of line: inlining adds eight bytes to obj_close_protocol's
+        // ARMv6-M frame, including non-IRQ paths. Recheck trap_redzone before inlining.
+        __attribute__((noinline)) bool irq_wait_alias_survives(Thread const* closer,
+                                                               CapEntry const& closing)
+        {
+            if (closer->cap_irq_live <= 1)
+            {
+                return false;
+            }
+            uint32_t const end = thread_cap_capacity(closer);
+            for (uint32_t i = 0; i < end; i++)
+            {
+                CapEntry const* const other = cap_slot(closer->caps, i);
+                if (other == &closing or other->type != static_cast<uint8_t>(CapType::CAP_IRQ))
+                {
+                    continue;
+                }
+                if (other->obj == closing.obj and (other->rights & CAP_WAIT) != 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
         // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
@@ -321,25 +349,10 @@ namespace kickos
                         ep->recv_holders--;
                         if (ep->recv_holders == 0)
                         {
-                            // If that endpoint was the published console, no userspace
-                            // driver can ever serve it again. This must PRECEDE the EPIPE
-                            // loop below, and the surrounding mask does not order the two:
-                            // sched::wake admits a switch for a live closer, and
-                            // arch_switch swaps INLINE on the sim and on xtensa LX6, so a
-                            // woken peer would observe a console still dark. Sound ahead
-                            // of the loop on the teardown path too, cap_teardown's
-                            // name-keyed pass having already released this thread's IRQ
-                            // caps.
-                            //
-                            // The note is NOT the reclaim decision, and it is STICKY because
-                            // this attempt can legitimately refuse. recv_holders counts
-                            // WAIT-bearing caps, so on a two-thread driver it reaches 0 when
-                            // the SERVICE thread dies, while the registers belong to the IRQ
-                            // thread, which parks on a line cap and is not counted here at
-                            // all. console_on_driver_death asks the device separately and
-                            // defers while any live thread still holds the register window;
-                            // only a thread DEATH can free that window, so exit_current is
-                            // the one site that retries.
+                            // Mark console-driver loss before waking EPIPE waiters: inline switching
+                            // can run them immediately. Keep the marker if reclaim is deferred while
+                            // an IRQ thread still owns the register window. exit_current retries after
+                            // thread death releases that window.
                             if (e.obj == stdout_target())
                             {
                                 console_note_driver_death();
@@ -367,12 +380,15 @@ namespace kickos
 #endif
             case CapType::CAP_IRQ:
             {
-                // Deliberately EMPTY, and it must STAY empty: the endpoint arm's EPIPE-wake
-                // has no reachable analogue here, because a parked irq_wait waiter always
-                // holds its own cap (waiters <= refs) and cancellation unlinks the target
-                // before the target's own teardown runs. Only an ASYNCHRONOUS destroy could
-                // make the case reachable, and the leak-never-strand guard in irq_ref_drop
-                // is the assert that would say so.
+                // Release the binding only after the last CAP_WAIT alias closes. Earlier
+                // release would revoke access still held by the thread. Clearing the target
+                // before TCB reuse prevents notifications reaching a different thread.
+                if (not irq_wait_alias_survives(closer, e))
+                {
+                    irq_notify_release(closer, e.obj);
+                }
+                // No waiter can be stranded here: a parked waiter holds a capability, and
+                // cancellation unlinks it before teardown. irq_ref_drop checks this invariant.
                 return 0;
             }
             case CapType::CAP_REPLY:
@@ -673,18 +689,10 @@ namespace kickos
             uint32_t irq;
         };
 
-        // The hold set a charged kind's bits live in, and the pool slot `obj_handle` names
-        // in it. False = an uncharged kind, which every cap table also carries: CAP_EMPTY,
-        // CAP_REPLY, and the two address-space kinds, none of which spends a charged pool
-        // slot. `slot` is -1 where the handle does not resolve.
-        //
-        // ONE SWITCH FOR BOTH ANSWERS, so a kind cannot be charged and unresolved at once.
-        // Split in two it needed an unreachable default arm to catch that, and the assert in
-        // it put kpanic under the syscall dispatch, which the trap red zone measures: +64
-        // bytes on rv32imac SYS and +32 on armv7m SVCK.
-        //
-        // A caller that wants only the pool passes NO_OBJECT: the all-ones index is never
-        // seated (slotpool.h), so it resolves to nothing and costs no index_of divide.
+        // Return the charged pool and resolved slot for this capability kind.
+        // False means uncharged; slot -1 means an invalid object. Use one switch
+        // so pool classification and resolution stay consistent without a panic path.
+        // NO_OBJECT requests only the pool and skips index lookup.
         constexpr int NO_OBJECT = -1;
         // always_inline, and it is load-bearing: at -Os GCC clones this per call site instead,
         // and the clone is a FRAME under the per-entry walk, which the armv7m SVC red zone
@@ -844,6 +852,7 @@ namespace kickos
 
     void* cap_resolve_e(Thread* c, uint32_t cap_handle, CapType want, uint8_t need, int* err)
     {
+        KICKOS_ASSERT_EXCLUSION_HELD();
         *err = KOS_EBADF; // bad index / empty / stale cap-gen / wrong type / stale object
         CapEntry* e = cap_lookup(c, cap_handle);
         if (e == nullptr)
@@ -992,7 +1001,7 @@ namespace kickos
         *out_width = 0;
     }
 
-    void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
+    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
     {
         // Index 0 is the kernel stdout slot, written directly by cap_seat_stdout and
         // cap_install_defaults, so this entry point rejects it outright: no delegation or
@@ -1001,7 +1010,7 @@ namespace kickos
         if (index <= KOS_CAP_STDOUT or index >= static_cast<int>(thread_cap_capacity(c)))
         {
             KICKOS_ASSERT(false);
-            return;
+            return nullptr;
         }
         CapEntry& e = *cap_slot(c->caps, static_cast<uint32_t>(index));
         // Both halves of the free-list contract: a live entry is not in the list, so
@@ -1015,6 +1024,7 @@ namespace kickos
         {
             c->cap_irq_live++;
         }
+        return &e;
     }
 
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights, uint32_t* out_cap)
@@ -1027,14 +1037,15 @@ namespace kickos
         {
             return -KOS_EMFILE;
         }
-        cap_install_at(c, static_cast<int>(index), obj_handle, type, rights);
-        *out_cap = (static_cast<uint32_t>(cap_slot(c->caps, index)->gen) << KCAP_INDEX_BITS)
-                   | index;
+        CapEntry const* const e =
+            cap_install_at(c, static_cast<int>(index), obj_handle, type, rights);
+        *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
         return 0;
     }
 
     int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap)
     {
+        *out_cap = KCAP_INVALID;
         int const idx = kernel().threads.index_of(caller);
         // Every thread that can issue a syscall holds a slot: idle is the one TCB outside the
         // pool, and kmain creates it with cap_run = CapRun{}, so its capacity is 0 and every
@@ -1043,19 +1054,20 @@ namespace kickos
         KICKOS_ASSERT(idx >= 0);
         if (cap_reply_live(c) >= KICKOS_CAP_REPLY_MAX)
         {
-            *out_cap = KCAP_INVALID;
             return -KOS_EMFILE; // at c's reply bound: the same shape as a full table
         }
-        // The handle is stored WHOLE in CapEntry::obj (thread.h asserts the widths match),
-        // so this reinterprets a full 32-bit word rather than narrowing it.
-        int const rc = cap_install(c, static_cast<int>(kernel().threads.handle_for(idx)),
-                                   CapType::CAP_REPLY, 0, out_cap);
-        if (rc != 0)
+        uint32_t const index = cap_run_peek_free(c->cap_free_head);
+        if (index == KCAP_NO_SLOT)
         {
-            return rc;
+            return -KOS_EMFILE;
         }
-        cap_reply_seq_seat(cap_slot(c->caps, *out_cap & KCAP_INDEX_MASK),
-                           static_cast<uint8_t>(caller->call_seq & 0xFF));
+        // CapEntry::obj stores the full handle width; thread.h checks the sizes.
+        CapEntry* const e =
+            cap_install_at(c, static_cast<int>(index),
+                           static_cast<int>(kernel().threads.handle_for(idx)),
+                           CapType::CAP_REPLY, 0);
+        cap_reply_seq_seat(e, static_cast<uint8_t>(caller->call_seq & 0xFF));
+        *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
 #if KCAP_RUN_CHUNKS > 1
         c->cap_reply_live++;
 #endif
@@ -1087,7 +1099,7 @@ namespace kickos
         e->gen++;
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
-        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, e, &c->cap_free_head);
         cap_reply_released(c);
         return true;
     }
@@ -1099,18 +1111,21 @@ namespace kickos
     // a stale handle.
     int cap_install_far_reply(Thread* c, uint32_t record, uint32_t* out_cap)
     {
+        *out_cap = KCAP_INVALID;
         if (cap_reply_live(c) >= KICKOS_CAP_REPLY_MAX)
         {
-            *out_cap = KCAP_INVALID;
             return -KOS_EMFILE;
         }
-        int const rc =
-            cap_install(c, static_cast<int>(ThreadPool::far_reply_handle(record)),
-                        CapType::CAP_REPLY, 0, out_cap);
-        if (rc != 0)
+        uint32_t const index = cap_run_peek_free(c->cap_free_head);
+        if (index == KCAP_NO_SLOT)
         {
-            return rc;
+            return -KOS_EMFILE;
         }
+        CapEntry const* const e =
+            cap_install_at(c, static_cast<int>(index),
+                           static_cast<int>(ThreadPool::far_reply_handle(record)),
+                           CapType::CAP_REPLY, 0);
+        *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
 #if KCAP_RUN_CHUNKS > 1
         c->cap_reply_live++;
 #endif
@@ -1134,7 +1149,7 @@ namespace kickos
         e->gen++;
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
-        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, e, &c->cap_free_head);
         cap_reply_released(c);
         return true;
     }
@@ -1254,7 +1269,7 @@ namespace kickos
         e->gen++;
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
-        cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, e, &c->cap_free_head);
         // The CAP_REPLY half of this is the close-instead-of-reply path kos_reply does not cover.
         cap_slot_released(c, detached);
         obj_ref_drop(detached, /*teardown=*/false);
@@ -1279,7 +1294,7 @@ namespace kickos
             e.gen++;
             e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
             e.rights = 0;
-            cap_run_free_release(c->caps, i, &c->cap_free_head);
+            cap_run_free_release(c->caps, i, &e, &c->cap_free_head);
             cap_slot_released(c, detached);
             obj_ref_drop(detached, /*teardown=*/true);
         }
@@ -1294,16 +1309,9 @@ namespace kickos
         {
             IrqLock lock;
             cap_state().teardown_depth++;
-            // NAME-KEYED FIRST, and in ONE masked window: an IRQ line is named by NUMBER, so
-            // until this thread's binding is detached a peer's irq_claim of the same line
-            // answers -KOS_EBUSY. The chunked loop below hands the CPU to peers, including
-            // the supervisor its own EPIPE wake releases, so a line swept there is
-            // observable as not-yet-released by the very thread that asked for it.
-            // Deliberately NOT chunked: a gap inside this pass is a moment when a thread with
-            // a counted teardown depth still holds a line, and both console reclaim sites
-            // rely on that being impossible. So the masked window may not scale with the
-            // table's width: at zero the pass is owed nothing and reads no entry, which is
-            // every thread in an image except a driver's IRQ thread.
+            // Release IRQ lines before the first teardown gap so supervisors can
+            // claim them after an EPIPE wake. Keep this pass under one lock; both
+            // console reclaim paths rely on it. cap_irq_live skips scanning non-IRQ tables.
             if (c->cap_irq_live != 0)
             {
                 for (uint32_t k = 0; k < cap_end; k++)
@@ -1338,22 +1346,9 @@ namespace kickos
             }
         }
         IrqLock lock;
-        // TOTALITY. None of these failures is visible downstream until an object pool has
-        // silently leaked a slot, or the funnel has read a dangling donor:
-        //   - no entry survived the sweep (a lost chunk boundary),
-        //   - the reply count agrees with the emptied table (a release arm that forgot
-        //     cap_reply_released, which would make the slot's next occupant refuse its first
-        //     caller). SEGMENTED BOARDS ONLY: on the flat path cap_reply_live rescans the
-        //     table the loop above just emptied, so it restates the check above it,
-        //   - the IRQ count agrees with the emptied table (a release arm that forgot to count
-        //     one down, which would make the next sweep of this SLOT run a pre-pass it is not
-        //     owed; the opposite drift is the debug scan after the pre-pass above),
-        //   - nobody is still parked on this thread (a CAP_REPLY arm that woke a caller
-        //     without unlinking it, which also walks a dead queue into the ready list), and
-        //   - this thread serves no endpoint (an endpoint arm that cleared Endpoint::server
-        //     without unlinking the chain, which then outlives the TCB into its next
-        //     occupant).
-        // The first is O(table), hence debug-only; the rest are O(1) or bounded by a chunk.
+        // Verify complete teardown: no capabilities, reply/IRQ counts, donors, or
+        // served endpoints remain. Full-table checks are debug-only; the others
+        // are constant-time or bounded by a capability chunk.
 #if KICKOS_DEBUG
         for (uint32_t k = 0; k < cap_end; k++)
         {
@@ -1413,17 +1408,11 @@ namespace kickos
         (void)cap_seat_stdout(child, stdout_target());
     }
 
-    // Move the kernel's stdout-target ref to `obj_handle` and seat the publisher's own slot 0
-    // on it (D3). Caller holds IrqLock. Take BOTH new refs BEFORE dropping any old one, or
-    // re-publishing the SAME endpoint transiently frees it and a ceiling refusal is no longer
-    // a clean no-op. The kernel's ref carries rights 0 (identity, no WAIT) so it never bumps
-    // recv_holders. It goes through obj_ref_inc / endpoint_ref_drop and never raw
-    // endpoint_refs[] arithmetic, so the free-at-zero teardown and waiter guard still apply.
-    //
-    // The publisher's own seat belongs here and not at the syscall: root was created before
-    // any publish, so its slot 0 is empty and cap_install_defaults never seated it. Without
-    // this its printf would kos_send(0) -> -KOS_EBADF and fall back to the now-dark kernel
-    // path.
+    // Move the kernel console reference and publisher's stdout slot to obj_handle.
+    // Caller holds IrqLock. Acquire both new references before releasing old ones
+    // so republishing the same endpoint cannot free it or partially fail.
+    // The kernel reference has no WAIT right and does not count as a receiver.
+    // Install the publisher's slot here because root predates console publication.
     bool cap_console_publish(Thread* publisher, int obj_handle)
     {
         if (not obj_ref_inc(CapType::CAP_ENDPOINT, obj_handle, 0))

@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The interrupt entry against a concurrent teardown, at TWO KERNEL CORES on the host. On
-// qemu-arm64-smp a device line is pinned to one core by the GIC, so the teardown and the
-// dispatch entry run on the same core and the interleaving is unreachable there; here
-// arch_cpu_id is the fixture's own and per thread, so an arm speaks as whichever core it names.
-//
-// TWO KINDS OF ARM, and what each one reaches:
-//   - the SINGLE-THREADED ones enter the dispatch entry as core one and run the teardown from
-//     inside that handler as core zero. Deterministic, but the peer's handler has already been
-//     ENTERED and is running the teardown itself, so nothing in it is blocked on anything.
-//   - the THREADED ones run core one on its own thread and leave it wedged inside the dispatch
-//     entry with its sem_post genuinely blocked on the kernel lock core zero holds. That is the
-//     production cycle: the peer answers every doorbell from the acquire loop and can never
-//     lower its own dispatch epoch. Only these arms reach it.
+// Test IRQ dispatch against concurrent teardown using two host threads as cores.
+// QEMU GIC routing serializes these operations on one core.
+// Single-threaded cases invoke teardown inside a simulated peer handler.
+// Threaded cases block the peer on the kernel lock while teardown runs;
+// doorbells can be answered there without completing the dispatch epoch.
 
 #include <gtest/gtest.h>
 
@@ -292,7 +284,7 @@ namespace
             g_cyc.handoff_ok.store(false);
             return;
         }
-        kickos_isr_irq(line); // irq_event_isr -> sem_post -> IrqLock -> blocked on core zero
+        kickos_isr_irq(line); // irq_event_isr -> notify_post -> IrqLock -> blocked on core zero
         g_cyc.peer_done.store(true);
     }
 
@@ -301,6 +293,9 @@ namespace
         int obj = -1;
         int idx = -1;
         uint32_t cap = 0;
+        // The peer dispatch holds this stable pool address. With no bound server,
+        // completed delivery sets pending.
+        kickos::IrqBinding* target = nullptr;
 
         void SetUp() override
         {
@@ -321,6 +316,8 @@ namespace
             ASSERT_GE(obj, 0);
             idx = index_of(obj);
             ASSERT_GE(idx, 0);
+            target = kickos::kernel().irq_bindings.at(idx);
+            ASSERT_NE(target, nullptr);
             ASSERT_EQ(kickos::kernel().irq_refs[idx], 1u);
         }
 
@@ -369,8 +366,7 @@ namespace
         EXPECT_TRUE(g_cyc.peer_done.load())
             << "the peer never left the dispatch entry, so the teardown did not release the "
                "lock its post needs";
-        EXPECT_EQ(kickos::irqfix::g_posts.load(), 1u)
-            << "the peer's post never completed";
+        EXPECT_TRUE(target->pending) << "the peer's post never completed";
     }
 
     // CLAIM TWO: the binding is not freed while a dispatch that could observe it is in flight.
@@ -640,15 +636,9 @@ namespace
         EXPECT_EQ(free_bindings(), free_before) << "the closed capability kept its slot";
     }
 
-    // =======================================================================================
-    // THE RECORD POOL AS A POOL. There is one record per line, so "every record taken" and
-    // "every line bound" are the same state and the boundary is read from the LINE side: a
-    // record index is observable nowhere outside kernel/irq/irq.cc, and the refusal for want
-    // of a record is unreachable through the public API by construction, since a caller that
-    // found a free line has left a record free for it.
-    //
-    // Runs with the peer inside the dispatch entry, so no reclamation can elapse and a record
-    // a retirement takes stays taken until the arm lets the peer out.
+    // Test record capacity through line allocation: one record exists per line,
+    // so a free line also has a record available. Hold a peer in dispatch to
+    // prevent retired records from being reclaimed during the test.
 
     struct Pool
     {
@@ -752,8 +742,11 @@ namespace
                 g_stale.rebind_rc.store(rc);
                 if (rc == 0)
                 {
-                    // The arm the new owner takes: rearm_locked unmasks in the first wait.
-                    g_stale.rebind_armed.store(kickos::irq_wait(&g_claim_thread, again) == 0);
+                    // Bind the new server; its first wait rearms the line.
+                    uint32_t mask = 0;
+                    g_stale.rebind_armed.store(
+                        kickos::irq_notify_bind(&g_claim_thread, again, &mask) == 0
+                        and kickos::irq_wait(&g_claim_thread, again) == 0);
                 }
             }
             kickos::irqfix::release_mask_hold();
@@ -781,7 +774,7 @@ namespace
         ASSERT_TRUE(g_stale.peer_done.load());
         // The stale dispatch RAN its retired pair. The claim below is about ordering the rebind
         // against it, not about stopping it.
-        ASSERT_EQ(kickos::irqfix::g_posts.load(), 1u)
+        ASSERT_TRUE(target->pending)
             << "the retired handler never posted, so it never reached the controller either";
 
         EXPECT_TRUE(g_stale.rebind_rc.load() != 0

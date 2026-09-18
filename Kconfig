@@ -656,8 +656,8 @@ config KICKOS_TASK_IRQ_HANDLE_BUDGET
 	default 7
 	help
 	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the tier-1 IRQ binding pool: strictly below
-	  KICKOS_MAX_IRQ_HANDLES or the build fails. A tier-0 kos_irq_attach is uncharged
-	  and does not spend this.
+	  KICKOS_MAX_IRQ_HANDLES or the build fails. An in-kernel irq_attach takes no
+	  binding and does not spend this.
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"

@@ -144,7 +144,9 @@ void xmcuart_console_driver(void* arg)
     {
         // Info-less recv: the console hosts plain sends only, so a client kos_call
         // bounces cleanly (-KOS_ENOSYS) instead of minting a reply cap here.
-        long const n = kos_recv(ep, buf, sizeof(buf), nullptr);
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        long const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (n < 0)
         {
             // Endpoint dead / EPIPE or a bad cap: unrecoverable. Exit and let root respawn

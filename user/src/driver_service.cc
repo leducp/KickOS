@@ -39,6 +39,10 @@ int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task)
 
 void edge_relay_thread(void*)
 {
+    if (kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr) != 0)
+    {
+        exit(0);
+    }
     while (true)
     {
         if (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) != 0)

@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# KickOS CI: the deterministic, host-runnable green gates.
-# Every job mirrors a `--preset` invocation. Every gate here is host or QEMU: a job may not
-# depend on a board, so nothing here states a port's hardware status.
 #
-# Warnings-as-errors rides every job with no flag (KICKOS_WERROR defaults ON in tree).
-#
-# Toolchains are the SAME pinned vendor tarballs used locally, downloaded and cached. The
-# sim job uses the host g++.
-#
-# Each pin lives in the composite action that uses it, under .github/actions/<name>. A job
-# asks for one by name and gets the cache, the fetch and the exported KICKOS_* variables.
+# Host and QEMU checks for each preset; these jobs do not validate hardware.
+# Warnings are errors by default. Toolchain versions and caches are managed
+# by .github/actions; sim uses the host compiler.
 
 name: CI
 
@@ -59,16 +52,9 @@ jobs:
       - run: cmake --build --preset sim
       - run: ctest --preset sim -LE tree --no-tests=error --output-on-failure
 
-  # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all is what
-  # makes it a GATE: UBSan's default is print-and-continue, exit status 0.
-  #
-  # Do NOT add -fsanitize=address: the sim switches threads with ucontext, and without
-  # __sanitizer_start/finish_switch_fiber annotations ASan treats each new stack as a wild
-  # region and the sim hangs.
-  #
-  # Flags go through the CFLAGS/CXXFLAGS ENVIRONMENT at JOB level, not -DCMAKE_C/CXX_FLAGS on
-  # the configure step: the oot_export test's child cmake inherits the environment but never
-  # a -D, and would otherwise link instrumented archives without the UBSan runtime.
+  # Run sim with UBSan and stop on the first error.
+  # ASan needs fiber-switch annotations for the sim's ucontext stacks.
+  # Set flags in the environment so oot_export's child CMake also links UBSan.
   sim-ubsan:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -98,7 +84,9 @@ jobs:
     # QEMU-only chips to keep the clock advancing (see arch_idle_wait). This timeout
     # is failure headroom on a loaded runner; passing gates exit early.
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
       # The gates whose image never exits, so they go through poll_image (tests/lib/gate.sh).
       POLLED: "hello|fp_switch|mpu_fault|rootfault|rootgone|reclaimwit_park"
     steps:
@@ -228,7 +216,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -250,21 +240,16 @@ jobs:
           tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe' \
             --preset qemu-arm64 --no-tests=error --output-on-failure
 
-  # armv8a (virt) at FOUR KERNEL CORES, in the two postures the placement work is written
-  # against. The qemu-arm64 job above drives ONE core, where sched_admit_mask, the affinity
-  # syscall and every placement arm compile out, so nothing there covers them.
-  #
-  # smp is the plain four-core posture; smpiso adds the isolation mask, which is what makes
-  # three of the placement arms run instead of skip.
-  #
-  # THE EXPECTED-SKIP LIST CANNOT WITNESS THE MASK. It is DERIVED from the same knob, so a
-  # variant that lost its mask moves the list with it and the selftest gate passes on a run
-  # that covered the plain SMP posture twice. The configured value is read below instead.
+  # Four-core AArch64 with and without core isolation. Check the configured
+  # isolation mask directly: the expected-skip list is derived from it and
+  # cannot detect its accidental removal.
   qemu-arm64-smp:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -309,7 +294,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -352,7 +339,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "90"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -420,7 +409,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -461,7 +452,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -483,22 +476,17 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault|rootgone' \
             --preset qemu-riscv --no-tests=error --output-on-failure
 
-  # rv64imac (virt) under QEMU: the base and sv48 postures, plus the FOUR-HART shared kernel.
-  # No rv64 preset ran in CI before this job, while cmake/presets/riscv.json has carried all
-  # three since the port landed, so what was missing was the job and not the coverage.
-  # Same pinned RISCstar toolchain as the two rv32 jobs, whose multilib set includes the rv64
-  # one; qemu-system-misc provides qemu-system-riscv64.
-  #
-  # The four-hart variant is where a shared kernel's address-space teardown is exposed: rv64
-  # keeps the kernel's own top-level entries in each space's ROOT page, so a hart still
-  # holding a destroyed space's root walks a frame the pool has reissued.
+  # RV64 base, Sv48, and four-core shared-kernel tests. Use the pinned
+  # RISCstar multilib toolchain and qemu-system-riscv64 from qemu-system-misc.
+  # The SMP variant exercises address-space teardown while peers may still
+  # hold a root page containing kernel mappings.
   qemu-riscv64:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Above the rv32 jobs' 30: the four-hart gates sample until both channels complete
-      # rather than waiting a fixed span, so this is headroom on a loaded runner.
-      QEMU_TIMEOUT: "60"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -533,27 +521,17 @@ jobs:
           tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure
 
-  # x86_64 (q35) under QEMU, over a UEFI handover. The ONE job with no toolchain action:
-  # cmake/toolchain-x86_64-uefi.cmake finds the HOST gcc, ubuntu-latest being x86_64 itself, and
-  # refuses the configure outright if ld carries no i386pep emulation for the PE32+ link.
-  #
-  # The firmware is not optional and no -kernel substitutes for it: the image is a PE32+
-  # application -kernel cannot start at all, so gate.sh builds an EFI system partition and boots
-  # OVMF. The pair is RESOLVED below rather than named: the ovmf package chooses those
-  # filenames and the spelling differs across releases.
-  #
-  # gate.sh SKIPS every image gate when it finds no firmware, and skips them again when mtools
-  # is absent, so both would report success. Resolving the pair here turns the first into a
-  # named refusal, mtools is in the package list for the second, and the skip guard below is
-  # what makes either of them red rather than green.
-  #
-  # Neither ovmf nor mtools ships a command of its own name, so build-tools cannot see either
-  # as already present and apts both on every run of this job.
+  # x86-64 QEMU boots the PE32+ image through OVMF, using host GCC and an
+  # ld with i386pep support. Resolve the firmware paths from the installed
+  # package and require mtools; otherwise image tests would skip.
+  # The skip guard turns missing runtime prerequisites into failures.
   qemu-x86_64:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      QEMU_TIMEOUT: "30"
+      # Match the longest QEMU timeout used by this job (selftest).
+      # Also supplies a timeout for scripts without their own default.
+      QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -619,17 +597,9 @@ jobs:
           # 240 DOWNWARD, and a bench image needs longer than any other gate here.
           cmake --preset qemu-x86_64-bench
           cmake --build --preset qemu-x86_64-bench
-          # THE DETERMINISTIC ARMS OF THIS PRESET'S BENCH BLOCK AND NO OTHER. lock reads sample
-          # counts and a nesting depth, cyccnt reads whether the counter moved, phase_table
-          # counts the rows that arrived against the count the header declares, saturate feeds
-          # the shipped accumulator fixed deltas and reads what each did, and irqspan_controls
-          # is the IRQ gate's PARSER proven on planted reports with no image at all. None of
-          # them reads a latency off this runner.
-          #
-          # `x86_64_bench_irqspan` is deliberately NOT here and the spelling above is why: as a
-          # regex it would match the controls entry too, and the entry it names reads timing
-          # distributions off a machine whose load nobody controls. That half is witnessed by
-          # hand at each rebaseline.
+          # Run deterministic benchmark checks for counts, counter progress,
+          # accumulator behavior, and parser controls. Measure IRQ latency manually
+          # at rebaseline; shared-runner load makes it unsuitable for this gate.
           out=$(QEMU_TIMEOUT=240 tests/ci/ctest_named.sh 'x86_64_bench_lock|x86_64_bench_cyccnt|x86_64_bench_phase_table|x86_64_bench_saturate|x86_64_bench_irqspan_controls' \
             --test-dir build/qemu-x86_64-bench --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -717,15 +687,10 @@ jobs:
             *Skipped*) echo "the containment arm SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
-  # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those shipping
-  # arch/arm/chip/<chip>/mpu.cmake) on their base variant. The only job that builds the
-  # enforcement-only link surface of the silicon boards: the .appdata/.appbss window and its
-  # ASSERTs, the closed-set archive selectors, the grant symbols, and arch_reserved_blocks,
-  # which an enforcing port must define itself or fail to link here.
-  #
-  # kernel_ctor_placement passes VACUOUSLY here: every app in this matrix links an empty
-  # .kickos_app_init_array window, so the check takes its "window empty -> PASS" early-out.
-  # It still proves the ctor-split section symbols EXIST.
+  # Build enforcing ARM variants to check app sections, grant symbols,
+  # archive selectors, and arch_reserved_blocks.
+  # These apps have empty constructor sections: kernel_ctor_placement checks
+  # that the section symbols exist, but not placement of actual constructors.
   build-boards-mpu:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -781,15 +746,9 @@ jobs:
           done
       - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)
         run: |
-          # KICKOS_SHUTDOWN_TO_BOOTLOADER depends on the self-test, so with it off the amp2
-          # defconfig's own line is refused and the request has to withdraw that knob too.
-          #
-          # Its own build directory: option() writes the cache once, so -D...=OFF into a tree
-          # already configured with it ON changes nothing.
-          #
-          # Build only: a per-preset gate REBUILDS its preset name from board, variant and node
-          # index, which this posture spells identically to the step above, so running the
-          # gates here would measure that tree instead of this one.
+          # Disable shutdown-to-bootloader along with its self-test dependency.
+          # Use a separate build directory to avoid cached options. Build only:
+          # preset-based gates would rebuild the standard variant instead.
           for node in 0 1; do
             cmake --preset pizero2350-amp2-n$node -B build/pizero2350-amp2-prod-n$node \
               -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN" \
@@ -806,23 +765,9 @@ jobs:
           cmake --build build/pizero2350-amp2-prod-n0 --target amp_partition
           ls -l build/pizero2350-amp2-prod-n0/kickos-partition.elf
 
-  # The microbench presets. Nothing else in this file configures them apart from the rv32
-  # qemu-riscv-bench line in the qemu-riscv job, and until this job existed not one bench arm
-  # ran anywhere: the presets were built and their images never booted.
-  #
-  # THIS JOB SETS NO QEMU_TIMEOUT, unlike every other emulator job here. Each bench gate
-  # carries its own bound (tests/integration/check_bench_*.sh: 150s for the per-core and
-  # phase-table gates, 240s for the rest) because a bench image runs a quarter-million round
-  # trips before the lines these gates read. A job-level value overrides those DOWNWARD and
-  # the run then reads as an image that printed nothing.
-  #
-  # THE FOUR-CORE MARGIN IS THE RUNNER HAVING FOUR CORES TO ITSELF, and it is not large. A
-  # four-hart sweep measures 32s to 85s per arm on a developer box against those bounds; the
-  # same arms pinned to four host CPUs cost what they cost unpinned, and pinned to TWO they
-  # overrun the bounds outright (per-core 156s against 150s, doorbell 246s against 240s). So an
-  # arm of the four-core step below that starts failing on its bound rather than on its own
-  # findings is the runner, and the answer is a longer bound in the gate, never a job-level
-  # QEMU_TIMEOUT, which would cut every bound here DOWNWARD at once.
+  # Run microbenchmark presets without a job-level QEMU_TIMEOUT: each gate
+  # sets its own limit. Four-core runs need sufficient host CPU time.
+  # Adjust a gate's limit if needed rather than overriding all limits here.
   bench:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -843,15 +788,9 @@ jobs:
             || { echo "qemu-system-riscv64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a and rv64 microbench at one core
         run: |
-          # Naming them turns a lost registration into a failure. Each is needed: the switch line
-          # comes from the bracket in the arch's switch.S, the phase table from
-          # kernel/include/kickos/bench.h, the saturation column from the accumulator and the
-          # authority arms from the bench syscalls, so no one of them shows another's failure.
-          #
-          # THE IRQ BLOCK IS DELIBERATELY ABSENT and is witnessed by hand at each rebaseline.
-          # CI is a regression test, not a performance one: every arm of that gate reads a
-          # timing distribution off a runner whose load it does not control, and the shared
-          # runner is where an intermittent arm comes from.
+          # Require every named benchmark check to remain registered.
+          # IRQ timing distributions are measured manually at rebaseline because
+          # shared-runner load is uncontrolled.
           cmake --preset qemu-arm64-bench -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64-bench
           tests/ci/ctest_named.sh 'qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth|qemu_arm64_bench_a53_pmcr|qemu_arm64_bench_irqspan_controls' \
@@ -862,24 +801,10 @@ jobs:
             --test-dir build/qemu-riscv64-bench --no-tests=error --output-on-failure
       - name: four-core microbench, the deterministic arms
         run: |
-          # -L host SELECTS EVERY IMAGE GATE AWAY, so the second command of each pair is not a
-          # refinement of the first: without it these presets boot nothing at all.
-          # bench_percore and bench_doorbell are registered above one kernel core ONLY, so
-          # until they were named here they ran nowhere in CI. The rest also run at one core in
-          # the step above, and what four cores adds to them is what one core cannot spell: the
-          # lock's WAIT slot, a phase row saturating on a bracket that closed against another
-          # core's counter, and benchauth's doorbell arms reaching the real op instead of the
-          # refusal a one-core build compiles in.
-          #
-          # NONE OF THEM READS A LATENCY. They count samples per core against the table's own
-          # total, count arrived rows against the count the report's header declares, read two
-          # fixed deltas back out of the shipped accumulator, ask whether the counter moved at
-          # all, and assert the bench syscall's authority arms. Runner load moves no answer
-          # any of that gives.
-          #
-          # THE IRQ BLOCK STAYS OUT at four cores as it does at one, and is witnessed by hand at
-          # each rebaseline: every arm of it reads a timing distribution off a machine whose
-          # load nobody controls. bench_irqspan_controls boots nothing and rides -L host above.
+          # The host label excludes image tests; the second command boots them.
+          # Four-core checks cover per-core samples, doorbells, lock waits, phase
+          # counts, saturation, and authority checks without latency thresholds.
+          # IRQ timing is measured manually; parser controls run with the host tests.
           cmake --preset qemu-arm64-benchsmp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64-benchsmp
           ctest --test-dir build/qemu-arm64-benchsmp -L host -LE tree --no-tests=error --output-on-failure

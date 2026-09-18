@@ -896,7 +896,7 @@ is the next one's baseline.
 | M8.6.2 | the static gate corpus audited: the suspicion that it was mostly dead weight, measured and answered |
 | M8.7 | P0: the rebaseline campaign, and the end-to-end instrument |
 | M8.8 | the per-switch and per-wake plumbing |
-| M8.9 | the IPC structure: the reserved reply slot, and the fused reply-receive |
+| M8.9 | the IPC structure: the fused reply-receive, and the notification bound to the same wait |
 | M8.10 | translating boards and SMP: the reent seat, ASIDs |
 | M8.11 | what only a measurement can justify |
 | M8.12 | the M8 exit measurement, frozen |
@@ -1520,6 +1520,20 @@ construction and the multicore contract puts configuration-time authority at con
 placing a thread of another task, minting dynamically and starting a core are all left open there.
 So this milestone either names the authority object per operation or records that it cannot yet; what
 it may not do is assume root.
+
+**THE NAMING LAYER HAS A SKETCH, AND IT IS WHAT MAKES A DRIVER'S SOURCE PORTABLE.** The maintainer's
+target shape for acquiring a line is a PATH rather than a number:
+
+    auto irq = kos_grant_irq("/dev/spi/1/irq");
+
+Today `kos_irq_claim` takes a bare line number, so the same driver source names a different integer
+on every part, and a board's wiring reaches the driver through a build-time constant instead of
+through the composition. The capability model underneath the sketch is already the tree's: something
+holding `AUTH_IRQ` acquires the line and the driver thread only ever holds the capability. What is
+absent is the resolver, and this milestone is where it belongs, the database already declaring
+interrupt lines. **The two halves are separable**: a path-to-line resolver can land over the existing
+claim without the database, and the database can land without the resolver. Neither is a reason to
+keep the number in the driver's source.
 
 ### M11 -- back to the driver era
 Remaining drivers and breadth, plus the SPI class work of `deferred-after-pr-train.md` -- the

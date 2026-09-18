@@ -398,15 +398,10 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // kernel_sp - 4. If arch_context_init ever stops pushing that word, this path lands
     // exactly on the top and every slain thread panics at its first preemption.
 #if KICKOS_KERNEL_STACKS
-    // The stub is rebuilt on the thread's own kernel block, so no privileged frame is
-    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
-    // block TOP, discarding whatever dispatch frames it held, which is what keeps the block
-    // requirement the MAX of the dispatch and exit classes rather than their sum.
-    //
-    // stack_lo and stack_hi are saved and put back because arch_context_init derives them
-    // from what it is handed, and handing it the block would leave the context describing
-    // kernel .bss as this thread's stack.
-    // tests/static/check_death_stack_seating.sh holds this shape.
+    // Build the exit stub at the top of the thread's kernel stack, discarding
+    // dispatch frames. Privileged state must not be stored on a user-writable stack.
+    // Preserve user stack bounds because arch_context_init would replace them
+    // with the kernel block bounds. Checked by check_death_stack_seating.sh.
     if (kernel_sp != 0)
     {
         uint32_t const lo = ctx->stack_lo;
@@ -553,17 +548,10 @@ void arch_fault_redirect_to_exit(void* frame)
     ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
 
-    // The stub runs at the TOP of the dying thread's stack, not at the depth the fault
-    // reached: an access exception restores SP (ISA UM sec.5.3.1), so an overflowed thread
-    // hands over a USP that reads in-bounds. Writing USP here is safe because the handler
-    // runs on the ISP: R0 in supervisor mode is the ISP, USP a separate control register.
-    //
-    // EIGHT BYTES BELOW THAT TOP, AND ONLY THIS ARCH NEEDS IT. kickos_rx_pendsw's block leg
-    // tests `kernel_sp - USP` with bleu, so a USP EXACTLY at the top reads as zero distance,
-    // falls through to the user-stack legs and is refused as wild. RX interrupt acceptance
-    // pushes PC and PSW to the ISP and leaves the USP untouched, so the guard can observe
-    // that pre-push value; ARM entry stacks on the PSP itself, so the edge exists nowhere
-    // else. svc_trampoline reaches the block at T-8 for the same reason.
+    // Reset USP below the stack top; exception entry restores SP and can hide
+    // the depth of an overflow (ISA UM 5.3.1). This handler uses ISP, so writing
+    // USP is safe. Use top-8 because kickos_rx_pendsw rejects zero distance
+    // from kernel_sp, and RX entry pushes PC/PSW on ISP without changing USP.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
@@ -572,21 +560,12 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
-// From the syscall trap and SWINT switcher (switch.S), when the live USP is neither inside
-// the running thread's stack with room to spare nor inside that thread's own kernel block.
-// Runs on the ISP.
-//
-// CONTAINS FIRST, and NEITHER A FRAME NOR THE REFUSED USP IS NEEDED FOR IT: arch_ctx_redirect
-// rebuilds the slain thread at the TOP of its own kernel block, so the exit stub runs on
-// ctx.kernel_sp and the pointer the guard refused is read by nothing. kpanic_enter belongs to
-// the terminating path alone, its IRQ mask being irreversible.
-//
-// g_arch_current and NOT the scheduler's current: this one tracks the PHYSICAL switch, so it
-// names the thread whose USP was refused even when a booked switch has already published
-// another one as current.
-//
-// Returns the context switch.S must resume, and does not return when nothing can be
-// contained.
+// Handle a USP outside both the user stack and the thread's kernel block.
+// Runs on ISP. Try containment before kpanic_enter, whose mask is permanent.
+// arch_ctx_redirect builds an exit frame on the kernel block without reading
+// the rejected USP. Use g_arch_current, which tracks the physical thread
+// even when the scheduler has already selected its replacement.
+// Return the context to resume, or terminate if containment fails.
 struct arch_context* kickos_rx_bad_usp(uint32_t usp)
 {
     struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
@@ -778,17 +757,10 @@ void arch_timer_disarm(void)
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // drop a pending compare-match request
 }
 
-// --- MPU: per-thread memory protection (RX72M MPU, UM sec.17) ---------------
-// The RX MPU checks accesses ONLY in user mode; supervisor is never checked and always
-// permitted (UM sec.17.1.1), and there is no supervisor permission field at all. So a
-// PRIVILEGED (PM=0) thread keeps full access whatever these registers hold, and enforcement
-// reduces to a no-access background (MPBAC=0) plus the running thread's regions in the
-// eight RSPAGEn/REPAGEn slots.
-//
-// Deferred-commit seam: arch_mpu_apply only STASHES the incoming set, and
-// kickos_arch_mpu_commit programs the slots from the SWINT switch epilogue AFTER the
-// physical swap. An eager apply would load the incoming region set while the OUTGOING user
-// thread is still running, faulting it on its own stack.
+// RX72M MPU (UM section 17): checks user mode only. Supervisor always has
+// access. Use MPBAC=0 and eight RSPAGEn/REPAGEn regions for user grants.
+// arch_mpu_apply stores the set; SWINT commits it after the physical switch
+// so the outgoing thread retains access to its stack until then.
 #if KICKOS_HAVE_MPU
 // The page masks are field encoding, not rounding: a region the 16-byte pages cannot
 // represent EXACTLY gets REPAGE 0 (V clear), never a window widened by up to 15 bytes on
@@ -839,6 +811,18 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
+#if KICKOS_BENCH
+// Declare the recorder here to avoid including the kernel benchmark header.
+extern "C" void kickos_bench_mpu_commit(uint32_t delta);
+
+// Match bench_cyccnt(): convert CMTW1 ticks (PCLKB/8) to ICLK cycles.
+// Inline counter reads so PH_NULL accounts for their overhead.
+static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
+{
+    return reg32(CMTW1_BASE + CMTW_CMWCNT) << 5;
+}
+#endif
+
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -852,8 +836,12 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 // bracket keeps the seam callable from anywhere else.
 void kickos_arch_mpu_commit(void)
 {
+#if KICKOS_BENCH
+    uint32_t const bench_start = mpu_bench_cyc();
+#endif
     arch_irq_state_t const irq = arch_irq_save();
     struct arch_mpu_encoded const* const img = g_pend_image;
+    // Do not record an empty commit: it writes no descriptors.
     if (img == nullptr)
     {
         arch_irq_restore(irq);
@@ -900,6 +888,9 @@ void kickos_arch_mpu_commit(void)
         rx_mpu_mark(']');
     }
     arch_irq_restore(irq);
+#if KICKOS_BENCH
+    kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
+#endif
 }
 #else
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
@@ -954,17 +945,11 @@ int arch_bitband_present(void)
 
 
 
-// --- Interrupt controller (ICUD) --------------------------------------------
-// Chip hooks, both lone-TU seams (arch/CMakeLists.txt states the rule).
-//
-// kickos_rx_dev_dispatch must call kickos_isr_irq ONCE PER ASSERTED SOURCE, a group vector
-// being able to assert several at once (UM sec.15.5.4 p.542). It also owns the per-source
-// clear, so the generic entry writes no IRn: an edge vector's IRn is already cleared by the
-// ICU on acceptance, and a level group source's must not be written (UM sec.15.2.1 p.480).
-//
-// kickos_rx_group_arm arms or disarms a GROUP-source logical line at its GENxxx.ENj. The
-// group registers, the group to vector map and the lazy arming of the group vector itself
-// belong to the chip; the core owns only the line-space split.
+// Chip IRQ hooks. kickos_rx_dev_dispatch must dispatch each asserted source
+// and handle its clear. Edge IRn is cleared on acceptance; level group IRn
+// must not be written (UM 15.5.4 p.542 and 15.2.1 p.480).
+// kickos_rx_group_arm controls GENxxx.ENj. The chip owns group registers,
+// vector mapping, and lazy vector arming; the core owns the logical line split.
 void kickos_rx_dev_dispatch(void);
 void kickos_rx_group_arm(int line, int on);
 

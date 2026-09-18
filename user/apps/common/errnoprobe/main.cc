@@ -1,23 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The per-thread errno witness. Four arms, each a different way for the running thread's
-// libc state to reach the CPU, because they are not the same code path:
-//
-//   A cooperative  a blocking syscall reschedules            switch_to -> switch_book
-//   B slot reuse   a dead thread's slot is handed to a new one, whose state must be clean
-//   C fastpath     kos_call swaps registers inside the trap handler   switch_prepare
-//   D preemption   a timer wake throws a spinning thread off the CPU with no syscall
-//
-// NOTHING HERE ASSIGNS errno. An assignment would pass with the mechanism ripped out, the
-// write and the read landing on the same wrong word. Every value below is written by
-// newlib's own _strtol_r: an overflowing literal gives ERANGE, an out-of-range base gives
-// EINVAL.
-//
-// Every crossing is forced by CONSTRUCTION and not by a sleep long enough to hope for: a
-// thread blocks until its peer has published, and where an arm depends on a peer being in a
-// particular state, the peer records the state it was actually in and the arm fails if it
-// was not that.
+// Test per-thread errno across blocking switches, slot reuse, IPC fastpath,
+// and timer preemption. Use newlib strtol errors (ERANGE/EINVAL), not direct
+// assignments, to test libc state selection. Synchronize peers explicitly
+// and check required scheduling states.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -323,7 +310,10 @@ namespace
         unsigned char buf[KOS_CALL_REG_BYTES];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         kos_sem_post(FAST_READY);
-        g_fast.recv_rc = kos_recv(FAST_EP, buf, sizeof(buf), &info);
+        struct kos_reply_recv_opts opts;
+        kos_reply_recv_opts_init(&opts, FAST_EP, 0, KOS_TIMEOUT_NONE);
+        g_fast.recv_rc = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
+        info = opts.info;
         // The first thing this thread does after the fastpath put it back on the CPU.
         g_fast.server_in_dispatch = errno;
         if (info.reply_cap != KOS_CAP_NONE)

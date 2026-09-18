@@ -48,9 +48,9 @@ The tier-1 IRQ substrate that must carry it (`kernel/irq/irq.cc`) has three hole
    document renames to `KOS_SYS_IRQ_CLAIM`) had **no authority check and no capability**
    (`kernel/syscall/syscall.cc` (the `KOS_SYS_IRQ_CLAIM` / `_WAIT` / `_ACK`
    case arms)). Any unprivileged thread could claim ANY line in `[0, KICKOS_MAX_IRQ)`,
-   first-come-first-served. Compare `KOS_SYS_IRQ_ATTACH = 11`
-   (`kernel/syscall/syscall.cc` (`case KOS_SYS_IRQ_ATTACH`)), which requires **`AUTH_IRQ`**
-   AND a `CAP_SEM` bearing `CAP_SIGNAL`.
+   first-come-first-served. Compare the tier-2 attach syscall of the day, number 11, which
+   required **`AUTH_IRQ`** AND a `CAP_SEM` bearing `CAP_SIGNAL`. That syscall has since been
+   retired and its number is unused.
 2. **Nothing is released on death.** `sched::exit_current` (`kernel/sched/sched.cc`
    (`exit_current`)) tears down capabilities only. An `IrqBinding` is not a cap type
    (`kernel/include/kickos/cap.h` (`enum class CapType`) has
@@ -125,9 +125,9 @@ on precisely that ground.
 
 A **narrower per-line authority is REFUSED**, so `TODO.md`'s "needs a decision rather than
 work" is now decided rather than carried. The reason is sec.3.6's and it is checkable rather
-than aesthetic: while `KOS_SYS_IRQ_ATTACH` stays reachable by any `AUTH_IRQ` holder naming a
-bare line number, tier 2 is a namespace-wide door and a per-line grant on tier-1 mint buys
-nothing. The holder populations of a would-be seventh bit and of `AUTH_IRQ` are identical
+than aesthetic: while the tier-2 attach syscall stays reachable by any `AUTH_IRQ` holder
+naming a bare line number, tier 2 is a namespace-wide door and a per-line grant on tier-1 mint
+buys nothing. The holder populations of a would-be seventh bit and of `AUTH_IRQ` are identical
 today -- `AUTH_IRQ` is declared in exactly one place in the tree
 (`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)), and all four tier-1 drivers run
 at authority zero -- so the bit would be the pre-M4.5.4 authority-inflation mistake mirrored.
@@ -326,8 +326,8 @@ does not want `IrqLock`) and steps 2 onward under one `IrqLock`:
 has exactly ONE privileged thread, `idle`, and `idle` issues no syscalls at all. A
 privileged-only `irq_claim` would therefore be a syscall no thread in the system can reach: a
 gate that reads as strict and is in fact a deletion. `AUTH_IRQ` is the bit that already gates
-the neighbouring line-binding syscalls, `KOS_SYS_IRQ_ATTACH` and `KOS_SYS_IRQ_UNMASK`
-(`kernel/syscall/syscall.cc` (`case KOS_SYS_IRQ_ATTACH`)), and the claim arm copies that arm
+the neighbouring line-binding syscalls, the tier-2 attach of the day and `KOS_SYS_IRQ_UNMASK`
+(`kernel/syscall/syscall.cc`), and the claim arm copies that arm
 verbatim, right down to the error: `cap_check_authority(sched::current(), AUTH_IRQ)`, else
 `-KOS_EPERM`. Root holds `AUTH_IRQ` today and seats no child with it, so the population that
 can mint is exactly the population that can already seize a line through tier 2. That is the
@@ -578,7 +578,7 @@ the cap at all, the interval H3 governs exists.
 Ruled with sec.2.1. If per-line granularity is ever genuinely wanted, it does not come from a
 finer authority bit and it does not come from possession of the cap. It comes from **retiring
 userspace tier-2**.
-While `KOS_SYS_IRQ_ATTACH` exists as an unprivileged-reachable syscall, any bit that gates
+While the tier-2 attach syscall exists as an unprivileged-reachable syscall, any bit that gates
 minting must also gate attaching, and attaching is inherently namespace-wide: the caller names
 a bare line number. Delete that syscall and the whole line namespace has exactly one entry
 point, `irq_claim`, at which point a per-line grant becomes expressible. A second, mint-only

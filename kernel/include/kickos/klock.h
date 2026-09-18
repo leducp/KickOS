@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The kernel lock's nesting bracket: one acquisition depth per core, so the cross-core lock
-// is taken as the depth rises from zero and released as it returns to it.
-//
-// Every body takes THIS CORE'S INTERRUPT MASK AS ALREADY APPLIED: the lock must be taken
-// after the mask and released before it comes back, or a handler entered on a core holding
-// the lock spins against its own release.
+// Per-core kernel-lock nesting. Acquire when depth changes from zero and
+// release when it returns to zero.
+// Call with local interrupts masked. Restore them only after release, or
+// an interrupt handler can deadlock on the lock held by its own core.
 
 #ifndef KICKOS_KLOCK_H
 #define KICKOS_KLOCK_H
@@ -14,12 +12,18 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/debug.h>
 
 namespace kickos
 {
 #if KICKOS_KERNEL_CORES > 1
     void klock_enter(void);
     void klock_leave(void);
+
+#if KICKOS_DEBUG
+    // Includes the switch window: klock_detach clears depth without releasing the lock.
+    bool klock_exclusion_held(void);
+#endif
 
     // detach takes the depth off the core and LEAVES THE LOCK HELD: kickos_switch_unlock
     // releases it once the swap has parked the outgoing frame. attach puts the depth back,
@@ -66,5 +70,13 @@ namespace kickos
     }
 #endif
 }
+
+// Assert the caller holds kernel exclusion. On single-core builds this is a no-op:
+// exclusion uses the interrupt mask, which has no query interface.
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
+#define KICKOS_ASSERT_EXCLUSION_HELD() KICKOS_DEBUG_ASSERT(::kickos::klock_exclusion_held())
+#else
+#define KICKOS_ASSERT_EXCLUSION_HELD() ((void)0)
+#endif
 
 #endif

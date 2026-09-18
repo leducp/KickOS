@@ -1,29 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC0-CH1 SSC (SPI) internal-loopback driver. On ARMv7-M the MPU is CPU-side
-// and covers peripheral space, so a granted DEV window IS a genuine per-thread
-// capability (reprogrammed every switch-in by arch_mpu_apply).
-//
-// The UNPRIVILEGED driver is granted ONLY the 512 B U0C1 channel window (0x4003_0200,
-// DEV R|W no-X) and brings the channel up itself; root writes no register at all and
-// holds no DEV region. FDR/BRG/CCR go through kos_periph_reg_write because those three
-// are write-PV-only at the bus. LOOP-BACK is internal (RM 18.2.3.5): the DX0 input stage
-// selects internal input "G", the channel's own transmitter, so a byte shifts out DOUT0
-// and back in on DIN0 entirely on-chip, with NO port pins and NO external MISO<->MOSI
-// jumper. The escalation surfaces (the SCU clock tree and the port IOCR pin-mux) stay
-// OUT of the window; keeping them out is what makes the window a real capability, and
-// the final poke at the UNGRANTED SCU clock-gate register MUST fault MemManage.
-//
-// USIC0's module clock and kernel channel U0C0 are already ungated by the console
-// bring-up (kickos_xmc_usic_init, U0C0 = 0x4003_0000); this app must leave the SCU
-// untouched so it stays a clean ungranted target for the negative test.
-//
-// Register addresses / bit fields are clean-room from the XMC4700/XMC4800
-// Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM
-// p.NN" citations are the manual's printed page numbers.
-//
-// Diagnostic app (kickos_add_diagnostic_apps): build-only, never a production image.
+// XMC4800 USIC0-CH1 internal SPI loopback diagnostic. Grant only the
+// 512-byte U0C1 window at 0x40030200. FDR/BRG/CCR need kos_periph_reg_write
+// because the bus permits privileged writes only.
+// Select DX0 input G for internal loopback (RM 18.2.3.5); no jumper is needed.
+// Console initialization has enabled the USIC0 clock. Keep SCU and pin mux
+// ungranted; the final SCU clock-gate access must cause MemManage.
+// Register definitions come from the XMC4700/XMC4800 RM V1.3 (2016-07);
+// page references use printed page numbers. Diagnostic image only.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -142,6 +127,10 @@ namespace
         volatile uint32_t* tbuf0 = reinterpret_cast<volatile uint32_t*>(win + off::TBUF0);
 
         int const h = KOS_SPAWN_DELEGATED_CAP0; // the only delegated cap: the line
+        if (kos_irq_attach(h, nullptr) != 0)
+        {
+            kos_panic("[xmcspi] irq_attach refused the delegated line");
+        }
 
         // The line must be owned before bring_up's last act arms CCR.RIEN/AIEN and the
         // first receive event can fire; root claimed it before this thread existed.
