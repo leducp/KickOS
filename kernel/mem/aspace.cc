@@ -8,6 +8,7 @@
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/irqlock.h>
+#include <kickos/klink.h>
 #include <kickos/kruntime.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -17,13 +18,13 @@
 extern "C"
 {
     // The chip linker script's app image split; a chip that carves no window leaves all four zero.
-    extern unsigned char __kickos_app_rom_start[] __attribute__((weak));
-    extern unsigned char __kickos_app_rom_end[] __attribute__((weak));
-    extern unsigned char __kickos_app_sram_start[] __attribute__((weak));
-    extern unsigned char __kickos_app_sram_end[] __attribute__((weak));
+    extern unsigned char __kickos_app_rom_start[] KICKOS_LINK_OPTIONAL;
+    extern unsigned char __kickos_app_rom_end[] KICKOS_LINK_OPTIONAL;
+    extern unsigned char __kickos_app_sram_start[] KICKOS_LINK_OPTIONAL;
+    extern unsigned char __kickos_app_sram_end[] KICKOS_LINK_OPTIONAL;
 
     // Added to an app virtual address to name the frame the loader put those bytes in.
-    extern unsigned char __kickos_app_load_delta[] __attribute__((weak));
+    extern unsigned char __kickos_app_load_delta[] KICKOS_LINK_OPTIONAL;
 
     // The kernel address that corresponds to physical address 0 for the image's own DRAM.
     extern unsigned char __kickos_frame_pool_delta[];
@@ -141,10 +142,8 @@ namespace kickos
             return extent_of(g_app_sram_lo, g_app_sram_hi, g);
         }
 
-        // Whether `p` is a byte of the app image, which is the domain the two deltas below are
-        // valid for. The chip carves the app's read-only window (__kickos_app_rom_*) and its
-        // writable one (__kickos_app_sram_*, covering .appdata, .appbss and the app heap); a
-        // window a chip does not carve leaves its pair equal, which admits nothing.
+        // Check app ROM/RAM windows before applying their address offsets.
+        // Equal bounds indicate an absent window.
         bool in_app_image(uintptr_t p)
         {
             uintptr_t const rom_lo = reinterpret_cast<uintptr_t>(g_app_rom_lo);
@@ -203,9 +202,7 @@ namespace kickos
             return true;
         }
 
-        // The image's static data into frames of this space's own: from the live home while it
-        // lives, from the frozen snapshot once it is gone. The caller's IrqLock is what makes
-        // the copy one point-in-time snapshot of the source.
+        // Copy data from the live root or saved snapshot under IrqLock.
         bool data_copy(struct arch_aspace* space, VirtualRanges* ranges, Extent const& data,
                        size_t g)
         {
@@ -303,9 +300,8 @@ namespace kickos
         {
             return data_copy(space, ranges, data, g);
         }
-        // Only the first space seeded maps the image's own pages: root's ctors run on the image
-        // itself, and every process after this one copies these bytes. A non-zero template means
-        // a home has already existed and its release could not take the snapshot.
+        // The first space uses the image data initialized by root constructors.
+        // A nonzero template with no live root means snapshot creation failed.
         if (g_data_template != 0)
         {
             return false;
@@ -463,9 +459,8 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        // VR_FRAMECAP and not VR_BORROWED alone: the image and every handoff carry that
-        // bit too, and a revoke keyed on it accepts ranges this call never placed.
-        // PLUS ONE, so the stored word is never the no-run encoding for a real slot 0.
+        // Require VR_FRAMECAP as well as VR_BORROWED. Store a biased run index
+        // so real slot zero is distinct from no run.
         int const run_slot = frame_run_slot_of(run_obj);
         if (run_slot < 0)
         {
@@ -582,9 +577,8 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
         g_release_runs++;
 #endif
-        // The space being destroyed can be the running one, so the tables about to go back to
-        // the pool are still what the walker reads. Every core's cell is cleared: a root left
-        // cached on another core is a switch that core would skip, into freed tables.
+        // Switch away before freeing active tables. Clear every core's cached root
+        // so a later activation cannot skip installing a replacement.
         uint32_t const cpu = arch_cpu_id();
         for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
         {
@@ -620,11 +614,8 @@ namespace kickos
             }
             if ((e->flags & VR_USTACK) != 0)
             {
-                // NEITHER ARM BELOW, which is the whole reason the flag exists. ustack_free
-                // released this run before the task's reference dropped; where it never ran,
-                // the destroy walk below frees the still-mapped stack pages off their leaves
-                // and strands only the guard. The reserved arm would free frames a leaf still
-                // points at.
+                // ustack_free already released unmapped stack runs. Still-mapped stack pages
+                // are freed by destroy; only their guard remains to release here.
                 continue;
             }
             if ((e->flags & VR_BORROWED) != 0)
@@ -649,11 +640,11 @@ namespace kickos
         arch_aspace_destroy(space);
     }
 
-    void aspace_activate_for(Thread const* t)
+    struct arch_aspace* aspace_activate_for(Thread const* t)
     {
         if (t == nullptr)
         {
-            return;
+            return nullptr;
         }
         struct arch_aspace* const space = domain_space(task_domain(t->task));
         if (space == nullptr)
@@ -662,23 +653,21 @@ namespace kickos
             g_unseated_switch_ins++;
 #endif
 #if KICKOS_KERNEL_CORES > 1
-            // A core's translation base names the running thread's space or the boot root: an
-            // outgoing space left installed here would have this core walking tables the
-            // release path frees and the pool reissues. KEPT UNDER THE GUARD: at one core the
-            // only reader of these tables is this core, and aspace_release activates the boot
-            // root itself before it frees them, so the arm would buy nothing and spend a
-            // non-tagged flush on every spaceless switch-in.
+            // On SMP, spaceless threads must install the boot root so they cannot
+            // retain a table another core frees. On one core, aspace_release switches
+            // away before freeing, so no extra switch is needed here.
             aspace_install_boot();
 #endif
-            return;
+            return nullptr;
         }
         uint32_t const cpu = arch_cpu_id();
         if (space == g_current[cpu])
         {
-            return;
+            return space;
         }
         g_current[cpu] = space;
         arch_aspace_activate(space);
+        return space;
     }
 
     bool aspace_seated_for(Thread const* t)

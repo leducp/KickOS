@@ -23,6 +23,10 @@ namespace kickos
         // returns them.
         enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
 
+        static_assert(KICKOS_MAX_DOMAINS > KDOM_DEFAULT_USER_INDEX + 1,
+                      "the domain pool must seat both immortal singletons and still leave a "
+                      "slot free_slot can hand out");
+
         Domain* free_slot()
         {
             Kernel& k = kernel();
@@ -391,10 +395,8 @@ namespace kickos
     }
 }
 
-// Reads the linker-defined app code (RX) and static data/.bss (RW-NX) sections into the regions
-// every unprivileged thread needs under MPU enforcement. The symbols are optional
-// (kickos/klink.h), so `end > start` is the test: a `start != 0` guard would read a valid base as
-// absent on a flash-at-0 chip (K64F, __kickos_code_start == 0).
+// Load app RX and RW-NX regions from optional linker bounds.
+// Use end > start: a zero start is valid on flash-at-zero targets.
 extern "C"
 {
     extern unsigned char __kickos_code_start[] KICKOS_LINK_OPTIONAL;

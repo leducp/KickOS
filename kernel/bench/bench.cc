@@ -64,9 +64,7 @@ namespace
     constinit Atomic<uint32_t, Order::RELAXED> g_irq_core = kickos::BENCH_CORE_NONE;
     constinit Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_irq_seen = 0;
 
-    // NOTHING GOES ABOVE THE STAMP: work there inflates every sample. Below it the sample is
-    // already fixed and only the raiser's spin waits longer, which feeds no statistic, so the
-    // core the reading belongs to is published there.
+    // Read the timestamp before any bookkeeping to avoid inflating samples.
     void bench_irq_handler(void*)
     {
         g_irq_entry = bench_cyccnt();
@@ -108,9 +106,7 @@ namespace
     // Same as the line: written by the close alone, read by the report on another thread.
     constinit Atomic<uint32_t, Order::RELAXED> g_e2e_closed = 0;
     constinit Atomic<uint32_t, Order::RELAXED> g_e2e_dropped = 0;
-    // THE DENOMINATOR, and the reason it is not decoration: a pass whose waiter never parked
-    // is abandoned by the sweep and closes nothing, so closed and dropped both stay put and
-    // the rows report the passes that did run as though they were all of them.
+    // Count requested passes, including those that never parked and closed no sample.
     constinit Atomic<uint32_t, Order::RELAXED> g_e2e_raised = 0;
 
     // Masked-span body: a byte copy across these models the endpoint copy under IrqLock
@@ -139,10 +135,7 @@ namespace
 #endif
     }
 
-// A sweep's probe line, the label pasted in the way a distribution row's is. `hcore` names the
-// ONE core that stamped every entry this sweep saw; `none` is a sweep whose line never fired
-// and `mixed` one whose samples came from several, which is cross-domain however each one was
-// classified.
+// Report the handler core: none for no delivery, mixed for multiple cores.
 #define BENCH_IRQ_PROBE_FMT(label)                                                             \
     "  " label ": line=%u raise=" BENCH_RAISE_NAME " on=%u raised=%u hcore=%u foreign=%u"      \
     " win=%u\n"
@@ -177,11 +170,7 @@ namespace
     static_assert(wcase_spans_fit(BENCH_LAT_SPAN_MAX),
                   "a WCASE_SPANS entry exceeds BENCH_LAT_SPAN_MAX");
 
-    // --- Accumulator ----------------------------------------------------------
-    // count is the validity, so a row needs no sentinel and lands in .bss.
-    //
-    // `sat` counts the samples the four fields above CANNOT hold. A saturated sample enters no
-    // statistic at all, histogram included.
+    // count marks valid data. Saturated samples enter no statistics or histogram.
     struct Acc
     {
         uint32_t min;
@@ -223,9 +212,8 @@ namespace
     constinit Acc g_e2e_tare = {};
 
 #if KICKOS_BENCH_TICK_BITS == 64
-    // The saturation rule's own witness, fed one delta the row can hold and one it cannot.
-    // Its own accumulator, so no reported row moves; file scope and not a local, the report
-    // running on the chain the stack-descent gate measures.
+    // Test saturation with one valid and one oversized delta in a separate
+    // accumulator. Keep it static to avoid increasing the measured stack depth.
     constinit Acc g_sat_probe = {};
     constexpr uint32_t SAT_PROBE_FITS = 1000u;
     // Low half 0x2000, which is ABOVE the representable sample: a build that counted this one
@@ -255,7 +243,6 @@ namespace
         into.count += from.count;
     }
 
-
     // Padded to one width: kvsnprintf implements no field width (lib/libc/fmt.cc), so a
     // "%-14s" here would print the flag and the digits literally.
     constexpr char const* PHASE_NAME[kickos::PH_COUNT] = {
@@ -271,7 +258,8 @@ namespace
         "REPLY_LOCKED    ", "REPLY_LOOKUP    ", "REPLY_COPY      ", "REPLY_FUNNEL    ",
         "REPLY_WAKE      ", "REPLY_RECV_TOTAL", "REPLY_RECV_TAIL ",
         "WAKE_UNPARK     ", "PICK_NEXT       ", "SWITCH_TO       ",
-        "SWITCH_BOOK     ", "MPU_APPLY       ", "MPU_COMMIT      ", "KTIME_REARM     ",
+        "SWITCH_BOOK     ", "MPU_APPLY       ", "MPU_COMMIT      ", "REENT_SEAT      ",
+        "KTIME_REARM     ",
         "ARCH_SWITCH     "};
     static_assert(sizeof(PHASE_NAME) / sizeof(PHASE_NAME[0]) == kickos::PH_COUNT,
                   "one name per phase, in enum order");
@@ -356,13 +344,8 @@ namespace
                   "the stride between two rows must be a whole number of buckets");
     constexpr uint32_t DIST_STRIDE = sizeof(BenchRow) / sizeof(uint32_t);
 
-    // The percentiles are quantiles of THIS and never of the live rows. File scope and not a
-    // local: 672 bytes on the chain the stack-descent gate measures.
-    //
-    // ONE PER KERNEL CORE. A buffer shared between reporters tears the very object it exists
-    // to hold: the rank and the buckets would come from two populations, which is a quantile
-    // of neither, and the torn row prints like any other. The walk takes its core index once,
-    // so a reporter migrated mid-walk keeps reading the buffer it filled.
+    // Use one snapshot buffer per core to avoid reporter races and large stack use.
+    // Keep its index fixed if the reporter migrates during the read.
     constinit kickos::BenchHistSnap g_dist_snap[KICKOS_KERNEL_CORES] = {};
     // A buffer narrowed to one entry still compiles against the index below and reads out of
     // bounds at every core but zero.
@@ -403,13 +386,10 @@ namespace
 #endif
     }
 
-    // What ipc_fast_taken_count() read when this window opened. The trap-handler IPC fastpath
-    // swaps threads inside the trap and never reaches the deferred switcher switch.S stamps,
-    // so its swaps are in no distribution and nothing in the switch row says how many were left
-    // out.
+    // Baseline for trap-handler fastpath switches, which bypass BD_SWITCH timing.
     constinit uint32_t g_ipc_fast_base = 0;
 
-    // ONE slot on EVERY core's row, which is what makes a re-reported slot's count one span's.
+    // Reset this slot on every core.
     void dist_reset_one(uint32_t d)
     {
         kickos::IrqLock lock;
@@ -428,21 +408,15 @@ namespace
 
 extern "C"
 {
-    // Switch-entry timestamp, written by the switch handler (switch.S), ONE CELL PER CORE:
-    // a cell shared between cores subtracts one core's open from another's close, which
-    // wraps near 2^32 whenever the peer opened later, and neither reads as wrong in the
-    // report. armv8a and rv64imac keep their own cell in their per-CPU block instead and
-    // reference nothing here; the LX6 addresses these by core index (lx6_percpu.inc).
+    // Switch-entry timestamps must be per core. ARM64 and RV64 keep theirs
+    // in their own per-CPU blocks; LX6 indexes this array by core.
     constinit uint32_t g_bench_sw_start[KICKOS_NUM_CORES] = {};
     // Xtensa only: the windowed exit can't host a call, so switch.S stamps the switch
     // END here and accumulates (end-start) at the NEXT switch entry (a safe call site).
     constinit uint32_t g_bench_sw_end[KICKOS_NUM_CORES] = {};
-    // rv32imac only, which the shared-kernel predicate holds to one core (its smp.cmake
-    // declares nothing), so these three are scalars. Its window spans a trap entry and a
-    // trap exit, and the exit leaves no register free at the mret, so switch.S banks the
-    // halves: g_bench_sw_half carries the save and swap (non-zero means a switch opened the
-    // window), g_bench_sw_rstart stamps the restore, and g_bench_sw_pend holds the completed
-    // delta until the NEXT switch, which is the next site that can host a call.
+    // RV32 is single-core. Save the save/swap and restore timestamps separately
+    // because the trap exit has no free register. Record the completed interval
+    // at the next switch, where a call is possible.
     constinit uint32_t g_bench_sw_half = 0;
     constinit uint32_t g_bench_sw_rstart = 0;
     constinit uint32_t g_bench_sw_pend = 0;
@@ -482,12 +456,8 @@ namespace
     // columns can carry: both are uint32_t.
     constexpr uint32_t CYC_NS_MAX = 0xFFFFFFFFu;
 
-    // A conversion too wide for the column is CAPPED and counted, never truncated: truncation
-    // prints a plausible small number beside a correct cycle figure. The count goes on its own
-    // line; a ninth kprintf_paced argument spills onto the chain the stack-descent gate
-    // measures.
-    //
-    // Callers reach this only past a non-zero cyccnt_hz(); the guard is the divisor's own.
+    // Cap oversized nanosecond conversions and count them separately.
+    // Keep the counter print separate to avoid a ninth stack-passed argument.
     uint32_t cyc_to_ns(uint32_t cyc, uint32_t& capped)
     {
         uint64_t const hz = cyccnt_hz();
@@ -545,10 +515,7 @@ namespace
     void phase_print_rows() {}
 #endif
 
-    // The ns conversion's own witness, on the widest cycle count a 32-bit accumulator can
-    // hold. Whether that converts inside the field is a RATE fact and not a defect: above
-    // about 1 GHz it does. What the pair states is that the cap and the count agree, so a
-    // build that truncates instead prints a small number beside capped=0.
+    // Check that conversion of the largest cycle count agrees with the cap counter.
     void ns_probe_print()
     {
         if (cyccnt_hz() == 0)
@@ -619,9 +586,7 @@ namespace kickos
 
     void bench_reset(uint32_t fast_taken)
     {
-        // Locked, unlike the two prints: this runs in thread context with interrupts on, and
-        // the switch handler writes this core's row from the switch tail. THE LOCK IS THIS
-        // CORE'S: a peer's in-flight sample can still land in a row this pass has cleared.
+        // Mask local updates while clearing rows. Peer cores can still add samples.
         IrqLock lock;
         // Drop any un-banked sample, banked one switch late on the xtensa and the rv32: else
         // the previous window's last switch leaks into this window's min/max.
@@ -650,13 +615,8 @@ namespace kickos
                 r.phase[i] = Acc{};
             }
         }
-        // The probe line's counters are part of the same window as the rows it explains: left
-        // running they would report the whole run beside a distribution reporting one window.
-        // THE TARE IS NOT CLEARED: it is taken once, before the first window, and nothing
-        // refills it, so a reset here would leave every window after the first with no floor.
-        // THE COUNTERS AND NOT THE STATE. This runs on the reporter thread while the waiter is
-        // already armed and parked on another core, so a reset of the state here takes an
-        // armed span back to idle and every raise after it is refused.
+        // Reset counters with their distributions. Preserve the one-time tare and
+        // the live waiter state, which may already be armed on another core.
         g_e2e_closed = 0;
         g_e2e_dropped = 0;
         g_e2e_raised = 0;
@@ -670,12 +630,8 @@ namespace kickos
     // caller chooses: the worst-case slot is re-reported once per span size.
     static void dist_print_fmt(uint32_t d, DistFmt const& f)
     {
-        // ONE READ OF EACH ROW, buckets first and the accumulator behind them, and every figure
-        // below derived from that read: a workload-fed row keeps moving while this runs, so a
-        // rank taken from one population and buckets from another is a quantile of neither.
-        // `n` is the accumulator's and is therefore read last: it can exceed the snapshot by
-        // the samples that landed during the walk, and those are in min/max/sum and not in the
-        // two percentiles.
+        // Snapshot buckets before the accumulator and compute all output from that copy.
+        // Concurrent samples may appear in n/min/max/sum but not the bucket quantiles.
 #if !BENCH_HEADLINE_MIN
         kickos::BenchHistSnap const& hist = dist_snapshot(d);
 #endif
@@ -842,11 +798,7 @@ namespace kickos
             {
                 KICKOS_BENCH_MARK(bd);
                 arch_ipi_send(peers);
-                // THE ROUND'S OWN CONTROL, and the only thing that tells a round trip from a
-                // bracket closed before any peer could answer: the raise alone, taken inside
-                // the same round so it perturbs nothing. The accumulated sample carries this
-                // plus every far side's service, so this core's row cannot have a MINIMUM
-                // within reach of it.
+                // Measure the raise alone as a control within the same round.
                 uint32_t const mid = bench_cyccnt();
                 arch_ipi_wait(peers);
                 KICKOS_BENCH_DIST_SPAN(BD_DOORBELL, bd);
@@ -877,10 +829,7 @@ namespace kickos
 
     void bench_phase_print()
     {
-        // THE ROW COUNT IS IN BAND so a reader can tell a short table from a short build:
-        // the rows below it are whole lines the console may refuse one at a time, and a
-        // capture missing three quarters of them is otherwise indistinguishable from a
-        // kernel built with fewer phases.
+        // Print the expected row count so truncated output can be detected.
         kprintf_paced("  phase table (%u rows; cyc avg/max, min last and a floor; leaf -= NULL,"
                       " composite -= NULL + k*(NEST-NULL)):\n",
                       static_cast<unsigned>(PH_COUNT));
@@ -1001,10 +950,7 @@ namespace kickos
     // has no cycle counter / no injectable line).
     static IrqSample irq_once(int line)
     {
-        // Re-arm before each inject: some backends mask the logical line on delivery and
-        // expect a driver's irq_ack to re-unmask (xtensa's software-doorbell path). The bench
-        // handler does not ack, so without this only the FIRST inject would fire. No-op on
-        // backends that do not mask on delivery (ARM NVIC / RISC-V).
+        // Rearm before each injection; some backends mask the line on delivery.
         irq_line_op(line, LineOp::UNMASK);
         g_irq_seen = 0;
         uint32_t const t0 = bench_cyccnt();
@@ -1019,14 +965,9 @@ namespace kickos
         uint32_t on;
     };
 
-    // PLACE THE SWEEP WHERE THE LINE IS DELIVERED, which is not something the kernel can be
-    // asked: a GIC SPI reaches the core its router names whoever set it pending, while rv64's
-    // inject raises sip on the calling hart. So every core this thread may run on is tried
-    // until one takes the interrupt itself. Where none does the sweep still runs and still
-    // refuses every sample, which reports the routing instead of hiding it.
-    //
-    // A SUBSET OF WHAT THE THREAD ALREADY HOLDS, so the affinity invariant needs no grant
-    // re-check: narrowing can never leave the task's core set.
+    // Try allowed cores until the handler runs on the initiating core.
+    // If none matches, retain the sweep and report rejected samples.
+    // Narrowing the existing affinity mask needs no additional permission.
     static IrqPlacement irq_place()
     {
         IrqPlacement p = {0, 0};
@@ -1097,12 +1038,8 @@ namespace kickos
         }
     }
 
-    // THE DENOMINATOR AND THE DOMAIN, without which the row beside it cannot be read: n=0
-    // against raised=0 is a line the kernel never attached, n=0 against raised=100 is a raise
-    // that reached no handler, and n=0 against foreign=100 is a raise whose handler ran on the
-    // core `hcore` names, whose counter shares no zero with this one. `win` is the bound every
-    // accepted sample is under, restated here so a reader need not trust the kernel's own
-    // arithmetic to see that the row is single-domain.
+    // Report requested, raised and foreign-core counts to distinguish missing
+    // delivery from rejected samples. win bounds accepted same-core samples.
     static void irq_tally_print(char const* fmt, char const* fmt_none, char const* fmt_mixed,
             IrqTally const& t, IrqPlacement const& p)
     {
@@ -1123,12 +1060,9 @@ namespace kickos
                 static_cast<unsigned>(t.foreign), static_cast<unsigned>(t.window));
     }
 
-    // WORST-case ISR-entry latency: raise the line at the START of a masked span, hold
-    // interrupts off across a bounded body (span_bytes of the endpoint-copy model), then
-    // release. Returns inject-to-entry cycles (span hold + exception entry), or 0 where the
-    // line is not injectable. The mask is the SAME arch_irq_save/restore seam kickos::IrqLock
-    // wraps. Frozen-counter arches (mps2 DWT / sim) read ~1, exactly as the best-case line
-    // does.
+    // Measure inject-to-handler latency across an interrupt-masked copy.
+    // The interval includes the masked work and exception entry.
+    // Return zero if injection is unsupported.
     static IrqSample irq_masked_once(int line, uint32_t span_bytes)
     {
         if (span_bytes > BENCH_LAT_SPAN_MAX)
@@ -1218,9 +1152,7 @@ namespace kickos
         g_e2e_line = line;
         g_e2e_waiter = sched::current();
         g_e2e_epoch = g_e2e_waiter->switch_count;
-        // THE SOLE RESET OF THE ISR CELL, and it stands ahead of the raise: the raiser reaches
-        // the raise only through an acquire of the ARMED below, so this store is already
-        // globally visible when the interrupt it clears for is injected.
+        // Clear the ISR result before publishing ARMED to the raiser.
         g_bench_e2e_isr_core = BENCH_CORE_NONE;
         g_e2e_mode = E2E_ARMED;
         return 0;
@@ -1238,9 +1170,7 @@ namespace kickos
         g_e2e_mode = E2E_PARKED;
     }
 
-    // NOT under IrqLock, and that is the whole point: a raise held off until a lock drops is
-    // bench_irq_masked_once, which is the row above this one. Nothing of the waiter's is read
-    // here, only what the waiter itself published.
+    // Do not hold IrqLock: this measures unmasked delivery.
     int bench_e2e_raise()
     {
         // The acquire, and the only reason the four cells the arm wrote may be read below.
@@ -1253,8 +1183,7 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // THE STAMP FIRST AND THE STATE AFTER IT: the state store is the release that hands
-        // the stamp to the closer, so nothing but that one store may sit between them.
+        // Publish the timestamp immediately through the following release store.
         g_e2e_t0 = arch_clock_now();
         g_e2e_mode = E2E_RAISED;
         g_e2e_raised = g_e2e_raised + 1;
@@ -1353,8 +1282,7 @@ namespace kickos
                 static_cast<unsigned>(g_e2e_line), static_cast<unsigned>(g_e2e_closed),
                 static_cast<unsigned>(g_e2e_dropped), static_cast<unsigned>(tmin),
                 static_cast<unsigned>(tavg), static_cast<unsigned>(g_e2e_tare.count));
-        // ASKED IS THE APP'S OWN SWEEP SIZE and RAISED is what the kernel let through, so the
-        // pair is what separates a short row from a short sweep.
+        // Compare the requested sweep size with the accepted raise count.
         kprintf_paced("  e2e-passes: asked=%u raised=%u\n", static_cast<unsigned>(asked),
                 static_cast<unsigned>(g_e2e_raised));
         dist_print_ns(BD_IRQ_E2E_LOCAL, E2E_FMT_LOCAL);

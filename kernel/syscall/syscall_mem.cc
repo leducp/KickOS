@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The one place a kernel-side user-pointer dereference lives. A privileged syscall MUST never
-// dereference a pointer the caller could not itself reach, and every access here names the
-// owner of each user end.
+// Kernel access to user memory. Validate permissions before dereferencing,
+// and identify the owning space for each user range.
 
 #include <kickos/arch/arch.h>
 #include <kickos/domain.h>
@@ -16,7 +15,6 @@
 #include <kickos/sys/abi.h>
 
 #include "syscall_internal.h"
-
 
 namespace kickos
 {
@@ -143,10 +141,8 @@ namespace kickos
 
     namespace
     {
-        // Exact base, so a sub-block window cannot reach a whole-block table
-        // entry (K64F PIT ch2 base 0x40037120, block 0x40037000). Reads the
-        // thread's possession record and never its reachable regions, the
-        // mapping being task-wide on a translating backend.
+        // Require the exact device base from the thread's ownership record.
+        // A sub-block grant must not resolve to the enclosing block.
         size_t mmio_block_of(Thread const* c, uintptr_t base)
         {
             if (c->dev_size == 0 or c->dev_base != base)
@@ -215,10 +211,8 @@ namespace kickos
         return arch_user_data_writable(ptr, len);
     }
 
-    // BOTH HALVES, NEVER EITHER: a read-or-write answer here would hand a caller a reply
-    // destination it may only read. The verdict must stay exactly user_readable_ok(ptr,
-    // read_len) AND user_writable_ok(ptr, write_len), the arch fallbacks and their order
-    // included; tests/unit/rangecheck holds the two against each other.
+    // Require both read and write validation, including architecture fallbacks.
+    // A read-only reply destination must be rejected.
     bool user_readable_and_writable_ok(uintptr_t ptr, size_t read_len, size_t write_len)
     {
         Thread* const c = sched::current();
@@ -287,10 +281,8 @@ namespace kickos
         return true;
     }
 
-    // Callers MUST validate first (user_range_ok / user_readable_ok / user_writable_ok): this
-    // is the access, never the check. Each user end names its owner; a null space means the
-    // address is directly kernel-dereferenceable. Overlapping ranges are not copied, the
-    // primitive being the ascending-only kmemcpy.
+    // Callers must validate permissions first. Null space means a directly
+    // accessible address. Reject overlap because kmemcpy copies forward only.
 
     namespace
     {
@@ -307,10 +299,8 @@ namespace kickos
         }
 #endif
 
-        // Each granule is reached through its own acquire, both ends held across the copy;
-        // ARCH_ASPACE_ACQUIRE_MIN counts those holds. False leaves a PREFIX behind: the
-        // granules below the one that refused are copied and released, so the destination
-        // holds a head of the source over a tail of what it held.
+        // Acquire each granule separately and hold both ends during the copy.
+        // Failure leaves the already-copied prefix in place.
         bool access_copy(struct arch_aspace* dspace, uintptr_t dst,
                          struct arch_aspace* sspace, uintptr_t src, size_t n)
         {
@@ -402,11 +392,36 @@ namespace kickos
         return access_copy(dspace, udst, nullptr, reinterpret_cast<uintptr_t>(ksrc), n);
     }
 
-    // Disjointness is a (space, range) question, addresses comparing only under one owner.
-    // An overlap is refused and MUST NOT become an assert again: this runs on the switch
-    // path, which the fault reporter descends into through cap_console_deliver, so a panic
-    // here re-enters kputs -> kconsole_write from inside the record it was writing. And it is
-    // reachable: two threads of ONE task naming one static array reach it with no capability.
+    // Copy one aligned pointer-sized word with one acquire. It cannot cross
+    // a granule boundary. Use memcpy to preserve effective-type rules (reent.h).
+    bool kaccess_word_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* kword)
+    {
+        if ((udst & static_cast<uintptr_t>(sizeof(void*) - 1u)) != 0)
+        {
+            return false;
+        }
+#if KICKOS_HAVE_ASPACE
+        if (dspace != nullptr)
+        {
+            void* const d = arch_aspace_acquire(dspace, udst);
+            if (d == nullptr)
+            {
+                return false;
+            }
+            __builtin_memcpy(__builtin_assume_aligned(d, sizeof(void*)), kword, sizeof(void*));
+            arch_aspace_release(dspace, udst);
+            return true;
+        }
+#else
+        (void)dspace;
+#endif
+        __builtin_memcpy(__builtin_assume_aligned(reinterpret_cast<void*>(udst), sizeof(void*)),
+                         kword, sizeof(void*));
+        return true;
+    }
+
+    // Compare overlap only within the same space. Return failure rather than
+    // asserting: user code can request overlap, and fault reporting uses this path.
     bool ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
                  uintptr_t src, size_t n)
     {

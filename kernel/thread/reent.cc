@@ -78,8 +78,7 @@ namespace kickos
         {
             return s_seam.shared;
         }
-        // ONE BANK PER INSTANCE (reent.h). The bound is still read: reent_seam_read refused a
-        // descriptor too short for the banking, so what reaches here is a slot out of range.
+        // The descriptor already guarantees one bank per instance; check the slot index.
         size_t const index =
             static_cast<size_t>(kickos_instance_index()) * KICKOS_THREAD_SLOTS
             + static_cast<size_t>(slot);
@@ -121,8 +120,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         // A silent refusal here leaves the seat word naming the outgoing thread's block, so
         // two processes resolve one errno and one stdio state through it.
-        if (not kaccess_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state,
-                                sizeof(state)))
+        if (not kaccess_word_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state))
         {
             thread_cancel_escalate(sched::current(), CANCEL_SLAY);
         }

@@ -1,36 +1,26 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RISC-V RV64IMAC translating backend: the arch_aspace_* family of the arch.h seam over the
-// configured paging mode's tables.
-//
-// ONE ROOT REGISTER. A space carries the kernel's fixed high range as a copy of the boot root's
-// own entries and every space shares the tables below them; activate writes satp, which is the
-// only place it moves after boot.
-//
-// The leaf is level 0 and the root is the deepest level. Both are DERIVED from the configured
-// paging mode in <kickos/arch/rv64_paging.h>, which the chip's prologue derives its own chain
-// from; the handover below refuses a depth stated on one side of the seam only.
-//
-// TWO ROUTES TO A FRAME'S BYTES, and which one applies is the physical address:
-//   - inside the kernel window the boot tables build, the frame is reached by adding the
-//     window's fixed delta. Every table frame is here.
-//   - outside it, through a TRANSIENT WINDOW of ARCH_ASPACE_ACQUIRE_MIN slots per core. A slot
-//     is keyed on (space, page) and REFERENCE COUNTED, so repeated acquires of one page answer
-//     one stable pointer and the mapping stands until the last release. Capacity is
-//     ARCH_ASPACE_ACQUIRE_MIN DISTINCT pages per core, not that many calls.
+// RV64 page tables for the configured paging mode.
+// Roots copy the boot root's kernel entries and share the tables below them.
+// Page-table levels are defined by rv64_paging.h.
+// Frames inside the kernel RAM window use a fixed address offset. Other frames
+// use reference-counted (space, page) slots, with ARCH_ASPACE_ACQUIRE_MIN
+// distinct pages per core.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/aspace_residency.h>
 #include <kickos/arch/aspace_table.h>
 #include <kickos/arch/rv64_paging.h>
 #include <kickos/extent.h>
+
+#include "sysops_rv64imac.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 #if KICKOS_KERNEL_CORES > 1
-// klock_rv64imac.cc: one poke and one wait over `peers`, whose whole effect is the fence every
-// serviced hart runs in the doorbell's service body.
+// Request and wait for a translation fence on each peer.
 extern "C" void kickos_rv64_translation_rendezvous(uint32_t peers);
 #endif
 
@@ -49,14 +39,12 @@ namespace
     constexpr int LEVEL_ROOT = KICKOS_RV64_LEVEL_ROOT;
     constexpr int LEVEL_LEAF = KICKOS_RV64_LEVEL_LEAF;
     constexpr unsigned INDEX_BITS = KICKOS_RV64_INDEX_BITS;
-    // The granule, the entry width and the index width are one fact three ways: a table holds
-    // exactly one index's worth of entries or an index reaches past the page it names.
+    // A page table must fit exactly one index range.
     static_assert(PTES == (static_cast<size_t>(1) << INDEX_BITS),
                   "an entry index does not span exactly one table page");
     static_assert(LEVEL_ROOT > LEVEL_LEAF, "a mode with no non-leaf level has no walk");
 
-    // The mode's virtual space is split by sign extension, so the low half a space may map ends
-    // here and everything above it is the kernel's window.
+    // Sign extension separates the user half from the kernel half.
     constexpr uintptr_t LOW_HALF_END = static_cast<uintptr_t>(1) << (KICKOS_RV64_VA_BITS - 1);
 
     // satp fields at XLEN 64: MODE 63:60, ASID 59:44, PPN 43:0.
@@ -64,13 +52,10 @@ namespace
     constexpr unsigned SATP_ASID_SHIFT = 44;
     constexpr uint64_t SATP_ASID_MASK = 0xFFFFull << SATP_ASID_SHIFT;
     constexpr uint64_t SATP_PPN_MASK = (1ull << SATP_ASID_SHIFT) - 1u;
-    // Derived from the depth this file walks: satp.MODE is numbered so each value adds one
-    // level, so the mode is LEVEL_ROOT + 6 and the two cannot disagree.
+    // Each paging mode adds a level; satp.MODE is LEVEL_ROOT + 6.
     constexpr uint64_t SATP_MODE = static_cast<uint64_t>(LEVEL_ROOT) + 6u;
     constexpr uint64_t SATP_MODE_MASK = 0xFull;
-    // LEVEL_ROOT is the depth every walk below runs at, and the chip's prologue builds its
-    // tables from the mode on the right. A level count stated here instead of derived is
-    // refused at compile time.
+    // The editor and boot code must use the same page-table depth.
     static_assert(SATP_MODE == KICKOS_RV64_SATP_MODE,
                   "the depth this backend walks is not the depth the configured paging mode has");
 
@@ -89,25 +74,29 @@ namespace
     constexpr uint64_t PTE_PPN_MASK = 0x003FFFFFFFFFFC00ull;
 
     // The identifier width recorded for this class of part, compared against the WARL
-    // measurement below. satp.ASID stays 0 in every root this file installs.
+    // measurement below.
     constexpr unsigned ASID_BITS_RECORDED = 16;
+
+    uint32_t asid_of(uint64_t satp)
+    {
+        return static_cast<uint32_t>((satp & SATP_ASID_MASK) >> SATP_ASID_SHIFT);
+    }
 
     // The window's slots per core, one per DISTINCT (space, page) held.
     constexpr size_t ACQUIRE_CAPACITY = ARCH_ASPACE_ACQUIRE_MIN;
     static_assert(ACQUIRE_CAPACITY * KICKOS_NUM_CORES <= PTES,
                   "the transient window outgrows the one level-0 table the chip provides");
 
-    // Chip<->arch contract, handed over by arch_init before the first space exists
-    // (arch/riscv/chip/virt_rv64/chip_virt_rv64.cc). Zero until then, which is what makes a
-    // call before the handover answer "not mapped" rather than walk a null table.
+    // Boot tables and physical-window bounds supplied by arch_init before use.
     uint64_t* g_boot_root = nullptr;
+    // Cache the boot root PPN for the switch path.
+    uint64_t g_boot_ppn = 0;
     uint64_t* g_window_leaves = nullptr;
     uintptr_t g_window_va = 0;
     uintptr_t g_window_delta = 0;
     arch_phys_addr_t g_window_pa_lo = 0;
     arch_phys_addr_t g_window_pa_hi = 0;
-    // The physical extent the PLATFORM implements, in bits; the chip is the only layer that
-    // can answer. Zero refuses every range.
+    // Platform physical address width. Zero rejects every range.
     unsigned g_phys_bits = 0;
 
     struct WindowSlot
@@ -118,29 +107,22 @@ namespace
     };
     WindowSlot g_slots[KICKOS_NUM_CORES][ACQUIRE_CAPACITY];
 
-    // A hold count that reached this is refused rather than wrapped: a wrap would drop the
-    // mapping under every caller still holding the pointer.
+    // Reject hold-count overflow to avoid unmapping a page still in use.
     constexpr uint32_t HOLDS_MAX = 0xFFFFFFFFu;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Invalidation sequences the map editor issued, and the ones a not-installed space skipped:
-    // the per-page shape and the whole-hart fence a fresh non-leaf entry owes. Every writer
-    // holds the caller's IrqLock.
+    // Issued and skipped invalidations, protected by the caller's IrqLock.
     uint32_t g_tlbi_issued = 0;
     uint32_t g_tlbi_elided = 0;
 #endif
 
-    // Releases that named no window hold and whose frame lies outside the kernel window: the
-    // mispairing arch_aspace_release describes below. Kept in every build; only the reporting
-    // through arch_aspace_tlbi_counts is self-test-only. Saturates. Written under the caller's
-    // masked window above.
+    // Saturating count of unmatched releases outside the direct RAM window.
+    // Updates run with interrupts masked; reporting is self-test-only.
     uint8_t g_release_mispaired = 0;
 
     uint64_t read_satp()
     {
-        uint64_t satp = 0;
-        __asm volatile("csrr %0, satp" : "=r"(satp));
-        return satp;
+        return kickos_rv64_read_satp();
     }
 
     arch_phys_addr_t pte_pa(uint64_t pte)
@@ -153,8 +135,7 @@ namespace
         return (static_cast<uint64_t>(pa >> GRANULE_SHIFT) << 10) & PTE_PPN_MASK;
     }
 
-    // A table frame is reached by the kernel window's delta: the frame pool is carved inside
-    // the image's DRAM share, so every table frame falls in the range the boot tables map.
+    // All table frames are inside the directly mapped RAM window.
     uint64_t* table_at(arch_phys_addr_t pa)
     {
         return reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(pa) + g_window_delta);
@@ -165,9 +146,7 @@ namespace
         return static_cast<arch_phys_addr_t>(reinterpret_cast<uintptr_t>(p) - g_window_delta);
     }
 
-    // The bound is the DRAM gigabyte the boot tables describe, not every address that delta
-    // reaches. The device gigapage is mapped at the same delta and is windowed anyway, which is
-    // what keeps the window pool exercised at all.
+    // Only DRAM uses direct acquisition; device frames use temporary slots.
     bool in_kernel_window(arch_phys_addr_t pa)
     {
         return pa >= g_window_pa_lo and pa < g_window_pa_hi;
@@ -198,50 +177,66 @@ namespace
     }
 
     // The store must reach the walker before the invalidate, and the invalidate must complete
-    // before the next translated access. rs2 = zero names every address space, nothing here
-    // tagging a translation.
+    // before the next translated access.
     void invalidate_page(uintptr_t va)
     {
 #if defined(KICKOS_ENABLE_SELFTEST)
         g_tlbi_issued++;
 #endif
-        __asm volatile("fence w, w" ::: "memory");
-        __asm volatile("sfence.vma %0, zero" ::"r"(va) : "memory");
+        kickos_rv64_fence_w_w();
+        kickos_rv64_sfence_page(va);
     }
 
     void invalidate_all()
     {
-        __asm volatile("fence w, w" ::: "memory");
-        __asm volatile("sfence.vma zero, zero" ::: "memory");
+        kickos_rv64_fence_w_w();
+        kickos_rv64_sfence_all();
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // The satp PPN each core last had written. write_satp is its one writer, and
-    // kickos_rv64_aspace_boot seeds every entry: the machine-mode prologue writes the SAME boot
-    // root on every hart, so a core that has never activated anything is on it by construction.
+    // Last installed PPN per core, initialized to the common boot root.
+    // Updated only by write_satp.
     uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
 #endif
 
-    // THE ONE WRITER of the installed-root record, placed where the register is written so the
-    // two cannot disagree. A record that OVER-reports is not harmless: the switch path skips
-    // the activate when the cell already names the incoming space.
+    // Root-keyed residency, including harts that switched away.
+    kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
+
+    uint64_t root_key(uint64_t const* root)
+    {
+        return satp_of(root) & SATP_PPN_MASK;
+    }
+
+    // Call with interrupts masked. SFENCE.VMA is required when leaving ASID 0
+    // or first activating this root on this hart. FENCE w,w and satp writes do
+    // not order implicit translation reads (Privileged ISA 11.1.1.11, 12.2.1).
+    // Untracked roots fence on every entry. The boot root is already published
+    // on every hart, and later edits to it synchronize every hart.
+    // Keep the installed-root and residency records consistent with satp.
     void write_satp(uint64_t satp)
     {
-        __asm volatile("csrw satp, %0" ::"r"(satp) : "memory");
-        __asm volatile("sfence.vma zero, zero" ::: "memory");
+        uint64_t const leaving = kickos_rv64_read_satp();
+        uint64_t const entering = satp & SATP_PPN_MASK;
+        uint32_t const core = arch_cpu_id();
+        // Update residency and read its previous value in one lookup.
+        bool const ran_here = g_residency.note_and_was_resident(entering, core);
+        bool const first_use_here = not ran_here and entering != g_boot_ppn;
+        kickos_rv64_write_satp(satp);
+        if (asid_of(leaving) == 0 or first_use_here)
+        {
+            kickos_rv64_sfence_all();
+        }
 #if KICKOS_KERNEL_CORES > 1
-        g_installed_root[arch_cpu_id()] = satp & SATP_PPN_MASK;
+        g_installed_root[core] = entering;
 #endif
     }
 
-    // A NON-LEAF entry that has just become valid. The per-leaf fence orders leaf entries only,
-    // and a hart may cache PTEs whose V bit is clear, so a page-walk cache holding the absence
-    // of this table keeps answering absent for every page under it. Privileged ISA 12.2.1 gives
-    // one remedy: SFENCE.VMA with rs1 = x0, and rs2 = x0 because no translation here is tagged.
-    // There is no narrower form.
-    void invalidate_nonleaf(bool installed)
+    // A new non-leaf PTE needs SFENCE.VMA with rs1=x0: by-address fences only
+    // cover leaf entries, and invalid PTEs may be cached (Privileged ISA 12.2.1).
+    // Use rs2=x0 to cover every ASID.
+    void invalidate_nonleaf(bool resident)
     {
-        if (not installed)
+        if (not resident)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
             g_tlbi_elided++;
@@ -254,15 +249,38 @@ namespace
         invalidate_all();
     }
 
-    // Whether `space` is the root THIS core is running on, asked of satp itself.
+    uint32_t resident_cores(struct arch_aspace* space)
+    {
+        return g_residency.cores(root_key(root_of(space)));
+    }
+
+    // Never-run spaces skip invalidation and are published on each hart's first
+    // activation. Keep residency bits after switching away.
+    bool resident_anywhere(struct arch_aspace* space)
+    {
+        return resident_cores(space) != 0;
+    }
+
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t resident_peers(struct arch_aspace* space)
+    {
+        return resident_cores(space) & ~(1u << arch_cpu_id());
+    }
+#else
+    uint32_t resident_peers(struct arch_aspace*)
+    {
+        return 0;
+    }
+#endif
+
+#if defined(KICKOS_ENABLE_SELFTEST)
     bool installed_here(struct arch_aspace* space)
     {
         return (read_satp() & SATP_PPN_MASK) == (satp_of(root_of(space)) & SATP_PPN_MASK);
     }
 
-    // Bit c set where core c's satp names `space`: the ACTIVE-CORE SET, DERIVED from what the
-    // backend last installed rather than held on the space. A peer's satp is unreadable from
-    // here, so a peer's half comes from the record above and this core's from the register.
+    // Cores currently using this root, for self-tests only.
+    // Maintenance uses residency, which includes harts that switched away.
     uint32_t active_cores(struct arch_aspace* space)
     {
         uint32_t set = 0;
@@ -282,37 +300,11 @@ namespace
 #endif
         return set;
     }
-
-    // A space no core has installed has no cached translation and no cached absence, so its
-    // seeding costs no maintenance AT EVERY CORE COUNT: the record is what keeps the elision
-    // alive above one core, where the register alone could only answer for this one.
-    bool installed_anywhere(struct arch_aspace* space)
-    {
-        return active_cores(space) != 0;
-    }
-
-#if KICKOS_KERNEL_CORES > 1
-    uint32_t peer_cores(struct arch_aspace* space)
-    {
-        return active_cores(space) & ~(1u << arch_cpu_id());
-    }
-#else
-    uint32_t peer_cores(struct arch_aspace*)
-    {
-        return 0;
-    }
 #endif
 
-    // THE TRANSLATION HALF, AND ON THIS ISA IT IS THE DOORBELL'S RATHER THAN THE HARDWARE'S.
-    // SFENCE.VMA orders the EXECUTING hart's translation alone and RISC-V defines no broadcast
-    // form, so a peer holding this space is made to run its own through the service body.
-    //
-    // DO NOT COPY armv8a'S EXECUTE-PERMISSION GATE. Its TLBI is inner-shareable, so it owes a
-    // send for the instruction side only and may gate on execute; gating here would leave every
-    // DATA removal unsent.
-    //
-    // The instruction half is FENCE.I, absent from this board's ISA baseline, and is neither
-    // sent nor approximated.
+    // SFENCE.VMA is local, so every resident peer must run its own fence.
+    // This applies to data and executable mappings. FENCE.I is unavailable
+    // in this board's ISA baseline.
 #if KICKOS_KERNEL_CORES > 1
     void translation_rendezvous(uint32_t peers)
     {
@@ -324,30 +316,25 @@ namespace
     }
 #endif
 
-    // WHAT armv8a GETS FROM ONE BROADCAST INSTRUCTION TAKES TWO HERE, and they are one unit:
-    // its invalidate_all is `tlbi vmalle1is`, so every core's entries are gone when it returns.
-    // SFENCE.VMA reaches this hart only, so a peer's half is the rendezvous, and ANY SEQUENCE
-    // THAT FREES A TABLE MUST USE THIS RATHER THAN invalidate_all: a frame handed back while a
-    // peer still caches a walk into it is read as descriptors once the pool reissues it.
+    // Invalidate on this hart and all resident peers before freeing tables.
     void invalidate_all_everywhere(uint32_t peers)
     {
         invalidate_all();
         translation_rendezvous(peers);
     }
 
-    // A descriptor written without an invalidation still owes the fence that makes the new
-    // entry visible to a walker before any later activation reads it. ONE PER CALL covers a
-    // whole run of pages, which is what keeps the elision's measurement intact.
+    // Order descriptor stores before notifying peers. FENCE w,w does not order
+    // implicit translation reads; write_satp supplies SFENCE.VMA on first use.
     void publish_edits()
     {
 #if KICKOS_KERNEL_CORES > 1
-        __asm volatile("fence w, w" ::: "memory");
+        kickos_rv64_fence_w_w();
 #endif
     }
 
-    void invalidate_page_if(uintptr_t va, bool installed)
+    void invalidate_page_if(uintptr_t va, bool resident)
     {
-        if (not installed)
+        if (not resident)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
             g_tlbi_elided++;
@@ -357,15 +344,13 @@ namespace
         invalidate_page(va);
     }
 
-    // An entry carries permissions and no memory type: the attribute is the physical address's,
-    // fixed by the platform, and Svpbmt is absent on this part (menvcfg.PBMTE reads back 0).
+    // Memory types are fixed by physical address; this part has no Svpbmt.
     bool memtype_known(enum arch_map_memtype type)
     {
         return type == ARCH_MAP_NORMAL or type == ARCH_MAP_NOCACHE or type == ARCH_MAP_DEVICE;
     }
 
-    // A leaf for the unprivileged level. W without R is reserved by the architecture, so a
-    // request with no read is refused.
+    // RISC-V reserves W without R; this backend requires read permission.
     bool leaf_attrs(uint32_t rights, enum arch_map_memtype type, uint64_t* out)
     {
         uint32_t const known = ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X;
@@ -373,8 +358,7 @@ namespace
         {
             return false;
         }
-        // Writable and executable at once is expressible here and refused: a page granted both
-        // is one an unprivileged thread can turn into code.
+        // Enforce W^X for userspace.
         if ((rights & ARCH_MAP_W) != 0 and (rights & ARCH_MAP_X) != 0)
         {
             return false;
@@ -383,8 +367,7 @@ namespace
         {
             return false;
         }
-        // A and D set: this port programs no hardware update of either, so a leaf that left
-        // them clear would fault on its first access.
+        // Set A and D because this port does not enable hardware updates.
         uint64_t desc = PTE_V | PTE_U | PTE_A | PTE_D | PTE_R;
         if ((rights & ARCH_MAP_W) != 0)
         {
@@ -403,9 +386,8 @@ namespace
         return (desc & PTE_V) != 0 and (desc & PTE_RWX) == 0;
     }
 
-    // Frees every table under `table` and every leaf output it names. `keep` is the boot root's
-    // entry array at LEVEL_ROOT and null below it: an entry a create copied from the boot root
-    // names tables every space shares, so walking into one would free the next space's.
+    // Free tables and leaf outputs, excluding shared entries copied from the
+    // boot root. `keep` is the boot root at LEVEL_ROOT and null below it.
     void free_subtree(uint64_t* table, int level, uint64_t const* keep)
     {
         for (size_t i = 0; i < PTES; i++)
@@ -424,15 +406,14 @@ namespace
             {
                 free_subtree(table_at(out), level - 1, nullptr);
             }
-            // A leaf output the pool never handed out is refused inside the free, which is what
-            // lets a space hold a device page without destroy reclaiming it.
+            // The allocator ignores outputs it does not own, such as device pages.
             kickos_frame_free(out);
             table[i] = 0;
         }
     }
 
     enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
-                                     arch_phys_addr_t pa, uint64_t leaf, bool installed)
+                                     arch_phys_addr_t pa, uint64_t leaf, bool resident)
     {
         while (pages != 0)
         {
@@ -441,14 +422,13 @@ namespace
             {
                 if ((table[idx] & PTE_V) != 0)
                 {
-                    // The invalidate belongs BETWEEN the two writes: a walk that took the old
-                    // entry's output and the new entry's permissions would be neither.
+                    // Invalidate between clearing and replacing the descriptor.
                     table[idx] = 0;
-                    invalidate_page_if(va, installed);
+                    invalidate_page_if(va, resident);
                 }
                 table[idx] = leaf | pa_ppn(pa);
-                // A fresh slot needs one too: an absence may be cached like a presence.
-                invalidate_page_if(va, installed);
+                // Invalid PTEs may also be cached.
+                invalidate_page_if(va, resident);
                 va += GRANULE;
                 pa += GRANULE;
                 pages--;
@@ -465,10 +445,10 @@ namespace
                 }
                 kickos::aspace::zero_table(table_at(frame), PTES);
                 desc = pa_ppn(frame) | PTE_V;
-                __asm volatile("fence w, w" ::: "memory");
+                kickos_rv64_fence_w_w();
                 table[idx] = desc;
                 // The per-leaf fence below names leaves only, so it does not reach this entry.
-                invalidate_nonleaf(installed);
+                invalidate_nonleaf(resident);
             }
             else if (not is_table(desc))
             {
@@ -486,7 +466,7 @@ namespace
                 here = here_max;
             }
             enum arch_aspace_result const rc =
-                map_into(table_at(pte_pa(desc)), level - 1, va, here, pa, leaf, installed);
+                map_into(table_at(pte_pa(desc)), level - 1, va, here, pa, leaf, resident);
             if (rc != ARCH_ASPACE_OK)
             {
                 return rc;
@@ -498,8 +478,7 @@ namespace
         return ARCH_ASPACE_OK;
     }
 
-    // True when `table` is empty once its empty children are gone. `keep` is as in free_subtree:
-    // an entry the boot root owns is never pruned.
+    // Free empty child tables, excluding boot entries; return whether this table is empty.
     bool prune_empty(uint64_t* table, int level, uint64_t const* keep)
     {
         if (level == LEVEL_LEAF)
@@ -531,7 +510,7 @@ namespace
         return kickos::aspace::table_empty(table, PTES);
     }
 
-    // Null when the range is not wholly mapped, which is what makes unmap total-or-fail.
+    // Return null for an unmapped leaf.
     uint64_t* leaf_entry(uint64_t* table, uintptr_t va)
     {
         for (int level = LEVEL_ROOT; level > LEVEL_LEAF; level--)
@@ -551,8 +530,7 @@ namespace
         return entry;
     }
 
-    // The low half only; above it is the kernel's window, whose entries every space shares.
-    // The single statement of that boundary every guard below asks.
+    // Only the user half may be edited; kernel tables are shared.
     bool low_half_page(uintptr_t page)
     {
         return page < LOW_HALF_END;
@@ -568,11 +546,8 @@ namespace
         return low_half_page(last);
     }
 
-    // The whole output extent [pa, pa + pages * GRANULE), tested BEFORE any entry is written,
-    // against BOTH bounds a leaf has: pa_ppn masks to the PPN field, so a range whose LAST page
-    // reaches past it wraps onto low physical memory while every write reports OK, and a range
-    // the machine does not implement access-faults on the walk. The first page passing says
-    // nothing about the rest.
+    // Validate the whole physical range against both hardware and PPN limits
+    // before editing. An oversized PPN would alias low memory.
     bool phys_range_ok(arch_phys_addr_t pa, size_t pages)
     {
         if ((pa & static_cast<arch_phys_addr_t>(GRANULE - 1)) != 0)
@@ -603,8 +578,7 @@ namespace
         {
             return false;
         }
-        // A platform naming the whole pointer width bounds nothing, and the shift below would
-        // be undefined at 64.
+        // Avoid shifting by 64 when the platform reports the full pointer width.
         if (g_phys_bits >= 64)
         {
             return true;
@@ -622,12 +596,9 @@ namespace
         return &g_window_leaves[(core * ACQUIRE_CAPACITY) + slot];
     }
 
-    // A frame outside the kernel window, mapped into a slot of this core's own. Null when every
-    // slot holds a different page.
-    //
-    // A page this core already holds answers the SAME slot with its count raised, so the pointer
-    // is stable across a second acquire and the mapping outlives a release taken in any order.
-    // A release names (space, page) and nothing else.
+    // Acquire a per-core slot for a frame outside the RAM window. Repeated
+    // acquires of (space, page) share a reference-counted slot and stable pointer.
+    // Return null if every slot holds a different page.
     void* window_take(struct arch_aspace* space, uintptr_t page, arch_phys_addr_t pa)
     {
         size_t const core = static_cast<size_t>(arch_cpu_id());
@@ -654,13 +625,12 @@ namespace
             {
                 continue;
             }
-            // Kernel data: no U and no X. PTE_G because the slot IS a mapping every space
-            // shares, and G is not inherited from the non-leaf entries above (Privileged ISA
-            // 12.3.1), which carry none.
+            // Kernel data mapping: global, non-user and non-executable.
+            // The parent entries do not set G (Privileged ISA 12.3.1).
             *slot_entry(core, i) =
                 pa_ppn(pa) | PTE_V | PTE_G | PTE_R | PTE_W | PTE_A | PTE_D;
-            __asm volatile("fence w, w" ::: "memory");
-            __asm volatile("sfence.vma %0, zero" ::"r"(slot_va(core, i)) : "memory");
+            kickos_rv64_fence_w_w();
+            kickos_rv64_sfence_page(slot_va(core, i));
             g_slots[core][i].space = space;
             g_slots[core][i].page = page;
             g_slots[core][i].holds = 1;
@@ -669,9 +639,8 @@ namespace
         return nullptr;
     }
 
-    // Surrenders one hold of (space, page), and says whether one matched. The slot is unmapped
-    // on the LAST hold only, so every other holder's pointer stays live whatever order the
-    // releases arrive in.
+    // Release one hold of (space, page); unmap only after the last hold.
+    // Return whether a matching hold existed.
     bool window_drop(struct arch_aspace* space, uintptr_t page)
     {
         size_t const core = static_cast<size_t>(arch_cpu_id());
@@ -691,8 +660,8 @@ namespace
                 return true;
             }
             *slot_entry(core, i) = 0;
-            __asm volatile("fence w, w" ::: "memory");
-            __asm volatile("sfence.vma %0, zero" ::"r"(slot_va(core, i)) : "memory");
+            kickos_rv64_fence_w_w();
+            kickos_rv64_sfence_page(slot_va(core, i));
             g_slots[core][i].space = nullptr;
             g_slots[core][i].page = 0;
             return true;
@@ -706,21 +675,17 @@ namespace
         bool contiguous; // and every bit below that one stuck too
     };
 
-    // The identifier field the hart implements, by writing ones across it. Safe under live
-    // translation: it preserves MODE and PPN, moves satp.ASID alone, and fences on both sides.
-    //
-    // WARL legal values need not be a contiguous low run, so the readback's POPCOUNT is not a
-    // width. The width is the highest bit that stuck plus one, and whether the bits below it
-    // stuck is reported BESIDE the figure rather than folded into it.
+    // Probe the ASID field while preserving MODE and PPN, fencing both sides.
+    // Report the highest accepted bit plus one and whether the field is contiguous.
     AsidField measure_asid_field()
     {
         arch_irq_state_t const s = arch_irq_save();
         uint64_t const satp = read_satp();
-        __asm volatile("sfence.vma zero, zero" ::: "memory");
-        __asm volatile("csrw satp, %0" ::"r"(satp | SATP_ASID_MASK) : "memory");
+        kickos_rv64_sfence_all();
+        kickos_rv64_write_satp(satp | SATP_ASID_MASK);
         uint64_t const back = read_satp();
-        __asm volatile("csrw satp, %0" ::"r"(satp) : "memory");
-        __asm volatile("sfence.vma zero, zero" ::: "memory");
+        kickos_rv64_write_satp(satp);
+        kickos_rv64_sfence_all();
         arch_irq_restore(s);
         uint64_t const field = (back & SATP_ASID_MASK) >> SATP_ASID_SHIFT;
         AsidField out;
@@ -731,6 +696,23 @@ namespace
         }
         out.contiguous = field == ((static_cast<uint64_t>(1) << out.bits) - 1u);
         return out;
+    }
+
+    // Probe once at boot: repeating it flushes cached translations.
+    // All harts must support the ASID width measured on the boot hart.
+    AsidField g_asid_field = {0, false};
+
+    // Reserve ID 0. Non-contiguous or absent ASID fields disable tagging.
+    // Residency also limits allocation to its row count.
+    uint32_t g_asid_capacity = 0;
+
+    uint32_t asid_capacity_of(AsidField field)
+    {
+        if (field.bits == 0 or not field.contiguous)
+        {
+            return 0;
+        }
+        return (1u << field.bits) - 1u;
     }
 }
 
@@ -751,12 +733,10 @@ uint64_t arch_aspace_model(void)
     if (mode == SATP_MODE)
     {
         granules = 1; // the architecture defines one page size for this mode
-        // The PLATFORM's extent: every RV64 mode encodes 56 bits of output in the PPN field,
-        // and an output the machine does not implement access-faults on the walk. The same
-        // bound phys_range_ok refuses against.
+        // Use the platform limit; the PPN field can encode unsupported physical addresses.
         pa_bits = g_phys_bits;
     }
-    AsidField const asid = measure_asid_field();
+    AsidField const asid = g_asid_field;
     uint64_t out = 0;
     if (granules != 0 and GRANULE == 4096u)
     {
@@ -767,8 +747,12 @@ uint64_t arch_aspace_model(void)
     {
         out |= ARCH_ASPACE_MODEL_ASID;
     }
-    // The widest output address this port programs is the top of the frame pool's carve, which
-    // the kernel window covers, so a range reaching the window's own top covers every leaf.
+    // Tagging can remain enabled even when the ASID width is below the expected width.
+    if (g_asid_capacity != 0)
+    {
+        out |= ARCH_ASPACE_MODEL_TAGGED;
+    }
+    // The supported physical range must cover the entire kernel RAM window.
     if (pa_bits != 0
         and (static_cast<arch_phys_addr_t>(1) << pa_bits) >= g_window_pa_hi)
     {
@@ -797,13 +781,14 @@ struct arch_aspace* arch_aspace_create(void)
         return nullptr;
     }
     uint64_t* const table = table_at(root);
-    // The boot root's own entries, so the kernel's fixed high range is present and every space
-    // shares the tables below them; a later kernel-half edit stays in step.
+    // Copy the boot root entries; their child tables remain shared.
     for (size_t i = 0; i < PTES; i++)
     {
         table[i] = g_boot_root[i];
     }
-    __asm volatile("fence w, w" ::: "memory");
+    kickos_rv64_fence_w_w();
+    // Destroy invalidates the old root before its frame or ASID can be reused.
+    g_residency.open(root_key(table), g_asid_capacity);
     return reinterpret_cast<struct arch_aspace*>(table);
 }
 
@@ -814,13 +799,18 @@ void arch_aspace_destroy(struct arch_aspace* space)
         return;
     }
     uint64_t* const table = root_of(space);
-    // BEFORE THE FREES: they put this space's identity back in the pool, and the set is derived
-    // from that identity.
-    uint32_t const peers = peer_cores(space);
-    // FIRST, not last, AND ON EVERY HART: a walk caches the address of an intermediate table,
-    // so a table freed while such an entry stands would be read as descriptors after the pool
-    // reissues it. The peers' half is the rendezvous, so it precedes the frees too.
+    // The boot root is not owned by the frame pool.
+    if (table == g_boot_root)
+    {
+        return;
+    }
+    // Save the root identity and peer set before freeing the tables.
+    uint32_t const peers = resident_peers(space);
+    uint64_t const key = root_key(table);
+    // Invalidate cached walks on all resident harts before freeing tables.
     invalidate_all_everywhere(peers);
+    // Release the ASID only after all resident harts have invalidated it.
+    g_residency.close(key);
     free_subtree(table, LEVEL_ROOT, g_boot_root);
     kickos_frame_free(phys_of(table));
 }
@@ -842,22 +832,32 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // A space installed on no core has no cached entry and no cached absence, so its whole
-    // seeding costs no maintenance; the running space's own widening still pays.
-    bool const installed = installed_anywhere(space);
-    uint32_t const peers = peer_cores(space);
+    // Reject partially mapped ranges: rollback would remove existing leaves.
+    // Wholly mapped ranges can be remapped without allocating tables.
+    size_t mapped = 0;
+    for (size_t i = 0; i < pages; i++)
+    {
+        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
+        {
+            mapped++;
+        }
+    }
+    if (mapped != 0 and mapped != pages)
+    {
+        return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
+    }
+    // Never-run spaces need publication on first activation, but no invalidation here.
+    bool const resident = resident_anywhere(space);
+    uint32_t const peers = resident_peers(space);
     enum arch_aspace_result const rc =
-        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, installed);
+        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, resident);
     publish_edits();
     if (rc != ARCH_ASPACE_OK)
     {
-        // Masked across the whole unwind: this space can be the running one, the self-grant
-        // widening it mid-syscall, and a walk between the invalidate and the frees would cache
-        // a table about to go back to the pool.
+        // Mask interrupts so no walk can occur between invalidation and table free.
         arch_irq_state_t const s = arch_irq_save();
-        // Leaves first and tables second: an entry left valid over a freed table would be a
-        // walk into the pool. Installation runs in address order, so the first page with no leaf
-        // ends the rollback.
+        // Clear leaves before freeing tables. Mapping proceeds in address order,
+        // so the first missing leaf ends rollback.
         for (size_t i = 0; i < pages; i++)
         {
             uint64_t* const entry =
@@ -868,20 +868,17 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
             }
             *entry = 0;
         }
-        // One sweep each side of the frees, and each reaches every hart: prune_empty frees the
-        // tables it empties, so a peer holding a walk into one must have dropped it first.
-        // WHAT THIS DOES NOT CLOSE: prune_empty clears an entry and frees its table in one
-        // pass, so the entries IT clears are dropped by the sweep after its frees. The kernel
-        // lock is what stops the pool reissuing a frame in that window, and splitting the lock
-        // is what would need prune_empty split into a clear pass and a free pass.
+        // Invalidate on all resident harts before and after pruning. Pruning clears
+        // and frees tables in one pass; the kernel lock prevents frame reuse until
+        // the second invalidation. Separate clear and free passes are required
+        // if that lock no longer covers the operation.
         invalidate_all_everywhere(peers);
         (void)prune_empty(root_of(space), LEVEL_ROOT, g_boot_root);
         invalidate_all_everywhere(peers);
         arch_irq_restore(s);
     }
-    // A fresh non-leaf entry drops a peer's cached ABSENCE, which no free is racing, so this
-    // one is owed once per call rather than ahead of anything. The unwind above carries its own.
-    if (installed)
+    // Invalidate peers' cached missing table entries once per call.
+    if (resident)
     {
         translation_rendezvous(peers);
     }
@@ -901,22 +898,19 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
             return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
         }
     }
-    bool const installed = installed_anywhere(space);
-    uint32_t const peers = peer_cores(space);
+    bool const resident = resident_anywhere(space);
+    uint32_t const peers = resident_peers(space);
     for (size_t i = 0; i < pages; i++)
     {
         uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
         uint64_t* const entry = leaf_entry(root_of(space), at);
         *entry = 0;
-        invalidate_page_if(at, installed);
+        invalidate_page_if(at, resident);
     }
     publish_edits();
-    // ONCE PER CALL rather than once per page, which is what keeps the elision's measurement
-    // intact. NOT gated on the execute permission: this backend's send carries the TRANSLATION
-    // half, which every removal owes.
+    // Synchronize peers for all removals, including data mappings.
     translation_rendezvous(peers);
-    // An intermediate table left empty is not a leak: destroy walks the tree and frees every
-    // table under the root.
+    // Empty tables are reclaimed by destroy.
     return ARCH_ASPACE_OK;
 }
 
@@ -926,16 +920,15 @@ void arch_aspace_activate(struct arch_aspace* space)
     {
         return;
     }
-    // Every space carries the same root entries for the kernel window, the devices and the
-    // transient window, so the code making this write keeps its own mappings across it.
-    //
-    // No identifier is allocated anywhere, so the fence names every address space.
+    uint64_t const satp = satp_of(root_of(space));
+    uint64_t const id = g_residency.identifier(satp & SATP_PPN_MASK);
+    // Kernel and temporary-window mappings are shared across roots.
+    // Mask interrupts across the root write and any required translation fence.
     arch_irq_state_t const s = arch_irq_save();
-    write_satp(satp_of(root_of(space)));
+    write_satp(satp | (id << SATP_ASID_SHIFT));
     arch_irq_restore(s);
 }
 
-// The space the boot path installed (arch.h, arch_aspace_boot).
 struct arch_aspace* arch_aspace_boot(void)
 {
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
@@ -948,8 +941,7 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
         return nullptr;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // The half test arch_aspace_frame_at makes: a frame this walk reached through the kernel's
-    // own entries would be handed back as a POINTER the caller may write through.
+    // Reject the kernel half before returning a writable pointer.
     if (not low_half_page(page))
     {
         return nullptr;
@@ -977,14 +969,8 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(slot) + off);
 }
 
-// A mispairing is COUNTED, not panicked over: this member is on the fault reporter's descent
-// (kaccess_to_user through access_copy), so a panic here would fire inside the record it is
-// writing. map_tlbi_elided reading g_release_mispaired through arch_aspace_tlbi_counts is what
-// refuses it, and a build with no self-test reports it nowhere.
-//
-// The test sees a second release of a page reached THROUGH a slot, whose frame is outside the
-// kernel window. A page acquired by the OFFSET route spends no slot, so a repeat there
-// surrenders nothing.
+// Count unmatched window releases without panicking: the fault reporter
+// uses this path. Direct RAM acquisitions have no window hold to release.
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr or g_window_leaves == nullptr)
@@ -992,9 +978,7 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
         return;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // An address outside the half held no slot, acquire having refused it. Falling through
-    // would walk the kernel's own entries and count a caller's bad address as the defect
-    // below.
+    // Out-of-range addresses cannot hold a window slot.
     if (not low_half_page(page))
     {
         return;
@@ -1003,10 +987,7 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
     bool defect = false;
     if (not window_drop(space, page))
     {
-        // No slot held this page. A hold the OFFSET route took spends none, so nothing to drop
-        // is the whole answer. A frame OUTSIDE the kernel window is only ever reached THROUGH a
-        // slot, so a release there pairs with no hold and the next release of the same page
-        // would surrender a live one. The route is the same question acquire asked.
+        // Only frames outside the direct RAM window require a matching slot hold.
         uint64_t const* const entry = leaf_entry(root_of(space), page);
         defect = entry != nullptr and not in_kernel_window(pte_pa(*entry));
     }
@@ -1019,25 +1000,18 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
 
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 {
-    // acquire's guard: the walk reaches every table through the kernel window's delta, which is
-    // 0 until the chip hands it over, so a call before the handover would read a table at its
-    // output address.
+    // Do not walk tables before the chip supplies the physical-window mapping.
     if (space == nullptr or g_window_leaves == nullptr)
     {
         return 0;
     }
     uintptr_t const page = va & ~static_cast<uintptr_t>(GRANULE - 1);
-    // Map and unmap's own half test, aligned down first because this member's `va` need not be
-    // granule-aligned where range_ok's is. The walk reads the index bits of `va` alone, so
-    // without this an address above the half ALIASES onto a low-half page and is answered with
-    // that page's frame.
+    // Reject addresses whose index bits could alias a user mapping.
     if (not low_half_page(page))
     {
         return 0;
     }
-    // Masked for the same reason the map unwind masks: it clears leaves and frees tables
-    // under one mask, and a walk interleaved with it would read a table already back in the
-    // pool.
+    // Protect the table walk from concurrent rollback and table reclamation.
     arch_irq_state_t const s = arch_irq_save();
     uint64_t const* const entry = leaf_entry(root_of(space), page);
     arch_phys_addr_t out = 0;
@@ -1049,9 +1023,7 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
     return out;
 }
 
-// Chip<->arch contract: the boot root, the transient window's level-0 table and its base
-// address, and the delta between an output address inside the image's DRAM share and the kernel
-// address that reaches it. Must run before any space exists.
+// Supply boot tables and physical-window bounds before creating any space.
 void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintptr_t window_va,
                              uintptr_t window_delta, arch_phys_addr_t pa_lo,
                              arch_phys_addr_t pa_hi, unsigned phys_bits)
@@ -1063,14 +1035,14 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
     g_window_pa_lo = pa_lo;
     g_window_pa_hi = pa_hi;
     g_phys_bits = phys_bits;
+    // Every hart starts on this boot root.
+    g_boot_ppn = satp_of(user_root) & SATP_PPN_MASK;
+    g_asid_field = measure_asid_field();
+    g_asid_capacity = asid_capacity_of(g_asid_field);
 #if KICKOS_KERNEL_CORES > 1
-    // Every hart's machine-mode prologue wrote THIS root into its own satp, so a core that has
-    // activated nothing yet is on it. Seeded rather than left zero: a zero cell names no space
-    // and would leave that core accounted for by nobody.
-    uint64_t const boot_ppn = satp_of(user_root) & SATP_PPN_MASK;
     for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
     {
-        g_installed_root[c] = boot_ppn;
+        g_installed_root[c] = g_boot_ppn;
     }
 #endif
     for (size_t c = 0; c < KICKOS_NUM_CORES; c++)

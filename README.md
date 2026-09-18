@@ -5,230 +5,221 @@ Copyright (c) 2026 Philippe Leduc
 
 # KickOS
 
-A capability-based microkernel RTOS, written from scratch: no vendor HAL, no vendor SDK, no
-CMSIS pack, no third-party kernel code. The privileged kernel holds threads, memory domains,
-IPC, capabilities and IRQ routing. Console, device drivers and buses are unprivileged userspace
-servers reached over IPC.
+KickOS is a capability-based microkernel RTOS written in C and C++. The kernel manages
+threads, memory domains, IPC, capabilities and interrupts. Device and bus drivers run as
+userspace servers and communicate through IPC. Console handover is supported on boards
+with a userspace console driver; the kernel retains startup and panic output.
 
-The tree carries 23 board targets: 14 MCU boards, eight QEMU machines, and a host "sim" that
-runs the same kernel and the same userspace as one Linux process, across eight instruction
-sets: armv7m, armv6m, ARMv8-A, RXv3, RV32IMAC, RV64IMAC, Xtensa LX6 and x86_64.
+The kernel and hardware backends are written without vendor HALs, SDKs, CMSIS packs or
+third-party kernel code. Register definitions come from hardware manuals.
 
-## What is different about it
+## Features
 
-- **The root thread is unprivileged on every board.** Not a posture and not a build option:
-  there is no configuration in which application code starts privileged. Everything a task can
-  reach, it was handed.
-- **Memory confinement uses whatever the silicon actually has** -- ARM PMSAv6/v7/v8, NXP
-  SYSMPU, the Renesas RX-MPU, RISC-V PMP, and `mprotect` on the host. One arch-independent
-  memory-domain model over a `{base, size, attr}` region contract, with ten chip region
-  backends and the host one behind it. Where a chip has no unit that faults, the enforcing
-  posture is not offered at all, rather than configured into a silent no-op.
-- **Objects are reached by capability, never by a global id.** A per-task typed handle table, a
-  single resolve chokepoint, refcounted destroy-on-last-close, and rights that can only narrow
-  when a handle is delegated to a child.
-- **The scheduler is tickless and event-driven.** It switches on any event -- yield, block,
-  semaphore post, device IRQ -- and a periodic tick is available but never the only trigger.
-- **The host sim is the real kernel**, not a mock: the same scheduler, the same syscall path
-  across the same SVC boundary, the same capability tables, with `mprotect` standing in for the
-  MPU. It is the authoritative test gate, and it needs no board and no emulator.
-- **A port is a seam, not a fork.** A new CPU means implementing `arch.h` plus a chip backend
-  (reset and vector table, clock tree, console, linker script); the kernel is not restructured
-  for it. The contract is [`docs/reference/porting.md`](docs/reference/porting.md).
-- **Consuming it is plain CMake.** `find_package(KickOS)`, `add_executable`, link `kickos`, and
-  write an ordinary `main`. Two standalone downstream projects, one hosted and one bare-metal,
-  are in [`examples/oot-app/`](examples/oot-app/) and
-  [`examples/oot-mcu-app/`](examples/oot-mcu-app/).
+- **Unprivileged applications.** The root application starts without kernel privilege.
+  Capabilities and delegated authority control access to kernel services. Hardware privilege
+  and memory isolation depend on the target; software checks cannot replace a missing MPU.
+- **Memory isolation.** MPU and PMP targets use protected memory regions. ARM64 and RV64
+  use per-process page tables, with ASIDs where supported. Linux sim uses `mprotect` over
+  its user-memory arena. Targets without enforcement still check capability permissions.
+- **Typed capabilities.** Tasks hold their own handle tables. Delegation can reduce rights;
+  reference counts control object lifetime.
+- **Event-driven scheduling.** Blocking, yielding, IPC and interrupts trigger scheduling.
+  The clock is tickless by default; a periodic tick is also available.
+- **Configurable resource pools.** Thread, task and memory-domain limits are independent.
+  Boards set their budgets through Kconfig.
+- **Host testing.** Linux sim runs the kernel and userspace in one process. It uses the same
+  scheduler, syscall dispatcher and capability code, with emulated privilege transitions.
+- **Portable backends.** Architecture and chip code implement the interface described in
+  the [porting guide](docs/reference/porting.md).
+- **CMake integration.** Applications can use `find_package(KickOS)`, link `kickos` and
+  provide an ordinary `main`. See the [host](examples/oot-app/) and
+  [MCU](examples/oot-mcu-app/) examples.
 
-Design ideas are studied from other RTOSes -- NuttX, Argon, RIOT, ChibiOS, uC/OS-III, RTEMS,
-ThreadX, RT-Thread, and seL4 and Zircon for the microkernel paradigm itself -- and never
-copied. Register definitions are hand-written from the reference manuals.
+## Supported targets
 
-## Does it run on your board
+The tree defines 24 targets: 14 MCU boards, eight QEMU targets, the i.MX8MP EVK target and
+Linux sim. Build support, emulator tests and hardware validation are separate. Check the
+[board reference](docs/reference/boards.md) for validation status, memory requirements,
+console pins and wiring.
 
-Preset names are board names. What each board has actually been proven to do on silicon, its
-console pins, LED and flash recipe, are all in
-[`docs/reference/boards.md`](docs/reference/boards.md).
-
-**For a part that is not in the table below**, that file opens with a stated minimum and a
-recommended configuration: 64 KiB flash / 16 KiB SRAM buys two threads with no `thread_local`
-and a self-test split across three images, 128 KiB / 32 KiB buys four or more threads,
-`thread_local` and the self-test as one. The two floors are separate -- flash decides the
-self-test split, SRAM decides `thread_local` and the thread count -- and neither is an SRAM
-number alone, since what binds is the arena left after `.bss`.
-
-| Board (preset) | Part / core | Memory confinement |
+| Preset | Part or machine | Memory isolation |
 |---|---|---|
-| **armv7m** | | |
+| **Cortex-M3/M4/M7/M33 (`armv7m` backend)** | | |
 | `frdmk64f` | MK64FN1M0 / Cortex-M4F | SYSMPU |
 | `xmc4800-relax` | XMC4800 / Cortex-M4F | PMSAv7 |
 | `f411disco` | STM32F411 / Cortex-M4F | PMSAv7 |
 | `blackpill` | STM32F411 / Cortex-M4F | PMSAv7 |
 | `teensy41` | i.MX RT1062 / Cortex-M7 | PMSAv7 |
 | `pizero2350` | RP2350 / Cortex-M33 | PMSAv8 |
-| `f302nucleo` | STM32F302R8 / Cortex-M4 | none (this line has no MPU) |
-| `bluepill-c8` | STM32F103C8 / Cortex-M3 | none |
-| `due` | AT91SAM3X8E / Cortex-M3 | none |
+| `f302nucleo` | STM32F302R8 / Cortex-M4 | None |
+| `bluepill-c8` | STM32F103C8 / Cortex-M3 | None |
+| `due` | AT91SAM3X8E / Cortex-M3 | None |
 | `qemu`, `qemu-m7`, `qemu-m3` | QEMU MPS2 an386 / an500 / an385 | PMSAv7 |
 | `qemu-m33` | QEMU MPS2 an505 / Cortex-M33 | PMSAv8 |
-| **armv6m** | | |
+| **Cortex-M0/M0+ (`armv6m` backend)** | | |
 | `picopi` | RP2040 / Cortex-M0+ | PMSAv6 |
-| `microbit` | nRF51822 / Cortex-M0 | none |
+| `microbit` | nRF51822 / Cortex-M0 | None |
 | **ARMv8-A** | | |
-| `qemu-arm64` | QEMU `virt` / Cortex-A53 | none (page tables, a root per process) |
+| `qemu-arm64` | QEMU `virt` / Cortex-A53 | MMU, VMSAv8 page tables |
+| `imx8mp-evk` | NXP i.MX 8M Plus / Cortex-A53 | MMU, VMSAv8 page tables |
 | **RV32IMAC** | | |
 | `esp32c6-wroom` | ESP32-C6 | PMP (NAPOT) |
 | `qemu-riscv` | QEMU `virt` | PMP (NAPOT) |
 | **RV64IMAC** | | |
-| `qemu-riscv64` | QEMU `virt` | none (page tables, a root per process) |
+| `qemu-riscv64` | QEMU `virt` | MMU, Sv39 or Sv48 page tables |
 | **RXv3** | | |
 | `rx72m` | Renesas RX72M | RX-MPU |
 | **Xtensa LX6** | | |
-| `esp32-wroom` | ESP32 | none (no per-task unit) |
-| **x86_64** | | |
-| `qemu-x86_64` | QEMU `q35` (ICH9) / UEFI | none (flat, adopted map) |
-| **host** | | |
-| `sim` | Linux process | `mprotect` |
+| `esp32-wroom` | ESP32 | None |
+| **x86-64** | | |
+| `qemu-x86_64` | QEMU `q35` / UEFI | None; shared firmware map |
+| **Host** | | |
+| `sim` | Linux process | `mprotect` over the user arena |
 
-Fourteen of those boards enforce with a hardware unit. The rest still run their root thread
-unprivileged where the core has a privilege ring at all; on the two parts with neither a ring
-nor a unit (nRF51, LX6) the authority word is software and still refuses.
+The `imx8mp-evk` target has local QEMU tests but no CI job or hardware validation. The
+`microbit` QEMU tests use 32 KiB of RAM; they do not represent a physical micro:bit v1.
+
+For a new MCU target, the board reference gives a 64 KiB flash / 16 KiB RAM minimum and a
+128 KiB / 32 KiB recommended configuration. Actual requirements depend on thread count,
+stacks, capability tables and enabled features. Small targets split the self-test across
+multiple images.
 
 ## Building
 
-CMake 3.24 or newer, Ninja, a host C++ compiler for the sim, and a cross toolchain per target
-family. `kconfiglib` is needed to configure any build.
+Requirements:
+
+- CMake 3.25 or newer for the supplied version-6 presets, plus Ninja.
+- A host C/C++ compiler for sim, or the target's toolchain.
+- Python 3 with `kconfiglib` for configuration.
+- GoogleTest with a CMake package for the host unit tests.
+- QEMU for emulator tests; x86-64 also needs OVMF firmware and `mtools`.
+
+Keep the Kconfig interpreter separate from flashing tools:
 
 ```sh
-# Host sim: build it and run the full test suite.
-cmake --preset sim && cmake --build --preset sim && ctest --preset sim --output-on-failure
-
-# An MCU target, e.g. the Raspberry Pi Pico; flash the resulting image.
-cmake --preset picopi && cmake --build --preset picopi
+python3 -m venv "$HOME/.venvs/kickos-kconfig"
+"$HOME/.venvs/kickos-kconfig/bin/pip" install kconfiglib==14.1.0
+export KICKOS_KCONFIG_PY="$HOME/.venvs/kickos-kconfig/bin/python"
 ```
 
-Emulator run gates, one preset per machine: `ctest --preset qemu` (Cortex-M4), `qemu-m7`,
-`qemu-m3`, `qemu-m33`, `microbit` (Cortex-M0), `qemu-riscv` (RV32IMAC), `qemu-arm64`
-(Cortex-A53), `qemu-riscv64` (RV64IMAC) and `qemu-x86_64` (q35 under UEFI firmware). Every one of
-those runs in CI as well, and most carry further run-gate variants beside them -- a ring-only
-`-flat` posture, a second paging mode, a core count, an isolated core, a GICv3, an AMP partition
--- which `cmake --list-presets` names and the CI table below states per instruction set.
-`imx8mp-evk` (quad Cortex-A53) is the one emulator run gate that exists locally and in no CI job
-(see *What CI gates* below). Flashing a real board is per board:
-[`docs/flashing.md`](docs/flashing.md) for the tool backends,
-[`docs/reference/boards.md`](docs/reference/boards.md) for the wiring.
-
-### Presets: a board and a variant, nothing else
+Build sim and run its tests:
 
 ```sh
-cmake --preset frdmk64f        # the board's base variant
-cmake --preset frdmk64f-st     # + the self-test (TAP) suite
-cmake --preset frdmk64f-flat   # the non-enforcing posture, on a board that can enforce
+cmake --preset sim -DKICKOS_BUILD_UNIT_TESTS=ON
+cmake --build --preset sim
+ctest --preset sim --output-on-failure
 ```
 
-Presets are defined in [`cmake/presets/`](cmake/presets/), one per board and variant, each
-building into its own directory under `build/`; `cmake --list-presets` names the fleet. The
-memory posture is part of the variant, so there is no
-`-D` for it: the 14 enforcing boards state enforcement in their base defconfig and carry a
-`<board>-flat` preset beside it, which is what the ring-only gates build. `sim` has no flat
-variant, because host `mprotect` is the only posture it has. Boards whose base variant is
-already a test image (`sim`, the four `qemu` machines, `qemu-arm64`, `qemu-riscv`,
-`qemu-riscv64`, `qemu-x86_64`, `imx8mp-evk`, `microbit`) have no `-st`.
+Set `CMAKE_PREFIX_PATH` if GoogleTest is installed outside the compiler's search paths.
+The [CI setup](.github/actions/gtest/action.yml) shows how to install it with Conan.
+Without GoogleTest, sim can build with `KICKOS_BUILD_UNIT_TESTS=OFF`, but the host unit
+suite is omitted.
+
+Build and test an emulator target:
+
+```sh
+cmake --preset qemu
+cmake --build --preset qemu
+ctest --preset qemu --output-on-failure
+```
+
+For a physical board, select its preset, build, then use the
+[flashing guide](docs/flashing.md):
+
+```sh
+cmake --preset picopi
+cmake --build --preset picopi
+```
+
+### Presets
+
+Presets select a board and configuration variant. Each uses a separate directory under
+`build/`. Run `cmake --list-presets` for the full list, defined in
+[`cmake/presets/`](cmake/presets/).
+
+```sh
+cmake --preset frdmk64f        # base configuration
+cmake --preset frdmk64f-st     # self-test configuration
+cmake --preset frdmk64f-flat   # MPU enforcement disabled
+```
+
+Available variants depend on the board. They include self-tests, benchmarks, telemetry,
+shared-kernel multicore builds, isolated cores and AMP partitions with separate kernels.
+MPU boards generally provide a `-flat` variant. Sim always uses `mprotect`; MMU targets
+select address-space support through their chip configuration.
 
 ### Configuration
 
-Configuration is Kconfig; CMake keeps the build graph.
-`boards/<board>/configs/<variant>/defconfig` is the saved, reviewable starting point kept in
-git, and a preset seeds the live `.config` from it once.
+Kconfig controls kernel settings. A preset loads its initial values from
+`boards/<board>/configs/<variant>/defconfig`. Later builds use the saved
+`build/<preset>/generated/.config`.
 
 ```sh
-ninja -C build/frdmk64f menuconfig      # edit the live configuration
-ninja -C build/frdmk64f                 # build what it now says
-ninja -C build/frdmk64f savedefconfig   # write it back to the defconfig, minimally
-ninja -C build/frdmk64f defconfig       # reload from the defconfig, discarding edits
-rm -rf build/frdmk64f                   # distclean: nothing was written in-tree
+ninja -C build/frdmk64f menuconfig     # edit the live configuration
+ninja -C build/frdmk64f                # apply changes and rebuild
+ninja -C build/frdmk64f savedefconfig  # save changes to the source defconfig
+ninja -C build/frdmk64f defconfig      # discard local settings and reload defconfig
 ```
 
-`.config` is authoritative once it exists, exactly as `CMakeCache.txt` is once a preset has
-seeded it. So editing a defconfig reaches a new build directory, or an existing one after
-`ninja defconfig`. Nothing generated lands in the source tree: `.config`, the C header the
-compile reads and the CMake fragment all live under the build directory's `generated/`.
+Editing a source defconfig does not update an existing build until it is reloaded. Generated
+configuration files stay in the build directory. Add a defconfig and preset for a reusable
+variant. Memory enforcement requires a working chip backend and the corresponding linker
+layout.
 
-A new posture is therefore a new defconfig under `boards/<board>/configs/`, not a flag. The
-enforcing posture is offered only where a wild cross-domain access actually faults, which needs
-both the chip's linker script to carve the protected window and its arch to ship a real region
-backend; a chip declares that pair by selecting `HAS_MPU`.
+### Toolchains
 
-`kconfiglib` is build-time only -- one pure-Python file, ISC-licensed, never in a shipped
-artefact. Put it in a venv of its own and name that interpreter absolutely through
-`KICKOS_KCONFIG_PY`, so the venv's `bin/` never lands on `PATH` and shadows the interpreter the
-flash tools run on. `cmake` prints the exact recipe if it cannot import it. A packaged
-`kconfig-mconf` drives `menuconfig` too, though not the generator.
+Cross toolchains accept these directory hints from the environment or CMake `-D` options,
+and otherwise search `PATH`:
 
-### Cross toolchains
+| Target family | Toolchain directory variable |
+|---|---|
+| Cortex-M | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| ARM64 | `KICKOS_AARCH64_TOOLCHAIN_BIN` |
+| RISC-V | `KICKOS_RISCV_TOOLCHAIN_BIN` |
+| RX | `KICKOS_RX_TOOLCHAIN_BIN` |
+| Xtensa | `KICKOS_XTENSA_BIN` |
 
-A cross build finds its compiler through a per-family hint -- `KICKOS_ARM_TOOLCHAIN_BIN`,
-`KICKOS_AARCH64_TOOLCHAIN_BIN`, `KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`,
-`KICKOS_XTENSA_BIN` -- seeded from the
-environment, overridable with `-D`, and falling back to `PATH` when left empty. The ARM and
-RISC-V toolchain files then verify what they resolved: a compiler without newlib and
-`libstdc++` for the board's own multilib is refused at configure time, naming what is missing,
-rather than failing dozens of build steps later on a missing standard header.
+The x86-64 UEFI build uses host GCC and GNU binutils with the `i386pep` linker emulation.
+See [CI toolchain setup](.github/actions/) for the versions and packages used in CI.
 
-## What CI gates
+## CI coverage
 
-The eight instruction sets are not covered equally, and the asymmetry is structural. The header
-of [`.github/workflows/ci.yml`](.github/workflows/ci.yml) states each job's reasoning.
+[The CI workflow](.github/workflows/ci.yml) defines the exact builds and test selections.
+Warnings are errors. Coverage includes:
 
-| Target | Gate | Confinement exercised |
-|---|---|---|
-| host `sim` | the full `ctest` suite -- the authoritative gate -- plus a UBSan build | `mprotect`, at runtime |
-| armv7m / armv8-m | eight QEMU MPS2 run gates: four machines (an386, an500, an385, an505), each in both postures | PMSAv7 and PMSAv8, at runtime |
-| armv6m | QEMU run gate (`microbit`, an nRF51822 provisioned at 32 KiB and not a BBC micro:bit v1) | none: the nRF51 has no unit |
-| rv32imac | QEMU `virt` run gate, both postures | PMP, at runtime |
-| armv8a | QEMU `virt` run gates at one kernel core, at four, at four with one isolated, at four under a GICv3, and as an AMP partition of one, two and three images; `imx8mp-evk` is a run gate in no CI job | VMSAv8 page tables, at runtime |
-| rv64imac | QEMU `virt` run gates: Sv39, Sv48, and a four-hart shared kernel | Sv39 and Sv48 page tables, at runtime |
-| x86_64 | QEMU `q35` run gate over a UEFI handover, on firmware the job resolves rather than names | none: the chip selects no memory family, so the adopted map is flat |
-| Xtensa LX6 | build gate: no upstream QEMU ESP32 machine model | none: the LX6 has no per-task unit |
-| Renesas RX | none | -- |
-| the remaining ARM boards | build sweep, the enforcement-only link surface, the RP2350 AMP partitions, plus the one gate that needs neither silicon nor an emulator | link surface only |
+| Target | Checks |
+|---|---|
+| Linux sim | Source checks, kernel and unit tests, plus a UBSan build |
+| Cortex-M3/M4/M7/M33 | Four QEMU MPS2 machines, with and without MPU enforcement |
+| Cortex-M0 | QEMU `microbit`, without memory enforcement |
+| ARM64 | QEMU `virt`: single core, four cores, core isolation, GICv3 and AMP; single-core and multicore benchmark checks |
+| RV32IMAC | QEMU `virt` with and without PMP; ESP32-C6 builds |
+| RV64IMAC | QEMU `virt`: Sv39, Sv48 and four harts; single-core and multicore benchmark checks |
+| x86-64 | QEMU `q35` with UEFI, including benchmark checks |
+| Xtensa LX6 | ESP32 builds and host checks, including SMP and benchmark configurations |
+| Other Cortex-M boards | Build and static checks, including MPU and RP2350 AMP configurations |
+| RXv3 | No CI job; validation uses the RX72M hardware |
 
-**A SKIP IS NOT A PASS, and what a run job buys turns on that.** An image gate boots through a
-guard that exits 77 when its emulator is absent; CTest reports that as Skipped and still exits 0,
-so an unprovisioned runner would green-light a job that booted nothing. Every run job therefore
-refuses outright on a missing emulator instead of skipping. The x86_64 job carries the widest
-version of the problem: its image is a PE32+ UEFI application that `-kernel` cannot start at all,
-so the gates boot OVMF off an EFI system partition and need `mtools` to build one, and the job
-resolves the firmware pair by matching spellings -- the package names those files and a
-`.secboot` or `.ms` firmware refuses an unsigned image -- then fails on a skip.
-`docs/reference/boards.md` carries the per-board detail.
+ARM64 AMP runtime tests cover shared-image and two-image configurations. Three-image AMP
+partitions are built and checked for link-layout agreement; CI does not boot them. RP2350
+AMP checks also run without booting hardware.
 
-The backends QEMU carries no model for -- SYSMPU, the Cortex-M7 anti-speculation wrap, PMSAv6
--- get their link surface built in CI and their traps proven on silicon. RX has no gate at all:
-the RX72M needs `-misa=v3` and `-mdfpu`, which exist only in the registration-gated Renesas
-GNURX build (upstream `rx-elf` GCC rejects both), so it cannot be built on a hosted runner and
-stays bench-validated. Warnings are errors in every job.
+Local emulator tests may report a skip when tools are missing; CTest can still exit
+successfully. CI checks the required tools, and the x86-64 job also rejects skipped tests.
+Emulator results do not replace hardware validation. See the
+[board reference](docs/reference/boards.md) for recorded hardware results and limitations.
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) is the map. Two tiers:
+Start with the [documentation index](docs/README.md).
 
-- **The Book** ([`docs/book/README.md`](docs/book/README.md)) -- how and why, plus a
-  teach-how-a-microkernel-works text. Durable across refactors.
-- **The Reference** ([`docs/reference/README.md`](docs/reference/README.md)) -- the exact
-  contract, code-synced: [`architecture.md`](docs/reference/architecture.md) for the kernel
-  design, [`porting.md`](docs/reference/porting.md) for the arch/chip seam,
-  [`boards.md`](docs/reference/boards.md) for per-board wiring and validation status,
-  [`invariants.md`](docs/reference/invariants.md),
-  [`ipc-call-reply.md`](docs/reference/ipc-call-reply.md) and
-  [`bus-service.md`](docs/reference/bus-service.md) for the IPC and bus contracts.
-
-[`STATE.md`](STATE.md) is where the project stands right now; [`roadmap.md`](roadmap.md) is the
-milestone-level plan.
+- [The Book](docs/book/README.md): concepts and design explanations.
+- [The Reference](docs/reference/README.md): interfaces, invariants, porting, boards and drivers.
+- [Project state](STATE.md): implementation status and current limitations.
+- [Roadmap](roadmap.md): planned milestones.
 
 ## License
 
-CeCILL-C V1.0 (LGPL-compatible, file-level copyleft). See [`LICENSE`](LICENSE). Every source
-file carries an `SPDX-License-Identifier: CECILL-C` header. The clean-room discipline behind
-the studied-never-copied rule is stated in
-[`docs/reference/architecture.md`](docs/reference/architecture.md).
+CeCILL-C V1.0. See [LICENSE](LICENSE). Source files carry
+`SPDX-License-Identifier: CECILL-C` headers. The
+[architecture reference](docs/reference/architecture.md) describes the clean-room policy.

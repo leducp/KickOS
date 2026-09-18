@@ -538,8 +538,8 @@ That is not a problem, because it is the rule sec.7.2 already states from the ot
 the IRQ thread takes `{win, shared}` and the service thread takes `{shared}` only, which is
 exactly the ownership split the SPSC rings need. Only DEV windows are exclusive; a RAM region
 is not, and the service thread's data-only domain reaches the same block. Still no kernel
-domain change, and the cost is 2 slots against a `KICKOS_MAX_DOMAINS` default of
-`KICKOS_MAX_THREADS + 2 = 18` (`kernel/include/kickos/config/system.h`
+domain change, and the cost is 2 slots against a `KICKOS_MAX_DOMAINS` default of 18
+on a region board (`kernel/include/kickos/config/system.h`
 (`KICKOS_MAX_DOMAINS`)), so there is headroom. **A driver that tried to touch the peripheral
 from its service thread would therefore fail at SPAWN, not at the register write** -- the
 isolation rule is enforced by the domain model rather than by convention.

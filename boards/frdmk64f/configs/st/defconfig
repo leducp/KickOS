@@ -5,15 +5,11 @@ CONFIG_BOARD_FRDMK64F=y
 
 # Adds the test-only self-test syscalls the TAP suite calls.
 CONFIG_MEMORY_MODEL_MPU=y
-# Not the fleet default 16: this is one Cortex-M4 core, and an application heavy enough
-# to want more than eight threads on it wants a different part. Enforcement also pins
-# __kickos_ram_start above the .appdata window, so the arena here is the smaller one.
-#
-# THE SIZE IS A POWER OF TWO ON PURPOSE, not for the arithmetic. The thread pointer on
-# ARM is derived as SP masked down to the stack block, which is only correct when the
-# blocks are strided by a power of two; the SYSMPU is a base+limit unit
-# (arch_mpu_region_pow2 is 0) and would otherwise stride them by the 32-byte granule.
+# Limit threads to fit the enforcing app-data layout. Power-of-two stack
+# strides are required for the SP-derived thread pointer.
 CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_MAX_TASKS=10
+CONFIG_KICKOS_MAX_DOMAINS=10
 CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192

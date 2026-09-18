@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What a process is made of above the arch map editor.
-// A space frees what it maps; a borrower unmaps before it dies.
+// Kernel address-space management. Borrowed mappings must be unmapped
+// before destroying a space, which frees its owned frames.
 
 #ifndef KICKOS_ASPACE_H
 #define KICKOS_ASPACE_H
@@ -17,36 +17,30 @@ namespace kickos
 {
     struct Thread;
 
-    // The kernel's only route to memory a process owns: each splits at granule boundaries and
-    // reaches every page through the acquire seam of the space that owns it.
-    //
-    // False is not "nothing happened": the move stops at the first granule the owning space
-    // refuses, so the destination holds a head of the source over a tail of what it held.
-    // NO CALLER MAY PANIC ON FALSE: every one answers its caller a negative code, so the party
-    // holding the partial prefix is the party told the copy failed. That prefix is bounded by
-    // KOS_EP_MSG_MAX on the IPC paths and by one aligned word on the scalar reads.
+    // Copy through each owning space's acquire interface, one granule at a time.
+    // Failure can leave a copied prefix. Return an error rather than panic;
+    // the fault reporter also uses these functions.
     [[nodiscard]] bool kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc,
                                          size_t n);
     [[nodiscard]] bool kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst,
                                        void const* ksrc, size_t n);
 
-    // The peer with BOTH ends in user memory, one of them possibly a PARKED thread's in a space
-    // the running translation does not name. One space requires the two ranges be disjoint, a
-    // refusal PLAIN USERSPACE reaches on every board: two threads of one task share a space,
-    // so one static array is one address for both ends of a rendezvous.
+    // Copy one naturally aligned pointer-sized word through one acquire.
+    // Return false for misalignment or failed acquisition.
+    [[nodiscard]] bool kaccess_word_to_user(struct arch_aspace* dspace, uintptr_t udst,
+                                            void const* kword);
+
+    // Copy between user ranges, each with its own space.
+    // Reject overlapping ranges in the same space.
     [[nodiscard]] bool ep_copy(struct arch_aspace* dspace, uintptr_t dst,
                                struct arch_aspace* sspace, uintptr_t src, size_t n);
 
 #if KICKOS_HAVE_ASPACE
 
-    // Map the process image into a freshly created space: app text read-execute on the same
-    // physical pages every other space uses, app static data read-write as a per-process copy.
-    // False leaves the space with whatever the failure reached; the caller destroys it through
-    // aspace_release. `ranges` is seeded with the same extents and rights, which is what the
-    // syscall entry validates an app pointer against and what teardown reads to tell a borrowed
-    // page from an owned one. The first space seeded keeps the image's own data pages and every
-    // later one copies them, from root while root lives and from a snapshot of root once it does
-    // not; a seed reaching a lost home with no snapshot behind it fails.
+    // Seed shared RX text, private RW data and matching validation ranges.
+    // The first space uses the image data; later spaces copy the live root or
+    // its saved snapshot. Fail if neither source exists. On failure, release
+    // the partially built space with aspace_release.
     bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
@@ -64,50 +58,44 @@ namespace kickos
     int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
                           size_t size, uint32_t rights, enum arch_map_memtype type);
 
-    // The kernel's own alias of a byte in the app's window: where the loader put it. Answers
-    // before any space exists. Null for a pointer outside the app image and where the chip
-    // carves no app window; every caller falls back to the pointer it passed. One byte is
-    // tested, this signature carrying no length.
+    // Return the kernel alias of one app-image byte, even before spaces exist.
+    // Return null outside the image or if no app window is configured.
     void* aspace_image_alias(void const* app_ptr);
 
-    // A small stable name for the frame backing `va` in `space`, or 0 where that page is not
-    // mapped. Selftest scaffolding, biased off the image's first text frame so the number is an
-    // offset between frames: comparable across spaces, and nothing else may be read out of it.
+    // Self-test frame identity relative to the first text frame; zero if unmapped.
+    // Values can be compared across spaces but are not physical addresses.
     uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va);
 
-    // The capability map: put a frame RUN a capability names into `space` at the address
-    // the holder chose. The range is recorded BORROWED, because the frames belong to the
-    // capability and come back when its last holder drops it, so this space must free
-    // nothing at teardown. -KOS_ENOMEM when the space cannot take the range there,
-    // -KOS_EINVAL on a bad shape.
+    // Map a capability-owned frame run at the chosen VA and record it as borrowed.
+    // The capability retains frame ownership. Return -KOS_ENOMEM for unavailable
+    // space or -KOS_EINVAL for an invalid range.
     int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                        int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
                        enum arch_map_memtype type);
 
-    // The capability unmap: take that range back out, and surrender the mapping's
-    // reference. -KOS_EPERM unless the range at `va` was placed by aspace_cap_map AND names
-    // `run_obj`. Matching a page count instead accepts the image and every handoff, which
-    // carry VR_BORROWED too.
+    // Unmap a capability mapping and release its reference. Return -KOS_EPERM
+    // unless both the mapping kind and run_obj match; VR_BORROWED alone is insufficient.
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                          int run_obj);
 
-    // The handoff: map the donor's reservation into `space` at the same virtual address and
-    // record it borrowed, so the target unmaps and frees nothing. -KOS_EPERM when the donor
-    // holds no such range, -KOS_ENOMEM when the target cannot take it there. `base` must be a
-    // reservation's own base and `size` must round up to its page count.
+    // Map the donor's complete reservation at the same VA without taking ownership.
+    // Require its exact base and rounded page count. Return -KOS_EPERM for a
+    // missing reservation or -KOS_ENOMEM if the destination cannot accept it.
     int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type);
 
-    // Install the incoming thread's task space. Where the thread holds none, above one core the
-    // boot root goes in instead (aspace_install_boot) and below it the running space is left.
-    // Skips the root write when the wanted root is already current.
-    void aspace_activate_for(Thread const* t);
+    // Install and return the thread's task space, skipping redundant root writes.
+    // For spaceless threads, return null; SMP installs the boot root, while
+    // single-core builds retain the current root.
+    struct arch_aspace* aspace_activate_for(Thread const* t);
 
-    // Whether the translation root this core holds is `t`'s own space, which is the condition
-    // for the app's half being addressable on its behalf at all. False for a thread whose task
-    // holds no space, where a kernel write to an app-half address lands in another process's
-    // memory, so the switch path asks this before it seats libc's reentrant state.
+    // aspace_seated_for's verdict read off what aspace_activate_for just answered, for a caller
+    // that already has it.
+    inline bool aspace_seated_with(struct arch_aspace* space) { return space != nullptr; }
+
+    // Return whether this core holds the thread's own space. Spaceless threads
+    // must not write libc state through another process's app mapping.
     bool aspace_seated_for(Thread const* t);
 
     // Install the boot root on THIS core and record it. For a caller about to stop being a
@@ -137,7 +125,10 @@ namespace kickos
 
 #else
 
-    inline void aspace_activate_for(Thread const*) {}
+    inline struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
+    // Null here names no space rather than no seat: the app half is one flat view and every
+    // thread is seated in it.
+    inline bool aspace_seated_with(struct arch_aspace*) { return true; }
     inline bool aspace_seated_for(Thread const*) { return true; }
     inline void aspace_install_boot(void) {}
     inline void* aspace_image_alias(void const*) { return nullptr; }

@@ -3,11 +3,10 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
-# Adds the test-only self-test syscalls the TAP suite calls. The split suite is this
-# fleet's heaviest static image, so on 20 KiB of SRAM the heap carve goes entirely:
-# .userheap sits directly below __kickos_ram_start and the arena needs those bytes to
-# seat both thread stacks past the two boot stacks.
+# Enable self-test syscalls and omit the heap to fit boot and worker stacks.
 CONFIG_KICKOS_MAX_THREADS=2
+CONFIG_KICKOS_MAX_TASKS=4
+CONFIG_KICKOS_MAX_DOMAINS=4
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4

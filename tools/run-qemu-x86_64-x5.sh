@@ -2,27 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Boot the address-space image under qemu-system-x86_64 with UEFI firmware and assert every
-# arm the aspace family owes on a single root register reports.
-#
-#   tools/run-qemu-x86_64-x5.sh <application.efi> [workdir]
-#
-# The machine, the EFI system partition and the serial capture come from
-# tools/run-qemu-x86_64-common.sh.
-#
-# Environment:
-#   KICKOS_X5_TOKEN     the token every line must carry (default below). Held against the IMAGE,
-#                       never scraped from the source.
-#   KICKOS_X5_FIRMWARE  `pflash` (split OVMF_CODE_4M plus OVMF_VARS_4M, the default) or
-#                       `bios` (the combined /usr/share/ovmf/OVMF.fd through -bios).
-#   KICKOS_X5_MACHINE   qemu machine type, default q35.
-#   KICKOS_X5_TIMEOUT   seconds, default 120.
-#   KICKOS_X86_64_CPU   a -cpu model, default none. Shared by all five witnesses.
-#
-# THE INVALIDATION ARMS NEED A SELF-TEST BUILD, the seam publishing its invalidation counts
-# only there. An image built without it says so on its own line and fails.
-#
-# POSIX sh (dash-clean).
+# Run the x86-64 address-space probe under QEMU/UEFI and check every result.
+# Usage: run-qemu-x86_64-x5.sh <application.efi> [workdir]
+# Requires a self-test build for invalidation counters.
+# Environment: KICKOS_X5_TOKEN, KICKOS_X5_FIRMWARE (pflash or bios),
+# KICKOS_X5_MACHINE (q35), KICKOS_X5_TIMEOUT (120 seconds),
+# and KICKOS_X86_64_CPU (optional QEMU CPU model).
 
 set -u
 
@@ -104,7 +89,10 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          refuse_pa_past_the_physical_width refuse_pa_range_past_the_physical_width \
          kernel_window_map_past_the_physical_width_refused \
          refuse_range_past_the_user_half refuse_page_count_that_wraps \
-         nothing_was_mapped_by_a_refusal unmap_refuses_a_partial_range \
+         nothing_was_mapped_by_a_refusal map_refuses_a_partially_mapped_range \
+         the_partially_mapped_range_kept_its_leaf map_admits_a_wholly_mapped_range \
+         the_remap_of_a_wholly_mapped_range_landed the_remapped_range_clears \
+         unmap_refuses_a_partial_range \
          the_partial_range_is_still_mapped unmap_refuses_an_unmapped_page \
          leaf_memtype_normal_is_write_back leaf_memtype_nocache_is_uncached_minus \
          leaf_memtype_device_is_uncacheable \
@@ -140,7 +128,9 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          frame_at_drops_the_offset frame_at_of_an_unmapped_page_is_zero \
          frame_at_of_a_null_space_is_zero frame_at_separates_the_two_spaces \
          fresh_map_issues_one replacing_a_live_page_issues_two and_the_replacement_took \
-         unmap_issues_one map_into_a_space_this_core_is_not_on_elides \
+         unmap_issues_one a_space_nothing_has_run \
+         map_into_a_space_nothing_has_run_elides \
+         map_into_a_space_this_core_has_left_still_pays \
          borrowed_page_unmapped_before_destroy the_lent_frame_survived_the_unmap \
          a_shared_slot_diverged_by_an_accessed_bit the_diverged_slot_kept_its_table \
          kernel_half_survives_a_destroy the_shared_window_survives_a_destroy \
@@ -157,11 +147,7 @@ do
     listed=$((listed + 1))
 done
 
-# THE SET AND NOT ONLY ITS MEMBERS. Every name above is asserted to have reported, which says
-# nothing about an arm the image reported and this list does not name. A FAILING unlisted arm is
-# still caught, by the image's own FAIL line and by its exit status; what is lost without this
-# count is the NAME, so the arm runs unread here and a reader of this script cannot tell it
-# exists.
+# Check the result count as well as names to detect unlisted tests.
 onwire="$(grep -c "^  $TOK arm=" "$PLAIN")" || onwire=0
 if [ "$listed" -ne "$onwire" ]; then
     fail "the image reported $onwire arm(s) and this script names $listed. An arm the list

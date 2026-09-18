@@ -1805,10 +1805,11 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       `table_empty` are shared, as an inline header rather than a translation unit, because
       `arch/include/` is the only root all three archives already expose and a header changes no
       archive membership. The other four named spans STAY duplicated and each refusal has a
-      reason: `installed_anywhere` and `peer_cores` are one expression each over a file-local
-      `active_cores()`, so sharing them needs a function pointer, a macro or the policy struct
+      reason: `resident_anywhere` and `resident_peers` are one expression each over a file-local
+      `resident_cores()`, so sharing them needs a function pointer, a macro or the policy struct
       this item forbids, and at one core it would force a translation-root read the current
-      single-core overload avoids; `invalidate_page_if` calls the per-arch `invalidate_page` and
+      single-core overload avoids. The RECORD under them is shared, `aspace_residency.h` being a
+      second inline header on the same ground as the first; `invalidate_page_if` calls the per-arch `invalidate_page` and
       touches a per-arch counter, and it is the one span whose out-lining could make a single
       symbol reachable from both `arch_aspace_map` and `arch_aspace_activate`, which
       `check_tlbi_shareability.sh` holds to OPPOSITE shareability verdicts; `range_ok` is
@@ -3434,7 +3435,7 @@ operation at this board's ISA baseline"), moved here from optimisation to correc
 `roadmap.md`'s ruling rather than duplicated. P1's peer-TLB IPI is folded into the ASID design
 item below rather than kept as SM-2's fix, which is a correctness fix landing in M8.1 instead.
 
-- [ ] **PERF-3: UNDER `KICKOS_LIBC_REENT` ON A TRANSLATING BOARD, EVERY SWITCH PAYS A PAGE
+- [x] **PERF-3: UNDER `KICKOS_LIBC_REENT` ON A TRANSLATING BOARD, EVERY SWITCH PAYS A PAGE
       WALK UNDER IRQ SAVE/RESTORE, UNMEASURED AND ABSENT FROM THE PLAN.** `reent.cc`
       (`reent_seat`) 118-134; `sched.cc` 115-132. Every switch calls `aspace_seated_for` (two
       out-of-line `domain_space` lookups), `reent_space_of` (a third lookup) and a
@@ -3443,6 +3444,19 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       Severity Medium. Direction: cache the space once in `switch_book` instead of re-deriving it
       each switch, and seat the reentrancy word through the kernel window rather than
       `kaccess_to_user`, since the frame is already known at prime time.
+      **RESOLVED:** `aspace_activate_for` answers the space it installed, so the switch path
+      derives it once where it derived it three times; `aspace_seated_with` reads the verdict off
+      that pointer and the two extra `domain_space` lookups are gone. The seat itself goes through
+      `kaccess_word_to_user`, one acquire and one aligned store, in place of the granule loop and
+      the byte copy `kaccess_to_user` spends on eight bytes. The block is now its own leaf,
+      `PH_REENT_SEAT`. Measured on `qemu-arm64-bench` and `qemu-riscv64-bench` at one core under
+      `-icount shift=0`: the residue that sat in no row, 256 on arm64 and 465 on rv64, becomes a
+      published leaf of 138 and 372 plus a residue of 16 and 21, and the whole switch path is 97
+      and 66 instructions shorter. **What is left is the backend's**, not this item's: 213 of
+      rv64's 372 are `arch_aspace_acquire` at 126 and `arch_aspace_release` at 87, the latter
+      walking three levels plus a `window_drop` lookup on a route that took no slot, where
+      armv8a's release is one instruction. That is an `arch/` change and belongs to whoever
+      opens the rv64 window seam next.
 
 - [ ] **THE DRIVER-FACING MAPPING API HAS A SKETCH, AND ITS MCU ARM IS THE INTERESTING HALF.** The
       maintainer's target shape for a driver taking a 4 KiB MMIO window, an i.MX8MP SPI module being
@@ -3485,12 +3499,73 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       raise the march baseline (a real option, measured against the toolchain's exact multilib
       strings, not assumed free) when the first instruction-side caller lands.
 
-- [ ] **AN X86_64 `KERNEL_CORES > 1` CONFIGURE REFUSAL IS OWED BY NAME, THE SAME SHAPE AS
+- [x] **AN X86_64 `KERNEL_CORES > 1` CONFIGURE REFUSAL IS OWED BY NAME, THE SAME SHAPE AS
       G-06.** x86_64 remote `invlpg` is local-only, and today that is moot because no x86 SMP build
       exists (no `smp.cmake`, the SMP predicate refuses the combination). That is the same
       incidental-absence shape G-06 (M8.4) closes for the fastpath. Direction: add an explicit
       `FATAL_ERROR` refusal of `KERNEL_CORES > 1` for x86_64 at configure time, so the refusal is
       named rather than resting on the absent `smp.cmake`.
+      **RESOLVED:** the root `CMakeLists.txt` refuses the combination and names INVLPG and the
+      root-register rewrite as the reason, both acting on the issuing core alone with no shootdown
+      sent. It sits BEFORE the shared-kernel predicate, where G-06's block sits after it: the six
+      the predicate asks for are properties an x86_64 part can truthfully declare and this refusal
+      stands whatever it declares, so after the predicate the message could not be reached at all
+      and the refusal would have gone on resting on the absent `smp.cmake`. `aspace_x86_64.cc`
+      carries the same clause as a `static_assert`, as `syscall_ipc_fast.cc` does for the fastpath.
+
+- [ ] **`KICKOS_MAX_DOMAINS` AND `KICKOS_MAX_TASKS` ARE DERIVED FROM THE THREAD COUNT, AND THE
+      MODEL SAYS THEY MUST NOT BE.** `config/system.h` 92-116 sets `KICKOS_MAX_TASKS` to
+      `KICKOS_THREAD_SLOTS + 1` on the stated ground that there is "one task per LIVE THREAD, since
+      grouping is implicit today", and `KICKOS_MAX_DOMAINS` to that plus two. **Ruled 2026-09-18: a
+      process is a domain plus one to N threads, and the two counts are not connected at all,
+      least of all on a big part.** So the derivation encodes a model the project does not hold,
+      and it does so as the default every board inherits rather than as one board's choice.
+      Direction, and the two halves are NOT the same size:
+      - **The sizing half is small and belongs wherever the ASID allocator lands**: give domains
+        and tasks their own provisioning bounds, stop deriving either from the thread count, and
+        size the identifier pool from `KICKOS_MAX_DOMAINS` alone. The ASID free list's capacity
+        argument is against that bound and against nothing else.
+      - **The model half is its own item and is not small**: a task holding N threads needs a
+        spawn that joins an existing task, a domain shared across that task's threads, and a
+        teardown that ends the domain with the LAST of them rather than with the thread. Today
+        grouping is implicit, so nothing in the tree exercises it.
+      **This is a live constraint on the ASID work and not a later tidy-up**, because on a
+      translating board a domain carries an address space and the identifier pool is sized from
+      the domain count: a pool sized from threads is sized from the wrong number the day a task
+      holds more than one.
+
+- [ ] **A TRANSLATING RV64 BOARD IS THE ONLY THING THAT CAN ANSWER TWO OF THE DESIGN'S NAMED
+      BLIND SPOTS.** The design records that no emulator property on this bench narrows the ASID
+      field (`asid-bits=off`, `asid_bits=off` and `asidlen=off` each refused while `sv48=off` on
+      the same command line is accepted), so the narrow-field and zero-width arms are reachable
+      only by mutating the port's own probe; and that no translating silicon exists here at all,
+      which is why a stale tagged entry has no witness outside the host seams. A C906-class part
+      with an MMU closes both: it reports whatever `satp.ASID` width it implements, which is the
+      one thing that can disagree with the emulator's 16, and it is real translating hardware.
+      Direction: the bring-up is its own work and M8.10 does not depend on it -- a flashing route,
+      a boot path and a console come first, and the SD-card boot shape these parts use is not one
+      this tree has a board for yet. Take it as the witness for the arms the design marks unwitnessed,
+      not as a milestone dependency.
+
+### The maintainer's rulings on the M8.10 design's five open questions (2026-09-18)
+
+1. **Tagging lands, and the form-narrowing is held back.** The residency set and tagging go in;
+   narrowing armv8a's `vaae1is` to `vae1is`, whose failure mode no vehicle here can observe, does
+   not ride the same commit.
+2. **The `KICKOS_LINK_OPTIONAL` cheap half rides as the first commit**, the strong-reference half
+   gets its own row. Its "owed before M8.10" premise was armed by x86_64 gaining an address space,
+   which M8.10 does not do.
+3. Open, pending the item above: the free list's capacity argument was stated against a domain
+   count derived from threads, and that derivation is now ruled wrong.
+4. **The partial-range refusal is a seam obligation on all three backends**, not a contract naming
+   the one that enforces it today.
+5. **M8.10 builds an rv64 host seam. DONE.** `mapexec` gave armv8a a host vehicle for maintenance
+   decisions and rv64 had none, and rv64 is the backend whose mask actually changes. `mapfence` is
+   that vehicle: the backend's inline asm lifted into a five-operation seam header, the frame pool
+   and the kernel window made the same host array so every page-table walk runs for real, and the
+   arms assert the OPERAND of each fence and not only that one was issued. It witnesses one class
+   `mapexec` cannot: RISC-V lets a hart cache a PTE with V clear, so the absence of a table caches
+   like a presence and the by-address form does not reach it.
 
 ## M8.11 -- measurement-justified only
 
@@ -3601,9 +3676,13 @@ the three that have no fastpath and the declaration really is conditional.
 
 ## M8.1.1-era finding, assigned to M8.6: weak linkage goes, and the build chooses the symbol
 
-- [ ] **(M8.6, and the count is NINE not eight: `kernel/mem/aspace.cc` 26 is a ninth raw site the
-      original sweep missed) WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE ABSENCE, WHICH THIS TREE HAS ALREADY
-      BEEN BITTEN BY ONCE.** `docs/reference/invariants.md`'s `ctors-run-before-init-entry` records
+- [ ] **THE CHEAP HALF IS DONE (M8.10). WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE
+      ABSENCE, WHICH THIS TREE HAS ALREADY BEEN BITTEN BY ONCE.** All nine raw declarations now go
+      through the macro, so the decision it centralises IS central and the one place to change is
+      one place. **What remains is the expensive half and it is what the item is really for**: the
+      references are still WEAK, so absent still collapses into a null nobody notices. Making them
+      strong needs every board's linker script to define the bound and emit a deliberately empty
+      window, which is a fleet-wide change and owns its own row. `docs/reference/invariants.md`'s `ctors-run-before-init-entry` records
       the failure in its own words: `__kickos_app_init_array_{start,end}` "were once WEAK, which
       collapsed absent into a null the walk skipped", so a monolithic `.init_array` could run every
       app constructor privileged from the reset handler AND skip the late walk with no diagnostic.
@@ -3613,20 +3692,21 @@ the three that have no fastpath and the declaration really is conditional.
       linker script defines the bound (empty if empty), the reference is strong, and a missing
       symbol is a link error rather than a zero nobody notices.
       Present state, all of it linker-script bounds:
-        * `kernel/include/kickos/klink.h` defines `KICKOS_LINK_OPTIONAL` as `weak` or, where a
+        * `include/kickos/klink.h` defines `KICKOS_LINK_OPTIONAL` as `weak` or, where a
           target cannot take a weak undef, `visibility("hidden")`. Seven users:
           `kernel/domain/domain.cc` (`__kickos_code_start`/`_end`, `__kickos_appdata_start`/`_end`)
           and `kernel/init/kmain.cc` (`kickos_app_build_time`, `_kickos_heap_start`,
           `_kickos_heap_limit`).
-        * **Eight raw `__attribute__((weak))` bypass that macro**, so the decision it centralises is
-          not actually central: `arch/common/arch_ram_common.cc` and `kernel/mem/aspace.cc` each
-          declare the SAME four symbols (`__kickos_app_rom_start`/`_end`,
-          `__kickos_app_sram_start`/`_end`) independently of it.
+        * The nine former raw sites now use it too, and the header sits in the top-level
+          `include/` and not under `kernel/include/`: the arch layer is given the repo's `include/`
+          and its own chip directory ONLY, never `kernel/include`, so the arch half could not have
+          reached the macro where it used to live.
         * `KICKOS_LINKER_WEAK_UNDEF` (`CMakeLists.txt` 176-191) exists only to serve the macro and
           goes with it.
-      **One case is genuinely different and must not be swept in:** `__register_frame` in
-      `chip_esp32c6.cc` and `chip_virt_rv32.cc` is libgcc's, not ours, and optional by its own
-      contract rather than by ours.
+      **One case is genuinely different and must not be swept in:** `__register_frame` is libgcc's,
+      not ours, and optional by its own contract rather than by ours. It has THREE raw sites and
+      not two -- `chip_esp32c6.cc`, `chip_virt_rv32.cc` and `user/src/root_entry.cc` -- so a later
+      sweep counting raw declarations finds one more than this item used to admit to.
       **THE OPEN QUESTION IS ANSWERED, AND BOTH OF ITS BRANCHES WERE WRONG** (M8.6, measured on
       `qemu-x86_64`). It asked whether x86_64 never compiles those two files, or whether
       `tools/check-x86_64-no-got.sh` is what stands between the tree and the failure
@@ -3675,7 +3755,7 @@ the three that have no fastpath and the declaration really is conditional.
 Two observations from the external second-pass audit of M8.1 that are not defects in it. Both are
 recorded against the milestone that owns the question, so neither rides M8.1 as a debt.
 
-- [ ] **THE PARTIAL-RANGE REFUSAL IS ARM64-ONLY, AND THE OTHER TWO TRANSLATING BACKENDS KEEP THE
+- [x] **THE PARTIAL-RANGE REFUSAL IS ARM64-ONLY, AND THE OTHER TWO TRANSLATING BACKENDS KEEP THE
       DESTRUCTIVE ROLLBACK.** `arch/arm64/armv8a/aspace_armv8a.cc` refuses a map over a range that is
       partly mapped before it edits anything; `aspace_rv64imac.cc` and `aspace_x86_64.cc` still take
       the pre-existing leaves with them if a caller ever violates the precondition
@@ -3684,12 +3764,51 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       becomes a seam obligation every translating backend answers, or the contract says plainly that
       only one backend enforces it. Belongs with M8.10, which is where the translating backends are
       already being touched for the reent seat and ASIDs.
+      **RESOLVED** on the ruling above: `arch_aspace_map`'s prologue on rv64 and x86_64 now counts
+      the leaves the range already holds and refuses a count between zero and the whole with
+      `ARCH_ASPACE_EINVAL`, ahead of the first edit, as armv8a does. `arch.h` states it as the
+      seam's rule rather than as a licence a backend may take. rv64's `arch_aspace_unmap` already
+      preflighted, but that is the UNMAP's own "wholly mapped" rule and left `map` unguarded.
 
-- [ ] **THE ARM64 PREFLIGHT IS A NEW LINEAR TERM ON EVERY MAP, AND IT IS UNMEASURED.** The
+- [ ] **THE PARTIAL-RANGE PREFLIGHT IS A NEW LINEAR TERM ON EVERY MAP, AND IT IS UNMEASURED.**
+      It now rides all three translating backends, not arm64 alone (the row above). The
       partial-range scan walks one leaf table per page before any edit. Inputs are bounded by
       allocated runs so it is finite and was accepted, but it is a per-page cost added to a path that
       had none, and no figure exists for it. Take it with the M8.7 baseline rather than separately, so
       the map path carries a number before M8.8 through M8.11 start changing costs around it.
+
+- [ ] **THE RESIDENCY LOOKUP IS A LINEAR SCAN ON THE ROOT-CHANGE PATH, AND ON THIS BENCH IT WILL
+      LOOK LIKE A REGRESSION WHILE BEING A WIN.** The side table is associative rather than
+      slot-indexed, because the frame pool's bounds are link-time symbols and the boot root is not
+      a pool frame on any of the three backends, so there is no compile-time index. Occupied rows
+      are kept as a prefix, which bounds the scan by the LIVE SPACE COUNT rather than by the
+      table: measured out of the linked arm64 image at **11 + 6 x (live spaces) instructions per
+      root change**, a miss (the boot root) paying the full live count. Uncompacted it is a flat
+      `11 + 6 x ROWS`, which was 203 against the 32 rows the table had when this was measured and
+      is 131 now that the rows follow `KICKOS_MAX_DOMAINS`, 20 on a translating board.
+      **The bench cannot see this at all** -- `qemu-arm64-bench` never changes the root, so
+      `arch_aspace_activate` is not reached and every switch row is identical before and after,
+      avg and min.
+      Two consequences, and the second is the one that bites. Tagging exists to take a TLB flush
+      off this same path; under `-icount shift=0` a flush costs about one instruction and this
+      scan costs a hundred, so **M8.12 will publish tagging as a loss on the only vehicle that can
+      measure it**, while on silicon the flush is the refill traffic of a whole working set and
+      the scan is a hundred instructions. Say that in the M8.12 text rather than letting a reader
+      find it. And if the scan is ever worth removing, the repair is to hand the row back from
+      `arch_aspace_acquire` rather than to re-look it up, which needs the same arch seam PERF-3
+      declined to open.
+
+- [ ] **THE MAP UNWIND'S PEER MASK IS SAMPLED BEFORE THE EDITS, AND ONLY THE KERNEL LOCK STOPS A
+      HART JOINING AFTER IT.** rv64's `arch_aspace_map` samples the resident set, edits, and on a
+      failure frees the tables it allocated using that sample. A hart installing the space between
+      the sample and the unwind is not in the mask, so it could cache a walk into a table the
+      unwind then hands back. **It is not reachable today**: the edit comes in from a syscall under
+      `IrqLock` and the install happens in `switch_to` under the kernel lock, so the two are
+      serialised. It is recorded because the reason is the BIG LOCK and nothing else -- M9's
+      per-core ready queues exist to narrow exactly that, and this window opens the day they do.
+      rv64 is the sharper case: armv8a's mask drives an instruction-side hint, rv64's gates frame
+      reclamation. The new `mapfence` seam witnesses the sampling POINT but cannot witness that the
+      point is right, so re-reading this is owed to whoever narrows the lock, not to a later sweep.
 
 ## M8.12 -- the M8 exit measurement, frozen
 
@@ -3709,6 +3828,20 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
 - [ ] **ROWS WHOSE SPAN CHANGED ON THE WAY INTO M8.12, SO THE RE-RUN ABOVE IS LIKE FOR LIKE ON
       EVERY OTHER ROW AND NOT ON THESE.** Each is named here so the published delta excludes it
       by name rather than by a reader noticing a figure that grew out of nowhere.
+      - **`REENT_SEAT` IS A NEW ROW, AND `SWITCH_TO`'s `k` GAINS ONE WITH IT.** PERF-3's block
+        sat between `PH_MPU_APPLY`'s close and `PH_ARCH_SWITCH`'s open, so at M8.7 it was in no
+        row at all and its M8.7 value is UNDEFINED rather than zero: read the M8.12 figure as a
+        new row and never as a delta. It is bracketed on every board that compiles
+        `KICKOS_LIBC_REENT` and absent on `sim` and `x86_64`, so `SWITCH_TO`'s `k` is 4 on those
+        two and 5 elsewhere, one more than M8.7 counted; a composite corrected at the old `k`
+        reads HIGH by one `NEST - NULL`. The row's own min is a steady-state seat and its MAX is
+        a first switch-in, the once-per-thread `reent_prime` riding inside the same bracket.
+        **And `MPU_APPLY` reads a few cycles longer for a reason that is not the row's meaning
+        changing.** `aspace_activate_for` sits inside that bracket and now answers the space it
+        installed, which makes the value outlive a call and costs the function one callee-saved
+        register: +5 on `qemu-arm64-bench` and +6 on `qemu-riscv64-bench`, against 97 and 66
+        instructions leaving the switch path overall. The span is M8.7's; only the body is
+        longer, so that row IS like for like.
       - **`MPU_COMMIT` on every ARM board.** `kickos_bench_mpu_commit` had one caller in the
         tree, `arch/riscv/rv32imac`, so `PH_MPU_COMMIT` read `n=0` on every ARM capture the
         project has ever taken, by construction. `MPU_APPLY` measures the deferred stash and not
@@ -11247,6 +11380,17 @@ written is what made each one more than it looks.
 Parked by the user as "at M7" when M7 meant the seam rework; M7 is multicore now, and this is
 orthogonal to every milestone rather than gated by one. The user's framing, 2026-08-21: the gate
 surface grows exponentially and may not be worth its size.
+
+- [ ] **A MUTATION HARNESS MUST `touch` EVERY SOURCE IT RESTORES, OR THE CONFIRMING BUILD IS
+      STALE AND THE GREEN IS THE MUTANT.** The rule for anyone mutation-proving an arm here, and
+      it applies to `ninja` and to `make` alike. A harness that copies a source aside, patches it,
+      builds, runs and then moves the copy back hands the build a restored file whose mtime is the
+      COPY's, which predates the object just built from the mutated source. The build believes the
+      object is current, the "reverted, green again" run re-executes the MUTANT binary, and the
+      red reads as a regression in the arm just written rather than as a stale object. Only the
+      restore direction is poisoned, the mutated builds being newer than their objects, so the
+      symptom is always a red that appears AFTER a mutation batch and never during one.
+      `touch` every restored source before the confirming build, or copy with the mtime bumped.
 
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.
