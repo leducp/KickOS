@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Per-thread stdout regression. Proves that a root pre-publish printf (whose
-// cap index 0 is empty, so its send fails) does NOT poison a post-publish worker
-// whose cap 0 IS seated to the console endpoint. _write (user/src/newlib_stubs.cc)
-// self-classifies per invocation against the CALLING thread's own cap 0; a
-// process-wide probe would instead let root's one failed send divert every later
-// thread to the debug console.
-//
-// Console is DARK to an external observer after publish (stdout routes to the
-// software counting driver below, which never re-emits), so the verdict cannot ride
-// stdout markers. It rides the EXIT STATUS: main returns 0 iff the driver received
-// exactly the worker's known payload byte count, else 1. On mps2 arch_shutdown
-// forwards that status via semihosting SYS_EXIT_EXTENDED (see chip_mps2.cc), and the
-// CTest gate reads QEMU's process exit code.
-//
-// qemu (mps2) is a NON-enforcement board, so all threads share one address space and
-// the globals below are a legitimate cross-thread channel.
+// Check that root's failed stdout send before publication does not redirect
+// later workers away from their valid console capability.
+// The counting console driver does not print, so exit status reports whether
+// it received the expected payload. QEMU reads the semihosting exit code.
+// This test uses shared globals on the non-enforcing mps2 variant.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

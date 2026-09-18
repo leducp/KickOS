@@ -65,7 +65,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ,       // wait_obj: the IrqBinding; queue-less, it naming its one server
+        WAIT_IRQ, // wait_obj: IrqBinding; one server, no queue
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -168,18 +168,10 @@ namespace kickos
         uint8_t cap_irq_live = 0;
 
 #if KICKOS_KERNEL_CORES > 1
-        // THE CORES THIS THREAD MAY RUN ON, and the whole of placement: a single-bit mask is a
-        // pin and a multi-bit one is affinity, so there is no flag beside it saying which.
-        //
-        // INVARIANT: never empty, and always a subset of task_core_set(task). Seated at create
-        // from task_default_cores, restored to it by a zero mask, and every write intersects
-        // with the grant, so no narrowing can strand it. A task's grant cannot narrow out from
-        // under it either: the grant is refused once the task has a member.
-        //
-        // A NONZERO ThreadAttr::core_mask WAS ADMITTED BY sched_admit_mask AT THE SPAWN
-        // BOUNDARY, against this same grant, before thread_create stores it verbatim.
-        //
-        // 0 here means the thread was never seated, which only a slot no thread occupies is.
+        // Allowed cores: one bit pins the thread, multiple bits allow migration.
+        // Always nonempty and within task_core_set(task) for a live thread.
+        // Spawn validates through sched_admit_mask; zero at the ABI selects task defaults.
+        // A task grant cannot narrow once it has members. A zero field means an unused slot.
         uint32_t affinity = 0;
         static_assert(KICKOS_KERNEL_CORES <= 32,
                       "a core set is a 32-bit mask, as the doorbell's core mask is "
@@ -189,14 +181,9 @@ namespace kickos
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
-        // IRQ notifications delivered to this thread and not yet consumed by a wait, ONE BIT
-        // PER LINE: the bit is the binding's own pool index, seated by irq_notify_bind. Set
-        // from ISR context and from the doorbell syscall, cleared by the wait that takes it,
-        // both under IrqLock.
-        //
-        // HERE for the reason `affinity` is here: where uint64_t aligns to 8 this pair of
-        // words is the padding slice_deadline_ns leaves anyway, so at one kernel core the
-        // field is free. Moving it costs every TCB four bytes or eight.
+        // Unconsumed IRQ notifications, one bit per binding pool index.
+        // Set by ISRs or software posts and cleared by waits, under IrqLock.
+        // Placed here to reuse padding after slice_deadline_ns where available.
         uint32_t notify_pending = 0;
         uint64_t slice_deadline_ns = 0;
 
@@ -424,18 +411,14 @@ namespace kickos
             bytes = bytes + sizeof(uint32_t);
         }
 #endif
-        // Thread::notify_pending competes for that same padding word. Measured 0 on the host,
-        // armv7m, armv6m, rv32imac and one-core armv8a, and four on RXv3, which has no such
-        // padding.
+        // notify_pending uses this padding except on RXv3, where it adds four bytes.
         if (alignof(uint64_t) == 4)
         {
             bytes = bytes + sizeof(uint32_t);
         }
 #if KICKOS_KERNEL_CORES > 1
-        // Above one core affinity already holds the word, so the pair rounds
-        // slice_deadline_ns up a whole quantum: measured 8 on armv8a and on the LX6. A TCB
-        // aligned wider than that quantum rounds once more at the tail, and a 16-aligned host
-        // fixture is the only thing in the fleet that is.
+        // On SMP, affinity already uses the padding; notify_pending adds eight bytes
+        // after alignment. A 16-byte-aligned host TCB also needs tail padding.
         if (alignof(uint64_t) == 8)
         {
             size_t const pair = 2 * sizeof(uint32_t);

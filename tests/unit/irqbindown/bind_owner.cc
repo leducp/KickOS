@@ -1,27 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// WHO OWNS AN IRQ NOTIFICATION BINDING, which is the question a capability close has to ask
-// before it revokes one. irq_notify_bind demands CAP_WAIT, so the authority behind a binding
-// is the SET of WAIT-bearing capabilities the bound thread holds on that line, and one thread
-// legitimately holds several aliases of one line through separate grants: a UART driver is
-// handed the line with CAP_WAIT and the doorbell with CAP_SIGNAL.
-//
-// The arms below fix the three answers that set can give a close.
-//
-//   an alias remains    the binding stands, and a later post still lands in the word. This is
-//                       the arm a close that revoked unconditionally fails: the closer walks
-//                       away without the authority it never gave up, its next wait answers
-//                       EPERM, and a post piles up in the latch with nobody to take it.
-//   the last one goes   the binding is released, and a post then finds no target. Without
-//                       this arm the one above passes over a close that revokes NOTHING,
-//                       which leaves a pointer into a TCB the pool can reuse.
-//   the thread dies     teardown releases it whatever the alias count was, because the sweep
-//                       closes every entry and the last of them is a close of the third kind.
-//
-// A SECOND WAIT ALIAS, NOT A SIGNAL ONE, IS WHAT SEPARATES THE FIRST TWO. Testing the closed
-// capability's own rights would answer both the same way and leave the multiple-WAIT case
-// deciding by which alias the thread happened to close first.
+// An IRQ binding remains valid while its server holds any CAP_WAIT alias.
+// Test closing a SIGNAL alias, closing one of two WAIT aliases, closing the
+// last WAIT alias, and thread teardown.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -46,8 +28,6 @@ namespace
     {
     };
 
-    // The claim's own object handle, which is what a close is keyed on and what an alias must
-    // name to be an alias at all.
     int obj_of(Thread* t, uint32_t cap)
     {
         IrqLock lock;
@@ -59,8 +39,7 @@ namespace
         return e->obj;
     }
 
-    // A second capability on the same binding, taking the object reference the delegation
-    // path takes for one: cap_install seats the entry and moves no counter of its own.
+    // Add an alias and its object reference; cap_install does not increment it.
     uint32_t alias(Thread* t, int obj, uint8_t rights)
     {
         IrqLock lock;
@@ -80,7 +59,6 @@ namespace
         return b->notify_target;
     }
 
-    // A server holding the claim, bound, with the bit its word takes a post in.
     struct Bound
     {
         Thread* server;
@@ -107,7 +85,7 @@ namespace
     }
 }
 
-// The designed two-alias driver: bound through the line capability, closing the doorbell.
+// Closing the doorbell capability must preserve the server's WAIT binding.
 TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_wait_binding_standing)
 {
     Bound const b = bind_server();
@@ -119,18 +97,14 @@ TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_wait_binding_standing)
     }
 
     EXPECT_EQ(bound_server(b.obj), b.server);
-    // The authority is not merely recorded: a post still reaches the word, which is what the
-    // driver's next wait returns on.
+    // Verify that the remaining authority still allows delivery.
     EXPECT_EQ(irq_notify(b.server, b.claim), 0);
     EXPECT_EQ(b.server->notify_pending & b.bit, b.bit);
 }
 
-// Two WAIT aliases: the first close is not the release and the second is. Closing the CLAIM
-// first is deliberate, the surviving alias then being the one the bind did not run through.
-//
-// THE UNCLOSED SIGNAL ALIAS IS THE INSTRUMENT, not part of the case: without a reference
-// still standing the last close frees the pool slot, the binding stops resolving for that
-// reason alone, and the arm reads a null target over a close that released nothing.
+// Close the original claim before its WAIT alias. Keep a SIGNAL alias alive
+// so the binding stays allocated: a null target then proves release rather
+// than destruction of the whole object.
 TEST_F(IrqBindOwn, the_binding_ends_with_the_last_wait_alias_and_not_before)
 {
     Bound const b = bind_server();
@@ -151,8 +125,7 @@ TEST_F(IrqBindOwn, the_binding_ends_with_the_last_wait_alias_and_not_before)
     EXPECT_EQ(bound_server(b.obj), nullptr);
 }
 
-// A post arriving between the two closes above goes back where a post with no server goes,
-// so the successor of a partially-closed driver is not left silent.
+// Preserve an unconsumed event for the next server when the last WAIT cap closes.
 TEST_F(IrqBindOwn, a_post_taken_before_the_last_close_returns_to_the_latch)
 {
     Bound const b = bind_server();
@@ -164,7 +137,6 @@ TEST_F(IrqBindOwn, a_post_taken_before_the_last_close_returns_to_the_latch)
         IrqLock lock;
         ASSERT_EQ(handle_close(b.server, b.claim), 0);
     }
-    // Still served, so the bit stays where it was taken.
     EXPECT_EQ(b.server->notify_pending & b.bit, b.bit);
 
     {
@@ -175,8 +147,7 @@ TEST_F(IrqBindOwn, a_post_taken_before_the_last_close_returns_to_the_latch)
     EXPECT_EQ(kernel().irq_bindings.resolve(b.obj), nullptr);
 }
 
-// Death releases it whatever the count was: the sweep closes every entry, so the last one is
-// an ordinary close with no alias left.
+// Teardown must release the binding after closing every alias.
 TEST_F(IrqBindOwn, teardown_releases_the_binding_through_the_last_alias_it_closes)
 {
     Bound const b = bind_server();

@@ -24,17 +24,11 @@ if(KICKOS_BOARD STREQUAL "microbit")
   list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
 endif()
 
-# The two 64 KiB FLASH parts (stm32f103 bluepill-c8, stm32f302), microbit (nrf51) and the
-# ENFORCING esp32c6 variants build the suite as THREE images: main.cc partitions its
-# registration list into three contiguous regions and KICKOS_SELFTEST_PART selects one. Each
-# part plans 1..N from its OWN registry, so the bench has to run all three to cover the suite.
-# Undefined elsewhere, where main.cc defaults it to 0 and registers everything.
-#
-# esp32c6's reason is a THIRD one, neither FLASH nor arena: its unprivileged code+rodata is ONE
-# pow2 PMP NAPOT window (esp32c6.ld `_code_size`, 128 KiB), so the whole suite in one image
-# overflows a window whose next step is 256 KiB and costs 128 KiB of thread arena. The flat
-# variant carves no such window, so it stays a single image, which is why this clause reads
-# KICKOS_HAVE_MPU and the other three read the chip alone.
+# Split the suite into three images on 64 KiB parts, microbit, and enforcing
+# ESP32-C6 variants. KICKOS_SELFTEST_PART selects a contiguous registry segment;
+# run all three for complete coverage. Zero registers the whole suite.
+# ESP32-C6 uses a 128 KiB PMP code window; doubling it for a single test image
+# would consume another 128 KiB of arena. Flat variants need no such window.
 set(_selftest_split 0)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302"
    OR KICKOS_CHIP STREQUAL "nrf51"

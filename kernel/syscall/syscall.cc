@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The arch-independent syscall table + dispatch. The arch entry (sim
-// trampoline / ARM SVC handler) reads the number + args and calls
-// syscall_dispatch(); the result is delivered back to the caller frame.
-// Kernel objects addressable from userspace (semaphores, threads) live in
-// static pools referenced by small integer handles: no pointers cross the
-// boundary.
+// Architecture-independent syscall dispatch. Architecture entry code passes
+// the number and arguments; dispatch returns the result to the caller frame.
+// Kernel objects are accessed through handles rather than kernel pointers.
 
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
@@ -85,16 +82,9 @@ namespace kickos
             return static_cast<uint64_t>(rc);
         }
 
-        // The console's user buffer, moved through the funnel a chunk at a time.
-        // kconsole_write streams privileged whatever it is handed, so a user pointer
-        // reaching it names whatever the RUNNING process holds at that address.
-        //
-        // Answers the bytes that REACHED the console. No lock spans the chunks, so a granule
-        // the entry proved readable can be unmapped before a later chunk reaches it, and the
-        // walk stops there.
-        //
-        // noinline is load-bearing for user_panic's reason below: the chunk must not widen
-        // syscall_dispatch's frame.
+        // Copy user data to the privileged console in chunks, returning bytes written.
+        // Stop if a later chunk becomes inaccessible between lock scopes.
+        // Keep out of line so the chunk buffer does not enlarge syscall_dispatch's frame.
         __attribute__((noinline)) size_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[64];
@@ -1151,15 +1141,9 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM); // never reserved by this task
             }
-            // Full budget, or a region this backend seats no descriptor for, is a returned
-            // error: truncating the set or carrying the grant unenforced would fault the thread
-            // on memory it was told it had. The knob here is KICKOS_MPU_MAX_REGIONS, so the code
-            // is not -KOS_EMFILE.
-            //
-            // A block this thread already names with another memory type is RETYPED in place;
-            // two descriptors over one block would leave the range checks and the hardware
-            // reading different ones. It sits inside MpuSet because a `prior` region held across
-            // the call here is caller stack the SVC red zone is measured on.
+            // Return an error if the descriptor budget or backend cannot enforce the grant.
+            // Retype an existing block in place to avoid conflicting overlapping descriptors.
+            // Keep the temporary region in MpuSet to limit syscall stack use.
             if (not c->mpu.add_enforced_retyping(base, rsz, attr))
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
@@ -1228,9 +1212,7 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_IRQ_ATTACH:
         {
-            // No authority: possession of a WAIT-bearing cap is the authorisation, as it is
-            // for wait and ack. The out-pointer carries the bit this line will arrive in, so
-            // it is checked BEFORE the bind, which a refused write could not undo.
+            // CAP_WAIT authorizes binding. Validate out_mask before changing the binding.
             int rc = cap_out_check(a1);
             if (rc != 0)
             {
@@ -1242,10 +1224,7 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_IRQ_CLAIM:
         {
-            // AUTH_IRQ, like IRQ_UNMASK: the tier-1 mint takes a bare line number out of the
-            // namespace and makes it owned. USING an already-claimed line needs no
-            // authority; possession of the cap is the authorisation, checked in
-            // cap_resolve_e.
+            // Claiming a raw line requires AUTH_IRQ. Later use is authorized by cap rights.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
@@ -1285,15 +1264,10 @@ uint64_t syscall_body(uintptr_t nr,
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:
         {
-            // The ONLY route to the bench helpers from an app: each reads kernel .data or a
-            // peripheral, so an app calling them directly runs them at ITS privilege and faults.
-            // Both prints run here, in thread context and holding no IrqLock.
-            //
-            // BEING A BENCH IMAGE GRANTS NO THREAD ANYTHING. An op that attaches or rings a
-            // doorbell carries the AUTH_IRQ its non-bench counterpart carries. RAISE injects
-            // too, but carries none: the arm already chose its line from a cap, so RAISE takes
-            // no line of its own to guard. Every caller-supplied count is bounded here rather
-            // than inside the helper, so a sweep body stays a measurement and not a gate.
+            // Benchmark helpers require kernel privilege. Print without IrqLock held.
+            // Operations that claim or ring IRQs require AUTH_IRQ. RAISE uses the line
+            // already selected through a capability. Validate counts here to keep checks
+            // out of the measured helpers.
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:

@@ -32,9 +32,8 @@ namespace kickos
         {
             q.unlink(&best->link);
             best->clear_wait_edge();
-            // No deadline cancel here: a pop is not an unpark, since endpoint_recv_locked pops a
-            // CALL_SEND_WAIT caller straight into reply_donor_park and the deadline must
-            // span both call phases. sched::wake_no_resched owns the cancel.
+            // Keep the deadline when moving a caller from SEND_WAIT to reply_donor_park.
+            // It covers both phases; wake_no_resched cancels it when the caller is woken.
         }
         return best;
     }
@@ -231,9 +230,7 @@ namespace kickos
     void reply_donor_park(Thread* server, Thread* caller)
     {
         server->reply_waiters.push(&caller->link);
-        // The server is the ONLY edge back from a queue-less reply park; endpoint_recv_locked
-        // re-parks a just-popped SEND_WAIT caller here, so this must run after that pop
-        // cleared the endpoint edge.
+        // Set the reply wait edge after the endpoint pop clears the send wait edge.
         caller->wait_kind = WAIT_EP_REPLY;
         caller->wait_obj = server;
     }
@@ -324,17 +321,12 @@ namespace kickos
                 p = caller->prio;
             }
         }
-        // ep->server is the authoritative "t is this endpoint's receiver" bit; the chain only
-        // indexes it. Do not re-derive membership from t's capability table, and do not sweep
-        // the endpoint pool either: at a large KICKOS_MAX_ENDPOINTS that sweep is the masked
-        // window. A chain member is always a live slot: server is cleared before recv_holders
-        // can reach 0, and the slot is freed only at zero refs.
-        //
-        // Ends on at()'s null, EP_SERVED_NONE decoding out of range (endpoint.h). NOTHING HERE
-        // MAY REACH kpanic: this funnel runs below the timer trap, and a panic door in it puts
-        // the whole console tail on that trap's measured descent, 16 bytes over rv32imac's TRAP
-        // red zone. The KICKOS_DEBUG_ASSERT below IS such a door at KICKOS_DEBUG=1, a posture
-        // no preset builds and so one check_trap_redzone.sh never measures.
+        // Follow the served-endpoint chain instead of scanning capabilities or the
+        // endpoint pool under the lock. ep->server defines membership; each linked
+        // slot stays live until the server reference is removed.
+        // EP_SERVED_NONE resolves to null and terminates traversal. Avoid panic paths
+        // here: this code runs below the timer trap and console reporting exceeds
+        // its RV32 red zone. The debug assertion adds such a path in debug builds.
         for (Endpoint* ep = kernel().endpoints.at(ep_served_index(t->served_head)); ep != nullptr;
              ep = kernel().endpoints.at(ep_served_index(ep->next_served)))
         {

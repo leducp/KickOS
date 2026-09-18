@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A serving node of an AMP partition: an ordinary thread parked in an ordinary receive, handed
-// an ordinary reply capability. The port it binds is the partition's first entry naming THIS
-// image's node, so one build of this source is whichever peer its configure was given. Nothing
-// below can tell a far caller from a near one (docs/design-multicore.md N6d).
-//
-// It never returns: root returning ends the system, and every node of this partition runs on
-// one machine (<kickos/sys/init.h>).
+// Serve the first partition port assigned to this node using ordinary
+// receive/reply calls. The service handles local and far callers alike.
+// Never return from root: that would shut down the partition's machine.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -52,20 +48,10 @@ int main(int argc, char** argv)
     printf("ampping: node %u serves port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)port);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // NODE 0 HAS NO OTHER WAY TO SEE THAT THIS APP RAN. Node 0's app calls the first peer the
-    // partition names and no other, so a node it never calls moves no window counter, and the
-    // line above is not evidence to anything: nothing serialises the console across two kernels
-    // and N6h rules the stream interleaves at byte granularity. So this app declares itself
-    // into its own row of the shared record, which node 0 reads and reports.
-    //
-    // AND THE ANNOUNCEMENT ABOVE IS ALREADY QUEUED WHEN THIS MARK APPEARS, which is what lets
-    // node 0 read a completed sweep as every node having finished its BOOT output. Publish the
-    // mark above that line and node 0 can print while a peer's banner is still arriving.
-    //
-    // The port travels as a CLAIM and is not what gets stored: the kernel checks it against the
-    // partition list and publishes its own derivation, so nothing this app says reaches the
-    // region two kernels share. A refusal means the two derivations disagree, which is worth a
-    // line to a human even though node 0's short count is what a gate reads.
+    // Publish startup in the shared record so node 0 can observe uncalled peers.
+    // Console output can interleave across kernels, so it is not a reliable marker.
+    // Publish after queuing the boot line. The kernel validates the claimed port
+    // and writes its own partition-derived value to the shared record.
     if ((intptr_t)kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port) < 0)
     {
         printf("ampping: node %u could not publish the port it serves\n",

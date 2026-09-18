@@ -128,8 +128,7 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     {
         return -KOS_EINVAL; // the engine blocks on the per-word RX-complete line
     }
-    // The thread that opens the bus is the thread that waits on it, so it binds the line's
-    // notification here rather than on the first transfer.
+    // Bind IRQ delivery to the thread that opens and uses the bus.
     if (kos_irq_attach(cfg->irq, nullptr) != 0)
     {
         return -KOS_EPERM;

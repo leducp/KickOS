@@ -1,24 +1,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# What a fused reply-receive owes on its way out, over kernel/syscall/syscall_ipc.cc itself.
-#
-# THE K-SEAM SOURCES AT TWO KERNEL CORES, which is the whole point for the announcement arms:
-# the obligation they pin is one core telling another to look, and at one core
-# poke_peers_below compiles to nothing and every arm would pass having witnessed nothing. The
-# sim preset drives one core, so this gate cannot join kickos_kseam; exitquiesce's
-# kickos_kseam_smp is the same sources at the right posture, and this library is that set plus
-# the translation unit under test.
-#
-# ipc_seam.cc answers the six symbols that set leaves undefined, all of them in the address
-# layer. It is NOT syscall_mem.cc: that file reads MPU and address-space state the host
-# fixture seats no board for, and the arms here own their buffers outright.
-#
-# KICKOS_BENCH=1 IS AN INSTRUMENT AND NOT A POSTURE HERE. The brackets compile to nothing
-# without it, and one of them is the boundary an arm below holds: PH_REPLY_RECV_TOTAL must
-# close PAST the deferred wake's seat. bench_phase_add is an ordinary out-of-line call and
-# kernel/bench/bench.cc is not in this set, so bench_seam.cc answers it and records WHEN the
-# row was taken. It answers the four further symbols the bench build pulls in as well.
+# Test fused reply-receive using the real IPC and scheduler code at two cores.
+# Peer notifications are compiled out on single-core builds.
+# ipc_seam supplies address validation and copying without board MPU state.
+# Enable benchmark calls so bench_seam can record whether REPLY_RECV_TOTAL
+# closes after deferred wake completion.
 set(_fusedwake_tu "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc")
 if(NOT EXISTS "${_fusedwake_tu}")
   message(FATAL_ERROR

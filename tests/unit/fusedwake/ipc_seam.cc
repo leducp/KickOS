@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What kernel/syscall/syscall_ipc.cc leaves undefined once the K-seam sources answer the rest,
-// re-derived with
-//
-//   nm --undefined-only <the object> | comm -23 - <what those sources define>
-//
-// at two kernel cores. All six are the address layer, and kernel/syscall/syscall_mem.cc is
-// deliberately NOT the answer: its verdicts read MPU regions and an address space the host
-// fixture seats no board for, so every access in an arm would be refused for a reason the arm
-// is not about. The arms own their buffers and pass them disjoint, so the copies below are the
-// real thing and only the PERMISSION question is answered by fiat.
+// Address-layer test hooks for the real IPC implementation. Tests own
+// disjoint buffers, so copies run normally and permission checks are stubbed.
+// syscall_mem.cc requires board MPU state unavailable in this fixture.
 
 #include <string.h>
 

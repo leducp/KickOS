@@ -2,15 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# For each named `case KOS_SYS_*` arm of kernel/syscall/syscall.cc, an `IrqLock` must be in
-# scope at the point the arm reaches the seam call.
-#
-# The scope test is textual: a lock taken inside a function the arm calls is not modelled, so an
-# arm that delegates its bracket that way must not be listed here.
-#
-# An arm that vanishes is a failure, not a pass.
-#
-# usage: check_irq_syscall_locked.sh [repo-root]
+# Check that each listed syscall holds IrqLock when calling its IRQ helper.
+# This is a textual scope check; omit calls whose helper takes its own lock.
+# Missing syscall cases fail the check.
+# Usage: check_irq_syscall_locked.sh [repo-root]
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"

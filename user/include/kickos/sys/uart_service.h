@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Buffered-UART service over the raw UART class: the shared ring block, the wire ABI of
-// <kickos/sys/uart.h>, and the two loops the driver's two threads run.
-//
-// Every kos_uart_* call touches registers, so all of them may be made ONLY from the IRQ
-// thread. That thread owns every register plus TX `tail` and RX `head`; the service thread
-// owns TX `head` and RX `tail`. One writer per index is what keeps both rings SPSC with no
-// lock, which <byte_ring.h> requires and cannot check.
+// Buffered UART service with shared rings and the uart.h protocol.
+// Only the IRQ thread may call kos_uart_* or access registers. It owns TX
+// tail and RX head; the service thread owns TX head and RX tail. Each ring
+// index must have one writer to satisfy byte_ring.h's SPSC contract.
 
 #ifndef KICKOS_SYS_UART_SERVICE_H
 #define KICKOS_SYS_UART_SERVICE_H
@@ -141,8 +138,7 @@ inline void dev_shutdown(Uart*)
 template <typename Uart>
 void irq_loop(Uart& dev, Shared* sh)
 {
-    // Before ready, and before the first wait: the doorbell the service thread rings is
-    // delivered by this bind where it arrives ahead of it, and lost where it does not.
+    // Bind before signaling readiness and waiting; binding delivers pending doorbells.
     if (kos_irq_attach(KOS_UART_CAP_LINE, nullptr) != 0)
     {
         dev_shutdown(&dev);

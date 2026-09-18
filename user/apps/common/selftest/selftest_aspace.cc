@@ -9,19 +9,10 @@
 namespace selftest
 {
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // --- The address-space seam (kos_aspace_probe) ------------------------------
-    // The map editor is a KERNEL seam, so each arm asks for a whole scenario rather than
-    // for a mapping; the probe answers a number. What every arm is really guarding against
-    // is an identity map answering in the editor's place, which passes a careless version
-    // of all of them.
-    // A frame RUN and an address space are objects of the capability layer, minted,
-    // resolved through the one chokepoint and closed. Every bit is a yes/no about a HANDLE;
-    // nothing here is an address.
-    // The zero-authority half of t_cap_objects. A PLAIN SPAWN, so it is a thread of ROOT's
-    // task and shares root's address space: that is what lets it answer through a global,
-    // which a member of a task of its own could not (its copy of the page would be its own).
-    // Its authority word is 0, seated at the spawn, and that is the whole difference from the
-    // caller root makes below.
+    // Test address-space operations through kernel scenarios returning status bits,
+    // not raw addresses. Frame runs and spaces are capability objects.
+    // The zero-authority worker joins root's task and shares its globals; only
+    // its authority differs from root's for the comparison.
     uintptr_t g_mint_seed = 0;
     uintptr_t g_mint_objects = 0;
     uintptr_t g_mint_self_space = 0;
@@ -1406,17 +1397,10 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // --- The ownership rule the other way round: THE DONOR DIES FIRST ----------------
-    // A donor that dies first frees each of its frames exactly once, so frame_pool_refused
-    // stays zero while the borrower reads memory the pool has since handed to somebody else:
-    // NO FRAME-POOL COUNTER CAN SEE IT. The lifetime edge domain_for takes on the donor
-    // (kernel/domain/domain.cc) is what this arm holds to account.
-    //
-    // The donor is a task of its OWN and reserves a block of its own: root cannot exit, and
-    // a block root reserved is borrowed in the donor's space, so the donor's teardown would
-    // free none of it. Root joins the donor's thread, so the donor is gone before anything
-    // below runs, and a churn task then takes what the pool will hand out and stamps every
-    // frame of it.
+    // Exit the owning donor task before its borrower, then allocate and write
+    // frames in a churn task. The borrower's data must survive through the
+    // domain lifetime reference. Pool counters alone cannot detect early reuse.
+    // Root joins the donor before starting churn; root cannot serve as the donor.
     enum
     {
         DX_STATUS = 0, // 1 once the donor seated a borrower into its own block
@@ -1971,16 +1955,9 @@ namespace selftest
         TAP_CHECK(rep[LR_FRAMES1] == rep[LR_FRAMES0]);
     }
 
-    // --- ...and the donor's reference comes back with it --------------------------------
-    // Releasing the borrower's space and surrendering the edge are one step in the code and
-    // two claims, and only the donor's own death separates them. So the donor here is the
-    // member's OWN task, and it dies inside the arm.
-    //
-    // The reading is a DIFFERENCE ACROSS THE REAP and never against a baseline: a refusal
-    // that keeps the reference is undone by the next domain allocation, which reclaims the
-    // slot, drops the stale space and surrenders the edge. Nothing between the member's own
-    // reading and root's allocates a domain. The refusal is the destination bound on a
-    // delegated capability, the last check before the spawn takes a reference.
+    // A failed spawn must release both the borrower space and its donor reference.
+    // Use the member's own task as donor and let it exit. Compare counts across
+    // reaping without allocating another domain, which could hide a stale reference.
     enum
     {
         LD_RC = 0,     // the refused spawn's own answer, negated
@@ -2065,18 +2042,10 @@ namespace selftest
         TAP_CHECK(frames_end > rep[LD_FRAMES]);
     }
 
-    // --- A sibling scribbling a PARKED member's frame -----------------------------------
-    // Thread stacks are TASK-WIDE mappings here, so a member can write a not-yet-run
-    // member's stack; what must not be reachable there is the privileged return state. The
-    // sibling fills the whole top-of-stack frame window with the AArch64 EL1h state word, so
-    // whichever slot holds the saved state reads "resume privileged" and whichever holds the
-    // return address reads a value the sibling picked. FILLING THE WINDOW is what keeps the
-    // arm from going vacuous when the frame layout moves.
-    //
-    // The victim proves both halves: reaching its own body says the return address was its
-    // entry, and kos_shutdown answering -KOS_EPERM says it runs unprivileged. The sibling
-    // MUST NOT exit while the victim is parked, both having to be live at once, so it parks
-    // on a semaphore nothing posts and the victim's own exit collects it.
+    // A task sibling overwrites the victim's user stack with privileged state
+    // values before it runs. Fill the frame window so layout changes do not hide
+    // the attack. The victim must reach its own entry and fail kos_shutdown
+    // with EPERM. Keep the sibling alive until the victim finishes.
     constexpr uint64_t HOSTILE_EL1H = 0x205u; // M[3:0] = EL1h, plus the debug mask
     constexpr uint32_t HOSTILE_WINDOW = 1024; // spans the whole armv8a exception frame
     constexpr uint32_t HOSTILE_JOIN_US = 60000;
@@ -2677,22 +2646,11 @@ namespace selftest
             kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, reinterpret_cast<uintptr_t>(&g_dt_word));
         kos_sem_post(CH_DONE);
     }
-    // --- A parked receiver's buffer unmapped under it -----------------------------------
-    // The scenario SEC-2 names: a thread parks in recv with `buf` inside a frame-capability
-    // mapping, a task-mate unmaps that page, and the sender's copy then reaches a granule the
-    // space no longer translates. Both ends must be answered -KOS_EFAULT.
-    //
-    // The sender's own buffer is app static data and NOT the mapping, so the refusal here is
-    // arch_aspace_acquire and never ep_copy's overlap test, which t_ipc_one_buffer_both_ends
-    // covers instead.
-    //
-    // BOTH PARTIES ARE SPAWNED AND PINNED (TAP_PIN_CORE), the receiver above the puller. The
-    // unmap has to land after the receiver's ENTRY check and not merely before the copy: an
-    // already-unmapped buffer is refused at the boundary, which parks nobody. The SENDER's own
-    // answer is what witnesses that the order held, and the assertion below is on it rather
-    // than on a probe: -KOS_EFAULT reaches a sender only through the fastpath into a parked
-    // receiver, so a receiver refused at its entry instead leaves this send parked to its
-    // deadline, reading -KOS_ETIMEDOUT.
+    // Park a receiver, unmap its buffer from a sibling, then send. Both parties
+    // must get EFAULT. Keep the sender buffer separate to exclude overlap errors.
+    // Pin both workers and give the receiver higher priority so validation
+    // precedes unmap. Sender EFAULT proves delivery reached a parked receiver;
+    // boundary rejection would instead leave the sender to time out.
     constexpr size_t RU_LEN = 32;
     constexpr uint32_t RU_SEND_US = 200000;
     // Insurance only: the puller's send is what wakes this receiver, and the puller's first
@@ -2790,18 +2748,9 @@ namespace selftest
     }
 
 
-    // --- A frame-run slot handed out a SECOND time ------------------------------------------
-    // frame_run_create spent alloc()'s INDEX where every consumer resolves a HANDLE, and an
-    // index answers resolve() only while its slot's generation is still 0. The create that
-    // takes a RECYCLED slot therefore resolved to nothing, and the run's base was stored
-    // through that null: a kernel data abort at address 0, reachable from here.
-    //
-    // KICKOS_MAX_FRAME_RUNS IS KERNEL-SIDE, so this arm MEASURES the wall instead of naming
-    // it. Phase one holds seeds until one is refused, which is the point past which any
-    // further cycle must be reusing something; phase two then runs more create/close cycles
-    // than that, so it provably crosses a recycle whatever the limiting supply turns out to
-    // be. Asserting the two numbers against each other is what keeps the arm from going
-    // vacuous on a board whose pools are wider.
+    // Exercise frame-run creation after slot reuse, when a raw index no longer
+    // resolves as a generational handle. Discover capacity by allocating until
+    // refused, then perform more create/close cycles than that count to force reuse.
     constexpr uint32_t FR_HOLD_MAX = 24;
     constexpr uint32_t FR_CYCLES = FR_HOLD_MAX;
     kos_cap_t g_fr_f[FR_HOLD_MAX];
@@ -2892,23 +2841,11 @@ namespace selftest
         return true;
     }
 
-    // --- A reply capability the RECEIVER was never told the handle of ------------------------
-    // Both LOCAL mint sites install a CAP_REPLY and only then write its handle where the
-    // receiver can read it, and that write is a copy the boundary check cannot promise. A
-    // handle nobody was told can never be spent, so the install is undone and both ends are
-    // answered -KOS_EFAULT.
-    //
-    // THE OUT-POINTER NAMES A RESERVED PAGE, and the map state decides WHICH check refuses it.
-    // user_range_ok wants a GRANTED range, which kos_frame_unmap takes back, so an
-    // already-unmapped page is refused at ENTRY and no unmap has to race a park: site A reads
-    // that refusal. Site B is the other order, the one a vanished page presents to a thread
-    // ALREADY PARKED, where the entry check ran while the page was mapped and the mint's own
-    // write is what meets the hole. Every thread here is unprivileged, root included, so
-    // neither check is waived for any of them.
-    //
-    // KICKOS_CAP_REPLY_MAX refusals run BEFORE each control. One refusal cannot tell an undo
-    // that freed the table slot from one that also gave the reply BOUND back, and it is the
-    // control whose own mint runs against that bound.
+    // If reply-cap write-back fails, revoke the cap and return EFAULT to both ends.
+    // Site A uses an already-unmapped opts page to test boundary validation.
+    // Site B unmaps after parking to test rollback after a successful validation.
+    // Repeat KICKOS_CAP_REPLY_MAX failures before a successful control to check
+    // recovery of both the slot and reply-cap budget.
     constexpr size_t LU_LEN = 8;
     constexpr uint32_t LU_US = 2u * 1000u * 1000u;
     constexpr int CH_LU_EP = 2;
@@ -2932,23 +2869,15 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Site B's other end. ONE receiver takes every refusal AND the control, so the reply bound
-    // under test is one table's rather than a fresh table per round.
-    //
-    // THE GATE IS WHAT ORDERS THE MAP AGAINST THE PARK, and it is not decoration: this
-    // receiver is unprivileged, so its own boundary check refuses an unmapped out-pointer at
-    // ENTRY and it would never reach the park the fastpath needs. Root maps the page, opens
-    // the gate, waits on await_pinned_park for a positive reading that this thread has parked,
-    // then unmaps under that park. That is the state a vanished page presents, and the one the
-    // fastpath's own write meets.
+    // Reuse one receiver across failures and the control to test one cap budget.
+    // Map opts before releasing its gate, confirm the receiver parked, then unmap
+    // the page. This ensures failure occurs at delivery rather than syscall entry.
     void lu_receiver(void*) // caps: done@1, E(WAIT)@2, gate@3
     {
         for (uint32_t i = 0; i <= KICKOS_CAP_REPLY_MAX; i++)
         {
             kos_sem_wait(CH_LU_GATE);
-            // THE OPTS STRUCT ITSELF SITS ON THE MAPPED PAGE, the nested info being the
-            // out-pointer the kernel writes: that is what puts the disclosure on the page
-            // root unmaps under this park.
+            // Place opts on the mapped page so unmapping invalidates the reply-cap output.
             struct kos_reply_recv_opts* const o =
                 reinterpret_cast<struct kos_reply_recv_opts*>(g_lu_info);
             kos_reply_recv_opts_init(o, CH_LU_EP, 0, KOS_TIMEOUT_NONE);
@@ -2999,18 +2928,12 @@ namespace selftest
         }
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
 
-        // --- SITE A IS NOT DRIVEN HERE, AND THIS RECORDS WHY -------------------------------
-        // The receive's CALL arm validates the out-pointer and writes it inside ONE syscall,
-        // under IrqLock, with no park in between. user_range_ok wants a GRANTED range and
-        // access_copy then walks that range's translation, so the only state where the first
-        // passes and the second refuses is a leaf a peer core removed between them. That
-        // window is a race no arm may bet on, and an already-unmapped page is refused at the
-        // BOUNDARY instead. The read below is that boundary refusal: the arm states the reason
-        // its sibling site is the one under test rather than asserting an outcome it cannot
-        // reach. The retraction itself is witnessed at site B and in tests/unit/capprobe.
+        // Site A validates and writes the output under one lock without parking.
+        // Only a concurrent unmap could make copying fail after validation, so this
+        // test does not depend on that race. An already-unmapped page tests boundary
+        // validation here; site B and tests/unit/capprobe test capability rollback.
         bool spawned = true;
-        // The opts struct on the vanished page, as at site B: the boundary refusal is over
-        // the struct the kernel reads and writes, which is where the info now lives.
+        // Use opts on the unmapped page to test validation of the metadata output.
         int32_t const a_entry =
             kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN),
                            reinterpret_cast<struct kos_reply_recv_opts*>(va));

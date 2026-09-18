@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Interrupts as events that wake a thread. Two tiers:
-//   Tier 2 (privileged, in-kernel only): irq_attach binds a direct handler that runs
-//     in ISR context. No syscall reaches it.
-//   Tier 1 (unprivileged userspace driver): irq_claim/attach/wait/ack/notify. A CAP_IRQ
-//     cap names the binding; the serving thread binds its notification bit, the generic
-//     first-level ISR masks the line and sets that bit, and the driver waits in thread
-//     context, services, and acks (unmask).
-//     Minting takes AUTH_IRQ; using a claimed line takes possession of the cap.
-//     Two threads may share one line with different rights; cap_teardown releases it.
+// IRQ delivery has two interfaces:
+// - Kernel handlers run directly in ISR context through irq_attach.
+// - Userspace drivers hold CAP_IRQ capabilities and bind delivery to one thread.
+//   The ISR masks the line and posts a notification. The driver services the
+//   device, then rearms through wait or ack.
+// Claiming a line requires AUTH_IRQ; using it requires capability rights.
 
 #ifndef KICKOS_IRQ_H
 #define KICKOS_IRQ_H
@@ -79,27 +76,18 @@ namespace kickos
     // exactly while the line is free.
     struct IrqBinding
     {
-        // The thread this line's notification is delivered into, seated by irq_notify_bind
-        // and cleared when that thread drops the capability. A raise arriving while it is
-        // null latches in `pending` instead, which is what keeps a doorbell rung before the
-        // server's first bind.
+        // Bound server thread. Events latch in pending while no server is bound.
         Thread* notify_target = nullptr;
         int line = 0;
-        // Which bit of the target's notify_pending this line owns: the binding's own pool
-        // index, so no two live bindings can collide and nothing has to allocate it.
+        // Bit in the server's notify_pending word, equal to this binding's pool index.
         uint8_t notify_bit = 0;
-        // A raise no notification word has taken. Set only while notify_target is null.
+        // Event pending while notify_target is null.
         bool pending = false;
-        // Whether the wait notify_target is in right now ACCEPTS this line, which is what
-        // lets a raise END that wait rather than only set its bit. Seated under IrqLock by
-        // irq_notify_wait_enter and cleared by irq_notify_wait_leave; a wait that does not
-        // accept the line leaves the bit standing for one that does.
+        // The current wait accepts this line and may be woken by it.
+        // Set by irq_notify_wait_enter and cleared by irq_notify_wait_leave under IrqLock.
         bool notify_wake = false;
-        // Set ONLY when an irq_wait returns (event consumed, line masked by the ISR,
-        // awaiting rearm), NEVER in the ISR. Setting it in the ISR races the
-        // ack;compute;wait shape: unmasking before the event is serviced re-fires the
-        // still-asserted line -> phantom notification -> next wait returns with no event ->
-        // the driver drains an empty device FIFO. Thread context only, under IrqLock.
+        // Set when a wait consumes the event, under IrqLock. Never set in the ISR:
+        // that would allow ack to unmask a level interrupt before the device is serviced.
         bool needs_rearm = false;
         uint8_t trigger = IRQ_EDGE;
         // False until the first arm. That arm discards a latch left from before the
@@ -129,57 +117,37 @@ namespace kickos
     bool irq_attach(int irq, IrqHandler handler, void* arg);
     void irq_detach(int irq);
 
-    // Tier 1: IRQ-as-event (usable from unprivileged userspace via syscalls). The
-    // caller must hold AUTH_IRQ; claims `line` (one owner, no stealing), allocates a
-    // binding, and installs a full-rights CAP_IRQ into `c`'s table. The line is left
-    // MASKED with needs_rearm set, so the first irq_wait arms it in the thread that
-    // will consume the event. -> 0 with the cap in *out_cap, or -KOS_E*: the exhaustion cases
-    // are distinct: -KOS_ENOMEM the binding pool or a publication record, -KOS_EMFILE the
-    // caller's own table, -KOS_EOVERFLOW the calling TASK's ceiling with the pool still holding
-    // slots (task.h). Above one kernel core -KOS_EBUSY also covers a line whose previous
-    // binding is still retiring, which a later claim of the same line takes.
+    // Claim an unused line with AUTH_IRQ and install a full-rights CAP_IRQ.
+    // Leave it masked until the server's first wait or ack. Return 0 with out_cap,
+    // or -KOS_E*: ENOMEM for pool exhaustion, EMFILE for a full cap table,
+    // EOVERFLOW for the task budget, EBUSY for an occupied or retiring line.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
-    // Bind this line's notification into the CALLING thread's word, and answer the one-bit
-    // mask it arrives in. Needs CAP_WAIT. The server does this ONCE before its first wait:
-    // the claim runs in the spawner, which delegates the capability and closes its own copy,
-    // so the claiming thread is not the serving one and cannot stand in for it. Idempotent
-    // for the thread already bound, -KOS_EBUSY for a line another thread serves. A raise
-    // latched before the bind is drained into the word here.
+    // Bind delivery to the calling thread and return its one-bit notification mask.
+    // Requires CAP_WAIT. The server must bind before waiting. Pending events are
+    // transferred to it. Rebinding the same thread succeeds; another gets -KOS_EBUSY.
     int irq_notify_bind(Thread* c, uint32_t cap_handle, uint32_t* out_mask);
 
-    // Drop `c`'s bind on the binding `obj_handle` names. A raise still standing in c's word
-    // goes back to the binding's own latch rather than away, so a binding another capability
-    // keeps alive still owes it to whoever binds next. A no-op where `c` is not the bound
-    // server. Caller holds IrqLock.
+    // Release c's binding and preserve unconsumed events for the next server.
+    // Does nothing if c is not bound to obj_handle. Caller holds IrqLock.
     void irq_notify_release(Thread* c, int obj_handle);
 
-    // Enter a wait that ACCEPTS the notification bits in `mask`. Narrows the mask to the lines
-    // `c` really serves, so a caller naming a bit of somebody else's binding gets it dropped
-    // rather than reaching that binding; rearms each accepted line a previous pass consumed,
-    // exactly as a wait on that line alone rearms on entry; and flags each so a raise ends
-    // THIS wait. Answers the narrowed mask, which is what the matching leave takes.
+    // Restrict mask to lines served by c, rearm consumed lines, and allow them
+    // to wake this wait. Returns the accepted mask for irq_notify_wait_leave.
     // Caller holds IrqLock.
     uint32_t irq_notify_wait_enter(Thread* c, uint32_t mask);
 
-    // Leave it. Unflags `opened`, takes whichever of those bits stand in c's word, clears
-    // them, and flags each taken line for the rearm its next wait entry or its irq_ack will
-    // perform. A bit outside `opened` is left standing. Answers the bits taken. Caller holds
-    // IrqLock.
+    // End the wait and return consumed bits from opened, leaving other bits pending.
+    // Consumed lines need rearming on the next wait or ack. Caller holds IrqLock.
     uint32_t irq_notify_wait_leave(Thread* c, uint32_t opened);
 
-    // Block until the line fires; 0, or -KOS_E*. Auto-rearms the previously-consumed line
-    // on entry, so `wait; service` alone keeps receiving IRQs and an explicit irq_ack is
-    // OPTIONAL. Needs CAP_WAIT on the cap, and the caller must hold the bind.
-    //
-    // -KOS_ECANCELED means the caller was cancelled (thread_kill): the wait was abandoned
-    // and every later irq_wait answers the same. The line is left as the last rearm set it,
-    // and the exiting thread's cap drop is what detaches and masks it. The one cancellation
-    // point in the kernel: the one primitive that REFUSES to re-block a cancelled caller.
+    // Wait for this line; return 0 or -KOS_E*. Requires CAP_WAIT and a binding
+    // to the caller. Rearms on entry, so an explicit ack is optional.
+    // Cancellation returns -KOS_ECANCELED on this and all later waits.
+    // Teardown releases the binding; cancellation does not rearm the line.
     int irq_wait(Thread* c, uint32_t cap_handle);
-    // irq_wait with a deadline of `timeout_us` RELATIVE microseconds, KOS_TIMEOUT_NONE being
-    // exactly irq_wait. -KOS_ETIMEDOUT where it passes with no raise; the line is left as the
-    // entry rearm set it, so the next wait does not re-arm and a raise already latched at the
-    // controller is still delivered.
+    // irq_wait with a relative timeout in microseconds; KOS_TIMEOUT_NONE waits forever.
+    // Returns -KOS_ETIMEDOUT on expiry without changing the line's rearm state.
+    // Pending controller events remain deliverable.
     int irq_wait_timed(Thread* c, uint32_t cap_handle, uint32_t timeout_us);
     // Unmask the previously-consumed line so it can fire again; 0, or -KOS_E*.
     // OPTIONAL and idempotent: the next irq_wait rearms anyway, and a redundant
@@ -191,12 +159,8 @@ namespace kickos
     // and the controller sits in arch_reserved_blocks, so no grant reaches the register.
     // Does NOT unmask; the intended shape is wait; read the device; discard; ack.
     int irq_discard(Thread* c, uint32_t cap_handle);
-    // Software-post the binding's notification WITHOUT touching the controller: the
-    // TX doorbell a service thread rings so the IRQ thread (sole owner of every
-    // peripheral register) primes a transfer. Needs CAP_SIGNAL. Distinct from
-    // arch_irq_inject, which raises AT the controller and simulates a device.
-    // -KOS_EALREADY where the bit was already set: the post is absorbed, as it must be,
-    // and this is the only channel a producer has for seeing a server that stopped draining.
+    // Post a software notification without accessing the controller. Requires CAP_SIGNAL.
+    // Returns -KOS_EALREADY if the bit was set; the existing notification remains pending.
     int irq_notify(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the

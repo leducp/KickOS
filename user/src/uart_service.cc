@@ -46,7 +46,7 @@ void serve_loop(Shared* sh)
     uint8_t msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
     kos_reply_recv_opts_init(&opts, KOS_UART_CAP_EP, 0u, KOS_TIMEOUT_NONE);
-    // Carried one pass forward: the answer to request k rides the call that takes k+1.
+    // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;
     while (true)
@@ -60,15 +60,14 @@ void serve_loop(Shared* sh)
         reply_len = 0;
         if (n < 0)
         {
-            // A client's own buffer going away ends that transaction; this service serves
-            // more than one and may not leave on it.
+            // Continue after a client-buffer fault.
             if (serve_transaction_failed(n))
             {
                 continue;
             }
             break; // endpoint dead (EPIPE) or a bad cap: let the bring-up respawn us
         }
-        // A plain send carries no reply capability and this service has no unframed arm.
+        // This service requires a call with a reply capability.
         if (opts.info.reply_cap == KOS_CAP_NONE)
         {
             continue;

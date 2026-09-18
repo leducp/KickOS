@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The WHOLE seam between the kernel sources a K-seam gate compiles and the rest of the
-// image: every symbol here is one those sources leave undefined.
-//
-// RE-DERIVE THE SET, which is a property of the chosen sources AND of the preset, both of
-// which move:
-//
-//   nm --undefined-only <the objects> | comm -23 - <their defined symbols>
-//
-// which also reports __gxx_personality_v0 and _Unwind_Resume unless the gate is built
-// -fno-exceptions as the CMakeLists does it.
-//
-// kpanic ends the PROCESS with a message matching tests/lib/panic.ere, so a kernel invariant
-// enforced by KICKOS_ASSERT rather than a return code is gated by a gtest death test.
-// KICKOS_EXPECT_PANIC in kseam_test.h is the only way to write one: it folds this stdout onto
-// the forked child's stderr, which is the stream gtest matches.
+// Architecture and runtime hooks for kernel fixtures. To check required symbols:
+//   nm --undefined-only <objects> | comm -23 - <defined-symbols>
+// Build with -fno-exceptions to avoid unwinding dependencies.
+// kpanic terminates the process. Use KICKOS_EXPECT_PANIC so gtest captures
+// the panic output and matches tests/lib/panic.ere.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -300,8 +290,7 @@ namespace kickos
         t->on_timer = false;
     }
 
-    // No clock drives these fixtures, so an armed deadline is recorded and never expires: an
-    // arm that wants the expiry drives thread_abort_park itself.
+    // No clock runs here. Tests trigger expiry with thread_abort_park.
     void ktime_deadline_arm(Thread* t, uint32_t)
     {
         t->on_timer = true;

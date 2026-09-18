@@ -151,10 +151,8 @@ enum kos_syscall_nr
                                //   this chip's allowlist), -KOS_ENOSYS (no backend). Gated on
                                //   possession of the block at `base`, not on an authority bit.
     KOS_SYS_IRQ_NOTIFY = 43,   // (irq_cap) -> 0, -KOS_EALREADY (the bit was already set and the
-                               //   post changed nothing, which is the doorbell working and the
-                               //   consumer behind, never a fault), or -KOS_EBADF / -KOS_EPERM
-                               //   (cap lacks SIGNAL). Software-posts the binding WITHOUT
-                               //   touching the controller.
+                               //    post had no effect), or -KOS_EBADF/-KOS_EPERM (missing SIGNAL).
+                               //    Posts a software notification without accessing the controller.
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
@@ -191,15 +189,10 @@ enum kos_syscall_nr
                                //   -KOS_EPERM (the caller did not create it). Cancels every
                                //   live member; the handle names nothing afterwards.
     KOS_SYS_THREAD_SLAY = 53,  // (kos_thread_t, timeout_us) -> 0 (GONE: the target is EXITED
-                               //   and its capability table is swept), -KOS_ETIMEDOUT (the
-                               //   redirect is armed and irrevocable, the target executes no
-                               //   further unprivileged instruction, and the sweep has not
-                               //   finished), -KOS_ECANCELED (the CALLER was cancelled while
-                               //   waiting; the target is still condemned), -KOS_EBADF,
-                               //   -KOS_EPERM (the caller did not spawn it), -KOS_EINVAL
-                               //   (self, idle, or a privileged target). FORCIBLE, where
-                               //   KOS_SYS_THREAD_KILL is cooperative: the target gets no
-                               //   cleanup window.
+                               //    and capability teardown finished), -KOS_ETIMEDOUT (termination
+                               //    committed, cleanup pending), -KOS_ECANCELED (caller cancelled;
+                               //    target still terminates), -KOS_EBADF, -KOS_EPERM (different parent),
+                               //    -KOS_EINVAL (self, idle, or privileged target). No cleanup window.
     KOS_SYS_TASK_SLAY = 54,    // (kos_task_t, timeout_us) -> 0 (the group is EMPTY and its
                                //   slot released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF,
                                //   -KOS_EPERM (the caller did not create it), -KOS_EINVAL (the
@@ -250,13 +243,9 @@ enum kos_syscall_nr
                                //   here carries one, which is what keeps it out of the
                                //   capability ABI's own records.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
-                               //   -KOS_EBADF on a cap that does not resolve, -KOS_EINVAL on an
-                               //   address-space cap whose domain translates nothing,
-                               //   -KOS_EPERM for a range this space did not take through
-                               //   KOS_SYS_FRAME_MAP, which is what stops one holder
-                               //   revoking another's mapping. It asks nothing about what
-                               //   NAMES the range: a thread parked in a receive with its
-                               //   buffer inside it is woken -KOS_EFAULT.
+                               //    -KOS_EBADF for an invalid cap, -KOS_EINVAL for a nontranslating space,
+                               //    -KOS_EPERM for a range not mapped through KOS_SYS_FRAME_MAP.
+                               //    Receivers using the unmapped range are woken with -KOS_EFAULT.
     KOS_SYS_AMP_ENDPOINT_CREATE = 62, // (node, port, kos_cap_t* out) -> 0, or -KOS_ENOSYS on an
                                //   image running one kernel, -KOS_EPERM for an unprivileged
                                //   caller, -KOS_EINVAL for the caller's own node or a port
@@ -264,19 +253,11 @@ enum kos_syscall_nr
                                //   caller does not own, -KOS_ENOMEM (endpoint pool) and
                                //   -KOS_EMFILE (the caller's cap table). The cap it grants is
                                //   SIGNAL-only.
-    KOS_SYS_THREAD_SET_AFFINITY = 63, // (kos_thread_t, core mask) -> 0, or -KOS_EPERM (the
-                               //   mask meets the thread's task's core set nowhere, or the
-                               //   target is in another task and the caller is unprivileged),
-                               //   -KOS_EINVAL (a NONZERO mask naming no core this kernel
-                               //   schedules), -KOS_EBADF. The ONE placement operation: pin is
-                               //   a mask of one bit and unpin is a mask of ZERO, which the
-                               //   kernel resolves to the task's DEFAULT set exactly as a
-                               //   spawn's zero core_mask is resolved. A NONZERO mask is a SET
-                               //   OF ACCEPTABLE CORES and is intersected with the machine
-                               //   before the grant, so a bit naming no core costs nothing
-                               //   beside one that does, and a bit naming an isolated core is
-                               //   the opt-in that reaches it.
-                               //   -KOS_ENOSYS on an image whose kernel drives one core.
+    KOS_SYS_THREAD_SET_AFFINITY = 63, // (kos_thread_t, core mask) -> 0, or -KOS_EPERM
+                               //   (no allowed core or unauthorized cross-task access), -KOS_EINVAL
+                               //   (nonzero mask with no machine core), -KOS_EBADF, -KOS_ENOSYS
+                               //   (single-core kernel). Zero selects task defaults; a nonzero mask
+                               //   intersects the machine and task grant and may include isolated cores.
     KOS_SYS_TASK_SCHED_GRANT = 64, // (kos_task_t, priority ceiling, core mask) -> 0, or
                                //   -KOS_EPERM (either half wider than the creator's own
                                //   grant, or a caller that did not create the task),
@@ -298,9 +279,8 @@ enum kos_syscall_nr
                                //   partition, so every other image returns -KOS_EINVAL for
                                //   every op).
     KOS_SYS_DOORBELL_PROBE = 67, // (op, a1) -> per-op (see enum kos_doorbell_op), or
-                               //   -KOS_EINVAL for a bad op (self-test only). Answers on every
-                               //   posture: an image whose doorbell folds out reads a real
-                               //   zero rather than a refusal.
+                               //    -KOS_EINVAL for a bad op (self-test only). Returns zero when
+                               //    doorbells are compiled out.
     KOS_SYS_REPLY_RECV = 68,   // (reply_cap, buf, kos_call_lens_pack(reply_len, recv_cap),
                                //   kos_reply_recv_opts* in-out) -> received bytes, or
                                //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
@@ -363,14 +343,9 @@ enum kos_mem_flags
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
 
-// `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). A BAD op returns -KOS_EINVAL.
-// Values are append-only WITHIN A TREE.
-//
-// Every PRINT op makes the KERNEL write the line, so they land on the kernel console
-// (kickos_services_none) alone.
-//
-// An op marked AUTH_IRQ below reaches the interrupt controller or the inter-core doorbell and
-// is refused -KOS_EPERM without KOS_AUTH_IRQ, exactly as KOS_SYS_IRQ_CLAIM is. The rest read kernel .data or write a line.
+// KOS_SYS_BENCH operation IDs (benchmark images only). Append new values.
+// Unknown operations return -KOS_EINVAL. PRINT operations use the kernel console.
+// Operations marked AUTH_IRQ require KOS_AUTH_IRQ or return -KOS_EPERM.
 enum kos_bench_op
 {
     KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Every distribution AND every phase.
@@ -430,10 +405,9 @@ enum kos_bench_op
 #define KOS_BENCH_SAMPLES_MAX 100u
 #define KOS_BENCH_ROUNDS_MAX 64u
 
-// The receive out-pointer: 8 bytes, 4-aligned. A plain kos_send arrival delivers
-// reply_cap == KOS_CAP_NONE; a kos_call arrival delivers a one-shot reply cap handle the
-// receiver must eventually kos_reply or kos_handle_close. A null out-ptr REJECTS calls, and
-// the caller's kos_call fails -KOS_ENOSYS.
+// Receive metadata: 8 bytes, aligned to 4. Plain sends have KOS_CAP_NONE;
+// calls supply a one-shot reply cap that the receiver must reply to or close.
+// Receiving without metadata rejects calls with -KOS_ENOSYS.
 struct kos_recv_info
 {
     uint32_t badge;      // sender badge (KOS_BADGE_NONE == 0 in this stage)
@@ -447,36 +421,21 @@ static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byte
 _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
 #endif
 
-// kos_reply_recv_opts::flags. An unknown bit is -KOS_EINVAL, never masked.
-//
-// KOS_RECV_NO_INFO is how a receive spells the info-less posture: the kernel writes nothing
-// to `info` and the receiver REJECTS calls (-KOS_ENOSYS to the caller), which is the DoS
-// closure a service every task can reach depends on. It is a flag and not a null out-pointer
-// because an opts struct always has an address, so without it the info-less posture and every
-// other thing the struct carries would be mutually exclusive.
+// Receive flags; unknown bits return -KOS_EINVAL.
+// KOS_RECV_NO_INFO leaves info untouched and rejects calls with -KOS_ENOSYS.
 #define KOS_RECV_NO_INFO 0x1u
 
-// KOS_SYS_REPLY_RECV's argument struct. `ep` is where the receive half listens, the reply
-// capability naming the CALLER and never the endpoint, so the endpoint has to be passed.
-//
-// `notify` is IN-OUT and is the WHOLE opt-in to interrupt delivery, there being no flag beside
-// it. The call takes no IRQ capability, so with an OUT-only field nothing at the call site
-// would say the wait can be ended by a line at all: the link would be the per-thread bind and
-// nothing else. An input mask puts it where the call is written, and it also lets a thread
-// bound to several lines wait on one of them.
-//
-// It nests kos_recv_info rather than widening it: a plain receive caller then has
-// no input field to leave uninitialised, and the kernel's write-back stays a whole-struct
-// copy. `notify` sits OUTSIDE that nesting because only this syscall reads or writes it.
+// Arguments for KOS_SYS_REPLY_RECV. ep selects the receive endpoint.
+// notify supplies the accepted IRQ bits on input and consumed bits on output.
+// Zero accepts no IRQs; unaccepted bits remain pending. Restore the accepted
+// mask before each call because the kernel overwrites it.
 struct kos_reply_recv_opts
 {
     kos_cap_t ep;              // IN: the endpoint to receive on (needs CAP_WAIT)
     uint32_t flags;            // IN: KOS_RECV_NO_INFO, or 0
     uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
-    uint32_t notify;           // IN:  the notification bits this wait accepts, each as
-                               //      kos_irq_attach answered it; 0 accepts none.
-                               // OUT: the bits it consumed. A bit NOT accepted is left
-                               //      standing for a later wait, never consumed and dropped.
+    uint32_t notify;           // IN: accepted kos_irq_attach bits; zero accepts none
+                               // OUT: consumed bits; unaccepted bits remain pending
     struct kos_recv_info info; // OUT: the arrival, whole-struct
 };
 #ifdef __cplusplus
@@ -491,10 +450,8 @@ _Static_assert(offsetof(struct kos_reply_recv_opts, info) == 16,
                "the nested kos_recv_info must sit at offset 16 (ABI)");
 #endif
 
-// Seat the IN half of a kos_reply_recv_opts and clear the OUT half. The struct is the one
-// argument the one receive primitive takes, so this is its packer, as kos_call_lens_pack is
-// the packer for the lengths. `notify` is left 0, which accepts no line; a caller that serves
-// one seats it per call, the return overwriting it.
+// Initialize receive options and clear outputs. No IRQ notifications are accepted
+// by default; set notify before each call that should accept them.
 static inline void kos_reply_recv_opts_init(struct kos_reply_recv_opts* o, kos_cap_t ep,
                                             uint32_t flags, uint32_t timeout_us)
 {
@@ -661,32 +618,17 @@ struct kos_thread_params
                          // reachable in the task the child joins. App static data is neither.
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
-    // OPTIONAL per-grant destination indices, cap_count entries parallel to caps[], or null
-    // for "every cap takes its default index". An entry of 0 also means default: index 0 is
-    // the kernel's stdout slot and cap_install_at refuses it outright.
-    //
-    // Default placement puts the first delegated cap at index 1, which is KOS_CAP_CLOCK's
-    // well-known index, so a parent handing a child one cap aliases a reserved name unless
-    // it names a destination here.
-    //
-    // -KOS_EINVAL, checked before the child exists, unless no two grants land on the same
-    // index (the defaulted ones counted) and every index is below the width the child's
-    // table ACTUALLY gets: KICKOS_CAP_CHILD_WIDTH where the table is chunked, and
-    // KICKOS_MAX_HANDLES on a build whose whole table is one chunk.
-    //
-    // The array must be uint16_t-aligned; the kernel refuses it otherwise rather than take
-    // a misaligned privileged load on a strict-align arch.
+    // Optional uint16_t-aligned destination indices, parallel to caps.
+    // Null or zero entries use default placement (grant i -> index i+1).
+    // Index 0 is reserved for stdout. The first default slot aliases KOS_CAP_CLOCK;
+    // use an explicit destination to preserve that slot.
+    // Reject duplicate destinations or indices outside the child table with EINVAL
+    // before creating the thread.
     uint16_t const* cap_dest;
-    // Cores the child may run on, as a mask. 0 asks for its task's DEFAULT set, which is that
-    // task's core set less the cores the image isolates; kos_thread_set_affinity resolves a
-    // zero mask to the same set. Nothing reaches an isolated core without an explicit mask
-    // naming it, here or through that call. Narrows and never widens: the
-    // kernel intersects it with the task's set, and a mask meeting that set nowhere is
-    // -KOS_EPERM. A bit naming a core the image does not drive is DROPPED, and only a mask
-    // naming no core it drives at all is -KOS_EINVAL.
-    //
-    // IGNORED on an image whose kernel drives one core, where every mask names the same
-    // placement.
+    // Allowed child cores. Zero selects task defaults, excluding isolated cores.
+    // Explicit masks intersect the machine and task grant; isolated cores require
+    // an explicit bit. No machine core returns EINVAL; no granted core returns EPERM.
+    // Ignored by single-core kernels.
     uint32_t core_mask;
     uint8_t cap_count;   // number of entries in caps[]; under default placement they land
                          // at child indices 1..cap_count.

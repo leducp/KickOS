@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What KICKOS_BENCH=1 leaves undefined once the K-seam sources and ipc_seam.cc answer the
-// rest, re-derived with
-//
-//   nm --undefined-only <the objects> | comm -23 - <what those sources define>
-//
-// at two kernel cores: five symbols, kernel/bench/bench.cc being no part of this library.
-// That file is not the answer, because the point of the substitution is the OBSERVATION
-// below: bench_phase_add is an ordinary out-of-line call, so a seam standing in for it sees
-// exactly WHEN a bracket closed relative to everything else the body does.
-//
-// The other four are answered so the link completes and are otherwise inert. g_bench_lock is
-// written by the IrqLock bracket on every acquire in these sources, so it is a real array and
-// not a stub.
+// Benchmark test hooks. Record when PH_REPLY_RECV_TOTAL closes relative to
+// scheduler switches. Other hooks provide the symbols needed to link;
+// g_bench_lock stores the lock timestamps written by IrqLock.
 
 #include <kickos/bench.h>
 

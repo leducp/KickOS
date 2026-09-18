@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Context-switch microbenchmark (KICKOS_BENCH builds only). Two equal-priority
-// threads ping-pong via semaphores; the reporter prints throughput (ctx-switches/s via
-// kos::clock_now, works on every arch) plus per-switch cost + IRQ-entry latency (cycles,
-// where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1, rv32imac
-// rdcycle/MTIME, xtensa CCOUNT). Whether such a cycle converts to time is a separate fact,
-// KOS_BENCH_OP_CYCCNT_HZ, and a 0 from it leaves every ns column off.
-//
-// The call/reply sweep times the endpoint copy under the kernel's own IrqLock. The phase
-// table printed after it breaks that round trip's FIXED cost down by kernel phase
-// (kernel/bench/bench.cc).
-//
-// Every cycle metric goes through kos_bench, one syscall: the helpers behind it read kernel
-// .data and core peripherals, and root is unprivileged on every board except the LX6, which
-// has no privilege ring.
-//
-// The app's own lines go through kickos::emit, which reaches a published console driver
-// over IPC and falls back to the kernel console when index 0 is empty. kos_print alone
-// would be dropped outright once a service list publishes the UART (sys/emit.h).
-//
-// The switch line and the phase table are printed by the KERNEL from inside kos_bench,
-// straight at the kernel console, so an instrumented run wants kickos_services_none,
-// which the `bench` config variant pins.
+// Semaphore ping-pong and IPC microbenchmarks. Report throughput from the
+// monotonic clock and cycle metrics through kos_bench. Omit time conversion
+// when KOS_BENCH_OP_CYCCNT_HZ is zero.
+// The IPC sweep measures copying and kernel phases under IrqLock.
+// App output uses kickos::emit; kernel benchmark tables use the kernel
+// console, so benchmark variants select kickos_services_none.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -145,7 +129,7 @@ namespace
     void e2e_waiter(void*)
     {
         auto irq = kos::Irq::adopt(CH_E2E_IRQ);
-        irq.attach(); // this thread serves the line
+        irq.attach();
         // Under an MPU reachability is per THREAD, so root's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
@@ -452,8 +436,7 @@ namespace
         memset(&opts, 0, sizeof(opts));
         opts.ep = 1;
         opts.timeout_us = KOS_TIMEOUT_NONE;
-        // Carried from one pass to the next: the answer to request k rides the syscall that
-        // receives request k+1, which is the whole of what this loop is here to measure.
+        // Send the previous reply while receiving the next request.
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
@@ -471,7 +454,7 @@ namespace
             reply_cap = opts.info.reply_cap;
             reply_len = static_cast<size_t>(n);
         }
-        // The terminal answer, which no receive follows: the last caller is parked on it.
+        // Send the final reply without receiving again.
         if (reply_cap != KOS_CAP_NONE)
         {
             kos_reply(reply_cap, buf, reply_len);

@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// thread_effective_prio is the LIVE authority over a donee's effective priority, and these
-// arms are what forbids replacing it with a cheap read of the donee.
-//
-// A donor's own priority can RISE after it donated. The kernel forwards such a raise along a
-// mutex-to-mutex chain only (mutex_lock's second pass walks wait_mutex()->owner), so a raise
-// that reaches a donor across an IPC edge leaves nothing on the donee saying so: the donee's
-// seated `prio` can sit at its `base_prio` while a donor above it waits. Each arm below builds
-// that state and then asks the funnel, once per donor term.
-//
-// The raise is applied through the same two lines park.cc and endpoint_recv_locked's bounce arms use
-// (`sched::set_prio(t, thread_effective_prio(t))`), so no arm invents a priority the kernel
-// would not have written itself.
+// Test effective-priority recomputation after a donor's priority rises.
+// IPC edges do not propagate boosts like mutex chains, so the donee's cached
+// priority can be stale. Exercise each donor source using the same
+// set_prio(thread_effective_prio(...)) update as the kernel.
 
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>

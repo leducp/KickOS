@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// NESTED-TRAP witness (rv32imac): which stack the kernel picks for an interrupt taken while it
-// is ALREADY running the interrupted thread's own syscall dispatch.
-//
-// rv32imac runs syscall_dispatch privileged, in thread mode, on the CALLER's continuation
-// (arch.h arch_syscall contract). An interrupt taken there arrives with mstatus.MPP=M, so no
-// U-mode sp test applies to it, and a prologue that adopted the interrupted sp would build its
-// frame at whatever depth the dispatch had descended to and run the ISR below that. What keeps
-// that off the thread's own stack is the trap entry transferring a U-mode ecall to the thread's
-// KERNEL block.
-//
-// kos_irq_inject, a selftest syscall, raises its line from INSIDE the dispatch with interrupts
-// enabled, so the trap fires at that exact instruction on every call: one nested M-mode trap
-// each time, with no window to hit. The kernel tallies them (kickos_nestwitness_note), and root
-// reads the tally back through KOS_SYS_NEST_WITNESS: traps > 0, the positive control, and
-// onstack == 0.
+// Test RV32 nested traps during syscall dispatch. Syscalls must run on the
+// thread's kernel stack so an M-mode interrupt cannot use the user stack.
+// kos_irq_inject raises an interrupt inside dispatch with interrupts enabled.
+// Read the kernel tally through NEST_WITNESS: require traps > 0 and onstack == 0.
 
 #include <kickos/arch/rv_trap_stack.h>
 #include <kickos/kos.h>
@@ -31,8 +20,7 @@
 
 using kickos::emit;
 
-// KOS_AUTH_IRQ is what the fallback mask lacks, and kos_irq_claim is refused without it, which
-// leaves the line unowned and every inject latched instead of delivered.
+// IRQ claiming requires AUTH_IRQ, which the fallback authority mask lacks.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
 
 namespace
@@ -87,7 +75,6 @@ namespace
 
     uintptr_t g_tn_stack_lo = 0;
 
-    // The line capability in the WORKER's own table: root claims and delegates it first.
     constexpr kos_cap_t TN_CAP = KOS_SPAWN_DELEGATED_CAP0;
 
     // Nothing may touch memory between the sp move and the trap. a0 is the syscall number and
@@ -148,8 +135,7 @@ namespace
                   static_cast<unsigned>(low), static_cast<unsigned>(g_tn_stack_lo),
                   static_cast<unsigned>(TN_PARK_ROOM));
         emit(msg);
-        // This thread serves the line, and without the bind its waits are refused and every
-        // inject past the first lands on a line the ISR left masked.
+        // Bind delivery to this worker before waiting.
         if (kos_irq_attach(TN_CAP, nullptr) != 0)
         {
             emit("[trapnest] ERROR: irq_attach refused the delegated line\n");
@@ -158,8 +144,7 @@ namespace
         for (uint32_t i = 0; i < TN_INJECTS; i++)
         {
             inject_from(low, KOS_SYS_IRQ_INJECT, static_cast<uint32_t>(TN_LINE));
-            // The first-level ISR masks the line, so without consuming the event and
-            // unmasking here every inject past the first would latch and deliver nothing.
+            // Consume and rearm after each injection; the ISR leaves the line masked.
             kos_irq_wait(TN_CAP);
             kos_irq_ack(TN_CAP);
         }
@@ -208,8 +193,7 @@ int main(int, char**)
     g_tn_params.mem_base = reinterpret_cast<void*>(0x1000u);
     g_tn_params.mem_size = 64;
 
-    // MUST be checked: a refused claim leaves the line MASKED, kos_irq_inject then latches the
-    // raise, no trap is taken, and the arm reports traps=0 while looking like it ran.
+    // Stop on claim failure or injections will not exercise the trap path.
     kos_cap_t line = KOS_CAP_NONE;
     if (kos_irq_claim(TN_LINE, KOS_IRQ_EDGE, &line) != 0)
     {

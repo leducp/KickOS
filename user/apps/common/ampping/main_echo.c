@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A serving node for the selftest to talk to. It answers every call on the port the partition
-// gives it with the caller's own bytes: a far call is witnessed by the payload coming back, so
-// the peer has to return it rather than transform it.
-//
-// The kernel binds every port the partition names this node, and this app receives on the
-// FIRST alone: the rest are deliberately left with no receiver, so a caller parks on one and
-// stays parked, which is what the reply-guard arm needs (docs/design-multicore.md N6f). The
-// app names no node index and no port count.
-//
-// It never returns, for the reason <kickos/amp.h> states: root returning ends the system, and
-// the nodes of a partition share one machine.
+// Echo calls on the first partition port assigned to this node. Leave other
+// ports unanswered for reply-guard tests. Never return from root: that would
+// shut down the machine shared by the partition.
 
 #include <stdbool.h>
 #include <stdio.h>

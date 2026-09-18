@@ -31,26 +31,12 @@ namespace kickos
         // Distinct from ipc.badge_out == 0, which means the receiver asked for no info.
         constexpr uint32_t KOS_BADGE_NONE = 0;
 
-        // THE ONE COMPLETION SITE for a wake a fused body readied and deliberately did not
-        // reschedule. Both halves of a reply-receive ready threads, and neither may switch
-        // away before the receive half parks, so the LOCAL SEAT is owed once at the end of
-        // the whole body.
-        //
-        // ONLY the local seat. The peer announcement is a separate obligation owed to EVERY
-        // readied thread at its own priority, and offer discharges it as each arrives: one
-        // seat can hold one thread, so a guard that deferred the announcement too would reach
-        // the peers for the top thread alone, and a thread the local pick may not place at
-        // all would be announced nowhere.
-        //
-        // The invariant that makes the seat total: completion happens in the destructor, which
-        // runs on every return out of the scope holding the guard, and the one path that may
-        // leave it empty is the park, which hands the thread to wq_block's own reschedule
-        // rather than dropping it. `take` is what makes those two exclusive, so no return, no
-        // error return and no park can forget one.
-        //
-        // A NORETURN EXIT UNDER A LIVE GUARD WOULD DEFEAT THAT, sched::exit_current unwinding
-        // nothing. Both guards are constructed past their body's park_cancel_pending check,
-        // which is the only such exit in reach, and a new one must stay outside their scope.
+        // Defer one local reschedule until the fused operation finishes or parks.
+        // Keep the highest-priority woken thread for that reschedule and announce
+        // other woken threads to eligible peers.
+        // The destructor completes nonparking paths; take() transfers completion to
+        // wq_block. Do not call a nonreturning exit while this guard is live: it
+        // would skip the destructor. Check park_cancel_pending before constructing it.
         class DeferredWake
         {
         public:
@@ -67,10 +53,7 @@ namespace kickos
                 }
             }
 
-            // Announces every thread offered and keeps the HIGHEST for the local seat: a
-            // pick fed the lower of two would decline the higher and seat the wrong one, so
-            // exactly one is deferred, and the one this call displaces from that place is
-            // announced now. The survivor's own announcement rides its reschedule.
+            // Keep the highest-priority thread for rescheduling; announce the other now.
             void offer(Thread* t)
             {
                 Thread* keep = t;
@@ -233,9 +216,7 @@ namespace kickos
         ep->far_port = static_cast<uint8_t>(port);
         kernel().endpoint_refs[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
-        // CAP_SIGNAL ALONE, AND NOT AN OVERSIGHT TO BE WIDENED: a receive resolves for
-        // CAP_WAIT, so this refuses a far endpoint there with no branch of its own, and
-        // endpoint_server_set is unreachable on one as a consequence.
+        // Far endpoints have CAP_SIGNAL only, so receive and server binding are refused.
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL, out_cap);
         if (rc != 0)
         {
@@ -395,13 +376,10 @@ namespace kickos
         return static_cast<int32_t>(n);
     }
 
-    // The RECEIVE half under an ALREADY-HELD IrqLock, shared by the plain receive, its timed
-    // form and the fused reply-receive. `badge_out` is the resolved out-pointer, 0 for the
-    // info-less posture, and `cap_len` is already clamped. `dw` is the caller's guard, which
-    // may already carry a thread the reply half woke; this body adds its own and either hands
-    // the top one to the park or leaves it for the guard to complete.
-    // Answers the byte count or -KOS_E*; on a park it sets *parked and seats *epoch, and the
-    // caller owes wq_confirm_resume and reads wait_result.
+    // Receive with IrqLock held and cap_len clamped. badge_out is zero for a
+    // receive without metadata. Add wakes to dw; parking takes its pending wake.
+    // Returns bytes received or -KOS_E*. On park, sets parked and epoch; the caller
+    // must run wq_confirm_resume before reading wait_result.
     int32_t endpoint_recv_locked(Thread* c, uint32_t cap, uintptr_t buf, size_t cap_len,
                                  uintptr_t badge_out, uint32_t timeout_us, DeferredWake* dw,
                                  bool* parked, uint32_t* epoch)
@@ -417,9 +395,8 @@ namespace kickos
             return -err; // EBADF (bad cap) or EPERM (no WAIT right)
         }
         endpoint_server_set(e, c); // the conventional receiver (D2 boost target)
-        // A reschedule inside the scan moves current() onto the woken caller, and the
-        // wq_block below re-reads it, so it would park that caller. Every wake here
-        // defers its reschedule to the guard.
+        // Defer rescheduling: changing current() here would make wq_block park the
+        // woken caller instead of this receiver.
         KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
         KICKOS_BENCH_MARK(bm_rscan);
         while (true)
@@ -431,15 +408,13 @@ namespace kickos
             }
             if (s->call_state == CALL_SEND_WAIT)
             {
-                // The reply cap would be minted into OUR table, which an info-less recv
-                // cannot deliver: bounce this caller and keep scanning for plain traffic
-                // behind it.
+                // A receive without metadata cannot return a reply cap. Reject the call
+                // and continue looking for plain sends.
                 if (badge_out == 0)
                 {
-                    s->call_state = CALL_NONE; // B1: clear before waking
+                    s->call_state = CALL_NONE; // clear before waking
                     s->wait_result = -KOS_ENOSYS;
-                    // Revert the D2 boost this bounced caller pinned on us; it is
-                    // off-queue with CALL_NONE, so the funnel now excludes it.
+                    // Remove this rejected caller's priority donation.
                     uint8_t const np = thread_effective_prio(c);
                     if (np != c->prio)
                     {
@@ -451,12 +426,11 @@ namespace kickos
                     }
                     continue;
                 }
-                // B3: probe the mint before committing; a plain sender behind this one
-                // can still be served.
+                // Check reply-cap capacity before committing; later plain sends may still fit.
                 if (not cap_can_take_reply(c))
                 {
                     s->call_state = CALL_NONE;
-                    s->wait_result = -KOS_EMFILE; // OUR table, reported to the caller
+                    s->wait_result = -KOS_EMFILE; // server table is full
                     uint8_t const np = thread_effective_prio(c);
                     if (np != c->prio)
                     {
@@ -471,20 +445,19 @@ namespace kickos
                 size_t n = s->ipc.len;
                 if (cap_len < n)
                 {
-                    n = cap_len; // truncate the request into our capacity
+                    n = cap_len;
                 }
                 bool ok = ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n);
                 if (ok)
                 {
                     uint32_t rcap = KCAP_INVALID;
-                    // Not inside the assert: a compiled-out condition would drop the mint.
+                    // Allocate outside the assert so release builds also execute it.
                     int const minted = cap_install_reply(c, s, &rcap);
                     KICKOS_ASSERT(minted == 0);
                     ok = write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
                     if (not ok)
                     {
-                        // An undisclosed mint is one nothing can ever spend, and this
-                        // caller would park on a handle we were never told.
+                        // Revoke the undisclosed reply cap and fail the caller.
                         bool const undone = cap_uninstall_reply(c, rcap, s);
                         KICKOS_ASSERT(undone);
                         (void)undone;
@@ -492,11 +465,9 @@ namespace kickos
                 }
                 if (not ok)
                 {
-                    // NOT a `continue` like the two bounces above: the refusal does not
-                    // say WHICH end went away, and if it was OUR buffer then every
-                    // remaining sender would be popped and faulted in turn. One popped
-                    // caller is the narrower loss.
-                    s->call_state = CALL_NONE; // B1: clear before waking
+                    // Stop on copy failure: if our buffer is invalid, continuing would fail
+                    // every queued sender.
+                    s->call_state = CALL_NONE; // clear before waking
                     s->wait_result = -KOS_EFAULT;
                     uint8_t const np = thread_effective_prio(c);
                     if (np != c->prio)
@@ -513,23 +484,21 @@ namespace kickos
                 s->ipc.badge_out = 0;
                 s->call_state = CALL_REPLY_WAIT;
                 reply_donor_park(c, s);
-                // D1: inherit the caller's priority for the transaction.
+                // Inherit the caller's priority for this transaction.
                 if (s->prio > c->prio)
                 {
                     sched::set_prio(c, s->prio);
                 }
-                return static_cast<int>(n); // process, then kos_reply the cap
+                return static_cast<int>(n);
             }
             size_t n = s->ipc.len;
             if (cap_len < n)
             {
-                n = cap_len; // truncate into the receiver's capacity
+                n = cap_len;
             }
             if (not ep_copy(user_space_of(c), buf, ipc_buf_space(s), s->ipc.buf, n))
             {
-                // Both ends are answered and the scan stops, for the reason the call arm
-                // above gives: a refusal names no end, so continuing could fault the
-                // whole queue on our own lost buffer.
+                // Fail both ends and stop; our buffer may be the invalid one.
                 s->wait_result = -KOS_EFAULT;
                 if (sched::wake_no_resched(s))
                 {
@@ -552,9 +521,7 @@ namespace kickos
         c->ipc.badge_out = badge_out;
         *epoch = c->switch_count;
         park_deadline_arm(c, timeout_us);
-        // THE PARK IS THE ONE EXIT THAT LEAVES THE GUARD EMPTY, and it owes the ask itself:
-        // this thread goes BLOCKED, so the switch's RUNNING -> READY store never runs and
-        // announces nothing, and a deferred wake dropped here would reach no peer at all.
+        // Transfer the pending wake to the park's reschedule, including peer notification.
         wq_block(e->recv_waiters, WAIT_EP_RECV, e, dw->take());
         KICKOS_BENCH_SPAN(PH_RECV_PARK, bm_rpark);
         *parked = true;
@@ -562,16 +529,12 @@ namespace kickos
         return 0;
     }
 
-    // One in-place buffer: request out, reply back. Returns reply bytes (>= 0), or -KOS_E*
-    // (EINVAL oversize, EFAULT bad buffer, EBADF/EPERM bad cap or no SIGNAL, EPIPE dead
-    // endpoint or server died, EMFILE the SERVER's table is full or at its inbound reply
-    // bound, ENOSYS server took an info-less recv, ETIMEDOUT `timeout_us` elapsed, ECANCELED
-    // cancelled while parked on either half). `timeout_us` bounds the WHOLE call: ONE deadline
-    // covers the wait on send_waiters AND the wait for the reply.
-    //
-    // A FAR CALL parks on one wait only, for the reply, and diverges on back-pressure alone:
-    // -KOS_EBUSY where the peer's ring is full, with nothing mutated
-    // (docs/reference/ipc-call-reply.md).
+    // Send a request and receive its reply in one buffer. Returns reply bytes
+    // or -KOS_E*: EINVAL for length, EFAULT for buffers, EBADF/EPERM for capability
+    // access, EPIPE for endpoint/server death, EMFILE for server reply-cap capacity,
+    // ENOSYS for a receiver without metadata, ETIMEDOUT, or ECANCELED.
+    // One deadline covers both send and reply waits. Far calls wait only for a
+    // reply and return EBUSY without side effects if the peer ring is full.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
@@ -804,13 +767,10 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-    // One-shot: the cap is consumed on EVERY exit. Under an ALREADY-HELD IrqLock. Returns 0,
-    // or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad reply buffer, ESRCH the caller is
-    // gone or aborted). Whatever it wakes it offers to `dw`, never rescheduling itself.
-    //
-    // `answered` is set where the LOCAL arm reached its wake, which is what the composite
-    // spans bracket. An explicit flag and not the return code: the far arm answers 0 and
-    // -KOS_EFAULT identically and brackets nothing.
+    // Reply with IrqLock held. Consumes the reply cap and adds wakes to dw.
+    // Returns 0 or -KOS_E* (EBADF, EFAULT, or ESRCH).
+    // Set answered only for a local caller wake; far replies do not contribute
+    // to the local benchmark phases.
     int endpoint_reply_locked(Thread* c, uint32_t reply_cap, uintptr_t buf, size_t len,
                               DeferredWake* dw, bool* answered)
     {
@@ -897,8 +857,7 @@ namespace kickos
         KICKOS_BENCH_SPAN(PH_REPLY_FUNNEL, bm_funnel);
         *answered = true;
         KICKOS_BENCH_MARK(bm_wake);
-        // D4: the caller is >= us whenever it donated. The reschedule is the CALLER's to
-        // issue, so a fused body can park first.
+        // Defer rescheduling so a fused receive can park first.
         if (sched::wake_no_resched(caller))
         {
             dw->offer(caller);
@@ -934,54 +893,34 @@ namespace kickos
         bool answered = false;
         int rc;
         {
-            // SCOPED TIGHTER THAN THE SPAN BELOW ON PURPOSE. Nothing here parks, so the
-            // standalone reply has no reason to defer its seat past the body, and leaving it
-            // to the function's own return would put ready-queue selection, the peer
-            // announcement and the switch after PH_REPLY_TOTAL closed: the row would then
-            // read as an improvement over a release that bracketed them.
+            // Complete the deferred wake before closing PH_REPLY_TOTAL.
             DeferredWake dw;
             rc = endpoint_reply_locked(c, reply_cap, buf, len, &dw, &answered);
         }
         if (answered)
         {
-            // Closes before the return, where `lock` releases and a pended switch fires.
+            // Close before lock release can trigger a pending switch.
             KICKOS_BENCH_SPAN(PH_REPLY_TOTAL, bm_total);
         }
         return rc;
     }
 
-    // KOS_SYS_REPLY_RECV: one trap, one IrqLock, one sched::current() and one buffer validate
-    // where the kos_reply then kos_recv every server loop open-codes pays two of each. `lens`
-    // packs reply_len and recv_cap nine bits each; `buf` is ONE buffer, the reply going out of
-    // it and the next request coming back into it, which is safe for the reason kos_call's
-    // in-place buffer is: the reply is fully copied before this body parks.
-    //
-    // THE WAKE IS DEFERRED and that is the whole point of the fusion. On arm64, rv64, x86_64,
-    // the LX6 and the sim arch_switch swaps INLINE, so a reply that rescheduled here would
-    // switch away before the receive half parked, the caller would find no receiver and the
-    // next call would take the slowpath. Both halves offer what they ready to one DeferredWake
-    // whose destructor is the single completion, and the park hands it the thread instead.
-    //
-    // THE REPLY HALF'S FAILURES ARE NOT SYMMETRIC, and what splits them is whether this call
-    // can still REPORT them. -KOS_ESRCH says the transaction the reply named is already over,
-    // which is nothing about this server's ability to receive and nothing a caller has to be
-    // told, so the receive half still runs. -KOS_EBADF and -KOS_EFAULT must reach the server,
-    // and a receive on top of one overwrites the code with its own, so they end the call.
-    // -KOS_EFAULT here is the CALLER's buffer and not this server's: `buf` was proved readable
-    // and writable above, so the only side of the reply copy that can still be gone is the far
-    // one. A server that treats it as fatal to itself lets one client end a shared service,
-    // which is why the loops in <kickos/sys/console_service.h> classify it and keep serving.
+    // Reply and receive using one syscall, lock, and shared buffer. The reply
+    // is copied before the receive can overwrite it. lens packs two 9-bit lengths.
+    // Defer wakes until receiving finishes or parks, so a resumed client can
+    // find the server waiting for its next request.
+    // ESRCH still allows receiving: that transaction has already ended. EBADF
+    // and EFAULT abort receiving so its result cannot hide the reply error.
+    // After server-buffer validation, a reply EFAULT can be a client-buffer fault;
+    // service loops must handle it without terminating the shared service.
     int32_t endpoint_reply_recv(uint32_t reply_cap, uintptr_t buf, uintptr_t lens,
                                 uintptr_t opts)
     {
         KICKOS_BENCH_MARK(bm_frtotal);
         size_t reply_len = kos_call_lens_send(lens);
         size_t recv_cap = kos_call_lens_recv(lens);
-        // CLAMPED, not refused, because that is what both halves did on their own: a reply
-        // longer than the bound was clamped by the parked caller's capacity anyway, and a
-        // receive capacity above it was harmless. The pack saturates at 511 rather than
-        // masking, so a wild argument arrives above the bound and clamps here rather than
-        // wrapping to a silent zero.
+        // Clamp both lengths to KOS_EP_MSG_MAX. Packing saturates at 511, so an
+        // oversized length reaches this clamp instead of wrapping.
         if (reply_len > KOS_EP_MSG_MAX)
         {
             reply_len = KOS_EP_MSG_MAX;
@@ -992,51 +931,38 @@ namespace kickos
         }
         if (opts == 0 or (opts & (alignof(uint32_t) - 1)) != 0)
         {
-            return -KOS_EINVAL; // load-bearing for the privileged accesses below
+            return -KOS_EINVAL; // reject misalignment before privileged accesses
         }
         Thread* c = sched::current();
         if (c == nullptr)
         {
             return -KOS_EPERM;
         }
-        // IN-OUT, so readable as well as writable.
         if (not user_readable_and_writable_ok(opts, sizeof(kos_reply_recv_opts),
                                               sizeof(kos_reply_recv_opts)))
         {
             return -KOS_EFAULT;
         }
-        // Copied ONCE, before anything can park: the struct stays user-writable, so a re-read
-        // after the park would see whatever the caller has since put there. Only the IN
-        // PREFIX is read, which ENDS AT `info` and not at `notify`: the notification mask is
-        // IN-OUT, so a read stopping short of it accepts no line and every notification
-        // silently stops ending a wait.
+        // Snapshot the user-writable inputs once before parking, including the
+        // in/out notify mask. info is output-only.
         kos_reply_recv_opts in = {};
         if (not kaccess_from_user(&in, user_space_of(c), opts,
                                   offsetof(kos_reply_recv_opts, info)))
         {
             return -KOS_EFAULT;
         }
-        // The notification mask is the whole opt-in, there being no flag beside it.
         uint32_t const admit = in.notify;
         uint32_t notify_bits = 0;
-        // THE SNAPSHOT ABOVE IS THE LINE: past it the field is proved writable and the
-        // write-back at the bottom is owed on EVERY exit, the argument refusals below
-        // included. That is the whole reason the rest of the body is a callable: the
-        // write-back is the statement after its single call, so a `return` added anywhere
-        // inside it lands ON the obligation instead of stepping over it, which no body whose
-        // exits are plain `return` statements can promise.
-        //
-        // NOT an RAII guard on the DeferredWake pattern, which is the shape this would
-        // otherwise be simplified into: a destructor runs after the return value is fixed, so
-        // it can discharge the write but can never answer the -KOS_EFAULT a REFUSED write
-        // owes the caller.
+        // Run the remaining paths through one write-back of consumed notifications.
+        // Use a callable so early returns still reach it. A destructor cannot replace
+        // the return code with EFAULT if write-back fails.
         auto const served = [&]() -> int32_t
         {
             if ((in.flags & ~KOS_RECV_NO_INFO) != 0)
             {
                 return -KOS_EINVAL;
             }
-            // ONE validate over the one buffer, read for the reply and written for the arrival.
+            // Validate the shared buffer for both reply reads and receive writes.
             if (not user_readable_and_writable_ok(buf, reply_len, recv_cap))
             {
                 return -KOS_EFAULT;
@@ -1044,13 +970,11 @@ namespace kickos
             uintptr_t badge_out = opts + offsetof(kos_reply_recv_opts, info);
             if ((in.flags & KOS_RECV_NO_INFO) != 0)
             {
-                badge_out = 0; // the info-less posture: nothing is written and calls bounce
+                badge_out = 0; // no metadata; reject calls
             }
             uint32_t epoch = 0;
             bool parked = false;
             int32_t rc = 0;
-            // Seated inside the lock below and READ after it on the parked path, which is why
-            // it lives out here.
             uint32_t opened = 0;
             bool reply_refused = false;
             {
@@ -1060,13 +984,9 @@ namespace kickos
                     sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
                 }
                 {
-                    // SCOPED TIGHTER THAN THE LOCK, as the standalone kos_reply scopes its
-                    // own seat: released here, the ready-queue selection and the peer
-                    // announcement the wake owes run INSIDE the composite below instead of
-                    // after it closed.
+                    // Complete the wake before closing the total, while IrqLock is held.
                     DeferredWake dw;
-                    // Discarded: this body brackets its own total, and the reply half's composite
-                    // spans belong to the standalone kos_reply.
+                    // Only standalone replies use this reply-phase timestamp.
                     bool answered = false;
                     if (reply_cap != KOS_CAP_NONE)
                     {
@@ -1080,16 +1000,12 @@ namespace kickos
                     }
                     if (not reply_refused)
                     {
-                        // Narrowed to the lines this thread really serves, and each of them rearmed
-                        // and opened to end the wait below. Leaving it is what takes the bits AND
-                        // flags each taken line for its next rearm, which nothing else on this path
-                        // does.
+                        // Accept only this thread's bound lines and rearm consumed events.
+                        // The matching leave consumes bits and marks them for the next rearm.
                         opened = irq_notify_wait_enter(c, admit);
                         if ((c->notify_pending & opened) != 0u)
                         {
-                            // Answered rather than parked behind: a message queued in the same
-                            // breath is taken by the next pass of the loop, which is why the
-                            // notification-only return is -KOS_ENOTIFY and not an error.
+                            // Return the notification now; a queued message can be received next time.
                             rc = -KOS_ENOTIFY;
                         }
                         else
@@ -1099,19 +1015,15 @@ namespace kickos
                         }
                         if (not parked)
                         {
-                            // An answer that never blocked takes its bits HERE, under the lock this
-                            // body already holds: nothing switched away, so the word is current.
+                            // No park occurred, so pending bits can be consumed under this lock.
                             notify_bits = irq_notify_wait_leave(c, opened);
                         }
                     }
                 }
                 if (not reply_refused)
                 {
-                    // THE LAST POINT BEFORE THIS THREAD CAN LOSE THE CPU, which is why the
-                    // composite ends here and not at the return: where arch_switch PENDS, the
-                    // switch takes at the brace below, and a close past it would put the whole
-                    // interval the server waited for its next client inside a row M8.12 reads
-                    // as a cost. A refusal served no request and is bracketed by nothing.
+                    // Close before lock release so deferred-switch targets exclude the wait.
+                    // Do not record reply refusals.
                     KICKOS_BENCH_SPAN(PH_REPLY_RECV_TOTAL, bm_frtotal);
                 }
             }
@@ -1121,14 +1033,9 @@ namespace kickos
                 wq_confirm_resume(c, epoch);
                 rc = static_cast<int32_t>(c->wait_result);
                 {
-                    // AND A PARKED ONE TAKES ITS BITS HERE, past the barrier, which is the
-                    // whole of the asymmetry above. Where arch_switch only PENDS the switch,
-                    // this body runs on for some instructions past wq_block before the switch
-                    // takes, so a take inside that lock scope reads the word as it stood BEFORE
-                    // the raise that woke this thread and answers -KOS_ENOTIFY with no bit in
-                    // it. Mutual exclusion is not what is missing: the barrier must run with
-                    // interrupts UNMASKED or the pended switch cannot take at all, which is why
-                    // it is outside the scope and why this take follows it.
+                    // Consume bits after the resume barrier. A deferred switch may not have
+                    // run when wq_block returns. The barrier needs interrupts enabled so that
+                    // switch can run before this thread reads its wake result.
                     IrqLock lock;
                     notify_bits = irq_notify_wait_leave(c, opened);
                 }
@@ -1137,18 +1044,9 @@ namespace kickos
             return rc;
         };
         int32_t const rc = served();
-        // REACHED BY EVERY EXIT PAST THE SNAPSHOT, the reply refusal and the two argument
-        // refusals included: zero consumed bits is an answer and not an absence, and the only
-        // exits that may skip it are the ones above that never proved the field writable.
-        //
-        // Skipped where the caller ACCEPTED no line, and that is sound because `notify` is
-        // IN-OUT: such a caller wrote 0 in, so leaving the field alone leaves 0, which is the
-        // true count of what this wait consumed. IT DIES WITH THE INPUT HALF: make `notify`
-        // OUT-only again and this skip starts leaving a stale value behind.
-        //
-        // The refusal below survives for the same reason. Where nothing was accepted there
-        // are no bits a lost write could drop; where something was, the caller's own buffer
-        // went away under it and is told so even though a message may have arrived.
+        // Write consumed bits on every path after the input snapshot, including errors.
+        // Skip when the input mask was zero: it already reports zero consumed bits.
+        // A failed write-back returns EFAULT even if a message was received.
         if (admit != 0
             and not kaccess_to_user(user_space_of(c),
                                     opts + offsetof(kos_reply_recv_opts, notify), &notify_bits,
@@ -1219,17 +1117,11 @@ namespace kickos
         return true;
     }
 
-    // A call from another kernel, reaching a thread of this one. Runs from the doorbell service
-    // body with this core's interrupts masked, and takes no lock for that reason.
-    //
-    // TRUE where a receiver took it and the call slot is now this node's record of the caller,
-    // released when the reply is sent. FALSE where nothing took it, and the slot is released at
-    // once so the ring does not fill behind a service that is not there.
-    //
-    // EVERY FALSE HERE IS ANSWERED BY dispatch_call, which publishes a zero-length reply
-    // carrying the tag: a refusal past the pop leaves a far caller parked, and under
-    // KOS_TIMEOUT_NONE nothing would ever wake it. So no arm below may grow an answer of its
-    // own, and none may return without reaching this bool.
+    // Deliver a call from another kernel. Runs in the doorbell handler with
+    // local interrupts masked; takes no lock.
+    // True retains the call slot until reply. False releases it immediately and
+    // requires dispatch_call to send a zero-length tagged reply, so the far
+    // caller cannot remain blocked. Do not send a second reply here.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    void const* payload, uint32_t len, uint32_t slot)
     {
@@ -1355,16 +1247,11 @@ namespace kickos
         return 0;
     }
 
-    // The partition's port capabilities, seated into root before its first instruction. One
-    // list (CONFIG_KICKOS_AMP_PORTS) names every crossing; an entry naming this node becomes a
-    // local endpoint with the port bound to it, an entry naming another becomes a far endpoint.
-    //
-    // ENTRY i LANDS AT CAPABILITY INDEX KICKOS_CAP_FIRST_DYNAMIC + i, which is how
-    // <kickos/amp.h> names the result without asking the kernel. That rests on this being the
-    // FIRST dynamic install into root's freshly attached run, on the walk running in list
-    // order, and on root's run carrying a slot per entry (cmake/cap_table.cmake sums one). An
-    // install placed before this one shifts every constant positionally, and the slot check
-    // below refuses to boot past it.
+    // Install CONFIG_KICKOS_AMP_PORTS capabilities into root before it runs.
+    // Local-node entries create local endpoints; other entries create far endpoints.
+    // Entry i must occupy KICKOS_CAP_FIRST_DYNAMIC + i. Install in list order
+    // before any other dynamic capability, with enough slots for every entry.
+    // The slot check rejects a boot that breaks this ABI layout.
     void amp_ports_seat(Thread* root)
     {
         IrqLock lock;

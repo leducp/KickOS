@@ -37,22 +37,11 @@ namespace kickos
         SUBSET
     };
 
-    // THE ONE ADMISSION OF A CORE MASK. Every path that seats one goes through it: a spawn, a
-    // re-affinity, and both halves of a task's grant.
-    //
-    // The machine first, then the grant: a bit naming a core this kernel does not schedule
-    // cannot be refused merely for being set, which is what keeps all ones an ordinary
-    // request. Naming NO core it schedules is the -KOS_EINVAL, a request no grant could
-    // satisfy.
-    //
-    // `requested` is a REAL MASK here, empty being malformed. A zero word means something
-    // different at each ABI that carries one (the task's default set at spawn and at
-    // kos_thread_set_affinity, leave this half alone in a grant), so each resolves its own
-    // before calling.
-    //
-    // TWO CLAUSES SUFFICE, so no placeability test belongs here: what survives is a NON-EMPTY
-    // subset of KICKOS_CORE_SET_ALL, which is exactly bits [0, KICKOS_KERNEL_CORES), and every
-    // one of those bits names a core pick_next scans.
+    // Validate masks for spawn, affinity changes, and task grants.
+    // First intersect requested with the machine's core set, then check the grant.
+    // An empty machine intersection returns EINVAL. Out-of-machine bits are ignored.
+    // Callers must resolve ABI-specific zero-mask defaults before calling; zero
+    // here is invalid. Every accepted bit names a core the scheduler can use.
     inline int sched_admit_mask(uint32_t requested, uint32_t grant, MaskBound bound,
                                 uint32_t* effective)
     {
@@ -96,61 +85,20 @@ namespace kickos
         uint64_t (*next_timed_event)(Thread const*);
     };
 
-    // THE EXCLUSION, AND HOW EVERY DECLARATION BELOW IS READ AGAINST IT.
+    // Scheduler locking rules:
+    // - "Caller holds the exclusion" requires interrupt masking and, on SMP, the
+    //   kernel lock. An IrqLock provides both.
+    // - start, yield, add_idle, set_affinity, and exit_current take their own IrqLock.
+    // - init, set_policy, default_policy, current, idle, is_idle, live_count, and
+    //   next_timed_event do not acquire it.
     //
-    // A function marked "caller holds the exclusion" runs with it ALREADY HELD: an IrqLock the
-    // caller constructed, or the mask a trap or doorbell body was entered with, which IS the
-    // exclusion on a kernel configured to one core. Above one core that mask alone is NOT
-    // enough, the cross-core kernel lock being the other half, so a masked-context caller
-    // there constructs the object like anyone else.
+    // IrqLock can nest. set_affinity and exit_current also accept locked callers.
+    // Known limitation: exit_current reached from a locked park prologue keeps the
+    // outer lock through cap_teardown, preventing its intended preemption gaps.
+    // See the M8.8 review residue in TODO.md.
     //
-    // EVERY DECLARATION FALLS IN ONE OF THREE CLASSES AND THE NOTE IS WHAT NAMES IT, so a
-    // call site is settled by reading the one declaration it names and nothing further.
-    //   HELD      carries the note, and never acquires. Most of this file.
-    //   ACQUIRES  constructs its own IrqLock. start, yield, add_idle, set_affinity and
-    //             exit_current, which are the whole of the class.
-    //   NEITHER   init, set_policy, default_policy, current, idle, is_idle, live_count and
-    //             next_timed_event, which install or read one pointer or word.
-    //
-    // TWO OF THE FIVE ARE REACHED BOTH WAYS, SO "NOTHING RE-ACQUIRES WHAT ITS CALLER HOLDS"
-    // IS NOT THE RULE AND AN AUDIT MADE ON IT MISREADS THEM. IrqLock nests in both halves
-    // (kickos/irqlock.h): each instance restores the interrupt state it found, and the kernel
-    // lock is taken and released as the per-core depth crosses zero. What each is reached by:
-    //   start         boot alone, holding nothing, and does not return.
-    //   yield         the yield syscall arm, a zero-length sleep, and the console-publish
-    //                 drain, which leaves the exclusion around each pass on purpose. All three
-    //                 hold nothing.
-    //   add_idle      bring-up alone, holding nothing. Its sibling `add` is HELD, and the same
-    //                 boot path brackets that one by hand.
-    //   set_affinity  HOLDING IT from the routed-core pin (kernel/irq/irq.cc) and from the
-    //                 kos_thread_set_affinity arm, both of which resolve and authority-check
-    //                 under their own bracket; holding nothing from the bench harness.
-    //   exit_current  holding nothing from the return trampoline, the fault stub, the slay
-    //                 trampoline, the kos_exit arm, and the cancel check syscall_dispatch
-    //                 makes on syscall entry, which is a death point reached with no bracket
-    //                 at all (tests/static/check_park_death_point.sh states why it reads
-    //                 there); HOLDING IT from every park prologue whose park_cancel_pending
-    //                 finds a cancel. It never returns, so such a caller's bracket is
-    //                 abandoned rather than destroyed and the depth leaves this core with the
-    //                 frame, not with that object.
-    //
-    // AND AN ABANDONED BRACKET BREAKS A PRECONDITION exit_current ITSELF HONOURS. cap_teardown
-    // (kernel/syscall/cap.cc) declares that its caller must NOT hold IrqLock: it drops and
-    // retakes one every chunk so that a sweep as wide as the capability table stays
-    // preemptible, and above one core those gaps are also where the cross-core lock is
-    // released. exit_current calls it outside its own brackets and satisfies that. A caller
-    // that reached exit_current holding one does not: the nested retakes restore the masked
-    // state they found, the per-core depth never returns to zero, and the whole sweep runs
-    // masked with the kernel lock held. Every park prologue above is such a caller. That is a
-    // known defect and not the intent; it is recorded in TODO.md under the M8.8 review
-    // residue, with what closing it takes.
-    //
-    // The one form is prose, as it is for cap_resolve and switch_prepare, and above one core a
-    // debug build checks it at the body: KICKOS_ASSERT_EXCLUSION_HELD (kickos/klock.h) reads
-    // the per-core lock state the caller's IrqLock already maintains, so nothing stands beside
-    // the lock as a second truth. AT ONE KERNEL CORE IT CHECKS NOTHING, the exclusion
-    // there being the interrupt mask and no seam reporting it, so a green single-core run
-    // witnesses no bracket at all and the note is the whole of what holds.
+    // Debug builds check held-lock preconditions on SMP. Single-core builds cannot
+    // check them because the architecture has no interrupt-mask query interface.
     namespace sched
     {
         void init();
@@ -164,12 +112,9 @@ namespace kickos
         void add(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
-        // Re-place `t` onto `mask`. The caller has already intersected it with t's task's core
-        // set and found it non-empty, so this writes and re-places rather than judging.
-        //
-        // A READY, BLOCKED or newly created thread just becomes eligible elsewhere at the next
-        // pick. A thread EXECUTING on a core the new mask excludes is not yanked: it is made
-        // ineligible there and that core is asked to reschedule, which is the only way off.
+        // Set an already-validated nonempty affinity mask. Ready or blocked threads
+        // become eligible on the new cores at their next scheduling decision.
+        // If a running thread is excluded from its current core, request a reschedule.
         void set_affinity(Thread* t, uint32_t mask);
 #endif
 
@@ -182,17 +127,12 @@ namespace kickos
         // scheduler ends the process via arch_shutdown (never unwinds to boot).
         void start();
 
-        // The bare entry to the single decision point, which is pick_and_seat. Safe to call
-        // from thread or ISR context; caller holds the exclusion.
-        //
-        // `woken` names a thread this pass readied and owes a core to. Above one core a pick
-        // that DECLINES it is the only thing that can announce it to a peer, at ITS priority
-        // and not the caller's, so a pass that readied somebody and passes nullptr strands a
-        // thread pinned elsewhere. Null where the pass readied nobody.
+        // Reschedule in thread or ISR context. Caller holds the exclusion.
+        // Pass the thread made ready as woken so an SMP peer can run it if this core
+        // does not. Pass nullptr only when no thread was made ready.
         void reschedule(Thread const* woken = nullptr);
 
-        // Voluntary yield: rotate within priority, then reschedule. ACQUIRES, and the
-        // console-publish drain calls it from outside a bracket it left on purpose.
+        // Yield within this priority and reschedule. Takes IrqLock internally.
         void yield();
 
         // Remove `current` from the run set (state must already be set to the reason,
@@ -210,23 +150,17 @@ namespace kickos
         // holds the exclusion.
         void wake(Thread* t);
 
-        // A reschedule leaves `current` naming the woken thread while this caller still
-        // runs, so a caller that reads sched::current() again after waking must ready with
-        // wake_no_resched (true iff it readied t) and defer one resched_after_wake, for the
-        // HIGHEST-priority thread it woke, to every path that does not itself park.
-        // Both hold the exclusion as their precondition.
-        //
-        // THAT DEFERRAL COVERS THE LOCAL SEAT AND NOTHING ELSE. A caller readying several
-        // threads still owes announce_ready for each of the others: see below.
+        // wake_no_resched returns true if it made t ready, without changing current().
+        // Defer resched_after_wake until current() is no longer needed, using the
+        // highest-priority thread woken. Announce other woken threads separately.
+        // Both functions require the caller to hold the exclusion.
         [[nodiscard]] bool wake_no_resched(Thread* t);
         void resched_after_wake(Thread const* t);
 
 #if KICKOS_KERNEL_CORES > 1
-        // Tell the peers that could take READY thread `t` to look, at ITS priority, with no
-        // local pick and no switch. One seat can hold only one thread, so a caller readying
-        // several and deferring ONE reschedule reaches every peer for one of them and none
-        // for the rest, and a thread whose affinity excludes this core is then reachable by
-        // nothing at all. Announcing costs no local decision, so it need not be deferred.
+        // Notify eligible peers that t is ready, using t's priority. Does not switch
+        // or make a local scheduling decision. Required for each thread made ready
+        // that is not passed to the deferred reschedule.
         void announce_ready(Thread const* t);
 #endif
 
@@ -239,17 +173,11 @@ namespace kickos
         struct arch_context* switch_prepare(Thread* next);
 #endif
 
-        // The SOLE writer of a thread's effective priority: no other code may write
-        // t->prio. A READY or RUNNING thread is re-seated through the policy hooks, since
-        // rq_remove locates its list by reading t->prio and a bare field write would
-        // corrupt the ready lists; a BLOCKED thread takes the value directly,
-        // because wait queues scan lazily at pop and the timer list is prio-independent.
-        // Does NOT reschedule; the caller decides. NOT BOUNDED BY THE TASK'S PRIORITY
-        // CEILING: every caller here is priority inheritance or the console-publish temporary,
-        // which are the kernel's own and not a task asking for priority. The ceiling is
-        // enforced where a task asks, at the spawn boundary. Caller holds the exclusion, and
-        // the console-publish drain re-enters it around each of its two calls rather than
-        // spanning the wait between them.
+        // Only this function may write effective priority. Reinsert READY/RUNNING
+        // threads through policy hooks before changing prio, which indexes their lists.
+        // BLOCKED threads need no reorder because wait queues scan priorities at pop.
+        // Does not reschedule or apply the task priority ceiling; inherited priority
+        // is kernel-controlled. Caller holds the exclusion.
         void set_prio(Thread* t, uint8_t p);
 
         // What this death is, which is the one thing exit_current cannot derive: a fault

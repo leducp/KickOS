@@ -85,7 +85,7 @@ namespace selftest
     constexpr int CH_READY = 2; // IRQ-driver tests
     constexpr int CH_IRQ = 3;   // IRQ-driver tests
     constexpr int CH_REL = 4;   // root-to-child release, where the child has no other park
-                                // between signalling readiness and waiting to be let go
+                                // between signaling readiness and waiting for release
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
@@ -93,19 +93,10 @@ namespace selftest
     // kos_ram_alloc grants the caller nothing: a test that must touch its own allocation
     // asks with kos_mem_self_grant.
 
-    // ONE SCHEDULING DOMAIN FOR AN ARM THAT NEEDS TWO THREADS ORDERED. Priority orders which
-    // runnable thread gets a core; above one core a thread with a core of its own proceeds
-    // whatever its priority. Pinning both parties to one core restores the order as a
-    // PROPERTY: pick_next scans from the top priority down and takes the first thread
-    // placeable on the asking core (kernel/sched/policy_fifo_rr.cc), so the lower-priority
-    // party runs only once the higher one is off the run queue, which for a thread whose one
-    // blocking point is the syscall under test is its park. Core 0 is the choice no image may
-    // isolate (cmake/isolated_cores.cmake refuses a mask naming it) and every task's default
-    // set holds it, so one literal serves every posture; the kernel ignores a mask on an image
-    // driving one core.
-    //
-    // Root CANNOT join such a domain: nothing hands a thread its own handle, so an arm that
-    // needs the order must put BOTH parties in spawned threads.
+    // Pin both test threads to core 0 when priority must determine execution order.
+    // A lower-priority thread then runs only after the higher one blocks.
+    // Core 0 cannot be isolated and belongs to every default task mask.
+    // Spawn both participants: root has no self-handle for affinity changes.
     constexpr uint32_t TAP_PIN_CORE = 0x1u;
     // The two ranks inside that domain: PARKS is the party whose park is the precondition,
     // AFTER the party whose first instruction must not run until it has parked. AFTER is below

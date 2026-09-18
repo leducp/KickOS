@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A BURST LONGER THAN THE RING, over the real console.cc and console_tx.cc, against a
-// transport with a line rate. The console takes a whole line or refuses it, so a printer that
-// does not read the refusal loses whole lines once the ring fills. The table the bench
-// report is built around is forty-two of them and no emulated board reproduces it, the
-// emulated UARTs all draining a ring the instant a byte is queued.
-//
-// The line rate is consoleseam's per-window slot budget.
+// Test a burst larger than the console ring against a rate-limited transport.
+// The printer must retry rejected lines. consoleseam limits bytes per window;
+// emulated UARTs drain immediately and do not exercise this case.
 
 #include <gtest/gtest.h>
 

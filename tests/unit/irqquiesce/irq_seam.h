@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The observable half of the seam kernel/irq/irq.cc is compiled against here. `g_core` is
-// what arch_cpu_id answers and is PER THREAD, so an arm may run two cores at once; the trace
-// records every controller and doorbell call in order, which is how an arm reads what a
-// teardown did rather than only what it returned.
-//
-// THE LOCK AND THE DOORBELL ARE REAL: arch_kernel_lock excludes and services a pending
-// doorbell while it spins, and sem_post takes IrqLock as kernel/sync/sync.cc does. An arm can
-// therefore put a peer inside the dispatch entry with its post genuinely blocked on the lock a
-// teardown holds, and a teardown that polls a peer's cell REFUSES here rather than hanging,
-// because the peer answers every doorbell from inside the acquire loop.
+// IRQ test hooks with per-host-thread core identity and an ordered trace.
+// The kernel lock excludes concurrent access and services doorbells while
+// spinning. A peer can therefore answer teardown's requests while still
+// blocked inside IRQ dispatch.
 
 #ifndef KICKOS_TESTS_UNIT_IRQQUIESCE_IRQ_SEAM_H
 #define KICKOS_TESTS_UNIT_IRQQUIESCE_IRQ_SEAM_H

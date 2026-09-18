@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The kernel lock's nesting bracket: one acquisition depth per core, so the cross-core lock
-// is taken as the depth rises from zero and released as it returns to it.
-//
-// Every body takes THIS CORE'S INTERRUPT MASK AS ALREADY APPLIED: the lock must be taken
-// after the mask and released before it comes back, or a handler entered on a core holding
-// the lock spins against its own release.
+// Per-core kernel-lock nesting. Acquire when depth changes from zero and
+// release when it returns to zero.
+// Call with local interrupts masked. Restore them only after release, or
+// an interrupt handler can deadlock on the lock held by its own core.
 
 #ifndef KICKOS_KLOCK_H
 #define KICKOS_KLOCK_H
@@ -23,8 +21,7 @@ namespace kickos
     void klock_leave(void);
 
 #if KICKOS_DEBUG
-    // Answers for the SWITCH WINDOW too: klock_detach takes the depth off the core without
-    // releasing, so a zero depth there is still this core holding the lock.
+    // Includes the switch window: klock_detach clears depth without releasing the lock.
     bool klock_exclusion_held(void);
 #endif
 
@@ -74,12 +71,8 @@ namespace kickos
 #endif
 }
 
-// What a "caller holds the exclusion" body checks of its caller (kickos/sched.h sorts every
-// scheduler declaration against that note).
-//
-// AT ONE KERNEL CORE IT CHECKS NOTHING. The exclusion there is the interrupt mask itself, no
-// depth is kept, and no arch seam reports whether the mask is applied, so a green single-core
-// run witnesses none of these and a missing bracket only shows above one core.
+// Assert the caller holds kernel exclusion. On single-core builds this is a no-op:
+// exclusion uses the interrupt mask, which has no query interface.
 #if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
 #define KICKOS_ASSERT_EXCLUSION_HELD() KICKOS_DEBUG_ASSERT(::kickos::klock_exclusion_held())
 #else

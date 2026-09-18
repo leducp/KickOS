@@ -43,20 +43,12 @@ namespace kickos
     // The same choice WITHOUT unlinking. Under the same IrqLock a following wq_pop_highest
     // returns this exact thread.
     Thread* wq_peek_highest(List& q);
-    // Park current on q and switch away; returns once a waker popped it and woke it. Thread
-    // context only. Caller holds ONE continuous IrqLock across the block decision AND this
-    // call, or the wake is lost.
-    //
-    // `kind` and `obj` are the wait edge (thread.h): `obj` must be the object owning `q`, and
-    // the pair must name the list this call parks on; thread_kill and the timed unwind reach
-    // that list through the tag and nothing else. wq_pop_highest clears both, so a re-park
-    // onto another list has to re-state them.
-    //
-    // `woken` is how a caller that readied somebody with sched::wake_no_resched hands that
-    // thread to THIS park's reschedule instead of issuing one of its own. It is not an
-    // optimisation: the outgoing thread parks, so it makes nothing takeable and the switch
-    // announces nothing, and a woken thread this core's pick declines would reach no peer
-    // at all.
+    // Park current on q and switch away. Thread context only. Hold one continuous
+    // IrqLock across the block decision and this call to avoid lost wakes.
+    // kind and obj identify the queue for cancellation and timeout cleanup.
+    // wq_pop_highest clears them; re-parking must set them again.
+    // Pass any thread readied by wake_no_resched as woken so the park's reschedule
+    // can notify a peer if this core does not select it.
     void wq_block(List& q, WaitKind kind, void* obj, Thread const* woken = nullptr);
 
     // Park `current` on NO list at all: the wait edge is then the ONLY thing that can find it
@@ -66,50 +58,25 @@ namespace kickos
     // waking; a parked thread never writes its own result. Caller holds IrqLock.
     void park_queueless(Thread* c, WaitKind kind, void* obj);
 
-    // Whether a cancel landed BEHIND syscall_dispatch's entry read of the same field. That
-    // read is outside the kernel lock, so a cancel raised after it aborted no park: the target
-    // was not BLOCKED, thread_cancel_kind therefore returned without unwinding anything, and a
-    // thread that parks after it is owed a wake by nobody.
-    //
-    // ASK IT IN THE CALLER'S OWN UNDER-LOCK PROLOGUE, before the first side effect, and end
-    // the thread there exactly as the entry check does. Not inside wq_block or park_queueless:
-    // a caller may reach its park with a transaction already committed, and exiting from
-    // inside the park would abandon it. Placed in the prologue there is nothing to unwind by
-    // hand: everything the caller holds that early is something sched::exit_current already
-    // sweeps, caps through cap_teardown and task holds through task_orphan_created_by.
-    //
-    // cancel_kind is written only under this same lock, so a prologue answer holds until the
-    // lock is released.
-    //
-    // TWO SHAPES ANSWER A PENDING CANCEL, and which one a site takes is the site's own. A
-    // parking caller ENDS the thread here, as syscall_dispatch's entry check does. irq_wait
-    // RETURNS -KOS_ECANCELED instead, being the kernel's one cancellation point, and its caller
-    // is owed the code. That divergence is why no park_cancel_or_exit helper folds the
-    // conditional away: a helper whose name promises an exit is wrong at the one site that
-    // returns. The conditional also keeps the check looking like a PROLOGUE rather than a
-    // statement that could be moved, and moving it is what breaks it: at the park instead,
-    // ktime_sleep_until would exit with the thread already on the sleep queue and its one-shot
-    // armed.
-    //
-    // Inline and not out-of-line: a host fixture compiling one kernel source against its own
-    // seam would otherwise stub this symbol, giving the death point a second body that cannot
-    // diverge loudly. One such stub was already in the tree.
+    // Check cancellation under IrqLock before any side effect in a blocking
+    // operation. Cancellation can arrive after syscall entry checked it but
+    // before the thread becomes BLOCKED, leaving no waiter to wake.
+    // Do not move this check into the park itself: a transaction may already
+    // be committed. Exit from the prologue instead, except irq_wait, which
+    // returns ECANCELED. The result stays valid until the lock releases.
+    // Keep inline so test fixtures use the same check as the kernel.
     [[nodiscard]] inline bool park_cancel_pending(Thread const* c)
     {
         return c->cancel_kind != CANCEL_NONE and not c->dying;
     }
 
-    // Resume barrier, MANDATORY for any blocking primitive that reads waker-set TCB state
-    // (wait_result) after resuming:
-    //     Thread* c = sched::current(); uint32_t epoch;
-    //     { IrqLock lock; ...predicate + set up state...; epoch = c->switch_count;
-    //       wq_block(q, kind, obj); }              // lock RELEASED here
-    //     wq_confirm_resume(c, epoch);              // barrier, OUTSIDE the lock
-    //     use c->wait_result;                       // now guaranteed post-resume
-    // On ARM arch_switch only PENDS PendSV and arch_irq_restore has no ISB, so a wait_result
-    // read after the block scope's lock drops can still retire on the not-yet-switched thread
-    // and return the PRE-block value. No-op on the sim, whose switch is synchronous. The
-    // waker, never the sleeper, writes wait_result and clears the wait edge under the lock.
+    // After blocking, release IrqLock and call wq_confirm_resume before reading
+    // waker-written state such as wait_result:
+    //   { IrqLock lock; epoch = c->switch_count; wq_block(q, kind, obj); }
+    //   wq_confirm_resume(c, epoch);
+    //   result = c->wait_result;
+    // ARM may execute instructions after unmasking before PendSV runs. The barrier
+    // prevents reading pre-block state. It is a no-op on synchronous-switch backends.
     void wq_confirm_resume(Thread* c, uint32_t epoch);
 
     void sem_init(Semaphore* s, int initial);

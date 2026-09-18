@@ -102,16 +102,10 @@ namespace kickos
     // kickos/aspace.h. ep_copy's payloads here are bounded (<= KOS_EP_MSG_MAX) and copied
     // under IrqLock at the copy site.
 
-    // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked
-    // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send. `ospace` is the
-    // owner of `out`, which is the RECEIVER at four of the six callers.
-    // Answers whether the info landed, and THE REFUSAL IS NOT AN ASSERT: cap_console_deliver
-    // is one of the six and is the fault reporter's route to a published console, so a panic
-    // inside this call re-enters kputs -> kconsole_write from inside the record it was
-    // writing. The five syscall-path callers discard the answer rather than assert it: the
-    // assert would sit across a translation unit boundary, where the plain-copy backend cannot
-    // be folded away, and so would put kpanic on the syscall descent every region board's trap
-    // red zone is measured against.
+    // Write badge and reply_cap to out in ospace; out == 0 skips metadata.
+    // KCAP_INVALID marks a plain send. Return whether the write succeeded.
+    // Do not assert on failure: fault reporting uses this path and a panic would
+    // re-enter console output. It would also add console stack use to syscall paths.
     [[nodiscard]] bool write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
                                        uint32_t reply_cap);
 
@@ -131,13 +125,10 @@ namespace kickos
     int sem_create(int initial, uint32_t* out_cap);
     int mutex_create(uint32_t* out_cap);
 
-    // --- IPC endpoints (syscall_ipc.cc) ----------------------------------------
-    // endpoint_send/call/reply_recv MUST be called with no caller-held IrqLock: they take
-    // their own for the resolve/deliver/park and release it before the resume barrier, and a
-    // spanning caller lock livelocks ARM.
-    //
-    // ONE implementation per operation serves both the timed and the untimed syscall
-    // number; the untimed dispatch arm passes KOS_TIMEOUT_NONE.
+    // IPC endpoints (syscall_ipc.cc).
+    // Call send/call/reply_recv without IrqLock. They lock internally and must
+    // release it before the resume barrier; an outer lock would livelock ARM.
+    // Untimed calls use KOS_TIMEOUT_NONE.
     int endpoint_create(uint32_t* out_cap);
     // The receiver runs in another node's kernel. Privileged, and -KOS_ENOSYS where the
     // image runs one kernel over one core.

@@ -76,16 +76,10 @@ namespace selftest
         TAP_CHECK((bits & 8u) != 0u);
     }
 
-    // --- What a node owes a caller whose route it has stopped believing --------------------
-    // Three arms on one question. THE FIRST TWO WITNESS A NODE BOOTED ALONE: each stomps the
-    // peer's call ring as amp_reset_record does and holds the reply ring toward it, both of
-    // which a node running a kernel of its own moves underneath, so each DECLINES against one
-    // and skips by name. THE THIRD WITNESSES BOTH ENVIRONMENTS, driving this node's self reply
-    // ring, which no node produces into and no service drains.
-    //
-    // EACH OWNS ITS REPLY-RING PRECONDITION inside its own forge: every take reserves a slot in
-    // the ring toward the peer, and on a node booted alone nothing else ever moves that tail,
-    // so a preceding arm's answers would refuse the take outright.
+    // Test replies after route validation fails. The first two cases modify a
+    // peer ring and require that peer to be offline; skip if it runs a kernel.
+    // The third uses this node's unused self-reply ring and works in either mode.
+    // Each test resets its reply-ring capacity before injecting a call.
 
     void t_amp_far_reset_answers()
     {
@@ -511,18 +505,10 @@ namespace selftest
         return static_cast<int64_t>(static_cast<intptr_t>(kos_amp_probe(op, a1)));
     }
 
-    // PORT_REPLY names a CLASS and never a service: a call published on it lands in the peer's
-    // reply ring, where the take answers CLASS and drops it. KOS_SYS_AMP_ENDPOINT_CREATE cannot
-    // reach that refusal at all, gating on the caller being privileged where root is
-    // unprivileged from its first instruction, so KOS_AMP_OP_MINT is the only route to it.
-    // --- The reply ring's reserve, refused with the call LEFT TO BE TAKEN -------------------
-    // A take reserves the slot its own reply will need, so a call whose answer would have
-    // nowhere to go is refused and left unread. THE ONE VERDICT NAMING THIS NODE'S OWN STATE:
-    // every other refusal on this ring names an untrusted far field and drops the slot with its
-    // cursor advanced, where this one must leave the call exactly where it is.
-    //
-    // The forge owns the whole scenario, including the ring it fills and gives back, so this arm
-    // depends on nothing that ran before it.
+    // Use the test mint operation to target PORT_REPLY and exercise class rejection.
+    // Then fill reply capacity: taking a call must leave it unread when no reply
+    // slot can be reserved. Malformed peer fields instead consume and drop a slot.
+    // Each scenario restores the rings it modifies.
     void t_amp_reply_reserve()
     {
         uint32_t const peer = amp_round_peer();
@@ -601,8 +587,7 @@ namespace selftest
         TAP_CHECK(kos_amp_endpoint_create(far_node, KOS_AMP_PORT_ECHO, &refused)
                   == -KOS_EPERM);
         TAP_CHECK(refused == KOS_CAP_NONE);
-        // CAP_SIGNAL alone, so the receive side refuses it at the resolve and no branch of
-        // the receive had to learn about locality.
+        // Far endpoints have only CAP_SIGNAL, so receive resolution must fail.
         char rbuf[AMP_FAR_LEN];
         struct kos_reply_recv_opts fo;
         kos_reply_recv_opts_init(&fo, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
@@ -635,15 +620,8 @@ namespace selftest
         // count check above and fail here.
         TAP_CHECK(same);
 
-        // The send arm, after the call for the reason above. It never parks, and it answers the
-        // byte count with no receiver anywhere on THIS node: recv_holders is 0 on a far
-        // endpoint, so a dead-endpoint refusal taken ahead of the far arm would answer
-        // -KOS_EPIPE here.
-        //
-        // On the crossing NOTHING answers, deliberately. A send to a port a peer THREAD serves
-        // is answered by that thread, and its answer names no caller, so it lands as a dropped
-        // reply at a time this arm does not control, inside the window the next arm counts
-        // dropped replies in.
+        // A far send must succeed without a local receiver. Use a peer port with
+        // no responding thread so a later dropped-reply check sees no delayed response.
         kos_cap_t const quiet = amp_far_unanswered();
         char sbuf[AMP_FAR_LEN];
         for (size_t i = 0; i < sizeof(sbuf); i++)
@@ -894,15 +872,9 @@ namespace selftest
         TAP_CHECK(n == 0);
     }
 
-    // --- A far call reaching a real receiving THREAD in another kernel ----------------------
-    // What a shared driver is: a peer's caller reaches a thread parked in an ordinary receive,
-    // that thread is handed an ordinary reply capability, and it answers with the ordinary
-    // reply call. Nothing in the service knows the caller is far.
-    //
-    // The endpoint is the PARTITION'S. This image binds no port and mints no endpoint: the
-    // kernel bound the port CONFIG_KICKOS_AMP_PORTS names this node before root ran. The forge
-    // below stands in for the PEER's publication, a single-image run having no second kernel to
-    // originate a call.
+    // Deliver a far call to a normal receiving thread and reply with its capability.
+    // Use the partition-created endpoint. On a standalone image, the test hook
+    // supplies the peer publication.
     Atomic<uint32_t, Order::RELAXED> g_amp_forged{0};
 
     // What one forged peer call carries (amp::forge_publish): eight bytes from 0xB0.
@@ -1096,22 +1068,10 @@ namespace selftest
     }
 
 
-    // --- An arrival this node cannot put in its own thread's buffer -------------------------
-    // Both far delivery arms copy into a thread of THIS node, and each refusal is this node's
-    // own buffer fault on a message that arrived intact. Neither needs the wire: the code
-    // travels on Thread::wait_result, which is the channel the local rendezvous uses, and a
-    // masked doorbell body having no syscall return is not what stands in the way of one.
-    //
-    // THE REAL ROUTE AND NO SCAFFOLD: a sibling holding the frame capability unmaps the page
-    // under the parked thread, which is SEC-2's own reachable path and what t_recv_buf_unmapped
-    // drives for the local case. Each phase orders the unmap AFTER the park, so nothing races:
-    // the reply half waits on a POSITIVE reading that a caller is parked, and the call half is
-    // ordered by root reaching its own recv while the forger sleeps.
-    //
-    // THE COUNTER IS THE DISCRIMINATOR, and it is why neither phase asserts a byte count on
-    // its own: -KOS_EFAULT is also what a boundary check answers, and that delivers nothing.
-    // Only a refusal past the take moves Counts::deliver_fault, so each phase asserts the code
-    // AND a delta of exactly one AND positive evidence that a thread took the message.
+    // Unmap a local buffer after its thread parks, then deliver a far message.
+    // Both call and reply paths must return EFAULT through wait_result.
+    // Check a deliver_fault increment of one as well as the error, distinguishing
+    // a delivery failure from rejection during syscall validation.
     constexpr int CH_DF_FRAME = 2;
     constexpr int CH_DF_SPACE = 3;
     uintptr_t g_df_va = 0;
@@ -1350,16 +1310,9 @@ namespace selftest
         }
     }
 
-    // --- A reply capability the receiver could not be told of -------------------------------
-    // The delivery installs the capability before it can know the receiver will be handed it.
-    // A receiver that is never handed one can never spend it, and the record it names would
-    // hold its caller's ring slot until the receiver exits, so the install is undone, the
-    // record forgotten, and the slot left to the taker.
-    //
-    // KICKOS_CAP_REPLY_MAX refusals run BEFORE the control, which is what separates an undo
-    // that freed the table slot from one that also gave back the reply bound: the control's
-    // own mint is refused against a bound the refusals never returned, and it is the control
-    // rather than this loop that then fails.
+    // If reply-cap write-back fails, undo the capability and call record so
+    // the ring slot can be released. Repeat KICKOS_CAP_REPLY_MAX times before
+    // a successful control to check recovery of both table slots and reply budget.
     void t_amp_far_undisclosed()
     {
         kos_cap_t const listen = amp_local_cap();
@@ -1461,15 +1414,9 @@ namespace selftest
         TAP_CHECK((forged & KOS_AMP_PEER_CALL_HELD) != 0u);
     }
 
-    // --- A receiver that asked for no info at all -------------------------------------------
-    // The same claim, reached with no forged refusal: write_recv_info answers TRUE for an
-    // out-ptr of zero, so an info-less receiver is one the delivery cannot hand a capability
-    // to however well everything else goes. The local call path refuses such a receiver
-    // outright; the wire carries no errno, so this one takes the call as a datagram and leaves
-    // the slot to the taker.
-    //
-    // KOS_RECV_NO_INFO and not a null out-ptr: a delivery that never comes must end this
-    // receive anyway, and on a board no watchdog stands behind an unbounded park.
+    // An info-less far receive cannot return a reply cap. It accepts a datagram
+    // and leaves slot cleanup to the taker; the wire carries no local errno.
+    // Use KOS_RECV_NO_INFO with a deadline so missing delivery cannot hang the test.
     void t_amp_far_infoless()
     {
         kos_cap_t const listen = amp_local_cap();
@@ -1683,8 +1630,7 @@ namespace selftest
             else
             {
                 TAP_CHECK(kos_amp_port_is_local(node, port) == 0);
-                // CAP_SIGNAL alone on a far endpoint, so the resolve is what refuses the
-                // receive and no branch of it had to learn about locality.
+                // Far endpoints have only CAP_SIGNAL, so receive resolution must fail.
                 struct kos_reply_recv_opts po;
                 kos_reply_recv_opts_init(&po, cap, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
                 TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe,

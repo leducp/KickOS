@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 userspace polled UART TX console driver. An UNPRIVILEGED thread owns the granted USIC0 CH0 register window and
-// serves a console endpoint: it kos_reply_recv()s byte batches from stdout clients and
-// POLL-writes each byte to the USIC transmit buffer. It does NOT clock/pin/baud
-// the USIC: the kernel's kickos_xmc_usic_init() already did that at boot, and
-// console_tx_deinit() left the channel TX-capable in a polled state. The driver
-// only drives TX inside its window; SCU (clock) and P1 IOCR (pin mux) stay OUT of
-// the window, privileged.
-//
-// HARD RULE (design D7): the driver MUST NOT use libc stdio (printf/puts). That
-// self-sends to the very endpoint it serves and deadlocks. Diagnostics go direct
-// to the USIC window or via kos_kconsole_write (RTT / kernel debug path).
-//
-// Isolation reality: on ARMv7-M PMSA the granted DEV window IS a genuine per-thread
-// capability (reprogrammed every switch-in), so another unprivileged thread faults
-// on the U0C0 window and SCU/IOCR stay privileged. That is why XMC is the first
-// handover target.
+// Polled USIC0 CH0 console driver for XMC4800. The kernel configures clocks,
+// pins, and baud rate before handover; the driver writes within its window.
+// Do not use libc stdio here: sending to this driver's own endpoint deadlocks.
+// Use the USIC window or kos_kconsole_write for diagnostics.
+// The MPU grants this window per thread; SCU and pin registers stay privileged.
 
 #ifndef KICKOS_DRIVER_XMCUART_H
 #define KICKOS_DRIVER_XMCUART_H
@@ -31,27 +20,18 @@ extern "C"
 {
 #endif
 
-    // The unprivileged driver thread entry. `arg` is the granted USIC0 CH0 window
-    // BASE, passed as the thread-arg VALUE (never dereferenced as memory). The
-    // delegated recv cap lands at child table index 1. Loops kos_reply_recv() ->
-    // poll-write each byte to TBUF0; exits cleanly when the receive returns < 0
-    // (endpoint dead / EPIPE). Spawned by xmcuart_console_start(), or directly by
-    // a consumer that wants its own orchestration.
+    // Unprivileged driver entry. arg is the USIC0 CH0 base address, not a pointer
+    // to an argument structure. Receive capability is delegated at index 1.
+    // Serves byte batches through polled TBUF0 writes. Spawned by
+    // xmcuart_console_start or directly by an application.
     void xmcuart_console_driver(void* arg);
 
-    // One-shot console-handover bring-up (call ONCE from the app main, BEFORE spawning
-    // any app that should print through the driver). The caller needs KOS_AUTH_CONSOLE
-    // and KOS_AUTH_MEMORY:
-    //   1. create a console endpoint E,
-    //   2. kos_console_publish(E)  (relinquishes the kernel UART, routes stdout to E),
-    //   3. spawn the UNPRIVILEGED driver granted the USIC0 CH0 window + {E | WAIT},
-    //   4. close root's own WAIT-bearing cap on E (else driver death cannot EPIPE
-    //      and clients hang).
-    // `cfg` carries the USIC0 CH0 window base/size and the driver priority as data (a
-    // KOS_SVC_CONSOLE service entry); cfg->prio must be >= every client's priority
-    // (D9: no PI on rendezvous). Returns 0, or < 0 on any failure
-    // (endpoint/publish/spawn). On failure the caller MUST NOT spawn console-dependent
-    // apps: publish and spawn are inseparable.
+    // Call once before starting console clients. Requires AUTH_CONSOLE and
+    // AUTH_MEMORY. Creates and publishes an endpoint, spawns the USIC0 CH0 driver,
+    // then closes root's WAIT cap so driver death wakes clients with EPIPE.
+    // cfg supplies the window and priority; priority must be at least every
+    // client's because plain rendezvous has no priority inheritance.
+    // Returns 0 or a negative error. Do not start console clients on failure.
     int xmcuart_console_start(struct kos_service_cfg const* cfg);
 
 #ifdef __cplusplus

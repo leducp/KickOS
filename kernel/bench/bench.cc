@@ -1,40 +1,19 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Cycle-accurate microbenchmark state (KICKOS_BENCH builds only). A NAMED DISTRIBUTION
-// (<kickos/bench.h>) is an accumulator plus, where the board keeps one, a histogram; the report
-// path below serves every slot, so an instrument joins the family by declaring a BD_* name, a
-// format label and the site that feeds it. SWITCH is slot zero and is
-// fed from the arch switch handler (switch.S). Its window is the SOFTWARE register save, the
-// swap and the software register restore; what the hardware stacks and unstacks on its own is
-// outside it, that being IRQ-entry latency, and so is the deferred MPU commit, which owns a
-// phase row. THE BACKENDS DO NOT ALL BRACKET ALL THREE PARTS, so a figure is comparable only
-// against one whose window encloses the same parts: armv7m and rv32imac do all three; rxv3,
-// armv8a, rv64imac and x86_64 stop at the swap, their exception return reloading every
-// register before it and leaving none free to close a window on; and the LX6 stamps its end
-// before the windowed exit reloads the incoming caller. armv8a, rv64imac and x86_64 bracket
-// their THREAD-CONTEXT switch alone (kickos_*_switch_now): the swap an interrupt books there
-// reuses the frame the trap entry already saved, so a window opened at that entry would
-// enclose the whole ISR dispatch, and one accumulator cannot carry two enclosures. The PHASE
-// accumulator is fed by the brackets in the syscall/scheduler/timer paths
-// (<kickos/bench.h>).
+// Per-core benchmark accumulators and histograms (KICKOS_BENCH only).
+// Each core writes its own row; reporting sums counts and histogram buckets
+// and takes global minima and maxima. Percentiles use bucket lower bounds.
 //
-// A part whose cycle counter glitches declares KICKOS_CHIP_CYCCNT_GLITCHES (its
-// chip_limits.h; today the XMC4800's DWT alone, chip_xmc4800.cc). There MIN is the statistic,
-// a glitched read being able only to inflate a delta and never push one below the true
-// minimum, and the histograms compile out entirely, which is also what keeps their RAM off
-// the board this instrument is tightest on. Everywhere else a minimum hides the tail, and the
-// headline is p50/p99/max, both of them bucket LOW EDGES and therefore FLOORS.
+// Switch measurements exclude hardware stacking and deferred MPU commits.
+// ARMv7-M and RV32 include software save, swap, and restore. RXv3, ARMv8-A,
+// RV64, and x86-64 stop at the swap; LX6 stops before the windowed restore.
+// ARMv8-A, RV64, and x86-64 measure thread-context switches only. Compare
+// results only when their measurement boundaries match.
 //
-// The counter's RATE is a chip fact of its own, KICKOS_CHIP_CYCCNT_HZ, falling back on the
-// core clock arch_cpu_clock_hz reports. A 0 there says nothing converts a reading into time,
-// and the nanosecond columns are then not printed.
-//
-// ONE ROW PER KERNEL CORE, indexed by kickos_kernel_core() and written by that core alone,
-// so no cell has a second writer. The KERNEL prints both tables from thread context and
-// outside any IrqLock, AGGREGATING the rows there: counts and sums add, minima take the min,
-// maxima take the max, and the percentiles are walked over the histograms SUMMED bucket-wise
-// across rows, a percentile not being an object that can be averaged.
+// Chips with KICKOS_CHIP_CYCCNT_GLITCHES report minima without histograms:
+// their counter errors can only increase measured intervals. Counter rate
+// comes from KICKOS_CHIP_CYCCNT_HZ or the core clock; zero omits time conversion.
 
 #include <kickos/irq_route.h>
 #include <kickos/bench.h>
@@ -95,19 +74,9 @@ namespace
         g_irq_seen = 1;
     }
 
-    // --- the end-to-end span --------------------------------------------------
-    // A span is OPENED by the raiser (or by the tare, which opens without raising) and CLOSED
-    // by the woken userspace thread. Three things have to hold for a sample to count, and each
-    // failure below produces a complete, plausible report on its own:
-    //   the closer IS the armed waiter, so a close from anywhere else cannot stand in for one
-    //   from the thread the interrupt woke;
-    //   the waiter's switch count MOVED, so a wait that returned on the fast path without ever
-    //   leaving the CPU is not a delivery;
-    //   an ISR ran, so a span that closes with no interrupt taken is not a wake;
-    //   a span was OPEN, so a wake on anything the raiser never raised is not a sample.
-    // Everything that fails one of them lands in g_e2e_dropped and nowhere else.
-    //
-    // ARMED AND PARKED ARE TWO PHASES OF ONE SPAN AND NOT TWO FACTS: nothing is ever both.
+    // End-to-end IRQ span. Accept a sample only if a span is open, the closer
+    // is the armed waiter, its switch count advanced, and an ISR ran. Other
+    // samples increment g_e2e_dropped. Armed and parked are distinct states.
     enum E2eMode : uint32_t
     {
         E2E_IDLE = 0,
@@ -117,21 +86,12 @@ namespace
         E2E_TARED
     };
 
-    // THE STATE IS THE PROTOCOL'S ONLY PUBLICATION POINT and every cell below it is ordinary
-    // data that state carries. Above one kernel core the transitions run on different cores:
-    // the arm writes the line, the waiter, the epoch and the ISR cell and then RELEASES
-    // E2E_ARMED; the waiter RELEASES E2E_PARKED from inside its own park; the raise ACQUIRES
-    // E2E_PARKED, which is what makes those four readable there, stamps t0 and RELEASES
-    // E2E_RAISED; the close ACQUIRES that, which is what makes t0 readable.
-    //
-    // EVERY TRANSITION IS A READ THEN A WRITE AND NEVER A COMPARE-AND-SWAP. The close stores
-    // IDLE before it knows the caller is the armed waiter, the arm overwrites a live span, and
-    // two raisers can both consume one PARKED. The sweep runs one armer, one raiser, one closer
-    // and one reporter behind a semaphore handshake (user/apps/common/bench/main.cc), so no two
-    // of those are ever in flight; docs/reference/bench.md says what the posture is carrying.
-    //
-    // AT ONE KERNEL CORE THE ORDER IS RELAXED ON PURPOSE: they run on that core and the
-    // interrupt is the only interleaving, so the compiler barrier is the whole requirement.
+    // State publishes the ordinary data fields. On SMP, release/acquire orders
+    // ARMED metadata, PARKED readiness, and RAISED timestamp t0.
+    // Transitions use loads and stores, not compare-and-swap. The benchmark
+    // semaphore handshake serializes one armer, raiser, closer, and reporter;
+    // concurrent users are unsupported (docs/reference/bench.md).
+    // Single-core builds need only compiler ordering against interrupts.
 #if KICKOS_KERNEL_CORES > 1
     using E2eState = Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>;
 #else
@@ -845,18 +805,10 @@ namespace kickos
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // A ROUND IS A RAISE ON EVERY PEER AND THE RENDEZVOUS THAT FOLLOWS IT, and both ends of the
-    // bracket are on the raising core because they have to be: a cycle counter is per core and
-    // unsynchronised across cores, so an end stamped on the far side would subtract two clocks.
-    // The sample is therefore the WHOLE round: the request cells, the one raise, every peer's
-    // service body and the last answer observed here, never one peer's share of it.
-    //
-    // NO SWITCH CAN FALL INSIDE THE BRACKET. The placement happens before the mask, and the
-    // rounds run under an IrqLock; the far side answers out of its doorbell service body and
-    // enters no scheduler. That matters on arm64, rv64, the LX6 and the sim, where arch_switch
-    // swaps inline and a bracket spanning a switch would close on the next resume.
-    //
-    // THE PROBE'S OWN WINDOW IS ONE lock-hold SAMPLE, the IrqLock below enclosing every round.
+    // Measure one complete round: request peers and wait for all replies.
+    // Both timestamps come from this core because counters are not synchronized.
+    // Placement precedes the IrqLock; peers reply without scheduling, so no
+    // switch occurs inside the interval. All rounds share one lock-hold sample.
     uint32_t bench_doorbell_probe_print(uint32_t core, uint32_t rounds)
     {
         Thread* const self = sched::current();
@@ -1001,19 +953,10 @@ namespace kickos
         uint32_t verdict;
     };
 
-    // Spin for the handler, then rule on what it stamped.
-    //
-    // THE TWO STAMPS BRACKETING IT ARE THE RAISING CORE'S OWN, so a handler that stamped in
-    // the same clock domain stamped between them. A per-core cycle counter has no common zero
-    // with this one and lands outside the window, which is the whole finding: the difference
-    // is then an offset and not a latency. The core the handler names is checked as well and
-    // the two fail independently: an offset can land inside the window by luck, and a
-    // counter can be a peer's on a board that reports the core correctly. A counter that
-    // wrapped inside the window is refused too, which is the safe direction.
-    //
-    // THE WINDOW ARM IS OFF WHERE THE COUNTER GLITCHES. A glitched read can only inflate, so
-    // on such a part it would throw away good samples on every glitch rather than catch an
-    // offset, and MIN is the statistic there precisely because an inflated reading is expected.
+    // Check both the handler's core ID and whether its timestamp falls between
+    // two local reads. Reject wrapped intervals. These checks detect mismatched
+    // clock domains independently. Disable the interval check on glitching
+    // counters, where valid reads can be inflated and only minima are meaningful.
 #if defined(KICKOS_CHIP_CYCCNT_GLITCHES) && KICKOS_CHIP_CYCCNT_GLITCHES
 #define BENCH_IRQ_WINDOW_ARM 0
 #else

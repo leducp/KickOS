@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Storage + allocation-policy gate for the capability table (kernel/include/kickos/cap.h):
-// the segmented chunk directory, the all-or-nothing chunk reservation, and the run's
-// free-slot list.
-//
-// Everything measured here goes through the header's own inline functions rather than a
-// mirror of their arithmetic.
+// Test capability chunk reservation and free-slot allocation through the
+// real inline functions in cap.h.
 
 #include <stdint.h>
 #include <stdio.h>

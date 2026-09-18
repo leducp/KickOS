@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The REQUEST side of a published console: the <kickos/sys/uart.h> op dispatch and the
-// two-protocol recv loop. The ring side is <kickos/sys/console_ring.h>, which states the
-// rules, the budgets and the CRLF posture.
-//
-// A Transport is a plain struct of constants and static functions:
-//     static constexpr uint32_t MODE_REQUIRED;
-//         Mode bits the transport cannot clear, and the mode shared_init seats.
-//     static Atomic<uint32_t, Order::RELAXED> const* inflight(Shared*);
-//         Bytes taken out of the ring and not yet seen complete, or nullptr where an empty
-//         ring is an empty channel. See console_ring.h's flush().
-//     static uint32_t tx_lost(Shared const*);
-//         TX loss the transport counts in a field of its own, added into the wire
-//         tx_dropped. 0 where there is none.
-// The Shared block it describes must carry `tx`, `rx`, `stats`, `mode`, `tx_buf` and
-// `rx_buf`.
+// Console request dispatch and framed/unframed receive loop.
+// See console_ring.h for buffering, budgets, and CRLF handling.
+// Transport must provide:
+//   MODE_REQUIRED: mode bits that cannot be cleared.
+//   inflight(Shared*): pending TX byte counter, or nullptr if unused.
+//   tx_lost(Shared const*): transport TX losses added to reported drops.
+// Shared must contain tx, rx, stats, mode, tx_buf, and rx_buf.
 
 #ifndef KICKOS_SYS_CONSOLE_SERVICE_H
 #define KICKOS_SYS_CONSOLE_SERVICE_H
@@ -44,8 +36,7 @@ enum
     KOS_CONSOLE_CAP_EP = KOS_SPAWN_DELEGATED_CAP0
 };
 
-// Build a status-only response OVER the request, and answer its length. Nothing here
-// replies: the loop carries the answer out on the call that takes the next request.
+// Build a status reply in buf and return its length for the next reply-receive.
 inline size_t reply_status(uint8_t* buf, int32_t status, uint16_t len)
 {
     struct kos_uart_rsp rsp;
@@ -69,12 +60,9 @@ void shared_init(Shared* s)
     }
 }
 
-// Parse + run one request frame IN PLACE: the response is built over the request in `buf` and
-// its length answered, on every path. A path answering 0 would leak the reply capability and
-// park the client forever. Every arm consumes what it needs of the request before it writes,
-// so no arm overwrites bytes it still has to read.
-//
-// `mode` is null for a service with no unframed console arm, where KOS_UART_SET_MODE refuses.
+// Handle one request in place and return the response length. Read request
+// fields before overwriting them. Every path must build a response.
+// mode is null when unframed console output and SET_MODE are unsupported.
 template <typename Transport, typename Shared>
 size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n)
 {
@@ -114,7 +102,6 @@ size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* bu
         struct kos_uart_rsp rsp;
         rsp.status = 0;
         rsp.rsv = 0;
-        // The ring writes FRESH bytes over the request, which this arm has finished with.
         uint32_t const got = kos_byte_ring_pop(&sh->rx, buf + sizeof(rsp), want);
         rsp.len = static_cast<uint16_t>(got);
         mem_copy(buf, &rsp, sizeof(rsp));
@@ -156,7 +143,7 @@ void console_serve_loop(Shared* sh)
     uint8_t msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
     kos_reply_recv_opts_init(&opts, KOS_CONSOLE_CAP_EP, 0u, KOS_TIMEOUT_NONE);
-    // Carried one pass forward: the answer to request k rides the call that takes k+1.
+    // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;
     while (true)
@@ -170,9 +157,7 @@ void console_serve_loop(Shared* sh)
         reply_len = 0;
         if (n < 0)
         {
-            // One client may not take the console away from the others: a refusal that names
-            // the far end of a copy ends that transaction and nothing else. The reply
-            // capability is consumed on every exit of the call, so there is nothing to drop.
+            // Continue after a client-buffer fault. The syscall has consumed the reply cap.
             if (serve_transaction_failed(n))
             {
                 continue;

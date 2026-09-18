@@ -415,8 +415,7 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
 
 int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask)
 {
-    // The kernel arm takes the same writable out-pointer every minting syscall takes, so a
-    // caller with no use for the mask is given one here rather than a second kernel contract.
+    // Supply a writable output even when the caller does not need the mask.
     uint32_t local = 0;
     if (out_mask == nullptr)
     {

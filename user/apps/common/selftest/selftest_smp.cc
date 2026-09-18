@@ -1175,17 +1175,9 @@ namespace selftest
         TAP_CHECK((reached & want) == want);
     }
 
-    // --- A DEFERRED WAKE MUST REACH A CALLER PINNED TO ANOTHER CORE ---------------
-    // The fused reply-receive answers its caller and then PARKS, so the switch that follows
-    // stores nothing and announces nothing: the outgoing thread left the run set. A caller
-    // placeable only on a peer is then owed the ask the park itself carries, and nothing
-    // later re-derives one.
-    //
-    // THIS CLAIM DOES NOT EXIST AT ONE CORE. There the same pick simply takes the caller, so
-    // the whole file is compiled out below one core rather than the arm skipping.
-    //
-    // The spinner is what makes a missing ask observable: FIFO and never blocking, it holds
-    // the caller's only core until something takes it away, and only an ask can.
+    // A fused reply followed by a park must notify the caller's core.
+    // A FIFO spinner occupies that core, so only a reschedule request lets the
+    // higher-priority caller run. Single-core builds cannot exercise this path.
     constexpr uint8_t XC_SPIN_PRIO = 14;   // above root, below the caller
     constexpr uint8_t XC_CALLER_PRIO = 20; // the thread the reply readies
     constexpr uint8_t XC_SERVER_PRIO = 12;
@@ -1209,9 +1201,8 @@ namespace selftest
             g_xc_serve_rc = -1;
             return;
         }
-        // The reply cap in hand IS the reading that the caller is parked awaiting it, and
-        // the gate is the reading that the spinner owns the caller's core. Both have to hold
-        // before the answer goes out or the arm proves nothing.
+        // Wait until the caller is parked for its reply and the spinner holds
+        // the caller's core before replying.
         kos_sem_wait(2);
         kos_cap_t const reply = opts.info.reply_cap;
         kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
@@ -1303,12 +1294,11 @@ namespace selftest
             tap::skip("pool too small for 3 threads");
             return;
         }
-        // THE WHOLE WITNESS. A DEADLINE and not a park: a caller nobody asked for stays READY
-        // behind the spinner and this returns a refusal instead of hanging the suite.
+        // Bound the wait so a missing peer request fails instead of hanging.
         int const cjoined = cl.join(XC_JOIN_US);
         g_xc_stop = 1;
         int const sjoined = sp.join(XC_JOIN_US);
-        // Releases the server's own park, which has nothing else coming.
+        // Release the server from its final receive.
         (void)kos_send(g_xc_ep, "", 0);
         int const vjoined = sv.join(XC_JOIN_US);
         (void)kos_handle_close(g_xc_ep);
@@ -1319,11 +1309,10 @@ namespace selftest
                   static_cast<unsigned>(g_xc_spins.load()));
         TAP_CHECK(sjoined == 0);
         TAP_CHECK(vjoined == 0);
-        // The precondition: the spinner really did hold the caller's core for the answer.
+        // Verify that the spinner held the caller's core when the reply was sent.
         TAP_CHECK(g_xc_spins.load() > 0u);
         TAP_CHECK(cjoined == 0);
-        // Read the VALUE too: a caller that ran for some other reason than its answer
-        // arriving would not carry the reply.
+        // Check the reply value as well as caller completion.
         TAP_CHECK(g_xc_call_rc.load() == 5);
     }
 #endif

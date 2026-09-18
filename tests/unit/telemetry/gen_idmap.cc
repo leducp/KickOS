@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// CI gate 3: trace-metadata de-drift. Emits the id->number maps from
-// kickos::trace::ArchId (include/kickos/trace/record.h) and enum kos_syscall_nr
-// (user/include/kickos/sys/abi.h): one "arch <n>" / "syscall <n>" line each.
-// check_idmap.py cross-checks these against abi.h and tools/kicktrace.py.
-//
-// The lists below reference each enumerator BY NAME, so a removed or renamed enum value fails
-// to compile here. An enumerator MISSING from the syscall list is caught by check_idmap.py,
-// which parses abi.h itself.
+// Emit architecture and syscall IDs for comparison with abi.h and kicktrace.py.
+// Named enumerators catch removals at compile time; check_idmap.py also
+// parses abi.h to detect IDs missing from this list.
 
 #include <kickos/sys/abi.h>
 #include <kickos/trace/record.h>

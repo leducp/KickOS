@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KICKOS_ASSERT_EXCLUSION_HELD, the check a "caller holds the exclusion" body makes of its
-// caller (kickos/sched.h), AT TWO KERNEL CORES: at one core the macro is nothing at all and
-// none of these arms is expressible there.
-//
-// The third arm is why the check reads `owed` and not the depth alone. A swap that is merely
-// BOOKED leaves the depth off the core with the lock still held, and the bracket that booked
-// it then unwinds to zero: a body reached before the exception epilogue parks the frame is
-// inside the exclusion while the depth says nothing.
+// Test KICKOS_ASSERT_EXCLUSION_HELD on two cores. Single-core builds omit it.
+// A deferred switch may clear depth while the lock remains held; the check
+// must include the pending release state.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -66,7 +61,7 @@ TEST_F(HeldAssert, a_booked_swap_leaves_the_exclusion_held_at_depth_zero)
 
     {
         IrqLock lock;
-        // What switch_to does around a swap the backend only books.
+        // Model a deferred switch.
         uint32_t const depth = klock_detach();
         klock_attach(depth);
     }
@@ -74,6 +69,6 @@ TEST_F(HeldAssert, a_booked_swap_leaves_the_exclusion_held_at_depth_zero)
     sched::set_prio(t, PRIO + 1);
     EXPECT_EQ(t->prio, PRIO + 1);
 
-    // The exception epilogue's park, which is what ends the span.
+    // Model lock release by the exception epilogue.
     kickos_switch_unlock();
 }

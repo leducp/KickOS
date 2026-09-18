@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The SPI bus service: a thin transport over the SPI class <kickos/driver/spi.h>, whose
-// implementation is chosen by the LINK. Every request op is one class call and there is no
-// third op: KOS_BUS_OP_CONFIG is kos_spi_device_open, KOS_BUS_OP_XFER is kos_spi_transfer. The
-// bus lifecycle is NOT on the wire; the driver thread that holds the window grant performs it
-// before serve_loop. Adding a call to the class means adding an op here in the same change.
-//
-// THE SLOT TABLE IS INDEXED BY THE CALLER'S OWN device BYTE, which is sound only while a
-// single client can reach the endpoint: a client holds a SIGNAL-only cap, and spawn-time
-// delegation refuses a source cap without CAP_TRANSFER, so a client cannot pass its copy on.
-// Mutually-untrusting clients sharing a bus would need badged endpoints and are NOT supported.
+// SPI endpoint service over the linked driver class. CONFIG calls
+// kos_spi_device_open; XFER calls kos_spi_transfer. The driver owns bus
+// setup and teardown outside this protocol.
+// Device slots are indexed by the client's byte, so only one trusted client
+// is supported. Its SIGNAL-only cap cannot be delegated. Sharing among
+// untrusted clients would require badged endpoints.
 
 #ifndef KICKOS_SYS_SPI_SERVICE_H
 #define KICKOS_SYS_SPI_SERVICE_H
@@ -43,8 +39,7 @@ enum
 // only where the caller is compiled: one body in libkickos_user.a would call the PUBLIC name,
 // which such a service never defines.
 
-// Build a service-level error reply (no rx) OVER the request, and answer its length. Nothing
-// here replies: the loop carries the answer out on the call that takes the next request.
+// Build an error reply without RX data; return its length for reply-receive.
 inline size_t reply_error(unsigned char* buf, int16_t status)
 {
     struct kos_bus_rsp rsp;
@@ -70,13 +65,9 @@ struct SlotTable
     }
 };
 
-// Parse + run one request IN PLACE: the reply is built over the request in `buf` and its
-// length answered, on every path. A path answering 0 would leak the reply capability and park
-// the client forever, so every arm below ends in one of the two builders.
-//
-// The gather below moves the payload DOWN over the request, which an ascending copy may do:
-// the framing it skips is wider than the header it lands behind, asserted here rather than
-// left to a reader of both structs.
+// Handle one request in place and return its response length.
+// Gather TX data toward the start of buf; forward copying is safe because
+// the reply header is smaller than the request framing (checked below).
 static_assert(sizeof(struct kos_bus_req) + sizeof(struct kos_bus_seg) > sizeof(struct kos_bus_rsp),
               "the reply header is wider than the framing the gather skips, so the in-place "
               "move would be an ASCENDING overlapping copy and would read bytes it has "
@@ -96,7 +87,7 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char
     }
     if (req.region_cap != -1)
     {
-        return reply_error(buf, -KOS_ENOSYS); // region path is DEFERRED (inline only)
+        return reply_error(buf, -KOS_ENOSYS); // region transfers are not implemented
     }
     if (req.offset != 0u)
     {
@@ -191,7 +182,7 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char
         return reply_error(buf, -KOS_EINVAL);
     }
 
-    // Gathered over the request past the reply header and run IN PLACE: rx overwrites tx.
+    // RX overwrites the gathered TX data after the reply header.
     unsigned char* work = buf + sizeof(struct kos_bus_rsp);
     mem_copy(work, buf + framing, total);
 
@@ -215,9 +206,8 @@ inline void serve_loop(struct kos_spi_bus* bus)
     SlotTable slots;
     unsigned char msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
-    // KOS_SPI_CAP_EP is the delegated {E | WAIT} recv cap.
     kos_reply_recv_opts_init(&opts, KOS_SPI_CAP_EP, 0u, KOS_TIMEOUT_NONE);
-    // Carried one pass forward: the answer to request k rides the call that takes k+1.
+    // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;
     while (true)
@@ -229,7 +219,7 @@ inline void serve_loop(struct kos_spi_bus* bus)
         reply_len = 0;
         if (n < 0)
         {
-            // A client's own buffer going away ends that transaction and not the bus.
+            // Continue after a client-buffer fault.
             if (serve_transaction_failed(static_cast<int32_t>(n)))
             {
                 continue;

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The shared USB CDC-ACM class layer, templated over a concrete per-controller device class.
-// No MMIO and no controller knowledge live here. It reuses the UART's ring, its wire ABI
-// (<kickos/sys/uart.h>) and its counters.
+// USB CDC-ACM service over a controller-specific device class. Reuses the UART
+// rings, protocol (uart.h), and counters; accesses hardware through UsbDev.
 //
 // The UsbDev class supplies the implicit interface:
 //     int      bring_up();                    // 0, or negative: nothing else may be called
@@ -22,23 +21,18 @@
 //     void     ep_out_arm(uint8_t ep, uint8_t pid);
 //     uint32_t ep_out_read(uint8_t ep, uint8_t* out, uint32_t max);
 //     void     ep_stall(uint8_t ep, bool on);
-// EVERY method touches the granted register window, so all of them may be called ONLY
-// from the IRQ thread.
+// Only the IRQ thread may call these methods because they access device registers.
 //
-// The RP block owns DPRAM and hands the DATA PID to software. The i.MX RT1062 owns the PID,
-// so its `pid` arguments are ignored, and it reads software-built descriptor lists out of
-// system RAM as a BUS MASTER, so its shared block must stay coherent with a device that never
-// looks at the D-cache; teensy41 gets that from KICKOS_IMXRT_DCACHE=OFF, which the build
-// derives from the service list.
+// RP controllers use DPRAM and software-managed DATA PID. RT1062 manages PID
+// itself and reads descriptors from system RAM, requiring cache coherence.
+// The teensy41 service configuration disables D-cache for this reason.
 //
-// The link is host-controlled and may never come up, so `configured` is a SEPARATE,
-// NON-LATCHING flag beside the UART's `ready` latch, and a bus reset clears it. This
-// ring's consumer may never exist, so the endpoint starts NON-BLOCKING.
+// Host configuration may never complete. Keep configured separate from ready,
+// clear it on bus reset, and start the endpoint in nonblocking mode.
 //
-// TX pacing is self-sustaining only while a buffer is in flight, a bulk IN completion being
-// the wake that pumps the next packet. A host that stops issuing IN tokens without a bus
-// reset (a closed tty, suspend, a bare unplug) leaves `Shared::tx_inflight` set with no
-// completion coming, so the ring fills and stays full and no doorbell shortens it.
+// Bulk IN completion sends the next packet. If the host stops reading without
+// a bus reset, tx_inflight stays set and the ring can remain full; a software
+// doorbell cannot complete the pending USB transfer.
 
 #ifndef KICKOS_SYS_USB_CDC_SERVICE_H
 #define KICKOS_SYS_USB_CDC_SERVICE_H
@@ -629,8 +623,7 @@ private:
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
-    // Before ready, and before the first wait: the doorbell the service thread rings is
-    // delivered by this bind where it arrives ahead of it, and lost where it does not.
+    // Bind before signaling readiness and waiting; binding delivers pending doorbells.
     if (kos_irq_attach(KOS_USB_CAP_LINE, nullptr) != 0)
     {
         exit(0);
@@ -656,20 +649,12 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     exit(0);
 }
 
-// ---------------------------------------------------------------------------------
-// The request side of the console is <kickos/sys/console_service.h>. This is what USB CDC
-// changes about it.
-//
-// MODE_REQUIRED is NON-BLOCKING, unlike the UART: no IN token is issued until a host both
-// enumerates the device AND opens the tty, so a blocking write here is unbounded. That is a
-// static property of the transport and must NOT be keyed on Shared::configured, which never
-// clears on unplug.
-//
-// An empty ring is NOT an empty channel here: up to one bulk packet still sits in the
-// controller's DPRAM buffer, holding the tail of the stream, so a flush waits on
-// tx_inflight too. The woken pass re-reads LIVE controller status, which recovers a bulk IN
-// completion the class layer missed: the one state in which a full ring has no completion
-// coming.
+// USB CDC uses console_service.h with nonblocking mode required: the host
+// may never enumerate or read. Do not derive that mode from configured,
+// which does not clear on unplug.
+// Flush also waits for tx_inflight because an empty ring may leave a packet
+// in controller memory. Rechecking controller status recovers a missed IN
+// completion when the ring is full.
 struct Transport
 {
     static constexpr uint32_t MODE_REQUIRED = KOS_UART_F_NONBLOCK;
