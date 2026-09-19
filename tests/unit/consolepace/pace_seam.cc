@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What console.cc and console_tx.cc leave undefined once tests/unit/consoleseam answers the
-// transport. arch_console_write is the LINE INSERT every buffered chip in the fleet defines,
-// which is what puts the refusal this gate is about on the path.
+// Console test stubs. arch_console_write uses the buffered line-insert path.
 
 #include <kickos/arch/arch.h>
 #include <kickos/bench.h>
@@ -68,12 +66,14 @@ extern "C"
 
 namespace kickos
 {
-    // KICKOS_BENCH lights up IrqLock's own instrumentation, which lives in bench.h and
-    // accumulates into kernel/bench/bench.cc. That file reaches the scheduler and the syscall
-    // table and cannot be linked here; the sample it would take is not what this gate reads.
+    // Stub lock sampling to avoid linking the scheduler and syscall table.
     constinit BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES] = {};
 
     void bench_dist_add(uint32_t, BenchTick)
+    {
+    }
+
+    void bench_lock_hold_add(BenchTick, void*)
     {
     }
 

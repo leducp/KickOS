@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Benchmark test hooks. Record when PH_REPLY_RECV_TOTAL closes relative to
-// scheduler switches. Other hooks provide the symbols needed to link;
-// g_bench_lock stores the lock timestamps written by IrqLock.
+// Record when PH_REPLY_RECV_TOTAL closes relative to scheduler switches.
+// Stub other benchmark hooks and provide IrqLock timestamp storage.
 
 #include <kickos/bench.h>
 
@@ -40,6 +39,10 @@ namespace kickos
     }
 
     void bench_dist_add(uint32_t, BenchTick)
+    {
+    }
+
+    void bench_lock_hold_add(BenchTick, void*)
     {
     }
 

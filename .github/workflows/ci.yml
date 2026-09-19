@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Host and QEMU checks for each preset; these jobs do not validate hardware.
-# Warnings are errors by default. Toolchain versions and caches are managed
-# by .github/actions; sim uses the host compiler.
+# Build, host and QEMU checks; hardware testing is separate.
+# Use ctest_named.sh to require every named test to remain registered.
+# CTest treats skipped tests as success, so image jobs check their prerequisites.
 
 name: CI
 
@@ -19,9 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The gates whose verdict is a function of the source tree alone: one configure answers
-  # for every preset, and none of them opens the build directory. Every other job excludes
-  # this label.
+  # Run source-only checks once. Other jobs exclude the tree label.
   code-quality:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -34,8 +32,7 @@ jobs:
       - run: cmake --preset sim
       - run: ctest --preset sim -L tree --no-tests=error --output-on-failure
 
-  # Authoritative deterministic gate: the host sim suite, less the tree gates code-quality
-  # already answered for every preset.
+  # Run the host suite, excluding the source-only checks above.
   sim:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -45,12 +42,18 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build g++
-      # Before the configure, and NOT optional: KICKOS_BUILD_UNIT_TESTS defaults to whether
-      # find_package(GTest) succeeded, and a run with the host unit layer dropped is green.
+      # Require GTest before configuration so unit tests cannot be silently disabled.
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build --preset sim
       - run: ctest --preset sim -LE tree --no-tests=error --output-on-failure
+      # Run only the two additional telemetry checks. The main sim build covers unit tests.
+      - name: the ch1 trace decoder gates (sim-telem)
+        run: |
+          cmake --preset sim-telem
+          cmake --build --preset sim-telem
+          tests/ci/ctest_named.sh 'telemetry_ring_wrap|telemetry_structural' \
+            --preset sim-telem --no-tests=error --output-on-failure
 
   # Run sim with UBSan and stop on the first error.
   # ASan needs fiber-switch annotations for the sim's ucontext stacks.
@@ -67,27 +70,21 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build g++
-      # GTest itself is built by Conan WITHOUT the job's CFLAGS (Conan uses its own profile),
-      # so the instrumented tree links an uninstrumented gtest.
+      # Conan builds GTest without this job's sanitizer flags.
       - uses: ./.github/actions/gtest
       - run: cmake --preset sim -B build/sim-ubsan -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build build/sim-ubsan
       - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
-  # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    # The mps2/nrf51 QEMU targets clock off semihosting SYS_CLOCK, which QEMU <= 10
-    # (ubuntu-latest ships 8.2) freezes while the core is halted in WFI, so a timed
-    # sleep with every thread idle never wakes. The arch idle path spins on these
-    # QEMU-only chips to keep the clock advancing (see arch_idle_wait). This timeout
-    # is failure headroom on a loaded runner; passing gates exit early.
+    # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
+    # semihosting clock; arch_idle_wait spins to keep it advancing.
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
-      # The gates whose image never exits, so they go through poll_image (tests/lib/gate.sh).
+      # These images run until poll_image stops them.
       POLLED: "hello|fp_switch|mpu_fault|rootfault|rootgone|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
@@ -96,36 +93,22 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
-      # A SKIP IS NOT A PASS. Every image gate in this job boots through need_qemu, which
-      # exits 77 on a missing emulator; ctest reports that as Skipped and still exits 0, so an
-      # absent qemu-system-arm greens a job that booted nothing.
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-arm >/dev/null 2>&1 \
             || { echo "qemu-system-arm is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
-      # --repeat until-pass:2 rides the POLLED gates and NOTHING else. The mps2/nrf51
-      # clock is the ~100 Hz semihosting SYS_CLOCK (chip_mps2.cc arch_clock_now, DWT
-      # frozen), so every timed sleep before an awaited line is stretched to a 10 ms
-      # granule and a loaded runner can push the last pattern past the poll bound. A real
-      # hang still fails, each attempt being bounded by the gate's own timeout.
+      # Retry only polled ARM gates: the coarse clock and runner load can delay output.
+      # Each attempt still has its own timeout.
       - name: armv7m (mps2-an386)
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
-          # Posture pin. Those two gates are REGISTERED only when the enforcing posture in
-          # this board's base defconfig resolves on, so naming them is what turns a lost
-          # registration into a failure.
-          #
-          # THROUGH ctest_named.sh AND NOT ctest, HERE AND AT EVERY OTHER NAME LIST IN THIS
-          # FILE. --no-tests=error fires only on an ENTIRELY empty selection, so one name of
-          # two going away leaves the step running the other and exiting 0. The helper asks
-          # ctest for each name on its own and refuses the run when one selects nothing.
+          # Require both tests, which are registered only when MPU enforcement is enabled.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
-      # The M33 is armv8-M (PMSAv8, a different register layout), the M7 has 16 MPU regions
-      # to the M4's 8, and the M3 is soft-float, so the soft-float switch path runs there.
+      # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
@@ -133,7 +116,6 @@ jobs:
           ctest --preset qemu-m33 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" \
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
-          # Posture pin, as on the an386: this board carries its own base defconfig.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m (mps2-an500, Cortex-M7)
@@ -143,7 +125,6 @@ jobs:
           ctest --preset qemu-m7 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" \
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
-          # Posture pin, as on the an386: this board carries its own base defconfig.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
@@ -151,29 +132,18 @@ jobs:
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
-          # NOT $POLLED: an385 is soft-float and never registers fp_switch, so the shared
-          # list would name a test that cannot exist here. Named separately rather than
-          # filtered out of $POLLED, which is shared so the four boards cannot drift apart.
+          # The soft-float M3 does not register fp_switch.
           tests/ci/ctest_named.sh 'hello|mpu_fault|rootfault|rootgone|reclaimwit_park' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
-          # Posture pin, as on the an386: this board carries its own base defconfig.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
-          # Pins the REGISTRATION, not just the result. The terse-column arm is keyed on this
-          # board AND on this tree resolving KICKOS_DIAG_TERSE off, the arm itself forcing the
-          # knob on in a tree of its own, so a variant that turned it on here would leave the
-          # suite one test shorter and still green.
+          # Require the board-specific diagnostic-format test to remain registered.
           tests/ci/ctest_named.sh '^qemu_m3_diag_terse$' --preset qemu-m3 --no-tests=error --output-on-failure
-      # The ring-only posture of the same four boards, which is what ringpriv and
-      # ringppb assert against: the privilege ring holds on its own.
+      # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
-          # NOT $POLLED: a flat variant resolves KICKOS_HAVE_MPU off, which is the posture
-          # itself, so mpu_fault, rootfault and rootgone register on none of the four. Named
-          # per board rather than filtered out of $POLLED, which is shared so the enforcing
-          # boards cannot drift apart.
+          # Flat builds do not register mpu_fault, rootfault or rootgone.
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
-            # an385 is soft-float and never registers fp_switch, as in its enforcing step above.
             if [ "$b" = qemu-m3 ]; then
               flat_polled='hello|reclaimwit_park'
             else
@@ -184,9 +154,7 @@ jobs:
             ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
             tests/ci/ctest_named.sh "$flat_polled" \
               --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:2
-            # The terse-column arm is keyed on the BOARD and the knob and not on the variant,
-            # so this posture carries a registration of its own, which the pin in the step
-            # above does not reach. qemu-m3 is the only one of the four that registers it.
+            # The flat M3 build also registers the diagnostic-format test.
             if [ "$b" = qemu-m3 ]; then
               tests/ci/ctest_named.sh '^qemu_m3_diag_terse$' --preset "$b-flat" --no-tests=error --output-on-failure
             fi
@@ -196,28 +164,18 @@ jobs:
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
           ctest --preset microbit -E "$POLLED" -LE tree --no-tests=error --output-on-failure
-          # NOT $POLLED: the nRF51 is a Cortex-M0 with no FPU and no MPU, and arch/arm/chip/nrf51
-          # ships no mpu.cmake, so fp_switch, mpu_fault, rootfault and rootgone cannot exist on
-          # this board at all. Named separately rather than filtered out of $POLLED, which is
-          # shared so the enforcing boards cannot drift apart.
+          # The Cortex-M0 has no FPU or MPU, so those tests are absent.
           tests/ci/ctest_named.sh 'hello|reclaimwit_park' \
             --preset microbit --no-tests=error --output-on-failure --repeat until-pass:2
-          # Pins the REGISTRATION, not just the result. microbit is the only CI board that
-          # carves kernel blocks without enforcing, so it is the only one where the block
-          # leg's room bound is reachable from a thread; a condition that stopped registering
-          # this arm would leave the suite one test shorter and still green.
+          # Require the stack-block test for this non-enforcing board.
           tests/ci/ctest_named.sh '^microbit_pspguard_block$' --preset microbit --no-tests=error --output-on-failure
 
-  # armv8a (virt) under QEMU: the first 64-bit ISA, a Cortex-A53 at EL1 with an unprivileged
-  # EL0 and a 1:1 map. The generic timer keeps counting in WFI, so a timed sleep advances
-  # with every thread idle and QEMU_TIMEOUT is failure headroom rather than a clock crutch.
-  # qemu-system-aarch64 ships in the qemu-system-arm package on Ubuntu.
+  # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -235,10 +193,15 @@ jobs:
           cmake --preset qemu-arm64 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64
           ctest --preset qemu-arm64 -LE tree --no-tests=error --output-on-failure
-          # Capability pin, not just a result: armv8a selects both kernel-stack symbols and
-          # TLS, and naming these three is what turns a lost registration into a failure.
+          # Require the kernel-stack and TLS tests for this architecture.
           tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe' \
             --preset qemu-arm64 --no-tests=error --output-on-failure
+      # The runner has no i.MX 8M Plus emulator. Check the build and host tests only.
+      - name: armv8a (NXP i.MX 8M Plus EVK) link surface
+        run: |
+          cmake --preset imx8mp-evk -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --build --preset imx8mp-evk
+          ctest --preset imx8mp-evk -L host -LE tree --no-tests=error --output-on-failure
 
   # Four-core AArch64 with and without core isolation. Check the configured
   # isolation mask directly: the expected-skip list is derived from it and
@@ -247,8 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -266,15 +228,13 @@ jobs:
           cmake --preset qemu-arm64-smp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           cmake --build --preset qemu-arm64-smp
           ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
-          # Posture pin, as in qemu-arm: the core count is a line in this variant's defconfig,
-          # and dropping it de-registers these four instead of failing them.
+          # Require tests that depend on the configured core count.
           tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer' \
             --preset qemu-arm64-smp --no-tests=error --output-on-failure
       - name: armv8a (virt) four cores, core 3 isolated
         run: |
           cmake --preset qemu-arm64-smpiso -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
-          # Posture pin, read from the RESOLVED configuration and not from anything the knob
-          # also derives. A mask of zero here is the plain SMP posture under another name.
+          # Check the resolved isolation mask independently of the expected-skip list.
           iso=$(sed -n 's/^#define KICKOS_ISOLATED_CORES //p' \
                 build/qemu-arm64-smpiso/generated/include/kickos/board_config.h)
           if [ -z "$iso" ] || [ "$((iso))" -eq 0 ]; then
@@ -286,16 +246,13 @@ jobs:
           tests/ci/ctest_named.sh 'isolated_cores|qemu_arm64_selftest' \
             --preset qemu-arm64-smpiso --no-tests=error --output-on-failure
 
-  # armv8a (virt) at FOUR KERNEL CORES under a GICv3, which is the controller the i.MX8MP A53
-  # cluster wires. The qemu-arm64-smp job drives the same four cores on the machine's default
-  # GICv2, and every AMP variant below builds a GICv3 with KICKOS_KERNEL_CORES at 1, so the
-  # shared-kernel doorbell over ICC_SGI1R_EL1 is reached by neither.
+  # Exercise shared-kernel GICv3 doorbells. The other SMP job uses GICv2;
+  # AMP builds use one kernel core and cannot cover this path.
   qemu-arm64-gicv3:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -311,9 +268,7 @@ jobs:
       - name: armv8a (virt) four cores under a GICv3
         run: |
           cmake --preset qemu-arm64-gicv3 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
-          # Posture pin, read from the RESOLVED configuration. The controller is one line in
-          # this variant's defconfig, and at version 2 the machine keeps its default GICv2 and
-          # this step is the qemu-arm64-smp job again under another name.
+          # Require GICv3 so this cannot silently duplicate the GICv2 job.
           gic=$(sed -n 's/^#define KICKOS_ARM64_GIC_VERSION //p' \
                 build/qemu-arm64-gicv3/generated/include/kickos/board_config.h)
           if [ -z "$gic" ] || [ "$((gic))" -ne 3 ]; then
@@ -322,25 +277,17 @@ jobs:
           fi
           cmake --build --preset qemu-arm64-gicv3
           ctest --preset qemu-arm64-gicv3 -LE tree --no-tests=error --output-on-failure
-          # Posture pin, as in qemu-arm64-smp: the kernel-core count is this variant's
-          # defconfig, and dropping it de-registers these four instead of failing them.
+          # Require tests that depend on the configured kernel-core count.
           tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer' \
             --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure
 
-  # armv8a (virt) as an AMP PARTITION, in BOTH halves of the instrument.
-  # docs/design-multicore.md N6c states the three clauses: the shared image catches a keying
-  # COLLAPSE, an own-image node catches a BOUND, and two kernels running at once catches what
-  # neither can, both of those running one image at a time.
-  #
-  # NOT UNDER `--repeat until-pass`. That flag rides the POLLED gates above and nothing else: a
-  # two-kernel gate draws fresh every run on the console interleaving and on which kernel
-  # publishes first, so a retry would mask the class this vehicle exists to find.
+  # Test shared-image AMP indexing, separate-image bounds and two running kernels.
+  # Do not retry: console interleaving and publication races must remain visible.
   qemu-arm64-amp:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -356,13 +303,10 @@ jobs:
       - name: armv8a (virt) AMP, one image over four cores
         run: |
           cmake --preset qemu-arm64-amp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
-          # Posture pin, read from the RESOLVED partition and not from anything that derives
-          # with it. A build that lost its AMP posture states no crossing, so the count is zero
-          # and every arm below de-registers instead of failing.
+          # Check the resolved AMP configuration before running its conditional tests.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared 4
           cmake --build --preset qemu-arm64-amp
           ctest --preset qemu-arm64-amp -LE tree --no-tests=error --output-on-failure
-          # Naming them turns a lost registration into a failure, as the pins above do.
           tests/ci/ctest_named.sh 'ipi_fence|qemu_arm64_selftest' \
             --preset qemu-arm64-amp --no-tests=error --output-on-failure
       - name: armv8a (virt) AMP, node 0 of a two-image partition
@@ -370,47 +314,35 @@ jobs:
           cmake --preset qemu-arm64-amp2-n0 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own 2
           cmake --build --preset qemu-arm64-amp2-n0
-          # The two vehicle gates build the PEER and merge the partition themselves, so this
-          # covers the merged artefact, the two-ELF agreement check and the arms that need a
-          # peer that is running.
+          # These tests build the peer and merged partition, then run both kernels.
           ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'amp_partition|amp_elf_agree|amp_peer_arms|ipi_fence' \
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure
       - name: armv8a (virt) AMP, node 1 of a two-image partition
         run: |
           cmake --preset qemu-arm64-amp2-n1 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
-          # Node ONE and not a second node zero: a pair built as two node zeros is N6c's
-          # collapse, it links and boots, and every arm that runs on node 0 passes on it.
+          # Build node 1 to catch accidental reuse of node 0's configuration.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own 2
           cmake --build --preset qemu-arm64-amp2-n1
           ctest --preset qemu-arm64-amp2-n1 -LE tree --no-tests=error --output-on-failure
       - name: armv8a (virt) AMP, a three-image partition, link geometry only
         run: |
-          # The width's claim is a link-geometry claim, so this job boots nothing: the
-          # two-kernel conversation is pinned by the node 0 job above.
-          #
-          # Every "each peer against node 0" shortcut is correct at two nodes, so a third node
-          # is what separates a real bound from a collapse, and the comparator checks every
-          # PAIR.
+          # Three-node build-only checks compare every pair of images. Two-node checks
+          # cannot detect code that assumes every peer is node 0.
           for n in 0 1 2; do
             cmake --preset "qemu-arm64-amp3-n$n" -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
             . ./.github/scripts/amp-pin.sh "build/qemu-arm64-amp3-n$n" "$n" own 3
             cmake --build --preset "qemu-arm64-amp3-n$n"
           done
-          # Node 0 owns the merge (N6h), so the comparator runs from its build and builds the
-          # peers itself. Naming it turns a lost registration into a failure.
+          # Node 0 builds and compares the peer images.
           tests/ci/ctest_named.sh 'amp_elf_agree' --preset qemu-arm64-amp3-n0 --no-tests=error --output-on-failure
 
-  # rv32imac (virt) under QEMU, plus build-only checks of three more rv32 presets,
-  # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
-  # RISC-V clocks off the CLINT mtime, which keeps ticking during WFI, so a timed sleep
-  # advances with every thread idle. QEMU_TIMEOUT is failure headroom.
+  # Use the pinned RISCstar newlib toolchain with rv32imac/ilp32 multilib.
   qemu-riscv:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -423,14 +355,13 @@ jobs:
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
-      # The ring-only posture: this board's flat variant is what the freestanding
-      # PMP-less hello and cxxtest gates are registered on.
+      # The flat variant registers freestanding tests without PMP enforcement.
       - name: rv32imac (virt) run gate, no PMP enforcement
         run: |
           cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-flat
           ctest --preset qemu-riscv-flat -LE tree --no-tests=error --output-on-failure
-      # -L host is the gate set that executes no image.
+      # The host label excludes image tests.
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
@@ -439,21 +370,23 @@ jobs:
           cmake --preset esp32c6-wroom-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom-flat
           ctest --test-dir build/esp32c6-wroom-flat -L host -LE tree --no-tests=error --output-on-failure
+          # Build larger selftest and benchmark images to check flash capacity.
+          cmake --preset esp32c6-wroom-st -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset esp32c6-wroom-st
+          ctest --test-dir build/esp32c6-wroom-st -L host -LE tree --no-tests=error --output-on-failure
+          cmake --preset esp32c6-wroom-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset esp32c6-wroom-bench
+          ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
           ctest --test-dir build/qemu-riscv-bench -L host -LE tree --no-tests=error --output-on-failure
 
-  # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
-  # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
-  # qemu_riscv_mpu_fault): the global pointer is kept out of the app's window, and a C++
-  # throw runs under enforcement.
-  # Deterministic (~3s). Same RISCstar toolchain as the non-enforcement job.
+  # Check C++ exceptions and global-pointer placement under PMP enforcement.
   qemu-riscv-mpu:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -471,8 +404,7 @@ jobs:
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
-          # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
-          # defconfig, and dropping it de-registers these gates instead of failing them.
+          # Require tests that depend on PMP enforcement.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault|rootgone' \
             --preset qemu-riscv --no-tests=error --output-on-failure
 
@@ -484,8 +416,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -503,8 +434,7 @@ jobs:
           cmake --preset qemu-riscv64 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv64
           ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
-          # Posture pin: both are registered only where this board's base defconfig resolves
-          # enforcement on, so naming them turns a lost registration into a failure.
+          # Require tests that depend on memory enforcement.
           tests/ci/ctest_named.sh 'rootfault|rootgone' --preset qemu-riscv64 --no-tests=error --output-on-failure
       - name: rv64imac (virt) sv48 gate
         run: |
@@ -516,21 +446,17 @@ jobs:
           cmake --preset qemu-riscv64-smp -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
-          # Posture pin: the hart count and the selftest line are this variant's defconfig,
-          # and dropping either de-registers these arms instead of failing them.
+          # Require tests that depend on the hart count and selftest configuration.
           tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure
 
-  # x86-64 QEMU boots the PE32+ image through OVMF, using host GCC and an
-  # ld with i386pep support. Resolve the firmware paths from the installed
-  # package and require mtools; otherwise image tests would skip.
-  # The skip guard turns missing runtime prerequisites into failures.
+  # Boot PE32+ through OVMF using host GCC and an ld with i386pep support.
+  # Require firmware and mtools so image tests cannot silently skip.
   qemu-x86_64:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      # Match the longest QEMU timeout used by this job (selftest).
-      # Also supplies a timeout for scripts without their own default.
+      # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
     steps:
       - uses: actions/checkout@v4
@@ -542,12 +468,22 @@ jobs:
         run: |
           command -v qemu-system-x86_64 >/dev/null 2>&1 \
             || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
-          # The PE32+ link's `-b elf64-x86-64` is load-bearing on binutils 2.42 and inert above
-          # it, so this line is the only record of whether a run could have caught the flag's
-          # loss. The toolchain file's i386pep refusal says nothing about the version.
+          # Report whether this linker needs -b elf64-x86-64 to extract ELF archive
+          # members under i386pep. Both outcomes are supported; the real link tests the flag.
           ld --version | head -1
-          # The variable store must be the CODE file's OWN spelling: a 4M image paired with a
-          # store of another size is not a working pair, so the match is what selects both.
+          probe=$(mktemp -d)
+          printf 'int kickos_probe_member(void){return 0;}\n' > "$probe/m.c"
+          printf 'extern int kickos_probe_member(void);\nint efi_main(void){return kickos_probe_member();}\n' > "$probe/r.c"
+          gcc -c -ffreestanding -fno-pic -fno-ident "$probe/m.c" -o "$probe/m.o"
+          gcc -c -ffreestanding -fno-pic -fno-ident "$probe/r.c" -o "$probe/r.o"
+          ar rcs "$probe/libm.a" "$probe/m.o"
+          if ld -m i386pep -e efi_main "$probe/r.o" "$probe/libm.a" -o "$probe/bare.efi" 2>/dev/null; then
+            echo "this ld extracts an ELF archive member under i386pep with no -b: the flag is INERT here"
+          else
+            echo "this ld extracts no ELF archive member under i386pep with no -b: the flag is LOAD-BEARING here"
+          fi
+          rm -rf "$probe"
+          # Pair the firmware code and variable store with matching sizes and names.
           ovmf_dirs="/usr/share/OVMF /usr/share/ovmf /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/qemu"
           ovmf_code=""
           ovmf_vars=""
@@ -556,9 +492,7 @@ jobs:
               [ -f "$c" ] || continue
               v=$(printf '%s' "$c" | sed 's/OVMF_CODE/OVMF_VARS/')
               [ -f "$v" ] || continue
-              # The SHORTEST match wins, which is the unqualified spelling: a .secboot or .ms
-              # firmware refuses an unsigned image, and every such qualifier lengthens the
-              # name. Glob order happens to deliver the same file and is not relied on.
+              # Prefer the shortest name to avoid secure-boot firmware for an unsigned image.
               if [ -z "$ovmf_code" ] || [ "${#c}" -lt "${#ovmf_code}" ]; then
                 ovmf_code="$c"
                 ovmf_vars="$v"
@@ -580,21 +514,15 @@ jobs:
           out=$(ctest --preset qemu-x86_64 -LE tree --no-tests=error --output-on-failure 2>&1) \
             || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
-          # A SKIP IS NOT A PASS, and nothing in this selection is expected to skip: this board
-          # is single-core, so cpu_id_fold takes its fold arm here and passes. This is the only
-          # thing standing between a firmware or mtools gap and a green job that booted nothing.
+          # No test in this single-core selection is expected to skip.
           case "$out" in
             *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-          # Naming them turns a lost registration into a failure. All three are registered from
-          # cmake/x86_64_boot.cmake, which CMakeLists.txt includes for this arch alone, so a
-          # lost include de-registers them instead of failing them.
+          # Require the architecture-specific boot checks.
           tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
-          # The x86_64 microbench rides THIS job because the firmware pair resolved above is
-          # what boots it, and that resolution is shell state of this step. QEMU_TIMEOUT is
-          # restated per command: the job-level 30 above would override the bench gates' own
-          # 240 DOWNWARD, and a bench image needs longer than any other gate here.
+          # Reuse this step's firmware paths. Override the shorter job timeout
+          # with the benchmark gates' 240-second limit.
           cmake --preset qemu-x86_64-bench
           cmake --build --preset qemu-x86_64-bench
           # Run deterministic benchmark checks for counts, counter progress,
@@ -603,15 +531,13 @@ jobs:
           out=$(QEMU_TIMEOUT=240 tests/ci/ctest_named.sh 'x86_64_bench_lock|x86_64_bench_cyccnt|x86_64_bench_phase_table|x86_64_bench_saturate|x86_64_bench_irqspan_controls' \
             --test-dir build/qemu-x86_64-bench --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
-          # Same reason as above, and it bites harder here: gate.sh skips an image gate when it
-          # finds no firmware and again with no mtools, and ctest calls a skip a pass.
+          # Reject skipped image tests, including missing firmware or mtools.
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
-  # Xtensa LX6 (esp32-wroom) gate: proves build/link/linker-script + windowed-ABI asm. It runs
-  # the `host` label less the tree gates, which leaves the checks whose verdict is per-link or
-  # per-preset. The selftest config is built too, for the wider link surface.
+  # Build LX6 application and selftest images. Run host checks for the
+  # configuration, linker script and windowed ABI.
   xtensa:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -643,9 +569,7 @@ jobs:
           cmake --build --preset esp32-wroom-bench
           ctest --test-dir build/esp32-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
 
-  # Build sweep of the remaining ARM boards (catches build/link/linker-script
-  # regressions). The `host` label runs less the tree gates, which leaves every gate reading
-  # this board's own configuration.
+  # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -655,36 +579,45 @@ jobs:
         preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, bluepill-c8, picopi-flat,
                  f302nucleo, due, xmc4800-relax-flat, qemu-telem, teensy41-flat,
                  pizero2350-flat]
+        # Build selftest variants in the same jobs. Enforcing boards are handled
+        # in build-boards-mpu; qemu-telem has no selftest variant.
+        include:
+          - preset: bluepill-c8
+            st: bluepill-c8-st
+          - preset: f302nucleo
+            st: f302nucleo-st
+          - preset: due
+            st: due-st
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          # qemu-system-arm is here for the qemu-telem entry alone, and it is not optional:
-          # without it the image arm below EXITS 77, ctest reports Skipped and returns 0, and
-          # --no-tests=error does not fire because the test WAS found.
+          # qemu-telem needs the emulator for its image tests.
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
-      # -L host, not a bare ctest: qemu-telem registers the full QEMU boot suite, and a
-      # suite whose every case skipped reads like a suite that ran.
+      # Run host checks here; qemu-telem image tests are selected separately below.
       - run: ctest --test-dir build/${{ matrix.preset }} -L host -LE tree --no-tests=error --output-on-failure
-      # And the one image arm -L host selects away. telemetry_qemu_contained is the only
-      # witness that a contained refusal still emits its SWITCH record, and this job is the
-      # only one that builds qemu-telem. ctest_named.sh stops a rename reading as a pass.
+      # The larger selftest images also check flash capacity.
+      - if: matrix.st
+        name: the selftest provisioning of the same board
+        run: |
+          cmake --preset ${{ matrix.st }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset ${{ matrix.st }}
+          ctest --test-dir build/${{ matrix.st }} -L host -LE tree --no-tests=error --output-on-failure
+      # Run telemetry containment and PendSV-tail trace checks under QEMU.
       - if: matrix.preset == 'qemu-telem'
-        name: telemetry containment arm (-L host selects it away)
+        name: telemetry image arms (-L host selects them away)
         run: |
           command -v qemu-system-arm >/dev/null 2>&1 \
-            || { echo "qemu-system-arm is absent: the arm below would SKIP and ctest would still exit 0"; exit 1; }
-          out=$(tests/ci/ctest_named.sh telemetry_qemu_contained \
+            || { echo "qemu-system-arm is absent: the arms below would SKIP and ctest would still exit 0"; exit 1; }
+          out=$(tests/ci/ctest_named.sh 'telemetry_qemu_contained|telemetry_qemu_structural' \
             --test-dir build/qemu-telem --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
-          # A SKIP IS NOT A PASS. ctest exits 0 on a skipped test, so the only thing that
-          # separates "the witness ran" from "the witness was absent" is this.
           case "$out" in
-            *Skipped*) echo "the containment arm SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a telemetry arm SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Build enforcing ARM variants to check app sections, grant symbols,
@@ -709,10 +642,13 @@ jobs:
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure
+      # Build each board's larger selftest image with the same memory protection layout.
+      - run: cmake --preset ${{ matrix.preset }}-st -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+      - run: cmake --build --preset ${{ matrix.preset }}-st
+      - run: ctest --test-dir build/${{ matrix.preset }}-st -LE tree --no-tests=error --output-on-failure
 
-  # The RP2350 AMP presets, which nothing else in this file builds: the shared-image
-  # scaffolding, then the own-image partition. The production step is that partition with the
-  # self-test off, where the code the own-image paths call unconditionally must still compile.
+  # Build RP2350 shared-image and separate-image configurations, including
+  # a production build without selftests.
   pizero2350-amp:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -725,16 +661,12 @@ jobs:
       - uses: ./.github/actions/arm-toolchain
       - name: armv8-M shared-image AMP, the provisional scaffolding
         run: |
-          # The tree's only rp2350 preset above one core, so rp_node_vectors is registered here
-          # and nowhere else: each own-image node below is a one-core image.
-          #
-          # NO amp-pin.sh here. This variant states no AMP posture, so it names zero crossings
-          # and the pin refuses it by design.
+          # The shared image uses two cores but declares no AMP crossings, so amp-pin
+          # does not apply. Separate-image nodes below each use one core.
           cmake --preset pizero2350-amp -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset pizero2350-amp
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
-          # Naming it turns a lost registration into a failure: the gate is keyed on the core count,
-          # which a lost CORES_TWO de-registers instead of failing.
+          # Require the vector test, which depends on the two-core configuration.
           tests/ci/ctest_named.sh '^rp_node_vectors$' \
             --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes, self-test on
@@ -757,11 +689,8 @@ jobs:
           done
       - name: armv8-M own-image partition, the MERGED artefact
         run: |
-          # The thing a user flashes, and it is no ALL target: the step above builds two node
-          # images and never the artefact that carries them, so nothing in CI linked the merge
-          # until here. build-partition.sh configures and builds the peer out of node 0's own
-          # tree, so this covers the peer configure, the Kconfig fingerprint agreement and the
-          # merge in one step.
+          # Build the flashable merged partition. This also builds the peer and checks
+          # that the Kconfig fingerprints agree.
           cmake --build build/pizero2350-amp2-prod-n0 --target amp_partition
           ls -l build/pizero2350-amp2-prod-n0/kickos-partition.elf
 
@@ -817,9 +746,11 @@ jobs:
             --test-dir build/qemu-riscv64-benchsmp --no-tests=error --output-on-failure
       - name: armv7m microbench, link surface only
         run: |
-          # The only armv7m bench preset with percentiles: the other one, xmc4800-relax-bench,
-          # declares KICKOS_CHIP_CYCCNT_GLITCHES and compiles the histogram out. No emulator
-          # boots this board, so its figures come off the bench and never from here.
+          # F411 uses percentile histograms. Run host checks only; timing needs hardware.
           cmake --preset f411disco-bench -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset f411disco-bench
           ctest --test-dir build/f411disco-bench -LE tree --no-tests=error --output-on-failure
+          # XMC builds the min/avg/max variant without histograms.
+          cmake --preset xmc4800-relax-bench -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset xmc4800-relax-bench
+          ctest --test-dir build/xmc4800-relax-bench -LE tree --no-tests=error --output-on-failure

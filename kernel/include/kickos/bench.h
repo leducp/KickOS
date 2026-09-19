@@ -20,7 +20,7 @@
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-// A53 cache line, so no two cores write one.
+// Keep per-core rows on separate cache lines.
 #define KICKOS_BENCH_CACHE_LINE 64u
 #define KICKOS_BENCH_PERCORE_ALIGNED alignas(KICKOS_BENCH_CACHE_LINE)
 #else
@@ -39,19 +39,16 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         // The spin in arch_kernel_lock.
         BD_LOCK_WAIT,
-        // ONE WHOLE ROUND: this core's request cell bumped for every peer, the one raise, the
-        // far sides servicing it, and this core observing the LAST of their answers.
+        // Request all peers, raise the doorbell and wait for every reply.
         BD_DOORBELL,
 #endif
         // The following slots are populated and printed by explicit sweeps.
         // Exclude them from ordinary workload reporting.
         BD_IRQ_ENTRY,
-        // ONE slot for the four masked span sizes, cleared and re-reported per span, so its
-        // count is one span's and never the sweep's.
+        // Reuse this slot for each masked span size, resetting it between spans.
         BD_IRQ_WCASE,
-        // The raise, through delivery and dispatch and the wake, to the woken userspace
-        // thread's first read of the device window it holds. Split on whether that thread ran
-        // on the core that took the interrupt.
+        // From IRQ raise to the woken userspace thread reading its device window.
+        // Split by whether the waiter and handler ran on the same core.
         BD_IRQ_E2E_LOCAL,
 #if KICKOS_KERNEL_CORES > 1
         BD_IRQ_E2E_CROSS,
@@ -70,6 +67,8 @@ namespace kickos
     {
         PH_NULL = 0,
         PH_NEST,
+        // Cost of an empty nested IrqLock, including instrumentation. Correct as a leaf.
+        PH_NEST_LOCK,
         PH_CALL_TOTAL,
         PH_CALL_VALIDATE,
         PH_CALL_LOCKED,
@@ -129,8 +128,8 @@ namespace kickos
         // Libc state setup, including first-use initialization, under KICKOS_LIBC_REENT.
         PH_REENT_SEAT,
         PH_KTIME_REARM,
-        // A leaf only where arch_switch PENDS (armv7m, rv32imac, rxv3). On the LX6 and the
-        // sim it swaps inline, and this one closes when the thread is next resumed.
+        // A leaf on deferred-switch targets (armv7m, rv32imac, rxv3).
+        // On LX6 and sim, the interval includes suspension until the thread resumes.
         PH_ARCH_SWITCH,
         PH_COUNT
     };
@@ -149,8 +148,7 @@ namespace kickos
 extern "C" volatile uint32_t* g_bench_cycle_src;
 #endif
 
-// always_inline is load-bearing, not a hint: at -Os an out-of-line copy of a body this small
-// charges its call to whichever phase the bracket wraps.
+// Force inlining at -Os to keep call overhead out of measured phases.
 #define KICKOS_BENCH_INLINE inline __attribute__((always_inline))
 
 namespace kickos
@@ -175,8 +173,7 @@ namespace kickos
         return v;
     }
 #elif defined(__riscv)
-    // rv64 runs in S-mode, where this CSR reads only because startup.S set mcounteren.CY and
-    // refused by name when the bit did not stick.
+    // S-mode access requires mcounteren.CY, checked by startup.S.
     KICKOS_BENCH_INLINE BenchTick bench_cyccnt()
     {
         uint64_t v;
@@ -192,8 +189,7 @@ namespace kickos
         return BenchTick{v};
     }
 #elif defined(__x86_64__)
-    // LFENCE first, as apic_x86_64.cc's own reader does: the counter read is a measurement
-    // boundary and rdtsc is not ordered against the instructions around it.
+    // LFENCE orders RDTSC after preceding instructions.
     KICKOS_BENCH_INLINE BenchTick bench_cyccnt()
     {
         uint32_t lo;
@@ -228,13 +224,14 @@ namespace kickos
     // suspension or migration between unsynchronized counters.
     void bench_phase_add(uint32_t phase, BenchTick delta);
     void bench_dist_add(uint32_t dist, BenchTick delta);
-    uint32_t bench_dist_count(uint32_t dist); // THIS core's row alone, for the probe below
+    // Record the outermost lock interval and retain the release address of its maximum.
+    void bench_lock_hold_add(BenchTick delta, void* site);
+    uint32_t bench_dist_count(uint32_t dist); // Current core only.
     // Capture the fastpath-switch baseline; these switches bypass BD_SWITCH.
-    void bench_reset(uint32_t fast_taken); // every core's distributions AND every phase accumulator
+    void bench_reset(uint32_t fast_taken); // Reset distributions and phases on all cores.
 
-    // Both print from the KERNEL, in thread context and outside any IrqLock, and both
-    // AGGREGATE the rows there; above one core each also prints its per-core lines.
-    uint32_t bench_dist_print(uint32_t fast_taken); // returns the switch sample count summed over the cores
+    // Print in kernel thread context outside IrqLock. Include aggregate and per-core rows.
+    uint32_t bench_dist_print(uint32_t fast_taken); // Return the aggregate switch count.
     void bench_phase_print();
 
     // Three nested IrqLocks must produce one sample on the calling core.
@@ -246,12 +243,10 @@ namespace kickos
     uint32_t bench_doorbell_probe_print(uint32_t core, uint32_t rounds);
 #endif
 
-    // Report attachment failure so zero samples cannot look like unsupported injection.
     uint64_t bench_cyccnt_hz();
 
-    // Attach, clear and unmask the entry-latency IRQ once for both sweeps.
-    // Report attach failure; the null handler then counts injections as spurious
-    // and the sweep reports zero, as for an unsupported software raise.
+    // Attach, clear and unmask the entry-latency IRQ for both sweeps.
+    // Return attachment errors so they cannot look like unsupported injection.
     int bench_irq_setup(int line);
     // Reset, populate and print a distribution; return its sample count.
     uint32_t bench_irq_sweep(uint32_t samples);
@@ -263,8 +258,7 @@ namespace kickos
     int bench_e2e_arm(int line);
     // Publish the park under the same kernel lock used by the ISR wake.
     void bench_e2e_park_mark();
-    // -KOS_EBUSY until the waiter has published its park: the raise would otherwise land on a
-    // line whose owner is still running and the sample would measure a fast-path wait return.
+    // Return -KOS_EBUSY until the waiter parks, excluding fast-path wait returns.
     int bench_e2e_raise();
     // Measure the return/read/trap overhead without injecting an interrupt.
     int bench_e2e_tare();
@@ -298,8 +292,7 @@ namespace kickos
     };
     extern BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES];
 
-    // A nested acquire costs an increment and takes no sample: the span reported is the
-    // outermost one.
+    // Only the outermost lock interval produces a sample.
     KICKOS_BENCH_INLINE void bench_lock_open()
     {
         BenchLockRow& r = g_bench_lock[kickos_kernel_core()];
@@ -322,12 +315,13 @@ namespace kickos
         r.depth--;
         if (r.depth == 0)
         {
-            bench_dist_add(BD_LOCK_HOLD, end - r.start);
+            // Inlining makes level 0 the return address of the function holding the lock.
+            bench_lock_hold_add(end - r.start, __builtin_return_address(0));
         }
     }
 
-    // Zeroes the depth WITHOUT sampling and hands it to the caller's frame. `start` is left
-    // alone: it describes this core's masked window, which the incoming thread continues.
+    // Transfer depth to the caller frame without sampling. Keep the per-core start
+    // timestamp because the incoming thread continues the masked interval.
     KICKOS_BENCH_INLINE uint32_t bench_lock_detach()
     {
         BenchLockRow& r = g_bench_lock[kickos_kernel_core()];
@@ -341,8 +335,7 @@ namespace kickos
         g_bench_lock[kickos_kernel_core()].depth = depth;
     }
 
-    // For a caller that never returns to destroy its own bracket. Without it the depth never
-    // falls back to zero and NO sample is ever taken again on that core.
+    // Clear depth for a caller that will not return to destroy its lock bracket.
     KICKOS_BENCH_INLINE void bench_lock_drop()
     {
         g_bench_lock[kickos_kernel_core()].depth = 0;

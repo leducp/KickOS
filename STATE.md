@@ -3098,6 +3098,51 @@ was mutating this checkout built a `-dirty` image, and a witness you cannot fals
 `CONTEXT.local.md` states the rule; serialising the bench against the AGENTS, not just against other
 captures, is the part that was not applied.
 
+## M8.12: the frozen exit measurement, and what these green runs do NOT say
+
+**THE FIGURES ARE [`docs/archive/M8.12_meas.md`](docs/archive/M8.12_meas.md)**; what follows is
+what no command re-derives. Tree `b356b18d`, thirty emulator runs over six presets and eight
+silicon captures over three boards, every banner carrying that stamp and none `-dirty`.
+
+**THE COMPARISON IS ONLY WORTH SOMETHING BECAUSE THE READER WAS CONTROLLED, AND THAT CHECK IS
+CHEAP AND WAS NEARLY SKIPPED.** The same extractor run over the M8.7 captures, which are still
+on this box, reproduces every published cell of that campaign's table. Without that the two
+tables are two numbers taken two ways and no delta between them means anything. **The general
+form: when a baseline's raw captures survive, re-deriving its published table is the control
+for the new one**, and it costs one command.
+
+**A HEADLINE STATISTIC IS A PER-PRESET PROPERTY AND MIXING TWO IS SILENT.** `xmc4800-relax`
+builds with the min headline and prints `min/avg/max` where every other board prints
+`p50/p99/max`. Reading field one off each board compares that board's MIN against everyone
+else's `p50` and shows a saving that is a label. Nothing in a capture warns of it; the row's own
+parenthesis is the only tell, and it has to be read rather than assumed.
+
+**THE SWITCH DID NOT MOVE AND THAT IS THE EXPECTED READING.** It is unchanged on all three
+silicon boards and on `qemu-x86_64`, and moves at most one bucket on the emulators, `p50` being
+a bucket low edge at an eighth of an octave. M8.11 already established the switch was not what
+the optimisation milestones were aimed at. What moved is the lock and the round trip, and the
+four-core round trip is where they compound.
+
+**THE FOUR-CORE ROUND TRIP IS THE HEADLINE AND IT IS NOT A KERNEL COST.** Both four-core boards
+fall by about four and a half times. There is no multi-core silicon on this bench, so nothing
+here separates the kernel's share of that from the emulator's, and the figure is a reading of
+this emulator under this workload. It is still the figure M9 is sized against, because M9's
+question is what the coarse lock costs and this is the only vehicle that can pose it.
+
+**THE XMC'S COUNTER WAS DEAD THREE TIMES AND LIVE ON THE FOURTH, AND THAT IS THE FINDING.**
+M8.11 gave up after two attempts and cited a pre-review tree for that board. The cure was more
+attempts, not a different tree. Its wall-clock rows are valid in all four captures, the DWT not
+being in that path, so a dead-counter capture is a partial reading rather than a lost one.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.** The per-switch ABSOLUTE on the two ARM silicon boards is
+not comparable with any ARM figure this project published before M8.9: `MPU_COMMIT` is
+bracketed now and the switch distribution closes before the commit runs. Six rows changed span
+on the way here and are excluded from the like-for-like by name, the record listing each. No
+RX board builds with the bench knob, so that arch has no exit table and never had an entry one.
+`frdmk64f` is off the bus and carried no bench row at either campaign. And every emulator cell
+is this box's instruction-path length under TCG, comparable to the same emulator at M8.7 and to
+nothing else.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).
