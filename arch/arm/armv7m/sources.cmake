@@ -8,6 +8,7 @@ set(KICKOS_ARCH_SOURCES
   arm/armv7m/arch_armv7m.cc
   arm/armv7m/cache.cc
   arm/common/arch_arm_common.cc
+  arm/common/arch_arm_mpu_pending.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}

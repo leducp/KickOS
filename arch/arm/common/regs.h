@@ -12,14 +12,48 @@
 
 #include <stdint.h>
 
+// A host gate drives a backend TU over a register window and a barrier trace of its own
+// (tests/unit/mpuskip). Zero in every shipping build, where both are the inlines below.
+#ifndef KICKOS_ARM_REGS_FROM_SEAM
+#define KICKOS_ARM_REGS_FROM_SEAM 0
+#endif
+
 namespace kickos
 {
     namespace arm
     {
+#if KICKOS_ARM_REGS_FROM_SEAM
+        volatile uint32_t& reg32(uintptr_t addr);
+        void barrier_dmb(void);
+        void barrier_dsb(void);
+        void barrier_isb(void);
+        void wait_for_interrupt(void);
+#else
         inline volatile uint32_t& reg32(uintptr_t addr)
         {
             return *reinterpret_cast<volatile uint32_t*>(addr);
         }
+
+        inline void barrier_dmb(void)
+        {
+            __asm volatile("dmb" ::: "memory");
+        }
+
+        inline void barrier_dsb(void)
+        {
+            __asm volatile("dsb" ::: "memory");
+        }
+
+        inline void barrier_isb(void)
+        {
+            __asm volatile("isb" ::: "memory");
+        }
+
+        inline void wait_for_interrupt(void)
+        {
+            __asm volatile("wfi");
+        }
+#endif
 
         // --- System Control Block ---
         constexpr uintptr_t SCB_ICSR = 0xE000ED04; // Interrupt Control and State

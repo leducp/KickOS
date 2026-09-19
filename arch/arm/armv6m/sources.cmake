@@ -15,6 +15,7 @@ set(KICKOS_ARCH_SOURCES
   arm/armv6m/arch_armv6m.cc
   ${_armv6m_fault}
   arm/common/arch_arm_common.cc
+  arm/common/arch_arm_mpu_pending.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}

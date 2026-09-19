@@ -235,21 +235,6 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     ctx->kernel_sp = kernel_sp;
 }
 
-// --- Critical section: PRIMASK (mask all configurable interrupts) -----------
-arch_irq_state_t arch_irq_save(void)
-{
-    uint32_t prev;
-    __asm volatile("mrs %0, primask" : "=r"(prev));
-    __asm volatile("cpsid i" ::: "memory");
-    return prev;
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    // If PRIMASK was already set (nested lock), stay masked.
-    __asm volatile("msr primask, %0" ::"r"(state) : "memory");
-}
-
 // --- Fault reporting. HardFault is the whole fault taxonomy on v6-M and the core exposes
 // no fault-status registers, so the stacked frame is the entire dump. ----------------
 void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)

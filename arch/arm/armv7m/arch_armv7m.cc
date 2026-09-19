@@ -321,11 +321,6 @@ arch_irq_state_t arch_irq_save(void)
     return prev;
 }
 
-void arch_irq_restore(arch_irq_state_t state)
-{
-    __asm volatile("msr basepri, %0" ::"r"(state) : "memory");
-}
-
 // --- Monotonic clock ---------------------------------------------------------
 // arch_clock_now is a REQUIRED chip contract, over a dedicated peripheral timer. The DWT is
 // debug-domain (gated by DEMCR.TRCENA, lockable on Cortex-M7, absent under QEMU), so this

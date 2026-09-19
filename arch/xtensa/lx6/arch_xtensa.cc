@@ -73,10 +73,6 @@ namespace
 
     inline uint32_t f_areg(unsigned n) { return F_AREG(n); }
 
-    // Masks the C-handleable levels 1-3 (the timer + all device lines); the high-level
-    // 4-7 / NMI zero-latency band stays unmaskable.
-    constexpr uint32_t KICKOS_IRQ_LOCK_LEVEL = 3;
-
     // ESP32 CCOMPARE0 (Xtensa timer 0) is wired to per-CPU internal interrupt 6, a
     // level-1 (C-handleable) line (ESP32 TRM 4.3, "CPU interrupts" table).
     constexpr int CCOMPARE0_INT = 6;
@@ -466,21 +462,6 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     xtensa_switch(from, to);
 }
 
-// --- Critical section: RSIL to the kernel lock level (mask levels 1-3) --------
-arch_irq_state_t arch_irq_save(void)
-{
-    uint32_t ps;
-    // RSIL atomically returns the old PS and raises PS.INTLEVEL. Nesting-safe: the whole
-    // PS is saved/restored, so a prior raised level is preserved.
-    __asm volatile("rsil %0, %1" : "=a"(ps) : "i"(KICKOS_IRQ_LOCK_LEVEL) : "memory");
-    return ps;
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    __asm volatile("wsr.ps %0; rsync" ::"a"(static_cast<uint32_t>(state)) : "memory");
-}
-
 int arch_in_isr(void)
 {
     return g_isr_depth[arch_cpu_id()] != 0;
@@ -717,6 +698,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 
 // Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 
 // 0 keeps arch_ram_alloc byte-granular.
 size_t arch_mpu_min_region(void)

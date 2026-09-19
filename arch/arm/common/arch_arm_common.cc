@@ -25,7 +25,6 @@
 #include <arm_isa.h> // per-profile: the panic banners and the device-priority write
 
 #include "regs.h"
-#include "mpu.h"
 
 #include <stddef.h>
 
@@ -195,156 +194,10 @@ void arch_timer_disarm(void)
     reg32(SCB_ICSR) = ICSR_PENDSTCLR;
 }
 
-// --- MPU: ARM PMSA backend (v6-M/v7-M share the register map) ----------------
-#if KICKOS_HAVE_MPU
-// Descriptor slots a per-thread image can occupy, above the chip's fixed rows. The
-// fixed-region init bound-checks the silicon against it.
-static constexpr size_t MAX_PEND_REGIONS = ARCH_MPU_ENCODED_SLOTS;
-
-// Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
-// Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
-// 0 for every chip without a fixed-region hook -> those chips are byte-identical.
-static size_t g_fixed_count = 0;
-
-// The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
-// Split out of arch_mpu_apply so the PendSV epilogue can run it atomically with the
-// physical context switch. An eager apply reprograms the MPU for the incoming thread
-// while the outgoing thread is still running (PendSV not fired yet), faulting it on
-// its own stack.
-//
-// PMSAv7 only: a chip whose MPU is the crossbar SYSMPU or a v8-M PMSAv8 programs a
-// different descriptor from its own commit, and its image has different words.
-#if KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
-extern "C" void kickos_arm_mpu_program(struct arch_mpu_encoded const* img)
-{
-    using namespace kickos::arm;
-    if (img == nullptr)
-    {
-        return;
-    }
-    // MEMFAULTENA and BUSFAULTENA keep an isolation violation and a bus abort as MemManage and
-    // BusFault instead of letting either escalate to HardFault.
-    //
-    // MPU_CTRL IS DELIBERATELY NOT ZEROED HERE. Disabling the MPU also stops the CHIP FIXED
-    // rows applying, and on imxrt1062 those carry the ERR011573 anti-speculation wrap over
-    // the FlexSPI band this code is itself executing from. Each descriptor is instead
-    // disabled individually just before it is rewritten, which leaves [0, k) in force
-    // throughout.
-    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA | SHCSR_BUSFAULTENA;
-    __asm volatile("dmb" ::: "memory");
-    // Chip fixed regions own the LOW slots [0, k), programmed once by
-    // kickos_arm_mpu_fixed_init and NEVER touched here. Per-thread grants go in
-    // [k, hw), so a grant sits ABOVE the fixed background and correctly overrides it
-    // (PMSAv7: highest-numbered region wins). k == 0 on every chip without a fixed hook.
-    size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
-    size_t const k = g_fixed_count;
-    for (size_t i = k; i < hw_regions; i++)
-    {
-        size_t const j = i - k; // per-thread region index
-        reg32(MPU_RNR) = static_cast<uint32_t>(i);
-        // Disable THIS descriptor before its base moves, or it would briefly pair the new
-        // base with the old size and attributes.
-        reg32(MPU_RASR) = 0;
-        if (j < ARCH_MPU_ENCODED_SLOTS)
-        {
-            reg32(MPU_RBAR) = img->rbar[j];
-            reg32(MPU_RASR) = img->rasr[j];
-        }
-        // No else: a slot past the image keeps the RASR = 0 written above.
-    }
-    __asm volatile("dsb" ::: "memory");
-    // Do not drop this because kickos_arm_mpu_fixed_init also enables the MPU: only imxrt1062
-    // calls that, so on every other PMSAv7 chip this is the ONLY write that enables it. It
-    // enables, so unlike a leading MPU_CTRL = 0 it cannot stop the chip fixed rows applying.
-    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
-    __asm volatile("dsb" ::: "memory");
-    __asm volatile("isb" ::: "memory");
-}
-
-#endif // KICKOS_ARM_MPU_PMSAV7
-
-// One-time: program the chip's fixed regions into the LOW slots [0, k), cache k, and
-// enable the MPU (with the PRIVDEFENA background). Call from the chip arch_init BEFORE
-// enabling caches and before the scheduler starts. Idempotent-safe to call once.
-void kickos_arm_mpu_fixed_init(void)
-{
-    using namespace kickos::arm;
-    struct kickos_arm_mpu_fixed_region const* fixed = nullptr;
-    size_t const k = kickos_arm_mpu_fixed(&fixed);
-    size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
-    // The fixed set plus a full per-thread set must fit the hardware descriptors, or a
-    // per-thread grant would silently fall off the top. Fail loud (a chip-config bug
-    // caught at boot), never truncate. No kernel assert on the arch path -> spin.
-    if (k + MAX_PEND_REGIONS > hw_regions)
-    {
-        while (true)
-        {
-            __asm volatile("wfi");
-        }
-    }
-    // Zeroing MPU_CTRL is correct HERE and only here: this runs at boot, before the caches and
-    // before any thread, so there is no fixed row yet to lose.
-    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA | SHCSR_BUSFAULTENA;
-    reg32(MPU_CTRL) = 0;
-    __asm volatile("dsb" ::: "memory");
-    for (size_t i = 0; i < k; i++)
-    {
-        reg32(MPU_RNR) = static_cast<uint32_t>(i);
-        reg32(MPU_RBAR) = fixed[i].base & ~0x1Fu;
-        reg32(MPU_RASR) = fixed[i].rasr;
-    }
-    g_fixed_count = k;
-    __asm volatile("dsb" ::: "memory");
-    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
-    __asm volatile("dsb" ::: "memory");
-    __asm volatile("isb" ::: "memory");
-}
-
-// --- Deferred MPU-commit seam (shared across every ARM backend) --------------- The
-// switch is a PENDED PendSV on every ARM arch: arch_mpu_apply runs on the OUTGOING
-// thread, but the physical register/PSP swap only happens later in PendSV. Programming
-// the hardware eagerly would run the outgoing thread under the INCOMING thread's
-// regions until PendSV fires -> a fault on its own stack (proven on RP2040). So
-// arch_mpu_apply only STASHES the region set here; kickos_arch_mpu_commit programs the
-// hardware AFTER the physical swap.
-//
-// A POINTER into the incoming thread's TCB, not a copy. The image is re-encoded by its
-// owner alone, and that owner is the thread the pended switch will land on, so a
-// re-encode between the stash and the commit programs the set that thread actually has.
-// Thread slots come from a static pool and are never returned to an allocator, so a
-// pointer left over from an earlier switch still addresses valid storage; two switch_book
-// calls under one lock leave the second, which is the thread the switch lands on.
-static struct arch_mpu_encoded const* g_pend_image = nullptr;
-
-// Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU, PMSAv8)
-// program its own hardware from the SAME stash by defining only the commit.
-struct arch_mpu_encoded const* kickos_arm_mpu_pending(void)
-{
-    return g_pend_image;
-}
-
-// STASH-ONLY apply: record the incoming image, no hardware write. Shared by every ARM
-// backend, PMSAv7 (v6-M/v7-M) and K64F SYSMPU and PMSAv8 alike; a chip replaces only the
-// commit, never this, so this definition is not overridable.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    g_pend_image = image;
-}
-
-#else
-// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. The stash has
-// no reader, but the apply symbol must still resolve.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    (void)image;
-}
-#endif
+// --- MPU ---------------------------------------------------------------------
+// The stash every ARM backend reads, and the two apply entries, are their own archive
+// member: arch/arm/common/arch_arm_mpu_pending.cc. The PMSAv7 descriptor writer is
+// arch_arm_mpu_pmsav7.cc; SYSMPU and PMSAv8 program their own from their own commits.
 
 // --- Interrupt controller (NVIC) --------------------------------------------
 void arch_irq_mask(int line)

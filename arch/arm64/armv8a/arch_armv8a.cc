@@ -189,9 +189,6 @@ static_assert(ARMV8A_FRAME_SIZE % 16 == 0, "SP must stay 16-byte aligned");
 
 namespace
 {
-    // PSTATE.I within DAIF, which is read and written at bit 7.
-    constexpr uint64_t DAIF_I = 1ULL << 7;
-
     // SPSR for a thread: debug masked, interrupts and SError live. EL1h means "EL1 with its
     // own SP"; EL0t is 0, EL0 having only SP_EL0 to run on.
     constexpr uint64_t SPSR_EL1H_IRQ_ON = (1ULL << 9) | 0x5ULL;
@@ -453,26 +450,6 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
-// --- Critical section -------------------------------------------------------
-// NESTING-SAFE: the state is the one bit this touches and the restore clears only what its own
-// save set. A wholesale `msr daif, saved` would write back D, A and F too, clobbering any change
-// made between the two.
-arch_irq_state_t arch_irq_save(void)
-{
-    uint64_t daif = 0;
-    __asm volatile("mrs %0, daif" : "=r"(daif));
-    __asm volatile("msr daifset, #2" ::: "memory"); // DAIFSet bit 1 == I
-    return static_cast<arch_irq_state_t>(daif & DAIF_I);
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    if (state == 0) // I was clear before the save, so the save is what masked it
-    {
-        __asm volatile("msr daifclr, #2" ::: "memory");
-    }
-}
-
 // The IRQ dispatcher alone bumps it, so it reads FALSE inside syscall dispatch as arch.h
 // requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
@@ -498,6 +475,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 
 size_t arch_mpu_min_region(void)
 {

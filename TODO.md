@@ -3038,21 +3038,30 @@ The M8.8 silicon pass priced PERF-4 cleanly and left four deltas needing an acco
 attributed, one is benign, one is open. Everything below rests on object code read across both
 trees unless it says otherwise.
 
-- [ ] **`arch_irq_save` AND `arch_irq_restore` ARE OUT-OF-LINE CALLS IN EVERY BUILD, AND THEY
+- [x] **DONE IN M8.11: `arch_irq_save` AND `arch_irq_restore` WERE OUT-OF-LINE CALLS IN EVERY BUILD, AND THEY
       DOMINATE WHAT AN `IrqLock` COSTS.** `IrqLock` is `always_inline` and says why, but its two
       seam calls live in another translation unit and these presets carry no LTO, so every
       acquisition pays two real call/return pairs on both armv7m and rv32. That is the largest
       REAL term in the 44 cycles PERF-1 removed from the switch path, and PERF-1 did not take it.
-      Direction: inline the two seam bodies, or give the presets LTO and measure what it does to
-      the callgraph gates first. Severity Medium, and it is measurement-justified: target M8.11.
+      **Landed as a per-HALF inline, not a per-arch one.** Seven backends take their restore inline
+      and every image shrinks; armv7m keeps its save out of line, where inlining it cost more flash
+      than the call it removed, and so do the RX restore and the sim pair, each needing an
+      arch-private register constant or a signal mask. **LTO is refused on two independent grounds**:
+      it does not link on any board today, an assembly vector table referencing a C++ `Reset_Handler`,
+      and even fixed it takes the gates that read per-preset object code with it.
 
-- [ ] **`arch_timer_arm` ON `esp32c6` RUNS A SOFTWARE 64-BIT DIVIDE INSIDE THE MASKED WINDOW, AND
+- [x] **DONE IN M8.11: `arch_timer_arm` ON `esp32c6` RAN A SOFTWARE 64-BIT DIVIDE INSIDE THE MASKED WINDOW, AND
       ITS COST GROWS WITH UPTIME.** `mtime_ns_to_ticks` is `ns * 4 / 25`, which compiles to
       `__udivdi3` on rv32, and the dividend grows as the machine runs. This is an ISR-latency
       hazard on its own account. **It is NOT the cause of the lock-hold tail below** -- that was
       refuted by class, a uptime-dependent quantity being unable to repeat bit-exactly across two
-      independent boots. Direction: a reciprocal multiply, or ticks carried in the unit the
-      comparator wants. Severity Medium, target M8.11.
+      independent boots. **Landed as a reciprocal multiply, chip-local.** Arming the timer is
+      straight-line now, so the masked window no longer tracks uptime, and the form is exact for
+      every deadline under about 123 years of it, derived rather than asserted and pinned by a host
+      test against the arithmetic it replaces. Carrying ticks in the comparator's unit was rejected:
+      the sleep-queue arithmetic is nanoseconds and shared by every arch, so it is a fleet-wide
+      refactor rather than a chip item. **The bench cannot witness it**: the old cost grew with
+      uptime and a bench run is seconds old.
 
 - [ ] **THE `lock-hold` ROW NAMES NO SITE, SO ITS `max` CANNOT BE CHASED.** The row is a bare
       scalar and nothing records which acquisition opened the window that produced it. Stash
@@ -3085,7 +3094,7 @@ trees unless it says otherwise.
       future lock-hold delta on that board is worth; then the return-address probe above; the
       single-change timer A/B is a poor fit and the layout control would confound it anyway.
 
-- [ ] **PROGRAM ONLY THE DESCRIPTORS WHOSE WORDS CHANGED, NOT THE WHOLE SET.** The all-or-nothing
+- [x] **PROGRAM ONLY THE DESCRIPTORS WHOSE WORDS CHANGED, NOT THE WHOLE SET.** The all-or-nothing
       same-set skip that shipped here was removed: it fired 5 times in about a million commits and
       zero times in 640366 commits of the IPC-heavy workload, against a compare plus a 16-word
       record write-back on every commit. The reason it never fires is the same thing that says
@@ -3112,6 +3121,33 @@ trees unless it says otherwise.
         sampled, and neither was the SMP-migration shape, where a thread lands on a core whose
         descriptors are a peer's: no emulatable board in the fleet has both an MPU and more than
         one shared-memory kernel core. Those are gaps in the evidence, not near-miss counts of 0.
+      - **LANDED at M8.11.** The record is a copy of the WORDS, one per hardware MPU, and the
+        contract is `mpu-commit-writes-what-changed` in `docs/reference/invariants.md`. PMSAv7
+        moved to its own archive member (`arch/arm/common/arch_arm_mpu_pmsav7.cc`) with the diff
+        UNROLLED: written as one loop carrying the posture test, a skipped descriptor cost 14
+        instructions and three taken branches and gave most of the saving back. PMSAv8, SYSMPU and
+        the RX MPU skip their slot loops; the RX read-back and the PMSAv7 `SCB_SHCSR`, `MPU_CTRL`
+        and barriers are skipped too when nothing moved. Measured cost against the same tree with
+        only these files reverted: `f411disco-bench` +364 B text / +64 B .bss, `picopi-st` +368 /
+        +72, `teensy41-st` +372 / +72, `frdmk64f-st` +96 / +96, `pizero2350-st` +48 / +68,
+        `rx72m-st` +72 / +64.
+      - **RV32 PMP was measured and LEFT TOTAL.** On `esp32c6-wroom-bench` the total commit
+        compiles to 39 instructions and reads `MPU_COMMIT 75/75 n=520039`, about two cycles an
+        instruction, so no `csrw` is the outlier a skip would need; the per-entry form compiles to
+        120 with about 55 on the all-skip path, trading 10 `csrw` for 19 more loads and branches.
+        QEMU cannot settle it either: its `pmpaddr` write carries a TLB flush and the same row
+        reads 2897 there. The decision and its reason are in the commit's own comment and in
+        `tests/static/check_mpu_record.sh`'s exemption table.
+      - **The SMP-migration shape is now STRUCTURALLY answered, still unmeasured.** The ARM records
+        are `[KICKOS_NUM_CORES]` and indexed by `arch_cpu_id()`, the machine identity and not the
+        kernel slot, because the core MPU is per-core banked; the SYSMPU keeps ONE record because
+        the crossbar unit is not. A thread landing on a peer core therefore diffs against that
+        core's descriptors. Still no emulatable board has both an MPU and more than one
+        shared-memory kernel core, so this is reasoned, not witnessed. RX silicon is still
+        unsampled.
+      - **Owed: the after-capture.** `MPU_COMMIT` on `f411disco-bench` is the acceptance test, and
+        it is a silicon run. Projection from the counted instructions and the 247-cycle baseline:
+        roughly 120 to 140 in the steady state, with the FIRST commit total and therefore the max.
 
 - [ ] **OPEN: two once-per-run excursions in the M8.7 captures vanished in M8.8 from code neither
       touched.** `CALL_VALIDATE` read `261/2645` with avg equal to min over 220000 samples, and
@@ -3381,22 +3417,16 @@ the ABI moves once rather than twice.
       on this box (GPL-2.0, so cite by path and never copy). **Renaming without generalising would
       be the opposite lie**, so the name stays accurate to what exists until the object does.
 
-- [ ] **THE PMSAv7 DESCRIPTOR WRITE IS IN NO BRACKET ON ANY ARM BACKEND, SO THE PHASE TABLE
-      UNDERSTATES PER-SWITCH COST THERE AND NO GATE NOTICES.** `kickos_bench_mpu_commit` is called
-      from exactly one site in the tree, `arch/riscv/rv32imac/arch_rv32imac.cc:475`. Nothing under
-      `arch/arm` feeds it, so `PH_MPU_COMMIT` reads `n=0` on every ARM board by construction and
-      always will. `MPU_APPLY` is only the deferred stash in `kernel/sched/sched.cc`, not the
-      hardware program. And in `arch/arm/armv7m/switch.S` the switch distribution's bracket closes
-      at `bl kickos_bench_switch_done` on line 194 while `bl kickos_arch_mpu_commit` runs on line
-      220, so the eight RBAR/RASR pairs are written AFTER the bracket has closed.
-      **THE CONSEQUENCE WITH TEETH IS M8.11's.** The per-descriptor write filed there is justified
-      on near-miss counts, which stand, but its EFFECT would be invisible to this instrument on
-      every ARM board: the optimisation could land, work, and move no row. Its acceptance test
-      would be blind. Fix the bracket BEFORE M8.11 rather than after, or that milestone cannot
-      show its own result on the arch it most affects.
-      **And it bears on M8.12 asymmetrically**: a consistently blind instrument still yields a
-      valid DELTA against M8.7, which was equally blind, so the like-for-like survives. What is
-      wrong is the absolute per-switch figure, on every ARM capture the project has ever taken.
+- [x] **DONE BY M8.9: THE DESCRIPTOR WRITE IS BRACKETED ON EVERY BACKEND THAT PROGRAMS ONE.**
+      `kickos_bench_mpu_commit` now has five feed sites -- PMSAv7, PMSAv8, the K64F SYSMPU, RXv3
+      and the rv32 PMP -- so `PH_MPU_COMMIT` is a live row on ARM and the per-descriptor write
+      filed against M8.11 has an acceptance test after all.
+      **The residue is narrower and it stands.** `MPU_APPLY` is only the deferred stash in
+      `kernel/sched/sched.cc`, and in `arch/arm/armv7m/switch.S` the switch distribution still
+      closes at `bl kickos_bench_switch_done` before `bl kickos_arch_mpu_commit` runs, as it does
+      on rv32imac and RXv3. So the descriptor write is measured in a row of its own and is still
+      outside the per-switch distribution, which leaves every ARM per-switch ABSOLUTE understated.
+      The delta against M8.7 survives, both trees being blind the same way.
 
 - [x] **THE IMAGE-LAYOUT CLIFF IS AN EMULATOR ARTEFACT, MEASURED ON SILICON AND NOT ASSUMED.**
       Preset `qemu` (mps2-an386, PMSAv7) has a contiguous band of selftest text sizes, roughly
@@ -3585,16 +3615,58 @@ below, not duplicated in this section.
       handler; REPLY slots are released as the tail advances immediately after the copy, so deferring
       the copy needs either a ring lifetime change or a staging queue -- which is a copy anyway. The
       CALL side already holds its slot until the reply, so it does not have this problem. Severity
-      Medium. Direction: measure the masked span first with `bench_irq_masked_once` before designing
-      the ring-lifetime change; do not size this item further until that number exists.
+      Medium.
+      **M8.11 TOOK THE MEASUREMENT AND HANDS THE MECHANISM TO M9.3.** The worst-case sweep prices a
+      masked span directly: on `esp32c6-wroom` a 256-byte span costs 2560 cycles against a 208-cycle
+      floor at zero bytes, and on `f411disco` 2816 against 52, so ONE copy at `KOS_EP_MSG_MAX` is
+      worth about 15 us of added interrupt latency on the C6 and 34 us on the F411, against a bare
+      entry of 192 and 36 cycles. Two such copies happen per message. The item is therefore real and
+      it is an ISR-latency item exactly as filed. What it needs is the REPLY side holding its slot
+      until the receiver has copied, which is the ring lifetime M9.3 designs (the kinds, the depth
+      that cannot fill, the drain budget); building it here would settle that contract ahead of the
+      milestone that owns it, and a staging queue is a copy again. So the number is banked and the
+      mechanism waits.
 
 - [ ] **PERF-8: THE ARMV8A SWITCH SAVES AND RESTORES ALL 32 Q REGISTERS (512 BYTES)
       UNCONDITIONALLY, VOLUNTARY OR NOT, AND THE FILE RULES OUT A CALLEE-SAVED SUBSET.**
       `arch/arm64/armv8a/switch.S` 61-96, 110-125. Every switch saves and restores 31 GPRs and the
       full q-register file regardless of whether the outgoing thread touched SIMD/FP at all. Severity
       Low. Direction: lazy FP/SIMD save via `CPACR_EL1.FPEN` trapping instead of an unconditional
-      save; rank this after M8.7's A53 baseline exists, since its payoff is a fraction of a currently
-      unmeasured trip.
+      save.
+      **M8.11 CANNOT DECIDE THIS AND THAT IS THE RESULT, NOT A GAP.** What the frame costs is
+      countable without a vehicle: sixteen `stp q` pairs each way, 512 bytes of vector state stored
+      and 512 restored on every switch, about half the frame's store instructions and two thirds of
+      its bytes, paid whether or not the outgoing thread ever touched SIMD. What no instrument here
+      can price is the SAVING, because it is memory traffic: QEMU models no data cache, so an
+      emulator reading would understate a lazy scheme systematically, and no A53 silicon has ever
+      booted on this bench. The entry metric for whenever one does: the armv8a switch distribution
+      and `SWITCH_BOOK` on a part with real caches, against a build that traps first FP use through
+      `CPACR_EL1.FPEN`.
+
+- [x] **DONE IN M8.11: THE USERSPACE CONSOLE CHUNK WAS 64 BYTES AND WHETHER IT MAY WIDEN WAS A FRAME-BUDGET
+      MEASUREMENT.** `console_write_user` splits a line into 64-byte inserts, so a longer line is
+      several inserts and several ring lines, and 54 of the selftest's 240 TAP lines exceed 64
+      bytes. The buffer is `noinline` precisely so it does not widen `syscall_dispatch`'s frame,
+      which sits on the calling thread's stack: GCC allocates the union of every dispatch arm's
+      locals at entry, so a buffer written inline in one arm charges every syscall on every thread.
+      A short write is REPORTED and the caller decides, so this is a budget question and not a
+      correctness debt. Direction: run the trap red-zone gate per preset and read whether the
+      console chain is the winning path for the dispatch class at all -- below that it moves
+      nothing. Two clauses bind: armv6m's `SVCK` is enforced at 808 over 628 measured and asks
+      892 of the 892 its kernel block leaves, so there is measured headroom and NO macro room
+      without raising `KICKOS_KERNEL_STACK_SIZE`; armv7m's `SVC` runs on the caller's own stack
+      and sits 4 bytes under its macro. Widening raises the threshold and never removes the
+      multi-insert path, so what a wider chunk buys is measured against the longest real TAP line
+      or it is not claimed. **Landed as one diagnostic line, capped at 128 bytes**, so 128
+      ordinarily and 127 at the Kconfig floor. **The stack was the wrong bound and 256 was the
+      wrong answer**: the ring refuses an insert it cannot take WHOLE and a CRLF console spends
+      two bytes on a newline, so a chunk of N can need 2N against a ring holding
+      2 * (KICKOS_DIAG_LINE_MAX - 1), and at the floor a 256-byte write was refused however empty
+      the ring stood. A static assert now fails the build where a chunk of all newlines would not
+      fit. What the shipped cap buys is the 186-byte TAP line in two inserts rather than three,
+      not one; a failure line carrying an absolute source path is bounded by no compile-time size
+      at all. The red-zone figures quoted around the 256-byte experiment are that experiment's,
+      and the four arches with a red-zone class read the same depth at the shipped cap as at 64.
 
 ## M8.1.1-era guard sweeps: the findings assigned forward, and the records kept
 
@@ -3892,7 +3964,12 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
         was letting run on the way OUT of the function, past the point `REPLY_TOTAL` closed.
         The wrapper now completes the guard in a scope of its own before the close, because
         nothing on the standalone path parks and it had no reason to defer at all, so
-        `REPLY_TOTAL` is M8.8's span again and the M8.12 delta on that row IS like for like.
+        `REPLY_TOTAL` is M8.8's span again. **Its SPAN is comparable and its POPULATION is not**:
+        the same milestone moved every server loop and every in-tree service to the fused
+        reply-receive, which never enters the wrapper, so the row falls from a quarter of a
+        million samples to about a dozen. The reply row to read at M8.12 is `REPLY_LOCKED`, which
+        the shared body feeds on both forms; `REPLY_TOTAL` and `REPLY_VALIDATE` are standalone-only
+        rows now and their tiny `n` is the expected reading rather than a stalled instrument.
         Two things are not. `REPLY_WAKE` and `REPLY_LOCKED` keep only the readying, so both
         are narrower than M8.8 and neither is a comparable row. And `REPLY_TOTAL`'s `k` grows
         by the brackets the reschedule carries, `PICK_NEXT` always and `SWITCH_TO` on the
@@ -3991,6 +4068,15 @@ rather than defended.
       message path. **Two claims must be checked before either is cited**: whether the most-cited
       precedent's IPC fastpath takes its queue lock on the same acquisition, and what that project's
       own documents say the verification envelope excludes.
+
+- [ ] **M9 RESEARCH, AFTER M8.12: STACK OWNERSHIP AND BLOCKING COMPLETION.** Revisit
+      [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) as part of
+      M9.0's reference survey. Evaluate shared per-CPU kernel stacks against the current
+      per-thread continuations, including RAM/flash, IRQ and IPC latency, timeout/cancellation,
+      teardown, host sim and the arch seam. Establish the effect separately from BKL partitioning
+      before combining them. This is an investigation, not approval to rewrite the kernel;
+      retaining the current design is a valid outcome. The report also preserves independent
+      stack-test improvements and the dated M8.9 audit findings.
 
 - [ ] **P5 (= M9.2): PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
       LOCK-PARTITION DESIGN, AND BUILDING THEM UNDER ONE LOCK FIRST BUILDS THEM TWICE.** Under
@@ -11433,13 +11519,21 @@ merits, as M8.11 / P9 (see the M8.11 section above); the other two share nothing
 word MPU and stay in `roadmap.md`'s `Later`. Retagged below; the technical content of all three is
 unchanged.
 
-- [ ] **RISC-V context-switch cost** (M8.11 / P9, fable-gated) -- the rv32 trap saves the full
-      integer file (~60 stack words/switch vs armv7m's ~18); ~3.5x per-handoff, general to RISC-V
-      (Hazard3 shares it, NOT C6-specific). Levers: (a) cooperative fast-path (callee-saved-only
-      voluntary switch, ~2x, portable incl. C6); (b) optional Zcmp `cm.push`/`cm.pop` compile-gated
-      path (Hazard3-only, code-size mainly). Prerequisite: fix the rv32 bench bracket (it currently
-      excludes the save/restore). Full design in `docs/design-riscv-switch-cost.md`; roadmap
-      "Later". Surfaced by the M3 C6 enforcement soak (C6 ~10.5k iters vs XMC ~33.9k, same window).
+- [x] **RISC-V context-switch cost** (M8.11 / P9) -- **REFUSED 2026-09-18 on its own numbers;
+      the record with the evidence and the four reopening tests is
+      `docs/design-riscv-switch-cost.md`.** Neither lever is built. Three findings close it. The
+      headline ~3.5x was an arithmetic error: armv7m moves 17 words each way (nine software plus
+      eight hardware-stacked), not nine, so the word ratio is 1.8x and not 3.5x. On silicon the
+      rv32 switch is the CHEAPER one end to end -- `esp32c6-wroom` 144 `SWITCH` + 75 `MPU_COMMIT`
+      = 219 a switch against `f411disco`'s 80 + 247 = 327, with the ARM column optimistic twice
+      over. And the lever's absolute ceiling, the whole 144-cycle bracket plus the 23-cycle msip
+      pend, is 2.7 percent of the 6130-cycle 8 B round trip and 5.6 percent of a 2984-cycle
+      ping-pong handoff, so it cannot be the 3.2x soak gap that raised the item. The eligible
+      population is NOT the problem: the register fastpath takes the caller's half of a round trip
+      and leaves the server's msip switch, which is thread context and would be caught; the n=40001
+      switch sample is the ping-pong and is essentially 100 percent eligible. What is refused is the
+      price -- a second frame shape in `switch.S`, a `resume_kind` fan-out across four resume sites,
+      and moving rv32 from the deferred-switch class to the immediate one, for single-digit percent.
 
 - [ ] **ARMv8-M TrustZone kernel-confinement backend -- opt-in, per-chip** (Later, fable-gated,
       needs the M4 service model + M6 SMP settled). The armv8-M-with-Security-Extension mechanism for

@@ -22,6 +22,7 @@
 
 #include <kickos/chip_mmap.h>
 #include "irq.h"
+#include "mtime_conv.h"
 #include "regs/apm.h"
 #include "regs/clint.h"
 #include "regs/uart.h"
@@ -80,18 +81,9 @@ namespace
     inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
     inline volatile uint32_t& r32(uintptr_t a) { return *r32p(a); }
 
-    // MTIME is core-clocked ~160 MHz (reg::clint::MTIME_HZ): 1e9/160e6 = 6.25 ns/tick =
-    // 25/4 exactly. An integer ns-per-tick (=6) would truncate and run every
-    // sleep/timestamp 4.17% long, so convert with the exact 25/4 ratio in 64-bit
-    // (overflows only past ~1460 yr at 160 MHz).
-    inline uint64_t mtime_ticks_to_ns(uint64_t ticks)
-    {
-        return ticks * 25ull / 4ull;
-    }
-    inline uint64_t mtime_ns_to_ticks(uint64_t ns)
-    {
-        return ns * 4ull / 25ull;
-    }
+    // mtime_ticks_to_ns / mtime_ns_to_ticks: see mtime_conv.h.
+    using kickos::esp32c6::mtime_ns_to_ticks;
+    using kickos::esp32c6::mtime_ticks_to_ns;
 
     // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on GPIO16/17 behind
     //     the board's CH343P (U4). The ROM already sets UART0 up (baud/pins) for its own

@@ -82,12 +82,26 @@ namespace kickos
             return static_cast<uint64_t>(rc);
         }
 
+        // The ring refuses an insert it cannot take WHOLE and a CRLF console spends two bytes
+        // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
+        // 2 * (KICKOS_DIAG_LINE_MAX - 1). Anything wider than that is refused on a board at the
+        // Kconfig floor however empty its ring is, and the caller reads that as a short write.
+        // The 128 caps what this frame costs on the arches no red-zone class walks.
+#if KICKOS_DIAG_LINE_MAX - 1 < 128
+        static constexpr size_t CONSOLE_CHUNK = KICKOS_DIAG_LINE_MAX - 1;
+#else
+        static constexpr size_t CONSOLE_CHUNK = 128;
+#endif
+        static_assert(2u * CONSOLE_CHUNK <= KICKOS_CONSOLE_TX_SIZE - 1u,
+                      "a chunk of all newlines must fit the ring, or a full-width write is "
+                      "refused whatever the ring holds");
+
         // Copy user data to the privileged console in chunks, returning bytes written.
         // Stop if a later chunk becomes inaccessible between lock scopes.
         // Keep out of line so the chunk buffer does not enlarge syscall_dispatch's frame.
         __attribute__((noinline)) size_t console_write_user(uintptr_t buf, size_t len)
         {
-            char chunk[64];
+            char chunk[CONSOLE_CHUNK];
             struct arch_aspace* const space = user_space_of(sched::current());
             size_t done = 0;
             while (done < len)
@@ -1148,12 +1162,11 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_ENOMEM);
             }
-            // Must be effective BEFORE the return: the caller's next
-            // instruction may dereference the region, and on a deferred-switch
-            // arch apply() only STASHES, the commit being what programs the
-            // hardware.
-            c->mpu.apply();
-            kickos_arch_mpu_commit();
+            // Must be effective BEFORE the return: the caller's next instruction may
+            // dereference the region, and on a deferred-switch arch apply() only STASHES.
+            // apply_now and NOT apply plus commit: a switch to another thread may already be
+            // pended, and the pair would leave its epilogue the caller's image to program.
+            c->mpu.apply_now();
             return 0;
 #endif
         }

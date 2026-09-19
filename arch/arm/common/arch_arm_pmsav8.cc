@@ -65,6 +65,17 @@ extern "C"
 // Read the shared pending stash written by arch_mpu_apply (arch_arm_common.cc).
 struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
+// The descriptor words this core's MPU holds, and whether that record may be believed.
+// A commit programs only the slots whose words differ from it, so anything that writes a
+// descriptor outside the loop below must invalidate it first: a partial commit leaves a
+// disagreement standing where a total one erased it. The MPU is per-core banked, hence one
+// record per core rather than one per image.
+//
+// Not the pending image POINTER: MpuSet re-encodes in place and thread slots come from a
+// static pool, so a pointer that was programmed once can address different words later.
+static struct arch_mpu_encoded g_mpu_held[KICKOS_NUM_CORES];
+static bool g_mpu_held_valid[KICKOS_NUM_CORES];
+
 // One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Must run
 // BEFORE the scheduler starts. This is also the LINK ANCHOR: chip_rp2350.o, always
 // pulled for arch_init, references this symbol, which is defined ONLY here, so GNU ld
@@ -87,6 +98,24 @@ void kickos_arm_pmsav8_init(void)
             __asm volatile("wfi");
         }
     }
+
+    // The per-thread rows the commit programs must EXIST in this part, or the slots above
+    // DREGION would be dropped and the grants in them silently lost. Same refusal and the
+    // same reason as PMSAv7's (arch_arm_mpu_pmsav7.cc): a part too narrow to hold a full
+    // per-thread set is refused, never truncated. No fixed count to add, the refusal above
+    // having just excluded one.
+    size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
+    if (ARCH_MPU_ENCODED_SLOTS > hw_regions)
+    {
+        while (true)
+        {
+            __asm volatile("wfi");
+        }
+    }
+
+    // This core's descriptors stand at their reset values here, and the MAIR indirection
+    // below changes what an already-programmed AttrIndx would have meant.
+    g_mpu_held_valid[arch_cpu_id()] = false;
 
     // slot0 Normal cacheable, slot1 Device, slot2 Normal non-cacheable
     reg32(MPU_MAIR0) =
@@ -151,6 +180,9 @@ void kickos_arch_mpu_commit(void)
     {
         return;
     }
+    uint32_t const core = arch_cpu_id();
+    struct arch_mpu_encoded* const held = &g_mpu_held[core];
+    bool const total = not g_mpu_held_valid[core];
     uint32_t primask;
     __asm volatile("mrs %0, primask" : "=r"(primask));
     __asm volatile("cpsid i" ::: "memory");
@@ -159,6 +191,9 @@ void kickos_arch_mpu_commit(void)
     // the loop below rewrites per-thread rows only. Sound because every row on this backend
     // is per-thread, which kickos_arm_pmsav8_init enforces. PMSAv7 must NOT do this
     // (imxrt1062's anti-speculation wrap).
+    //
+    // The disable/re-enable pair is per COMMIT and cannot be skipped the way a descriptor can:
+    // this revision has no way to move one row with the MPU live. Only the loop shortens.
     reg32(MPU_CTRL) = 0; // disable while reprogramming (a switch must take effect atomically)
     __asm volatile("dsb" ::: "memory");
 
@@ -166,17 +201,29 @@ void kickos_arch_mpu_commit(void)
     size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
     for (size_t i = 0; i < hw_regions; i++)
     {
-        reg32(MPU_RNR) = static_cast<uint32_t>(i);
-        if (i < ARCH_MPU_ENCODED_SLOTS)
+        if (i >= ARCH_MPU_ENCODED_SLOTS)
         {
-            reg32(MPU_RBAR) = img->rbar[i];
-            reg32(MPU_RLAR) = img->rlar[i];
-        }
-        else
-        {
+            // Past the image: disabled by the total commit and never written again, no
+            // image reaching this far.
+            if (not total)
+            {
+                continue;
+            }
+            reg32(MPU_RNR) = static_cast<uint32_t>(i);
             reg32(MPU_RLAR) = 0; // EN=0: disable the descriptor
+            continue;
         }
+        if (not total and held->rbar[i] == img->rbar[i] and held->rlar[i] == img->rlar[i])
+        {
+            continue;
+        }
+        reg32(MPU_RNR) = static_cast<uint32_t>(i);
+        reg32(MPU_RBAR) = img->rbar[i];
+        reg32(MPU_RLAR) = img->rlar[i];
+        held->rbar[i] = img->rbar[i];
+        held->rlar[i] = img->rlar[i];
     }
+    g_mpu_held_valid[core] = true;
 
     __asm volatile("dsb" ::: "memory");
     reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA; // priv uses default map

@@ -54,8 +54,8 @@ namespace
     static_assert(KICKOS_RV_TRAP_F_SP % 4 == 0, "F_SP is not a word offset");
     static_assert(F_SP < FRAME_WORDS, "F_SP lies outside the frame");
 
-    // mstatus bits (RISC-V Privileged ISA v1.10).
-    constexpr uint32_t MSTATUS_MIE  = 1u << 3;
+    // mstatus bits (RISC-V Privileged ISA v1.10). MIE is KICKOS_RV32_MSTATUS_MIE, the
+    // inline critical section's own (kickos/arch/irq_inline.h).
     constexpr uint32_t MSTATUS_MPIE = 1u << 7;
     constexpr uint32_t MSTATUS_MPP_M = 3u << 11; // MPP = machine (U = 0)
 
@@ -304,21 +304,6 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     *g_clint_msip = 1; // pend machine software interrupt
 }
 
-// --- Critical section: clear/restore mstatus.MIE ----------------------------
-arch_irq_state_t arch_irq_save(void)
-{
-    uint32_t old;
-    __asm volatile("csrrci %0, mstatus, 0x8" : "=r"(old)::"memory");
-    return old & MSTATUS_MIE;
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    // csrs only SETS bits, and state is 0 or MSTATUS_MIE, so this re-enables MIE exactly
-    // when the paired save disabled it. That is what makes it nesting-safe.
-    __asm volatile("csrs mstatus, %0" ::"r"(state) : "memory");
-}
-
 int arch_in_isr(void)
 {
     return g_isr_depth != 0;
@@ -405,9 +390,10 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 
 // A POINTER into the caller's TCB, not a copy: every commit on this arch is preceded by an
 // apply inside the SAME MIE=0 window (the msip trap, the .Lecall fastpath tail, arch_start,
-// and the self-grant syscall, which commits before it returns), so nothing can rewrite the
-// image in between. Thread slots come from a static pool and are never returned to an
-// allocator, so a pointer left over from an earlier switch still addresses valid storage.
+// and arch_mpu_apply_now, which stashes, commits and puts the booked image back), so nothing
+// can rewrite the image in between. Thread slots come from a static pool and are never
+// returned to an allocator, so a pointer left over from an earlier switch still addresses
+// valid storage.
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
 #if KICKOS_BENCH
@@ -457,6 +443,12 @@ void kickos_arch_mpu_commit(void)
     // the permissive bootstrap TOR entry (kickos_rv32_init); the kernel is in M-mode here
     // and bypasses PMP, so the transient is safe. csrw takes an IMMEDIATE CSR number, so
     // the entries are spelled out rather than indexed.
+    //
+    // EVERY ENTRY, EVERY COMMIT, and the measurement is why: the eight pmpaddr CSRs are
+    // individually addressable, but skipping one costs a load and a taken branch where
+    // writing it costs a load and a csrw, so a per-entry skip spends more instructions than
+    // the writes it saves. The ARM backends skip because a descriptor there is four MMIO
+    // stores (docs/reference/invariants.md, mpu-commit-writes-what-changed).
     __asm volatile("csrw pmpaddr0, %0" ::"r"(addr[0]) : "memory");
     __asm volatile("csrw pmpaddr1, %0" ::"r"(addr[1]) : "memory");
     __asm volatile("csrw pmpaddr2, %0" ::"r"(addr[2]) : "memory");
@@ -475,6 +467,25 @@ void kickos_arch_mpu_commit(void)
     kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
 #endif
 }
+
+// THE STASH IS RESTORED, and that is this entry's whole reason to exist: a switch to another
+// thread may already be pended behind the caller, and the stash is ONE cell. Leaving this set
+// in it would have the epilogue program the CALLER's regions onto the incoming thread, which
+// would then run under them until the next switch re-stashed. Self-bracketed: an interrupt
+// between the two writes below could decide a switch, and the restore would then drop the
+// image that switch stashed.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    (void)regions;
+    (void)n;
+    arch_irq_state_t const irq = arch_irq_save();
+    struct arch_mpu_encoded const* const pend = g_pend_image;
+    g_pend_image = image;
+    kickos_arch_mpu_commit();
+    g_pend_image = pend;
+    arch_irq_restore(irq);
+}
 #else
 // KICKOS_HAVE_MPU=0: the permissive bootstrap PMP stays in place for the life of the image.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
@@ -486,6 +497,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 // .Lswitch and arch_start call this unconditionally.
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 #endif
 
 size_t arch_mpu_min_region(void)

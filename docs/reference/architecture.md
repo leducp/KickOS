@@ -178,8 +178,10 @@ switch-in `arch_mpu_apply()` only **stashes** the incoming region set (shared, a
 overridable); `kickos_arch_mpu_commit()` **programs the hardware** from the context-switch
 epilogue, after the physical swap, and is the per-target definition -- K64F SYSMPU, ARM
 PMSAv7/v6-M (XMC4800, F411, i.MX RT1062, RP2040; the shared fallback TU
-`arch/arm/common/kickos_arch_mpu_commit_default.cc`), RP2350 PMSAv8, C6/virt RISC-V PMP,
-RX72M MPU.
+`arch/arm/common/kickos_arch_mpu_commit_default.cc` over the descriptor writer in
+`arch/arm/common/arch_arm_mpu_pmsav7.cc`), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU.
+Every backend but the PMP writes only the descriptors whose words changed, against a record
+of what the hardware holds (`reference/invariants.md`, `mpu-commit-writes-what-changed`).
 (See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
 maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmake`, and
 the same chips select `HAS_MPU` in `arch/Kconfig`, which is what makes the enforcing
@@ -409,7 +411,9 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
   called from ISR context. Callers must not assume the switch completed on return.
 - `arch_start(boot, first)` -- enter the first thread from the boot context.
 - `arch_irq_save()/restore()` + `arch_in_isr()` -- critical section (RAII `IrqLock`). **v7-m:
-  BASEPRI**; **v6-m: PRIMASK**. Sim: `sigprocmask`.
+  BASEPRI**; **v6-m: PRIMASK**. Sim: `sigprocmask`. An arch whose half is a couple of
+  instructions defines it inline in its own `kickos/arch/irq_inline.h` instead, so `IrqLock`
+  carries no call for it.
 - `arch_timer_arm(deadline)` / `arch_timer_disarm()` + `arch_clock_now()` -- monotonic clock +
   one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick). Sim:
   `clock_gettime(MONOTONIC)` + `timer_create`/`SIGALRM`.

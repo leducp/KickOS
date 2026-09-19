@@ -205,8 +205,20 @@ void arch_start(struct arch_context* boot, struct arch_context* first);
 
 // --- Critical section (RAII-wrapped by kernel IrqLock) ---------------------
 typedef uintptr_t arch_irq_state_t;
+// An arch whose mask or unmask is a couple of instructions defines that half in its own
+// kickos/arch/irq_inline.h and marks which half it took, so IrqLock carries no call for it.
+// A half no header takes stays an ordinary out-of-line seam, and so does every half on an
+// arch shipping no such header: the host unit fixtures answer this seam with definitions of
+// their own, and an inline body would take that substitution away from them.
+#if defined(__has_include) && __has_include(<kickos/arch/irq_inline.h>)
+#include <kickos/arch/irq_inline.h>
+#endif
+#ifndef KICKOS_ARCH_IRQ_SAVE_INLINE
 arch_irq_state_t arch_irq_save(void);
+#endif
+#ifndef KICKOS_ARCH_IRQ_RESTORE_INLINE
 void arch_irq_restore(arch_irq_state_t state);
+#endif
 
 // Nonzero while executing in interrupt/ISR context.
 int arch_in_isr(void);
@@ -322,10 +334,20 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image);
 
 // Program the set recorded by arch_mpu_apply after a deferred physical switch.
-// Direct calls may only apply the running thread's newly widened set before
-// returning from self-grant. No-op when apply programs hardware immediately
-// or when no MPU exists; every backend must provide a definition.
+// No-op when apply programs hardware immediately or when no MPU exists; every
+// backend must provide a definition. Called from a switch epilogue, and from
+// arch_mpu_apply_now below, which brackets it; a grant that must be live before
+// its syscall returns goes through THAT, never through apply then commit.
 void kickos_arch_mpu_commit(void);
+
+// Program this region set into the hardware NOW, for a grant (kos_mem_self_grant)
+// that must be effective before the syscall returns. It must NOT become the image
+// a pended switch commits: a deferred backend keeps ONE stash cell, and leaving
+// this set in it would have the switch epilogue program the caller's descriptors
+// onto the incoming thread. Same arguments as arch_mpu_apply. Every backend must
+// provide a definition; where apply already programs the hardware this is apply.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image);
 
 // Nontranslating protection regions; translating ports use arch_aspace_*.
 

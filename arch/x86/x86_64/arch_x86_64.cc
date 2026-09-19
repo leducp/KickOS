@@ -78,8 +78,7 @@ namespace
     static_assert(KICKOS_IDLE_STACK_SIZE >= 4 * X86_64_FRAME_SIZE,
                   "the idle stack cannot take an interrupt frame and its dispatch");
 
-    // RFLAGS.IF, bit 9.
-    constexpr uint64_t RFLAGS_IF = 1ull << 9;
+    constexpr uint64_t RFLAGS_IF = KICKOS_X86_64_RFLAGS_IF;
     // Bit 1 reads as one on every x86 processor; a resumed frame with it clear is one nothing
     // built.
     constexpr uint64_t RFLAGS_RESERVED_ONE = 1ull << 1;
@@ -264,24 +263,6 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
-// --- Critical section -------------------------------------------------------
-// Nesting-safe: the state is the one bit this touches and the restore sets only what its own
-// save cleared. A wholesale RFLAGS write-back would clobber the arithmetic and direction flags.
-arch_irq_state_t arch_irq_save(void)
-{
-    uint64_t flags = 0;
-    __asm__ volatile("pushfq\n\tpop %0\n\tcli" : "=r"(flags)::"memory");
-    return static_cast<arch_irq_state_t>(flags & RFLAGS_IF);
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    if (state != 0) // IF was set before the save, so the save is what masked it
-    {
-        __asm__ volatile("sti" ::: "memory");
-    }
-}
-
 // The interrupt entry alone bumps it, so it reads FALSE inside syscall dispatch as arch.h
 // requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
@@ -324,6 +305,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 
 size_t arch_mpu_min_region(void)
 {

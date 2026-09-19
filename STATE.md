@@ -3020,6 +3020,84 @@ to 0 is one both backends deliberately keep booting, and `ALL` may not contradic
 that keeps it booting. **A green suite was the wrong instrument for that question and saying so is
 the finding.**
 
+## M8.11: what a measurement justified, and what these green runs do NOT say
+
+**THE MILESTONE IS SIX ITEMS AND A NUMBER DECIDED EACH ONE.** Three landed, two are refused with
+their figures, and one is measured and handed on. The figures are in
+[`docs/archive/M8.11_meas.md`](docs/archive/M8.11_meas.md); what follows is what no command
+re-derives.
+
+**THE ARM DESCRIPTOR WRITE HAD NEVER BEEN MEASURED, AND IT COSTS MORE THAN THE SWITCH IT FOLLOWS.**
+`PH_MPU_COMMIT` gained its first `arch/arm` feed site in M8.9, so every ARM capture before this
+milestone read `n=0`, the whole M8.7 rebaseline included. The first reading is 247 cycles on
+`f411disco` against an 80-cycle switch distribution and 244 on `xmc4800-relax` against 83. Both
+switch brackets close before the commit runs, so the per-switch ABSOLUTE in every ARM capture this
+project has published understates the switch by more than the switch is. The DELTA against M8.7
+survives, both trees being blind the same way.
+
+**THE PER-DESCRIPTOR SKIP PAID A QUARTER, NOT A HALF, AND THE REASON GENERALISES.** The projection
+was built on avoided MMIO stores and came out near half; the measurement is 247 to 189 on
+`f411disco` and 244 to 220 on the XMC. A PPB store on these parts is about two cycles, so a commit's
+cost is its INSTRUCTION STREAM and not its bus traffic: dropping 30 of 34 stores buys 60 cycles, and
+the compare that decides what to drop costs most of an equal number back. **The corollary is the
+useful part: the unroll is what makes the skip pay at all.** Written as one loop carrying the
+posture test, `-Os` re-reads the record flag and re-checks the slot bound every iteration and a
+SKIPPED descriptor costs 14 instructions, which is most of what the skip buys; unrolled it costs
+eight. The two PMSAv7 parts keep different fractions, a little under a quarter and a tenth, which
+tracks clock and flash wait states rather than anything in the tree.
+
+**THE RECORD IS A MEMO OF THE LAST WRITE AND CALLING IT A SECOND AUTHORITY WAS WRONG.** The kernel
+is the only writer of those descriptors, so reading them back answers nothing the writer did not
+already know, and the `no-second-truth` rule is not what is being traded against. What the record
+supplies is the PREVIOUS commit's words, which nothing else still holds: `MpuSet` re-encodes in
+place and thread slots come from a static pool, so comparing the incoming image's address against
+the last one is unsound and `kos_mem_self_grant` takes exactly that path. It can go stale in one way
+only, a writer moving a descriptor outside a commit, and that set is enumerated and held by a gate.
+
+**THE PMP KEEPS WRITING EVERY ENTRY AND THAT IS A MEASURED DECISION.** The total commit is 39
+instructions and reads 75 cycles; the per-entry form compiles to 120 with about 55 on the all-skip
+path, because the eight cfg bytes ride four to a CSR and the sequence is unrolled with immediate CSR
+numbers, so a skip spends a load and a branch where the write spends a load and a `csrw`. **QEMU is
+not the instrument for that question**: its `pmpaddr` write carries a TLB flush and the same row
+reads 2897 there against 75 on silicon, a 38x inflation.
+
+**THE RISC-V SWITCH ITEM DIED OF ITS OWN PREMISE.** The filed headline was a 3.5x per-handoff cost
+from rv32 saving the full integer file. armv7m moves 17 words each way once the eight
+hardware-stacked ones are counted, not nine, so the ratio is 1.8x; and end to end the rv32 switch is
+the CHEAPER one, 144 plus a 75-cycle commit against 80 plus 247, with the ARM column optimistic
+twice over. The lever's absolute ceiling is 2.7 percent of an 8 B round trip and 5.6 percent of a
+ping-pong handoff, so it cannot be the 3.2x soak gap that raised the item. What it would have cost
+is a second frame shape in `switch.S`, a `resume_kind` fan-out across four resume sites, and moving
+rv32 from the deferred-switch class to the immediate one.
+
+**THE DOORBELL COPY IS REAL, PRICED, AND WAITS FOR A MECHANISM M9.3 OWNS.** A 256-byte masked span
+costs 2560 cycles on the C6 and 2816 on the F411 against bare entries of 192 and 36, so one copy at
+`KOS_EP_MSG_MAX` is worth about 15 and 34 microseconds of added interrupt latency, and two happen
+per message. Deferring it needs the REPLY side to hold its slot until the receiver has copied, which
+is the ring lifetime M9.3 designs; a staging queue is a copy again. The number is banked rather than
+the mechanism built, because building it here settles that contract ahead of the milestone that owns
+it.
+
+**AND ONE ITEM CANNOT BE DECIDED HERE AT ALL, WHICH IS ITSELF THE RESULT.** Every armv8a switch
+stores 512 bytes of vector state and restores 512, about half the frame's store instructions and two
+thirds of its bytes, whether or not the outgoing thread ever touched SIMD. What no vehicle here can
+price is the SAVING, because it is memory traffic: QEMU models no data cache and would understate a
+lazy scheme systematically, and no A53 silicon has ever booted on this bench.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.** No MPU-enforcing SMP part exists here, so the per-core
+descriptor record is reasoned and unwitnessed. The SYSMPU and RX backends carry the skip and have no
+bench variant, so neither was measured at all. The C6's round trip moved 0.7 percent the wrong way
+and its `lock-hold` max by 56 cycles, both inside the layout sensitivity that board showed at M8.8
+and neither attributed. The esp32c6 timer conversion cannot show its win here, its cost having grown
+with uptime and a bench run being seconds old. And `xmc4800-relax` produced one capture whose cycle
+counter was dead across 220000 samples and the chain refused it, which is that board's documented
+character rather than a regression.
+
+**A TRAP THAT COST A CAPTURE, AND THE FILE ALREADY SAID SO.** A bench capture taken while a subagent
+was mutating this checkout built a `-dirty` image, and a witness you cannot falsify is not one.
+`CONTEXT.local.md` states the rule; serialising the bench against the AGENTS, not just against other
+captures, is the part that was not applied.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).
