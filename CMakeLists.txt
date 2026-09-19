@@ -868,6 +868,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(panic_stack_seat PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME mpu_record
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_mpu_record.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(mpu_record PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME park_death_point
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

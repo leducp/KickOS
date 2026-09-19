@@ -545,6 +545,19 @@ extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_
     return seated;
 }
 
+// The RGD words the SYSMPU holds, and whether that record may be believed. A commit
+// programs only the descriptors whose words differ from it, so anything that writes or
+// invalidates an RGD outside the loop below must clear the flag first: a partial commit
+// leaves a disagreement standing where a total one erased it.
+//
+// ONE record for the chip, not one per core: the SYSMPU is a bus-side crossbar unit that
+// every master shares, unlike the per-core banked ARM core MPU.
+//
+// Not the pending image POINTER: MpuSet's mutators re-encode in place and thread slots come
+// from a static pool, so the same pointer can address different words later.
+static struct arch_mpu_encoded g_mpu_held;
+static bool g_mpu_held_valid = false;
+
 // SYSMPU commit: replaces the PMSAv7 kickos_arch_mpu_commit fallback (K64F has no ARM
 // core MPU). Programs the running thread's per-thread USER grants (RGD1..) from the
 // shared stash; supervisor + DMA stay covered by RGD0. Runs AFTER the physical swap.
@@ -585,25 +598,58 @@ extern "C" void kickos_arch_mpu_commit(void)
             | reg::sysmpu::WORD2_M1SM;
         r32(reg::sysmpu::RGDAAC0) &= ~core_user_and_sm;
         r32(reg::sysmpu::CESR) |= reg::sysmpu::CESR_VLD; // (already enabled at reset)
+        g_mpu_held_valid = false;
         rgd0_ready = true;
     }
+    // Read AFTER the bring-up above, which invalidates the record.
+    bool const total = not g_mpu_held_valid;
     // Program RGD1..(n) from the region set; invalidate the rest. RGD0 stays the
     // background. Writing WORD2 clears VLD, so set WORD0/1/2 then WORD3=VLD last.
     for (size_t i = 0; i + 1 < reg::sysmpu::RGD_COUNT; i++)
     {
         uintptr_t const rgd = reg::sysmpu::RGD + (i + 1) * reg::sysmpu::RGD_STRIDE;
-        if (i < ARCH_MPU_ENCODED_SLOTS and img->word2[i] != 0u)
+        if (i >= ARCH_MPU_ENCODED_SLOTS)
         {
-            r32(rgd + 0x0) = img->word0[i];                                 // SRTADDR[31:5]
-            r32(rgd + 0x4) = img->word1[i];                                 // ENDADDR[31:5]
-            r32(rgd + reg::sysmpu::RGD_WORD2) = img->word2[i];              // clears VLD
+            // Past the image: invalidated by the total commit and never written again.
+            if (not total)
+            {
+                continue;
+            }
+            r32(rgd + reg::sysmpu::RGD_WORD3) = 0u;
+            continue;
+        }
+        // An all-zero triple is how the record spells an invalidated descriptor, which
+        // arch_mpu_encode never seats: a seated slot always carries a WORD2.
+        uint32_t word0 = 0;
+        uint32_t word1 = 0;
+        uint32_t word2 = 0;
+        if (img->word2[i] != 0u)
+        {
+            word0 = img->word0[i];
+            word1 = img->word1[i];
+            word2 = img->word2[i];
+        }
+        if (not total and g_mpu_held.word0[i] == word0 and g_mpu_held.word1[i] == word1
+            and g_mpu_held.word2[i] == word2)
+        {
+            continue;
+        }
+        if (word2 != 0u)
+        {
+            r32(rgd + 0x0) = word0;                                         // SRTADDR[31:5]
+            r32(rgd + 0x4) = word1;                                         // ENDADDR[31:5]
+            r32(rgd + reg::sysmpu::RGD_WORD2) = word2;                      // clears VLD
             r32(rgd + reg::sysmpu::RGD_WORD3) = reg::sysmpu::RGD_WORD3_VLD; // VLD=1
         }
         else
         {
             r32(rgd + reg::sysmpu::RGD_WORD3) = 0u; // invalidate the descriptor
         }
+        g_mpu_held.word0[i] = word0;
+        g_mpu_held.word1[i] = word1;
+        g_mpu_held.word2[i] = word2;
     }
+    g_mpu_held_valid = true;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");

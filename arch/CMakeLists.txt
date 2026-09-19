@@ -88,6 +88,7 @@ set(KICKOS_SEAM_DEFAULTS_ARM
 if(KICKOS_HAVE_MPU)
   list(APPEND KICKOS_SEAM_DEFAULTS_ARM
     arm/common/arch_mpu_encode_default.cc
+    arm/common/arch_arm_mpu_pmsav7.cc
     arm/common/kickos_arm_mpu_fixed_default.cc)
 endif()
 

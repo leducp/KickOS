@@ -40,7 +40,6 @@ namespace
 {
     // sstatus bits, from the header switch.S reads: SPP is ONE bit at 8, where the
     // machine-mode MPP is two at 11.
-    constexpr uint64_t SSTATUS_SIE = KICKOS_RV64_SSTATUS_SIE;
     constexpr uint64_t SSTATUS_SPIE = KICKOS_RV64_SSTATUS_SPIE;
     constexpr uint64_t SSTATUS_SPP = KICKOS_RV64_SSTATUS_SPP;
 
@@ -418,21 +417,6 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
-// --- Critical section -------------------------------------------------------
-arch_irq_state_t arch_irq_save(void)
-{
-    uint64_t old = 0;
-    __asm volatile("csrrci %0, sstatus, 2" : "=r"(old)::"memory");
-    return static_cast<arch_irq_state_t>(old & SSTATUS_SIE);
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    // csrs only SETS bits, and state is 0 or SSTATUS_SIE, so this re-enables SIE exactly
-    // when the paired save disabled it. That is what makes it nesting-safe.
-    __asm volatile("csrs sstatus, %0" ::"r"(static_cast<uint64_t>(state)) : "memory");
-}
-
 // The interrupt leg of the entry alone bumps it, so it reads FALSE inside syscall dispatch as
 // arch.h requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
@@ -459,6 +443,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 
 size_t arch_mpu_min_region(void)
 {

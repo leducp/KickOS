@@ -811,6 +811,27 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
+// The region words the MPU holds, and whether that record may be believed. A commit
+// programs only the slots whose words differ from it, so anything that writes a region or
+// clears the V bits outside the loop below must clear the flag first: a partial commit
+// leaves a disagreement standing where a total one erased it.
+//
+// A slot the record spells {0, 0} is an INACTIVE one: RSPAGEn keeps whatever it held when V
+// went away, so the record tracks the intent and not the stale start page.
+//
+// Not the pending image POINTER: MpuSet's mutators re-encode in place and thread slots come
+// from a static pool, so the same pointer can address different words later.
+static struct arch_mpu_encoded g_mpu_held;
+static bool g_mpu_held_valid = false;
+static_assert(MPU_REGION_COUNT <= ARCH_MPU_ENCODED_SLOTS,
+              "the record is one cell per encoded slot and the commit indexes it by region");
+// And the other direction, which is the descriptor-budget refusal PMSAv7 and PMSAv8 spin on:
+// an image slot above the last hardware region would be dropped and its grant silently lost.
+// The RX region count is a chip constant rather than a register field, so the refusal is a
+// BUILD failure here and there is no runtime read to spin on.
+static_assert(ARCH_MPU_ENCODED_SLOTS <= MPU_REGION_COUNT,
+              "this part cannot hold a full per-thread set; refuse, never drop the top slots");
+
 #if KICKOS_BENCH
 // Declare the recorder here to avoid including the kernel benchmark header.
 extern "C" void kickos_bench_mpu_commit(uint32_t delta);
@@ -860,29 +881,53 @@ void kickos_arch_mpu_commit(void)
         reg16(MPU_MPOPI) = MPU_MPOPI_INV;
         reg32(MPU_MPBAC) = 0;
         reg32(MPU_MPEN) = MPU_MPEN_MPEN;
+        // MPOPI.INV clears every region's V bit, so nothing the record claimed still holds.
+        g_mpu_held_valid = false;
         mpu_ready = true;
     }
+    // Read AFTER the bring-up above, which invalidates the record.
+    bool const total = not g_mpu_held_valid;
+    bool wrote = false;
     // Write RSPAGEn (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is
     // never momentarily valid with a stale end/attr.
     for (size_t i = 0; i < MPU_REGION_COUNT; i++)
     {
         uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
         uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
+        uint32_t rspage = 0;
+        uint32_t repage = 0;
         if (i < ARCH_MPU_ENCODED_SLOTS and (img->repage[i] & MPU_REPAGE_V))
         {
-            reg32(rsp) = img->rspage[i];
-            reg32(rep) = img->repage[i];
+            rspage = img->rspage[i];
+            repage = img->repage[i];
+        }
+        if (not total and g_mpu_held.rspage[i] == rspage and g_mpu_held.repage[i] == repage)
+        {
+            continue;
+        }
+        if (repage != 0)
+        {
+            reg32(rsp) = rspage;
+            reg32(rep) = repage;
         }
         else
         {
             reg32(rep) = 0; // clears V -> slot inactive
         }
+        g_mpu_held.rspage[i] = rspage;
+        g_mpu_held.repage[i] = repage;
+        wrote = true;
     }
+    g_mpu_held_valid = true;
     // UM sec.17.4.3: read back an MPU register so the writes are in effect before the
     // scheduler's RTE drops into user mode. The asm consumes the value so the load is really
-    // issued and is not reordered past here.
-    uint32_t const mpu_sync = reg32(MPU_MPEN);
-    __asm volatile("" ::"r"(mpu_sync) : "memory");
+    // issued and is not reordered past here. A commit that moved no region has nothing to
+    // wait for.
+    if (wrote)
+    {
+        uint32_t const mpu_sync = reg32(MPU_MPEN);
+        __asm volatile("" ::"r"(mpu_sync) : "memory");
+    }
     if (g_in_isr)
     {
         rx_mpu_mark(']');
@@ -891,6 +936,25 @@ void kickos_arch_mpu_commit(void)
 #if KICKOS_BENCH
     kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
 #endif
+}
+
+// THE STASH IS RESTORED, and that is this entry's whole reason to exist: a switch to another
+// thread may already be pended behind the caller, and the stash is ONE cell. Leaving this set
+// in it would have the epilogue program the CALLER's regions onto the incoming thread, which
+// would then run under them until the next switch re-stashed. Self-bracketed: an interrupt
+// between the two writes below could decide a switch, and the restore would then drop the
+// image that switch stashed.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    (void)regions;
+    (void)n;
+    arch_irq_state_t const irq = arch_irq_save();
+    struct arch_mpu_encoded const* const pend = g_pend_image;
+    g_pend_image = image;
+    kickos_arch_mpu_commit();
+    g_pend_image = pend;
+    arch_irq_restore(irq);
 }
 #else
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
@@ -902,6 +966,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
 }
 // Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 #endif
 
 size_t arch_mpu_min_region(void)

@@ -10,8 +10,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
       ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
       deathspace drvbringup fastrefuse faultline frame fusedwake grantnocache irqquiesce kstring
-      ktime mapexec mapfence placeadmit ramowner reschedowed slotpool taskbudget tlscarve uartclass
-      vrange)
+      ktime mapexec mapfence mpuskip mtimeconv placeadmit ramowner reschedowed slotpool taskbudget tlscarve
+      uartclass vrange)
     add_subdirectory(${_unit})
   endforeach()
 

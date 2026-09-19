@@ -1244,8 +1244,15 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 }
 
 // Empty: arch_mpu_apply above already programs mprotect as it records. The symbol must still
-// resolve, the self-grant path calling it.
+// resolve, arch.h requiring a definition of it from every backend.
 void kickos_arch_mpu_commit(void) {}
+
+// Nothing is deferred on this backend, so the set is already live when apply returns.
+void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
+                        struct arch_mpu_encoded const* image)
+{
+    arch_mpu_apply(regions, n, image);
+}
 
 // --- Fault isolation --------------------------------------------------------
 // arch_syscall raises the WHOLE arena for the duration of dispatch and tracks it per-context in

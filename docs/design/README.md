@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 41 documents = 28 LANDED + 8 ACTIVE + 5 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 42 documents = 28 LANDED + 8 ACTIVE + 6 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -101,9 +101,10 @@ Two things follow from this that are easy to get wrong:
 |---|---|
 | [`design-m7-smp.md`](../design-m7-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
-| [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |
+| [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp. **ANSWERED AND REFUSED (2026-09-18)**: neither lever is built, the page carries the numbers and the four tests that would reopen it. It stays here because nothing was committed to code, not because the question is open |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
+| [`design-stack-safety-research.md`](../design-stack-safety-research.md) | Stack-budget checks, tailored-stack and guard tests, reference-kernel mechanisms, the case for a shared kernel-stack experiment, and the dated M8.9-p4 audit findings |
 
 ## SUPERSEDED
 

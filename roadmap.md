@@ -1295,7 +1295,7 @@ file owns only the number.
 
 | sub-milestone | what it lands |
 | --- | --- |
-| M9.0 | the reference-kernel survey, and the lock-domain questions it is allowed to answer |
+| M9.0 | the reference-kernel survey: lock domains and the separate shared-kernel-stack investigation |
 | M9.1 | the lock's own bound: fair arbitration per backend, the doorbell poll kept |
 | M9.2 | ownership under the lock: a home derived from the mask, per-core ready queues, the wait-edge rule |
 | M9.3 | the per-pair rings: the kinds, the depth that cannot fill, the drain budget |
@@ -1475,6 +1475,15 @@ context and budget design inside a project already surveyed, and a message-passi
 inheritance across the message path are named as references that are NOT on the box, so that their
 absence is a known gap rather than an implied verdict.
 
+**SHARED KERNEL STACKS ARE A SEPARATE M9 INVESTIGATION, AFTER M8.12.** The research in
+[`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) extends the
+reference survey with stack ownership, blocking completion, overflow protection and RAM cost.
+It asks whether explicit saved operation state and one kernel stack per CPU serve KickOS better
+than per-thread kernel continuations. This is exploratory, not an approved rewrite or an M8.9
+fix. Measure it against the frozen M8.12 baseline independently of big-kernel-lock partitioning
+before assessing their interaction, so each change's cost remains attributable. Keeping the
+current stack model is a valid result; no new implementation sub-milestone is assigned here.
+
 ### M10 -- static composition, and an init provider that stays
 **THE DRIVER ERA MOVES DOWN ONE PLACE AND THIS TAKES THE SLOT.** The reason is the same one that put
 M9 ahead of the drivers: the driver model is a settled pattern whose remaining work is breadth,
@@ -1558,15 +1567,18 @@ primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic pol
 MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 AMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
 
-### RISC-V context-switch cost -- optimization (post-MMU, not scheduled)
-The rv32 trap-based switch software-saves the full integer file (~60 stack words/switch vs
-armv7m's ~18 with hardware exception stacking) -- a ~3.5x per-handoff cost, general to RISC-V
-(not C6-specific; Hazard3 shares it). Two levers, both fable-gated: (a) a **cooperative
-fast-path** (voluntary switches save only callee-saved regs, ~2x, portable to every rv32 target
-incl. the C6), and (b) an **optional Zcmp `cm.push`/`cm.pop`** compile-gated path (Hazard3-only;
-compresses instruction count, not memory traffic; single-digit % on top of (a), mostly code
-size). Full analysis, the compile-gate design, and the prerequisite bench-bracket fix in
-`docs/design-riscv-switch-cost.md`.
+### RISC-V context-switch cost -- optimization (M8.11) -- REFUSED
+**Measured and refused on 2026-09-18; neither lever is built.** The record with the evidence and
+the four reopening tests is `docs/design-riscv-switch-cost.md`. The item's headline ~3.5x was an
+arithmetic error -- armv7m moves 17 words each way, nine software plus eight hardware-stacked,
+not nine -- and on silicon the rv32 switch is the cheaper one end to end, `esp32c6-wroom` at 219
+cycles of arch work a switch against `f411disco`'s 327. The cooperative fast-path's absolute
+ceiling, the whole switch bracket plus the msip pend, is 2.7 percent of an 8 B call/reply round
+trip and 5.6 percent of a ping-pong handoff, which is far short of the 3.2x enforcement-soak gap
+that raised it; the Zcmp path depended on the cooperative frame and falls with it. The eligible
+population was never the problem and is essentially all of the measured switches -- what is
+refused is paying a second frame shape in the arch's most safety-load-bearing assembly, plus the
+move of rv32 from the deferred-switch class to the immediate one, for single-digit percent.
 
 ### ARMv8-M TrustZone kernel-confinement backend (post-MMU, opt-in, per-chip)
 The armv8-M-with-Security-Extension MECHANISM for kernel confinement: kernel/TCB in Secure state,

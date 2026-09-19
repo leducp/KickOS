@@ -93,11 +93,11 @@
  * frame ALREADY includes the incoming return-address slot, so the chains below are not
  * missing a per-level 4.
  *
- *   _PENDSW      32  kickos_arch_mpu_commit[28] -> arch_irq_restore[4], the only C the
+ *   _PENDSW      36  kickos_arch_mpu_commit[32] -> arch_irq_restore[4], the only C the
  *                    restore epilogue runs below an incoming frame. The INCOMING thread's
  *                    stack pays it, checked against this same figure when it was switched out.
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
- *   _SYS_FAST    32  the same epilogue and so the same chain as _PENDSW. It stays a macro of
+ *   _SYS_FAST    36  the same epilogue and so the same chain as _PENDSW. It stays a macro of
  *                    its own because it is a distinct SITE with its own guard.
  *   _SYSK       796  ENFORCED over 632 measured, as headroom a future change is measured
  *                    against; cutting it to the measurement returns 164 per
@@ -122,7 +122,7 @@
  * rx72m is the only chip that selects ARCH_RXV3 and trap_redzone_roots.txt declares three of
  * its presets, so a figure here is the worse of three readings. No telemetry build is among
  * them: _PENDSW's optional trace and bench roots are ABSENT from this graph and contribute 0
- * to the 32 above. A re-measurement MUST carry this board's -misa=v3 -mdfpu baseline; at the
+ * to the 36 above. A re-measurement MUST carry this board's -misa=v3 -mdfpu baseline; at the
  * compiler's default -misa=v1 with no DFPU every figure comes out smaller than the truth. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW 64
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_SYS 0

@@ -152,6 +152,16 @@ namespace kickos
 #endif
         }
 
+        // Loads this set into the hardware AT ONCE, for a grant that must be live before the
+        // syscall granting it returns. NOT the switch path: on a deferred backend this must
+        // not become the image a pended switch's epilogue programs.
+        void apply_now() const
+        {
+#if KICKOS_HAVE_MPU
+            arch_mpu_apply_now(regions_, count_, &image_);
+#endif
+        }
+
       private:
         bool full() const
         {

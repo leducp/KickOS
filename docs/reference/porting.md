@@ -814,6 +814,42 @@ fallback), and the ONE window its `arch_mpu_region_encodable` admits
 address, and every other shape of that one, still fails closed. That arm is silicon-only,
 and `c6blink` and `rxdrv` carry probes for it.
 
+### The critical section (`arch_irq_save`, `arch_irq_restore`)
+
+`IrqLock` is `always_inline` and says why, so whatever these two cost is paid at every
+acquisition. **A port may take either half inline**: ship
+`<arch>/include/kickos/arch/irq_inline.h`, define the body there as a
+`static inline __attribute__((always_inline))`, and set `KICKOS_ARCH_IRQ_SAVE_INLINE` or
+`KICKOS_ARCH_IRQ_RESTORE_INLINE` for the half taken. `arch.h` declares only the halves no header
+took, and the arch unit defines exactly those. A port may also ship no such header at all, which
+is what `sim` does.
+
+**Two conditions decide a half, and both are refusals, not preferences.**
+
+1. **The body must be a couple of instructions.** Inlining trades a call for a copy at every
+   site, so a body with a branch or a read-modify-write costs more flash than the call it
+   removes. ARMv7-M `arch_irq_save` carries the nested-lock test and the DSB+ISB the BASEPRI
+   raise needs, and RXv3 `arch_irq_restore` has to splice the IPL field back into a
+   read-back PSW; both stay out of line. The sim's pair is a `sigprocmask` and stays out of
+   line whatever its size.
+2. **The body must need nothing from the arch's private register headers.** `regs.h` is
+   arch-internal and is not on the porting include path, so a value the inline body needs has
+   to have its single home on the public arch include path -- and hoisting a register-band
+   constant there to inline one body is the wrong trade. That is the second reason ARMv7-M
+   `arch_irq_save` (`PRIO_LOCK_BASEPRI`) and the RXv3 pair (`PSW_IPL_MASK`) stay out of line.
+
+**Guard the header on the compiler's own ISA predefine.** A host unit fixture can carry an
+arch's include directory while answering this seam with a definition of its own
+(`tests/unit/mapfence`), and an unguarded header collides with it. Outside a real compile for
+that ISA the header must define nothing, so the seam falls back to the declaration and the
+fixture's definition links.
+
+**SET THE MARKERS BEFORE THE HEADER INCLUDES `arch.h`, NOT AFTER.** `arch.h` reads them to decide
+which halves it declares, so a marker set after that include arrives too late: the out-of-line
+prototype is already declared and the `static inline` definition below it is then a
+`declared 'extern' and later 'static'` error. The header includes `arch.h` for
+`arch_irq_state_t`, so the order inside it is markers, then the include, then the bodies.
+
 ### Which core am I (`arch_cpu_id`)
 
 **A port does nothing here today, and that is the point.** `KICKOS_NUM_CORES` defaults to 1 on
@@ -1785,9 +1821,9 @@ label is not sloppiness in the cases: `kos_thread_create` returns `-KOS_ENOMEM` 
 case that only sees a negative spawn return cannot tell which limit it hit. This is the
 same trap *What binds beyond memory* states from the other end -- a spawn failure is not
 evidence that the thread pool is the limit -- and it is why the pool term is now checked at
-LINK time on every board (see *The SRAM model*). At the current
-`KICKOS_MAX_THREADS 3` against an arena that backs exactly three stacks, the two remaining
-4th-worker skips are honest under either reading.
+LINK time on every board (see *The SRAM model*). At the three slots that capture ran at,
+against an arena that backed exactly three stacks, the two remaining 4th-worker skips are
+honest under either reading. The `st` defconfig provisions two slots today.
 
 **`mutex_deadlock` is mislabelled differently, and no arena work will ever un-skip it**:
 its guard is cap-table and semaphore exhaustion, not memory at all. The two halves of a
@@ -2042,6 +2078,8 @@ abandoned (the system never returns to boot).
   `PRIO_LOCK_BASEPRI` (0x20); PendSV/SysTick/SVCall sit at 0xE0-0xF0 and device
   IRQs must be configured >= 0x30, so the lock masks all of them while leaving a
   future 0x00/0x10 zero-latency band unmaskable. (v6-M/RP2040 will use PRIMASK.)
+  The unmask is inline (`arch/arm/armv7m/include/kickos/arch/irq_inline.h`), the raise is
+  not; *The critical section* above says why.
 - **Monotonic clock** = the **DWT cycle counter**, extended to 64-bit in software.
   *Limitation:* a 32-bit wrap (~35 s at 120 MHz) not observed within one period
   is missed; a DWT/timer overflow interrupt is the refinement.
@@ -2052,14 +2090,16 @@ abandoned (the system never returns to boot).
   masked (disabled) line (ISPR holds pending independent of ISER): it coalesces
   one-deep and fires at the next `unmask`. `arch_irq_clear_pending` (ICPR) is the
   explicit discard, used at first-arm to drop pre-registration garbage.
-- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`) provides per-domain
+- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_mpu_pmsav7.cc`) provides per-domain
   enforcement at M2. `arch_mpu_apply` only **stashes** the incoming region set and is a PLAIN,
   non-overridable definition shared by every ARM backend; `kickos_arch_mpu_commit` (fallback TU
   `arch/arm/common/kickos_arch_mpu_commit_default.cc`) / `kickos_arm_mpu_program` **program the
   hardware** from the PendSV switch epilogue, after the physical swap (the deferred-commit seam,
   `design-mpu-commit-deferred.md`). A chip with a non-PMSAv7 MPU defines the commit, never
-  `arch_mpu_apply` (K64F SYSMPU, RP2350 PMSAv8). `arch_mpu_region_encodable` bounds a grant to
-  what the backend can describe.
+  `arch_mpu_apply` (K64F SYSMPU, RP2350 PMSAv8). `arch_mpu_apply_now` is the entry for the one
+  commit that is NOT a switch's, `kos_mem_self_grant`: it programs the set at once and leaves
+  the stash to the switch that booked it (`invariants.md`, `mpu-apply-on-every-switch-in`).
+  `arch_mpu_region_encodable` bounds a grant to what the backend can describe.
 - **Rule 7 reserved blocks (M4)** -- an enforcing chip MUST define `arch_reserved_blocks`
   (its owns-for-life peripherals: timebase, IRQ controller, every access-permission controller
   -- the MPU/PMP twin AND any bus-side gate, e.g. the K64F AIPS PACR pages or the ESP32-C6
@@ -2419,6 +2459,7 @@ Hardware MPU enforcement is **done** (M2): the cross-domain trap is silicon-prov
 PMSAv6-M/v7/v8, RISC-V PMP and the RX MPU. For a new port that means enforcement is part of the
 seam you implement, not a later milestone -- `arch_mpu_apply` (stash at the switch decision),
 `kickos_arch_mpu_commit` (program from the switch epilogue, after the physical swap),
+`arch_mpu_apply_now` (program a set at once WITHOUT becoming the stash, for the self-grant),
 `arch_mpu_region_encodable`, and `arch_reserved_blocks`, which has no fallback TU so omitting it
 is a link error. See `architecture.md` (Memory domains) and `invariants.md`
 (`mpu-apply-on-every-switch-in`, `grant-refuses-kernel-reserved-blocks`).
