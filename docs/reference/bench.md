@@ -196,6 +196,41 @@ that runs AFTER the report and is printed by the op that ran it: printed with th
 would report the window before its own sweep. That boundary is `DIST_SWEPT_FIRST`, and a slot
 added on the wrong side of it reports the previous window with nothing saying so.
 
+### The phase table's three calibration rows
+
+`NULL`, `NEST` and `NEST_LOCK` are taken at one site, `kos_call`'s locked body, under the same
+interrupt mask as the brackets they calibrate. They are what every other row is corrected
+against, and the table header states the arithmetic: a leaf loses `NULL`, a composite loses
+`NULL` plus `k` times `NEST - NULL`.
+
+| row | the object it prices |
+| --- | --- |
+| `NULL` | two counter reads, issue to issue |
+| `NEST` | the same pair inside an enclosing span, so it also carries the accumulator call the closing read cannot see |
+| `NEST_LOCK` | an empty NESTED `IrqLock` inside an enclosing span |
+
+`NEST_LOCK` IS WHAT PRICES A REMOVED NESTED LOCK, and it exists because a PERF-1 figure is
+partly the instrument's own. Each nested acquisition that a change deletes also deletes a
+`bench_lock_open`/`bench_lock_close` pair, and the close takes its counter read unconditionally,
+ahead of the depth test, so a nested acquisition pays a read that buys nothing. `NULL` cannot
+price that: it measures the distance between two reads and not what those reads charge the span
+around them. `NEST_LOCK - NULL` is the whole nested acquisition as a bench build pays for it,
+which is the quantity such a change removes; what a production build would have paid is the
+`arch_irq_save`/`arch_irq_restore` pair inside it, read off the object code, and the difference
+is the instrument-only share.
+
+IT IS NESTED BY CONSTRUCTION AND NOT BY LUCK: the site sits inside `kos_call`'s own `IrqLock`,
+so the depth rises from one and no `lock-hold` sample is taken. At depth zero the same body
+would price the outermost bracket and feed the distribution a sample of its own.
+
+**IT COSTS THE ROWS AROUND IT, and two of them by arithmetic.** `CALL_LOCKED` and `CALL_TOTAL`
+enclose the calibration site, so each gained ONE nested bracket when `NEST_LOCK` landed: a
+composite corrected at the old `k` reads high by one `NEST - NULL`. The lock it takes is real in
+a bench image, so those two rows and the throughput row also carry the acquisition itself. And on
+`qemu-riscv` a bracket added ANYWHERE inflates rows it is not inside, `rdcycle` there being
+answered from the host tick source, so no row of that board is comparable across this change.
+None of it reaches a production image: the site is compiled out with `KICKOS_BENCH`.
+
 ### What `BD_SWITCH` does not count
 
 THE ROW IS A SUBSET OF THE PHYSICAL SWAPS IN ITS OWN WINDOW ON TWO ARCHES, and the report
@@ -249,6 +284,33 @@ WHAT THAT MAX DOES NOT COVER: a masked window opened by a bare `arch_irq_save` r
 `arch_irq_clear_pending`, `arch_irq_inject`), a few chip clock bodies, and the panic path, which
 masks and never restores. Each is a straight-line body with no loop and no console, so none can
 produce the millisecond-scale span this instrument exists to catch.
+
+THAT MAX NAMES ITS OWN SITE. `lock-site: core=N site=0xADDR max=M` is one line per kernel core,
+and the address is the return address of whatever function held the outermost bracket, taken at
+the release that set that core's maximum and kept only while that sample is still the maximum.
+So the site is filed off the accumulator's own `max` rather than beside it, and the two cannot
+name different samples. Resolve it with `addr2line` against the image the capture names; the
+bench boards are deterministic enough that one run names the path.
+
+**IT IS ONE LEVEL OUT FROM THE LOCK, and that is what `__builtin_return_address(0)` means
+here.** The bracket is always inlined, so the address belongs to the CALLER of the function that
+held the lock, not to the acquisition. A body holding an `IrqLock` and called from several
+places is therefore discriminated by the site and a body called from one is not.
+
+`site=0x0` IS A CORE THAT TOOK NO SAMPLE, and nothing else can produce it: the cell is written
+by the first sample whatever its width, and no return address on any target here is zero. That
+makes the site cell its own authority, so the line carries no separate sample count.
+
+**THE `max` ON THAT LINE MAY EXCEED THE AGGREGATED ROW PRINTED ABOVE IT, and both are correct.**
+The report prints from a thread, and printing takes locks, so the row is still being fed between
+the two lines. The pair on the `lock-site` line is one read of one row and is what binds the
+address to a figure; the row above is the aggregate at the instant IT was read.
+
+**AND THE MAX IS OFTEN THE CONSOLE RATHER THAN A KERNEL CRITICAL SECTION.** Measured on
+`esp32c6-wroom-bench`: the site resolves inside `console_emit`, at the arm that hands a whole
+line to `arch_console_write`. So a reader taking this row for the kernel's longest masked window
+is reading how much the report printed. Resolve the site before drawing any conclusion from the
+figure, and expect a row that moves when the console's output moves.
 
 ### What a doorbell ROUND is, and what it is not
 
@@ -455,6 +517,19 @@ Root cannot be the raiser: it holds no handle on itself, and placing a thread ta
 
 - `p50` and `p99` are bucket LOW EDGES at an eighth of an octave, so both are FLOORS and two
   runs compare only to that resolution. The line names its own statistic.
+- A `p99` IS STATED ONLY WHERE THE ROW CARRIES 1000 SAMPLES, and below that the middle column
+  carries the row's own MAXIMUM and the statistic label reads `p50/max/max`. Ruled at M8.12,
+  where the choice was between refusing the figure and printing the maximum outright. Under 100
+  samples the 99th nearest rank IS the largest sample, and a few hundred put one or two samples
+  above it, so what a swept row was publishing is its top sample under a percentile's name: the
+  `irq` and `wcase-irq` rows carry 100, `e2e-local` 50 and `e2e-cross` 150. At the floor the top
+  percent is ten samples rather than one. The workload-fed `switch`, `lock-hold` and `lock-wait`
+  rows carry tens of thousands and are unaffected. Two things follow. A capture taken before
+  M8.12 labels those rows `p50/p99/max` and its middle column is a bucket floor rather than a
+  maximum, so the two eras' middle columns are not one figure; and no gate keys on the label,
+  which is what lets the archived captures still be read. A board that declares
+  `KICKOS_CHIP_CYCCNT_GLITCHES` reports `min/avg/max` and has no percentile to withhold, so no
+  row of one is ever relabelled.
 - A part declaring `KICKOS_CHIP_CYCCNT_GLITCHES` keeps MIN as its headline and compiles the
   histograms out entirely. That board is also the one with least RAM, which is the point: a
   histogram is 672 bytes per core per slot, against 24 for the accumulator alone.

@@ -103,7 +103,7 @@ code wins, then this file.
 | `microbit` | nRF51822 / M0, 32 KiB | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `qemu-arm64` | QEMU virt / Cortex-A53 (AArch64) | -- | PL011 UART at `0x09000000` | `ctest --preset qemu-arm64` | [x] CI (first 64-bit ISA, and **emulator only** -- there is no A-profile silicon on this bench; see *Per-board caveats* below) |
-| `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and not in CI**: witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
+| `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and BUILD-ONLY in CI** (the `host` gates; the run gate is a bench step, no runner's emulator modelling the die): witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
@@ -722,15 +722,15 @@ the board".
 
 | ISA | Boards | CI gate | MPU enforcement in CI |
 |---|---|---|---|
-| host | `sim` | full `ctest` -- the authoritative deterministic gate | **runtime** (host `mprotect`) |
-| rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
-| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, the board sweep, and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + build sweep + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
-| armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
-| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, the `qemu-arm64-amp` family, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated and at four cores under a GICv3, plus the AMP partition at one, two and three images; `imx8mp-evk` is a LOCAL run gate in no CI job | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
-| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
-| Xtensa LX6 | `esp32-wroom` | build only, plain, `-st` and `-smp` | -- (no per-domain unit) |
+| host | `sim`, `sim-telem` | full `ctest` -- the authoritative deterministic gate -- plus the two ch1 trace decoder gates on the telemetry variant | **runtime** (host `mprotect`) |
+| rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate in both postures; `qemu-riscv-bench` and all three C6 provisionings (plain, `-st`, `-bench`) build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
+| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, `qemu-telem`, the board sweep with its `-st` provisionings, the two `-bench` presets, and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + the two telemetry image arms on `qemu-telem` + build sweep, each silicon board in its application AND its selftest provisioning, + `f411disco-bench` and `xmc4800-relax-bench` + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
+| armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build in both the application and the selftest provisioning | **build only** |
+| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, the `qemu-arm64-amp` family, `qemu-arm64-bench`, `qemu-arm64-benchsmp`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated and at four cores under a GICv3, plus the AMP partition at one, two and three images, plus the microbench gates at one core and at four; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
+| rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp`, `qemu-riscv64-bench`, `qemu-riscv64-benchsmp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel; the microbench gates at one hart and at four ride the `bench` job | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
+| Xtensa LX6 | `esp32-wroom` | build only, plain, `-st`, `-smp` and `-bench` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
-| x86_64 | `qemu-x86_64` | run gate over a UEFI handover, on firmware the job resolves rather than names | -- (no memory family selected; the map is flat) |
+| x86_64 | `qemu-x86_64`, `qemu-x86_64-bench` | run gate over a UEFI handover, on firmware the job resolves rather than names, and the microbench gates on the same resolved pair | -- (no memory family selected; the map is flat) |
 
 - **The `KICKOS_SERVICE_LIST` axis is COMPILE-checked in CI and never LINK-checked there.**
   `tests/static/check_service_lists.sh` pins that every provider is declared against a preset
@@ -776,6 +776,16 @@ the board".
   `.secboot` or `.ms` firmware refuses an unsigned image -- and treats any skipped gate as a
   failure.
 
+- **The microbenchmark presets have a job of their own, and the IRQ block is not in it.** The
+  `bench` job builds `qemu-arm64-bench`, `qemu-riscv64-bench` and both four-core variants and runs
+  the counter, lock, saturation, phase-table and authority gates on them; `qemu-x86_64-bench` rides
+  the x86_64 job instead, because the firmware pair that boots it is resolved in that job's own
+  shell; `f411disco-bench` and `xmc4800-relax-bench` are link surface only, no emulator modelling
+  either part. What the job does NOT boot is `*_bench_irqspan`: every arm of that gate reads a
+  timing distribution off a runner whose load nobody controls, so the IRQ block is witnessed by
+  hand at each rebaseline. Its parser half is a separate registration,
+  `*_bench_irqspan_controls`, which runs planted reports with no image and therefore does carry
+  the `host` label and does run here.
 - **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
   (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a

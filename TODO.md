@@ -1543,6 +1543,26 @@ inside the tree.
       what would reopen this is an rxv3 EMULATOR, and nothing else. `oot_arch_boards.txt` says
       so on the row itself, because the map is where a reader learns what a `covers` row does
       and does not promise -- it names the board that runs the gate and never claims CI runs it.
+      **RE-CHECKED AT M8.12 AND THE ANSWER STILL DOES NOT MOVE, NOW WITH THE FOUR DEAD ENDS
+      NAMED RATHER THAN ASSUMED.** (a) The prebuilt GNURX toolchain is behind a WordPress login:
+      every asset URL on `llvm-gcc-renesas.com` answers 302 to `wp-login.php`, and the redirect
+      serves the login page with a 200, so a `curl -fsSL` would fetch HTML and not notice. (b) No
+      GitHub release carries an equivalent; the one third-party mirror found is GNURX 4.8.0 from
+      2016, which predates RXv3 entirely. (c) There is no `rx-elf` or `gcc-rx` package in Debian
+      or Ubuntu, and building upstream `rx-elf` GCC would not substitute: upstream offers
+      rx610/rx200/rx600/rx100 and no ISA-version option at all, so RXv3 codegen exists only in
+      the Renesas fork. `boards/rx72m/board.cmake`'s `-misa=v3` and `-mdfpu` are exactly the two
+      flags that fork adds. (d) The emulator: `qemu-system-rx` DOES ship in Ubuntu's
+      `qemu-system-misc`, and it models only `gdbsim-r5f562n7`/`-r5f562n8` over a single
+      `rx62n` CPU type, which is RXv1. So the revisit condition is still unfired. What is new is
+      that it is now visibly CLOSER: an "add RXv2/RXv3 CPU support" series was posted to
+      qemu-devel on 2026-09-13, described as the foundation for an RX72M machine model, and it
+      is not in master. **The one remaining non-interactive route is to BUILD GNURX from source
+      in the job**: the source downloads go through a different script (`d.php`) which is NOT
+      gated, and they are the patched sources (the gcc tree carries `Enum(rx_isa_versions)` with
+      v1/v2/v3). That is a gcc bootstrap per cache miss for a build-only gate, which is a far
+      bigger trade than this bullet has ever been asked to make; recording it so the option is
+      not re-discovered as though it were new.
 
 - [ ] **THE FASTPATH REFUSAL SUITE CANNOT REACH THE FAR-ENDPOINT FALL-THROUGH, AND THE CLAIM NOW
       SAYS SO RATHER THAN THE COVERAGE GROWING.** `tests/unit/fastrefuse`;
@@ -1565,6 +1585,30 @@ inside the tree.
       shell variable (`qemu-arm64-amp3-n$n`, `pizero2350-amp2-n$node`, `"$b-flat"`) match nothing
       at all. Direction: an instrument that enumerates what each job CONFIGURES, since no grep of
       that file answers the question it is asked.
+      **RE-DERIVED AND MOSTLY CLOSED (M8.12): 60 OF 78 BEFORE, 75 OF 78 AFTER, AND THE WHOLE
+      RESIDUE IS `rx72m` x3.** The 71 above was the fleet of the day; `cmake --list-presets` is
+      the authority and it now answers 78. The residue list itself was still exact, so what had
+      moved was the denominator and not the gap. The fifteen closed are `sim-telem`,
+      `imx8mp-evk`, `esp32c6-wroom-st`/`-bench`, `xmc4800-relax-bench` and the ten ARM `-st`
+      provisionings, and NOT ONE OF THEM COST A NEW JOB: the file still declares seventeen. Each
+      rides the job that already holds its toolchain -- the `-st` presets as a second preset in
+      the two board sweeps, the C6 pair in the rv32 build-only step, `xmc4800-relax-bench`
+      beside `f411disco-bench`, `imx8mp-evk` in the armv8a job and `sim-telem` in the sim job.
+      What each buys: the `-st` provisioning is a bigger image in the same flash region, which
+      is the class `f302nucleo-st` overflowed by 248 bytes at M6.3 with nothing in CI to see it;
+      `xmc4800-relax-bench` is the instrument compiled with the histogram OUT, which no other
+      preset links; `imx8mp-evk` is build-only because no hosted runner's emulator models the
+      die, so its image gates would all skip. **THE INSTRUMENT IS STILL OWED AND THE NUMBER
+      ABOVE IS STILL HAND-DERIVED.** What blocks writing it is not the parsing: a gate that
+      merely enumerates asserts nothing, and a gate that asserts coverage needs a list of
+      presets allowed to be uncovered, which is a second truth beside the workflow. That choice
+      is the maintainer's.
+      **AND THE SAME SWEEP FOUND A GATE OF THE OTHER KIND**, registered on a preset CI DOES
+      build and run by no job: `telemetry_qemu_structural`, which its own registration calls the
+      only automated coverage of the PendSV-tail switch hook's asm. `qemu-telem` is built in the
+      board sweep, the sweep runs `-L host`, and the named step beside it named only
+      `telemetry_qemu_contained`. It is named now. So preset coverage and GATE coverage are two
+      questions and the instrument owed above answers only the first.
 
 - [ ] **THE `qemu-x86_64` JOB'S ONE VERSION STATEMENT IS ABOUT AN EMULATION AND NOT ABOUT A
       VERSION, AND THE FLAG IT PROTECTS EXPIRES INTO DECORATION.** `cmake/x86_64_boot.cmake`'s
@@ -1577,6 +1621,17 @@ inside the tree.
       whether a flag no reachable toolchain can be shown to need still belongs, or pin a linker
       that needs it; the project's own standard is that a pin which cannot be shown to fire is
       decoration.
+      **THE RUN NOW ASKS THE LINKER INSTEAD OF PRINTING ITS VERSION, AND THE DECISION IS STILL
+      OPEN** (M8.12). A version needs the reader to know which releases are which, and the
+      toolchain file's refusal is about the i386pep EMULATION and answers nothing about
+      extraction. So the job builds a two-file ELF archive of its own and links it under i386pep
+      with the flag absent: the member resolves or it does not, and the step says which. It
+      reports and does not refuse, both answers being correct for their linker, and the flag's
+      loss is still caught by the real link failing wherever it is load-bearing. Read at binutils
+      2.47 the probe says INERT, which agrees with the record. What this does not do is take
+      either branch: dropping the flag from `cmake/x86_64_image.cmake` and pinning a linker that
+      needs it are both the maintainer's, and what was missing for either was any way to learn,
+      per run, whether a needing toolchain is still reachable.
 
 - [ ] **`IrqLock`'s CTOR AND DTOR ARE `always_inline` AT ONE CORE TOO, AND THAT IS WITNESSED ON TWO
       PRESETS.** `kernel/include/kickos/irqlock.h` 27 and 32. The attribute used to be conditional
@@ -2753,12 +2808,30 @@ suspect in any figure taken above one core.
 **The silicon half is re-taken and the percentile walk moved no published row.** The per-row
 comparison, and the two commits that DID move a row, are in the rebaseline record.
 
-- [ ] **A SWEPT ROW'S `p99` IS ITS MAXIMUM, AND THE INSTRUMENT LABELS IT THE SAME AS A REAL ONE.**
+- [x] **A SWEPT ROW'S `p99` IS ITS MAXIMUM, AND THE INSTRUMENT LABELS IT THE SAME AS A REAL ONE.**
       `e2e-local` carries n = 50, whose 99th nearest rank is rank 50; `irq`, every `wcase-irq` and
       `e2e-cross` put one sample above their rank. The workload-fed `switch` and `lock-hold` carry
       tens of thousands and mean what they say. Every row already prints its own `n`, so the
       rebaseline record states the rule rather than moving the instrument mid-baseline. Decide for
       M8.12 whether a `p99` below some `n` should be refused or printed as `max` outright.
+      **RULED AND LANDED: printed as `max` outright, below a floor of 1000 samples, with the row's
+      own statistic label saying so.** A row under the floor heads its middle column
+      `(p50/max/max, n=...)` and that column carries the row's maximum; at or above it the label
+      and the figure are unchanged. The floor is where the top percent stops being one sample:
+      under 100 the 99th nearest rank IS the largest sample, a few hundred put one or two above
+      it, and at 1000 it is ten. Withholding the figure was the alternative and was refused --
+      the maximum is a real statistic the population does support, and a blank column invites the
+      reader to go and compute the thing the row was already publishing wrong.
+      **The label is IN BAND and no gate keys on it**, which is what lets the archived captures
+      still be read: a pre-M8.12 capture labels those rows `p50/p99/max` and its middle column is
+      a bucket floor rather than a maximum, so the two eras' middle columns are not one figure and
+      must not be differenced. `check_bench_lock.sh` holds the rule with three arms, one per
+      direction, each with its own plant. A board declaring `KICKOS_CHIP_CYCCNT_GLITCHES` reports
+      `min/avg/max` and has no percentile to withhold, so no row of one is relabelled.
+      **`tools/bench/bench-capture.sh`'s own planted controls still carry the old label on an
+      `e2e-local` row of 50** -- they are self-consistent and nothing in that chain reads the
+      label, so they are correct as controls and stale as a picture of a current capture. Owed to
+      whoever next owns that file.
 
 ### Carried decisions: four questions each audit pass re-raises, ruled here
 
@@ -2839,7 +2912,7 @@ one needs a new fact, not a new reading.
 Found by mutating real captures and real gate inputs during the review, which is the only thing
 that finds this class. None is an M8.7 regression; the first two are in checks M8.7 itself added.
 
-- [ ] **SIX OF THE SEVEN NEW RUNTIME BENCH GATES CARRY NO PLANTED CONTROL, WHILE THE SEVENTH AND
+- [x] **SIX OF THE SEVEN NEW RUNTIME BENCH GATES CARRY NO PLANTED CONTROL, WHILE THE SEVENTH AND
       ALL FOUR STATIC ONES DO.** `tests/integration/check_bench_lock.sh`,
       `check_bench_cyccnt.sh`, `check_bench_saturate.sh`, `check_bench_phase_table.sh`,
       `check_bench_percore.sh`, `check_bench_doorbell.sh`. Each parses real console output with a
@@ -2851,6 +2924,31 @@ that finds this class. None is an M8.7 regression; the first two are in checks M
       gate always-pass or always-fail and nothing here would say so. Direction: plant one
       mutation per arm the way the irqspan gate's controls already do. Target M8.12, when the
       instrument is re-pointed anyway.
+      **LANDED: all six, each split into a parse and an arms body with a `--controls` way in that
+      runs planted reports through both.** The controls need no emulator, so each is registered
+      beside its image gate on every board the bench target exists for -- silicon included, where
+      no image gate registers at all and the parser half was previously witnessed nowhere.
+      - **THE CONVENTION IS TIGHTENED BY ONE STEP AND THAT IS THE POINT.**
+        `check_bench_irqspan.sh`'s controls assert the verdict; these also assert the NUMBER of
+        findings, so a plant that trips a second arm is refused by the harness rather than left
+        for a reader to notice. "One plant per arm" stops being a rule an author follows and
+        becomes one the gate holds. Where two clauses provably coincide the pair keeps both,
+        shares one plant declaring two findings, and says at the arms why no plant separates
+        them.
+      - **EACH GATE WAS PROVEN BY MUTATION, not by observing a pass**: every arm in turn was made
+        unable to fire and the controls went red for it. Four clauses across the six stay green
+        under that and are NOT holes -- they are message branches inside a hard stop or inside
+        one TAP-numbered arm, whose neighbour refuses the same report with the same count, and
+        each says so where it sits. It is the shape `check_bench_irqspan.sh` already carries for
+        its own missing-probe guard.
+      - **The plants are real reports with one field moved.** A four-core capture had to be taken
+        for the per-core and doorbell bases, no such text existing anywhere in the tree.
+      - **`check_bench_phase_table.sh` gained two things beyond plants.** Its waiver list and its
+        reason function were two lists that had to agree, and the arm checking a waiver had a
+        reason read the gate's own constant rather than anything a report could carry: the reason
+        function is the sole authority now and a row is waived exactly when it names why. And its
+        terminator match no longer depends on the table state, which is what kept the header and
+        terminator plants from isolating.
 
 - [x] **FOUR ARMS OF `check_bench_irqspan.sh` ARE SATISFIED BY THEIR OWN FIELD'S ABSENCE, AND
       THE SPAN LABEL IS STILL NOT TIED TO THE SPAN ITS ROW MEASURED.** Demonstrated by deleting
@@ -3063,13 +3161,24 @@ trees unless it says otherwise.
       refactor rather than a chip item. **The bench cannot witness it**: the old cost grew with
       uptime and a bench run is seconds old.
 
-- [ ] **THE `lock-hold` ROW NAMES NO SITE, SO ITS `max` CANNOT BE CHASED.** The row is a bare
+- [x] **THE `lock-hold` ROW NAMES NO SITE, SO ITS `max` CANNOT BE CHASED.** The row is a bare
       scalar and nothing records which acquisition opened the window that produced it. Stash
       `__builtin_return_address(0)` into the per-core row when depth reaches 0, carry it beside
       the max and print it. Bench-only, and on a board this deterministic one run names the path.
       Target M8.12, with the rest of the instrument work.
+      **LANDED as `lock-site`, one line per kernel core beside the distribution block.** The
+      address is FILED OFF THE ACCUMULATOR'S OWN `max` rather than kept beside it: the sample
+      that moved the maximum is the one whose site is kept, so the two cannot name different
+      acquisitions and no second cell decides which is current. Three consequences a reader owes:
+      it is one level out from the lock, the bracket being always inlined, so it names the CALLER
+      of the body that held the lock and discriminates a body reached from several places rather
+      than the acquisition; `site=0x0` is a core that took no sample and nothing else produces it,
+      which is why the line carries no count of its own; and the `max` printed on that line can
+      exceed the aggregated row above it, the row still being fed while the report prints, which
+      is exactly why the pair is read together. `check_bench_lock.sh` carries three arms and three
+      plants for it.
 
-- [ ] **NO CALIBRATION ROW PRICES A NESTED `IrqLock`, SO PART OF EVERY PERF-1 FIGURE IS
+- [x] **NO CALIBRATION ROW PRICES A NESTED `IrqLock`, SO PART OF EVERY PERF-1 FIGURE IS
       INSTRUMENT-ONLY AND NOBODY CAN SAY HOW MUCH.** Each removed nested lock also removes a
       `bench_lock_open`/`bench_lock_close` pair, and `bench_lock_close` takes its cycle stamp
       unconditionally BEFORE the depth test, so every nested acquisition paid a counter read that
@@ -3078,6 +3187,22 @@ trees unless it says otherwise.
       distance between two reads and not what those reads charge an enclosing span. Direction: a
       phase exactly analogous to `PH_NEST` but siting an empty NESTED `IrqLock` inside an
       enclosing span, which prices the removed quantity directly on each board. Target M8.12.
+      **LANDED as `NEST_LOCK`, at `PH_NEST`'s own site inside `kos_call`'s locked body.** It is
+      nested BY CONSTRUCTION and not by luck: the enclosing `IrqLock` is already held there, so
+      the depth rises from one and the body takes no `lock-hold` sample of its own. `NEST_LOCK -
+      NULL` is the whole nested acquisition as a bench build pays for it, which is the quantity
+      such a removal takes away; the production share is the `arch_irq_save`/`arch_irq_restore`
+      pair inside it, read off the object code, and the difference is the instrument-only part.
+      **What it does NOT settle is the figure**: it is a per-board reading and the emulators
+      inflate it, so the number to quote comes from a silicon capture and not from qemu.
+      The acquisition is real, so it is compiled out under `#if KICKOS_BENCH` rather than left to
+      the bracket macros, which expand to nothing and would have left the lock behind.
+      **IT MOVED TWO COMPOSITES AND ONE WHOLE BOARD, and both are the instrument rather than the
+      kernel.** `CALL_LOCKED` and `CALL_TOTAL` enclose the calibration site, so each gained one
+      nested bracket and a composite corrected at the old `k` now reads high by one
+      `NEST - NULL`; they also carry the acquisition itself, as does the throughput row. And on
+      `qemu-riscv` a bracket added anywhere inflates rows it is not inside, so no row of that
+      board is comparable across this commit. The frozen M8.12 capture predates all of it.
 
 - [ ] **OPEN: `esp32c6`'s `lock-hold` max grew by exactly 173 cycles and nothing accounts for
       it.** 2013 to 2186, bit-exact in all three windows of both runs on both trees, so six
@@ -3089,10 +3214,43 @@ trees unless it says otherwise.
       covered, one dead at one core), and the uptime-dependent divide above. The only outermost
       body that gained instructions gained about twenty. A deterministic relink floor of one to
       four cycles is independently visible on byte-identical bodies but is three times too small.
-      **Experiment order, and the layout control comes first**: rebuild with kernel text perturbed
-      and semantics untouched and re-capture, which both tests placement and calibrates what any
-      future lock-hold delta on that board is worth; then the return-address probe above; the
-      single-change timer A/B is a poor fit and the layout control would confound it anyway.
+      **THE EXPERIMENT ORDER IS INVERTED: THE LAYOUT CONTROL CANNOT BE BUILT ON THIS BOARD, AND
+      WHY NOT IS THE FINDING.** `klock.cc.obj` contributes ZERO bytes of text at one core: the
+      lock body is inlined into every caller, so the lock has no placement of its own to
+      perturb and a control aimed at it is aimed at an empty object. That is also why the
+      return-address probe is the instrument that can attribute the `max` -- the window's cost
+      is the CALLER's code, and the probe names the caller. Run the probe first; the
+      single-change timer A/B remains a poor fit.
+      **Three semantics-free perturbations were tried at the frozen tree and not one moved a
+      single loadable byte**, each for its own reason, and the first two are traps rather than
+      results: an anonymous `.text` pad is COLLECTED, the build carrying `-ffunction-sections`
+      and `--gc-sections` and the pad carrying no symbol and no reference;
+      `-falign-functions=64` is accepted into 127 compile commands and then IGNORED, GCC
+      dropping alignment options under `-Os`; and the link-order swap landed in the archive,
+      the two members visibly exchanging places, and moved nothing for the zero-text reason
+      above. Each was checked by comparing the loadable section table and sampled symbol
+      addresses, which is the only thing that separates a perturbation that did not land from
+      one that landed and did nothing.
+      **What that leaves is a calibration, and it is the useful half**: two independent builds
+      and flashes of the same tree gave a bit-identical `2070`, and no perturbation reachable
+      by ordinary means moves it. So a relink on this board is worth ZERO, and any nonzero
+      lock-hold delta it ever shows is real rather than placement. The 173 stands as a real
+      cost and is still unattributed.
+      **THE PROBE RAN AND THE MAX IS THE CONSOLE, NOT ANY IPC OR SCHEDULER PATH.** On
+      `esp32c6-wroom-bench` the site line reads `core=0 site=0x408046e8 max=2073` in all three
+      windows, and that address resolves inside `console_emit`, at the chip-writer arm that
+      hands a whole line to `arch_console_write`. So the row a reader would take for the
+      kernel's longest critical section is a statement about how much the console wrote, and
+      `docs/reference/bench.md` owes that caveat beside the row.
+      **What it makes available, NOT what it proves**: a max owned by the console explains
+      every property the +173 shows and no other candidate did -- bit-exact repeatability,
+      because the report prints the same bytes every run; an unchanged `n`, because the number
+      of acquisitions did not move; and why refuting the timer, the MMIO cost and the four
+      sites that gained an acquisition left nothing, since none of them is the console. A
+      milestone that changed what the bench prints would move this row exactly and
+      deterministically. **Not established**: that the same site owned the max on the two
+      M8.8-era trees, and that a print change accounts for exactly 173. Settling it is a
+      capture of those two trees with the probe, which is cheap now that the probe exists.
 
 - [x] **PROGRAM ONLY THE DESCRIPTORS WHOSE WORDS CHANGED, NOT THE WHOLE SET.** The all-or-nothing
       same-set skip that shipped here was removed: it fired 5 times in about a million commits and
@@ -3888,7 +4046,54 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
 is the PRE-optimisation baseline, taken before M8.8 through M8.11 touch anything it measures;
 M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judged against.
 
-- [ ] **RE-RUN M8.7'S FULL PHASE TABLE AND END-TO-END INSTRUMENT, PER BOARD, AFTER M8.8 THROUGH
+- [x] **NO GATE COULD SEE A ROW WHOSE POPULATION COLLAPSED, AND ONE HAD.** `REPLY_TOTAL` fell
+      from about a quarter of a million samples to thirteen when every server loop and every
+      in-tree service adopted the fused reply-receive at M8.9. The row kept printing, kept a
+      plausible `avg/max`, and stood for nothing;
+      `tests/integration/check_bench_phase_table.sh` counted ROWS against the header's declared
+      count and never read an `n` at all, so nothing in the tree said so. The capture this
+      protects is the frozen one M9 is sized from, which is why it lands BEFORE the run and not
+      after it. It reads the capture and touches no bracket and no span, so it moves no figure
+      and the like-for-like comparison is untouched.
+      **LANDED: a fourth arm, `population`.** A row below a floor of 1000 samples is refused
+      unless it is named in the gate's `LOW_N_ROWS` with the reason it is quiet, and a waived
+      row whose population RECOVERS is refused too, on `check_mpu_record.sh`'s stale-exemption
+      argument: the waiver states WHY a row is quiet, so a busy one means that reason stopped
+      holding. A row carrying no `n=` field at all is refused rather than skipped, which is the
+      absence-satisfies-the-arm shape the M8.7 review residue names. Waived flat: the four
+      `CALL_SLOW_*` rows, a one-shot probe the sweep never retakes, and `REPLY_TOTAL` /
+      `REPLY_VALIDATE`, standalone-only since the fused path.
+      - **TWO ROWS ARE POSTURE-CONDITIONAL AND A FLAT WAIVER WOULD HAVE RE-HIDDEN THE VERY
+        THING THE ARM IS FOR.** Both were found by RUNNING the gate across the fleet, not by
+        reading it. `MPU_COMMIT`: `qemu-riscv-bench` and `qemu-arm64-bench` build
+        `KICKOS_HAVE_MPU=0`, program no descriptor, and read `n=0` structurally. `REENT_SEAT`:
+        the top-level `CMakeLists.txt` clears `KICKOS_LIBC_REENT` for exactly `sim` and
+        `x86_64`, which is what this section already says one bullet down, so the seat is never
+        taken on `qemu-x86_64-bench`. The banner states both conditions -- `mpu off` against
+        `mpu enforce`, and the arch name -- so the gate reads each IN BAND, as it already reads
+        the row count, and waives the row only where the build cannot feed it. An ENFORCING
+        image with a blind `MPU_COMMIT` is refused, which is precisely the ARM state of every
+        capture through M8.7; so is an MPU-off image whose row is fed, and so is a capture
+        whose banner states neither posture nor arch, the expectation not being readable then.
+        `MPU_APPLY` is deliberately NOT in this class: the deferred stash runs whatever the
+        posture and carries samples on an MPU-off board.
+      - **The arm carries five planted controls and was proven against seven mutations**, so it
+        can be shown to refuse rather than merely observed to pass -- the convention
+        `check_bench_irqspan.sh` and all four `tests/static/check_bench_*.sh` already hold, and
+        which the item below says these six gates lack. Green over six M8.11 silicon captures
+        (`f411disco`, `esp32c6-wroom` and `xmc4800-relax`, base and final) and over all six
+        emulator bench presets in their own ctest registrations. Each mutation of a real
+        capture produces exactly ONE refusal, naming the row: a busy row collapsed, an `n=`
+        field deleted, a waived row made busy, `MPU_COMMIT` zeroed under `mpu enforce`,
+        `MPU_COMMIT` fed under `mpu off`, `REENT_SEAT` zeroed on an arch that seats it, and the
+        posture line removed.
+      - **The floor is tree-relative, and that is the arm's scope rather than a weakness.** Fed
+        an M8.7 capture it refuses `CALL_DONATE`, which read `n=0` in that era and reads about
+        20000 now. The waiver list, the posture and the declared row count all move with the
+        kernel, so an archived capture from an older milestone is out of scope by construction
+        and the gate's header says so.
+
+- [x] **RE-RUN M8.7'S FULL PHASE TABLE AND END-TO-END INSTRUMENT, PER BOARD, AFTER M8.8 THROUGH
       M8.11 LAND, AND PUBLISH THE LIKE-FOR-LIKE COMPARISON.** Same instrument, same boards, same
       p50/p99/max reporting M8.7 establishes (`kernel/bench/bench.cc`); nothing else changes
       between the two runs, so the delta is attributable to M8.8 through M8.11 rather than to a
@@ -3896,6 +4101,28 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
       lock-wait cycles under contention, and p50/p99/max for both IRQ-to-user and the IPC round
       trip are the exact entry metrics `roadmap.md`'s M9 section names, so this item's output is
       not a report but M9's own precondition.
+      **LANDED. The measurements are [`docs/archive/M8.12_meas.md`](docs/archive/M8.12_meas.md);
+      `STATE.md`'s M8.12 section carries what a green run does not say.** Thirty emulator runs
+      over six presets and eight silicon captures over three boards, at tree `b356b18d`. The
+      switch is unchanged on every board that can resolve it; `lock-hold` falls 15 to 27 percent
+      on silicon and 31 to 67 percent on the emulators; the round trip falls 8 to 16 percent on
+      silicon, 21 to 41 percent on the one-core emulators and about four and a half times on both
+      four-core boards. **The control that makes the comparison mean anything is that the same
+      extractor reproduces every published M8.7 cell from that campaign's own captures**, which
+      are still on the box; without it the two tables are two numbers taken two ways.
+      - **THE ADDITIVE INSTRUMENT ITEMS BELOW LAND AFTER THIS CAPTURE, NOT BEFORE IT.** The
+        `lock-hold` return-address probe, the nested-`IrqLock` calibration phase and the
+        `p99`-below-some-`n` decision all move `kernel/bench/bench.cc`, which is the thing this
+        item's own like-for-like rule protects, and the `REPLY_RECV_TAIL` measurement above
+        already shows a bracket added ANYWHERE inflates rows it is not inside on `qemu-riscv`.
+        Their figures are M9 entry data and not part of the M8.7 comparison. The phase-table
+        population arm was safe before the run for the opposite reason: it reads the capture and
+        changes no image.
+      - **The dirty-tree trap fired again and was caught by the harness rather than by care.**
+        The six emulator presets had been built while the gate change was still uncommitted, so
+        every image stamped `-dirty` and no capture from them would have been a witness. The
+        campaign refuses a dirty tree outright and refuses any run whose banner does not name the
+        tree, and it rebuilds before it measures.
 
 - [ ] **ROWS WHOSE SPAN CHANGED ON THE WAY INTO M8.12, SO THE RE-RUN ABOVE IS LIKE FOR LIKE ON
       EVERY OTHER ROW AND NOT ON THESE.** Each is named here so the published delta excludes it
@@ -12877,6 +13104,26 @@ follows is what survived that.
       DECISION FOR THE MAINTAINER, NOT A DEFECT TO FIX HERE**: what the tree owes is either that
       cost in CI or a written statement that the IRQ block is witnessed by hand at rebaseline
       time and not by CI.
+      **THE WRITTEN STATEMENT EXISTS, AND SO DOES THE SPLIT IT LEAVES ROOM FOR** (M8.12, and
+      this bullet's premise is now partly false). `docs/archive/M8.7_rebaseline_meas.md` states
+      under *What these figures may NOT be used for* that the IRQ block is not in CI because CI
+      is a regression test and not a performance one, and that the block is witnessed by hand at
+      each rebaseline. That is the second branch and it is already taken. Meanwhile the gate
+      acquired a SECOND REGISTRATION that this bullet predates: `--controls` runs the planted
+      reports and exits, which is every arm reading a report's SHAPE and none reading a timing
+      figure, so it needs no image and no emulator, and `*_bench_irqspan_controls` carries the
+      `host` label and RUNS IN CI on `qemu-arm64-bench`, `qemu-riscv64-bench` and
+      `qemu-x86_64-bench`. So the load-sensitive and the structural arms are already apart and
+      the structural side already runs; the string `irqspan` does appear in the workflow now.
+      **WHAT IS LEFT IS NARROWER THAN THE BULLET, AND IT IS STILL THE MAINTAINER'S.** A plant is
+      text: it proves the PARSER and says nothing about a report a kernel actually printed. No CI
+      run reads the IRQ block of a real report, so `probe`, `fields`, `population`, `passes` and
+      the two `e2e` accounting clauses -- none of which reads a cycle figure -- are witnessed
+      against synthetic input only. Closing that needs a third way in, an image run with the
+      timing arms (`span`, `floor`, `local`, `order`, `wcase`'s bound and every `domain` window
+      comparison) held back, and that is a mode `check_bench_irqspan.sh` does not have. Adding
+      one is an edit to the gate plus a judgement on whether a half-run gate is worth its
+      emulator minutes. NOT TAKEN HERE, and no timing assertion was added to CI.
 
 - [ ] **TWO ARCH QUESTIONS THE INSTRUMENT NOW ASKS AND CANNOT ANSWER.** Whether `arch_irq_unmask`
       on armv8a should route a global line to the core that unmasks it rather than leaving it
