@@ -1284,11 +1284,15 @@ that the coarse lock survives is a successful outcome of this milestone, not a f
 
 **NO SPEEDUP FIGURE IS STATED HERE, AND THAT IS DELIBERATE.** The scenario arithmetic that sizes
 this work rests on a DERIVED locked fraction rather than an SMP measurement, and this file has just
-finished repairing the last figure of exactly that kind: `MPU_APPLY` was quoted fleet-wide at 443
+finished repairing one figure of exactly that kind, and M9.0 found a second in the repair itself:
+`MPU_APPLY` was quoted fleet-wide at 443
 cycles a switch, and section 8.5 of `docs/design-m5-ipc-fastpath.md` measures the same board at 94
 once the PMP precompute landed, which left every derived multiplier resting on a term a quarter of
 its assumed size. So the envelope belongs to the audit that computed it. **M8.12 is what this
-milestone is sized from, and every value is recomputed there before M9 is approved.**
+milestone is sized from, and every value is recomputed there before M9 is approved.** That
+recompute is M9.0's third deliverable and not a preamble to it: it reads frozen numbers and
+writes no code, which is what keeps that stage startable at any time, and until it exists every
+stage below is assigned and none is approved.
 
 **IT CARRIES A STOP CONDITION, WHICH IS THE POINT OF THE ENTRY METRICS.** The entry metrics are the
 M8.12 locked fraction, the lock-wait cycles under contention, and p50/p99/max for both IRQ-to-user
@@ -1301,34 +1305,51 @@ file owns only the number.
 
 | sub-milestone | what it lands |
 | --- | --- |
-| M9.0 | the reference-kernel survey: lock domains and the separate shared-kernel-stack investigation |
+| M9.0 | the reference-kernel survey, the shared-kernel-stack investigation, and the entry envelope recomputed against M8.12 |
 | M9.1 | the lock's own bound: fair arbitration per backend, the doorbell poll kept |
 | M9.2 | ownership under the lock: a home derived from the mask, per-core ready queues, the wait-edge rule |
 | M9.3 | the per-pair rings: the kinds, the depth that cannot fill, the drain budget |
 | M9.4 | the local scheduler leaves the lock, under the stop condition |
 | M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
-| M9.6 | the write-up, the contract changes, and the M9 exit measurement |
+| M9.6 | the console contract across cores: who may speak, in the SMP and the AMP shape |
+| M9.7 | the write-up, the contract changes, and the M9 exit measurement |
 
-**WHAT M8 HANDS M9, REASSIGNED AT M8.13 RATHER THAN LEFT IN THE MILESTONE THAT COULD NOT
-TAKE THEM.** Each was raised inside M8, each needs the lock or the scheduler to move before
-it can be settled, and each is recorded in `TODO.md` with its evidence. The console tear
-across cores, in both its SMP and its AMP shapes, which is a partition-wide contract for who
-may speak and not a locking fix. The gate that would enforce "the caller holds the
-exclusion", which is the backstop M8 declined to buy with a naming rule. The peer ask
-walking every core on an ordinary reschedule, whose cheap answer needs a maintained set.
-The end-to-end ISR stamp not scoped to the armed line. The map unwind's peer mask, sampled
-before the edits and held only by the big lock. A cancelled park running `cap_teardown`
-masked, both repairs landing on the `dying` restart guard. The doorbell's masked payload
-copy, measured and banked, waiting on M9.3's ring lifetime. The partial-range map
-preflight, which no frozen M8 baseline carries and no bench preset drives. And the two arch
-questions the IRQ instrument asks and cannot answer, armv8a's `arch_irq_unmask` routing and
-whether rv64imac's raised set should be per hart.
+**WHAT M8 HANDS M9, EACH ON THE STAGE THAT UNBLOCKS IT.** Every one was raised inside M8 and
+recorded in `TODO.md` with its evidence, and M8.13 reassigned them here as a list with no
+stage. A list with no stage is what made M8 need a tail at all, so each now names one:
+
+- **M9.1** -- the end-to-end ISR stamp, not scoped to the armed line. M9.1 is the first stage
+  that takes a NEW cross-core capture, and this is the cell that misclassifies a sample as
+  local or cross when a foreign line fires inside the span.
+- **M9.2** -- four, all of them the ownership surface. The peer ask walking every core on an
+  ordinary reschedule, whose cheap answer needs the maintained set per-core queues are. The map
+  unwind's peer mask, sampled before the edits and held only by the big lock. A cancelled park
+  running `cap_teardown` masked, both candidate repairs landing on the `dying` restart guard.
+  And the two arch questions the IRQ instrument asks and cannot answer -- armv8a's
+  `arch_irq_unmask` routing, and whether rv64imac's raised set should be per hart -- which are
+  the same "a line follows its claimer" rule this stage already carries.
+- **M9.3** -- the doorbell's masked payload copy, measured and banked, waiting on the ring
+  lifetime this stage designs.
+- **M9.6** -- the console tear across cores, in both its SMP and its AMP shapes. It is the one
+  item here that needs neither the lock nor the scheduler, which is why it is a stage and not an
+  attachment: what it owes is a partition-wide contract for who may speak. It depends on nothing
+  above it and may land at any point.
+- **M9.7** -- two that cannot be settled until the contract stops moving. The gate that would
+  enforce "the caller holds the exclusion", which is the backstop M8 declined to buy with a
+  naming rule and which needs roots that have stopped moving. And the partial-range map
+  preflight, which no frozen M8 baseline carries and no bench preset drives, so it needs the
+  vehicle this milestone builds for the lock question anyway.
+
+**THE NUMBERING MOVED ONCE AND ONLY AT THE END.** The console stage takes M9.6 and the write-up
+becomes M9.7, so the five lock stages keep the numbers their evidence gates and recorded rulings
+were written against.
 
 **EVERY ROW AFTER M9.0 IS ASSIGNED AND NOT YET APPROVED, and the distinction is the point of
 assigning them.** A number here fixes what a stage IS, so that the evidence gate can refuse the
 stage without the argument moving to a different number afterwards. M9.0 can start whenever, being
-read-only. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN SHAPE.** These seven rows are the plan as
-it reads today, and this file has renumbered and re-cut worse than this when the work found
+read-only, the envelope recompute included. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN
+SHAPE.** These eight rows are the plan as it reads today, and this file has renumbered and re-cut worse than
+this when the work found
 something: a discovery moves the roadmap rather than the roadmap constraining the discovery, so a
 stage that turns out to be two, or to be already answered by the one before it, is re-cut on the
 spot and no argument is owed to its number.
@@ -1491,10 +1512,14 @@ not an SMP precedent. **Its per-project row carries a licence**, because the cle
 checkable against one. **And the survey's own scope grew**: the tree's AMP window is a row, so is
 its routed mask touch, and so are a lock-free capability kernel and a production remote-wake inbox
 that both sit on the box already; a multikernel with a published crossover between shared memory
-with locks and message passing, a capability kernel binding every context to a core, a scheduling
-context and budget design inside a project already surveyed, and a message-passing system with
-inheritance across the message path are named as references that are NOT on the box, so that their
-absence is a known gap rather than an implied verdict.
+with locks and message passing, a capability kernel binding every context to a core, and a
+message-passing system with inheritance across the message path are named as references that are
+NOT on the box, so that their absence is a known gap rather than an implied verdict.
+**THE SCHEDULING-CONTEXT ROW IS TWO ROWS AND NEITHER OF THEM IS ABSENT**, which the survey
+established rather than assumed: seL4's mixed-criticality sources and Fiasco.OC's scheduling
+contexts are both checked out here, in two different shapes, and what is missing is the paper that
+argues the first and the L4Re userland that programs the second. So the temporal half below has a
+mechanism to read today and no case for either shape.
 
 **SHARED KERNEL STACKS ARE A SEPARATE M9 INVESTIGATION, AFTER M8.12.** The research in
 [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) extends the
@@ -1534,9 +1559,9 @@ creators and at the line claim is M8.3's, and once it lands as decided a SEAL is
 budget goes to zero": what a seal still needs is an authority holder, an errno, a scope and a rule
 about whether it can be undone. A deferred start works as a userspace gate today; a create-suspended
 posture is cleaner and is an alpha-ABI change made once. Release timers, an execution budget and an
-overrun action are the temporal half, and **the scheduling-context design inside a project the M9.0
-survey already reads is required reading before any of it is proposed** -- that residue is that
-design, and proposing another before reading it would be inventing a solved thing.
+overrun action are the temporal half, and **the two scheduling-context designs the M9.0 survey
+reads are required reading before any of it is proposed** -- that residue is those designs, and
+proposing another before reading them would be inventing a solved thing.
 
 **TWO THINGS ARE CONDITIONAL AND THE TABLE SAYS SO PER ROW.** A seal buys nothing for concurrency
 while the lock is kept on the capability resolve, so its concurrency value is M9's second outcome

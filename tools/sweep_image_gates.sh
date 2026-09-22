@@ -182,9 +182,12 @@ trap 'rm -f "$LOCK"; exit 143' TERM
 
 # What the recorded status is evidence ABOUT. Without git the identity is unique to this
 # run, so nothing is ever reused and the sweep is whole rather than partly reprinted.
-TREE_ID="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"
+TREE_ID="$(git -C "$ROOT" rev-parse HEAD^{tree} 2>/dev/null)"
 if [ -n "$TREE_ID" ]; then
     TREE_ID="$TREE_ID $(git -C "$ROOT" status --porcelain 2>/dev/null | cksum)"
+    # porcelain carries NAMES and status codes, never content, so two different edits to one
+    # tracked file key the same without this second term. Untracked files stay keyed by name.
+    TREE_ID="$TREE_ID $(git -C "$ROOT" diff HEAD 2>/dev/null | cksum)"
 else
     TREE_ID="no git under $ROOT, run $$ at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 fi

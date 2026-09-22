@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 42 documents = 28 LANDED + 8 ACTIVE + 6 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 44 documents = 28 LANDED + 9 ACTIVE + 7 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -94,6 +94,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-m5-kickcat-reality-check.md`](../design-m5-kickcat-reality-check.md) | KickCAT brought back at the end of the driver era to JUDGE the driver APIs rather than consume them: the SPI-class collision, the ruling, and what writing the backend found. Header status: written and compiled, never linked, never run |
 | [`design-m7-state-inventory.md`](../design-m7-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
 | [`design-multicore.md`](../design-multicore.md) | The multicore design contract: the hardware predicate that decides which parts get a shared kernel at all, AMP for the parts that fail it, what it FREEZES, and the step plan with the expected result of each step. It names no milestone on purpose, `../../roadmap.md` owning the schedule |
+| [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | M9's four entry metrics recomputed against the frozen M8.12 measurement: the locked fraction and the Amdahl bound re-derived with every input named, the inputs M8.12 does not carry, five of the fourteen first claimed absent having not survived checking, the terms that have moved the way `MPU_APPLY` did, and what the evidence supports per stage. It approves nothing |
 
 ## EXPLORATORY
 
@@ -104,7 +105,8 @@ Two things follow from this that are easy to get wrong:
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp. **ANSWERED AND REFUSED (2026-09-18)**: neither lever is built, the page carries the numbers and the four tests that would reopen it. It stays here because nothing was committed to code, not because the question is open |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
-| [`design-stack-safety-research.md`](../design-stack-safety-research.md) | Stack-budget checks, tailored-stack and guard tests, reference-kernel mechanisms, the case for a shared kernel-stack experiment, and the dated M8.9-p4 audit findings |
+| [`design-m9-reference-kernels.md`](../design-m9-reference-kernels.md) | The M9.0 reference-kernel survey: nineteen rows, each with its licence, covering lock domains, acquisition order, remote wake, migration, whether the lock is released inside the switch, the kernel stack model and what each project publishes about itself -- plus where KickOS already sits among them. Cited by path, copied from nowhere, and it does not rank |
+| [`design-stack-safety-research.md`](../design-stack-safety-research.md) | Stack-budget checks, tailored-stack and guard tests, reference-kernel mechanisms, the case for a shared kernel-stack experiment, and the dated M8.9-p4 audit findings. Section 8 is the M9.0 investigation, whose verdict is to keep the per-thread continuation |
 
 ## SUPERSEDED
 
