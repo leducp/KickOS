@@ -148,7 +148,7 @@ namespace kickos
                 int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
                 endpoint_server_set(ep, owner);
                 ep->recv_holders = 1;
-                cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+                cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
                 park_plain_sender(sender, ep);
                 return sender;
             }
@@ -164,7 +164,7 @@ namespace kickos
                 int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
                 EXPECT_TRUE(cap_console_publish(publisher, handle))
                     << "fixture: the console endpoint was published";
-                cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+                cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
                 // Through the real counter locator, so recv_holders and endpoint_refs move
                 // together: a hand-written 1 in recv_holders would make the sweep's drop the
                 // last reference and take a leak-never-strand branch instead of this arm.
@@ -223,7 +223,7 @@ namespace kickos
             int mtx_handle = 0;
             Mutex* const m = own_mutex(outer, &mtx_handle);
             cap_install_at(outer, static_cast<int>(SWEEP_WIDTH) - 1, mtx_handle,
-                           CapType::CAP_MUTEX, CAP_WAIT);
+                           CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
             park_mutex_waiter(waiter, m);
 
             Thread* const inner = spawn(3, PRIO_SWEEPER);

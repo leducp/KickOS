@@ -984,6 +984,15 @@ answer: a far SEND parks nobody and carries the no-route tag, so the answer its 
 lands at the SENDER as a dropped reply, and a node now feeds that counter with the consequences of
 its own sends as well as with a peer thread's replies.
 
+**AND THE SECOND WAY TO OWN A WINDOW, which the rule above does not name: read the delta INSIDE
+the critical section that produced it.** A forge that publishes, takes and dispatches under one
+IrqLock may read the counter either side of its own dispatch: nothing else on that core runs
+between the two reads, and the row is this node's own writing, so what comes back attributes ONE
+event instead of summing a window. `amp_far_reply_guard` is again the standing evidence. It read
+one delta across a whole sequence of forges, where a forge losing its caller while one foreign
+message was taken read exactly like every forge arriving, and no counter placed outside the
+sequence could separate those: a window SUM is not an attribution, however narrow the window.
+
 **A PEER THAT IS A WINDOW LAYER IS A WEAKER ENVIRONMENT THAN A PEER THAT IS A THREAD, and that
 is the half worth writing down.** It is weaker in what it HOLDS and not in whether it answers: the
 window layer answers the echo port with the payload and every other taken call with a zero-length

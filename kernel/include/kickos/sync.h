@@ -36,9 +36,10 @@ namespace kickos
     // still an ACQUIRE, unlike every other negative return.
     static constexpr intptr_t MUTEX_OWNER_DIED = -KOS_EOWNERDEAD;
 
-    // Remove and return the highest-priority waiter (FIFO among equals), or nullptr. Pure
-    // select+unlink: no state or schedule change. ISR-callable. The priority scan is lazy
-    // at-pop, so a waiter boosted while parked needs no re-queue.
+    // Remove and return the highest-priority waiter (FIFO among equals), or nullptr. Under the
+    // caller's IrqLock, which an ISR already holds. Pure select+unlink: no state or schedule
+    // change. The priority scan is lazy at-pop, so a waiter boosted while parked needs no
+    // re-queue.
     Thread* wq_pop_highest(List& q);
     // The same choice WITHOUT unlinking. Under the same IrqLock a following wq_pop_highest
     // returns this exact thread.

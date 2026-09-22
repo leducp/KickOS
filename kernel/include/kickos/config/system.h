@@ -110,6 +110,12 @@
 #define KICKOS_MAX_IRQ_HANDLES 8
 #endif
 
+// Notification objects (CAP_NOTIFY; see notify.h). One carries 32 badge bits and at most
+// one bound waiter, so a server serving several lines needs one and not one per line.
+#ifndef KICKOS_MAX_NOTIFY
+#define KICKOS_MAX_NOTIFY 8
+#endif
+
 // Frame RUNS a capability may name at once. Built only where a frame pool exists.
 #ifndef KICKOS_MAX_FRAME_RUNS
 #define KICKOS_MAX_FRAME_RUNS 8
@@ -128,6 +134,9 @@
 #endif
 #ifndef KICKOS_TASK_IRQ_HANDLE_BUDGET
 #define KICKOS_TASK_IRQ_HANDLE_BUDGET 7
+#endif
+#ifndef KICKOS_TASK_NOTIFY_BUDGET
+#define KICKOS_TASK_NOTIFY_BUDGET 7
 #endif
 
 namespace kickos

@@ -83,6 +83,11 @@ namespace kickos
         int installed_handle();
         void reset_caps();
 
+        // The ONE notification every arm's line signals. Seamed rather than pooled: this
+        // gate is about the dispatch entry against a teardown, not about what a raise does
+        // once it lands, and the real object would drag the capability layer in behind it.
+        kickos::Notification* the_notification();
+
         // Doorbell pokes sent BY that core. Its own counter rather than a trace scan: the
         // threaded arms append to the trace from two threads and a count taken across that is
         // not one core's own tally.

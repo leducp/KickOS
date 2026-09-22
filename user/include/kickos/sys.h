@@ -317,32 +317,59 @@ int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVA
 // caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
 // having slots); the cap lands in *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
-// Bind this line to the calling thread before its first wait. Returns its
-// notification bit in out_mask and delivers any event pending before binding.
-// Returns 0, EBADF for a bad cap, EPERM without CAP_WAIT, EINVAL/EFAULT for
-// an invalid output pointer, or EBUSY if another thread serves the line
-// (errors are negative).
-int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask);
-// Wait for the line. Returns 0 or -KOS_E*: EBADF/EPERM for an invalid cap,
-// missing CAP_WAIT, or no binding to this thread; ECANCELED on cancellation.
-int kos_irq_wait(kos_cap_t irq_cap);
-// Wait with a relative timeout in microseconds; KOS_TIMEOUT_NONE waits forever.
-// Returns -KOS_ETIMEDOUT on expiry without an event.
-int kos_irq_wait_timed(kos_cap_t irq_cap, uint32_t timeout_us);
+// Attach this line to a notification as one signaller among others. The ISR raises
+// `notify_cap`'s BADGE bit there, so badge the capability first if the object carries more
+// than one source. Needs KOS_CAP_WAIT on the line and KOS_CAP_SIGNAL on the notification.
+// ONE-WAY and once only: 0, -KOS_EALREADY (this line already signals something), -KOS_EBADF,
+// -KOS_EPERM or -KOS_EOVERFLOW.
+int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap);
 // Rearm early after servicing the device, allowing IRQs during later work.
-// Optional: wait rearms on entry. Repeated acks have no effect.
-int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
-// Post a software notification without accessing the controller. Requires SIGNAL.
-// The waiter must allow for a wake with no device interrupt asserted.
-// Returns -KOS_EALREADY if already pending; the event remains pending and
-// retrying the post is unnecessary.
-int kos_irq_notify(kos_cap_t irq_cap); // 0, -KOS_EALREADY, or -KOS_EBADF/-KOS_EPERM
+// Optional: kos_notify_wait rearms on entry. Repeated acks have no effect.
+// -KOS_EINVAL for a line attached to no notification: arming it would open a source whose
+// raise lands nowhere.
+int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, -KOS_EBADF/-KOS_EPERM/-KOS_EINVAL
 // Drop the controller's latched pending for the line. An EDGE binding's rearm deliberately
 // KEEPS that latch, and the controller is a reserved block no grant can reach, so this is
 // the only way to retire a pending the driver knows is stale. Neither masks nor unmasks: use
 // it between a wait return and the ack, where the ISR has already left the line masked.
 // Needs KOS_CAP_WAIT.
 int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+
+// --- Notifications -----------------------------------------------------------------------
+// A notification is a word of 32 badge bits with at most one bound waiter. An IRQ line
+// attached with kos_irq_bind_notify is one signaller; a holder of a KOS_CAP_SIGNAL copy
+// calling kos_notify is another. Nothing here needs an authority bit or a line: a
+// notification with no line attached is a complete object, and the badge on a capability is
+// what confines its holder to one bit.
+//
+// Create one and install a full-rights capability naming it. 0, or -KOS_E* (ENOMEM pool,
+// EMFILE cap table, EOVERFLOW this TASK's ceiling of notifications, EINVAL/EFAULT out-ptr).
+int kos_notify_create(kos_cap_t* out_cap);
+// MINT a second name for the same object, badged with `bit` (0..31) and carrying the
+// source's rights, so a signal through the new capability raises that bit and no other. The
+// badge is set AT THE COPY: an unbadged capability is the unconfined one and a badged copy
+// reaches its own bit only, which is why `source_cap` must itself be UNBADGED
+// (-KOS_EALREADY otherwise). Also -KOS_EBADF, -KOS_EINVAL (bit out of range), -KOS_EFAULT,
+// -KOS_EMFILE (the caller's cap table) or -KOS_EOVERFLOW.
+int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap);
+// Raise this capability's badge bit. Needs KOS_CAP_SIGNAL; touches no controller, so the
+// waiter must be idempotent about finding no work. -KOS_EALREADY where the bit was already
+// set: the notification stays pending and retrying is unnecessary.
+int kos_notify(kos_cap_t notify_cap);
+// Become the object's one waiter. Needs KOS_CAP_WAIT. -KOS_EBUSY where another thread is
+// bound, or where the caller is already bound to a different object. The bind holds a
+// reference of its own, so closing the last capability does not free the object under it.
+int kos_notify_bind(kos_cap_t notify_cap);
+// Give the binding up. Unconsumed bits are LEFT pending for the next server, which is how a
+// driver hands its device over. -KOS_EPERM where the caller is not the bound thread.
+int kos_notify_unbind(kos_cap_t notify_cap);
+// Wait for any bit of `mask`, consuming and returning them in *out_bits. Every attached line
+// whose badge is in `mask` is rearmed on entry, so a driver that never acks still receives
+// every later interrupt. `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
+// 0, or -KOS_E*: EBADF, EPERM (no KOS_CAP_WAIT, or the caller is not the bound thread),
+// EINVAL (an empty mask), EFAULT, ETIMEDOUT, ECANCELED.
+int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
+                    uint32_t* out_bits);
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Running core clock in Hz. 0 if the backend has no silicon core clock (host sim, QEMU virt).

@@ -70,7 +70,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_NONE,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 
@@ -108,11 +108,9 @@ namespace
         0x40000000u, 0x100000000ull, 0x400000000ull, 0x10000000000ull, 0x100000000000ull,
     };
     constexpr uint32_t SIMCON_WIN = 0x10000u;
-    // Lines taken elsewhere: 30 (sim console ring), 29 (simuart loopback), 6..16 (the
-    // selftest arms, KICKOS_IRQ_FREE_BASE 6 plus offsets 0 to 10 on a sim build, which
-    // defines no KICKOS_IRQ_SOFT_ONLY_BASE). Nothing raises this one; the thread only has
-    // to hold a window and be cancellable.
-    constexpr int SIMCON_WIN_LINE = 28;
+    // NO LINE HERE, AND THAT IS THE POINT. This thread only has to hold a window and be
+    // cancellable, and a bare notification is parkable: a line claimed for a board with no
+    // device on it was the price the old per-line notification word charged.
 
     // Root's wait for the window thread to reach its park, in 1 ms steps.
     constexpr uint32_t WIN_READY_MAX = 500u;
@@ -120,19 +118,20 @@ namespace
 
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_win_ready{0};
 
-    // Claims the line and spawns `entry` on the first candidate window the host leaves
-    // free. The caller's own line cap goes before returning: the spawned thread is the
-    // only holder that needs one. An invalid handle leaves nothing to close.
+    // Creates the object the thread parks on and spawns `entry` on the first candidate
+    // window the host leaves free. The caller's own capability goes before returning: the
+    // spawned thread's BIND holds a reference of its own. An invalid handle leaves nothing
+    // to close.
     kos::thread::Handle spawn_window_thread(void (*entry)(void*), uint8_t prio,
                                             char const* name, kos_task_t task)
     {
-        kos_cap_t line = KOS_CAP_NONE;
-        int const line_rc = kos_irq_claim(SIMCON_WIN_LINE, KOS_IRQ_EDGE, &line);
-        if (line_rc != 0)
+        kos_cap_t note = KOS_CAP_NONE;
+        int const note_rc = kos_notify_create(&note);
+        if (note_rc != 0)
         {
-            return kos::thread::Handle(KOS_THREAD_NONE, line_rc);
+            return kos::thread::Handle(KOS_THREAD_NONE, note_rc);
         }
-        kos_cap_grant const win_caps[1] = {{line, KOS_CAP_WAIT}};
+        kos_cap_grant const win_caps[1] = {{note, KOS_CAP_WAIT}};
         kos::thread::Handle t;
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
@@ -151,7 +150,7 @@ namespace
                 break; // the pool, not the window: no later candidate can succeed
             }
         }
-        kos_handle_close(line);
+        kos_handle_close(note);
         return t;
     }
 
@@ -163,7 +162,7 @@ namespace
     {
         kos::thread::Handle const h =
             drv::spawn_one(k_desc.threads[0], cfg, /*blk=*/nullptr, ep, /*line=*/nullptr,
-                           task);
+                           /*note=*/KOS_CAP_NONE, task);
         if (not h.valid())
         {
             // CLOSE BEFORE PRINTING: the console is USER_OWNED from the publish on, and the
@@ -179,12 +178,14 @@ namespace
     void simconsole_window_thread(void*)
     {
         wire_puts("[simcon] window thread holding the console registers\n");
-        (void)kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr);
+        (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0);
         g_win_ready = 1;
-        // kos_irq_wait returns non-zero once thread_kill cancels it, exactly as
+        // The wait returns non-zero once thread_kill cancels it, exactly as
         // uart_service.h's irq_loop expects. Exiting releases the DEV window, which is
         // what lets the console come back.
-        while (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) == 0)
+        while (kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu, KOS_TIMEOUT_NONE,
+                               nullptr)
+               == 0)
         {
         }
         wire_puts("[simcon] window thread cancelled, releasing the registers\n");
@@ -194,14 +195,16 @@ namespace
 
 #if defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE
     // An IRQ thread that takes the register window and never sets the ready flag root
-    // waits on. It parks IN kos_irq_wait, the one wedge shape thread_kill can cancel, so
-    // the window is actually released; a thread wedged before its first kos_irq_wait is
-    // marked and does not die.
+    // waits on. It parks IN kos_notify_wait, the one wedge shape thread_kill can cancel, so
+    // the window is actually released; a thread wedged before its first wait is marked and
+    // does not die.
     void simconsole_wedge_thread(void*)
     {
         wire_puts("[simcon] wedge irq thread parked, ready never set\n");
-        (void)kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr);
-        while (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) == 0)
+        (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0);
+        while (kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu, KOS_TIMEOUT_NONE,
+                               nullptr)
+               == 0)
         {
         }
         wire_puts("[simcon] wedge irq thread cancelled, releasing the registers\n");
@@ -423,7 +426,8 @@ extern "C"
         {
             kos_handle_close(ep);
             (void)kos_task_kill(task);
-            kos::print("[simcon] ERROR: no line or DEV window for the wedge irq thread\n");
+            kos::print("[simcon] ERROR: no notification or DEV window for the wedge irq "
+                       "thread\n");
             return -1;
         }
 
@@ -472,7 +476,7 @@ extern "C"
                                           KOS_TASK_NONE);
         if (not g_win_thread.valid())
         {
-            kos::print("[simcon] ERROR: no line or DEV window for the window thread\n");
+            kos::print("[simcon] ERROR: no notification or DEV window for the window thread\n");
             return -1;
         }
         // A spawn does NOT reschedule, so the new thread has not run yet whatever its

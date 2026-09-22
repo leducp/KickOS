@@ -4,6 +4,7 @@
 // The ready structure is policy-owned, never this file's.
 
 #include <kickos/aspace.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/smptrace.h>
 #include <kickos/bench.h>
@@ -436,7 +437,8 @@ namespace kickos
         bool wake_no_resched(Thread* t)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
-            // Spans the readying path only: the refusals below do no ready-queue work.
+            // The refusals below do no ready-queue work and still feed this row, so its
+            // minimum can be a refusal rather than a readying.
             KICKOS_BENCH_MARK(bm_unpark);
             // The unpark funnel, and so the one place a timed wait's deadline is dropped.
             // Never in wq_pop_highest: a CALL_SEND_WAIT caller popped there migrates park to
@@ -451,6 +453,7 @@ namespace kickos
             {
                 KOS_TRACE(::kickos::KOS_TR_REFUSED, KOS_TRACE_ID(t),
                           static_cast<uint32_t>(t->state));
+                KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
                 return false;
             }
             t->state = ThreadState::READY;
@@ -540,6 +543,12 @@ namespace kickos
                 // with interrupts unmasked between chunks. `state` cannot be the dying marker,
                 // a switch back in rewrites it to RUNNING.
                 c->dying = true;
+                // BEFORE the sweep and NOT inside it: cap_teardown drops and retakes IrqLock
+                // every KCAP_TEARDOWN_CHUNK slots, and a notification still naming this thread
+                // across one of those gaps is a wake into a thread already in teardown. The
+                // CAP_IRQ pre-pass at the top of cap_teardown is the precedent. Unconsumed
+                // bits are LEFT pending for the next server.
+                notify_unbind_self(c);
                 // Cancel faulted-task peers before releasing the task slot. Use cooperative
                 // cancellation so device holders can shut down their hardware.
                 if (cause == EXIT_FAULTED)

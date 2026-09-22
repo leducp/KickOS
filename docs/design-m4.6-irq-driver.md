@@ -6,6 +6,15 @@ Copyright (c) 2026 Philippe Leduc
 # M4.6 design -- the IRQ-driven driver pattern, and the buffered userspace UART on top
 
 > **Status: LANDED** -- the M4.6 step-0 design gate.
+>
+> **THE DELIVERY MECHANISM BELOW IS NO LONGER THE LIVE CONTRACT.** M8.13 made the notification
+> a first-class object: the pending set lives in a `Notification` rather than in a word of the
+> server's TCB, a line is one SIGNALLER among others rather than the only kind there is, and
+> `kos_irq_attach` / `kos_irq_wait` / `kos_irq_wait_timed` / `kos_irq_notify` are gone in favour
+> of `kos_notify_bind` / `kos_notify_wait` / `kos_notify` and `kos_irq_bind_notify`. The
+> RULINGS this document makes still hold, the mask-in-the-ISR discipline and the reasoning of
+> section 2.6 included; only their spelling moved. Read `reference/ipc-call-reply.md` for the
+> live contract.
 
 This document is the M4.6 step-0 gate: the general
 mechanism by which an **unprivileged userspace driver owns an interrupt line** -- claimed by

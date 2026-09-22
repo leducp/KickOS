@@ -10,9 +10,9 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | script | job |
 | --- | --- |
 | `tools/bench/bench-present.sh` | READ ONLY: which machine the boards are on, which of them answer, each probe serial and each resolved console. Flashes nothing and is safe at any time |
-| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, runs every board and every service list it owes, then states coverage |
+| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, runs every board, every service list and every image it owes, then states coverage |
 | `tools/bench/bench.sh` | ONE board: configure, build, locate the image, then hand off -- locally, or over ssh to the bench host |
-| `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, validate. THIS is the script that runs where the hardware is |
+| `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
@@ -157,6 +157,10 @@ a coverage table naming each one as `captured` or `NOT RUN`. Any `NOT RUN` makes
 Each list gets its own TAG, because TAG keys the log and two captures of one app at one TAG
 overwrite each other.
 
+Each list is then run in EVERY image the board's suite ships as, and the row naming a result
+names the image. `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes
+nothing; it asks no board either, so no line it prints is a witness.
+
 ## The report has to survive the console
 
 Every line the kernel side of the report prints goes out through `kprintf_paced`, which offers
@@ -180,7 +184,7 @@ new instrument is a `BD_` name, a format label and the site that calls `bench_di
 
 | slot | the span it samples |
 | --- | --- |
-| `BD_SWITCH` | the software register save, the swap and the software restore, stamped by `switch.S` |
+| `BD_SWITCH` | the software register save, the swap and the software restore, stamped by `switch.S` (the LX6 closing one `retw` past it, in `arch_switch`) |
 | `BD_LOCK_HOLD` | the OUTERMOST `IrqLock` bracket, depth zero to depth zero |
 | `BD_LOCK_WAIT` | the spin inside `arch_kernel_lock`, above one kernel core only |
 | `BD_DOORBELL` | one whole doorbell round, above one kernel core only |
@@ -231,6 +235,101 @@ a bench image, so those two rows and the throughput row also carry the acquisiti
 answered from the host tick source, so no row of that board is comparable across this change.
 None of it reaches a production image: the site is compiled out with `KICKOS_BENCH`.
 
+**THE PAIR INFLATES WHAT IT CALIBRATES, AND FOUR ROWS CARRY IT, NOT TWO.** The site sits inside
+`kos_call`'s locked body (`kernel/syscall/syscall_ipc.cc`), which the fastpath closes as
+`CALL_LOCKED` and `CALL_TOTAL` and the slowpath closes as `CALL_SLOW_LOCKED` and
+`CALL_SLOW_TOTAL`. All four enclose it. What it charges each of them is four counter reads and
+two accumulator calls for the pair, which is exactly `2 * (NEST - NULL)`, plus a third bracket
+and a real nested acquisition for `NEST_LOCK`: the whole site is
+`3 * (NEST - NULL) + (NEST_LOCK - NULL)`.
+
+Those three brackets are inside `k`, so a composite corrected by the table's own rule is already
+right and a reader subtracts nothing further. What SURVIVES the correction is
+`NEST_LOCK - NULL`, the nested lock being real work in a bench image. A reader comparing one of
+the four rows against a build carrying no calibration site subtracts the whole site.
+
+MOVING THE PAIR TO AN `IrqLock` OF ITS OWN WOULD END THE INFLATION AND COST THE ARGUMENT that
+the calibration runs under the same interrupt mask as the brackets it calibrates, and it would
+move those four rows and the throughput row. It is not done, and this is what a reader gets
+instead.
+
+### Which composite rows may be corrected by hand
+
+`k` BELONGS TO A SAMPLE AND NOT TO A ROW, which is why nothing prints it. A conditional arm, a
+scan that popped a sender, a wake that seated a switch: each changes how many nested brackets
+one sample carried, and a row's `avg` merges samples that carried different numbers. A single
+printed `k` beside such a row would be a new false statement, which is worse than the silence.
+
+SO FOR EVERY ROW BELOW MARKED `varies`, THE ROW IS NOT HAND-CORRECTABLE FROM THE OUTPUT ALONE:
+its `min`, `avg` and `max` do not share one `k` and no single subtraction is right for the
+three. The rows carrying a number carry it on every sample that reaches their close, and
+`row - NULL - k * (NEST - NULL)` is exact for them.
+
+| composite | `k` | what settles it |
+| --- | --- | --- |
+| `NEST` | 1 | `NULL`, which is the whole point of the row |
+| `CALL_MINT` | 2 | `CALL_MINT_CAP` and `CALL_MINT_INFO`, both on every arm that closes it |
+| `REPLY_WAKE` | 1 | the one `WAKE_UNPARK`, which now closes on the refusal arm too |
+| `REPLY_LOCKED` | 5 | `REPLY_LOOKUP`, `REPLY_COPY`, `REPLY_FUNNEL`, `REPLY_WAKE`, and the one `WAKE_UNPARK` inside the last of them |
+| `SWITCH_TO` | 4, or 5 under `KICKOS_LIBC_REENT` | `SWITCH_BOOK`, `MPU_APPLY`, `KTIME_REARM`, `ARCH_SWITCH`, and `REENT_SEAT` where that knob is on. ON A DEFERRED-SWITCH TARGET ONLY: where `arch_switch` swaps inline the span holds the suspension, and every bracket another thread closes on this core lands in it. A board whose deferred MPU commit does work adds `MPU_COMMIT` and the row then varies |
+| `CALL_TOTAL`, `CALL_LOCKED` | varies | `CALL_DONATE` closes only where the caller outranks the server, and the wake's tail (`PICK_NEXT` and everything under `SWITCH_TO`) only where `resched_after_wake` seats a switch |
+| `CALL_SLOW_TOTAL`, `CALL_SLOW_LOCKED` | varies | `CALL_SLOW_DONATE` is conditional on the bound server's priority, and `CALL_SLOW_PARK`'s block carries the same scheduling tail |
+| `CALL_WAKE`, `CALL_SLOW_PARK`, `RECV_PARK` | varies | each encloses a reschedule that seats a switch or declines to |
+| `RECV_SCAN` | varies, unbounded | one `WAKE_UNPARK` per sender the scan popped and rejected, and the loop runs over a queue |
+| `RECV_LOCKED` | varies | `RECV_RESOLVE`, `RECV_SCAN` and `RECV_PARK`, plus whatever those two carried |
+| `REPLY_TOTAL`, `REPLY_RECV_TOTAL` | varies | the reply half is optional, the receive can answer a notification without entering the receive body, and the deferred wake completes inside the span or does not |
+
+Every row not in that table is a leaf and loses `NULL`, with one caveat carried elsewhere on
+this page: where `arch_switch` swaps inline, `ARCH_SWITCH` holds the suspension, so whatever
+another thread closes on that core lands in it and the row is a leaf on deferred-switch targets
+only.
+
+A CAPTURE WITNESSES TWO OF THOSE CONDITIONALS WITHOUT LEAVING THE TABLE: `CALL_DONATE`'s `n` is
+a fraction of `CALL_TOTAL`'s, 19999 against 219999 in the M8.12 silicon captures, and
+`PICK_NEXT`'s exceeds `SWITCH_TO`'s. A nested row whose `n` does not track its composite's is a
+conditional arm. The converse does not hold: a bracket that also closes outside the composite
+keeps a count of its own, which is why `SWITCH_BOOK` reads 520039 against `SWITCH_TO`'s 480039
+on a board whose IPC fastpath swaps without entering `switch_to`.
+
+### `CALL_RESUME` is a leaf, and the round trip is in no row at all on a deferred-switch target
+
+Its mark is taken AFTER the `IrqLock` scope around the locked body has been left, so the release
+that fires a pended switch has already run by then and `wq_confirm_resume`'s spin finds the
+switch count already advanced. The frozen M8.12 captures say it outright: `CALL_RESUME` reads
+`29/29 min=29` over 220000 samples on `f411disco-bench`, `28/28 min=28` on `esp32c6-wroom-bench`
+and `31/282 min=31` on `xmc4800-relax-bench`, against a `CALL_TOTAL` of 2845 and up. A row
+covering a server's processing cannot read like that.
+
+WHERE THE ROUND TRIP LANDS IS THE TARGET'S SWITCH POSTURE. On a deferred-switch target the
+pended switch fires inside the `IrqLock` destructor, after `CALL_TOTAL` closed and before
+`CALL_RESUME` is marked, so the round trip is in NO phase row and the throughput row is the only
+figure holding it. Where `arch_switch` swaps inline the switch happens earlier still, inside
+`sched::wake` under the lock, and `CALL_WAKE` carries the server's whole processing together
+with everything enclosing it: on `qemu-riscv64-bench` at one hart `CALL_WAKE`'s minimum is 26940
+cycles of `CALL_TOTAL`'s 40380.
+
+THE SPIN CAN COVER THE ROUND TRIP AND IS NOT WITNESSED DOING SO. Where the pend has not been
+serviced by the time the mark is taken, the spin waits for the whole round trip and the sample
+IS the round trip. No capture read here carries one, the three silicon boards' maxima sitting on
+their minima.
+
+### A bracket left open costs one counter read, and two returns leave one open on purpose
+
+`KICKOS_BENCH_MARK` declares a local and reads the counter; the accumulator is touched only by
+`KICKOS_BENCH_SPAN`. There is no pending-mark cell, so an abandoned mark cannot be consumed by a
+later span, cannot overwrite anything and cannot corrupt a later sample. What it does is put one
+counter read, one `NULL`, inside whatever span encloses it, where the closed bracket the
+correction models costs `NEST - NULL`. Where the enclosing composite is abandoned on the same
+arm, which is every refusal that returns out of `kos_call`, the read reaches no sample at all
+and only `lock-hold` sees it.
+
+`endpoint_recv_locked` CLOSES `RECV_LOCKED` AND `RECV_SCAN` ON THE PARKING PATH AND ON ITS ERROR
+ARMS, AND NOT ON ITS TWO SERVED RETURNS. Closing those would put a scan that stopped on a hit
+into rows that otherwise describe a scan run to empty, and it moves both rows' `n`: measured,
+one sample in 260000 on `qemu-riscv64-bench` at one hart. `REPLY_RECV_TOTAL` does close on a
+served receive, so it carries those two raw reads there, which is one of the reasons its `k`
+varies.
+
 ### What `BD_SWITCH` does not count
 
 THE ROW IS A SUBSET OF THE PHYSICAL SWAPS IN ITS OWN WINDOW ON TWO ARCHES, and the report
@@ -264,13 +363,38 @@ anything else, and refuses the line's absence, a build that stopped printing it 
 looking complete.
 
 THE LX6's ROW IS THE COOPERATIVE WINDOWED SWAP ALONE. `xtensa_switch` banks the PREVIOUS
-switch's cost on its way in, the windowed exit below it being unable to host a call, and only
-that cooperative exit re-stamps the end cell. A switch resuming a thread through the interrupt
-frame leaves the exit unrun, so the entry that follows it finds no end stamp and banks nothing
-rather than banking a delta against a stale one. The counter there is 32 bits, so a stale pair
-would land in the row as an ordinary sample with no `SAT` column to refuse it;
-`tests/static/check_bench_xtensa_stamp.sh` reads the consumption out of the linked image,
-there being no LX6 emulator in this tree to read the row from.
+switch's cost on its way in, the windowed exit below it being unable to host a call. THE END
+CELL IS STAMPED PAST THE `retw`, in `arch_switch`, where the windowed return lands, so the ps
+write, the return itself and the underflow that reloads the incoming frame from its base save
+area are inside the span; that is what makes this row the save, the swap and the restore, as
+it is on `rv32imac` and `armv7m`. The ancestor frames below that one reload lazily as the
+thread runs and belong to no switch. A switch resuming a thread through the interrupt frame
+never returns there, so the entry that follows it finds no end stamp and banks nothing rather
+than banking a delta against a stale one. The counter there is 32 bits, so a stale pair would
+land in the row as an ordinary sample with no `SAT` column to refuse it;
+`tests/static/check_bench_xtensa_stamp.sh` reads both halves out of the linked image, there
+being no LX6 emulator in this tree to read the row from.
+
+THE RXv3 ROW CLOSES WITH THE FRAME BACK. `kickos_rx_pendsw` stamps the open above the
+register save and writes the save-and-swap half into a cell; `kickos_rx_restore` stamps its
+own open past the deferred MPU commit and closes at the bottom of the frame reload, where the
+DPFPU file, the accumulators, `FPSW` and R1-R15 are all back. The two halves are summed there
+and banked by the NEXT switch, a call at either end standing inside the window it would
+report. That is the same deferred bank `rv32imac` uses, and the same reason: the exit has no
+register left. The pop is SPLIT for it, `popm r1-r13` then the close then `popm r14-r15`,
+because nothing but the `rte` stands below a whole `popm r1-r15` and the `rte` has no scratch
+at all. What the span leaves out is the MPU commit, priced separately as `PH_MPU_COMMIT`, and
+the `rte` itself. The pending cell is CONSUMED ON READ: the IPC fastpath, `arch_start` and
+the two USP-refusal arms all reach that restore without opening a window, and a cell left
+standing would be subtracted from a later close and banked as a delta near the counter's
+width. The time base is CMTW1 at 7.5 MHz, so a sample is a multiple of 32 ICLK cycles; the
+cells hold raw ticks and the scaling happens once, at the bank.
+
+TWO THINGS ON THAT ROW SURPRISE A READER COMPARING IT ACROSS ARCHES. Its `n` is one short of
+the switches the window held, the last switch's sample still standing in the pending cell when
+the report prints. And the cells, the stamps and the bank cost the SWINT handler something on
+every switch, which the throughput line sees and NO phase row does: this is a deferred-switch
+target, so `SWITCH_TO` and `ARCH_SWITCH` close before the handler ever runs.
 
 `BD_LOCK_HOLD` IS NOT THE SAME OBJECT ON BOTH POSTURES, and a reader comparing two boards has
 to know which. At one kernel core `klock_enter` and `klock_leave` are empty, so the sample is
@@ -311,6 +435,18 @@ address to a figure; the row above is the aggregate at the instant IT was read.
 line to `arch_console_write`. So a reader taking this row for the kernel's longest masked window
 is reading how much the report printed. Resolve the site before drawing any conclusion from the
 figure, and expect a row that moves when the console's output moves.
+
+**AND ON THAT BOARD IT CARRIES A TWO-STATE ALIGNMENT TERM OF ABOUT 170 CYCLES, WHICH IS NOT A
+COST AT ALL.** `console_tx_insert_line`'s entry address mod 4 decides which state a build
+lands in: at 0 the row reads about 2013, at 2 about 2185, over thirteen captures and eleven
+builds with no exception, each bit-exact across its own three windows. Two dead bytes of text
+flip it either way. The instruction stream is identical; only its phase against a 32-bit fetch
+word moves, which over an 87-byte copy is worth about two cycles a byte, and under the C
+extension the linker owes the function only 2-byte alignment so the phase a build gets is
+arbitrary. **So a `lock-hold` delta on this board is worth nothing until the two builds are
+shown to share that address bit**, and a perturbation designed to test placement must not be a
+multiple of four: four such controls found nothing here precisely because they were blind to
+the one bit that matters. A single `nop` is the control that works.
 
 ### What a doorbell ROUND is, and what it is not
 
@@ -555,9 +691,9 @@ Root cannot be the raiser: it holds no handle on itself, and placing a thread ta
 - THE LX6 IS NOT COVERED AND CANNOT BE. It counts 32 bits and swaps inline, so a span that
   waits for a resume still wraps into the row there and reads as a cost of about 2^32 cycles.
   Widening it needs a reader running more often than CCOUNT wraps, which is not a price a
-  bracket can pay. `BD_SWITCH` is not such a span: `switch.S` stamps both of its ends inside
-  one `xtensa_switch`, and the entry that banks a sample finds no end stamp where the exit that
-  writes one did not run.
+  bracket can pay. `BD_SWITCH` is not such a span: its two ends stand one `retw` apart, inside
+  one transit of the switcher on one core, and the entry that banks a sample finds no end stamp
+  where the resume that writes one did not run.
 
 ### The controls
 
@@ -668,8 +804,13 @@ closed span is a board that cannot deliver an injected line, which is refused.
 
 ## What a capture may claim
 
-- the banner carries the commit, and `-dirty` if the tree had uncommitted edits. A witness
-  taken from a dirty tree that does not say so is unfalsifiable. For a `bench` capture the
+- the banner carries the build label, and `-dirty` if the tree had uncommitted edits. A witness
+  taken from a dirty tree that does not say so is unfalsifiable. THE LABEL IS A COMMIT HASH ONLY
+  WHILE NO TAG IS REACHABLE: `cmake/build_stamp.cmake` stamps `git describe --dirty --always`,
+  which answers `<tag>` on a tree sitting on one and `<tag>-<n>-g<hash>` past it. A tagged tree
+  is what a re-measurement of an archived campaign runs on, so the capture chain recognises all
+  three shapes; where the console ate the word `commit` the label is recovered by holding the
+  surviving bytes against the one the build stamped. For a `bench` capture the
   label is COMPARED, against the one the build stamped into that image
   (`cmake/build_stamp.cmake`, carried to the capture in `EXPECT_COMMIT`), and the whole label
   including the suffix must match. A label the recovery could not read the suffix off is
@@ -726,8 +867,26 @@ closed span is a board that cannot deliver an injected line, which is refused.
   declaration and is stated, not judged.
 - a witness belongs to a TREE, not to a run: never re-message or rebase past a capture and
   keep calling it evidence.
-- a two-image board (`f302nucleo`, `bluepill-c8`) restarts TAP numbering at 1 in each image,
-  so a lone first plan line is HALF a run, not a short one.
+- a TAP capture is judged by `tests/integration/check_tap_stream.sh`, the same verdict the sim
+  and QEMU gates run, and not by this chain's count of the `ok` lines it can see. THAT IS THE
+  WHOLE POINT: a console that dropped lines under producer pressure shrinks the count with the
+  loss, so the count agrees with itself while the harness's trailer, computed inside the image
+  before anything went missing, says the run failed. Measured on `f411disco`: `ok: 123` against
+  a plan of `1..125`, `# 1 test(s) failed` in the same log, and a summary reading `not ok: 0`.
+  The arm count and the skip, partial and fault permission sets come out of the build's own
+  `kickos-selftest-manifest.txt`, one row per image, written by
+  `tests/integration/gates/selftest.cmake` from the very variables it hands its own entries. A
+  TAP app with no row, or no arm count, is REFUSED rather than checked against itself.
+  ONE ROUTE REACHES NO VERDICT: a USB CDC console is the device, so it loses the head of the
+  capture and with it the plan line. That capture says so and is reconciled by hand.
+- a SPLIT board restarts TAP numbering at 1 in each image, so a lone first plan line is a
+  FRACTION of a run and not a short one, and whatever reports the pass must say which image a
+  figure came from. How many images a board ships as is a property of ITS configure, published
+  by `user/apps/common/selftest/CMakeLists.txt` as `KICKOS_SELFTEST_IMAGES` and written beside
+  the build as `kickos-selftest-images.txt`; `bench-fleet.sh` asks for it through
+  `LIST_IMAGES=1 bench.sh <board>` rather than naming boards. It named them once, went two
+  splits stale on two of them and named a third nowhere at all, and a fleet pass then flashed
+  one image of three while reading green.
 - a board absent from the bus is REPORTED as absent. It is never silently skipped, and an
   absent board is not a pass.
 - a cycle figure is claimable only where the counter MOVED, and the capture says so or

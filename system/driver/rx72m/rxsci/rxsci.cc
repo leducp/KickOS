@@ -56,44 +56,34 @@ namespace
         .ep_posture = drv::KOS_DRV_EP_HANDOVER,
         .svc_kind = KOS_SVC_CONSOLE,
         .line_count = 2,
-        .thread_count = 3,
-        .barrier_after = 2,
+        .thread_count = 2,
+        .barrier_after = 1,
         // Both EDGE: a raise taken while the line is masked latches and redelivers on the
-        // rearm, and leg L5 requires it of RXI, which is relayed by a thread holding no
-        // window. TEI6 / ERI6 are LEVEL and are NOT claimed (see <rxsci.h>).
+        // rearm. TEI6 / ERI6 are LEVEL and are NOT claimed (see <rxsci.h>).
         .lines = {{SCI6_TXI_LINE, KOS_IRQ_EDGE}, {SCI6_RXI_LINE, KOS_IRQ_EDGE}},
+        // NO RELAY THREAD. One wait covers both lines and the doorbell, so the window
+        // holder services RXI directly instead of a second thread converting it into a
+        // raise on TXI's binding.
         .threads = {{.entry = irq_entry,
                      .name = "rxsciirq",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
-                     .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},
-                    // barrier_after = 2 spawns this one BEFORE the readiness poll, which is
-                    // sound only because it holds no WAIT cap on the endpoint: root stays the
-                    // sole receiver, so a readiness timeout is still reportable.
-                    //
-                    // It takes no block argument and touches no ring, but it is a member of
-                    // this driver's task and so its region set covers the whole block anyway.
-                    // The fleet's only thread in that position; the DEV window, which is what
-                    // isolation here is about, it does not have.
-                    {.entry = drv::edge_relay_thread,
-                     .name = "rxscirx",
-                     .prio_delta = 1,
-                     .arg = drv::KOS_DRV_ARG_NONE,
-                     .window_grant = false,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_SIGNAL}}},
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
                     {.entry = uart::console_thread,
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 2,
-                     // SIGNAL is a pure post on the binding, not a raise at the controller.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_SIGNAL}}}},
+                     // A BADGED copy: a pure raise of the doorbell's own bit, never a touch
+                     // of the controller.
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL,
+                               drv::doorbell_badge(2)}}}},
         .block_init = block_init
     };
 

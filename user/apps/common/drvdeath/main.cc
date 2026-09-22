@@ -21,7 +21,7 @@
 //      whole assertion.
 //
 // Under KICKOS_SIMCON_WINDOW_THREAD the driver is TWO threads: a service thread that
-// receives, and a thread that holds the register window and parks in kos_irq_wait. Step 4
+// receives, and a thread that holds the register window and parks in a notification wait. Step 4
 // then splits in two, because the reclaim must WAIT for the register holder, not for the
 // last receiver.
 
@@ -172,7 +172,7 @@ int main(int, char**)
         kos_print("[drvdeath] ERROR: no window thread handle\n");
         return 2;
     }
-    // Cancellation, not destruction: this wakes the thread out of kos_irq_wait with
+    // Cancellation, not destruction: this wakes the thread out of its notification wait with
     // -KOS_ECANCELED and it exits itself. Releasing the window is what finally lets the
     // sticky death note reclaim the console. The thread runs above root, so it has exited
     // by the time this returns.

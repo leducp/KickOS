@@ -261,7 +261,7 @@ namespace kickos
                     sched::wake(t);
                     break;
                 }
-                case WAIT_IRQ:
+                case WAIT_NOTIFY:
                 case WAIT_JOIN:
                 case WAIT_TASK_EMPTY:
                 {

@@ -10,7 +10,7 @@
 # wire ABI and the rings by driving kickos::uart::serve_one in a single thread:
 #   - the TX DOORBELL crosses threads. Nothing raises this line: the sim has no
 #     hardware source for it, so the only thing that can move a byte is the service
-#     thread's kos_irq_notify waking the IRQ thread out of kos_irq_wait. If the doorbell
+#     thread's doorbell raise waking the IRQ thread out of its notification wait. If the doorbell
 #     is broken, no byte is ever transmitted and the read returns nothing.
 #   - both rings stay SPSC with one writer per index in a DIFFERENT thread.
 #   - content, not just counts: the loopback must return every byte in order, so a mask or
@@ -70,7 +70,7 @@ printf '%s\n' "$OUT" | grep -q '\[uartloop\] sustained=4096 of 4096' \
 has '\[uartloop\] PASS (loopback in order; sustained output past a full ring)' \
   || fail "the loopback did not return the payload intact: see the wrote/read/match line above"
 
-# irq_wakes counts every irq_wait return, so it is the doorbell's own footprint. A PASS above
+# irq_wakes counts every wait return, so it is the doorbell's own footprint. A PASS above
 # is impossible at zero today, and this keeps it so if a change satisfies the read another
 # way.
 printf '%s\n' "$OUT" | grep -q 'wakes=0' \

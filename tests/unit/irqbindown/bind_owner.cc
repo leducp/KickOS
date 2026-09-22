@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// An IRQ binding remains valid while its server holds any CAP_WAIT alias.
-// Test closing a SIGNAL alias, closing one of two WAIT aliases, closing the
-// last WAIT alias, and thread teardown.
+// THE THREE HOLDERS of a notification's reference, one arm each and one arm for what each
+// one's release does NOT do: every capability naming it, the BIND, and each attached IRQ
+// binding. The bind's own reference is the AMP-3 lesson applied here: a bind leaning on
+// someone else's capability hands a stranger the object when that capability closes.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
@@ -40,33 +42,45 @@ namespace
     }
 
     // Add an alias and its object reference; cap_install does not increment it.
-    uint32_t alias(Thread* t, int obj, uint8_t rights)
+    uint32_t alias(Thread* t, int obj, CapType type, uint8_t rights)
     {
         IrqLock lock;
         uint32_t cap = KCAP_INVALID;
-        EXPECT_TRUE(obj_ref_inc(CapType::CAP_IRQ, obj, rights));
-        EXPECT_EQ(cap_install(t, obj, CapType::CAP_IRQ, rights, &cap), 0);
+        EXPECT_TRUE(obj_ref_inc(type, obj, rights));
+        EXPECT_EQ(cap_install(t, obj, type, rights, &cap), 0);
         return cap;
     }
 
-    Thread* bound_server(int obj)
+    Thread* bound_thread(int obj)
     {
-        IrqBinding const* const b = kernel().irq_bindings.resolve(obj);
-        if (b == nullptr)
+        Notification const* const n = kernel().notifies.resolve(obj);
+        if (n == nullptr)
         {
             return nullptr;
         }
-        return b->notify_target;
+        return n->bound;
+    }
+
+    uint32_t pending_of(int obj)
+    {
+        Notification const* const n = kernel().notifies.resolve(obj);
+        if (n == nullptr)
+        {
+            return 0;
+        }
+        return n->pending;
     }
 
     struct Bound
     {
         Thread* server;
-        uint32_t claim;
-        int obj;
-        uint32_t bit;
+        uint32_t note;  // the full-rights capability notify_create handed out
+        uint32_t claim; // the CAP_IRQ for LINE
+        int obj;        // the notification's global handle
     };
 
+    // A server holding a notification it is bound to, plus a claimed line attached to it on
+    // bit 0. The line's own capability stays open: the arms below decide when it closes.
     Bound bind_server()
     {
         Bound b{};
@@ -76,87 +90,132 @@ namespace
             IrqLock lock;
             sched::reschedule();
         }
-        EXPECT_EQ(irq_claim(b.server, LINE, 0, &b.claim), 0);
-        EXPECT_EQ(irq_notify_bind(b.server, b.claim, &b.bit), 0);
-        b.obj = obj_of(b.server, b.claim);
+        EXPECT_EQ(notify_create(b.server, &b.note), 0);
+        b.obj = obj_of(b.server, b.note);
         EXPECT_GE(b.obj, 0);
-        EXPECT_EQ(bound_server(b.obj), b.server);
+        EXPECT_EQ(notify_bind(b.server, b.note), 0);
+        EXPECT_EQ(bound_thread(b.obj), b.server);
+        EXPECT_EQ(irq_claim(b.server, LINE, 0, &b.claim), 0);
+        EXPECT_EQ(irq_bind_notify(b.server, b.claim, b.note), 0);
         return b;
     }
 }
 
-// Closing the doorbell capability must preserve the server's WAIT binding.
-TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_wait_binding_standing)
+// A SIGNAL copy is one holder among several: closing it neither ends the binding nor takes
+// the object away.
+TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_binding_standing)
 {
     Bound const b = bind_server();
-    uint32_t const doorbell = alias(b.server, b.obj, CAP_SIGNAL);
+    uint32_t const doorbell = alias(b.server, b.obj, CapType::CAP_NOTIFY, CAP_SIGNAL);
 
     {
         IrqLock lock;
         ASSERT_EQ(handle_close(b.server, doorbell), 0);
     }
 
-    EXPECT_EQ(bound_server(b.obj), b.server);
-    // Verify that the remaining authority still allows delivery.
-    EXPECT_EQ(irq_notify(b.server, b.claim), 0);
-    EXPECT_EQ(b.server->notify_pending & b.bit, b.bit);
+    EXPECT_EQ(bound_thread(b.obj), b.server);
+    // The remaining authority still delivers.
+    EXPECT_EQ(notify_signal(b.server, b.note), 0);
+    EXPECT_EQ(pending_of(b.obj) & 1u, 1u);
 }
 
-// Close the original claim before its WAIT alias. Keep a SIGNAL alias alive
-// so the binding stays allocated: a null target then proves release rather
-// than destruction of the whole object.
-TEST_F(IrqBindOwn, the_binding_ends_with_the_last_wait_alias_and_not_before)
+// THE BIND HOLDS A REFERENCE OF ITS OWN. Closing every capability while a thread is bound
+// must NOT free the object: it is still named by that thread's TCB.
+TEST_F(IrqBindOwn, the_last_capability_closing_under_a_live_bind_frees_nothing)
 {
     Bound const b = bind_server();
-    uint32_t const second = alias(b.server, b.obj, CAP_WAIT);
-    (void)alias(b.server, b.obj, CAP_SIGNAL);
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+        ASSERT_EQ(handle_close(b.server, b.note), 0);
     }
-    EXPECT_EQ(bound_server(b.obj), b.server);
 
-    {
-        IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, second), 0);
-    }
-    ASSERT_NE(kernel().irq_bindings.resolve(b.obj), nullptr) << "the slot went away instead";
-    EXPECT_EQ(bound_server(b.obj), nullptr);
+    ASSERT_NE(kernel().notifies.resolve(b.obj), nullptr) << "the slot went away under a bind";
+    EXPECT_EQ(bound_thread(b.obj), b.server);
+    EXPECT_EQ(notify_bound_handle(b.server->notify_bound), b.obj);
 }
 
-// Preserve an unconsumed event for the next server when the last WAIT cap closes.
-TEST_F(IrqBindOwn, a_post_taken_before_the_last_close_returns_to_the_latch)
+// An unconsumed raise is LEFT for the next server when the bound thread dies. That is the
+// whole of the handover, with the transfer removed: the bits were never in the TCB.
+TEST_F(IrqBindOwn, a_bound_thread_s_death_clears_the_binding_and_leaves_the_pending)
 {
     Bound const b = bind_server();
-    uint32_t const second = alias(b.server, b.obj, CAP_WAIT);
-    ASSERT_EQ(irq_notify(b.server, b.claim), 0);
-    ASSERT_EQ(b.server->notify_pending & b.bit, b.bit);
+    // A second holder, so the object survives the dying thread's own capability sweep and
+    // the arm can read what that sweep left.
+    Thread* const keeper = seat_pool(1, PRIO_SERVER);
+    attach_caps(keeper, KICKOS_CAP_CHILD_WIDTH);
+    (void)alias(keeper, b.obj, CapType::CAP_NOTIFY, CAP_WAIT);
+
+    ASSERT_EQ(notify_signal(b.server, b.note), 0);
+    ASSERT_EQ(pending_of(b.obj) & 1u, 1u);
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+        b.server->dying = true;
+        notify_unbind_self(b.server);
     }
-    EXPECT_EQ(b.server->notify_pending & b.bit, b.bit);
-
-    {
-        IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, second), 0);
-    }
-    EXPECT_EQ(b.server->notify_pending & b.bit, 0u);
-    EXPECT_EQ(kernel().irq_bindings.resolve(b.obj), nullptr);
-}
-
-// Teardown must release the binding after closing every alias.
-TEST_F(IrqBindOwn, teardown_releases_the_binding_through_the_last_alias_it_closes)
-{
-    Bound const b = bind_server();
-    (void)alias(b.server, b.obj, CAP_WAIT);
-    (void)alias(b.server, b.obj, CAP_SIGNAL);
-
-    b.server->dying = true;
     cap_teardown(b.server);
 
-    EXPECT_EQ(kernel().irq_bindings.resolve(b.obj), nullptr);
+    ASSERT_NE(kernel().notifies.resolve(b.obj), nullptr) << "the keeper's reference was lost";
+    EXPECT_EQ(bound_thread(b.obj), nullptr);
+    EXPECT_EQ(b.server->notify_bound, KOS_NOTIFY_UNBOUND);
+    EXPECT_EQ(pending_of(b.obj) & 1u, 1u) << "the next server's event was discarded";
+}
+
+// AN ATTACHED IRQ BINDING IS THE THIRD HOLDER. With the bind gone and every capability
+// closed, the line's own reference is what is left, and it goes with the line.
+TEST_F(IrqBindOwn, the_attached_line_holds_the_last_reference_and_releases_it_at_its_own_death)
+{
+    Bound const b = bind_server();
+
+    {
+        IrqLock lock;
+        ASSERT_EQ(notify_unbind(b.server, b.note), 0);
+        ASSERT_EQ(handle_close(b.server, b.note), 0);
+    }
+    ASSERT_NE(kernel().notifies.resolve(b.obj), nullptr)
+        << "the attached line's reference was never taken";
+
+    {
+        IrqLock lock;
+        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+    }
+    EXPECT_EQ(kernel().irq_bindings.resolve(obj_of(b.server, b.claim)), nullptr);
+    EXPECT_EQ(kernel().notifies.resolve(b.obj), nullptr) << "the object outlived every holder";
+}
+
+// Teardown releases both kinds through the sweep, with the bind released ahead of it.
+TEST_F(IrqBindOwn, teardown_releases_the_object_through_the_last_holder_it_closes)
+{
+    Bound const b = bind_server();
+    (void)alias(b.server, b.obj, CapType::CAP_NOTIFY, CAP_WAIT);
+    (void)alias(b.server, b.obj, CapType::CAP_NOTIFY, CAP_SIGNAL);
+
+    {
+        IrqLock lock;
+        b.server->dying = true;
+        notify_unbind_self(b.server);
+    }
+    cap_teardown(b.server);
+
+    EXPECT_EQ(kernel().notifies.resolve(b.obj), nullptr);
     EXPECT_EQ(b.server->cap_irq_live, 0);
+    EXPECT_EQ(b.server->notify_bound, KOS_NOTIFY_UNBOUND);
+}
+
+// A second thread cannot take a binding another thread holds, and a thread already bound
+// cannot take a second object: the TCB names exactly one.
+TEST_F(IrqBindOwn, a_bind_is_refused_both_ways_round)
+{
+    Bound const b = bind_server();
+    Thread* const other = seat_pool(1, PRIO_SERVER);
+    attach_caps(other, KICKOS_CAP_CHILD_WIDTH);
+    uint32_t const theirs = alias(other, b.obj, CapType::CAP_NOTIFY, CAP_WAIT);
+    EXPECT_EQ(notify_bind(other, theirs), -KOS_EBUSY);
+
+    uint32_t second = KCAP_INVALID;
+    ASSERT_EQ(notify_create(b.server, &second), 0);
+    EXPECT_EQ(notify_bind(b.server, second), -KOS_EBUSY);
+    // Idempotent on the object it already holds, and it must not take a second reference.
+    EXPECT_EQ(notify_bind(b.server, b.note), 0);
 }

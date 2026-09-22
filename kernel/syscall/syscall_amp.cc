@@ -207,7 +207,7 @@ namespace kickos
             {
                 if (not endpoint_far_reply_route(&tag, &node))
                 {
-                    return KOS_AMP_V_EMPTY;
+                    return KOS_AMP_V_EMPTY | KOS_AMP_FORGE_NO_CALLER;
                 }
                 if (selector == KOS_AMP_FORGE_REPLY_WRONG_RING)
                 {
@@ -225,7 +225,7 @@ namespace kickos
                     }
                     if (node >= amp::NODE_MAX)
                     {
-                        return KOS_AMP_V_EMPTY; // a two-node partition has no third ring
+                        return KOS_AMP_V_EMPTY | KOS_AMP_FORGE_NO_RING;
                     }
                 }
                 else if (selector == KOS_AMP_FORGE_REPLY_STALE_SEQ)
@@ -244,11 +244,33 @@ namespace kickos
             {
                 len = 0u;
             }
-            if (amp::forge_reply(node, tag, len))
+            amp::ForgedReply const f = amp::forge_reply(node, tag, len);
+            if (not f.published)
             {
-                return KOS_AMP_V_TOOK;
+                return KOS_AMP_V_EMPTY | KOS_AMP_FORGE_NO_RING;
             }
-            return KOS_AMP_V_EMPTY;
+            uint64_t bits = 0;
+            if (f.offered)
+            {
+                bits = bits | KOS_AMP_FORGE_OFFERED;
+            }
+            if (f.counted)
+            {
+                bits = bits | KOS_AMP_FORGE_COUNTED;
+            }
+            // Under the same IrqLock as the dispatch above, so this answers whether THAT
+            // publication left a caller parked and not whether one is parked now.
+            amp::ReplyTag after = {};
+            uint32_t after_node = 0;
+            if (endpoint_far_reply_route(&after, &after_node))
+            {
+                bits = bits | KOS_AMP_FORGE_STILL_PARKED;
+            }
+            if (f.delivered)
+            {
+                return KOS_AMP_V_TOOK | bits;
+            }
+            return KOS_AMP_V_EMPTY | bits;
         }
 
         uint64_t amp_forge(uint32_t selector)
@@ -592,6 +614,22 @@ namespace kickos
                     return static_cast<uint64_t>(-KOS_EINVAL);
                 }
                 amp::app_alive_set(port + 1u);
+                return 0;
+            }
+            case KOS_AMP_OP_APP_SERVED:
+            {
+                return amp::counts(static_cast<uint32_t>(a1)).app_served.load();
+            }
+            case KOS_AMP_OP_APP_SERVED_BUMP:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                // No argument at all: the row is this node's, so nothing a caller supplies can
+                // make it speak for a peer.
+                amp::app_served_bump();
                 return 0;
             }
             case KOS_AMP_OP_PEER_HOLD:

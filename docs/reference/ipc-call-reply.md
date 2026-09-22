@@ -280,10 +280,10 @@ the return value is already fixed cannot answer.
 
 **CONSUMING A NOTIFICATION REARMS ITS LINE, and that is not bookkeeping.** The first-level ISR
 masks the line, and only a `needs_rearm` flag set in thread context lets a later `kos_irq_ack`,
-or the next accepting wait's own entry, lift that mask. So this call does both of the things a
-`kos_irq_wait` does around a line: on ENTRY it rearms each accepted line a previous pass
-consumed, which is what keeps `kos_irq_ack` OPTIONAL exactly as it is for a per-line wait, and
-on consuming a bit it flags that line so a later ack can lift the mask early. Without the
+or the next accepting wait's own entry, lift that mask. So this call does both of the things
+`kos_notify_wait` does around a line: on ENTRY it rearms every SIGNALLER CHAINED ON THE BOUND
+OBJECT whose badge the accept mask covers, which is what keeps `kos_irq_ack` OPTIONAL, and on
+consuming a bit it flags that signaller so a later ack can lift the mask early. Without the
 second, a driver takes exactly ONE interrupt per line and then goes silent with no error on any
 path.
 
@@ -301,42 +301,51 @@ arm, so `CALL_SLOW_TOTAL`'s n falls toward zero once a server loop adopts this a
 `CALL_TOTAL`'s n rises by the same amount. On a backend where the eager wake
 was left in, neither moves.
 
-## The IRQ notification, and which waits admit one
+## The notification, and which waits admit one
 
-An interrupt is delivered as ONE BIT PER LINE in the SERVING thread's own
-`Thread::notify_pending`, not as a per-line notification object.
+An interrupt is delivered as ONE BIT of a NOTIFICATION OBJECT (`kickos/notify.h`) the serving
+thread is bound to. The object is first-class: nothing about it is an IRQ concept, and one with
+no line attached is a complete notification.
 
-- **The bind is explicit and it is the SERVER's.** `kos_irq_attach(irq_cap, &mask)` says "this
-  thread serves this line" and answers the single-bit mask the line will arrive in. It cannot
-  be done at the claim: a driver's lines are claimed by the SPAWNER, which needs `KOS_AUTH_IRQ`,
-  delegated into the threads it spawns, and then closed, so the claiming thread is neither the
-  waiter nor a holder afterwards. One binding is also routinely delegated twice, `CAP_WAIT` to
-  the thread that parks on the line and `CAP_SIGNAL` to the peer that rings it as a doorbell.
-- **A second thread binding the same line is refused `-KOS_EBUSY`**, as a second claim of the
-  line is: one server per line, as one owner per line.
-- **A raise arriving before any bind LATCHES on the binding** and the bind delivers it. That is
-  what keeps a `kos_irq_notify` doorbell rung before the server's first wait from being
-  dropped, which is the startup race the doorbell exists to win.
-- **A post onto a bit already set answers `-KOS_EALREADY`.** The post is absorbed, as it must
-  be, one bit per line carrying no count; the code says the doorbell is working and the
-  consumer has not drained it yet, never that the ring was lost. A poster that treats it as a
-  failure and retries is reading it backwards.
-- **A raise the server never consumed goes BACK to that latch when its bind ends**, which is
-  the same startup race read from the other end: another capability can keep the binding alive
-  across a server's death, and the ISR has already masked the line. Dropped instead of handed
-  back, the event is nowhere and the line is masked with no wait return left to flag it for
-  rearm, so the replacement server is silent for good.
-- **`kos_irq_wait` refuses `-KOS_EPERM` from a thread that does not hold the bind**, there
-  being no word for the line to arrive in. A pending cancel still answers `-KOS_ECANCELED`
-  first: a killed thread is owed that code from every later wait.
-- **Which waits ACCEPT a notification**: `KOS_SYS_IRQ_WAIT` and its timed form, for the one
-  line they name, and `KOS_SYS_REPLY_RECV` for the lines its `notify` mask names. Nothing else.
-  A bit set on a thread parked in a mutex, a plain `sem_wait` or a call's reply wait is NOT a
-  wake: those parks have no result channel for it, and the bits are collected by the thread's
-  next accepting wait.
-- **A mask naming a line the caller does not serve is DROPPED, not honoured.** The bit is a
-  binding's pool index, which is not a capability, so the bind is what authorises the wait to
-  touch that line and the mask is narrowed to it.
+- **The badge belongs to the CAPABILITY and is set at the copy.** `kos_notify_badge(src, bit,
+  &out)` mints a second name for the same object carrying `bit` and the source's rights; the
+  source must itself be UNBADGED, which is what makes an unbadged capability the unconfined
+  name and a badged one reach its own bit and no other. It cannot be re-seated: a holder able
+  to mint from its own badged copy reaches every bit and the confinement is vacuous.
+- **A line is one signaller among others.** `kos_irq_bind_notify(irq_cap, notify_cap)` attaches
+  the line, copying that capability's badge INTO the binding, because ISR context may resolve
+  no capability, walk no pool and allocate nothing. It is ONE-WAY: nothing detaches a live
+  binding, which is what makes the binding's raw pointer to the object sound. A holder of a
+  `CAP_SIGNAL` copy calling `kos_notify` is another signaller, and it touches no controller.
+- **The bind is explicit and it is the WAITER's.** `kos_notify_bind(notify_cap)` says "this
+  thread is this object's one waiter". It cannot be done at the claim: a driver's lines are
+  claimed by the SPAWNER, which needs `KOS_AUTH_IRQ`, delegated into the threads it spawns, and
+  then closed, so the claiming thread is neither the waiter nor a holder afterwards.
+- **It returns NOTHING.** A waiter cannot learn its signallers' badges, so the honest accept-all
+  mask is an ordinary argument of the wait rather than a value the bind could pretend to know.
+- **A second thread binding the same object is refused `-KOS_EBUSY`**, and so is a thread
+  already bound to a different one: the TCB names exactly one.
+- **A raise arriving before any bind LATCHES IN THE OBJECT** and the next wait takes it. That is
+  what keeps a doorbell rung before the server's first wait from being dropped, which is the
+  startup race the doorbell exists to win. It needs no transfer: the bits were never in a TCB.
+- **A raise onto a bit already set answers `-KOS_EALREADY`.** The raise is absorbed, as it must
+  be, one bit carrying no count; the code says the doorbell is working and the consumer has not
+  drained it yet, never that the ring was lost. A signaller that treats it as a failure and
+  retries is reading it backwards.
+- **A raise the server never consumed STAYS pending when its bind ends**, which is the same
+  startup race read from the other end, and it is the whole of a driver handover. The object
+  outlives the server because the BIND held a reference of its own: leaning on the binder's
+  capability would hand a stranger the object the moment that capability closed.
+- **`kos_notify_wait` refuses `-KOS_EPERM` from a thread that does not hold the bind**, there
+  being no wait edge for the object to deliver along. A pending cancel still answers
+  `-KOS_ECANCELED` first: a killed thread is owed that code from every later wait.
+- **Which waits ACCEPT a notification**: `KOS_SYS_NOTIFY_WAIT`, for the bits its mask names, and
+  `KOS_SYS_REPLY_RECV`, for the bits its `notify` mask names. Nothing else. A bit set on a
+  thread parked in a mutex, a plain `sem_wait` or a call's reply wait is NOT a wake: those parks
+  have no result channel for it, and the bits are collected by the thread's next accepting wait.
+- **The mask is not an authority test.** Every bit of the object belongs to its bound waiter, so
+  a mask is what that waiter is willing to be woken for and nothing else; the BADGE on a
+  signaller's capability is what confines a signaller to one bit.
 - **A message and a notification are additive, not alternative.** `opts->notify` is non-zero
   iff at least one accepted bit fired and was consumed by this wait, and the return value says
   separately whether a message arrived. A notification-only return is `-KOS_ENOTIFY`, which
@@ -382,9 +391,9 @@ costs nothing there: the binding, the bind and the post all compile and link on 
 and the rest of the IPC suite is green on four cores.
 
 **The notification bound and the reply bound do not interact.** `cap_can_take_reply` gates on a
-free dynamic slot and on `cap_reply_live(c) < KICKOS_CAP_REPLY_MAX`. A notification is not a
-capability and consumes no slot, so a wait that returns one alone mints nothing and leaves the
-table as it found it.
+free dynamic slot and on `cap_reply_live(c) < KICKOS_CAP_REPLY_MAX`. A raise is not a capability
+and consumes no slot, so a wait that returns one alone mints nothing and leaves the table as it
+found it.
 
 ## The receive out-struct
 

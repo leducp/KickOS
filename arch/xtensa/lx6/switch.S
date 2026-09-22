@@ -84,11 +84,12 @@ xtensa_switch:
        exit below cannot host a call, so the cost lands one switch late. a2=from/a3=to
        survive the call4 (they sit below the callee window).
 
-       THE END CELL IS CONSUMED ON READ. Only the COOP exit below refreshes it: the
-       IRQ-frame resume leaves it holding a stamp OLDER than the start written a few
-       instructions further down, and the next entry would subtract the two and bank a
-       delta near 2^32 as a switch cost. Cleared here, a switch that resumed a preempted
-       thread contributes no sample rather than a wrong one.
+       THE END CELL IS CONSUMED ON READ. Only arch_switch refreshes it, past the retw at
+       the COOP exit below: an IRQ-frame resume never returns there and leaves the cell
+       holding a stamp OLDER than the start written a few instructions further down, and the
+       next entry would subtract the two and bank a delta near 2^32 as a switch cost. Cleared
+       here, a switch that resumed a preempted thread contributes no sample rather than a
+       wrong one.
 
        BOTH CELLS ARE THIS CORE'S. CCOUNT is per core on this die, so a pair read across
        cores is not a duration at all, and a shared cell would also bank one core's switch
@@ -150,13 +151,9 @@ xtensa_switch:
     SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
-#if KICKOS_BENCH
-    /* Stamp this switch's END (COOP path). a5/a6/a7 are dead here (retw discards this
-       window); the next switch entry banks (end - start). */
-    rsr.ccount a5
-    PERCPU_CELL a6, g_bench_sw_end, a7
-    s32i    a5, a6, 0
-#endif
+    /* The bench window is NOT closed here. arch_switch stamps the end cell where this retw
+       lands, so the ps write, the windowed return and the underflow that reloads the
+       incoming frame from its base save area are all inside the measured span. */
     wsr.ps  a4
     rsync
     retw

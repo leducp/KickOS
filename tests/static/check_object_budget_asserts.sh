@@ -75,15 +75,43 @@ $(sed 's/^/        /' "$_w/striperr")"
 $(sed 's/^/        /' "$_w/readerr")"
 }
 
+# Whether the stripped header carries a static_assert naming <budget>, whatever its shape.
+# The reader parses one shape, so an assert spelled past it leaves no ASSERT record; this is
+# what tells that apart from an assert that is not there.
+assert_mentions() { # <strippedfile> <budget>
+    awk -v B="$2" '
+        { all = all " " $0 }
+        END {
+            gsub(/[[:space:]]+/, " ", all)
+            n = split(all, parts, /static_assert[[:space:]]*\(/)
+            for (i = 2; i <= n; i++) {
+                s = parts[i]
+                sub(/;.*$/, "", s)
+                if (index(s, B) > 0) { exit 0 }
+            }
+            exit 1
+        }' "$1"
+}
+
 # judge <workdir>, leaving <workdir>/findings and printing the kinds it read.
 judge() {
     _w="$1"
     : > "$_w/findings"
     _kinds="$(awk '$1 == "CEIL" { print $2 }' "$_w/records")"
     _n="$(printf '%s\n' "$_kinds" | grep -c '[^[:blank:]]')"
+    # THE LANDMARK BEFORE THE COUNT: no CEIL record from a header the reader never entered is
+    # not a switch charging nothing, it is a function this reader did not find.
+    _seen="$(awk '$1 == "CEILSEEN" { print $2; exit }' "$_w/records")"
+    if [ "${_seen:-0}" -eq 0 ]; then
+        printf 'the reader never entered task_object_ceiling: nothing in the header matches\n' >> "$_w/findings"
+        printf '    /constexpr int task_object_ceiling(/, so the charged kinds are UNKNOWN and not\n' >> "$_w/findings"
+        printf '    none. The function was renamed, respelled or moved out of this header\n' >> "$_w/findings"
+        return 0
+    fi
     if [ "$_n" -lt 2 ]; then
-        printf 'the reader found %s charged kind(s) in task_object_ceiling; a reader that\n' "$_n" >> "$_w/findings"
-        printf 'cannot see the switch would report a clean tree over an unguarded one\n' >> "$_w/findings"
+        printf 'the reader entered task_object_ceiling and found %s charged kind(s) in it,\n' "$_n" >> "$_w/findings"
+        printf '    where every board charges at least two. Either the switch narrowed, or its arms\n' >> "$_w/findings"
+        printf '    no longer have the `case CapType::CAP_x: return <macro>;` shape this reader keys on\n' >> "$_w/findings"
         return 0
     fi
     # A pipeline subshell cannot carry _seen_pools out, so the loop reads a FILE.
@@ -94,6 +122,14 @@ judge() {
         awk -v B="$_bud" '$1 == "ASSERT" && $3 == B' "$_w/records" > "$_w/hit"
         _h="$(grep -c '[^[:blank:]]' "$_w/hit")"
         if [ "$_h" -eq 0 ]; then
+            if assert_mentions "$_w/stripped" "$_bud"; then
+                printf '%s charges %s and a static_assert names it that this reader could not\n' \
+                       "$_kind" "$_bud" >> "$_w/findings"
+                printf '    parse, so whether it holds the budget below its pool is UNKNOWN and not no.\n' >> "$_w/findings"
+                printf '    The shape read is `<pool> == 0 or <budget> < <pool>`; restore it, or teach\n' >> "$_w/findings"
+                printf '    tests/static/object_budget_asserts.awk the new one\n' >> "$_w/findings"
+                continue
+            fi
             printf '%s charges %s and NO static_assert holds it below its pool: one task\n' \
                    "$_kind" "$_bud" >> "$_w/findings"
             printf '    could take the last slot of that pool on any board that sized the two alike\n' >> "$_w/findings"
@@ -211,9 +247,30 @@ selftest_expect relaxed 1
 # The second kind measured against the FIRST kind's pool.
 write_case "$selftest_dir/shared.h" "<" KICKOS_MAX_A yes
 selftest_expect shared 1
-# A header with no switch at all: the reader must refuse rather than report clean.
+# A header with no switch at all: the reader must refuse rather than report clean, and the
+# refusal must name the LANDMARK it could not find rather than a count of charged kinds.
 printf 'namespace kickos { int nothing_here = 0; }\n' > "$selftest_dir/blind.h"
 selftest_expect blind 1
+grep -q 'never entered task_object_ceiling' "$selftest_dir/blind/findings" \
+    || fail "self-test 'blind': the reader reported a count over a header it never entered, so
+    a renamed ceiling function reads as a switch that charges nothing"
+
+# The function respelled: the arms are all there and the landmark is not.
+sed 's/constexpr int task_object_ceiling/constexpr int task_object_ceiling_v2/' \
+    "$selftest_dir/good.h" > "$selftest_dir/renamed.h"
+selftest_expect renamed 1
+grep -q 'never entered task_object_ceiling' "$selftest_dir/renamed/findings" \
+    || fail "self-test 'renamed': a header carrying the whole switch under another name is
+    reported as one that charges nothing, which is a claim about the tree and not what was read"
+
+# THE ASSERT SPELLED PAST THE PARSE: present, naming the budget, and in the other order. The
+# reader emits no ASSERT record for it, which is the same records as a deleted assert.
+sed 's/KICKOS_MAX_B == 0$/KICKOS_TASK_B_BUDGET < KICKOS_MAX_B/; s/or KICKOS_TASK_B_BUDGET < KICKOS_MAX_B,$/or KICKOS_MAX_B == 0,/' \
+    "$selftest_dir/good.h" > "$selftest_dir/reordered.h"
+selftest_expect reordered 1
+grep -q 'could not' "$selftest_dir/reordered/findings" \
+    || fail "self-test 'reordered': an assert this reader cannot parse is reported as an assert
+    that is not there, so a respelling reads as the deletion this gate exists to catch"
 
 # --- the tree ----------------------------------------------------------------------------
 git ls-files --error-unmatch "$HEADER" > /dev/null 2>&1 \

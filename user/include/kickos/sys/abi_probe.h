@@ -210,6 +210,15 @@ enum kos_amp_op
     // receive-info to a local buffer failed. Count once per arrival; separate
     // from REPLY_UNSENT, which reports malformed peers.
     KOS_AMP_OP_DELIVER_FAULT = 27,
+    /* (node) -> calls a thread on that node received and answered itself; zero
+     * for an out-of-range node. Apart from TOOK and SENT, which both move for a
+     * call the kernel answered with its own empty reply.
+     */
+    KOS_AMP_OP_APP_SERVED = 28,
+    /* () -> count one call this node's app answered. Root only. The row is this
+     * node's, derived in the kernel; never accept a node ID. Return 0.
+     */
+    KOS_AMP_OP_APP_SERVED_BUMP = 29,
     /* Invalid-op test selector, never dispatched. Keep last so new ops cannot
      * turn the rejection test into a valid request.
      */
@@ -230,8 +239,9 @@ enum
     KOS_AMP_FORGE_SELF_SEND = 7,   // a send to the LOCAL node, whose ring nothing drains
     KOS_AMP_FORGE_DEPTH_RESET = 8, // a depth left standing, then a well-formed publication:
                                    // the answer is whether the ring recovered
-    /* Inject replies for a caller parked on a remote call. Return KOS_AMP_V_TOOK
-     * if delivered or KOS_AMP_V_EMPTY if tag validation drops them.
+    /* Inject replies for a caller parked on a remote call. The verdict is
+     * KOS_AMP_V_TOOK if delivered or KOS_AMP_V_EMPTY if tag validation drops them,
+     * with the KOS_AMP_FORGE_* result bits below saying which of them the call did.
      */
     KOS_AMP_FORGE_REPLY_UNPARKED = 9,   // a tag for a thread that is not parked at all
     KOS_AMP_FORGE_REPLY_WRONG_RING = 10, // the parked caller's own tag, on another node's ring
@@ -291,6 +301,24 @@ enum
 
 #define KOS_AMP_PEER_CALL_HELD 0x100u
 #define KOS_AMP_PEER_CALL_VERDICT(x) ((x) & 0xFFu)
+
+/* Reply-forge result bits, above the verdict in the low byte. The verdict alone cannot
+ * separate a reply the guard refused from a publication that never reached the guard:
+ * both leave the caller unwoken and both read KOS_AMP_V_EMPTY. Every bit is decided
+ * inside the forge's own critical section, so a caller reading them attributes one
+ * publication rather than summing a window every node feeds.
+ */
+#define KOS_AMP_FORGE_VERDICT(x) ((x) & 0xFFu)
+/* The publication was taken back by this same call, so the guard judged it. */
+#define KOS_AMP_FORGE_OFFERED 0x100u
+/* The refusal moved this node's dropped-reply count by exactly one. */
+#define KOS_AMP_FORGE_COUNTED 0x200u
+/* No thread was parked on a far call, so no tag could be routed and nothing was published. */
+#define KOS_AMP_FORGE_NO_CALLER 0x400u
+/* The partition holds no ring this forge needs, as a two-node one holds no third. */
+#define KOS_AMP_FORGE_NO_RING 0x800u
+/* A caller was still parked on a far call when the dispatch returned. */
+#define KOS_AMP_FORGE_STILL_PARKED 0x1000u
 
 enum
 {

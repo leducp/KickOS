@@ -610,6 +610,15 @@ config KICKOS_MAX_IRQ_HANDLES
 	range 0 32
 	default 8
 
+config KICKOS_MAX_NOTIFY
+	int "Notification objects"
+	range 0 32
+	default 8
+	help
+	  The pool behind CAP_NOTIFY. One object carries 32 badge bits and at most one
+	  bound waiter, so a server serving several lines needs one, not one per line.
+	  The ceiling of 32 is the hold set's width, as for every charged pool.
+
 config KICKOS_TASK_SEMAPHORE_BUDGET
 	int "Semaphores one task may hold"
 	range 1 31
@@ -679,6 +688,14 @@ config KICKOS_TASK_IRQ_HANDLE_BUDGET
 	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the tier-1 IRQ binding pool: strictly below
 	  KICKOS_MAX_IRQ_HANDLES or the build fails. An in-kernel irq_attach takes no
 	  binding and does not spend this.
+
+config KICKOS_TASK_NOTIFY_BUDGET
+	int "Notification objects one task may hold"
+	range 1 31
+	default 7
+	help
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the notification pool: strictly below
+	  KICKOS_MAX_NOTIFY or the build fails.
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"

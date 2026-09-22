@@ -8,6 +8,10 @@
 # not budgets: a skip, a partial or a faulting thread whose name is not listed fails the
 # gate, and a listed name that did not skip / go partial / fault is a NOTE, never a failure.
 #
+# A VACUITY skip is the exception and takes no list at all: it is permitted whatever its name
+# and expected nowhere. The stream is what says which kind of skip it is; see VACUITY_MARK
+# below for why it cannot be a fourth set here.
+#
 # A PARTIAL is an arm that ran its invariant and left a sub-case unexercised on this
 # board. It reports `ok`, so no plan/case reconciliation can see it and only the by-name
 # set can. That matters because a mechanism regression makes an arm take its PARTIAL
@@ -17,8 +21,8 @@
 # <expected-arms> is what makes the suite non-vacuous. tap.cc plans `1..N` from the
 # RUNTIME registry, so a deleted arm shrinks the plan and the case count in lockstep and
 # no self-consistent parse can see it. The caller owns the number because a large minority
-# of the arms are #if-conditional (posture, MPU, self-test syscalls) and the split image
-# cuts the set again by KICKOS_SELFTEST_PART, so the total is per-posture AND per-image.
+# of the arms are #if-conditional (posture, MPU, self-test syscalls) and a split image
+# carries only its own run of registry regions, so the total is per-posture AND per-image.
 #
 # usage: <tap stream> | check_tap_stream.sh <label> <expected-arms>
 
@@ -34,6 +38,41 @@ out="$(tr -d '\r')"
 expect_skips="$(printf '%s' "${EXPECT_SKIPS:-}" | tr ',;\t\n' '    ')"
 expect_partials="$(printf '%s' "${EXPECT_PARTIALS:-}" | tr ',;\t\n' '    ')"
 expect_faults="$(printf '%s' "${EXPECT_FAULTS:-}" | tr ',;\t\n' '    ')"
+
+# THE PRODUCER SAYS WHEN IT DROPPED OUTPUT, and it is the only thing that can: every count
+# below reconciles against the lines that SURVIVED, so a capture missing whole lines can
+# satisfy all of them and still not be the run it claims to be. <kickos/sys/emit.h> gives the
+# kernel console ring one full ring of wire time to take a write and then drops the
+# remainder, counting the bytes; the count reaches the wire as this marker on the first write
+# that fits after the loss.
+#
+# NOT ANCHORED, and counted by occurrence rather than by line: the write that was cut can end
+# mid-line, and a second writer on a shared console prepends its bytes, so the marker is not
+# always the start of a capture line. It is checked FIRST so a truncated capture is named as
+# one instead of being reported as a plan that does not add up.
+DROP_MARK="# console dropped"
+
+# Planted before it is trusted, as a minimal pair: a parse that matches nothing reports every
+# capture whole, which is the reading this clause exists to end.
+literal_count "ok 1 - a
+$DROP_MARK 48 byte(s)
+ok 2 - b" "$DROP_MARK"
+[ "$KOS_LITERAL_N" = 1 ] \
+    || fail "the drop-marker parse reads $KOS_LITERAL_N marker(s) out of a planted stream
+  carrying one, so a producer reporting lost output would be read as a clean capture"
+literal_count "ok 1 - a
+ok 2 - b" "$DROP_MARK"
+[ "$KOS_LITERAL_N" = 0 ] \
+    || fail "the drop-marker parse fires on a stream carrying no marker ($KOS_LITERAL_N)"
+
+literal_count "$out" "$DROP_MARK"
+if [ "$KOS_LITERAL_N" -gt 0 ]; then
+    printf '%s\n' "$out" | grep -F -- "$DROP_MARK"
+    fail "the producer reports console output it could not deliver ($KOS_LITERAL_N marker(s)):
+  this capture is MISSING LINES and is a witness for nothing, whatever the counts below
+  reconcile to. The ring refused a write for a whole ring's wire time, which is a console the
+  run outran or one that stopped draining, not a test result"
+fi
 
 # THE VERDICT IS THE HARNESS'S OWN TALLY. Above one core arch_console_write is a byte-at-a-time
 # device loop under no lock, so a peer's status line lands INSIDE another line character by
@@ -58,6 +97,28 @@ case "$verdict" in
   that shredded it): tests/tap/tap.cc emits one whatever the outcome, so its absence is never
   'nothing to report'" ;;
 esac
+# A LINE THE HARNESS COULD NOT HOLD IS CUT AND MARKED, AND NOTHING ELSE HERE CAN SEE IT.
+# tests/tap/tap.cc assembles each line in a fixed buffer and restores the newline it would
+# otherwise have lost, so the stream stays countable and every reconciliation below reads
+# clean while a reason, a diagnostic or a failure's own file and line sit truncated. The
+# marker is the only trace, and a cut reason is exactly the text a reader needs most.
+TRUNC_MARK='<TRUNCATED>'
+
+# Planted as a MINIMAL PAIR before the search is trusted: a checker that matches nothing
+# reports every stream whole.
+_planted="ok 7 - an_arm # SKIP a reason that ran out of roo$TRUNC_MARK"
+printf '%s\n' "$_planted" | grep -qF "$TRUNC_MARK" \
+    || fail "the truncation search does not see a planted '$TRUNC_MARK' line, so a cut line
+  would pass every clause in this gate"
+printf '%s\n' "ok 7 - an_arm # SKIP a reason with room to spare" | grep -qF "$TRUNC_MARK" \
+    && fail "the truncation search fires on a line that was NOT cut, so it says nothing"
+
+if printf '%s\n' "$out" | grep -qF "$TRUNC_MARK"; then
+    printf '%s\n' "$out" | grep -F "$TRUNC_MARK"
+    fail "the line(s) above overran the harness's assembly buffer and were emitted CUT:
+  shorten what they format. The stream itself is intact, so no other clause here refuses it"
+fi
+
 # ONLY A NAMED THREAD MAY FAULT. A thread-fault record from any other thread is an arm whose
 # thread died the wrong way, and thread-scoped isolation means the plan, case and directive
 # checks above still reconcile and read green, so only this clause can see it. A slay redirect
@@ -243,22 +304,75 @@ else
     fi
 fi
 
+# THE STREAM SAYS WHICH CATEGORY A SKIP IS, AND NOTHING HERE LOOKS IT UP. Two kinds reach the
+# wire under the SKIP directive and they are judged by OPPOSITE rules:
+#
+#   PROVISIONING, `# SKIP <reason>`: this board cannot host the arm. DECLARED in EXPECT_SKIPS;
+#     an undeclared one FAILS and a declared one that did not skip is a NOTE.
+#   VACUITY, `# SKIP VACUOUS <reason>`: the timing window the arm's claim rests on did not hold
+#     on this run, so the arm asserted nothing. PERMITTED whatever its name, NEVER expected.
+#
+# A vacuity skip may not join the declared set. That set is a MEASUREMENT and not slack, a
+# listed arm that did not skip being only a note, so an arm gone PERMANENTLY vacuous would read
+# green forever, which is the failure the detection exists to end. Nor may there be a separate
+# list of the arms allowed to go vacuous: that is a second authority beside the arms, stale the
+# moment one of them is repaired. So the category travels ON THE WIRE and is read here.
+#
+# IT STAYS A SKIP ON THE WIRE on purpose. A directive of its own would have read as a plain
+# pass to every reader not taught the category, check_amp_peer_arms.sh's armed() among them,
+# where a peer-dependent arm silently declining is exactly what that gate exists to refuse.
+#
+# PERMITTED IS NOT SILENT: each one is printed by name with its reason, and the count is
+# reconciled against the harness's own `# vacuous: N`. Without that reconciliation a marker
+# this parse no longer matched would report every run free of vacuity, which is the same false
+# green wearing the new name.
+VACUITY_MARK='SKIP VACUOUS'
+
+# The names carrying <DIRECTIVE>, one per line. `SKIP` is a PREFIX of `SKIP VACUOUS`, so the
+# ordinary-skip caller subtracts the vacuity names instead of trusting this to separate them.
+directive_names() { # <DIRECTIVE>
+    sed -n "s/^ok [0-9][0-9]* - \([A-Za-z0-9_]*\) # $1.*/\1/p"
+}
+
+# Planted before either parse is trusted, as MINIMAL PAIRS: the two differ only in the marker,
+# so a probe passing for the wrong reason cannot be credited to the right one.
+_planted="ok 7 - an_arm # $VACUITY_MARK the waiter reaching its lock: due 3 us PAST a 120 us span"
+_probe="$(printf '%s\n' "$_planted" | directive_names "$VACUITY_MARK")"
+[ "$_probe" = an_arm ] \
+    || fail "the vacuity parse reads no name out of a planted '# $VACUITY_MARK' line (got
+  '$_probe'), so every run would report no vacuity at all"
+_probe="$(printf '%s\n' "$_planted" | directive_names SKIP)"
+[ "$_probe" = an_arm ] \
+    || fail "the ordinary-skip parse no longer reads a vacuity line (got '$_probe'), so the
+  subtraction below is dead weight and the two categories are being told apart by something
+  this gate does not state"
+_planted="ok 7 - an_arm # SKIP this part hosts no console"
+_probe="$(printf '%s\n' "$_planted" | directive_names "$VACUITY_MARK")"
+[ -z "$_probe" ] \
+    || fail "the vacuity parse reads an ORDINARY skip as a vacuity skip (got '$_probe'), so an
+  undeclared provisioning skip would be permitted"
+
 # One directive class. The harness spells both as a passing case carrying a directive,
 # `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line.
 # Sets N to the count.
-check_directive() { # <DIRECTIVE> <summary-label> <permitted names>
+check_directive() { # <DIRECTIVE> <summary-label> <permitted names> [<names a sub-category took>]
     _dir="$1"
     _label="$2"
     _expect="$3"
+    _claimed="${4:-}"
 
     N="$(echo "$out" | sed -n "s/^# $_label: \([0-9][0-9]*\)\$/\1/p" | tail -1)"
     if [ -z "$N" ]; then
         fail "no '# $_label: N' summary in the TAP stream (harness regression?)"
     fi
 
-    _names="$(echo "$out" \
-        | sed -n "s/^ok [0-9][0-9]* - \([A-Za-z0-9_]*\) # $_dir.*/\1/p" \
-        | tr '\n' ' ')"
+    _names=""
+    for _x in $(echo "$out" | directive_names "$_dir"); do
+        case " $_claimed " in
+            *" $_x "*) ;;
+            *) _names="$_names $_x" ;;
+        esac
+    done
     _parsed=0
     for _x in $_names; do _parsed=$((_parsed + 1)); done
 
@@ -299,10 +413,36 @@ if [ "$passing" -ne "$cases" ]; then
     fail "$cases case(s) reported and $passing of them ok"
 fi
 
-check_directive SKIP skipped "$expect_skips"
+# The vacuity category first, because the ordinary-skip check subtracts what it claims.
+_vac_names=""
+for _x in $(printf '%s\n' "$out" | directive_names "$VACUITY_MARK"); do
+    _vac_names="$_vac_names $_x"
+done
+vacuous=0
+for _x in $_vac_names; do vacuous=$((vacuous + 1)); done
+_vac_said="$(printf '%s\n' "$out" | sed -n 's/^# vacuous: \([0-9][0-9]*\)$/\1/p' | tail -1)"
+if [ -z "$_vac_said" ]; then
+    fail "no '# vacuous: N' summary in the TAP stream (harness regression?). This category is
+  permitted by rule and named by no list, so the harness's own count is the only thing that
+  holds the parse above to something"
+fi
+if [ "$vacuous" -ne "$_vac_said" ]; then
+    printf '%s\n' "$out" | grep "# SKIP"
+    fail "the harness reports $_vac_said vacuity skip(s) against $vacuous '# $VACUITY_MARK'
+  line(s) parsed: the marker moved, or a line carrying one was dropped before this gate read it"
+fi
+if [ "$vacuous" -gt 0 ]; then
+    echo "VACUITY: $vacuous arm(s) asserted nothing on this run (permitted, never expected):"
+    # The same anchor the count used, so the list and the count cannot disagree.
+    printf '%s\n' "$out" \
+        | sed -n "s/^\(ok [0-9][0-9]* - [A-Za-z0-9_]* # $VACUITY_MARK .*\)/  \1/p"
+fi
+
+check_directive SKIP skipped "$expect_skips" "$_vac_names"
 skipped="$N"
 check_directive PARTIAL partial "$expect_partials"
 partial="$N"
 
-echo "PASS: $label TAP suite clean ($plan arms, $skipped skipped, $partial partial, all expected)"
+echo "PASS: $label TAP suite clean ($plan arms, $skipped skipped, $vacuous vacuous," \
+     "$partial partial, all expected)"
 exit 0

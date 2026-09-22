@@ -43,6 +43,7 @@ namespace tap
             PASS,
             PARTIAL,
             SKIP,
+            SKIP_VACUOUS,
             FAIL
         };
         Verdict g_verdict = Verdict::PASS;
@@ -88,14 +89,54 @@ namespace tap
             }
         }
 
-        void emitf(char const* fmt, ...)
+        // Stands in for the tail of a line the assembly buffer could not hold, and carries
+        // the newline so a cut line still ends where a reader counts.
+        constexpr char CUT[] = "<TRUNCATED>\n";
+
+        // Assemble ONE line and write it. THE NEWLINE IS THE EMITTER'S, never a caller's: a
+        // line that fills the buffer would otherwise lose its own and run into the result
+        // line after it, which leaves that one uncountable at line start and drops it from
+        // every by-line parse. A format string that carries a '\n' of its own gets a blank
+        // line, not a lost one.
+        // `pfx` goes into the same buffer rather than a write of its own: above one core a
+        // second write can land inside another node's line.
+        void emitv(char const* pfx, size_t pfxlen, char const* fmt, va_list ap)
         {
             char b[224];
+            memcpy(b, pfx, pfxlen);
+            int const w = kvsnprintf(b + pfxlen, sizeof(b) - pfxlen, fmt, ap);
+            size_t const want = pfxlen + static_cast<size_t>(w);
+            if (want + 2 > sizeof(b))
+            {
+                memcpy(b + sizeof(b) - sizeof(CUT), CUT, sizeof(CUT));
+            }
+            else
+            {
+                b[want] = '\n';
+                b[want + 1] = '\0';
+            }
+            emit(b);
+        }
+
+        void emitf(char const* fmt, ...)
+        {
             va_list ap;
             va_start(ap, fmt);
-            kvsnprintf(b, sizeof(b), fmt, ap);
+            emitv("", 0, fmt, ap);
             va_end(ap);
-            emit(b);
+        }
+
+        // The two skip categories rank together: first skip of either kind wins, and a fail
+        // recorded later still outranks both.
+        void record_skip(Verdict v, char const* fmt, va_list ap)
+        {
+            if (g_verdict == Verdict::FAIL or g_verdict == Verdict::SKIP
+                or g_verdict == Verdict::SKIP_VACUOUS)
+            {
+                return;
+            }
+            kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+            g_verdict = v;
         }
 
         // Is this thread's stdout cap seated (a service list published the console)?
@@ -136,15 +177,18 @@ namespace tap
 
     void skip(char const* fmt, ...)
     {
-        if (g_verdict == Verdict::FAIL or g_verdict == Verdict::SKIP)
-        {
-            return;
-        }
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+        record_skip(Verdict::SKIP, fmt, ap);
         va_end(ap);
-        g_verdict = Verdict::SKIP;
+    }
+
+    void skip_vacuous(char const* fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        record_skip(Verdict::SKIP_VACUOUS, fmt, ap);
+        va_end(ap);
     }
 
     void partial(char const* fmt, ...)
@@ -162,12 +206,10 @@ namespace tap
 
     void diag(char const* fmt, ...)
     {
-        char b[200];
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(b, sizeof(b), fmt, ap);
+        emitv("# ", 2, fmt, ap);
         va_end(ap);
-        emitf("# %s\n", b);
     }
 
     void set_after_failure(TestFn fn) { g_after_failure = fn; }
@@ -179,7 +221,7 @@ namespace tap
         {
             plan++; // one extra slot for the overflow verdict below
         }
-        emitf("1..%d\n", plan);
+        emitf("1..%d", plan);
         if (stdout_published())
         {
             diag("tap route: stdout endpoint -> console driver (service list published)");
@@ -190,6 +232,7 @@ namespace tap
         }
         int failed = 0;
         int skipped = 0;
+        int vacuous = 0;
         int partials = 0;
         for (int i = 0; i < g_count; i++)
         {
@@ -199,50 +242,66 @@ namespace tap
             if (g_verdict == Verdict::FAIL)
             {
                 failed++;
-                emitf("not ok %d - %s # %s\n", i + 1, g_tests[i].name, g_msg);
+                emitf("not ok %d - %s # %s", i + 1, g_tests[i].name, g_msg);
                 if (g_after_failure != nullptr)
                 {
                     g_after_failure();
                 }
             }
-            else if (g_verdict == Verdict::SKIP)
+            // ONE directive with a sub-category, and the sub-category is the HARNESS'S: an
+            // arm can neither forge nor misspell it into its own reason string.
+            else if (g_verdict == Verdict::SKIP or g_verdict == Verdict::SKIP_VACUOUS)
             {
-                skipped++;
-                emitf("ok %d - %s # SKIP %s\n", i + 1, g_tests[i].name, g_msg);
+                char const* directive = "SKIP";
+                if (g_verdict == Verdict::SKIP)
+                {
+                    skipped++;
+                }
+                else
+                {
+                    vacuous++;
+                    directive = "SKIP VACUOUS";
+                }
+                emitf("ok %d - %s # %s %s", i + 1, g_tests[i].name, directive, g_msg);
             }
             else if (g_verdict == Verdict::PARTIAL)
             {
                 partials++;
-                emitf("ok %d - %s # PARTIAL %s\n", i + 1, g_tests[i].name, g_msg);
+                emitf("ok %d - %s # PARTIAL %s", i + 1, g_tests[i].name, g_msg);
             }
             else
             {
-                emitf("ok %d - %s\n", i + 1, g_tests[i].name);
+                emitf("ok %d - %s", i + 1, g_tests[i].name);
             }
         }
         if (g_dropped > 0)
         {
             failed++;
-            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d\n",
+            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d",
                   g_count + 1, g_dropped, MAX_TESTS);
         }
-        // Both always emitted, zero included: a gate reconciles its by-name permission
+        // All three always emitted, zero included: a gate reconciles its by-name permission
         // set against these counts, so an absent line must mean "truncated run", never
-        // "none of those". The completion marker must keep the `# all tests passed`
-        // substring the gates grep for.
-        emitf("# skipped: %d\n", skipped);
-        emitf("# partial: %d\n", partials);
-        if (failed == 0 and skipped == 0 and partials == 0)
+        // "none of those". `# vacuous: N` carries no permission set to reconcile and is
+        // stated for the same reason in reverse: it is what proves the gate's marker parse
+        // still matches, so a wording change here cannot retire the category in silence.
+        // The three counts are DISJOINT. The completion marker must keep the
+        // `# all tests passed` substring the gates grep for.
+        emitf("# skipped: %d", skipped);
+        emitf("# vacuous: %d", vacuous);
+        emitf("# partial: %d", partials);
+        if (failed == 0 and skipped == 0 and vacuous == 0 and partials == 0)
         {
-            emit("# all tests passed\n");
+            emitf("# all tests passed");
         }
         else if (failed == 0)
         {
-            emitf("# all tests passed (%d skipped, %d partial)\n", skipped, partials);
+            emitf("# all tests passed (%d skipped, %d vacuous, %d partial)", skipped, vacuous,
+                  partials);
         }
         else
         {
-            emitf("# %d test(s) failed\n", failed);
+            emitf("# %d test(s) failed", failed);
         }
         return failed;
     }

@@ -3,7 +3,7 @@
 //
 // RP2040 / RP2350 USB CDC-ACM console driver on the <kickos/sys/usb_cdc_service.h>
 // substrate: a privileged one-shot bring-up plus two unprivileged threads, one parked in
-// kos_irq_wait owning every USB register and the whole control endpoint, one parked in
+// a notification wait owning every USB register and the whole control endpoint, one parked in
 // kos_recv owning neither. ONE backend for both chips: the per-chip delta is rp_usb_chip.h
 // plus writing ABSOLUTE values rather than read-modify-writes, which is what absorbs the
 // reset-value differences.
@@ -423,18 +423,20 @@ namespace
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
-                     .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},
+                     .cap_count = 2,
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},
                     {.entry = rpusb_service_thread,
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 2,
-                     // The SAME line as the doorbell, SIGNAL only: a pure post on the
-                     // binding, not a raise at the controller.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_SIGNAL}}}},
+                     // A BADGED copy of the same notification: the doorbell owns its own
+                     // bit, so the servicer tells it from the line's raise.
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL,
+                               drv::doorbell_badge(1)}}}},
         .block_init = block_init
     };
 

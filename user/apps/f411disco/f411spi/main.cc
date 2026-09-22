@@ -116,10 +116,12 @@ namespace
             }
         }
 
-        int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
-        if (kos_irq_attach(h, nullptr) != 0)
+        // The line is delegated at slot 0 and never named here: the wait below re-arms it,
+        // so this driver owes no explicit ack.
+        int const n = KOS_SPAWN_DELEGATED_CAP0 + 1; // the object the line raises, on bit 0
+        if (kos_notify_bind(n) != 0)
         {
-            kos_panic("[f411spi] irq_attach refused the delegated line");
+            kos_panic("[f411spi] notify_bind refused the delegated object");
         }
 
         // SSM|SSI must hold internal NSS high or the master takes a MODF. Configure with
@@ -128,8 +130,8 @@ namespace
         *cr2 = CR2_RXNEIE; // arm RX interrupt (only source that wakes line 35)
         *cr1 |= CR1_SPE;
 
-        // Must print before the first blocking wait: a misrouted line hangs the driver in
-        // kos_irq_wait, and this line is what tells that apart from a dead board or a
+        // Must print before the first blocking wait: a misrouted line hangs the driver in the
+        // notification wait, and this line is what tells that apart from a dead board or a
         // missing console adapter.
         kos::print("[f411spi] starting loopback (blocking on SPI1 IRQ 35)\n");
 
@@ -159,11 +161,11 @@ namespace
             }
             *dr = tx; // load TX buffer; master starts clocking the frame out on MOSI
 
-            kos_irq_wait(h);           // block until RXNE raises line 35; return auto-re-arms
-                                       // the line (no explicit kernel ack)
-            uint32_t rx = *dr & 0xFFu; // SPI has no W1C flag, so this DR read is the only
-                                       // way to clear RXNE; without it the level storms
-                                       // when the next wait re-arms the line
+            // Blocks until RXNE raises line 35; the return re-arms the line.
+            (void)kos_notify_wait(n, 1u, KOS_TIMEOUT_NONE, nullptr);
+            // SPI has no W1C flag, so this DR read is the only way to clear RXNE; without
+            // it the level storms when the next wait re-arms the line.
+            uint32_t rx = *dr & 0xFFu;
 
             char s[64];
             char const* verdict = "PASS";
@@ -226,13 +228,18 @@ int main(int, char**)
     mux_pin("PA7/MOSI", PORT_A, PIN_MOSI, MUX_AF5);
 
     // EDGE is safe only because the driver's DR read clears RXNE before the next
-    // kos_irq_wait re-arms the line.
+    // notification wait re-arms the line.
     kos_cap_t irq = KOS_CAP_NONE;
     if (kos_irq_claim(SPI1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos::print("[f411spi] ERROR: irq_claim(SPI1) failed\n");
     }
-    kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
+    kos_cap_t note = KOS_CAP_NONE;
+    if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    {
+        kos::print("[f411spi] ERROR: the line could not be attached to a notification\n");
+    }
+    kos_cap_grant const caps[2] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
 
     // The driver ends on the negative test's fault, and a fault cancels the faulting
     // thread's whole TASK: spawned plain it would join root's task and take root with it,
@@ -253,7 +260,7 @@ int main(int, char**)
                                        /*mem=*/nullptr, /*mem_size=*/0,
                                        /*stack=*/nullptr, /*stack_size=*/0,
                                        /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
-                                       caps, 1, /*authority=*/0, /*cap_dest=*/nullptr, victim);
+                                       caps, 2, /*authority=*/0, /*cap_dest=*/nullptr, victim);
         if (not drv.valid())
         {
             kos::print("[f411spi] ERROR: driver spawn failed\n");

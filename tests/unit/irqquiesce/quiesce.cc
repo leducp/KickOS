@@ -18,6 +18,7 @@
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/sys/errno.h>
 #include <kickos/thread.h>
@@ -293,9 +294,16 @@ namespace
         int obj = -1;
         int idx = -1;
         uint32_t cap = 0;
-        // The peer dispatch holds this stable pool address. With no bound server,
-        // completed delivery sets pending.
+        // The peer dispatch holds this stable pool address. With no bound thread on the
+        // object it signals, completed delivery leaves the bit pending there.
         kickos::IrqBinding* target = nullptr;
+
+        // The bit the target raises: irq_bind_notify copies the capability's badge, and an
+        // unbadged one is bit 0.
+        bool target_posted() const
+        {
+            return target->notify != nullptr and (target->notify->pending & 1u) != 0u;
+        }
 
         void SetUp() override
         {
@@ -319,6 +327,11 @@ namespace
             target = kickos::kernel().irq_bindings.at(idx);
             ASSERT_NE(target, nullptr);
             ASSERT_EQ(kickos::kernel().irq_refs[idx], 1u);
+            // The line needs somewhere to raise: without it the ISR masks and returns, and
+            // every "the post completed" assertion below would read as a failure. The seam's
+            // one object, reached through the real attach path.
+            kickos::irqfix::the_notification()->pending = 0;
+            ASSERT_EQ(kickos::irq_bind_notify(&g_claim_thread, cap, 0u), 0);
         }
 
         // Run the teardown as core zero with core one wedged inside the dispatch entry.
@@ -366,7 +379,7 @@ namespace
         EXPECT_TRUE(g_cyc.peer_done.load())
             << "the peer never left the dispatch entry, so the teardown did not release the "
                "lock its post needs";
-        EXPECT_TRUE(target->pending) << "the peer's post never completed";
+        EXPECT_TRUE(target_posted()) << "the peer's post never completed";
     }
 
     // CLAIM TWO: the binding is not freed while a dispatch that could observe it is in flight.
@@ -742,11 +755,15 @@ namespace
                 g_stale.rebind_rc.store(rc);
                 if (rc == 0)
                 {
-                    // Bind the new server; its first wait rearms the line.
-                    uint32_t mask = 0;
-                    g_stale.rebind_armed.store(
-                        kickos::irq_notify_bind(&g_claim_thread, again, &mask) == 0
-                        and kickos::irq_wait(&g_claim_thread, again) == 0);
+                    // Attach the new binding and rearm its bit, which is what a wait over
+                    // that bit does and the only half of the wait this arm is about.
+                    bool ok = kickos::irq_bind_notify(&g_claim_thread, again, 0u) == 0;
+                    if (ok)
+                    {
+                        kickos::IrqLock lock;
+                        kickos::irq_signallers_rearm(kickos::irqfix::the_notification(), 1u);
+                    }
+                    g_stale.rebind_armed.store(ok);
                 }
             }
             kickos::irqfix::release_mask_hold();
@@ -774,7 +791,7 @@ namespace
         ASSERT_TRUE(g_stale.peer_done.load());
         // The stale dispatch RAN its retired pair. The claim below is about ordering the rebind
         // against it, not about stopping it.
-        ASSERT_TRUE(target->pending)
+        ASSERT_TRUE(target_posted())
             << "the retired handler never posted, so it never reached the controller either";
 
         EXPECT_TRUE(g_stale.rebind_rc.load() != 0

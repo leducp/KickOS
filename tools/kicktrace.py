@@ -63,16 +63,16 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_create", 8: "exit", 9: "irq_inject", 10: "guard_addr",
-    11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
-    15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
+    11: "notify_create", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
+    15: "notify_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
     19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",
     23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
-    27: "send", 29: "console_publish", 30: "cpu_clock_set",
+    27: "send", 28: "notify_bind", 29: "console_publish", 30: "cpu_clock_set",
     31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
     35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "reboot",
     39: "periph_enable", 40: "cap_narrow", 41: "panic",
-    42: "periph_reg_write", 43: "irq_notify", 44: "irq_discard",
-    45: "thread_kill", 46: "call_timed",
+    42: "periph_reg_write", 43: "notify", 44: "irq_discard",
+    45: "thread_kill", 46: "call_timed", 47: "notify_unbind",
     48: "thread_join", 49: "wait_last", 50: "send_timed",
     51: "task_create", 52: "task_kill", 53: "thread_slay",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "ipc_fast_taken",
@@ -80,7 +80,7 @@ SYSCALL_NAME = {
     61: "frame_unmap", 62: "amp_endpoint_create",
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "sched_probe",
     66: "amp_probe", 67: "doorbell_probe", 68: "reply_recv",
-    69: "irq_wait_timed",
+    69: "notify_badge", 70: "irq_bind_notify",
 }
 
 TRACE_MAGIC = 0x4B545243

@@ -83,8 +83,9 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, -KOS_EINVAL, or -KOS_EPERM
                                 //   for a line the kernel dispatches itself (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
-    KOS_SYS_IRQ_ATTACH = 11,    // (irq_cap, uint32_t* out_mask) -> 0, or -KOS_E*
-                                //   (EBADF/EPERM/EINVAL/EFAULT/EBUSY)
+    KOS_SYS_NOTIFY_CREATE = 11, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM notification
+                                //   pool, EMFILE caller's cap table, EOVERFLOW task's
+                                //   notification budget, EINVAL/EFAULT out-ptr, EPERM)
     KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
     KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
@@ -93,10 +94,15 @@ enum kos_syscall_nr
                                 //   (line/flags/out-ptr), EFAULT (out-ptr), EBUSY (line owned),
                                 //   ENOMEM (binding pool), EMFILE (cap table),
                                 //   EOVERFLOW (task's binding budget)
-    KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT),
-                                //   or -KOS_ECANCELED where the caller was cancelled before or
-                                //   during the park
+    KOS_SYS_NOTIFY_WAIT = 15,   // (notify_cap, accept mask, timeout_us, uint32_t* out_bits)
+                                //   -> 0 with the consumed bits in *out_bits, or -KOS_E*:
+                                //   EBADF, EPERM (cap lacks WAIT, or the caller is not the
+                                //   bound thread), EINVAL (an empty mask, or a bad out-ptr),
+                                //   EFAULT (out-ptr), ETIMEDOUT, ECANCELED. KOS_TIMEOUT_NONE
+                                //   waits forever
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
+                                //   / -KOS_EINVAL (the line signals no notification, so
+                                //   arming it would open a source whose raise lands nowhere)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
@@ -117,6 +123,10 @@ enum kos_syscall_nr
                                 //   EPIPE (dead endpoint, or the last receiver left while
                                 //   parked). Parks indefinitely otherwise. EFAULT also answers
                                 //   a rendezvous copy refused at either end (sys.h)
+    KOS_SYS_NOTIFY_BIND = 28,   // (notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (cap lacks
+                                //   WAIT), EBUSY (another thread is bound, or the caller is
+                                //   already bound to a different object), EOVERFLOW (the
+                                //   object's reference count is at its ceiling)
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
                                   //   -KOS_EBADF (bad cap), -KOS_EOVERFLOW (endpoint
                                   //   refcount at its ceiling)
@@ -150,9 +160,10 @@ enum kos_syscall_nr
                                //   window at that base), -KOS_EINVAL (base+offset is not on
                                //   this chip's allowlist), -KOS_ENOSYS (no backend). Gated on
                                //   possession of the block at `base`, not on an authority bit.
-    KOS_SYS_IRQ_NOTIFY = 43,   // (irq_cap) -> 0, -KOS_EALREADY (the bit was already set and the
-                               //    post had no effect), or -KOS_EBADF/-KOS_EPERM (missing SIGNAL).
-                               //    Posts a software notification without accessing the controller.
+    KOS_SYS_NOTIFY = 43,       // (notify_cap) -> 0, -KOS_EALREADY (this capability's badge bit
+                               //    was already set and the raise had no effect), or
+                               //    -KOS_EBADF/-KOS_EPERM (missing SIGNAL). Raises the bit
+                               //    without touching any controller.
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
@@ -165,6 +176,9 @@ enum kos_syscall_nr
                                //   timeout_us) -> as KOS_SYS_CALL, plus -KOS_ETIMEDOUT. Both
                                //   lengths share one argument slot so the fourth can carry
                                //   the deadline.
+    KOS_SYS_NOTIFY_UNBIND = 47, // (notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (cap lacks
+                               //   WAIT, or the caller is not the bound thread). Unconsumed
+                               //   bits are LEFT pending for the next server.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
                                //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
@@ -287,8 +301,18 @@ enum kos_syscall_nr
                                //   -KOS_EFAULT, -KOS_EPERM, -KOS_EBADF, -KOS_ESRCH,
                                //   -KOS_EMFILE, -KOS_ENOSYS, -KOS_EPIPE, -KOS_ETIMEDOUT,
                                //   -KOS_ECANCELED
-    KOS_SYS_IRQ_WAIT_TIMED = 69 // (irq_cap, timeout_us) -> as KOS_SYS_IRQ_WAIT, plus
-                               //   -KOS_ETIMEDOUT
+    KOS_SYS_NOTIFY_BADGE = 69, // (source notify_cap, bit, kos_cap_t* out) -> 0, or -KOS_E*:
+                               //   EBADF, EINVAL (bit at or above 32, or a bad out-ptr),
+                               //   EFAULT (out-ptr), EALREADY (the source is already badged),
+                               //   EMFILE (caller's cap table), EOVERFLOW (the object's
+                               //   reference count). MINTS a second name for the same object,
+                               //   badged with `bit` and carrying the source's rights.
+    KOS_SYS_IRQ_BIND_NOTIFY = 70 // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (the
+                               //   line's cap lacks WAIT, the notification's lacks SIGNAL, or
+                               //   the chain would span two routed cores), EALREADY (this
+                               //   line already signals something), EOVERFLOW (the object's
+                               //   reference count is at its ceiling). ONE-WAY: nothing
+                               //   detaches a live binding.
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
@@ -426,15 +450,15 @@ _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byt
 #define KOS_RECV_NO_INFO 0x1u
 
 // Arguments for KOS_SYS_REPLY_RECV. ep selects the receive endpoint.
-// notify supplies the accepted IRQ bits on input and consumed bits on output.
-// Zero accepts no IRQs; unaccepted bits remain pending. Restore the accepted
-// mask before each call because the kernel overwrites it.
+// notify supplies the accepted badge bits on input and consumed bits on output, over
+// whatever notification the caller is bound to. Zero accepts none; unaccepted bits remain
+// pending. Restore the accepted mask before each call because the kernel overwrites it.
 struct kos_reply_recv_opts
 {
     kos_cap_t ep;              // IN: the endpoint to receive on (needs CAP_WAIT)
     uint32_t flags;            // IN: KOS_RECV_NO_INFO, or 0
     uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
-    uint32_t notify;           // IN: accepted kos_irq_attach bits; zero accepts none
+    uint32_t notify;           // IN: accepted badge bits; zero accepts none
                                // OUT: consumed bits; unaccepted bits remain pending
     struct kos_recv_info info; // OUT: the arrival, whole-struct
 };

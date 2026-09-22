@@ -13,6 +13,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 
@@ -244,6 +245,11 @@ namespace kickos
                 irq_ref_drop(e.obj, teardown);
                 return;
             }
+            case CapType::CAP_NOTIFY:
+            {
+                notify_ref_drop(e.obj, teardown);
+                return;
+            }
 #if KICKOS_HAVE_ASPACE
             case CapType::CAP_FRAME:
             {
@@ -262,33 +268,6 @@ namespace kickos
                 return;
             }
             }
-        }
-
-        // Check for another CAP_WAIT alias to this IRQ in closer's table, excluding
-        // the closing entry by address. The one-cap case avoids a scan.
-        // Keep this out of line: inlining adds eight bytes to obj_close_protocol's
-        // ARMv6-M frame, including non-IRQ paths. Recheck trap_redzone before inlining.
-        __attribute__((noinline)) bool irq_wait_alias_survives(Thread const* closer,
-                                                               CapEntry const& closing)
-        {
-            if (closer->cap_irq_live <= 1)
-            {
-                return false;
-            }
-            uint32_t const end = thread_cap_capacity(closer);
-            for (uint32_t i = 0; i < end; i++)
-            {
-                CapEntry const* const other = cap_slot(closer->caps, i);
-                if (other == &closing or other->type != static_cast<uint8_t>(CapType::CAP_IRQ))
-                {
-                    continue;
-                }
-                if (other->obj == closing.obj and (other->rights & CAP_WAIT) != 0)
-                {
-                    return true;
-                }
-            }
-            return false;
         }
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
@@ -380,15 +359,17 @@ namespace kickos
 #endif
             case CapType::CAP_IRQ:
             {
-                // Release the binding only after the last CAP_WAIT alias closes. Earlier
-                // release would revoke access still held by the thread. Clearing the target
-                // before TCB reuse prevents notifications reaching a different thread.
-                if (not irq_wait_alias_survives(closer, e))
-                {
-                    irq_notify_release(closer, e.obj);
-                }
-                // No waiter can be stranded here: a parked waiter holds a capability, and
-                // cancellation unlinks it before teardown. irq_ref_drop checks this invariant.
+                // NOTHING. A waiter parks on the NOTIFICATION and not on the line, so closing
+                // a capability naming this line neither reaches that waiter nor needs to know
+                // whether a WAIT-bearing alias survives in this table. The binding leaves its
+                // object's signaller chain at irq_ref_drop, once its own last reference goes.
+                return 0;
+            }
+            case CapType::CAP_NOTIFY:
+            {
+                // NOTHING, and not an oversight: the BIND holds a reference of its own, so
+                // the object outlives its last capability, and the bound thread is released
+                // by its own kos_notify_unbind or by notify_unbind_self at its death.
                 return 0;
             }
             case CapType::CAP_REPLY:
@@ -509,6 +490,16 @@ namespace kickos
                     return false;
                 }
                 *refs = &kernel().irq_refs[idx];
+                return true;
+            }
+            case CapType::CAP_NOTIFY:
+            {
+                int const idx = kernel().notifies.live_index(obj_handle);
+                if (idx < 0)
+                {
+                    return false;
+                }
+                *refs = &kernel().notify_refs[idx];
                 return true;
             }
 #if KICKOS_HAVE_ASPACE
@@ -687,16 +678,15 @@ namespace kickos
             uint32_t mutex;
             uint32_t endpoint;
             uint32_t irq;
+            uint32_t notify;
         };
 
-        // Return the charged pool and resolved slot for this capability kind.
-        // False means uncharged; slot -1 means an invalid object. Use one switch
-        // so pool classification and resolution stay consistent without a panic path.
-        // NO_OBJECT requests only the pool and skips index lookup.
+        // Return the pool hold set and slot for a capability kind.
+        // Uncharged kinds return false; invalid handles give slot -1.
+        // Use NO_OBJECT when only the hold set is needed.
         constexpr int NO_OBJECT = -1;
-        // always_inline, and it is load-bearing: at -Os GCC clones this per call site instead,
-        // and the clone is a FRAME under the per-entry walk, which the armv7m SVC red zone
-        // measures on a board that enforces it (KICKOS_KERNEL_STACKS=0).
+        // Keep this inline to avoid an extra stack frame on armv7m
+        // when KICKOS_KERNEL_STACKS=0.
         inline __attribute__((always_inline)) bool
         charged_pool(CapType type, int obj_handle, TaskObjectHolds* h, uint32_t** set,
                      int* slot)
@@ -727,6 +717,12 @@ namespace kickos
                 *slot = kernel().irq_bindings.live_index(obj_handle);
                 return true;
             }
+            case CapType::CAP_NOTIFY:
+            {
+                *set = &h->notify;
+                *slot = kernel().notifies.live_index(obj_handle);
+                return true;
+            }
             default:
             {
                 return false;
@@ -746,9 +742,32 @@ namespace kickos
             *set = *set | (1u << static_cast<unsigned>(slot));
         }
 
-        // Every charged pool slot task `t` holds, read off the capability tables of its live
-        // members. The walk is the whole accounting, so it is the one place a delegated,
-        // inherited or kernel-seated capability counts the same as an own-create.
+        // Return the attached notification slot, or -1 for no attachment or an invalid handle.
+        // index_of may require division; keep this off hot paths.
+        int binding_notify_slot(int binding_handle)
+        {
+            Kernel& k = kernel();
+            IrqBinding const* const b = k.irq_bindings.resolve(binding_handle);
+            if (b == nullptr)
+            {
+                return -1;
+            }
+            return k.notifies.index_of(b->notify);
+        }
+
+        void hold_mark_binding_notify(int binding_handle, TaskObjectHolds* h)
+        {
+            int const slot = binding_notify_slot(binding_handle);
+            if (slot < 0)
+            {
+                return;
+            }
+            h->notify = h->notify | (1u << static_cast<unsigned>(slot));
+        }
+
+        // Collect the task's objects from its members' capabilities and bindings.
+        // Thread and IRQ bindings retain notifications after their capabilities close.
+        // Count each pool slot once, even if several references keep it alive.
         void task_object_holds(Task const* t, TaskObjectHolds* out)
         {
             *out = TaskObjectHolds{};
@@ -764,11 +783,19 @@ namespace kickos
                 {
                     continue;
                 }
+                if (th->notify_bound != KOS_NOTIFY_UNBOUND)
+                {
+                    hold_mark(CapType::CAP_NOTIFY, notify_bound_handle(th->notify_bound), out);
+                }
                 uint32_t const end = thread_cap_capacity(th);
                 for (uint32_t e = 0; e < end; e++)
                 {
                     CapEntry const* const entry = cap_slot(th->caps, e);
                     hold_mark(static_cast<CapType>(entry->type), entry->obj, out);
+                    if (entry->type == static_cast<uint8_t>(CapType::CAP_IRQ))
+                    {
+                        hold_mark_binding_notify(entry->obj, out);
+                    }
                 }
             }
         }
@@ -786,38 +813,94 @@ namespace kickos
         int slot = 0;
         if (not charged_pool(kind, NO_OBJECT, &holds, &set, &slot))
         {
-            return true; // an uncharged kind sits on no ceiling
+            return true; // No budget for this kind.
         }
         return task_object_count(*set) < task_object_ceiling(kind);
     }
 
-    bool task_object_admit_grants(Task const* t, uint8_t const* types, int const* objs, int n)
+    namespace
+    {
+        // Add a slot to the hold set unless it would exceed the budget.
+        // Repeated slots count once, regardless of grant order.
+        bool stage_hold(CapType kind, int slot, TaskObjectHolds* h)
+        {
+            uint32_t* set = nullptr;
+            int ignored = 0;
+            if (not charged_pool(kind, NO_OBJECT, h, &set, &ignored) or slot < 0)
+            {
+                return true;
+            }
+            uint32_t const bit = 1u << static_cast<unsigned>(slot);
+            if ((*set & bit) != 0)
+            {
+                return true;
+            }
+            if (task_object_count(*set) >= task_object_ceiling(kind))
+            {
+                return false;
+            }
+            *set = *set | bit;
+            return true;
+        }
+    }
+
+    bool task_object_admit_grants(Task const* t, uint8_t const* packed, int const* objs, int n)
     {
         if (t == nullptr or n <= 0)
         {
-            return true; // the empty grant list, which is most spawns: do not pay the walk
+            return true; // No task budget or no grants to check.
         }
         TaskObjectHolds holds;
         task_object_holds(t, &holds);
         for (int i = 0; i < n; i++)
         {
-            CapType const type = static_cast<CapType>(types[i]);
+            CapType const type = static_cast<CapType>(kcap_grant_type(packed[i]));
             uint32_t* set = nullptr;
             int slot = 0;
-            if (not charged_pool(type, objs[i], &holds, &set, &slot) or slot < 0)
+            if (not charged_pool(type, objs[i], &holds, &set, &slot))
             {
                 continue;
             }
-            uint32_t const bit = 1u << static_cast<unsigned>(slot);
-            if ((*set & bit) != 0)
-            {
-                continue; // a second name for a slot this task already holds takes no slot
-            }
-            if (task_object_count(*set) >= task_object_ceiling(type))
+            if (not stage_hold(type, slot, &holds))
             {
                 return false;
             }
-            *set = *set | bit;
+            // An IRQ grant also adds its attached notification to the destination's holds.
+            if (type == CapType::CAP_IRQ
+                and not stage_hold(CapType::CAP_NOTIFY, binding_notify_slot(objs[i]), &holds))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool task_object_admit_binding_notify(int binding_slot, int notify_handle)
+    {
+        Kernel& k = kernel();
+        int const notify_slot = k.notifies.live_index(notify_handle);
+        if (notify_slot < 0 or binding_slot < 0)
+        {
+            return true;
+        }
+        uint32_t const notify_bit = 1u << static_cast<unsigned>(notify_slot);
+        uint32_t const irq_bit = 1u << static_cast<unsigned>(binding_slot);
+        for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+        {
+            TaskObjectHolds holds;
+            task_object_holds(&k.tasks[i], &holds);
+            if ((holds.irq & irq_bit) == 0)
+            {
+                continue; // This task does not hold the IRQ.
+            }
+            if ((holds.notify & notify_bit) != 0)
+            {
+                continue;
+            }
+            if (task_object_count(holds.notify) >= task_object_ceiling(CapType::CAP_NOTIFY))
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -886,6 +969,10 @@ namespace kickos
         else if (want == CapType::CAP_IRQ)
         {
             p = kernel().irq_bindings.resolve(e->obj);
+        }
+        else if (want == CapType::CAP_NOTIFY)
+        {
+            p = kernel().notifies.resolve(e->obj);
         }
 #if KICKOS_HAVE_ASPACE
         else if (want == CapType::CAP_FRAME)
@@ -1001,7 +1088,8 @@ namespace kickos
         *out_width = 0;
     }
 
-    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
+    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights,
+                             uint8_t badge)
     {
         // Index 0 is the kernel stdout slot, written directly by cap_seat_stdout and
         // cap_install_defaults, so this entry point rejects it outright: no delegation or
@@ -1020,6 +1108,9 @@ namespace kickos
         e.obj = obj_handle;
         e.type = static_cast<uint8_t>(type);
         e.rights = rights;
+        // A released entry keeps the spare bits its last occupant left, so they are SEATED
+        // here and never inherited: an unbadged install has to say so.
+        cap_badge_seat(&e, badge);
         if (type == CapType::CAP_IRQ)
         {
             c->cap_irq_live++;
@@ -1038,7 +1129,8 @@ namespace kickos
             return -KOS_EMFILE;
         }
         CapEntry const* const e =
-            cap_install_at(c, static_cast<int>(index), obj_handle, type, rights);
+            cap_install_at(c, static_cast<int>(index), obj_handle, type, rights,
+                           KCAP_BADGE_NONE);
         *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
         return 0;
     }
@@ -1065,7 +1157,7 @@ namespace kickos
         CapEntry* const e =
             cap_install_at(c, static_cast<int>(index),
                            static_cast<int>(kernel().threads.handle_for(idx)),
-                           CapType::CAP_REPLY, 0);
+                           CapType::CAP_REPLY, 0, KCAP_BADGE_NONE);
         cap_reply_seq_seat(e, static_cast<uint8_t>(caller->call_seq & 0xFF));
         *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
 #if KCAP_RUN_CHUNKS > 1
@@ -1124,7 +1216,7 @@ namespace kickos
         CapEntry const* const e =
             cap_install_at(c, static_cast<int>(index),
                            static_cast<int>(ThreadPool::far_reply_handle(record)),
-                           CapType::CAP_REPLY, 0);
+                           CapType::CAP_REPLY, 0, KCAP_BADGE_NONE);
         *out_cap = (static_cast<uint32_t>(e->gen) << KCAP_INDEX_BITS) | index;
 #if KCAP_RUN_CHUNKS > 1
         c->cap_reply_live++;
@@ -1388,6 +1480,7 @@ namespace kickos
         e.obj = target;
         e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
         e.rights = CAP_SIGNAL;
+        cap_badge_seat(&e, KCAP_BADGE_NONE); // as cap_install_at: never inherited
         if (had_prior)
         {
             obj_ref_drop(prior, /*teardown=*/false);

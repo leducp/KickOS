@@ -637,16 +637,45 @@ namespace selftest
     // The guard arm's two halves. MAIN is the one that parks, because a far endpoint's cap
     // carries no TRANSFER and so cannot be delegated to a worker; the worker is the forger.
     kos_cap_t g_amp_guard_done = KOS_CAP_NONE;
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_parked{0};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_unparked{99};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_wrong_ring{99};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_stale_seq{99};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_alias_seq{99};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_good{99};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_drops{0};
-    Atomic<uint32_t, Order::RELAXED> g_amp_guard_still_parked{0};
 
-    void amp_guard_forger(void*) // caps: g_amp_guard_done@1 (CH_DONE)
+    // Every hostile reply this arm plays. The control is not among them: it completes the
+    // caller, so it is played last and alone.
+    constexpr uint32_t AMP_GUARD_FORGE[] = {
+        KOS_AMP_FORGE_REPLY_UNPARKED,   // a tag for a thread that is not parked at all
+        KOS_AMP_FORGE_REPLY_WRONG_RING, // the parked caller's own tag, on a ring it is not on
+        KOS_AMP_FORGE_REPLY_STALE_SEQ,  // the parked caller, one call sequence out of date
+        KOS_AMP_FORGE_REPLY_ALIAS_SEQ,  // the low byte its own, the whole 16 bits not
+    };
+    constexpr unsigned AMP_GUARD_FORGES =
+        static_cast<unsigned>(sizeof(AMP_GUARD_FORGE) / sizeof(AMP_GUARD_FORGE[0]));
+
+    // WHAT BOUNDS THE RETRY, and it is the vehicle's own arithmetic rather than a number
+    // picked to make a flake go away. One park is one far call published into a peer held
+    // quiet for the length of this arm, so it occupies one slot of that peer's call ring and
+    // does not give it back until the hold comes off. KOS_AMP_RING_SLOTS is how many the
+    // caller can therefore have outstanding at once: one is the sequence's own and the rest
+    // are what a lapsed park may be replaced from.
+    constexpr unsigned AMP_GUARD_PARKS = KOS_AMP_RING_SLOTS;
+    constexpr unsigned AMP_GUARD_SPARE_PARKS = AMP_GUARD_PARKS - 1u;
+
+    // The caller's deadline is twice the forger's park wait ON PURPOSE. The forger starts
+    // before the call is issued, so a forger that reads the first park at the last moment of
+    // that wait still has half the caller's deadline to play the sequence in. It shrinks the
+    // lapse; the retry below is what covers the rest.
+    constexpr uint32_t AMP_GUARD_CALL_US = 2u * AMP_FAR_US;
+
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_parked{0};
+    // One word per forge, exactly as the kernel answered it: the verdict in the low byte
+    // under the KOS_AMP_FORGE_* result bits. Zero where the staging never got it placed.
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_forged[AMP_GUARD_FORGES];
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_good{0};
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_lapsed{0};
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_drops{0};
+    // Cleared once the forger has nothing left to place, which is what stops the caller
+    // offering parks.
+    Atomic<uint32_t, Order::RELAXED> g_amp_guard_forging{0};
+
+    bool amp_guard_await_park()
     {
         uint64_t const deadline = kos_clock_now() + AMP_REPLY_NS;
         while (kos_clock_now() < deadline)
@@ -654,31 +683,77 @@ namespace selftest
             if (kos_amp_probe(KOS_AMP_OP_FAR_PARKED, AMP_SELF_ROW) != 0u)
             {
                 g_amp_guard_parked = 1;
-                break;
+                return true;
             }
             kos_sleep_ns(AMP_REPLY_TICK_NS);
         }
-        if (g_amp_guard_parked == 0)
+        return false;
+    }
+
+    // Plays ONE forge at a caller that is parked and answers what the guard made of it.
+    // Zero where the staging ran out of parks before the guard ever saw it: an arm may not
+    // assert over a publication it never offered, and this is what tells the two apart.
+    uint32_t amp_guard_place(uint32_t selector, unsigned* parks)
+    {
+        while (true)
         {
-            kos_sem_post(CH_DONE);
-            return;
+            if (not amp_guard_await_park())
+            {
+                return 0u;
+            }
+            uint32_t const r =
+                static_cast<uint32_t>(kos_amp_probe(KOS_AMP_OP_FORGE, selector));
+            // An answer and not a lapse: a partition of two holds no third ring, so this
+            // forge has nothing to play and says so once.
+            if ((r & KOS_AMP_FORGE_NO_RING) != 0u)
+            {
+                return r;
+            }
+            // NO_CALLER: the caller's own deadline expired between the park read above and
+            // this call, so no tag could be routed and nothing was published. OFFERED clear:
+            // it was published and something else took it before this call could, so the
+            // guard never judged THIS publication. Either way the forge is replayed at a
+            // fresh park rather than counted, which is what costs one.
+            //
+            // AND THE THIRD, which is the same event one step later: a refusal cannot have
+            // woken anybody, so a caller gone after one is a caller whose own deadline
+            // expired under the forge. That forge's own claim stands, but the park the next
+            // one needs has gone with it, so this is replayed too rather than read as the
+            // guard having completed a call it refused.
+            if ((r & KOS_AMP_FORGE_NO_CALLER) != 0u
+                or (r & KOS_AMP_FORGE_OFFERED) == 0u
+                or (KOS_AMP_FORGE_VERDICT(r) == KOS_AMP_V_EMPTY
+                    and (r & KOS_AMP_FORGE_STILL_PARKED) == 0u))
+            {
+                g_amp_guard_lapsed = g_amp_guard_lapsed.load() + 1u;
+                // The spare parks are the SEQUENCE'S and not this forge's: every forge is
+                // tried at least once whatever the ones before it spent.
+                if (*parks == 0u)
+                {
+                    return 0u;
+                }
+                *parks = *parks - 1u;
+                continue;
+            }
+            return r;
         }
+    }
+
+    void amp_guard_forger(void*) // caps: g_amp_guard_done@1 (CH_DONE)
+    {
+        unsigned parks = AMP_GUARD_SPARE_PARKS;
         uintptr_t const drops0 = kos_amp_probe(KOS_AMP_OP_REPLY_DROP, AMP_SELF_ROW);
-        g_amp_guard_unparked = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_UNPARKED));
-        g_amp_guard_wrong_ring = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_WRONG_RING));
-        g_amp_guard_stale_seq = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_STALE_SEQ));
-        g_amp_guard_alias_seq = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_ALIAS_SEQ));
+        for (unsigned i = 0; i < AMP_GUARD_FORGES; i++)
+        {
+            g_amp_guard_forged[i] = amp_guard_place(AMP_GUARD_FORGE[i], &parks);
+        }
+        // LAST, because it is what takes the caller off its park.
+        g_amp_guard_good = amp_guard_place(KOS_AMP_FORGE_REPLY_GOOD, &parks);
+        // A TOTAL FOR THE LOG AND NOT AN ASSERTION: every drop this arm judges is the one
+        // its own forge bracketed, and this says what else the window held.
         g_amp_guard_drops = static_cast<uint32_t>(
             kos_amp_probe(KOS_AMP_OP_REPLY_DROP, AMP_SELF_ROW) - drops0);
-        // Read BEFORE the control below: after it the caller is awake either way.
-        g_amp_guard_still_parked =
-            static_cast<uint32_t>(kos_amp_probe(KOS_AMP_OP_FAR_PARKED, AMP_SELF_ROW));
-        g_amp_guard_good = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_GOOD));
+        g_amp_guard_forging = 0;
         kos_sem_post(CH_DONE);
     }
 
@@ -705,30 +780,30 @@ namespace selftest
             return;
         }
         // AND THE PEER MUST BE QUIESCENT BEFORE THE PUBLICATION, which withholding the seat
-        // does not by itself give: a raise LATCHED before the seat came off still fires, and the
-        // pass it buys drains this arm's own call and answers it inside the drop delta below.
-        // reply_drop is fed by every node (docs/design-multicore.md N6f), so the delta owes an
-        // empty partition rather than a widened tolerance. A peer that is not running never
-        // moves, so this falls through at once there.
+        // does not by itself give: a raise LATCHED before the seat came off still fires, and
+        // the pass it buys drains this arm's own call and answers it, which takes the caller
+        // off the park every forge below needs. A peer that is not running never moves, so
+        // this falls through at once there.
         if (not amp_wait_quiet(quiet_node))
         {
             // RELEASED FIRST: a seat left withheld makes the peer deaf for the life of the
             // image, and nothing below runs to release it.
             (void)kos_amp_probe(KOS_AMP_OP_PEER_HOLD, 0u);
-            tap::skip("the partition never went quiet, so no delta of a counter it all feeds "
-                      "can be attributed");
+            tap::skip("the partition never went quiet, so nothing holds the caller on the "
+                      "park these forges are played at");
             return;
         }
         // Every control and every result, before the caller parks: a repeated in-process run
         // would otherwise read the last run's answers and pass on them.
         g_amp_guard_parked = 0;
-        g_amp_guard_unparked = 99;
-        g_amp_guard_wrong_ring = 99;
-        g_amp_guard_stale_seq = 99;
-        g_amp_guard_alias_seq = 99;
-        g_amp_guard_good = 99;
+        for (unsigned i = 0; i < AMP_GUARD_FORGES; i++)
+        {
+            g_amp_guard_forged[i] = 0;
+        }
+        g_amp_guard_good = 0;
+        g_amp_guard_lapsed = 0;
         g_amp_guard_drops = 0;
-        g_amp_guard_still_parked = 0;
+        g_amp_guard_forging = 1;
         kos_sem_create(0, &g_amp_guard_done);
         kos_cap_grant caps[] = {{g_amp_guard_done, CH_FULL}};
         auto w = kos::thread::create_caps(amp_guard_forger, nullptr, "ampfrg", 10, caps, 1);
@@ -739,13 +814,30 @@ namespace selftest
             (void)kos_amp_probe(KOS_AMP_OP_PEER_HOLD, 0u);
             return;
         }
+        // THE STAGING. One park per far call, offered again for as long as the forger still
+        // has a forge to place, so that "every forge was offered to the guard" is something
+        // the run establishes instead of something it hopes for. Only the control forge
+        // answers this port, so a reply is what says the sequence is over.
         char cbuf[AMP_FAR_LEN] = {};
-        int32_t const n = kos_call_timed(ep, cbuf, sizeof(cbuf), sizeof(cbuf), AMP_FAR_US);
+        int32_t n = 0;
+        unsigned calls = 0;
+        while (g_amp_guard_forging.load() != 0u and calls < AMP_GUARD_PARKS)
+        {
+            calls++;
+            for (size_t i = 0; i < sizeof(cbuf); i++)
+            {
+                cbuf[i] = 0;
+            }
+            n = kos_call_timed(ep, cbuf, sizeof(cbuf), sizeof(cbuf), AMP_GUARD_CALL_US);
+            if (n > 0)
+            {
+                break;
+            }
+        }
         kos_sem_wait(g_amp_guard_done);
         kos_sem_destroy(g_amp_guard_done);
-        // BEFORE the first check that can return. The peer then services the call it was
-        // never poked for and publishes its own empty answer for a caller the control below
-        // already completed, which lands as one more dropped reply AFTER the count was read.
+        // BEFORE the first check that can return: a seat left withheld makes the peer deaf
+        // for the life of the image.
         uint32_t const released = static_cast<uint32_t>(
             kos_amp_probe(KOS_AMP_OP_PEER_HOLD, 0u));
         if (g_amp_guard_parked == 0)
@@ -754,34 +846,80 @@ namespace selftest
             return;
         }
         TAP_CHECK(released == 1u);
-        // All three refused: a tag for a thread that is not parked, a live caller's own tag
-        // published on a ring it is not parked on, and a sequence one call out of date.
-        TAP_CHECK(g_amp_guard_unparked == KOS_AMP_V_EMPTY);
-        TAP_CHECK(g_amp_guard_wrong_ring == KOS_AMP_V_EMPTY);
-        TAP_CHECK(g_amp_guard_stale_seq == KOS_AMP_V_EMPTY);
-        // The FOURTH, and the one an 8-bit comparison takes: the low byte is the parked
-        // caller's own and the whole 16-bit sequence is not, which is the alias 256 short
-        // calls bring round while a caller still holds its tag.
-        TAP_CHECK(g_amp_guard_alias_seq == KOS_AMP_V_EMPTY);
-        // Dropped AND counted, which is what separates a refusal from a reply that never
-        // arrived at all. How many of the four can be played is the partition's WIDTH: the
-        // wrong-ring forge needs a ring the caller is NOT parked on, and a partition of two
-        // holds no third ring for it (docs/design-multicore.md N6c).
-        unsigned expect_drops = 4u;
-        if (KICKOS_AMP_NODES < 3)
+        // EVERY CLAIM BELOW IS PER FORGE AND NOTHING IS SUMMED. The kernel decides each of
+        // these bits inside the forge's own critical section, where this node runs nothing
+        // else, so what one word says is what became of ONE publication. A delta read across
+        // the whole sequence cannot say that: one forge losing its park while one foreign
+        // message is taken reads exactly like every forge arriving.
+        unsigned placed = 0;
+        unsigned width = 0;
+        for (unsigned i = 0; i < AMP_GUARD_FORGES; i++)
         {
-            expect_drops = 3u;
+            uint32_t const r = g_amp_guard_forged[i].load();
+            if (r == 0u)
+            {
+                continue; // never offered, which the decline below reports
+            }
+            placed++;
+            // How many of the four can be played is the partition's WIDTH and not a result:
+            // the wrong-ring forge needs a ring the caller is NOT parked on, and a partition
+            // of two holds no third one (docs/design-multicore.md N6c).
+            if ((r & KOS_AMP_FORGE_NO_RING) != 0u)
+            {
+                continue;
+            }
+            width++;
+            if (KOS_AMP_FORGE_VERDICT(r) != KOS_AMP_V_EMPTY)
+            {
+                tap::fail("forge %u of %u woke a caller with a hostile reply (0x%lx)",
+                          i, AMP_GUARD_FORGES, static_cast<unsigned long>(r));
+                return;
+            }
+            // Refused and COUNTED. The guard refusing without counting is the failure this
+            // arm exists to find, and it is the one a dropped-reply delta over the whole
+            // sequence could not tell from a forge nobody offered.
+            if ((r & KOS_AMP_FORGE_COUNTED) == 0u)
+            {
+                tap::fail("forge %u of %u was refused and not counted (0x%lx)",
+                          i, AMP_GUARD_FORGES, static_cast<unsigned long>(r));
+                return;
+            }
+            // And the caller it did not name is still parked, read under the same mask as
+            // the dispatch that refused it. The staging replays a forge that loses this, so
+            // reaching here with it clear is this arm's own retry gone wrong and not a
+            // loaded box.
+            if ((r & KOS_AMP_FORGE_STILL_PARKED) == 0u)
+            {
+                tap::fail("forge %u of %u left no caller parked (0x%lx)",
+                          i, AMP_GUARD_FORGES, static_cast<unsigned long>(r));
+                return;
+            }
         }
-        TAP_CHECK(g_amp_guard_drops == expect_drops);
-        // And the caller none of them named is still parked.
-        TAP_CHECK(g_amp_guard_still_parked == 1u);
-        // The control on that same caller: the right tag on the right ring completes it.
-        TAP_CHECK(g_amp_guard_good == KOS_AMP_V_TOOK);
-        tap::diag("far reply guard: %u hostile reply(ies) dropped of 4 forged, control "
-                  "returned %ld", static_cast<unsigned>(g_amp_guard_drops.load()),
-                  static_cast<long>(n));
-        TAP_CHECK(n > 0);
-        TAP_CHECK(cbuf[0] == static_cast<char>(0xC0u));
+        uint32_t const good = g_amp_guard_good.load();
+        if (good != 0u)
+        {
+            placed++;
+            // The control on that same guard: the right tag on the right ring completes a
+            // caller, so a run where every hostile forge was refused still proves the path
+            // it was refused on was live.
+            TAP_CHECK(KOS_AMP_FORGE_VERDICT(good) == KOS_AMP_V_TOOK);
+            TAP_CHECK((good & KOS_AMP_FORGE_OFFERED) != 0u);
+            TAP_CHECK(n > 0);
+            TAP_CHECK(cbuf[0] == static_cast<char>(0xC0u));
+        }
+        unsigned const lapsed = static_cast<unsigned>(g_amp_guard_lapsed.load());
+        if (placed != AMP_GUARD_FORGES + 1u)
+        {
+            tap::skip("%u of %u forge(s) reached the guard, the caller's park having "
+                      "expired under %u of them and the vehicle holding no more",
+                      placed, AMP_GUARD_FORGES + 1u, lapsed);
+            return;
+        }
+        tap::diag("far reply guard: %u of %u hostile forge(s) had a ring in this partition, "
+                  "each refused and counted once, %u park(s) replaced, %u drop(s) in the "
+                  "window, control returned %ld",
+                  width, AMP_GUARD_FORGES, lapsed,
+                  static_cast<unsigned>(g_amp_guard_drops.load()), static_cast<long>(n));
     }
 
 
@@ -809,7 +947,8 @@ namespace selftest
             return;
         }
         g_amp_empty_forge = static_cast<uint32_t>(
-            kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_EMPTY));
+            KOS_AMP_FORGE_VERDICT(kos_amp_probe(KOS_AMP_OP_FORGE,
+                                                KOS_AMP_FORGE_REPLY_EMPTY)));
         kos_sem_post(CH_DONE);
     }
 
@@ -1104,8 +1243,9 @@ namespace selftest
         // is the only copy left to meet it.
         g_df_unmap = kos_frame_unmap(CH_DF_FRAME, CH_DF_SPACE, g_df_va);
         int64_t const before = amp_count(KOS_AMP_OP_DELIVER_FAULT, AMP_SELF_ROW);
-        g_df_forge =
-            static_cast<uint32_t>(kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_REPLY_GOOD));
+        g_df_forge = static_cast<uint32_t>(
+            KOS_AMP_FORGE_VERDICT(kos_amp_probe(KOS_AMP_OP_FORGE,
+                                                KOS_AMP_FORGE_REPLY_GOOD)));
         g_df_delta = static_cast<int32_t>(
             amp_count(KOS_AMP_OP_DELIVER_FAULT, AMP_SELF_ROW) - before);
         kos_sem_post(CH_DONE);

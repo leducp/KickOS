@@ -5,8 +5,15 @@
 #   awk -v FNAME=<path> -f extern_c_linkage.awk <path>
 #
 # Prints one `<file>:<line>` per anonymous namespace opened while an `extern "C"` block is
-# on the brace stack. Exits 2 with a REFUSE line on stderr when the file cannot be counted,
-# so an unreadable file is never reported as clean.
+# on the brace stack, and then one `EXT <tagged> <gaps>` line. Exits 2 with a REFUSE line on
+# stderr when the file cannot be counted, so an unreadable file is never reported as clean.
+#
+# THE TAG COUNT IS THERE BECAUSE THE HIT COUNT CANNOT SAY WHY IT IS ZERO. Every hit is gated on
+# a block this scanner TAGGED as language linkage, so a spelling the tag regex does not
+# recognise leaves the file clean at zero hits with the hazard still in it. `tagged` is what the
+# scanner saw and `gaps` is what it half saw: an open brace whose code text carries the linkage
+# spec without ENDING in it, which is a block this scanner is reading as an ordinary one. A
+# declarator is excluded by its parenthesis, so `extern "C" void f() {` is not a gap.
 #
 # Its OWN file rather than inline in the shell script: the program needs both quote
 # characters, and escaping them through a single-quoted shell heredoc is how a scanner
@@ -83,10 +90,11 @@ BEGIN { depth = 0; ext = 0; buf = ""; state = 0; refuse = "" }
             } else if (buf ~ /(^|[^A-Za-z0-9_])namespace[ \t]*$/) {
                 tag = "anon"
             }
+            if (tag != "extern" && buf ~ /extern[ \t]*"C(\+\+)?"/ && buf !~ /\(/) { gaps++ }
             if (tag == "anon" && ext > 0) { print FNAME ":" FNR }
             depth++
             stack[depth] = tag
-            if (tag == "extern") { ext++ }
+            if (tag == "extern") { ext++; tagged++ }
             buf = ""
             continue
         }
@@ -117,4 +125,5 @@ END {
         print "REFUSE " FNAME ": braces do not balance (final depth " depth ")" > "/dev/stderr"
         exit 2
     }
+    printf "EXT %d %d\n", tagged + 0, gaps + 0
 }

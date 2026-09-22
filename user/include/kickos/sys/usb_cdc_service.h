@@ -63,8 +63,13 @@ enum
 {
     KOS_USB_CAP_EP = console::KOS_CONSOLE_CAP_EP,
     KOS_USB_CAP_DOORBELL = console::KOS_CONSOLE_CAP_DOORBELL,
-    KOS_USB_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0
+    // IRQ thread: the notification it binds and waits on (WAIT), and the line it acks (WAIT).
+    KOS_USB_CAP_NOTIFY = KOS_SPAWN_DELEGATED_CAP0,
+    KOS_USB_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 1
 };
+
+// EVERY bit of the object, for the reason KOS_UART_ACCEPT gives.
+constexpr uint32_t KOS_USB_ACCEPT = 0xFFFFFFFFu;
 
 // Controller events the class layer reacts to. A backend reports only what it saw and
 // clears the source before returning.
@@ -623,8 +628,9 @@ private:
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
-    // Bind before signaling readiness and waiting; binding delivers pending doorbells.
-    if (kos_irq_attach(KOS_USB_CAP_LINE, nullptr) != 0)
+    // Bind before signaling readiness and waiting: a raise before the bind is LATCHED in the
+    // object and delivered to whoever binds next, so nothing is lost either way.
+    if (kos_notify_bind(KOS_USB_CAP_NOTIFY) != 0)
     {
         exit(0);
     }
@@ -633,7 +639,8 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no
         // window exists in which it is armed and unowned.
-        if (kos_irq_wait(KOS_USB_CAP_LINE) != 0)
+        if (kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, KOS_TIMEOUT_NONE, nullptr)
+            != 0)
         {
             break; // the cap went away: the line is gone, so this thread has no work
         }

@@ -5,8 +5,13 @@
 # The microbench switch bracket's stamp cell, read out of the LINKED IMAGE: above one kernel
 # core it must be addressed off this core's per-CPU base and never off a link-time address.
 #
-# REFUSED: a switch body that forms any link-time address at all, one that never reads the
-# per-CPU base, and a body this reader cannot decode.
+# REFUSED: a switch body that forms any link-time address at all, one that reads the per-CPU
+# base only once, and a body this reader cannot decode.
+#
+# A BODY THAT ADDRESSES NEITHER WAY IS UNKNOWN AND NOT A FINDING. Both forms together are the
+# opening landmark of the window this rule is stated over, so a body carrying neither is a
+# forwarder or a bracket that left, and tests/lib/objdump_window.awk refuses it by name rather
+# than letting a count of zero read as "the stamp is not per core".
 #
 # WHY THIS IS STRUCTURAL AND NOT A RUNTIME BOUND. A stamp shared between cores subtracts one
 # core's open from another's close, which wraps near 2^32 when the peer opened later. That
@@ -58,27 +63,20 @@ scratch_dir
 # --- the reader ---------------------------------------------------------------
 # Emits exactly one record: the body's instruction count, its per-CPU base reads and its
 # link-time address formations.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
-# tests/lib/objdump_scope.awk ahead of this file.
+# HALF A PROGRAM: `seen`, the body scope and every refusal above come from gate.sh's
+# scoped_body, which reads tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead
+# of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 {
-    text = $0
-    sub(/^[^:]*:[ \t]*/, "", text)
-    sub(/[ \t]*\/\/.*$/, "", text)
-    sub(/[ \t]*#.*$/, "", text)
-    n++
-    if (text ~ base_re) { base++ }
-    if (text ~ pcrel_re) { pcrel++ }
+    if (win_text ~ base_re) { base++ }
+    if (win_text ~ pcrel_re) { pcrel++ }
 }
-END {
-    if (!seen) { print "NOSYM"; exit }
-    if (n == 0) { print "NOINSN"; exit }
-    printf "COUNTS %d %d %d\n", n, base + 0, pcrel + 0
-}
+END { printf "COUNTS %d %d %d\n", win_n, base + 0, pcrel + 0 }
 AWK
 
 read_body() { # <listing> <symbol>
-    scoped_body "$TMP/reader.awk" "$1" "$2" -v base_re="$BASE" -v pcrel_re="$PCREL"
+    scoped_body "$TMP/reader.awk" "$1" "$2" \
+        -v base_re="$BASE" -v pcrel_re="$PCREL" -v win_open="$BASE|$PCREL"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -113,9 +111,14 @@ read_body() { # <listing> <symbol>
     esac
 } > "$TMP/ctl_shared"
 
+# The forwarder: a body that addresses nothing at all, which is the record a body carrying the
+# bracket and sharing its cell would otherwise be indistinguishable from.
 {
     echo '0000000000001000 <planted_switch>:'
-    echo "    1000:	nop"
+    case "$arch" in
+        armv8a)   echo "    1000:	b	2000 <kickos_armv8a_switch_now_real>" ;;
+        rv64imac) echo "    1000:	j	2000 <kickos_rv64_switch_now_real>" ;;
+    esac
     echo "    1004:	nop"
 } > "$TMP/ctl_nostamp"
 
@@ -137,9 +140,11 @@ esac
 
 ctl="$(read_body "$TMP/ctl_nostamp" planted_switch)"
 case "$ctl" in
-    "COUNTS 2 0 0") ;;
-    *) fail "the reader answered [$ctl] for a planted body carrying neither form, so an image
-  whose bracket was deleted would not be reported as such" ;;
+    "NOOPEN 2") ;;
+    *) fail "the reader answered [$ctl] for a planted two-instruction forwarder, which
+  addresses its stamp neither way. Read as a record it reports zero per-CPU base reads, which
+  is what a shared cell also reports, so a bracket that moved behind a forwarder goes red as a
+  stamp that is not per core" ;;
 esac
 
 ctl_dead_reader "$(read_body "$TMP/ctl_percore" a_symbol_no_listing_carries)" \
@@ -163,6 +168,11 @@ case "$kind" in
     NOINSN)
         fail "the body of '$SYM' in $elf disassembles to no instruction at all, so the corpus
   is UNKNOWN rather than empty" ;;
+    NOOPEN)
+        fail "the body of '$SYM' in $elf forms no address at all across its $total
+  instruction(s): neither a read of the per-CPU base nor a link-time address. The bracket is
+  not in this body, so what this gate has is UNKNOWN and not a stamp two cores share. The
+  symbol names a forwarder, or the stamping moved to a callee" ;;
     COUNTS) ;;
     *)
         fail "the reader emitted [$rec] for '$SYM', a record this gate does not model" ;;
@@ -183,11 +193,12 @@ if [ "$pcrel" -ne 0 ]; then
   the peer opened later and reads as a plausible switch cost otherwise"
 fi
 
-# The open and the close each reach it, so one read is half a bracket.
+# The open and the close each reach it, so one read is half a bracket. A body reading it zero
+# times is refused above as UNKNOWN, so what reaches here is a body that addresses its stamp
+# and does it per core on one side only.
 if [ "$base" -lt 2 ]; then
     bad "the body of '$SYM' in $elf reads the per-CPU base $base time(s), where the bracket's
-  open and its close each owe one. Either the stamp is not per core, or the bracket is no
-  longer in this body and this gate is reading something that cannot carry the defect"
+  open and its close each owe one, so one half of the bracket reaches its stamp some other way"
 fi
 
 if [ "$rc" -ne 0 ]; then

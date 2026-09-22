@@ -422,3 +422,10 @@ ASSERT(__kickos_amp_window_end > __kickos_amp_window_start,
 ASSERT(__kickos_amp_counts_end > __kickos_amp_counts_start,
        "KickOS: .amp_shared.counts is empty: a node sweeping a peer's row would read its own")
 #endif
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+KICKOS_APP_CODE_WINDOW_NONE()
+KICKOS_APP_DATA_WINDOW_NONE()
+/* The app is loaded at the virtual addresses it was linked for. */
+__kickos_app_load_delta = 0;

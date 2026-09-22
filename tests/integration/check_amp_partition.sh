@@ -37,9 +37,16 @@
 # the lines these clauses read. What carries the clauses past that is not silence. Not one of
 # them counts a peer's lines, and not one pattern anchors at line start, so a peer's fragment
 # sitting in front of a line node 0 printed is accepted and the ordering loop reads a line
-# NUMBER, which a prepend does not move. A peer's bytes landing INSIDE a clause's own matched
-# text is what that leaves, and nothing here measures its rate: TODO.md's M8.8 review residue
-# carries the options for closing it.
+# NUMBER, which a prepend does not move.
+#
+# AND THE ROUNDS ARE NO LONGER READ OFF THIS CONSOLE AT ALL. Both apps still print once a round,
+# for a human debugging a peer that stopped answering, and no clause here counts those lines: the
+# serving app bumps its OWN row of the shared record ahead of every reply, and node 0 reports
+# what it reads there in one line beside its own count of the answers it holds. That is N6h's
+# rule applied to the one clause that still inferred a crossing from console text, and it leaves
+# a peer's bytes landing INSIDE a matched line as a residue on the remaining clauses alone. Each
+# of those is printed after a peer's reply, which is the class N6h measured at zero tears in 300
+# runs under load, where the app-entry line in that same measurement tore 7 times.
 #
 # A two-kernel gate draws fresh every run on the console interleaving, on which kernel reaches
 # its first publication first, and on which is inside a masked handler when the other rings, so
@@ -117,10 +124,42 @@ echo "== node apps: $alive_ok of $NODES published the port the partition names, 
 printf '%s\n' "$OUT" | grep -qE 'ampping: node [0-9]+ calls node [0-9]+ port' \
     || fail "node 0 never announced the far port the partition handed it"
 
-# The ANSWER and not merely a wake: a peer replies with the request byte plus one. The answering
-# node is left unnamed and only required not to be node 0.
-printf '%s\n' "$OUT" | grep -qE 'ping 1 -> pong 2 from node [1-9][0-9]*' \
-    || fail "node 0's first round did not come back carrying a peer's own answer"
+# THE ANSWER AND NOT MERELY A WAKE, READ OUT OF THE SHARED RECORD AND NOT OFF THIS CONSOLE.
+# N6h: a peer is witnessed through a counter the OTHER node reads, never through what it printed,
+# and the per-round lines both apps still print are read by nothing here. Node 0 checks every
+# round's answer itself, the peer's own transformation of the payload, and refuses before this
+# line where one is wrong; what the line adds is the peer's OWN row, which its serving app bumps
+# ahead of every reply it sends. That row is the same record the app-alive sweep reads, under the
+# same one-writer-per-row rule.
+cross="$(printf '%s\n' "$OUT" \
+    | sed -n 's/.*ampping: node \([0-9]*\) answered \([0-9]*\) round(s), its own record says \([0-9]*\).*/\1 \2 \3/p' \
+    | tail -1)"
+[ -n "$cross" ] || fail "node 0 never reported what the answering node's own row says.
+  The crossing is UNKNOWN and not absent: no clause here reads a round off the console, so
+  without this line there is nothing to read. A node the partition hands no far port refuses
+  earlier and by its own name."
+cross_node="$(echo "$cross" | cut -d' ' -f1)"
+cross_rounds="$(echo "$cross" | cut -d' ' -f2)"
+cross_served="$(echo "$cross" | cut -d' ' -f3)"
+# A FIELD MAY MATCH EMPTY, `[0-9]*` accepting none, so a torn line reaches the arithmetic below
+# as a blank rather than as a number. Refused here by name: a record this gate cannot read is
+# UNKNOWN and not a partition that never crossed.
+for field in "$cross_node" "$cross_rounds" "$cross_served"; do
+    case "$field" in
+        ''|*[!0-9]*) fail "node 0's crossing line carries a field that is not a number: [$cross].
+  The record is UNKNOWN and not a crossing that failed." ;;
+    esac
+done
+[ "$cross_node" != "0" ] || fail "node 0 named ITSELF as the node that answered its rounds, so
+  this reports a local call and not a crossing"
+[ "$cross_rounds" -ge 1 ] || fail "node 0 holds answers for $cross_rounds round(s), so nothing
+  crossed for the row below to have counted"
+[ "$cross_served" -ge "$cross_rounds" ] || fail "node $cross_node's own row counts $cross_served
+  call(s) its APP answered, where node 0 holds answers for $cross_rounds round(s). A row short
+  of the rounds means those answers came from something other than a thread in that kernel: the
+  kernel answers a call no thread received with an empty reply of its own, and that moves TOOK
+  and SENT but not this row."
+echo "== crossing: node $cross_node's row counts $cross_served answered call(s) for the $cross_rounds round(s) node 0 holds"
 
 printf '%s\n' "$OUT" | grep -q 'ampping: node 0 done' \
     || fail "node 0 never completed its rounds"
@@ -170,7 +209,7 @@ at_line() { # <extended regex>: the capture line it first matched on, empty wher
 barrier_at="$(at_line 'ampping: [0-9]+ of [0-9]+ node app\(s\) alive')"
 [ -n "$barrier_at" ] || fail "the app-alive sweep line is not in the capture"
 for pat in 'ampping: node [0-9]+ calls node [0-9]+ port' \
-           'ping 1 -> pong 2 from node [1-9][0-9]*' \
+           'ampping: node [0-9]+ answered [0-9]+ round\(s\), its own record says' \
            'ampping: node 0 done' \
            'ampping: deferred [0-9]+ raise\(s\) skipped at node'; do
     at="$(at_line "$pat")"
@@ -182,6 +221,5 @@ for pat in 'ampping: node [0-9]+ calls node [0-9]+ port' \
 done
 echo "== ordering: every line read above arrives after the app-alive sweep"
 
-rounds="$(printf '%s\n' "$OUT" | grep -c ' -> pong ' || true)"
-echo "PASS: one artefact of $NODES node(s), $alive_ok node app(s) alive, $rounds round(s)
-  answered by a thread in another kernel"
+echo "PASS: one artefact of $NODES node(s), $alive_ok node app(s) alive, $cross_rounds round(s)
+  answered by a thread in node $cross_node's kernel on that node's own row"

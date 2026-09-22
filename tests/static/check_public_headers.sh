@@ -208,10 +208,66 @@ c_facing() { # <path>; 0 names __cplusplus and has a non-comment extern "C", 1 n
        END { exit !found }' "$TMP/stripped" "$1"
 }
 
-includes_of() { # <path> -> its angled include targets that are CODE
-  LC_ALL=C awk -f "$STRIP" "$1" 2>>"$TMP/strip.err" \
-    | sed -n 's|^[[:space:]]*#[[:space:]]*include[[:space:]]*<\([^>]*\)>.*|\1|p'
+includes_of() { # <path> -> its include targets that are CODE, both spellings, one per line
+  _io_reldir="${1#"$INC"/}"
+  case "$_io_reldir" in
+    */*) _io_reldir="${_io_reldir%/*}" ;;
+    *)   _io_reldir="" ;;
+  esac
+  LC_ALL=C awk -f "$STRIP" "$1" 2>>"$TMP/strip.err" > "$TMP/includes_of.stripped" || return 1
+  # angled: the SPELLING itself, resolved against the -I roots exactly as the compiler
+  # resolves <kickos/...>, unchanged from what the source names.
+  sed -n 's|^[[:space:]]*#[[:space:]]*include[[:space:]]*<\([^>]*\)>.*|\1|p' \
+    "$TMP/includes_of.stripped"
+  # quoted: resolved against the DIRECTORY OF THE INCLUDING FILE (C11 6.10.2p3), never
+  # against $INC. This run's working directory holds no "kickos/" tree of its own, so
+  # treating a quoted target as though it were the angled spelling, looking it up straight
+  # under $INC, would fail the existence test for almost any real path and the header
+  # would be judged as reaching outside the package rather than as naming a sibling.
+  #
+  # THE TARGET COMES FROM THE RAW LINE, NOT THE STRIPPED ONE: c_facing()'s own comment above
+  # states it, and it binds here too. The stripper blanks a string literal WHOLE, quote
+  # characters included, so "sub/target.h" leaves nothing on the stripped line to read. The
+  # stripped line at the SAME number is kept only to prove the directive is CODE (a `#include`
+  # inside a comment strips to a blank line and cannot match the leading `#`).
+  awk 'NR == FNR { s[FNR] = $0; next }
+       /^[[:space:]]*#[[:space:]]*include[[:space:]]*"/ && s[FNR] ~ /^[[:space:]]*#/ {
+         if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2) }
+       }' "$TMP/includes_of.stripped" "$1" \
+    | while IFS= read -r _io_q; do
+        if [ -n "$_io_reldir" ]; then
+          printf '%s/%s\n' "$_io_reldir" "$_io_q"
+        else
+          printf '%s\n' "$_io_q"
+        fi
+      done
 }
+
+# --- control: includes_of() must tell a quoted include from an angled one, and resolve
+# each by its own rule, before either is trusted over the real corpus ------------------
+# A synthetic package tree under $TMP, so the control never touches the real $INC.
+_io_save_inc="$INC"
+INC="$TMP/incof_probe"
+mkdir -p "$INC/kickos/sub" || fail "cannot create the includes_of() control tree"
+printf '#include <stdint.h>\n'          > "$INC/kickos/sub/target.h"
+printf '#include <kickos/sub/target.h>\n' > "$INC/kickos/angled_probe.h"
+printf '#include "sub/target.h"\n'        > "$INC/kickos/quoted_probe.h"
+
+_io_got="$(includes_of "$INC/kickos/angled_probe.h")"
+[ "$_io_got" = "kickos/sub/target.h" ] \
+  || fail "includes_of() read [$_io_got] for an angled include of kickos/sub/target.h, so
+      an angled dependency would join the wrong corpus entry or none at all"
+
+_io_got="$(includes_of "$INC/kickos/quoted_probe.h")"
+[ "$_io_got" = "kickos/sub/target.h" ] \
+  || fail "includes_of() read [$_io_got] for a QUOTED include of \"sub/target.h\" from
+      kickos/quoted_probe.h, so a sibling pulled in by \"...\" rather than <...> never
+      reaches the C corpus closure, or resolves against the wrong directory"
+
+rm -rf "$INC"
+INC="$_io_save_inc"
+
+echo "== control: includes_of() resolves an angled include by its spelling and a quoted include against its own file's directory =="
 
 : > "$TMP/strip.err"
 : > "$TMP/unstrippable"

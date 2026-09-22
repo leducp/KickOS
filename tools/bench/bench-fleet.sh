@@ -44,13 +44,19 @@ mkdir -p "$OUTDIR"
 ALL="rx72m f302nucleo esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
 WANT="${*:-$ALL}"
 
-# Boards whose suite outgrew a 64 KiB flash and ships as two images. TAP numbering
-# RESTARTS at 1 in each, so a lone first plan line is HALF a run, not a short one.
-two_image() {
-  case $1 in
-    f302nucleo|bluepill-c8) return 0 ;;
-    *) return 1 ;;
-  esac
+# WHICH IMAGES A BOARD'S SUITE SHIPS AS, asked of the tree one board at a time. The count is a
+# property of that board's own configure: the selftest app cuts its registration list into
+# regions and groups them into as many images as the board's flash or code window takes, and it
+# publishes the names it emitted. A list here would be a second authority, and this script
+# carried one: it named two boards that had gone to four images and did not name esp32c6-wroom
+# at all, so a fleet pass flashed one image of three on that board. TAP numbering RESTARTS at 1
+# in each image, so a lone first plan line is a FRACTION of a run and not a short one, and the
+# pass read green for two splits.
+#
+# The configure this does is the one the runs below reuse: same TAG, same board, same variant,
+# same service list, so it lands in the same build dir and costs nothing twice.
+images_for() { # <board> <service list> <stderr out>
+  TAG="$TAG" SERVICE_LIST="$2" LIST_IMAGES=1 "$BENCH" "$1" 2>"$3"
 }
 
 # ONE enumeration of the bus, taken once, wherever the boards are.
@@ -62,13 +68,22 @@ if [ -z "${BENCH_HOST:-}" ] && [ -n "${RIG_BENCH_HOST:-}" ]; then
   echo "  $RIG_BENCH_HOST as the bench. tools/bench/bench-present.sh says where the boards are."
 fi
 echo "=== $BENCH_WHERE"
-bench_bus_read
-case $? in
-  1) echo "REFUSING: could not enumerate the bus on $BENCH_WHERE. Run tools/bench/bench-present.sh reach." >&2
-     exit 2 ;;
-  2) echo "REFUSING: the bus enumeration came back empty" >&2
-     exit 2 ;;
-esac
+# DRY_RUN=1 asks WHICH IMAGES A PASS WOULD FLASH and flashes none. That is a question about the
+# configured build and not about the bus, so no board is asked for either: the enumeration and
+# the presence checks below are what a real pass owes, and every line this mode prints says it
+# witnessed nothing.
+DRY_RUN="${DRY_RUN:-0}"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "=== DRY RUN: no board is asked for, nothing is flashed, and nothing below is a witness."
+else
+  bench_bus_read
+  case $? in
+    1) echo "REFUSING: could not enumerate the bus on $BENCH_WHERE. Run tools/bench/bench-present.sh reach." >&2
+       exit 2 ;;
+    2) echo "REFUSING: the bus enumeration came back empty" >&2
+       exit 2 ;;
+  esac
+fi
 
 RESULTS=""
 # THE SERVICE LISTS A BOARD OWES A FULL PASS, derived from the tree rather than listed here:
@@ -147,32 +162,34 @@ ABSENT=0
 COVERED=""
 for board in $WANT; do
   SN=""
-  ROWS=$(board_probe_rows "$board")
-  case $? in
-    1) record "$board" "REFUSED (no row; add one to tools/bench/board-rows.sh rather than guessing its probe)"
-       FAILED=1
-       continue ;;
-    2) record "$board" "REFUSED ($ROWS)"
-       FAILED=1
-       continue ;;
-  esac
-  MISS=""
-  while IFS='|' read -r id flag what; do
-    [ -n "$id" ] || continue
-    if ! usb_present "$id"; then
-      MISS="$id is not on the bus: $what"
-      break
-    fi
-    if [ "$flag" = "sn" ]; then
-      SN=$(usb_serial_of "${id%%:*}" "${id##*:}") || { MISS="$id carries no serial descriptor: $what"; break; }
-    fi
-  done <<EOF
+  if [ "$DRY_RUN" != "1" ]; then
+    ROWS=$(board_probe_rows "$board")
+    case $? in
+      1) record "$board" "REFUSED (no row; add one to tools/bench/board-rows.sh rather than guessing its probe)"
+         FAILED=1
+         continue ;;
+      2) record "$board" "REFUSED ($ROWS)"
+         FAILED=1
+         continue ;;
+    esac
+    MISS=""
+    while IFS='|' read -r id flag what; do
+      [ -n "$id" ] || continue
+      if ! usb_present "$id"; then
+        MISS="$id is not on the bus: $what"
+        break
+      fi
+      if [ "$flag" = "sn" ]; then
+        SN=$(usb_serial_of "${id%%:*}" "${id##*:}") || { MISS="$id carries no serial descriptor: $what"; break; }
+      fi
+    done <<EOF
 $ROWS
 EOF
-  if [ -n "$MISS" ]; then
-    record "$board" "ABSENT ($MISS)"
-    ABSENT=1
-    continue
+    if [ -n "$MISS" ]; then
+      record "$board" "ABSENT ($MISS)"
+      ABSENT=1
+      continue
+    fi
   fi
 
   echo "=== $board${SN:+  SN $SN}"
@@ -188,12 +205,25 @@ EOF
     else
       ltag="$TAG$(printf '%s' "${list#kickos_services_}" | tr -d '_')"; llabel="$board/$list"
     fi
-    if two_image "$board"; then
-      TAG="$ltag" SERVICE_LIST="$list" bench_one "$board" selftest    "$SN" "$llabel/p1" || FAILED=1
-      TAG="$ltag" SERVICE_LIST="$list" bench_one "$board" selftest_p2 "$SN" "$llabel/p2" || FAILED=1
-    else
-      TAG="$ltag" SERVICE_LIST="$list" bench_one "$board" selftest "$SN" "$llabel" || FAILED=1
+    LERR=$(mktemp)
+    IMAGES=$(TAG="$ltag" images_for "$board" "$list" "$LERR")
+    if [ -z "$IMAGES" ]; then
+      record "$llabel" "REFUSED (the tree was not able to say which images this board ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
+      grep -E 'REFUSING|Error|error:' "$LERR" | head -5 | sed 's/^/    /'
+      rm -f "$LERR"
+      FAILED=1
+      continue
     fi
+    rm -f "$LERR"
+    # EVERY IMAGE, AND THE LABEL SAYS WHICH ONE. Each carries its own plan starting at 1, so a
+    # figure in the table below belongs to an image rather than to the board.
+    for img in $IMAGES; do
+      if [ "$DRY_RUN" = "1" ]; then
+        record "$llabel/$img" "WOULD FLASH (dry run; no capture, no verdict)"
+        continue
+      fi
+      TAG="$ltag" SERVICE_LIST="$list" bench_one "$board" "$img" "$SN" "$llabel/$img" || FAILED=1
+    done
     COVERED="$COVERED$board ${list:-@default}
 "
   done

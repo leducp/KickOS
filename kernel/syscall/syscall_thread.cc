@@ -315,8 +315,15 @@ namespace kickos
         // resolve in the CALLER's table, carry CAP_TRANSFER, and narrow only. Sized by the GRANT
         // bound: these, plus gbuf and dbuf below, live on the CALLER's stack, which can be 1 KiB.
         int deleg_obj[KICKOS_MAX_SPAWN_GRANTS];
-        uint8_t deleg_type[KICKOS_MAX_SPAWN_GRANTS];
-        uint8_t deleg_rights[KICKOS_MAX_SPAWN_GRANTS];
+        // Kind and rights in ONE byte, kcap_grant_pack's, so the badge array below costs this
+        // frame nothing: it sits on the syscall descent the trap red zone measures, and a
+        // third array would move the SVC reservation a whole 64-byte step on every board that
+        // enforces the class.
+        uint8_t deleg_kind[KICKOS_MAX_SPAWN_GRANTS];
+        // A CAP_NOTIFY's badge travels with the copy. Left behind, the child's copy would be
+        // UNBADGED and raise bit 0, which is a different bit of the same object and not a
+        // narrowing of anything.
+        uint8_t deleg_badge[KICKOS_MAX_SPAWN_GRANTS];
         // uint16_t: a destination is a capability-table index, and a table is up to
         // KICKOS_MAX_HANDLES == 65535 slots wide, which a byte cannot name.
         uint16_t deleg_dest[KICKOS_MAX_SPAWN_GRANTS];
@@ -400,8 +407,9 @@ namespace kickos
                     return -KOS_EINVAL;
                 }
                 deleg_obj[ci] = se->obj;
-                deleg_type[ci] = se->type;
-                deleg_rights[ci] = static_cast<uint8_t>(se->rights & mask);
+                deleg_kind[ci] =
+                    kcap_grant_pack(se->type, static_cast<uint8_t>(se->rights & mask));
+                deleg_badge[ci] = cap_badge(*se);
                 // An absent array, or a 0 entry, means default placement. 0 costs nothing
                 // as a sentinel: index 0 is the kernel's stdout slot, which cap_install_at
                 // refuses anyway.
@@ -660,7 +668,7 @@ namespace kickos
         // taken so the only unwind owed is the run. Without it a task at its ceiling passes
         // its objects into a second task and takes its whole ceiling over again, which is the
         // pool's last slot two spawns later.
-        if (not task_object_admit_grants(tk, deleg_type, deleg_obj, ncaps))
+        if (not task_object_admit_grants(tk, deleg_kind, deleg_obj, ncaps))
         {
             cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
             spawn_unwind(k, attr, tk, stack, stack_size, i);
@@ -673,15 +681,15 @@ namespace kickos
         // additionally owe the task reference and the child's already-seated caps.
         for (int ci = 0; ci < ncaps; ci++)
         {
-            if (obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci],
-                            deleg_rights[ci]))
+            if (obj_ref_inc(static_cast<CapType>(kcap_grant_type(deleg_kind[ci])), deleg_obj[ci],
+                            kcap_grant_rights(deleg_kind[ci])))
             {
                 continue;
             }
             for (int cj = 0; cj < ci; cj++)
             {
-                obj_ref_undo(static_cast<CapType>(deleg_type[cj]), deleg_obj[cj],
-                             deleg_rights[cj]);
+                obj_ref_undo(static_cast<CapType>(kcap_grant_type(deleg_kind[cj])),
+                             deleg_obj[cj], kcap_grant_rights(deleg_kind[cj]));
             }
             cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
             spawn_unwind(k, attr, tk, stack, stack_size, i);
@@ -697,7 +705,8 @@ namespace kickos
         for (int ci = 0; ci < ncaps; ci++)
         {
             cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
-                           static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
+                           static_cast<CapType>(kcap_grant_type(deleg_kind[ci])),
+                           kcap_grant_rights(deleg_kind[ci]), deleg_badge[ci]);
         }
         // What is left stays inside the lock: between an allocated child and sched::add the
         // SPAWNER is preemptible, and a spawner slain in that gap never returns to its

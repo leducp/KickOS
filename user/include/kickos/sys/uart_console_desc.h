@@ -73,16 +73,18 @@
                          .prio_delta = 1,                                                   \
                          .arg = ::kickos::driver::KOS_DRV_ARG_BLOCK,                        \
                          .window_grant = true,                                              \
-                         .cap_count = 1,                                                    \
-                         .caps = {{::kickos::driver::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},    \
+                         .cap_count = 2,                                                    \
+                         .caps = {{::kickos::driver::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},   \
+                                  {::kickos::driver::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},  \
                         {.entry = ::kickos::uart::console_thread,                           \
                          .name = nullptr,                                                   \
                          .prio_delta = 0,                                                   \
                          .arg = ::kickos::driver::KOS_DRV_ARG_BLOCK,                        \
                          .window_grant = false,                                             \
                          .cap_count = 2,                                                    \
-                         .caps = {{::kickos::driver::KOS_DRV_RES_EP, KOS_CAP_WAIT},         \
-                                  {::kickos::driver::KOS_DRV_RES_LINE0, KOS_CAP_SIGNAL}}}}, \
+                         .caps = {{::kickos::driver::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},      \
+                                  {::kickos::driver::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL,     \
+                                   ::kickos::driver::doorbell_badge(1)}}}},              \
             .block_init = block_init                                                        \
         };                                                                                  \
                                                                                             \

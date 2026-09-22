@@ -45,6 +45,13 @@ state == 1 {
         state = 2
         next
     }
+    # Opens apply to depth BEFORE a match on this same line is recorded, and closes apply
+    # AFTER: a brace pair that opens and closes on one line nets zero on a whole-line delta,
+    # which hid a lock whose block closes on its own declaring line from ever reading as
+    # out of scope. Recording at the post-open, pre-close depth is what lets it.
+    n = gsub(/\{/, "{", line)
+    m = gsub(/\}/, "}", line)
+    depth += n
     if (line ~ /IrqLock[ \t]+[A-Za-z_]/ && lockline == 0) {
         lockline = FNR
         lockdepth = depth
@@ -53,9 +60,7 @@ state == 1 {
         callline = FNR
         calldepth = depth
     }
-    n = gsub(/\{/, "{", line)
-    m = gsub(/\}/, "}", line)
-    depth += n - m
+    depth -= m
     if (depth < 0) { state = 2 }
     next
 }
@@ -130,6 +135,17 @@ switch (nr)
     }
 }
 EOF
+cat > "$TMP/ctl_closed_oneline.cc" <<'EOF'
+switch (nr)
+{
+    case KOS_SYS_PLANTED:
+    {
+        { IrqLock lock; }
+        planted_seam(0);
+        return 0;
+    }
+}
+EOF
 cat > "$TMP/ctl_sibling.cc" <<'EOF'
 switch (nr)
 {
@@ -185,6 +201,15 @@ case "$ctl" in
     *) fail "the reader answered [$ctl] for a planted arm whose lock sits in a block that CLOSED
   before the seam call. A lock out of scope is not a lock, and a reader that counts it would
   pass the one refactor most likely to introduce this bug" ;;
+esac
+
+ctl="$(read_arm "$TMP/ctl_closed_oneline.cc" KOS_SYS_PLANTED planted_seam)"
+case "$ctl" in
+    "UNLOCKED 5 6") ;;
+    *) fail "the reader answered [$ctl] for a planted arm whose lock OPENS AND CLOSES ON ONE
+  LINE ('{ IrqLock lock; }') before the seam call on the next line. A brace pair that opens and
+  closes within one line nets zero on a whole-line delta, which is exactly the shape that let a
+  lock already out of scope read as enclosing" ;;
 esac
 
 ctl="$(read_arm "$TMP/ctl_sibling.cc" KOS_SYS_PLANTED planted_seam)"

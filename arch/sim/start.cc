@@ -37,6 +37,24 @@ asm(".pushsection .kickos_app_init_array,\"a\"\n"
     "__kickos_app_init_array_end:\n"
     ".popsection\n");
 
+// The windows a hosted image has none of, stated EMPTY for the same reason: kmain and
+// domain.cc reference these bounds strongly, so absent would be a link error and not a zero.
+// Labels rather than absolute zeros, so each pair is start == end at a real address.
+asm(".pushsection .kickos_link_bounds,\"a\"\n"
+    ".globl __kickos_code_start\n"
+    ".globl __kickos_code_end\n"
+    ".globl __kickos_appdata_start\n"
+    ".globl __kickos_appdata_end\n"
+    ".globl _kickos_heap_start\n"
+    ".globl _kickos_heap_limit\n"
+    "__kickos_code_start:\n"
+    "__kickos_code_end:\n"
+    "__kickos_appdata_start:\n"
+    "__kickos_appdata_end:\n"
+    "_kickos_heap_start:\n"
+    "_kickos_heap_limit:\n"
+    ".popsection\n");
+
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
 
 namespace

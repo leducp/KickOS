@@ -3143,6 +3143,112 @@ RX board builds with the bench knob, so that arch has no exit table and never ha
 is this box's instruction-path length under TCG, comparable to the same emulator at M8.7 and to
 nothing else.
 
+## M8.13: the tail, and what these green runs do NOT say
+
+**THE TAIL FOUND MORE ABOUT THE INSTRUMENTS THAN ABOUT THE KERNEL, and that is the durable
+result.** Six readers were reporting a cleanliness they had never established: a callgraph gate
+passing on a window wider than its own rule, an `extern "C"` scanner that folded an unjudged
+block into a PASS, a budget gate reporting that no assert held a bound when it had merely failed
+to parse the one that does, an x86_64 entry check folding an absent symbol into a direction-flag
+violation, and two bench readers reporting zero where they meant blind. The shared landmark
+window in `tests/lib` exists so the next such reader inherits the refusal instead of remembering
+it, and **the rule it encodes is the one that took two attempts to see: a landmark NOT GIVEN is
+an anchor, a landmark NOT FOUND is a refusal.** Collapse those and you either refuse every
+open-ended rule or pass every blind one.
+
+**THE FLEET SWEEP IS THE ONLY COVER A BUILD-ONLY BOARD HAS, AND TWO BROKE INSIDE THIS MILESTONE
+WITHOUT ANYTHING ELSE NOTICING.** `bluepill-c8-st` overflowed its flash when the vacuity arms
+grew region 2, and `f411disco` stopped compiling when the notification move left a handle its
+deleted acknowledgement had read. Neither board was in the milestone's verification set, and
+neither was in the feature's own. A preset set chosen for a change covers that change; only the
+sweep covers the fleet, and the sweep is the last thing a milestone runs.
+
+**A NULL DEREFERENCE ISOLATED INTO `abort` IS VISIBLE ON EXACTLY ONE ARCH.** `SlotPool::at` has
+been total since M8.3, and the signaller-chain walks spent its answer unchecked, so GCC proved
+the path and isolated it. `trap_redzone` on rxv3 refused the unsized node; the armv7m and armv6m
+graphs carry no such edge at all. **So the defect was arch-independent and its visibility was
+not**, which is the argument for fixing the walk rather than declaring the symbol.
+
+**A `-1` DEFAULT MEMBER INITIALISER ON ANY MEMBER OF THE KERNEL OBJECT MOVES THE WHOLE OBJECT OUT
+OF `.bss` INTO `.data`.** It took one board 6172 bytes past its flash region. Every sentinel in
+the notification work is biased so zero means none. Nothing but a link failure on one board would
+have surfaced it, and no review would have.
+
+**THE C6's `lock-hold` ROW CARRIES A TWO-STATE ALIGNMENT TERM AND IT IS NOT A COST.** One
+function's entry address mod 4 decides whether that row reads about 2013 or about 2185, over
+thirteen captures and eleven builds with no exception. Two dead bytes flip it. **Four earlier
+placement controls found nothing because every one of them was a multiple of four and therefore
+blind to the only bit that matters**; the control that works is a single `nop`. So a lock-hold
+delta on that board means nothing until two builds are shown to share that bit, and the earlier
+record's claim that a relink there is worth ZERO is struck.
+
+**THE FROZEN EXIT TABLE IS UNTOUCHED AND THE NOTIFICATION OBJECT'S ROWS SIT BESIDE IT.** The box
+could not be made quiet, so the addendum is PAIRED, baseline and tip alternating through one
+harness, with the baseline side reproducing five of six frozen cells as its own control. Four of
+six end-to-end cells are unchanged and two move by one bucket, which is the histogram's
+resolution.
+
+**A SILICON SELFTEST CAN BE TWO LINES SHORT OF ITS OWN PLAN WITH EVERY VERDICT CLEAN, AND IT WAS
+NEVER THE CONSOLE.** The local notes had recorded that shape for `rx72m` and `esp32-wroom` and
+stated it as a property of those two consoles; `f411disco` does it too, on a different console,
+which is what widened it from a hardware fact to a producer bounded in YIELDS and discarding the
+remainder in silence, on every board. Dose-response on one board settled it: the ring size and
+the retry bound each fix it alone, so the ring had only been masking the bug. **The consequence
+that outlives the fix: every green silicon selftest archived before this milestone is suspect,
+and the fix does not retire that, because an old capture was taken by an old image.**
+
+**WHICH SKIPS ARE VACUITY AND WHICH ARE PROVISIONING WAS MEASURED, NOT JUDGED.** Fourteen loaded
+runs: 29 arms skip in every one, and exactly one name varies. A provisioning skip is constant for
+an image; a vacuity skip is not. The new category is permitted and never expected, and it is a
+SUB-CATEGORY of the existing directive on purpose, so every reader not taught it still refuses
+the line rather than reading it as a pass.
+
+**AND ONE ARM COULD NOT BE MADE DECIDABLE BY ANY PRECONDITION.** `slice_preempts_every_core`
+records an expiry only where the running thread CHANGED, so it is a claim about placement, and
+placement is what a loaded host takes away. A genuine defect and a starved run read identically
+in occupancy, in burner count, in residency and in pairing. It took a staging redesign that
+CONSTRUCTS the peer to separate them, and then by forty times. A vacuity test that cannot tell
+the two apart converts a defect into a skip, which is worse than the false red it replaces.
+
+**armv7m SVC HAS FOUR BYTES OF SLACK on the three kstacks-0 boards**, measured by planting a
+frame rather than inferred. That is the class a syscall-path frame breaks first.
+
+**A NEW CHARGED POOL OWES AN ANSWER TO "WHAT ELSE CAN HOLD ONE OF THESE ALIVE?", AND THE
+NOTIFICATION OBJECT DID NOT GIVE IT.** The object budget derives a task's holds from its members'
+capability tables, and that was the WHOLE accounting because until this milestone a capability was
+the only thing that kept a charged slot allocated. The notification is the first object designed
+to outlive its last capability: the bind and the IRQ attach each take a reference precisely so it
+does, and the accounting had no way to know. Closing the capability therefore dropped the charge
+while the slot stayed allocated, and one task could hold a pool its budget caps below -- which is
+the denial the budget exists to prevent, reached with no adversary, no IRQ and no authority. The
+build-time assert that each budget is strictly below its pool does not reach it: that assert
+bounds what a task may TAKE, and this is about what it HOLDS. Found by the external audit of this
+branch, not by any of the arms the branch wrote. **The generalisation is the durable part**: the
+next charged pool must state its holders, and the reference-taking design that makes an object
+survive its capability is exactly what puts it outside a capability walk.
+
+**AND COUNTING A HOLD IS NOT ADMITTING IT, WHICH THE SECOND AUDIT PASS HAD TO SAY OUT LOUD.**
+The corrected walk charged a held line's notification, and that was only half the mechanism: the
+walk answers what a task holds NOW, while admission decides what it may COME to hold, and those
+are different code paths. For an object held through another object the second question has three
+answers, not one -- the creator, the spawn's grant list, and the operation that attaches the
+object to a thing already delegated. Both of the latter walked past the corrected walk, in
+opposite orders, and fixing either alone leaves the other open. **The rule to carry: an indirect
+hold owes an admission at every point the indirection can be established or moved, and the
+walk that counts it will not tell you where those are.**
+
+**AND THE REFERENCE PAGE HAD DRIFTED IN THE SAME COMMIT, SILENTLY.** The budget invariant said
+four charged pools, four figures and four asserts, from the moment the notification pool became
+the fifth. Nothing gates that page against the code, so the drift was only findable by reading the
+code the page stands for -- which is how the auditor found the defect underneath it.
+
+**WHAT NO GREEN RUN HERE SAYS.** No silicon witnessed the notification object; the three boards
+of M8.12's second half have no counterpart in this milestone. The SMP routed-core refusal, a real
+device ISR racing a bind, the reference ceiling and two signallers sharing a bit are all reasoned
+and unwitnessed, because no board on this bench can pose them. A fleet bench pass still flashes a
+fraction of the suite on every split board and has since the first split, so no silicon selftest
+figure on `esp32c6-wroom` covers more than its first image.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

@@ -254,12 +254,11 @@ void arch_irq_inject(int irq)
 }
 
 // --- Kernel-facing ISR entries ----------------------------------------------
-// SysTick expiry: disarm (one-shot tickless model) then run the kernel handler,
-// which re-arms the next deadline via arch_timer_arm.
+// No disarm here: ktime_on_timer disarms before it reads the queue, and arch_timer_disarm
+// writes this same SYST_CSR = 0 plus the PENDSTCLR that only it ever wrote.
 void SysTick_Handler(void)
 {
-    reg32(SYST_CSR) = 0;
-    kickos_isr_timer();
+    kickos_isr_timer(); // disarms, then re-arms the next deadline
 }
 
 // The exception number in IPSR is 16 + the external line. The mask is the 9-bit v7-M IPSR

@@ -80,6 +80,20 @@ arm_records() { # <bodyfile> <outfile>
         }' "$1" > "$2"
 }
 
+# A PREPROCESSOR LINE NAMING THE KNOB, whatever its spelling. arm_records() keys on the one
+# bare `#if KICKOS_KERNEL_STACKS`, so an arm guarded any other way comes back EMPTY, which is
+# the same record as a backend that carries no arm at all. This is the difference between the
+# two: an empty arm beside one of these lines is a guard this reader did not recognise, and
+# that is UNKNOWN rather than a slay stub rebuilt on the user stack.
+knob_mentioned() { # <bodyfile>
+    awk -F: '
+        {
+            text = substr($0, index($0, ":") + 1)
+            if (text ~ /^[[:space:]]*#/ && text ~ /KICKOS_KERNEL_STACKS/) { found = 1 }
+        }
+        END { exit !found }' "$1"
+}
+
 # Joined into one logical line: the block base and the arch_context_init call each span two
 # source lines, so a per-line match would report both absent.
 collapse() { # <recordfile>
@@ -165,6 +179,39 @@ arm_records "$TMP/negbody" "$TMP/negarm"
 if [ -s "$TMP/negarm" ]; then
     fail "the prose twin yielded a block arm; comments are being read as code and every claim is satisfiable by a comment"
 fi
+# The prose twin is also the negative for the refusal itself: a backend that genuinely carries
+# no arm must be judged and not excused.
+knob_mentioned "$TMP/negbody" \
+    && fail "the prose twin reads as guarding on KICKOS_KERNEL_STACKS, so a backend with the
+      knob in a comment, or none at all, would be excused as UNKNOWN instead of judged"
+
+# A GUARD THIS READER DOES NOT RECOGNISE: the same arm behind a spelling arm_records() keys
+# past. It must be told apart from a backend carrying no arm, or the gate reports the defect it
+# exists to catch on a file it could not read.
+cat > "$TMP/spell.cc" <<'EOF'
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    uint32_t const kernel_sp = ctx->kernel_sp;
+#if defined(KICKOS_KERNEL_STACKS) && KICKOS_KERNEL_STACKS
+    if (kernel_sp != 0)
+    {
+        return;
+    }
+#endif
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+EOF
+extract "$TMP/spell.cc" arch_ctx_redirect "$TMP/spellbody" \
+    || fail "the extractor refused the planted respelled guard, so this negative proves nothing"
+arm_records "$TMP/spellbody" "$TMP/spellarm"
+[ -s "$TMP/spellarm" ] \
+    && fail "arm_records read a guard spelled with #if defined(...), so the refusal below
+      is unreachable and the control proves nothing"
+knob_mentioned "$TMP/spellbody" \
+    || fail "a body guarded on KICKOS_KERNEL_STACKS through a spelling arm_records() keys past
+      is not recognised as naming the knob, so it would be reported as a backend with no block
+      arm, which is the defect and not what was read"
 
 # A body that ZEROES the bounds instead of restoring them must not satisfy the restore
 # claims: the bare `=[^=]` forms accepted it, which is the whole point of the tightening.
@@ -278,8 +325,15 @@ while IFS="$TAB" read -r a f; do
     fi
     arm_records "$TMP/body" "$TMP/arm"
     if [ ! -s "$TMP/arm" ]; then
-        bad "$f: arch_ctx_redirect carries no '#if KICKOS_KERNEL_STACKS' arm, so on a board
+        if knob_mentioned "$TMP/body"; then
+            bad "$f: arch_ctx_redirect guards on KICKOS_KERNEL_STACKS through a spelling this
+      gate does not read, so it extracted no arm and every claim below is UNKNOWN rather than
+      absent. arm_records() keys on a bare '#if KICKOS_KERNEL_STACKS'; restore that spelling or
+      teach it this one"
+        else
+            bad "$f: arch_ctx_redirect carries no '#if KICKOS_KERNEL_STACKS' arm, so on a board
       that carves blocks its slay stub is rebuilt on the thread's USER stack"
+        fi
         continue
     fi
     BLOB="$(collapse "$TMP/arm")"
@@ -350,8 +404,13 @@ if ! extract "$FAULT" kickos_fault_stack_top "$TMP/topbody"; then
 fi
 arm_records "$TMP/topbody" "$TMP/toparm"
 if [ ! -s "$TMP/toparm" ]; then
-    bad "$FAULT: kickos_fault_stack_top carries no '#if KICKOS_KERNEL_STACKS' arm, so the
+    if knob_mentioned "$TMP/topbody"; then
+        bad "$FAULT: kickos_fault_stack_top guards on KICKOS_KERNEL_STACKS through a spelling
+      this gate does not read, so its verdict is UNKNOWN rather than an absent arm"
+    else
+        bad "$FAULT: kickos_fault_stack_top carries no '#if KICKOS_KERNEL_STACKS' arm, so the
       fault redirect aims every stub at the dying thread's USER stack"
+    fi
 else
     printf '%s' "$(collapse "$TMP/toparm")" | grep -qE 'return[^;]*ctx\.kernel_sp' \
         || bad "$FAULT: the block arm of kickos_fault_stack_top does not answer with

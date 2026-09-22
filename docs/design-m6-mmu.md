@@ -5600,7 +5600,9 @@ a different answer and three of them are worth carrying:
   Hidden visibility does not help a WEAK undefined symbol, measured both ways: gcc reaches it
   GOT-indirect at any visibility. So `KICKOS_LINK_OPTIONAL` (`include/kickos/klink.h`) drops
   the `weak` on a target whose linker resolves no weak undefined, and `pe_image.ld` STATES all six
-  windows as empty, exactly as the sim states an empty ctor window. `kickos_root_entry` is the
+  windows as empty, exactly as the sim states an empty ctor window. (M8.13 took the six the rest of
+  the way: they are `KICKOS_LINK_BOUND`, strong on every target, and every chip script states them.
+  `KICKOS_LINK_OPTIONAL` survives for the app build stamp alone.) `kickos_root_entry` is the
   eighth and needed only hidden visibility, its reference already being strong.
   `tools/check-x86_64-no-got.sh` now takes archives as well as objects and reports the member name
   for each hit, which needed `LC_ALL=C`: a localised binutils prints `Fichier:` and the member-name

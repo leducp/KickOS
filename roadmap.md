@@ -900,6 +900,12 @@ is the next one's baseline.
 | M8.10 | translating boards and SMP: the reent seat, ASIDs |
 | M8.11 | what only a measurement can justify |
 | M8.12 | the M8 exit measurement, frozen |
+| M8.13 | the tail: the instrument's residues, the gate holes, and every item the milestone left |
+
+**M8.13 COMES AFTER THE EXIT MEASUREMENT AND DOES NOT MOVE IT.** The frozen table is M8.12's and
+stays that tree's reading; what M8.13 finishes is everything M8 left unticked and everything the
+milestone carried with no number of its own. Nothing it lands may change a figure M8.12 published,
+so an item that would is reassigned to M9 rather than taken here.
 
 **THE FIX PHASE IS CUT BY SEAM AND NOT BY SEVERITY**, so that each sub-milestone is one review gate
 over one surface whose invariants can be stated together. Cutting it by severity instead would have
@@ -1303,6 +1309,21 @@ file owns only the number.
 | M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
 | M9.6 | the write-up, the contract changes, and the M9 exit measurement |
 
+**WHAT M8 HANDS M9, REASSIGNED AT M8.13 RATHER THAN LEFT IN THE MILESTONE THAT COULD NOT
+TAKE THEM.** Each was raised inside M8, each needs the lock or the scheduler to move before
+it can be settled, and each is recorded in `TODO.md` with its evidence. The console tear
+across cores, in both its SMP and its AMP shapes, which is a partition-wide contract for who
+may speak and not a locking fix. The gate that would enforce "the caller holds the
+exclusion", which is the backstop M8 declined to buy with a naming rule. The peer ask
+walking every core on an ordinary reschedule, whose cheap answer needs a maintained set.
+The end-to-end ISR stamp not scoped to the armed line. The map unwind's peer mask, sampled
+before the edits and held only by the big lock. A cancelled park running `cap_teardown`
+masked, both repairs landing on the `dying` restart guard. The doorbell's masked payload
+copy, measured and banked, waiting on M9.3's ring lifetime. The partial-range map
+preflight, which no frozen M8 baseline carries and no bench preset drives. And the two arch
+questions the IRQ instrument asks and cannot answer, armv8a's `arch_irq_unmask` routing and
+whether rv64imac's raised set should be per hart.
+
 **EVERY ROW AFTER M9.0 IS ASSIGNED AND NOT YET APPROVED, and the distinction is the point of
 assigning them.** A number here fixes what a stage IS, so that the evidence gate can refuse the
 stage without the argument moving to a different number afterwards. M9.0 can start whenever, being
@@ -1552,6 +1573,14 @@ carries M9's silicon re-check with it: a part with eight cores, the large-system
 and a GICv3 is the first thing that could answer on silicon what M9 answers on an emulator, and the
 requirement-5 ruling for clusters that share an ISA without sharing a performance class is this
 port's to make.
+
+**THE DRIVER-FACING MAPPING API IS A ROW HERE, ASSIGNED AT M8.13** and previously assigned to
+nothing. The target shape is `kos_vmem_alloc` then `kos_memmap`, and the interesting half is
+the MCU one: a region board has no address space to reserve and what grants access is an MPU
+descriptor, so the reserve answers the physical address itself and the map becomes the grant.
+It belongs here because the MCU arm cannot be specified from the driver case alone and this is
+where a second real consumer exists to specify it against. `TODO.md`'s M8.10 section carries
+the worked example and the direction.
 
 ### M12 -- KickCAT as the reality check
 **After** the driver era, not inside it. KickCAT has been deferred through the whole driver era, and

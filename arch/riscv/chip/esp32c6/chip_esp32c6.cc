@@ -58,6 +58,8 @@ extern "C"
     // must register it by hand at boot. WEAK ref: a freestanding image references no
     // _Unwind_*, the registrar object is never pulled, and the call is skipped.
     extern uint32_t __eh_frame_start;
+    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
+    // and optional by libgcc's own contract, so no linker script can state it.
     void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and

@@ -26,8 +26,9 @@ SYM_ARM=_ZN6kickos13bench_e2e_armEi
 SYM_PARK=_ZN6kickos19bench_e2e_park_markEv
 SYM_RAISE=_ZN6kickos15bench_e2e_raiseEv
 SYM_CLOSE=_ZN6kickos15bench_e2e_closeEv
-# Check the kernel's timed IRQ wait body; the untimed entry only forwards to it.
-SYM_WAIT=_ZN6kickos14irq_wait_timedEPNS_6ThreadEjj
+# Check the kernel's notification wait body. There is ONE wait and it is always timed, so
+# nothing forwards to it and the name below is the only body that can carry the mark.
+SYM_WAIT=_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj
 
 # The calls that bracket each body's ordering. Mangled for the same reason.
 C_CURRENT='<_ZN6kickos5sched7currentEv>'
@@ -35,7 +36,8 @@ C_UNLOCK='<_ZN6kickos11klock_leaveEv>'
 C_CLOCK='<arch_clock_now>'
 C_INJECT='<arch_irq_inject>'
 C_LOCK='<_ZN6kickos11klock_enterEv>'
-C_BLOCK='<_ZN6kickos8wq_blockERNS_4ListENS_8WaitKindEPv>'
+# What the notification wait blocks with. It has no queue, so it never reaches wq_block.
+C_BLOCK='<_ZN6kickos14park_queuelessEPNS_6ThreadENS_8WaitKindEPv>'
 C_PARK='<_ZN6kickos19bench_e2e_park_markEv>'
 
 # ACQ/REL: the mnemonic, and the operand where the mnemonic alone does not say the direction.
@@ -52,6 +54,7 @@ case "$arch" in
         CALL_ONE='bl	ffffff804001b400 <arch_clock_now>'
         CALL_TWO='bl	ffffff804001b2c8 <arch_irq_inject>'
         CALL_MARK='bl	ffffff8040017b1c <_ZN6kickos19bench_e2e_park_markEv>'
+        FWD_INSN='b	ffffff8040017c40 <_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj>'
         RET_INSN='ret'
         ;;
     rv64imac)
@@ -66,6 +69,7 @@ case "$arch" in
         CALL_ONE='jal	ffffffff80012070 <arch_clock_now>'
         CALL_TWO='jal	ffffffff8001077c <arch_irq_inject>'
         CALL_MARK='jal	ffffffff8000fe36 <_ZN6kickos19bench_e2e_park_markEv>'
+        FWD_INSN='j	ffffffff8000ff10 <_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj>'
         RET_INSN='ret'
         ;;
     *)
@@ -83,10 +87,16 @@ scratch_dir
 # One record per body: the instruction count, the acquires and releases in it, and then the
 # four positional counts: acquires ahead of the OPENING call, acquires and releases between the
 # opening call and the CLOSING one, and calls to a NAMED callee in that same stretch. A body
-# whose bracket calls are not given reads the positional counts as zero; one given no closing
-# call brackets from the opening call to the end of the body.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
-# tests/lib/objdump_scope.awk ahead of this file.
+# given no closing call brackets from the opening call to the end of the body.
+# EVERY POSITIONAL COUNT IS ZERO IN A BODY THE BRACKET CALLS ARE NOT IN, which is the same
+# record as a body that carries the calls and publishes nothing between them. So a bracket call
+# the body was given and does not contain is its own record and never a verdict: NOBRACKET for
+# neither of them, NOOPEN and NOCLOSE for one. Without those the reader answers a renamed,
+# inlined or forwarded body with the finding it exists to report.
+# HALF A PROGRAM: `seen`, the body scope, the window and all three of those refusals come from
+# gate.sh's scoped_body, which reads tests/lib/objdump_scope.awk and
+# tests/lib/objdump_window.awk ahead of this file. The bracket calls are EREs there rather than
+# literals, and no mangled name in the table above carries an ERE metacharacter.
 cat > "$TMP/reader.awk" <<'AWK'
 {
     text = $0
@@ -98,32 +108,21 @@ cat > "$TMP/reader.awk" <<'AWK'
     ops = text
     sub(/^[^ \t]*[ \t]*/, "", ops)
     gsub(/[ \t]/, "", ops)
-    n++
     if (mnem == acq_mnem && (acq_ops == "" || ops == acq_ops))
     {
         acq++
-        if (opened == 0) { acq_pre++ }
-        else if (closed == 0) { acq_mid++ }
+        if (win_pre) { acq_pre++ }
+        else if (win_in) { acq_mid++ }
     }
     if (mnem == rel_mnem && (rel_ops == "" || ops == rel_ops))
     {
         rel++
-        if (opened != 0 && closed == 0) { rel_mid++ }
+        if (win_in) { rel_mid++ }
     }
-    if (call_mark != "" && index(text, call_mark) > 0 && opened != 0 && closed == 0)
-    {
-        mark_mid++
-    }
-    if (call_open != "" && index(text, call_open) > 0 && opened == 0) { opened = n }
-    if (call_close != "" && index(text, call_close) > 0 && closed == 0 && opened != 0)
-    {
-        closed = n
-    }
+    if (call_mark != "" && win_in && index(text, call_mark) > 0) { mark_mid++ }
 }
 END {
-    if (!seen) { print "NOSYM"; exit }
-    if (n == 0) { print "NOINSN"; exit }
-    printf "BODY %d %d %d %d %d %d %d\n", n, acq + 0, rel + 0, acq_pre + 0, acq_mid + 0,
+    printf "BODY %d %d %d %d %d %d %d\n", win_n, acq + 0, rel + 0, acq_pre + 0, acq_mid + 0,
            rel_mid + 0, mark_mid + 0
 }
 AWK
@@ -132,7 +131,7 @@ read_body() { # <listing> <symbol> <opening-call> <closing-call> [<counted-call>
     scoped_body "$TMP/reader.awk" "$1" "$2" \
         -v acq_mnem="$ACQ_MNEM" -v acq_ops="$ACQ_OPS" \
         -v rel_mnem="$REL_MNEM" -v rel_ops="$REL_OPS" \
-        -v call_open="$3" -v call_close="$4" -v call_mark="${5:-}"
+        -v win_open="$3" -v win_close="$4" -v call_mark="${5:-}"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -212,9 +211,44 @@ ctl_mark "$TMP/ctl_call_post" "BODY 4 0 0 0 0 0 0" "a planted body whose counted
 ctl_dead_reader "$(read_body "$TMP/ctl_pub" a_symbol_no_listing_carries "$C_CLOCK" "$C_INJECT")" \
     "a renamed or inlined body would read as a clean one"
 
+# The body that carries NEITHER bracket call: a forwarder over the body that does. Every
+# positional count is zero there for want of a window, which is the record a body that carries
+# the calls and orders nothing also produces.
+plant "$TMP/ctl_fwd" "$FWD_INSN" "$RET_INSN"
+_got="$(read_body "$TMP/ctl_fwd" planted_body "$C_CLOCK" "$C_INJECT")"
+[ "$_got" = "NOBRACKET 2" ] || fail "the reader answered [$_got] and not [NOBRACKET 2] for a
+  planted two-instruction forwarder, which carries neither bracketing call. Read as a BODY it
+  reports every ordering this gate asks for as missing, so a symbol that moved behind a
+  forwarder goes red as a broken protocol"
+
+# One side of the bracket present and the other absent. The window then runs from the opening
+# call to the end of the body, or never opens at all, and neither is the stretch the rule is
+# stated over.
+plant "$TMP/ctl_open_only" "$ACQ_INSN" "$CALL_ONE" "$REL_INSN" "$RET_INSN"
+_got="$(read_body "$TMP/ctl_open_only" planted_body "$C_CLOCK" "$C_INJECT")"
+[ "$_got" = "NOCLOSE 4" ] || fail "the reader answered [$_got] and not [NOCLOSE 4] for a planted
+  body carrying the opening call and not the closing one. Read as a BODY the window silently
+  runs to the end of the body, which counts ordering the rule does not reach and turns a
+  refusal into a pass"
+
+plant "$TMP/ctl_close_only" "$ACQ_INSN" "$CALL_TWO" "$REL_INSN" "$RET_INSN"
+_got="$(read_body "$TMP/ctl_close_only" planted_body "$C_CLOCK" "$C_INJECT")"
+[ "$_got" = "NOOPEN 4" ] || fail "the reader answered [$_got] and not [NOOPEN 4] for a planted
+  body carrying the closing call and not the opening one. The window never opens, so every
+  positional count is zero and the body reads as one that publishes nothing"
+
+# Both calls present and in the WRONG ORDER, which no count of either can see.
+plant "$TMP/ctl_close_first" "$CALL_TWO" "$ACQ_INSN" "$CALL_ONE" "$REL_INSN" "$RET_INSN"
+_got="$(read_body "$TMP/ctl_close_first" planted_body "$C_CLOCK" "$C_INJECT")"
+[ "$_got" = "NOCLOSE 5" ] || fail "the reader answered [$_got] and not [NOCLOSE 5] for a planted
+  body whose closing call stands only AHEAD of the opening one. Both calls are present, so a
+  reader counting their presence passes it, and the window then runs from the opening call to
+  the end of the body and counts ordering the rule does not reach"
+
 echo "== control: the reader reports the publishing shape, the consuming shape, the relaxed
-   downgrade, ordering sited outside the bracket that owes it, an open-ended bracket, and a
-   counted call inside that bracket and on either side of it"
+   downgrade, ordering sited outside the bracket that owes it, an open-ended bracket, a
+   counted call inside that bracket and on either side of it, and a body carrying neither
+   bracket call, only the opening one, only the closing one, or both in the wrong order"
 
 # --- the instruction stream ---------------------------------------------------
 tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"
@@ -232,6 +266,21 @@ record() { # <symbol> <opening-call> <closing-call> <what it carries> [<counted-
         NOINSN)
             fail "the body of '$1' in $elf disassembles to no instruction at all, so the
   corpus is UNKNOWN rather than empty" ;;
+        "NOBRACKET "*)
+            fail "the body of '$1' in $elf, which is $4, carries NEITHER '$2' nor '$3' across
+  its $(field "$_r" 2) instruction(s). This gate cannot see the bracket it reads the ordering
+  inside, so what it has is UNKNOWN and not an empty bracket: the symbol names a forwarder, or
+  both callees were inlined or renamed. Point it at the body that carries them" ;;
+        "NOOPEN "*)
+            fail "the body of '$1' in $elf, which is $4, never reaches '$2' across its
+  $(field "$_r" 2) instruction(s), so the bracket this ordering sits in never opens and every
+  positional count below would read zero. That is UNKNOWN, not a bracket that publishes
+  nothing" ;;
+        "NOCLOSE "*)
+            fail "the body of '$1' in $elf, which is $4, reaches no '$3' PAST '$2' across its
+  $(field "$_r" 2) instruction(s), so the bracket runs to the end of the body instead of to the
+  call that closes it. That is UNKNOWN, not a pass: ordering counted past the closing call is
+  ordering the rule does not reach" ;;
         "BODY "*) ;;
         *)
             fail "the reader emitted [$_r] for '$1', a record this gate does not model" ;;

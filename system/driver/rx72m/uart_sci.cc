@@ -67,7 +67,7 @@ namespace
         }
         r8(base + rs::SCR_OFFSET) = static_cast<uint8_t>(scr & ~rs::SCR_TIE);
         // MANDATORY read-back: an RX I/O write is posted (UM sec.5 p.210), and sec.42.14.8
-        // p.2317 spells out this sequence for SCR.TIE. The caller returns into kos_irq_wait,
+        // p.2317 spells out this sequence for SCR.TIE. The caller returns into its notification wait,
         // which unmasks the line, so an unlanded TIE=0 rearms into a live source.
         //
         // BOUNDED: this runs on the drained-queue path in the only thread servicing the

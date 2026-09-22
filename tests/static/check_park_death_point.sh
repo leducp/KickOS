@@ -51,7 +51,7 @@ WRITE='[^=!<>]=[[:space:]]*ThreadState::BLOCKED'
 ASK='park_cancel_pending'
 
 corpus "$TMP/all" "tracked file under kernel/" kernel
-grep -E '\.(cc|h)$' "$TMP/all" > "$TMP/corpus"
+grep -E '\.(cc|h|h\.in)$' "$TMP/all" > "$TMP/corpus"
 NFILES=$(wc -l < "$TMP/corpus")
 [ "$NFILES" -gt 0 ] || fail "no tracked C/C++ file under kernel/; an empty corpus passes forever"
 

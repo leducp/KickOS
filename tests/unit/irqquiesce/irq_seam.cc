@@ -8,6 +8,8 @@
 
 #include "irq_seam.h"
 
+#include <kickos/notify.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -263,6 +265,18 @@ namespace kickos
         void* g_installed_obj = nullptr;
         int g_installed_handle = -1;
         unsigned g_closes = 0;
+        // The one object every line here signals, and the one entry a CAP_NOTIFY resolve
+        // answers. Handle 0 names it; nothing in this gate ever frees it.
+        Notification g_note;
+        CapEntry g_note_entry = {};
+    }
+
+    namespace irqfix
+    {
+        Notification* the_notification()
+        {
+            return &g_note;
+        }
     }
 
     int cap_install(Thread*, int obj, CapType, uint8_t, uint32_t* out)
@@ -273,6 +287,33 @@ namespace kickos
         return 0;
     }
 
+    // The notification half of the capability layer, flat: one object, one entry, no pool.
+    CapEntry* cap_lookup(Thread*, uint32_t)
+    {
+        g_note_entry.obj = 0;
+        g_note_entry.type = static_cast<uint8_t>(CapType::CAP_NOTIFY);
+        g_note_entry.rights = CAP_WAIT | CAP_SIGNAL;
+        cap_badge_seat(&g_note_entry, KCAP_BADGE_NONE); // bit 0, as an unbadged copy raises
+        return &g_note_entry;
+    }
+
+    bool obj_ref_inc(CapType, int, uint8_t)
+    {
+        return true;
+    }
+
+    bool notify_raise(Notification* n, uint32_t bit)
+    {
+        IrqLock lock;
+        bool const changed = (n->pending & bit) == 0u;
+        n->pending = n->pending | bit;
+        return changed; // no bound thread here: nothing to wake
+    }
+
+    void notify_ref_drop(int, bool)
+    {
+    }
+
     // The object budget reads a task's capability tables, which this seam does not build:
     // every arm here runs one claim on a threadless fixture, so admitting all of them is the
     // real kernel's answer for a caller holding no task.
@@ -281,8 +322,18 @@ namespace kickos
         return true;
     }
 
-    void* cap_resolve_e(Thread*, uint32_t, CapType, uint8_t, int* err)
+    bool task_object_admit_binding_notify(int, int)
     {
+        return true;
+    }
+
+    void* cap_resolve_e(Thread*, uint32_t, CapType want, uint8_t, int* err)
+    {
+        if (want == CapType::CAP_NOTIFY)
+        {
+            *err = 0;
+            return &g_note;
+        }
         if (g_installed_obj == nullptr)
         {
             *err = KOS_EBADF;

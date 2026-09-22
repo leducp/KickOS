@@ -45,8 +45,11 @@
 #            scans it: the reader maps NUL to an ASCII control byte first, so no byte report
 #            is suppressed and no tool outside POSIX is asked for. The line half SKIPS it by
 #            name, awk's records over a NUL stream meaning nothing.
-#            A file that is both NUL-holding and byte-exempt is therefore refused by neither,
-#            which is what exempt_bytes() says when it names NULs off the wire.
+#            A file that is both NUL-holding and byte-exempt used to be refused by neither.
+#            exempt_nul_files() closes that: it is the one place a NUL is EXPECTED inside a
+#            byte-exempt file, and a byte-exempt file holding a NUL that is not named there is
+#            refused by name instead of passing through the crack the two skips left between
+#            them.
 #
 # The byte rule is about the BYTE, so its verdict covers bytes above 0x7F and NUL and nothing
 # else: an ASCII spelling that is merely WRONG passes (an HTML entity for a dash, `(c)` where
@@ -109,6 +112,31 @@ exempt_bytes() { # <file>
       and either way round it decides whether this file's bytes are read at all"
 }
 
+# The byte-exempt files that are ALSO expected to hold a NUL. Named individually, same
+# reasoning as exempt_byte_files() above: a pattern here would let a future exempt file carry
+# a NUL unremarked. Of the seven names in exempt_byte_files(), only this one measures NUL-holding
+# on this tree; the check below refuses if that ever disagrees.
+#
+#   docs/archive/M1_raw_meas.md
+#       archived raw instrument capture; its NULs are off the wire, same reason it is
+#       byte-exempt at all.
+exempt_nul_files() {
+    printf '%s\n' \
+        'docs/archive/M1_raw_meas.md'
+}
+
+exempt_nul() { # <file>
+    grep -Fxq -e "$1" "$TMP/exempt_nul_names"
+    _en=$?
+    case "$_en" in
+        0) return 0 ;;
+        1) return 1 ;;
+    esac
+    fail "exit $_en from grep while asking whether $1 is NUL-exempt: the answer is UNKNOWN,
+      and either way round it decides whether a byte-exempt file's NUL is acknowledged or
+      refused"
+}
+
 # The line records a tracked file is allowed to carry, one per line, in the shape scan_file
 # emits. Every listed record must still be PRESENT: a file that stopped carrying one fails
 # here, so the set cannot go stale into a blanket skip. Every record a file carries that is
@@ -131,6 +159,19 @@ scratch_dir
 exempt_byte_files > "$TMP/exempt_names"
 require_nonempty "$TMP/exempt_names" "exempt_byte_files() names nothing, so the controls
       below would assert nothing about the exemption"
+
+exempt_nul_files > "$TMP/exempt_nul_names"
+require_nonempty "$TMP/exempt_nul_names" "exempt_nul_files() names nothing, so the controls
+      below would assert nothing about the NUL exemption"
+# A name here that is not also byte-exempt declares an exemption for a check that never
+# reaches it: the main loop below only asks exempt_nul() about a file exempt_bytes() already
+# passed.
+while IFS= read -r _xn; do
+    grep -Fxq -e "$_xn" "$TMP/exempt_names" \
+        || fail "exempt_nul_files() names [$_xn], which exempt_byte_files() does not: a NUL
+      exemption on a file whose bytes are not exempt asserts nothing, since the byte half
+      would refuse that file on its own bytes first"
+done < "$TMP/exempt_nul_names"
 
 # EVERY DETECTOR BELOW WRITES ITS RECORDS TO A FILE AND RETURNS A STATUS. A detector that
 # died produces no record, which is what a clean file produces too, so a caller reading only
@@ -386,7 +427,17 @@ if exempt_bytes "docs/archive/NOT_A_CAPTURE_meas.md"; then
       carry any byte at all and a NUL in it would clear the line half too"
 fi
 
-echo "== control: the filter passes an unlisted record and refuses a listed one gone missing, and the byte exemption fires only on a file it names =="
+# The NUL exemption is the filter that closes the crack between the two skips above: a
+# byte-exempt file's NUL either matches a name here or the walk below refuses it by name.
+exempt_nul "docs/archive/M1_raw_meas.md" \
+    || fail "the NUL exemption does not fire on the one file it names, so the walk below
+      would refuse a real, legitimate NUL-holding capture"
+if exempt_nul "docs/archive/M3_raw_meas.md"; then
+    fail "the NUL exemption fires on a file it does not name, so a byte-exempt file could gain
+      an unacknowledged NUL and still pass"
+fi
+
+echo "== control: the filter passes an unlisted record and refuses a listed one gone missing, the byte exemption fires only on a file it names, and the NUL exemption fires only on a file it names =="
 
 # --- the corpus ---------------------------------------------------------------
 corpus_all "$TMP/all"
@@ -405,12 +456,23 @@ while IFS= read -r _x; do
       entry exempts whatever lands on that path next. Drop it from the list."
 done < "$TMP/exempt_names"
 
+# Every declared NUL exemption must still HOLD a NUL: a stale entry here is the mirror of the
+# one above, an acknowledgment that no longer matches the file and would sit there asserting
+# nothing while a real, unacknowledged NUL elsewhere is what this exemption exists to catch.
+while IFS= read -r _xn; do
+    holds_nul "$_xn" \
+        || fail "exempt_nul_files() names [$_xn], which does not hold a NUL: a stale
+      acknowledgment here is not evidence of anything. Drop it from the list or re-measure."
+done < "$TMP/exempt_nul_names"
+
 : > "$TMP/bytes"
 : > "$TMP/lines"
 : > "$TMP/binary"
 : > "$TMP/notext"
 : > "$TMP/empty"
 : > "$TMP/exempt"
+: > "$TMP/exempt_nul"
+: > "$TMP/unacked_nul"
 : > "$TMP/allowed"
 N_BYTE=0
 N_LINE=0
@@ -431,6 +493,17 @@ while IFS= read -r f; do
 
     if exempt_bytes "$f"; then
         printf '%s\n' "$f" >> "$TMP/exempt"
+        # A byte-exempt file's bytes are never scanned, and a NUL routes it out of the line
+        # half two lines below, so without this check the combination is refused by neither:
+        # exempt_nul_files() is the one place that NUL is expected, and anywhere else it is a
+        # finding by name.
+        if [ "$_nul" -eq 1 ]; then
+            if exempt_nul "$f"; then
+                printf '%s\n' "$f" >> "$TMP/exempt_nul"
+            else
+                printf '%s\n' "$f" >> "$TMP/unacked_nul"
+            fi
+        fi
     else
         # The tally counts a SUCCESSFUL read, never a loop entry: a reader that died leaves
         # the same empty record file as a clean one, and would otherwise raise the headline
@@ -503,6 +576,10 @@ if [ -s "$TMP/notext" ]; then
     echo "== lines not scanned, a NUL byte makes it not text (the byte half refuses one it scans) =="
     sed 's/^/   /' "$TMP/notext"
 fi
+if [ -s "$TMP/exempt_nul" ]; then
+    echo "== byte-exempt AND holds a NUL, acknowledged by name (see exempt_nul_files()) =="
+    sed 's/^/   /' "$TMP/exempt_nul"
+fi
 
 RC=0
 
@@ -528,6 +605,18 @@ if [ -s "$TMP/binary" ]; then
     sed 's/^/      /' "$TMP/binary" >&2
     echo "      Drop the file, strip the NULs, or classify it in this script with the reason" >&2
     echo "      the tree tracks a non-text file." >&2
+    RC=1
+fi
+
+if [ -s "$TMP/unacked_nul" ]; then
+    echo "" >&2
+    echo "FAIL: $(wc -l < "$TMP/unacked_nul" | tr -d ' ') byte-exempt tracked file(s) hold a NUL" >&2
+    echo "      that exempt_nul_files() does not name, so neither half of this gate refuses" >&2
+    echo "      them: the byte half skips them by exempt_bytes(), and the line half skips any" >&2
+    echo "      NUL-holding file. Their verdict is UNKNOWN, not clean:" >&2
+    sed 's/^/      /' "$TMP/unacked_nul" >&2
+    echo "      Add the file to exempt_nul_files() if the NUL is a legitimate raw-capture byte," >&2
+    echo "      or strip the NUL if it is not." >&2
     RC=1
 fi
 

@@ -20,7 +20,7 @@
 #include <kickos/driver/spi.h>
 
 #include <kickos/io/mmio.h> // r32
-#include <kickos/sys.h>     // kos_periph_reg_write, kos_periph_clock_hz, kos_irq_wait/ack
+#include <kickos/sys.h>     // kos_periph_reg_write, kos_periph_clock_hz, kos_notify_wait, ack
 #include <kickos/sys/errno.h>
 
 #include <regs/usic.h>
@@ -128,14 +128,20 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     {
         return -KOS_EINVAL; // the engine blocks on the per-word RX-complete line
     }
-    // Bind IRQ delivery to the thread that opens and uses the bus.
-    if (kos_irq_attach(cfg->irq, nullptr) != 0)
+    if (cfg->notify == KOS_CAP_NONE)
+    {
+        return -KOS_EINVAL; // a line with nowhere to raise is a line nothing can arm
+    }
+    // Bind the object the line signals to the thread that opens and uses the bus.
+    if (kos_notify_bind(cfg->notify) != 0)
     {
         return -KOS_EPERM;
     }
     b->base = cfg->base;
     b->ep = cfg->ep;
     b->irq = cfg->irq;
+    b->notify = cfg->notify;
+    b->notify_bit = cfg->notify_bit;
 
     uintptr_t const win = b->base;
 
@@ -300,6 +306,8 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
     uintptr_t const win = b->base;
     kos_cap_t const irq = b->irq;
+    kos_cap_t const note = b->notify;
+    uint32_t const note_bit = 1u << b->notify_bit;
     bool const cs_hw = (d->cs_policy == KOS_BUS_CS_HW);
 
     r32(win + ru::off::SCTR) = d->prog[PROG_SCTR];
@@ -330,7 +338,9 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
         *tbuf0 = static_cast<uint32_t>(buf[i]) & 0xFFu; // TDV=1 -> clock one frame
 
-        kos_irq_wait(irq);                                  // block until AIF/RIF raises SR1
+        // Block until AIF/RIF raises SR1. The wait rearms the line itself, so the ack below
+        // is the EARLY rearm and not the only one.
+        (void)kos_notify_wait(note, note_bit, KOS_TIMEOUT_NONE, nullptr);
         buf[i] = static_cast<unsigned char>(*rbuf & 0xFFu); // read releases RBUF
 
         *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE re-arm: an un-cleared level re-asserts

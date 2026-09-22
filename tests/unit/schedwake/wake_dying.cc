@@ -420,7 +420,7 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     // endpoint arm fires the EPIPE drain when recv_holders reaches 0, and only a WAIT-bearing
     // cap counts toward it.
     ep->recv_holders = 1;
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
     g_switches = 0;
     trace_reset();
@@ -449,7 +449,7 @@ TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_preempts_the_sweep
 
     int mtx_handle = 0;
     Mutex* m = own_mutex(c, &mtx_handle);
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
     park_mutex_waiter(waiter, m);
     g_switches = 0;
     trace_reset();
@@ -481,13 +481,13 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     int const ep_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
     endpoint_server_set(ep, c);
     ep->recv_holders = 1;
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
 
     // The mutex cap in the LAST slot, past the boundary: only a resumed sweep reaches it.
     int mtx_handle = 0;
     Mutex* m = own_mutex(c, &mtx_handle);
-    cap_install_at(c, static_cast<int>(width) - 1, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT);
+    cap_install_at(c, static_cast<int>(width) - 1, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
     park_mutex_waiter(waiter, m);
     g_switches = 0;
     trace_reset();
@@ -516,7 +516,7 @@ TEST_F(SchedWake, a_sender_is_not_epiped_while_another_receiver_holds_the_endpoi
     endpoint_server_set(ep, c);
     ep->recv_holders = 2; // a live peer still holds a WAIT cap on this endpoint
     kernel().endpoint_refs[kernel().endpoints.index_of(ep)] = 2;
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
     g_switches = 0;
     trace_reset();
@@ -540,7 +540,7 @@ TEST_F(SchedWake, a_send_only_cap_does_not_drain_the_endpoint)
     ep->recv_holders = 1;
     // CAP_SIGNAL, not CAP_WAIT: closing a send-only cap is not a receiver leaving, so it
     // must not touch recv_holders and must not EPIPE anybody.
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_SIGNAL);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
     g_switches = 0;
     trace_reset();
@@ -563,7 +563,7 @@ TEST_F(SchedWake, the_drain_epipes_every_parked_sender_not_just_the_first)
     int const ep_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
     endpoint_server_set(ep, c);
     ep->recv_holders = 1;
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(hi, ep);
     park_plain_sender(lo, ep);
     g_switches = 0;

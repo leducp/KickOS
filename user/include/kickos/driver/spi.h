@@ -44,6 +44,10 @@ extern "C"
         uintptr_t base; // the granted register window; a local engine's authority
         kos_cap_t ep;   // a SIGNAL-bearing cap on a bus service endpoint; the proxy's
         kos_cap_t irq;  // the pacing IRQ cap, KOS_CAP_NONE when the engine polls
+        // The notification that line signals, and the bit it signals there. Both are
+        // meaningless when `irq` is KOS_CAP_NONE: the engine then never blocks.
+        kos_cap_t notify;
+        uint32_t notify_bit;
     };
 
     struct kos_spi_bus
@@ -51,6 +55,8 @@ extern "C"
         uintptr_t base;
         kos_cap_t ep;
         kos_cap_t irq;
+        kos_cap_t notify;
+        uint32_t notify_bit;
     };
 
     struct kos_spi_device_config

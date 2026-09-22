@@ -18,11 +18,12 @@ extern "C"
     extern unsigned char __kickos_rom_start[];
     extern unsigned char __kickos_rom_end[];
     extern unsigned char __kickos_sram_start[];
-    // Optional separate app windows. Zero bounds admit no extra addresses.
-    extern unsigned char __kickos_app_rom_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_rom_end[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_sram_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_sram_end[] KICKOS_LINK_OPTIONAL;
+    // The app's own windows, stated empty by a chip that carves none: start == end then,
+    // and range_within admits no address.
+    extern unsigned char __kickos_app_rom_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_rom_end[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_sram_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_sram_end[] KICKOS_LINK_BOUND;
 }
 
 namespace

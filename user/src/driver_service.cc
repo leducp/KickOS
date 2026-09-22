@@ -37,23 +37,6 @@ int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task)
     return rc;
 }
 
-void edge_relay_thread(void*)
-{
-    if (kos_irq_attach(KOS_SPAWN_DELEGATED_CAP0, nullptr) != 0)
-    {
-        exit(0);
-    }
-    while (true)
-    {
-        if (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) != 0)
-        {
-            break; // the cap went away: no line left to relay
-        }
-        (void)kos_irq_notify(KOS_SPAWN_DELEGATED_CAP0 + 1);
-    }
-    exit(0);
-}
-
 bool wait_ready(void const* blk, uint16_t off)
 {
     Atomic<uint32_t, Order::RELAXED> const* const flag =
@@ -71,11 +54,16 @@ bool wait_ready(void const* blk, uint16_t off)
     return *flag != 0u;
 }
 
-void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t task)
+void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note,
+            kos_task_t task)
 {
     for (uint8_t i = 0; i < claimed; i++)
     {
         kos_handle_close(line[i]);
+    }
+    if (note != KOS_CAP_NONE)
+    {
+        kos_handle_close(note); // guarded: a driver with no notification must not close one
     }
     kos_handle_close(ep);
     // Ends every member and drops root's hold on the task slot. Legal on a group that never
@@ -83,15 +71,51 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t tas
     (void)kos_task_kill(task);
 }
 
+// Every capability this spawn minted for itself, closed once the child holds its copies.
+void drop_minted(kos_cap_t* minted)
+{
+    for (uint8_t i = 0; i < KOS_DRV_CAPS_MAX; i++)
+    {
+        if (minted[i] != KOS_CAP_NONE)
+        {
+            kos_handle_close(minted[i]);
+            minted[i] = KOS_CAP_NONE;
+        }
+    }
+}
+
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, kos_task_t task)
+                              kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
+                              kos_task_t task)
 {
     kos_cap_grant grants[KOS_DRV_CAPS_MAX] = {};
+    // A BADGED notification copy exists only as long as this spawn needs a source for it.
+    kos_cap_t minted[KOS_DRV_CAPS_MAX] = {};
+    for (uint8_t i = 0; i < KOS_DRV_CAPS_MAX; i++)
+    {
+        minted[i] = KOS_CAP_NONE;
+    }
     for (uint8_t i = 0; i < t.cap_count; i++)
     {
         if (t.caps[i].resource == KOS_DRV_RES_EP)
         {
             grants[i].source_cap = ep;
+        }
+        else if (t.caps[i].resource == KOS_DRV_RES_NOTIFY)
+        {
+            if (t.caps[i].badge == 0u)
+            {
+                grants[i].source_cap = note;
+            }
+            else if (kos_notify_badge(note, badge_bit(t.caps[i].badge), &minted[i]) != 0)
+            {
+                drop_minted(minted);
+                return kos::thread::Handle();
+            }
+            else
+            {
+                grants[i].source_cap = minted[i];
+            }
         }
         else
         {
@@ -126,13 +150,16 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
 
     // No mem grant of its own: the ring block is the TASK's shared region, and a member
     // bringing one is refused -KOS_EINVAL.
-    return kos::thread::create(t.entry, arg, name,
-                               static_cast<uint8_t>(cfg->prio + t.prio_delta),
-                               KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-                               /*mem=*/nullptr, /*mem_size=*/0,
-                               /*stack=*/nullptr, /*stack_size=*/0,
-                               win, win_size, grants, t.cap_count,
-                               /*authority=*/0, /*cap_dest=*/nullptr, task);
+    auto h = kos::thread::create(t.entry, arg, name,
+                                 static_cast<uint8_t>(cfg->prio + t.prio_delta),
+                                 KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
+                                 /*mem=*/nullptr, /*mem_size=*/0,
+                                 /*stack=*/nullptr, /*stack_size=*/0,
+                                 win, win_size, grants, t.cap_count,
+                                 /*authority=*/0, /*cap_dest=*/nullptr, task);
+    // The child holds its own copies now, so this spawn's sources go back.
+    drop_minted(minted);
+    return h;
 }
 
 int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep)
@@ -198,6 +225,7 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         return fail(d.tag, "ERROR: task_create failed\n");
     }
 
+    kos_cap_t note = KOS_CAP_NONE;
     kos_cap_t ep = KOS_CAP_NONE;
     if (kos_endpoint_create(&ep) != 0)
     {
@@ -222,13 +250,42 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
     for (uint8_t i = 0; i < d.line_count; i++)
     {
         // Claimed HERE: minting needs KOS_AUTH_IRQ and every driver thread runs at authority
-        // 0. A line comes back MASKED, and the waiting thread's first irq_wait arms it.
+        // 0. A line comes back MASKED, and the bound thread's first wait over its bit arms
+        // it.
         if (kos_irq_claim(d.lines[i].number, d.lines[i].trigger, &line[i]) != 0)
         {
-            unwind(line, claimed, ep, task);
+            unwind(line, claimed, ep, note, task);
             return fail(d.tag, "ERROR: irq_claim failed\n");
         }
         claimed++;
+    }
+
+    // ONE object for the whole driver: every line raises a bit of it, and so does every
+    // doorbell. LINE i IS BIT i, which is the rule leg L13 holds a doorbell badge above.
+    if (notify_used(d))
+    {
+        if (kos_notify_create(&note) != 0)
+        {
+            unwind(line, claimed, ep, note, task);
+            return fail(d.tag, "ERROR: notify_create failed\n");
+        }
+        for (uint8_t i = 0; i < claimed; i++)
+        {
+            kos_cap_t badged = KOS_CAP_NONE;
+            if (kos_notify_badge(note, i, &badged) != 0)
+            {
+                unwind(line, claimed, ep, note, task);
+                return fail(d.tag, "ERROR: notify_badge failed\n");
+            }
+            int const rc = kos_irq_bind_notify(line[i], badged);
+            // The BINDING took a reference of its own, so this name is spent either way.
+            kos_handle_close(badged);
+            if (rc != 0)
+            {
+                unwind(line, claimed, ep, note, task);
+                return fail(d.tag, "ERROR: irq_bind_notify failed\n");
+            }
+        }
     }
 
     // thread_count + 1 barrier positions: barrier_after == thread_count polls AFTER the last
@@ -239,7 +296,7 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         {
             if (not wait_ready(blk, d.ready_offset))
             {
-                unwind(line, claimed, ep, task);
+                unwind(line, claimed, ep, note, task);
                 return fail(d.tag, "ERROR: a driver thread never reached its loop\n");
             }
         }
@@ -247,17 +304,23 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         {
             break;
         }
-        if (not spawn_one(d.threads[i], cfg, blk, ep, line, task).valid())
+        if (not spawn_one(d.threads[i], cfg, blk, ep, line, note, task).valid())
         {
-            unwind(line, claimed, ep, task);
+            unwind(line, claimed, ep, note, task);
             return fail(d.tag, "ERROR: driver thread spawn failed\n");
         }
     }
 
-    // With the driver threads the only holders, a line returns to the pool when they die.
+    // With the driver threads the only holders, a line returns to the pool when they die,
+    // and the notification with the last of them: its binder's reference and each attached
+    // line's go at the same death.
     for (uint8_t i = 0; i < claimed; i++)
     {
         kos_handle_close(line[i]);
+    }
+    if (note != KOS_CAP_NONE)
+    {
+        kos_handle_close(note);
     }
 
     if (d.ep_posture == KOS_DRV_EP_RETAIN)

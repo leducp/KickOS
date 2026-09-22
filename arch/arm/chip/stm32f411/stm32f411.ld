@@ -311,3 +311,10 @@ ASSERT(_ebss > _sbss,
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")
 #endif
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+#if !KICKOS_HAVE_MPU
+KICKOS_APP_DATA_WINDOW_NONE()
+#endif
+KICKOS_APP_IMAGE_SPLIT_NONE()

@@ -19,6 +19,11 @@
 > `user/include/kickos/sys/driver_service.h` for the field set and
 > `docs/design-task-layer.md` open question 7 for the ruling. The listings stay as they are: they
 > record what M4.8.1 decided.
+> **M8.13 ADDS LEG L13 AND RETIRES THE RELAY THREAD.** A driver now creates ONE notification,
+> every claimed line signals it on its own bit, and a doorbell is a BADGED copy rather than a
+> `CAP_SIGNAL` alias of a line. `drv::edge_relay_thread` is DELETED: one wait covers every line
+> and the doorbell, so the RX72M SCI collapsed from three threads to two. Read
+> `reference/bus-service.md` and `user/include/kickos/sys/driver_service.h`.
 > See `design-m4-driver-model.md` for the numbered rules this builds on.
 
 ## 0. What is actually duplicated
