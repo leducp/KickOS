@@ -13,6 +13,7 @@
 #include <kickos/endpoint.h> // EP_SERVED_NONE
 #include <kickos/list.h>
 #include <kickos/mpuset.h>
+#include <kickos/notify.h> // KOS_NOTIFY_UNBOUND, and the Notification the wait edge names
 
 #include <kickos/sys/abi.h> // KOS_THREAD_NONE, KOS_AMP_RING_SLOTS
 
@@ -26,7 +27,7 @@
 namespace kickos
 {
     struct Endpoint;   // kickos/endpoint.h
-    struct IrqBinding; // kickos/irq.h
+    struct Notification; // kickos/notify.h
     struct Mutex;      // kickos/sync.h
     struct Task;       // kickos/task.h
 
@@ -65,7 +66,7 @@ namespace kickos
         WAIT_NONE = 0,
         WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
-        WAIT_IRQ, // wait_obj: IrqBinding; one server, no queue
+        WAIT_NOTIFY, // wait_obj: the Notification; one bound waiter, no queue
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
@@ -181,10 +182,12 @@ namespace kickos
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
-        // Unconsumed IRQ notifications, one bit per binding pool index.
-        // Set by ISRs or software posts and cleared by waits, under IrqLock.
-        // Placed here to reuse padding after slice_deadline_ns where available.
-        uint32_t notify_pending = 0;
+        // The notification this thread is bound to, by generational handle BIASED BY ONE, so
+        // the ZERO a fresh TCB carries means none (kickos/notify.h says why zero and not -1).
+        // The pending bits live in that object and not here, so one word names it whatever
+        // its badge space. Same width and same slot as the word it replaced, so
+        // thread_scalar_bytes() and the TCB layout do not move. Written under IrqLock.
+        int32_t notify_bound = KOS_NOTIFY_UNBOUND;
         uint64_t slice_deadline_ns = 0;
 
         void* stack_base = nullptr;
@@ -342,13 +345,13 @@ namespace kickos
             }
             return static_cast<Thread*>(wait_obj);
         }
-        IrqBinding* wait_irq_binding() const
+        Notification* wait_notify() const
         {
-            if (wait_kind != WAIT_IRQ)
+            if (wait_kind != WAIT_NOTIFY)
             {
                 return nullptr;
             }
-            return static_cast<IrqBinding*>(wait_obj);
+            return static_cast<Notification*>(wait_obj);
         }
         Task* wait_task_target() const
         {
@@ -411,13 +414,13 @@ namespace kickos
             bytes = bytes + sizeof(uint32_t);
         }
 #endif
-        // notify_pending uses this padding except on RXv3, where it adds four bytes.
+        // notify_bound uses this padding except on RXv3, where it adds four bytes.
         if (alignof(uint64_t) == 4)
         {
             bytes = bytes + sizeof(uint32_t);
         }
 #if KICKOS_KERNEL_CORES > 1
-        // On SMP, affinity already uses the padding; notify_pending adds eight bytes
+        // On SMP, affinity already uses the padding; notify_bound adds eight bytes
         // after alignment. A 16-byte-aligned host TCB also needs tail padding.
         if (alignof(uint64_t) == 8)
         {

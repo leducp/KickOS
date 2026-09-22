@@ -100,7 +100,7 @@ namespace
                      .cap_count = 1,
                      // caps[0] lands at KOS_SPAWN_DELEGATED_CAP0, which the recv loop
                      // below names directly; no class substrate checks it.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 

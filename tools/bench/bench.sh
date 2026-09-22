@@ -43,6 +43,13 @@
 #
 # The -st variant states the enforcing posture itself; there is no posture flag.
 set -u
+# HOW MANY IMAGES THE SUITE SHIPS AS ON THIS BOARD IS A PROPERTY OF ITS CONFIGURE, and
+# LIST_IMAGES=1 is how a caller asks: configure, print the names one per line, flash nothing.
+# Everything this script narrates goes to stderr in that mode, so the caller's $(...) holds the
+# list and nothing else.
+if [ "${LIST_IMAGES:-0}" = "1" ]; then
+  exec 3>&1 1>&2
+fi
 # readlink, because .session/ carries a SYMLINK to this script for muscle memory: without
 # it $0's directory is .session/ and the sibling scripts below are not there.
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -75,7 +82,10 @@ bench_host_select "${BENCH_HOST:-}"
 # THE PROBE SERIAL IS READ OFF THE BUS when the caller passes none. It is never paired with
 # a board by hand: more than one XMC and more than one K64F are in rotation, so a serial is
 # not a desk fact. A serial given as an argument still wins.
-if [ -z "$SN" ]; then
+#
+# Not in LIST_IMAGES mode: asking which images a board ships must not fail for a board that is
+# unplugged, or the caller is left choosing between a stale list of its own and nothing.
+if [ -z "$SN" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
   PROBE_ID=$(board_probe_rows "$BOARD" 2>/dev/null | awk -F '|' '$2 == "sn" { print $1; exit }')
   if [ -n "$PROBE_ID" ]; then
     bench_bus_read || {
@@ -170,6 +180,62 @@ if ! CFGOUT=$(cmake --preset "$BOARD-$VARIANT" -B "$BUILD" "${EXTRA[@]+"${EXTRA[
   exit 1
 fi
 printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
+
+# WHAT THIS BOARD'S CONFIGURE SAYS ABOUT ITS SELFTEST IMAGES: one row per image, carrying the
+# image name, the arm count that image plans and the skip, partial and fault permission sets.
+# Written by tests/integration/gates/selftest.cmake, which is the file that hands the same three
+# sets to the CTest entries, so nothing here is a second statement of them.
+MANIFEST="$BUILD/kickos-selftest-manifest.txt"
+MANIFEST_OWED=0
+case $APP in
+  selftest*) MANIFEST_OWED=1 ;;
+  *) ;;
+esac
+if [ "${LIST_IMAGES:-0}" = "1" ]; then
+  MANIFEST_OWED=1
+fi
+if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
+  echo "REFUSING: $BOARD-$VARIANT configured but published no selftest manifest at $MANIFEST." >&2
+  echo "  tests/integration/gates/selftest.cmake writes it, and it is skipped whole when" >&2
+  echo "  KICKOS_BUILD_TESTS is off. Without it the capture has no arm count and no permission" >&2
+  echo "  sets, and a TAP stream nothing checks is a count of the lines that survived." >&2
+  exit 1
+fi
+
+# Refused rather than defaulted to the first image: a caller that took silence for "one image"
+# would flash a fraction of the suite, and TAP numbering restarts at 1 in each image, so the
+# short run would read as a whole one.
+if [ "${LIST_IMAGES:-0}" = "1" ]; then
+  cut -d'|' -f1 "$MANIFEST" >&3
+  exit 0
+fi
+
+# THE ROW FOR THE IMAGE BEING CAPTURED, passed to the capture so it can run
+# tests/integration/check_tap_stream.sh over what the board printed. A selftest image whose name
+# is in no row is refused: judging it against another image's arm count is worse than not
+# judging it.
+EXPECT_ARMS=""
+EXPECT_SKIPS=""
+EXPECT_PARTIALS=""
+EXPECT_FAULTS=""
+case $APP in
+  selftest*)
+    # awk and not grep: `^selftest|` is a literal in a basic regex and an ALTERNATION in an
+    # extended one, where it matches every row and `selftest_p3` would silently take the arm
+    # count of image 1. The field comparison is an equality and cannot be read two ways.
+    MROW=$(awk -F '|' -v app="$APP" '$1 == app { print; exit }' "$MANIFEST")
+    [ -n "$MROW" ] || { echo "REFUSING: $MANIFEST carries no row for $APP, so this board's" >&2
+      echo "  configure did not emit that image and nothing states how many arms it plans." >&2
+      exit 1; }
+    IFS='|' read -r _ EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS <<MROW
+$MROW
+MROW
+    [ -n "$EXPECT_ARMS" ] || { echo "REFUSING: $MANIFEST's row for $APP states no arm count" >&2; exit 1; }
+    ;;
+  *) ;;
+esac
+export EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS
+
 cmake --build "$BUILD" -j8 --target "$APP" > /dev/null || exit 1
 
 # THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
@@ -185,8 +251,8 @@ export EXPECT_COMMIT
 # The emitted image base, without extension. Board-specific apps are searched FIRST, the
 # same order tools/flash-common.sh uses, so a name collision resolves the same way here.
 #
-# The last two candidates are the two-image split: `selftest_p2` is declared by
-# user/apps/common/selftest/CMakeLists.txt, so CMake emits it into the SELFTEST directory and
+# The last two candidates are the split suite: `selftest_p2` and up are declared by
+# user/apps/common/selftest/CMakeLists.txt, so CMake emits them into the SELFTEST directory and
 # there is no selftest_p2/ directory to find. tools/flash-common.sh's _app_base has the same
 # blind spot.
 BASE=${APP%_p[0-9]}
@@ -252,10 +318,15 @@ REMOTE
 # bench host runs the same recipe this tree ships. rsync means only the delta travels.
 # The capture chain rides along inside tools/bench/, so it is the same tree's copy too.
 #
+# tests/ travels for the same reason: the capture runs tests/integration/check_tap_stream.sh
+# over the stream, and that script sources tests/lib/gate.sh, which itself reads
+# tests/lib/panic.ere at source time. Shipped WHOLE rather than file by file, so a helper one
+# of them picks up tomorrow cannot be the one that is missing over there.
+#
 # -s (--secluded-args/--protect-args) sends the remote-side path over rsync's own
 # protocol instead of a shell command line, so the destination is never re-parsed by the
 # remote login shell.
-rsync -a -s --delete -e "$RSH" tools boards "$BENCH_HOST:$RROOT/" || { echo "REFUSING: could not ship tools/ and boards/" >&2; exit 1; }
+rsync -a -s --delete -e "$RSH" tools boards tests "$BENCH_HOST:$RROOT/" || { echo "REFUSING: could not ship tools/, boards/ and tests/" >&2; exit 1; }
 # The rig config is the one thing tools/ cannot carry: it is gitignored, and the console
 # cable it names is a property of the CABLE, so it is valid wherever that cable is plugged.
 rsync -a -s -e "$RSH" "$RIG_CONF" "$BENCH_HOST:$RROOT/.session/rig.conf" || { echo "REFUSING: could not ship the rig config" >&2; exit 1; }
@@ -285,7 +356,8 @@ rsync -a -s -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: cou
 ROUT=$(mktemp)
 RARGS=()
 for _ra in "$BOARD" "$APP" "$RRUN/$APP" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
-           "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT"; do
+           "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
+           "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}"; do
   RARGS+=("$(printf '%q' "$_ra")")
 done
 "${SSH[@]}" bash -s -- "${RARGS[@]}" \
@@ -308,6 +380,17 @@ export CONSOLE_USB_CDC="$9"
 # The tree shipped here is a copy with no .git, so the capture cannot derive this and the
 # label the image was built with travels with the image.
 export EXPECT_COMMIT="${10}"
+# What check_tap_stream.sh is owed. `-` carries "none" here as it does for every other argument,
+# and an empty permission set means the same thing to that script as an unset one: nothing may
+# skip. EXPECT_ARMS is the one that matters, and the capture refuses a selftest image without it.
+ARMS=${11}
+SKIPS=${12}
+PARTIALS=${13}
+FAULTS=${14}
+[ "$ARMS" != "-" ] && export EXPECT_ARMS="$ARMS"
+[ "$SKIPS" != "-" ] && export EXPECT_SKIPS="$SKIPS"
+[ "$PARTIALS" != "-" ] && export EXPECT_PARTIALS="$PARTIALS"
+[ "$FAULTS" != "-" ] && export EXPECT_FAULTS="$FAULTS"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}

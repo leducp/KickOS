@@ -1281,7 +1281,7 @@ resolves inside the tree.
       so a contended cell cannot be one. Two writers on one word is what style.md sends to a
       lock, and this app exists to measure the hardware primitive instead.
 
-- [ ] **THE RP2xxx REGISTER HEADERS ARE NOT FOLDED, AND THE ARITHMETIC IS RECORDED SO IT IS NOT
+- [x] **THE RP2xxx REGISTER HEADERS ARE NOT FOLDED, AND THE ARITHMETIC IS RECORDED SO IT IS NOT
       RE-DERIVED AS AN OPPORTUNITY.** Nine of eleven pairs share names between
       `arch/arm/chip/rp2040/regs/` and `rp2350/regs/`. `pll.h` is 52 against 49 lines with 23
       differing, of which exactly ONE is code (`PRIM_POSTDIV`, `6<<16` against `5<<16`); `timer.h`
@@ -1291,6 +1291,7 @@ resolves inside the tree.
       include path beside a chip `regs/` directory is exactly the same-tail shadowing that
       `check_include_guards.sh` states in its own header that nothing compares. Overrule it with
       those numbers rather than by re-measuring.
+      **CLOSED AT M8.13 AS A REFUSAL**, on those two grounds and the figures beside them.
 
 - [x] **THE HOLD WALK'S MASKED TIME WAS ESTIMATED STATICALLY AND IS NOW MEASURED (M8.5.1).**
       `object-pool-keeps-a-slot-from-any-one-task` priced the admission as an operation COUNT --
@@ -1335,7 +1336,7 @@ resolves inside the tree.
 Every item below was found by doing M8.4's own work, and each carries its evidence so it resolves
 inside the tree.
 
-- [ ] **A U-MODE THREAD CAN STEER AN M-MODE STORE ON rv32imac, AND THE FIX IS IN WHILE rv64imac IS
+- [x] **A U-MODE THREAD CAN STEER AN M-MODE STORE ON rv32imac, AND THE FIX IS IN WHILE rv64imac IS
       UNCHECKED.** `gp` is x3, U-mode writable and deliberately not saved in the trap frame, and
       `trap_entry` computed `&g_arch_current` through it before re-anchoring: the ctx it then read
       was the thread's to forge, its `stack_hi`/`stack_lo` defeated the bounds test that backs the
@@ -1363,7 +1364,7 @@ inside the tree.
       reach through a machine interrupt or an undelegated exception; the image-wide zero covers
       both.
 
-- [ ] **`check_riscv_kernel_gp.sh` DOES NOT TRANSFER TO rv32 AND ADDING AN `lw` SPELLING IS NOT THE
+- [x] **`check_riscv_kernel_gp.sh` DOES NOT TRANSFER TO rv32 AND ADDING AN `lw` SPELLING IS NOT THE
       FIX.** It bans gp-relative kernel access image-wide, which holds on the rv64 SPLIT image and
       is false on the flat rv32 one: rv32 has no address space, so one `.text` carries kernel and
       app with about 69 legitimate gp accesses under a single anchor, and the rv64 anchor shape
@@ -1371,16 +1372,24 @@ inside the tree.
       (`la gp, __global_pointer$`). Registering it on rv32 would redden the fleet while asserting
       something untrue there. Direction: the narrow trap-vector gate, which is what M8.4 landed
       instead; this item records why the obvious extension was refused.
+      **CLOSED AT M8.13 AS A REFUSAL.** The extension is not made and the narrow gate is what
+      rv32 carries, `tests/static/check_rv32_trap_gp_anchor.sh`. A claim that cannot be
+      witnessed is a refusal to state with its reason, and the reason is the flat image's own
+      legitimate gp traffic under a single anchor.
 
-- [ ] **G-02'S PLUMBING IS FIXED AND ITS MASK IS NOT.** `KICKOS_DIAG_TERSE` now reaches CMake on
+- [x] **G-02'S PLUMBING IS FIXED AND ITS MASK IS NOT.** `KICKOS_DIAG_TERSE` now reaches CMake on
       `bluepill-c8` and `f302nucleo`, so `panicgate.cmake` reads a real value there, but no
       `panicgate` case is REGISTERED on either board: `kickos_add_qemu_test` registers only where
       there is an emulator and both are silicon. The wrong-expected-string symptom therefore still
       has no test, and what witnesses the fix is `kconfig_reach` asserting the value arrives.
       Direction: either a posture that reaches an emulator carries the same expectation, or state
       that this symptom is unwitnessable off silicon and why that is acceptable.
+      **CLOSED: the expectation reaches an emulator.** `panicgate.cmake` registers
+      `diag_terse` on `qemu-m3` where the knob resolves off, so the wrong-expected-string
+      symptom has a run gate on a machine the fleet emulates and no longer rests on
+      `kconfig_reach` asserting the value arrives.
 
-- [ ] **THE CONSOLE TEARS AT CHARACTER LEVEL ACROSS CORES, AND THE TWO FIXES ARE NOT EQUIVALENT.**
+- [x] **THE CONSOLE TEARS AT CHARACTER LEVEL ACROSS CORES, AND THE TWO FIXES ARE NOT EQUIVALENT.**
       Under load on `qemu-riscv64-smp` a fault banner arrives inside another line's bytes
       (`... mapped in no spac` then `=== THREAD FAULT =e`), which drops a TAP plan line in 10 of
       320 runs. On that preset stdout is unpublished, so a TAP line is ONE `kos_kconsole_write`
@@ -1445,8 +1454,12 @@ inside the tree.
       construction. **The repair is M9's by the roadmap, which owns console locking; the rate
       is the argument for M9 taking it early.** Not pulled into M8.6: that is the widening M8's
       phase ordering exists to prevent.
+      **REASSIGNED TO M9 AT M8.13**, both halves together. The AMP half is the sharper one: only
+      rp2350 arbitrates a shared console and `qemu-arm64-amp2` puts two images on one UART with
+      no claim of any kind, so what M9 owns is a partition-wide contract for who may speak and
+      not a lock.
 
-- [ ] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
+- [x] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
       THE NEXT SPAWN.** `user/apps/common/selftest/main.cc` (`join_stale_gen`), 5 runs in 320 at
       16-way and 2 in 60 serial under load. Same class as the `cap_share` arm M8.4 fixed: an arm
       asserting a synchronous property of something the kernel does not promise synchronously.
@@ -1454,16 +1467,141 @@ inside the tree.
       either a restaging against something the arm CAN observe, or a new probe, which is an API
       surface decision and not a test fix. **LEFT FOR NOW** (owner, 2026-09-09): the probe is a
       real API question and is not to be settled by a flaky arm.
+      **RESTAGED AT M8.13, NO PROBE ADDED.** The arm establishes the reseat as a FACT before
+      asserting on it: parked probes are spawned until one lands on the stale handle's
+      index, each probe that landed elsewhere kept alive so the allocator cannot hand the
+      same wrong slot back, and the arm skips by name when the budget runs out without
+      constructing one. What it rests on is already contractual: the ABI documents a thread
+      handle as index bits under generation bits, so the index is readable app-side, and a
+      generation no seated occupant holds resolves to nothing. What it stopped asserting is
+      the thing the kernel never promised, that the next spawn takes the freed slot.
+      Bracketed three ways: the old arm reddens deterministically on the staged race, the
+      restaged one passes, and at a budget of one it skips.
 
-- [ ] **A POPULATION OF SELFTEST ARMS IS PROGRESS-DEPENDENT AND REDDENS ONLY ABOVE ANY REAL
+- [x] **A POPULATION OF SELFTEST ARMS IS PROGRESS-DEPENDENT AND REDDENS ONLY ABOVE ANY REAL
       `ctest -j`.** `slice_preempts_every_core`, `threads_reach_every_core`, two IPC arms and
       `mem_self_grant` declining its own precondition, observed at 16 concurrent gate copies or
       under 16 CPU hogs. Flagged as a population rather than attributed one by one: each asserts
       that scheduling PROGRESS happened within a window the host can starve. Direction: decide
       whether such an arm belongs in a suite at all, since the alternative to a window is an
       oracle the image does not supply.
+      **RULED AND BUILT AT M8.13: SUCH AN ARM DETECTS ITS OWN VACUITY AND SKIPS BY NAME.**
+      Each party records only what it can see, the spinning thread stamping both ends of its
+      span and the party the span holds off recording its own pre-syscall clock read, because
+      a thread kept off the CPU cannot read the clock at its own wake. The skip names the
+      precondition and prints how far outside the span the instant fell. Measured on the
+      2026-09-17 load profile, twelve runs a side: HEAD gave 21 reds over six arms and no
+      skips; the fixed binary gives none and 35 named skips. Two of those arms never reddened
+      at all, so the change converts silent VACUOUS greens as well as false reds, and that is
+      the half no rate could have shown. A vacuity test that cannot fire would be worse than
+      none, so every arm's skip was forced by mutating its staging and watched to fire; the
+      negative control is `slice_preempts_every_core`, which on an unloaded box with a short
+      burn goes RED and not skip, so a slice that never expired is still a defect.
+      **WHAT IS OWED IS THE SKIP'S CATEGORY, not the detection.** An undeclared skip fails
+      the TAP gate, so a lost window is currently a red that names the arm rather than a
+      stated gap. Declaring these beside the provisioning skips would be false: that list is
+      a MEASUREMENT, a listed arm that did not skip is only a note, and a permanently vacuous
+      arm would then read green forever. Ruled: a vacuity skip becomes a THIRD category,
+      permitted and never expected, which a provisioning skip is not.
+      **BUILT AT M8.13, AND THE WIRE FORM IS THE DECISION.** A vacuity skip is
+      `# SKIP VACUOUS <reason>`, a SUB-CATEGORY of the existing directive rather than one of
+      its own, so it FAILS CLOSED for every reader not taught it: a new `# VACUOUS` directive
+      would have read as a plain pass to `check_amp_peer_arms.sh`, whose whole job is to
+      refuse a peer-dependent arm that silently declines. The category is the harness's
+      verdict and not a prefix a body writes, so an arm can neither forge nor misspell it,
+      and a producer-stated `# vacuous: N` is what makes the parse provable: without it a
+      marker whose wording moved would report every run free of vacuity, which is this
+      milestone's false green wearing a new name. Nothing lists WHICH arms may go vacuous,
+      because that list would be the second authority the tree refuses and would be stale the
+      moment an arm is repaired. A DROPPED line still cannot pass as a vacuity skip: a
+      vacuity skip must be present and counted, so a drop breaks both the plan
+      reconciliation and the count, which matters because `rx72m` and `esp32-wroom` really do
+      drop whole TAP lines near the end of a capture.
+      **TWO ARMS ARE NOT YET COVERED, FOUND BY THIS MILESTONE'S OWN VERIFICATION AND NOT BY A
+      SWEEP.** Under 24 hogs on `qemu-riscv64-benchsmp`, 12 runs a side:
+      `slice_preempts_every_core` still goes `not ok` on `(after & want) == want`, and
+      `mem_self_grant` still fails as `SKIP not on the expected list`. BOTH DO IT ON THE M8.12
+      MERGE TOO, at 4 of 12 against 5 of 12 here, so neither is a regression; what they are is
+      the ruling not reaching them.
+      The gap in the first is precise: its vacuity check asks whether the burners were SEEN on
+      every core, which is whether a comparator had one of ours to take off. It does not ask
+      whether the burn window allowed a slice to EXPIRE on each of them, and a host that
+      deschedules the emulator starves exactly that while the guest clock runs on. So the arm
+      declines the case where the crowd never reached a core and asserts through the case where
+      it reached one and never got preempted there.
+      The second is simpler: `mem_self_grant` declines its own precondition with an ORDINARY
+      skip, and whether it fires is load-dependent, so it is a vacuity skip wearing the wrong
+      category and it fails the gate every time the arena happens to be short.
+      **BOTH CATEGORIES FIXED AT M8.13, AND `join_stale_gen` JOINED THEM.** The fleet image
+      sweep caught the third: the restaged arm skips when its budget runs out without
+      constructing a reseat, that skip was ordinary, and it is declared nowhere, so it failed
+      the gate on one run of a preset that had passed on the run before.
+      **THE CLASSIFICATION WAS MEASURED RATHER THAN JUDGED.** Fourteen runs of the four-hart
+      preset under 32 busy loops: 29 arms skip in EVERY run, which is the declared multi-core
+      set and correctly ordinary, and the only name that varies is already vacuous. So the rule
+      is that a provisioning skip is constant for an image and a vacuity skip is not, and only
+      the two with evidence were on the wrong side.
+      **AND `slice_preempts_every_core` IS DECIDABLE NOW, BY STAGING AND NOT BY A
+      PRECONDITION.** Each core gets a round in which two burners are pinned to it and one to
+      each other core, so the equal-priority peer an expiry needs is a CONSTRUCTION rather
+      than something the scheduler might supply, and the pinned pair's own span on that core
+      measures whether the core gave them any CPU at all. The minimal pair that read
+      identically under every earlier candidate now separates by about forty times: a span of
+      7944 to 7972 us under a comparator that can never expire, against 179 to 214 us when
+      the window is starved, with preemptions, unproven cores, pinning and occupancy all
+      identical. The negative control holds: a real failure to preempt on an idle box is
+      still RED.
+      **THE RELEASE GATE IS THE PART THE PROPOSAL DID NOT HAVE.** A burner runs the instant
+      it is created, so without one the first of a pair burns while root creates the second,
+      and under load that gap outlasts the round: the core never carries two, every expiry
+      rotates the incumbent to itself, and the arm reddens with the DEFECT'S EXACT SIGNATURE.
+      Measured at 1 red in 12 before it was added. Both burners wait and are released
+      together now.
+      **WHAT IT GIVES UP is in the arm's own comment**: the unpinned crowd exercised
+      placement for free, and this does not. That claim is `threads_reach_every_core`'s
+      subject, and this arm passing now says nothing about it.
+      **CLOSED.** The population declines by name where it can, in a category that greens;
+      the one arm no precondition could decide was restaged so its subject is constructed;
+      and the classification that decides which is which was measured rather than argued.
+      What is NOT claimed: `mutex_pi_donation` and `mutex_multi_held` were on this list in
+      error and are rendezvous-staged already, and the arms named in the 2026-09-17 section
+      but not here are untouched.
+      **CONVERTING `mem_self_grant` FORCED A DECLARATION CHANGE that is easy to miss**: a call
+      site carries ONE category, so once it declines as vacuous the microbit skip set naming it
+      could never fire again. A permission that cannot fire is the stale-list shape that
+      quietly widens what a board may skip, so the name came out of that list with its reason
+      recorded there.
+      **`slice_preempts_every_core` IS NOT DECIDABLE AS IT STANDS, AND NO PRECONDITION WAS
+      ADDED.** The mechanism is sharper than a starved window: `g_slice_preempt[core]` is set
+      only where `sched::current()` DIFFERS across `tick_rr`, and an expiry with no
+      equal-priority peer queued on that core rotates the thread to itself and records nothing.
+      So `(after & want) == want` is a claim about PLACEMENT, that the scheduler kept two of
+      the crowd queued on every core, and placement is exactly what the host takes away.
+      Witnessed unloaded with the crowd pinned: a lone burner held core 1 for 176 contiguous
+      samples across the whole window and that core's bit stayed clear.
+      **THE MINIMAL PAIR IS IDENTICAL IN EVERY QUANTITY THE ARM CAN READ.** A genuine defect
+      (the RR quantum raised so no slice can expire) and a host-starved run both show the
+      burners seen on 0xf, one burner on the missing core, and a best contiguous run of 155
+      against 96, the DEFECT being the larger. Occupancy, distinct burners per core, contiguous
+      residency in guest time and in sampled work were each measured and rejected.
+      Published-core pairing tracks the answer almost exactly and is therefore the WORST
+      candidate: pairing is produced by the peer running on the core, which the defect
+      suppresses, so it would turn the defect into a skip. The probe surface carries nothing
+      else; a runqueue depth or a per-core expiry count would decide it and both are kernel
+      changes.
+      **WHAT DID CHANGE is the category, not the judgement**: the two vacuity declarations this
+      file already carried were still plain skips, so each reddened the gate and every run
+      printed `# vacuous: 0`. Under 24 hogs, gate failures went 5 of 12 to 2 of 12; only the
+      category is attributed and the rest is variance on a shape nobody touched.
+      **`threads_reach_every_core` IS NOT THE SAME HOLE**: its precondition keys on the
+      worker's own pass count, which is the quantity the host starves, so the starvation
+      witnesses itself. Measured over twelve hog runs the fewest passes read 1 where it was
+      starved and 17 or more where it was not, against a floor of 16. One red in 24 runs had
+      every worker more than three times over the floor and none frozen, the opposite
+      signature, so the floor correctly declined to skip it. That red is UNATTRIBUTED and did
+      not recur in twelve further runs; it is an observation and not a finding.
 
-- [ ] **`qemu-riscv`'s NANOSECOND COLUMN IS VOID, AND IT DECIDES WHETHER M8.7 MAY QUOTE THAT BOARD
+- [x] **`qemu-riscv`'s NANOSECOND COLUMN IS VOID, AND IT DECIDES WHETHER M8.7 MAY QUOTE THAT BOARD
       AT ALL.** `arch/riscv/chip/virt_rv32/chip_virt_rv32.cc` publishes `SystemCoreClock` as the
       CLINT **mtime** rate, 10 MHz, and `kernel/bench/bench.cc` scales `rdcycle` samples by it. Its
       own arithmetic refutes it: an average bracket of 1041 units at 100 ns a unit over 40000
@@ -1498,37 +1636,125 @@ inside the tree.
       on the arches whose `arch_cpu_clock_hz` reads the symbol, which rv64imac is not, so only
       `virt_rv32` publishes 0 now.
 
-- [ ] **THE BENCH CALIBRATION PAIR INFLATES WHAT IT CALIBRATES.** `PH_NULL` and `PH_NEST` sit
+- [x] **THE BENCH CALIBRATION PAIR INFLATES WHAT IT CALIBRATES.** `PH_NULL` and `PH_NEST` sit
       inside `bm_locked`/`bm_total` (`kernel/syscall/syscall_ipc.cc`), so every `CALL_TOTAL` sample
       carries `2*(NEST-NULL)`. Moving them to an `IrqLock` of their own fixes it and costs the
       argument that they run under the same interrupt mask as the brackets they calibrate.
       Direction: M8.7's, with the rebaseline that consumes both figures. **ASSIGNED TO M8.7**
       (owner, 2026-09-09).
+      **DOCUMENTED AT M8.13, SITE NOT MOVED, AND THE ROW LIST ABOVE IS WRONG.** `bm_locked`
+      and `bm_total` are both marked BEFORE the site, so the slowpath's `CALL_SLOW_LOCKED`
+      and `CALL_SLOW_TOTAL` enclose it too: FOUR rows, not two, and the whole site charges
+      each `3*(NEST-NULL) + (NEST_LOCK-NULL)`. All three brackets are inside `k`, so a
+      correctly corrected composite is right and what survives the correction is the nested
+      lock, which is real work in a bench image. Scaled off the frozen rv32 rows, the pair
+      alone is about 3.9 percent of `CALL_TOTAL`'s min. Moving the site to a lock of its own
+      would move four published rows and cost the argument that the pair runs under the same
+      mask as what it calibrates, so `docs/reference/bench.md` states the charge instead.
 
-- [ ] **NOTHING PRINTS `k`, SO A READER CAN STILL APPLY THE WRONG COMPOSITE CORRECTION.** M8.4
+- [x] **NOTHING PRINTS `k`, SO A READER CAN STILL APPLY THE WRONG COMPOSITE CORRECTION.** M8.4
       fixed the correction and established that `k` belongs to a SAMPLE and not to a row
       (`CALL_TOTAL` 21 to 22, `REPLY_WAKE` 2 to 7, `RECV_SCAN` unbounded). The table still reports
       no `k`, so the corrected rule cannot be applied by hand from the output alone. Direction:
       print the count beside the composite, or state in the header that a composite is not
       hand-correctable.
+      **NEITHER BRANCH AS OFFERED, AND THE EVIDENCE IS WHY (M8.13).** `k` was established per
+      row from the code. Five composites have a FIXED `k` and the rest VARY WITHIN ONE RUN,
+      which the frozen captures show without leaving the table: `CALL_DONATE` n=19999 against
+      `CALL_TOTAL` n=219999, and `PICK_NEXT` n=480064 against `SWITCH_TO` n=480039. So a
+      single printed `k` beside a varying row would be a NEW false statement, and a blanket
+      header saying no composite is hand-correctable would be false for the five fixed ones.
+      `docs/reference/bench.md` carries the per-row answer instead, with the number for each
+      fixed row and the reason a varying one cannot be corrected by hand. The printed header
+      is untouched, which also costs no re-planting: five gates carry it verbatim in their
+      fixtures.
 
-- [ ] **BRACKETS THAT NEVER CLOSE ON AN ERROR ARM LEAVE A COUNTER READ WITH NO ACCUMULATOR CALL
+- [x] **BRACKETS THAT NEVER CLOSE ON AN ERROR ARM LEAVE A COUNTER READ WITH NO ACCUMULATOR CALL
       INSIDE THE ENCLOSING SPAN, WHICH NEITHER CORRECTION DESCRIBES.** The AMP far-call arm marks
       `bm_total`/`bm_locked` and never spans them while running a `reschedule()` inside that dead
       region; `PH_WAKE_UNPARK`, `PH_CALL_COPY`, `PH_CALL_MINT` and every served `RECV_*` arm do the
       same. And **`PH_CALL_RESUME` is not a leaf**: its mark sits after the lock drops and its body
       spins until the pended switch fired, so its delta covers the server's whole processing.
       Direction: both are M8.7's to price before its numbers are called comparable.
+      **PRICED AND CLOSED AT M8.13, AND THE COST IS SMALLER THAN THE ITEM ASSUMES.** There is
+      no pending-mark cell: a mark is a function-local and only a span touches an
+      accumulator, so an abandoned mark cannot be overwritten, consumed later or corrupt a
+      later sample. Its whole cost is one counter read inside any ENCLOSING span that still
+      closes, which on most of these arms is nothing at all because the enclosing composite
+      is abandoned on the same arm. Closed: the AMP far-call arm (ahead of its reschedule, so
+      the parked wait is not in the sample), `WAKE_UNPARK`'s refusal, `CALL_COPY`'s EFAULT,
+      `CALL_MINT_INFO` and `CALL_MINT` on the refused `write_recv_info`, and the receive
+      arms' resolve and EFAULT returns.
+      **THE TWO SERVED RETURNS ARE DELIBERATELY LEFT OPEN**, and that is a measurement and
+      not an oversight: closing them moved `RECV_LOCKED` and `RECV_SCAN` from n=259999 to
+      n=260000 on `qemu-riscv64-bench`, a deterministic change to two rows the frozen record
+      publishes, and it mixes a scan that stopped on a hit into rows that describe a scan run
+      to empty. The code says so where it sits.
+      **NO PUBLISHED FIGURE MOVED.** All 44 `n` columns are identical before and after, twice
+      over, on an idle box. The cycle columns could not have carried that claim: two captures
+      of the SAME binary moved 4 to 8 percent, so `n` is the exact column on this emulator
+      and the interim run with the served arms closed is the counter-control that shows the
+      +1 belonged to that change alone.
+      **AND `PH_CALL_RESUME` IS A LEAF, REFUTING THE CLAIM ABOVE.** Its mark sits after the
+      lock scope has been LEFT, so the release that fires a pended switch has already run.
+      The frozen captures read it at 29/29, 28/28 and 31/282 against a `CALL_TOTAL` of 2845
+      and up. The round trip lands elsewhere: on a deferred-switch target inside the lock's
+      destructor, in no phase row at all; where the switch is inline, inside `CALL_WAKE`. The
+      bracket was not moved and `docs/reference/bench.md` states where the time goes.
 
-- [ ] **rxv3 AND THE LX6 STILL BRACKET A DIFFERENT SWITCH SPAN, AND NO PRESET BUILDS EITHER
-      BRACKET.** `arch/rx/rxv3/switch.S` closes before its restore and `arch/xtensa/lx6/switch.S`
+- [x] **rxv3 AND THE LX6 BOTH BRACKET THE WHOLE SWITCH NOW.** `arch/rx/rxv3/switch.S` closes before its restore and `arch/xtensa/lx6/switch.S`
       stamps before the `retw`, so both reload ZERO words inside the window where rv32imac and
       armv7m reload their full frame. Neither arch has a bench preset in the tree, so nothing
       compiles those brackets and no figure exists to compare. Direction: the same deferred-bank
       mechanism M8.4 wrote for rv32imac, and rxv3 needs its `popm` split so two registers survive
       the stamp. A bench preset per arch is the precondition.
+      **THE PREMISE ABOVE WAS STALE FOR THE LX6 AND IS CORRECTED HERE**: `esp32-wroom-bench`
+      is a preset, is declared in the red-zone roots, is in CI, and the board is on the bus.
+      Only rxv3 was ever blocked, and it still is.
+      **THE LX6 BRACKET CLOSES PAST THE WINDOWED RETURN NOW (M8.13).** The end stamp left the
+      switch assembly and stands one `retw` later, so the ps write, the sync, the return and
+      the window underflow that reloads the incoming frame are all inside the row, which is
+      this arch's analogue of the full frame reload rv32imac and armv7m already count. The
+      ancestor frames below that one reload lazily as the thread runs and belong to no
+      switch; that is the honest limit and `docs/reference/bench.md` states it.
+      **THE WITNESS IS A TRIPLE AND NOT A p50.** On silicon the row moves 144 to 176 cycles
+      while `n` is identical and throughput moves 0.06 percent. The same sample count says
+      the row still counts exactly the cooperative exits; unmoved throughput says the switch
+      did not get slower. Together they say the BRACKET grew and the code did not, which no
+      single figure could.
+      The deferred bank and the consume-on-read are unchanged and still owed: a resume that
+      never returns through this path would otherwise bank a delta near the counter's width.
+      **rxv3 CLOSED AT M8.13, AND THE RED-ZONE PRECONDITION HELD.** The bench tail costs the
+      PENDSW class 12 bytes, 44 against the 64 it enforces, so nothing was moved and no
+      reserve grew to fit an instrument. The restore's single `popm r1-r15` was split so two
+      registers survive the stamp, read off the object code rather than assumed: at the base
+      commit that one instruction reloaded every register and the `rte` had no scratch at all.
+      **THE PRECONDITION NAMED ONE HAZARD AND THERE WERE TWO.** The bench variant also turns
+      the selftest on, which makes the printing chain trap-reachable, and the indirect-call
+      bindings are scoped PER PRESET. The gate refused with eight unbound indirect sites
+      saying every figure it had just printed was a LOWER BOUND, which is the gate doing
+      exactly its job and is why the first depth reading could not have been trusted.
+      **THE SILICON WITNESS IS NOT THE LX6's TRIPLE AND IS NOT DRESSED AS ONE.** The row goes
+      96 to 160/192 cycles, `n` moves by exactly one out of 40001, and throughput falls 1.5
+      percent. The `n` of one is structural: the bank is one switch late, so the last sample
+      is still pending when the window ends. The 1.5 percent is REAL and is the
+      instrumentation, about 40 cycles a switch in the SWINT handler, which no phase row can
+      see because this is a deferred-switch target and both switch rows close before that
+      handler runs. The LX6 paid 0.06 percent because only its end stamp moved; here a direct
+      call became a deferred bank. It is a bench-build cost and production carries none of
+      it, and `docs/reference/bench.md` says so beside the row.
+      **OWED: rxv3 HAS NO STRUCTURAL GATE FOR THIS ROW.** The LX6 got one because a stamp
+      moved back to the wrong place silently shortens its window. There is no RX emulator, so
+      nothing but a bench run reads this row, and a future edit could collapse the split
+      `popm` or the consume-on-read with every gate still green.
+      **AND AN rxv3 BENCH PRESET OWES THE TRAP RED ZONE A RE-MEASUREMENT BEFORE IT IS USED**
+      (rehomed here at M8.13 from the M8.12 excluded-rows item, which closed).
+      `kickos_arch_mpu_commit` is a hard PENDSW root and carries the `kickos_bench_mpu_commit`
+      tail below it under the bench knob, while `trap_redzone_roots.txt` declares no rxv3 preset
+      that turns that knob on, so `KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW` is measured over a graph
+      that cannot reach it. armv7m has `f411disco-bench` declared and is covered.
 
-- [ ] **rxv3 IS IN NO CI JOB AT ALL**, so one of the four arches the new fastpath refusal names is
+- [x] **rxv3 IS IN NO CI JOB AT ALL**, so one of the four arches the new fastpath refusal names is
       witnessed locally only. `grep -c rx72m .github/workflows/ci.yml` is 0, and so is `rxv3` and
       `RX_TOOLCHAIN`. Unlike x86_64, whose runner is itself the target, this needs a Renesas
       toolchain fetched in CI. **NOTHING TO DO FOR NOW** (owner, 2026-09-09): a BUILD job is
@@ -1563,8 +1789,12 @@ inside the tree.
       v1/v2/v3). That is a gcc bootstrap per cache miss for a build-only gate, which is a far
       bigger trade than this bullet has ever been asked to make; recording it so the option is
       not re-discovered as though it were new.
+      **CLOSED AT M8.13 AS A REFUSAL, on those four dead ends.** No non-interactive route to an
+      RXv3 toolchain exists and no RXv3 emulator exists, so there is nothing here to witness
+      and nothing to carry. The single condition that reopens it is an rxv3 emulator reaching a
+      qemu release.
 
-- [ ] **THE FASTPATH REFUSAL SUITE CANNOT REACH THE FAR-ENDPOINT FALL-THROUGH, AND THE CLAIM NOW
+- [x] **THE FASTPATH REFUSAL SUITE CANNOT REACH THE FAR-ENDPOINT FALL-THROUGH, AND THE CLAIM NOW
       SAYS SO RATHER THAN THE COVERAGE GROWING.** `tests/unit/fastrefuse`;
       `kernel/syscall/syscall_ipc_fast.cc`. The library compiles at `KICKOS_AMP_NODE=0`, where
       `endpoint_is_far` is `return false` by definition, so an arm there would refuse on the shared
@@ -1576,8 +1806,11 @@ inside the tree.
       being correctly ordered and simple. Direction: if an AMP posture library ever exists for
       another reason, the arm costs almost nothing on top of it; standing one up for this alone buys
       the claim "a far endpoint is refused at all" and no ordering.
+      **CLOSED AT M8.13 AS A REFUSAL.** A second posture library and a second executable buy
+      that one claim and not the ordering the clause's comment justifies, so the suite's header
+      stating the boundary is what the tree carries.
 
-- [ ] **CI COVERS 53 OF 71 PRESETS AND THE RESIDUE IS EVERY `-bench` AND EVERY ARM `-st`.** Still
+- [x] **CI COVERS 53 OF 71 PRESETS AND THE RESIDUE IS EVERY `-bench` AND EVERY ARM `-st`.** Still
       uncovered after M8.4: `imx8mp-evk`, `sim-telem`, `rx72m` x3, `esp32c6-wroom-st`/`-bench`,
       `xmc4800-relax-st`/`-bench` and the nine remaining ARM `-st` presets. **And deriving that
       count by grepping the preset NAME is lossy in BOTH directions**: a job name matched with no
@@ -1609,8 +1842,13 @@ inside the tree.
       board sweep, the sweep runs `-L host`, and the named step beside it named only
       `telemetry_qemu_contained`. It is named now. So preset coverage and GATE coverage are two
       questions and the instrument owed above answers only the first.
+      **RULED AT M8.13: THE INSTRUMENT IS NOT BUILT.** An enumerator asserts nothing, and a gate
+      that asserts coverage needs a list of presets allowed to be uncovered, which is a second
+      authority beside the workflow. So the figure stays hand-derived, the residue stays named
+      here and in `docs/reference/boards.md`, and a preset dropping out of CI is caught by a
+      reader of that column and by nothing else. That is accepted rather than unnoticed.
 
-- [ ] **THE `qemu-x86_64` JOB'S ONE VERSION STATEMENT IS ABOUT AN EMULATION AND NOT ABOUT A
+- [x] **THE `qemu-x86_64` JOB'S ONE VERSION STATEMENT IS ABOUT AN EMULATION AND NOT ABOUT A
       VERSION, AND THE FLAG IT PROTECTS EXPIRES INTO DECORATION.** `cmake/x86_64_boot.cmake`'s
       `-b elf64-x86-64` is load-bearing on binutils 2.42, where `ld -m i386pep` reads an ELF
       archive's symbol index and still extracts no member, and inert on 2.47, which extracts
@@ -1632,8 +1870,13 @@ inside the tree.
       either branch: dropping the flag from `cmake/x86_64_image.cmake` and pinning a linker that
       needs it are both the maintainer's, and what was missing for either was any way to learn,
       per run, whether a needing toolchain is still reachable.
+      **RULED AT M8.13: THE FLAG STAYS AND SO DOES THE PROBE.** The flag is load-bearing at
+      binutils 2.42, a version still reachable off this runner, and dropping it would break a
+      link no CI job can see. Pinning a linker that needs it was refused as the costlier half of
+      the same argument. The probe stays because it is the only thing that says, per run,
+      whether the branch this ruling declines has become reachable again.
 
-- [ ] **`IrqLock`'s CTOR AND DTOR ARE `always_inline` AT ONE CORE TOO, AND THAT IS WITNESSED ON TWO
+- [x] **`IrqLock`'s CTOR AND DTOR ARE `always_inline` AT ONE CORE TOO, AND THAT IS WITNESSED ON TWO
       PRESETS.** `kernel/include/kickos/irqlock.h` 27 and 32. The attribute used to be conditional
       on `KICKOS_KERNEL_CORES > 1`, so a single-core board inlined only at the compiler's
       discretion: GCC 16.2 inlines and the CI runner's 13.3 does not, and `console_reach` saw five
@@ -1642,6 +1885,14 @@ inside the tree.
       compilers. So if a red-zone or reachability gate reddens on an MCU arch, this is the first
       place to look. Direction: M8.5's own whole-fleet sweep is the witness this owes, and closing
       it needs no work of its own.
+      **WITNESSED AT M8.13 ON BOTH UNTESTED COMPILERS.** All three `rx72m` presets and all
+      four `esp32-wroom` presets configure, build and pass their host gates, each over a
+      scratch tree wiped immediately before the run, so neither the RX nor the Xtensa
+      compiler reddens a gate under the unconditional attribute. `trap_redzone` is the gate
+      that carries this on those two arches and it ran for seconds, not the fraction of a
+      second a reused tree returns. **`console_reach` IS REGISTERED ON NEITHER**, so the
+      reachability half of the worry has no witness on RX or Xtensa and no sweep can give it
+      one.
 
 ## M8.5 -- DRY in kernel and arch
 
@@ -1846,7 +2097,7 @@ CHIP PORTS ARE NEAR-CLONES", rather than duplicating it.
       rp2xxx pair above -- a shared STM32F0/F3-family translation unit, chip-specific peripherals
       staying local.
 
-- [ ] **THE ASPACE WALKER SKELETON IS REAL BUT SMALLER THAN THE PRIOR CANVAS CLAIMED: ~250
+- [x] **THE ASPACE WALKER SKELETON IS REAL BUT SMALLER THAN THE PRIOR CANVAS CLAIMED: ~250
       LINES x3 AT MOST, NOT ~1K.** `aspace_armv8a.cc` / `aspace_rv64imac.cc` / `aspace_x86_64.cc`,
       containment 0.31 / 0.25 / 0.21 respectively. The prior audit's ~1k-of-3.3k shareable figure
       counted comment lines (code lines are 693/837/1008 = 2538 total); the true shared shape is 18
@@ -2569,7 +2820,7 @@ The ledger is `.session/reports/2026-09-11-m862-static-gate-audit.md`. Corpus 68
       one `libc.a` and `libgcc.a` are LOADed TWICE from one mention -- the shape `KERNEL_TWICE`
       exists to catch, which no string can show.
 
-- [ ] **`check_smp_trace_builds` CANNOT BECOME A PRESET, AND THE KNOB DOES NOT LINK ON TWO
+- [x] **`check_smp_trace_builds` CANNOT BECOME A PRESET, AND THE KNOB DOES NOT LINK ON TWO
       ARCHES.** The replacement was built and the tree refuses it:
       `check_trap_redzone_decls.sh` runs `uniq -d` over the registration key every visible preset
       rebuilds from its board and resolved variant, so a second preset on one board collides by
@@ -2582,8 +2833,23 @@ The ledger is `.session/reports/2026-09-11-m862-static-gate-audit.md`. Corpus 68
       both, having only ever claimed syntax. Direction: decide whether to mint the variant, and
       give the gate the positive control it lacks -- its silent-pass mode is a `sed` dropping the
       `-D`, after which the disabled arm compiles clean.
+      **THE MINT IS REFUSED AND THE CONTROL IS IN (M8.13).** A `smp-trace` defconfig
+      byte-identical to `smp`'s is a second truth about that board's configuration for a knob
+      Kconfig does not declare, which is the ground this item already states and the ground
+      this tree refuses everywhere else. The control is a probe translation unit that reacts
+      to an UNDEFINED macro, run through the same function the real loop calls rather than a
+      copy of it. The real units could never have carried it: their own
+      `#if defined(...) &&` guard compiles clean whether the knob is forced on or absent, so
+      only a probe that refuses the unforced command separates the two.
+      **AND THE LINK CLAIM ABOVE IS HALF STALE.** Re-measured at M8.13 with the knob forced
+      on: `microbit` still refuses to link, naming the user-RAM arena and the thread slots
+      the board advertises and cannot seat, and the ring still costs exactly 12352 bytes of
+      `.bss`. `qemu-riscv` now configures and BUILDS CLEAN. So the armv6m half stands and the
+      rv32imac half does not, and the gate still reports PASS on both, which is what the
+      new control does not change: it proves the knob was forced on, never that a forced-on
+      image links.
 
-- [ ] **FOUR RESIDUES THE AUDIT MEASURED AND THIS MILESTONE DID NOT CLOSE.** `trap_redzone`'s new
+- [x] **FOUR RESIDUES THE AUDIT MEASURED AND THIS MILESTONE DID NOT CLOSE.** `trap_redzone`'s new
       floors rest on seven presets of 54, so the other 47 inherit an arch floor untested and a
       preset legitimately smaller than the arch minimum would be a FALSE RED rather than a missed
       catch. `check_doc_names` now proves its reporting half can report and still nothing proves
@@ -2592,6 +2858,18 @@ The ledger is `.session/reports/2026-09-11-m862-static-gate-audit.md`. Corpus 68
       corpus claim is weaker than it reads. And `check_ascii` says nothing about a file that is
       both NUL-holding and byte-exempt, refused by neither half; that one is stated in its header
       and predates this branch.
+      **TWO OF THE FOUR CLOSED AT M8.13.** `check_public_headers` tells a quoted include from
+      an angled one: the angled spelling resolves against the include roots as a compiler
+      resolves it, and a quoted target resolves against the including file's own directory.
+      The target has to be read off the RAW line, the shared stripper blanking a string
+      literal whole with its quote characters, and the stripped line at that number is used
+      only to prove the directive is code. `check_ascii` no longer lets a file fall between
+      its two halves: a byte-exempt file holding a NUL is acknowledged by name or refused by
+      name, and both the acknowledgment list and its members' NUL-holding are checked before
+      the corpus walk, so the list cannot go stale into a blanket skip.
+      **THE OTHER TWO STAND**, and neither was touched: `trap_redzone`'s floors still rest on
+      seven presets of 54, and `check_doc_names` still proves only that its reporting half
+      can report.
 
 ## M8.6.2 audit round: what an external pass found in the audited corpus
 
@@ -2704,7 +2982,7 @@ contact and are corrected below; the rest held, and three of them were worse tha
       quoting defects and the answer is no: it enforces a disjoint rule -- no tracked script
       WRITES an identifier the shell owns -- and nothing here writes one. Its silence is correct.
 
-- [ ] **`check_dash_punct` COULD NOT SEE A COMMAND POSITION AFTER A CASE PATTERN'S `)`.** Fixed,
+- [x] **`check_dash_punct` COULD NOT SEE A COMMAND POSITION AFTER A CASE PATTERN'S `)`.** Fixed,
       and the gate's own mutation counts were re-tuned deliberately rather than incidentally:
       every count that moved, moved because the corpus gained a line the disabled variant
       legitimately exposes, and the all-clauses-on negative total stayed at zero. Left open here
@@ -2716,7 +2994,7 @@ contact and are corrected below; the rest held, and three of them were worse tha
 Found by planting violations during the milestone review, which is the only thing that finds this
 class. All three are pre-existing except the first, which is in the check M8.6 itself added.
 
-- [ ] **THE SELFTEST ARMS CHECK MISSES A MULTI-LINE DECLARATION AND A COMMENTED-OUT
+- [x] **THE SELFTEST ARMS CHECK MISSES A MULTI-LINE DECLARATION AND A COMMENTED-OUT
       REGISTRATION.** `user/apps/common/selftest/CMakeLists.txt`. It does NOT repeat the
       partition check's mistake -- both sides are `file(STRINGS)` over real source and it
       asserts set containment -- and it caught five of eight planted attacks. It misses a
@@ -2728,8 +3006,20 @@ class. All three are pre-existing except the first, which is in the check M8.6 i
       The `#if 0` shape is caught downstream by the plan count, but only on a preset carrying a
       run gate, and `f302nucleo` has none. Direction: strip block comments before counting, and
       match a declaration across a newline.
+      **DONE AT M8.13, AND THE OBVIOUS FIX CARRIED A HOLE OF ITS OWN.** Block comments are
+      stripped from the whole file before the scan and a declaration is matched across a
+      folded newline, both as the direction says. The registration match is also ANCHORED
+      after a newline and a leading blank, which the direction did not say and which the
+      original `^ *TAP_ADD(` had for free: matching anywhere in the text closes the
+      block-comment hole and OPENS a line-comment one, a `//`-commented `TAP_ADD` then
+      reading as a registration. Measured both ways on the real tree, the old scan refusing
+      that plant and the unanchored new one accepting it. A `//` is not stripped instead,
+      one inside a string literal being indistinguishable here. The scan runs on the text and
+      never on a CMake list of lines: this file continues lines with a trailing backslash, and
+      a newline turned into a list separator makes that backslash an ESCAPED semicolon, which
+      merges the continued lines and loses every match inside them.
 
-- [ ] **`check_irq_syscall_locked` PASSES A LOCK SCOPE THAT OPENS AND CLOSES ON ONE LINE.**
+- [x] **`check_irq_syscall_locked` PASSES A LOCK SCOPE THAT OPENS AND CLOSES ON ONE LINE.**
       `{ IrqLock lock; }` followed by `arch_irq_inject(irq)` goes GREEN. The reader records
       `lockdepth` BEFORE counting the line's braces, so a one-line block nets zero and the "a
       block that has already closed does not count" refinement never fires. Its own
@@ -2737,14 +3027,21 @@ class. All three are pre-existing except the first, which is in the check M8.6 i
       the refinement is untested. Pre-existing; M8.6's diff on that file removes only the
       `LC_ALL` line. Direction: count the braces before recording the depth, and plant the
       one-line shape in the control.
+      **DONE AT M8.13.** A line's opening braces reach the depth BEFORE a match on that line
+      is recorded and its closing braces after, so a block that opens and closes on one line
+      records its lock at the deeper depth and a call on the next line reads as out of scope.
+      The one-line shape is planted beside the multi-line one, and the hole was reproduced
+      against the real dispatch arm before the fix and cleared after it.
 
-- [ ] **TWO KERNEL GATES DO NOT REACH THE TRACKED `kernel/**.h.in`.**
+- [x] **TWO KERNEL GATES DO NOT REACH THE TRACKED `kernel/**.h.in`.**
       `check_irq_line_op_sole` filters `'kernel/*.cc' 'kernel/*.h'` and `check_park_death_point`
       filters `\.(cc|h)$`, so both pass over an `arch_irq_mask()` call and a
       `ThreadState::BLOCKED` write planted at file scope in
       `kernel/include/kickos/config/amp_ports.h.in` and `cap_width.h.in`. Those configure into
       real kernel translation units. The shared `corpus_sources()` already carries `*.h.in`, so
       this is one word in each. Pre-existing.
+      **DONE AT M8.13.** Both corpora reach `*.h.in`, witnessed by planting the two violations
+      this item names in those two tracked files and watching each gate name its own.
 
 ## M8.7 -- P0: the rebaseline campaign and the end-to-end instrument
 
@@ -2839,7 +3136,7 @@ Each of these was found, ruled on, and found again by the next pass, because the
 a commit message or nowhere. They are RULED, not open. Re-deriving one is the waste; re-opening
 one needs a new fact, not a new reading.
 
-- [ ] **RULED, target M9: the SMP peer-row reads stay as they are.** A report thread reads every
+- [x] **RULED, target M9: the SMP peer-row reads stay as they are.** A report thread reads every
       core's row while those cores keep writing, so `dist_print_fmt` is reader-versus-writer above
       one kernel core. It is not reader-versus-READERS, and that is what bounds it: `row()` is
       always the current core's, so every cell has exactly one writer. Of what the SMP build
@@ -2870,7 +3167,7 @@ one needs a new fact, not a new reading.
       the bracket inside `klock_leave()`, changes what `lock-hold` measures, so it may not land
       inside a baseline; M9 is where the lock is reworked and the instrument can move with it.
 
-- [ ] **RULED, target M9: the end-to-end protocol keeps its read-then-write transitions, and the
+- [x] **RULED, target M9: the end-to-end protocol keeps its read-then-write transitions, and the
       safety stays in the caller.** Three transitions change state before or without establishing
       that the caller owns the span: `arm` releases ARMED whatever the state was, so a second armer
       overwrites a live span; `raise` tests PARKED and then stores RAISED with nothing between, so
@@ -2885,7 +3182,7 @@ one needs a new fact, not a new reading.
       structure excludes. `docs/reference/bench.md` states the behaviour; this is the ruling that
       it stays. Revisit in M9, where a second kernel-side raiser would be the new fact.
 
-- [ ] **RULED, target M8.12: the inline-switch composites stay PUBLISHED, with the caveat stated
+- [x] **RULED, target M8.12: the inline-switch composites stay PUBLISHED, with the caveat stated
       beside them.** On `arm64`, `rv64`, `x86_64`, the LX6 and the sim the switch swaps inline, so
       a switch-enclosing composite closes only when the thread is next resumed, which is unbounded,
       and above one kernel core it can close on a core whose cycle counter shares no zero with the
@@ -2899,8 +3196,12 @@ one needs a new fact, not a new reading.
       row on the PENDING-switch backends too, where no other composite carries one. The close is
       inside the body's lock now, so what remains on that row is the inline-switch suspension
       this ruling accepts and states, and the M8.12 section carries the rest.
+      **RE-READ AT M8.12 AND THE RULING HELD.** The exit table publishes every composite with
+      the correction arithmetic in its own header, and `docs/reference/bench.md` names which
+      rows are leaves, which are composites and that the LX6 is the one no `SAT` column can
+      cover. Closed at M8.13.
 
-- [ ] **RULED, standing, re-confirmed at each capture pass: the emulator logs stay UNTRACKED.**
+- [x] **RULED, standing, re-confirmed at each capture pass: the emulator logs stay UNTRACKED.**
       They cost no bench time and regenerate from this tree, which is exactly the test
       `docs/README.md` states for what `docs/archive/` holds: a measurement is archived because it
       cost bench time and some are permanently unreproducible, and prose or a rerunnable log is
@@ -2975,7 +3276,7 @@ that finds this class. None is an M8.7 regression; the first two are in checks M
       carry planted controls, one per field and one per direction of the relabel. **All 36
       baseline captures carry every one of these tokens**, and all 36 are still accepted.
 
-- [ ] **THE END-TO-END ISR STAMP IS WRITTEN BY THE GENERIC TRAMPOLINE, NOT SCOPED TO THE ARMED
+- [x] **THE END-TO-END ISR STAMP IS WRITTEN BY THE GENERIC TRAMPOLINE, NOT SCOPED TO THE ARMED
       LINE.** `kernel/irq/irq.cc`, `irq_event_isr` calls the bench stamp unconditionally, and it
       is the ISR bound to every driver-style claim. `bench_e2e_close` accepts the stamp on a
       sentinel test plus a switch-count test, neither of which asks which line fired. A foreign
@@ -2986,10 +3287,14 @@ that finds this class. None is an M8.7 regression; the first two are in checks M
       carried e2e ruling above, which covers the arm/raise/close transitions and not this cell.
       Direction: pass the binding through to the stamp so a foreign line cannot write it. Target
       M9, with the rest of the protocol.
+      **REASSIGNED TO M9 AT M8.13**, with the two carried e2e rulings it sits beside.
 
-- [ ] **`docs/reference/boards.md`'s CI-COVERAGE COLUMN DOES NOT CARRY THE BENCH JOB.** The armv8a
+- [x] **`docs/reference/boards.md`'s CI-COVERAGE COLUMN DOES NOT CARRY THE BENCH JOB.** The armv8a
       and LX6 rows still describe the coverage that existed before the bench job was added, so
       every cell is true and the picture is short. An omission rather than drift; anytime.
+      **CLOSED: the column carries it.** The armv8a row names `qemu-arm64-bench`,
+      `qemu-arm64-benchsmp` and the microbench gates at one core and at four; the LX6 row names
+      its `-bench` provisioning beside the other three.
 
 
 ## M8.8 -- per-switch and per-wake plumbing
@@ -3075,7 +3380,7 @@ the skip half is closed refuted there.
       on this bench. The next silicon pass is where a number comes from. Read that as unmeasured
       and not as no benefit.
 
-- [ ] **RULED, PERF-6 REFUSED: THE REPLY FUNNEL KEEPS ITS WALK, AND NOTHING CHEAP MAY STAND IN
+- [x] **RULED, PERF-6 REFUSED: THE REPLY FUNNEL KEEPS ITS WALK, AND NOTHING CHEAP MAY STAND IN
       FRONT OF IT.** `sync.cc` (`thread_effective_prio`) 308-352, called from the `REPLY_FUNNEL`
       span in `syscall_ipc.cc` 937. The cost is real: a replier that received no donation does
       walk its held mutexes, its `reply_waiters` and every served endpoint's `send_waiters`. The
@@ -3204,7 +3509,7 @@ trees unless it says otherwise.
       `qemu-riscv` a bracket added anywhere inflates rows it is not inside, so no row of that
       board is comparable across this commit. The frozen M8.12 capture predates all of it.
 
-- [ ] **OPEN: `esp32c6`'s `lock-hold` max grew by exactly 173 cycles and nothing accounts for
+- [x] **`esp32c6`'s `lock-hold` max grew by exactly 173 cycles and nothing accounts for
       it.** 2013 to 2186, bit-exact in all three windows of both runs on both trees, so six
       samples a side. `n` is bit-identical, so the population and the lock structure are
       unchanged and one outermost window's body grew. Refuted by object code: the deleted backend
@@ -3251,6 +3556,38 @@ trees unless it says otherwise.
       deterministically. **Not established**: that the same site owned the max on the two
       M8.8-era trees, and that a print change accounts for exactly 173. Settling it is a
       capture of those two trees with the probe, which is cheap now that the probe exists.
+      **ATTRIBUTED AT M8.13: THE 173 IS INSTRUCTION ALIGNMENT, NOT A COST.**
+      `console_tx_insert_line`'s entry address mod 4 decides the row. At 0 it reads 2013 to
+      2016, at 2 it reads 2183 to 2186. Thirteen captures over two trees, eleven builds, no
+      exception, every capture bit-exact across its three windows. TWO DEAD BYTES flip it, in
+      both directions, on both trees. Over an 87-byte copy the gap is about two cycles a
+      byte, and under the C extension the linker owes the function only 2-byte alignment, so
+      which phase a build lands on is arbitrary.
+      **THE CONSOLE OWNS THE ROW, ESTABLISHED TWICE AND ONCE WITHOUT THE PROBE.** The probe
+      names `console_emit` at the instruction after `jal arch_console_write` on both trees,
+      the lock actually held being `console_tx_insert_line`'s. Independently: ten extra
+      characters on the window's longest line moved the unmodified M8.7 max 2013 to 2233,
+      which is 22.0 cycles per emitted byte and identifies the body with no instrument in
+      the image at all.
+      **A PRINT CHANGE ACCOUNTS FOR NOTHING and does not even permit the 173.** The longest
+      line that can feed the row is 85 characters on M8.7, M8.8 and HEAD alike, byte for
+      byte; only three lines print inside the window. At 22.0 cycles a byte the 173 would
+      need eight more characters and none appeared, and one extra printed character ahead of
+      the window moved the max not at all.
+      **THE PROBE IS NOT INERT ON THIS ROW, and that is stated ahead of its numbers.** Inside
+      the measured window it adds, removes and resizes not one instruction, which was checked
+      against the disassembly before any flash. It still moves the figure, because 820 bytes
+      of growth re-phase the hot function: it takes M8.7 from 2013 to 2185 and M8.8 from 2186
+      to 2014, the two trees swapping values. That is why the corroboration above matters.
+      **AND THIS STRIKES A CLAIM THIS ITEM ALREADY MADE.** "A relink on this board is worth
+      ZERO, and any nonzero lock-hold delta it ever shows is real rather than placement" is
+      WRONG. The calibration behind it measured build DETERMINISM and not placement, and
+      every perturbation tried was a multiple of four and therefore blind to the one bit that
+      matters. A relink here is worth 0 or about 170 depending on one address bit. The
+      control that works is a single `nop`.
+      NOT PINNED: whether the phase that matters is the function entry's or the copy loop's,
+      since only the whole function was ever shifted. Cache is not an explanation, the ROM
+      bootloader copying the image to SRAM with no instruction cache in play.
 
 - [x] **PROGRAM ONLY THE DESCRIPTORS WHOSE WORDS CHANGED, NOT THE WHOLE SET.** The all-or-nothing
       same-set skip that shipped here was removed: it fired 5 times in about a million commits and
@@ -3307,7 +3644,7 @@ trees unless it says otherwise.
         it is a silicon run. Projection from the counted instructions and the 247-cycle baseline:
         roughly 120 to 140 in the steady state, with the FIRST commit total and therefore the max.
 
-- [ ] **OPEN: two once-per-run excursions in the M8.7 captures vanished in M8.8 from code neither
+- [x] **Two once-per-run excursions in the M8.7 captures vanished in M8.8 from code neither
       touched.** `CALL_VALIDATE` read `261/2645` with avg equal to min over 220000 samples, and
       `REPLY_TOTAL` carried a 2487-cycle excess outside every one of its children; both are gone
       and the M8.8 composites close on the message-copy spread exactly. PERF-5 is worth 97 cycles
@@ -3315,6 +3652,22 @@ trees unless it says otherwise.
       `REPLY_VALIDATE`, which runs the identical unchanged walk and reads a constant 134 over
       260000 samples in both trees. So a once-per-run excursion left unmodified code, which wants
       a cause before either max is quoted. Target M8.12.
+      **CHARACTERISED AT M8.13 FROM THE ARCHIVE ALONE, AND THE WORRY IS RETIRED.**
+      **IT IS DETERMINISTIC, NOT NOISE.** Both M8.7 C6 captures read `261/2645` BIT-
+      IDENTICALLY across two independent flash-and-capture cycles, as does `REPLY_TOTAL` at
+      `1766/4687`. An asynchronous event landing in the window would not reproduce to the
+      cycle across two flashes, so this is a one-shot on a deterministic path.
+      **IT IS C6-ONLY.** `f411disco` carries an excess of 153 at M8.7 and 149 at M8.12, and
+      `xmc4800-relax` the same order; only the C6 ever showed 2384. So it is not a property
+      of the row.
+      **AND IT IS GONE IN THE MEASUREMENT THAT MATTERS.** The frozen M8.12 C6 captures read
+      `CALL_VALIDATE 170/170 min=170` over 220000 samples, both of them: not one sample
+      deviates. There is no max left to quote on that row, which is what this item asked for
+      before one could be. `REPLY_TOTAL` on that board is now `n=13`, standalone-only since
+      the fused path took over, so its M8.7 max is not a comparable figure either.
+      **WHICH one-shot it was is UNKNOWN and is left unknown.** A deterministic first pass
+      through something is the shape, but nothing in the archive names it, and this milestone
+      has already had one plausible story fit a symptom perfectly and be wrong.
 
 
 ## M8.8 review residue: what the audit and the ten-angle pass left open
@@ -3322,7 +3675,7 @@ trees unless it says otherwise.
 Each was found by planting a mutation or by an external read, and each is deliberately not fixed in
 M8.8. None is a regression this milestone introduced unless it says so.
 
-- [ ] **THE ARM TIMER ISR DISARMS TWICE, EXACTLY AS RX DID.** `SysTick_Handler` in
+- [x] **THE ARM TIMER ISR DISARMS TWICE, AND NOT AT ALL AS RX DID.** `SysTick_Handler` in
       `arch/arm/common/arch_arm_common.cc` writes `SYST_CSR = 0` before `kickos_isr_timer`, and the
       ARM `arch_timer_disarm` then repeats that write plus the ICSR pend-clear. The RX twin was
       removed this milestone on the argument that the kernel owns the comparator state and
@@ -3330,8 +3683,26 @@ M8.8. None is a regression this milestone introduced unless it says so.
       clear-then-stop leaves open. The same argument applies here. **It was deliberately left**:
       it moves a per-arch trap-stack figure, and unlike RX there ARE ARM boards on this bench, so it
       deserves a witness rather than riding along build-only. Anytime, with a bench run.
+      **DONE AT M8.13, AND BOTH OF THIS ITEM'S OWN CLAIMS ARE FALSE.** The RX argument does
+      NOT transfer: RX wrote the flag clear and then the stop, so a match between the two
+      re-set the flag the clear had just dropped. The ARM entry writes ONLY the stop and
+      never touches the pend-clear, so there is no clear for a reload to outrun and the
+      composite is stop, stop, clear either way. **No window existed on ARM before or after**,
+      so this is a redundancy removal and not the defect fix the RX twin was. What does
+      transfer is ownership: the handler's only body reaches `ktime_on_timer`, whose first
+      statement under the lock is the disarm, and nothing else writes that register.
+      **AND IT MOVES NO TRAP FIGURE, which is why it was held back.** The handler is the root
+      of no armv7m or armv6m class, a first-level ISR entry being off the walk for the same
+      handler-mode reason PENDSV is, and its own frame is unchanged. Six ARM presets over two
+      trees read bit-identical figures, chains and node counts, the graphs differing only
+      where the moved edge says they must, which is what shows the runs were fresh rather
+      than reused trees.
+      **THE INSTRUMENT WAS VALIDATED WITH A THIRD READING rather than assumed**, a volatile
+      array planted on a rooted chain moving RET, EXIT and SVC as expected. It exposed
+      something worth keeping: **armv7m SVC on the three kstacks-0 boards has FOUR BYTES of
+      slack**, so that is the class a syscall-path frame breaks first.
 
-- [ ] **NO GATE ENFORCES "THE CALLER HOLDS THE EXCLUSION".** Ten scheduler and timer bodies lost
+- [x] **NO GATE ENFORCES "THE CALLER HOLDS THE EXCLUSION".** Ten scheduler and timer bodies lost
       their own `IrqLock` this milestone and state the precondition in prose; roughly thirty-five
       call sites now have to be individually correct forever with no backstop. On the host fixture
       `IrqLock` is a no-op, so the brackets added to the unit arms prove nothing about a target.
@@ -3342,6 +3713,9 @@ M8.8. None is a regression this milestone introduced unless it says so.
       declared masked-context allowlist. Target M9, with the lock rework. **The header now states
       the three classes and names the five that acquire for themselves, so such a gate has a
       written source for its roots instead of re-deriving them.**
+      **REASSIGNED TO M9 AT M8.13.** The gate is the backstop the caller-held API ruling above
+      declines to buy with a naming rule, so it lands with the lock rework that makes the roots
+      stop moving.
 
 - [x] **A TEAR ON THE AMP BARRIER LINE REDDENS THE GATE OUTRIGHT.** `check_amp_partition.sh`'s
       app-alive sweep line was matched anchored, in both the clause and the ordering loop,
@@ -3353,11 +3727,13 @@ M8.8. None is a regression this milestone introduced unless it says so.
       clause, the one sibling in the file carrying the same two-site shape, was closed with it, so
       no pattern in that gate anchors at line start any more.
 
-- [ ] **`wq_pop_highest` MUTATES A LIST AND NAMES NO EXCLUSION.** `kernel/include/kickos/sync.h`
+- [x] **`wq_pop_highest` MUTATES A LIST AND NAMES NO EXCLUSION.** `kernel/include/kickos/sync.h`
       says "ISR-callable. Pure select+unlink" where its neighbour `wq_peek_highest` says "Under the
       same IrqLock". It always runs under a caller's lock and never had an internal one, so its
       contract did not change this milestone -- it is the surface being uneven rather than a defect.
       One line, anytime.
+      **DONE AT M8.13.** The declaration states the caller's IrqLock and says an ISR already
+      holds it, so the two neighbours describe the same exclusion.
 
 - [x] **THE ORDINARY SWITCH ANNOUNCED NOTHING, AND THAT IS AN UNBOUNDED CROSS-CORE INVERSION.**
       `sched.cc`. SM-5's successor rule asked for the displaced thread only where this core took a
@@ -3406,15 +3782,19 @@ M8.8. None is a regression this milestone introduced unless it says so.
       and the merged walk's wrapping-descriptor overflow branch had no arm at all, so a later
       refactor could bypass either without reddening anything.
 
-- [ ] **AN API SHAPE FOR THE CALLER-HELD CONTRACT IS THE MAINTAINER'S CALL.** The external audit
+- [x] **AN API SHAPE FOR THE CALLER-HELD CONTRACT IS THE MAINTAINER'S CALL.** The external audit
       recommends giving caller-held scheduler operations one unmistakable form, `_locked` names or
       an exclusion token, keeping only thin acquisition wrappers at true entry points, so that an
       unlocked call is harder to express. The M8.8 design explicitly refused a `_locked` suffix on
       the grounds that there is no unlocked twin, so the suffix would name a distinction that does
       not exist. Both positions are defensible; this is a design decision and not a defect. Decide
       before M9 reworks the lock, since that is where either shape would land.
+      **RULED AT M8.13: THE PROSE CONTRACT STAYS AND NO NAME CHANGES.** M8.8's argument holds,
+      there being no unlocked twin for a suffix to distinguish, and an exclusion token would put
+      a parameter on ten bodies and every call site to say what the header already sorts. The
+      backstop stays the callgraph gate M9 owes.
 
-- [ ] **A CANCELLED PARK RUNS `cap_teardown` MASKED, AGAINST THAT FUNCTION'S OWN DECLARED
+- [x] **A CANCELLED PARK RUNS `cap_teardown` MASKED, AGAINST THAT FUNCTION'S OWN DECLARED
       PRECONDITION.** `kernel/syscall/cap.cc` states in as many words that its caller must NOT hold
       `IrqLock`: the sweep drops and retakes one every `KCAP_TEARDOWN_CHUNK` slots so that a walk as
       wide as the capability table stays preemptible, and above one kernel core those gaps are also
@@ -3437,8 +3817,11 @@ M8.8. None is a regression this milestone introduced unless it says so.
       between the cancel being seen and the thread being marked dying; giving `exit_current` a form
       that unwinds to depth zero before the sweep moves that window inside it instead. Both land on
       the `dying` restart guard `switch_book` reads, so neither is a local edit.
+      **REASSIGNED TO M9 AT M8.13.** Both candidate shapes land on that guard, which is the
+      scheduler surface M9 reworks, so taking either here would settle a contract ahead of the
+      milestone that owns it. The limitation stays recorded in `kickos/sched.h`.
 
-- [ ] **THE AMP GATE'S TOLERANCE RESTS ON ITS PATTERNS AND NOT ON THE PEERS BEING QUIET.**
+- [x] **THE AMP GATE'S TOLERANCE RESTS ON ITS PATTERNS AND NOT ON THE PEERS BEING QUIET.**
       `tests/integration/check_amp_partition.sh` reads lines node 0 prints after its app-alive
       sweep. That sweep proves every node has queued its BOOT output and nothing beyond it:
       `user/apps/common/ampping/main_serve.c` publishes the mark being swept and then prints one
@@ -3455,11 +3838,38 @@ M8.8. None is a regression this milestone introduced unless it says so.
       a human debugging a hang the only line saying a peer answered at all. Or serialise the console
       across the two kernels, which N6h refuses outright as an unbounded cross-kernel claim. Decide
       before anything else is added to this gate.
+      **DONE AT M8.13 BY THE FIRST OPTION: THE CROSSING IS A ROW, NOT A CONSOLE LINE.** The
+      serving app bumps a counter of its own beside `app_alive` ahead of every reply, and
+      node 0 prints its own verified answer count against what the peer's row says. The gate
+      asserts on that one line and on nothing else about the rounds, and its own count of
+      pong lines is gone, which also removes the only figure it kept beside the app's.
+      **THE PROOF IS A PLANTED CAPTURE WITH EVERY `serve` AND `ping -> pong` LINE DELETED,
+      WHICH PASSES.** That is the ruling in one verdict: the console stopped being evidence.
+      A missing crossing line, a torn field, and a peer's bytes landing between the words and
+      the number are each refused BY NAME as UNKNOWN, and a record disagreeing with the count
+      is RED.
+      **IT IS ITS OWN FIELD AND NOT `took` OR `sent`, for the distinction the deleted clause
+      carried.** Both of those move for a call this node's kernel answered with an empty
+      reply when no thread received it, so a peer reading either learns that a message
+      crossed and not that an application served it.
+      **N6h IS THE CLAUSE THIS WORKS INSIDE AND IT ALREADY SAID SO**: witness a peer through
+      a counter the other node reads, never through what the peer printed. So this brings a
+      clause into line with a rule the design already stated. N6e and N6f are untouched: no
+      ring, no doorbell and no message crosses, and the only geometry change is four bytes at
+      the end of the per-node row.
+      **THE RATE THIS ITEM QUOTES DID NOT REPRODUCE AT ALL**, reported rather than read as an
+      improvement: the gate was green 30 of 30 under 24-way load on BOTH sides, so there is
+      no before-rate to have improved on. What the runs establish is that the new clause is
+      not itself flaky and that the load instrument does produce reds on this box.
+      **THE RESIDUE IS NOT GONE and the gate header says so.** The clauses that are not the
+      crossing still read node 0 lines a peer's bytes could land inside; each is printed
+      after a peer's reply, the class N6h measured at zero tears in 300 loaded runs against
+      seven for the app-entry line.
 
 
 ## M8.8 accepted cost, to be made cheaper in M9
 
-- [ ] **THE PEER ASK WALKS EVERY CORE ON AN ORDINARY RESCHEDULE, AND THE MAINTAINER ACCEPTED THAT
+- [x] **THE PEER ASK WALKS EVERY CORE ON AN ORDINARY RESCHEDULE, AND THE MAINTAINER ACCEPTED THAT
       PRICE RATHER THAN ABSORBING IT.** Announcing a displaced thread closes an unbounded
       cross-core priority inversion, and the ask keys on the `RUNNING -> READY` store so it now
       runs wherever the outgoing thread has any peer affinity. Priced from object code at four
@@ -3475,6 +3885,8 @@ M8.8. None is a regression this milestone introduced unless it says so.
       read. Either wants its own correctness argument, since the walk is what makes the
       announcement total. **Do not reopen the correctness fix to buy this back** -- the inversion
       it closes is unbounded, and that trade was made deliberately.
+      **REASSIGNED TO M9 AT M8.13**, which is the milestone that reworks the lock and the
+      scheduler together and so the only one that can hold the set the cheap answer would read.
 
 
 ## M8.9 -- IPC structure
@@ -3563,7 +3975,7 @@ the ABI moves once rather than twice.
         drivers copy the ack from the one beside them. Comment only, and the behaviour was
         confirmed to be exactly this before it was written down.
 
-- [ ] **`kos_irq_notify` IS A SPECIAL CASE OF A NOTIFICATION THAT SHOULD BE GENERIC, AND THE NAME
+- [x] **`kos_irq_notify` IS A SPECIAL CASE OF A NOTIFICATION THAT SHOULD BE GENERIC, AND THE NAME
       RECORDS THE CONFLATION.** Milestone unassigned; `roadmap.md` is the only file that assigns
       one. Today a thread can be notified only through a `CAP_IRQ`, because the bit IS a binding's
       pool index and the bind takes an IRQ capability. The mechanism underneath is general: a
@@ -3574,6 +3986,36 @@ the ABI moves once rather than twice.
       others; seL4's Notification and its `TCB_BindNotification` are the prior art and are readable
       on this box (GPL-2.0, so cite by path and never copy). **Renaming without generalising would
       be the opposite lie**, so the name stays accurate to what exists until the object does.
+      **BUILT AT M8.13, AND THE NAME DID NOT SURVIVE BECAUSE THE OBJECT NOW DOES.** A
+      notification is a capability object carrying the pending word, one bound waiter and a
+      chain of signallers; an interrupt line is one signaller among them. No new right was
+      needed, `CAP_SIGNAL` already being the right to signal rather than an IRQ concept, and
+      no new authority: creating one takes none, as an endpoint takes none.
+      **THE BIT IS CARRIED BY THE CAPABILITY AND COSTS NO NEW FIELD**, living in the spare
+      bits only a reply capability spends, settable once. A MINT is what produces a second
+      differently badged name, because delegation at spawn is this tree's only copy
+      mechanism and a driver needs two names before it delegates anything. So which bit a
+      holder may raise is GRANTED rather than agreed.
+      **WHAT THE GENERALISATION PAID FOR, beyond the item**: the RX serial driver's relay
+      thread is gone, three threads to two; the sim stops claiming a line it has no device on
+      purely to have something parkable; the two USB drivers stop borrowing the doorbell's
+      own line; and `irq_autorearm` witnesses the chained rearm holding NO IRQ capability at
+      all, which the old shape could not express.
+      **`notify_no_line` IS THE ARM THAT PROVES IT**, and it could not have been written
+      against the old tree: no authority, no line, two badged copies, both rung, one wait,
+      both bits out.
+      **THE TWO DEFECTS THE BUILD FOUND ARE WORTH MORE THAN THE FEATURE'S OWN NOTES.** A
+      `-1` default member initialiser on any member of the kernel object moves the WHOLE
+      object out of `.bss` into `.data`, which took one board 6172 bytes past its flash
+      region; every sentinel is BIASED so zero means none. And a six-byte staging array on
+      the spawn stager's frame moved an armv7m SVC red zone past its bound, where the extra
+      parameter everyone expected to cost something did not; packing the staged kind and
+      rights into one byte, as the capability entry already packs them, put it back.
+      Unwitnessable here and named rather than implied: the SMP routed-core refusal, no board
+      here routing two lines to different cores; a real device ISR racing a bind, every raise
+      in the suite being from thread context; the reference ceiling, which no board's
+      capability table can reach; and two signallers sharing a bit, which the kernel permits
+      and nothing exercises.
 
 - [x] **DONE BY M8.9: THE DESCRIPTOR WRITE IS BRACKETED ON EVERY BACKEND THAT PROGRAMS ONE.**
       `kickos_bench_mpu_commit` now has five feed sites -- PMSAv7, PMSAv8, the K64F SYSMPU, RXv3
@@ -3601,7 +4043,7 @@ the ABI moves once rather than twice.
       `qemu_selftest` that runs 3.5x slower inside the band, which is tolerable once the arms in it
       stop deciding correctness on a timing margin.
 
-- [ ] **A CALLGRAPH GATE THAT NAMES ITS SUBJECT BY SYMBOL REPORTS A MOVED SYMBOL AS A BROKEN
+- [x] **A CALLGRAPH GATE THAT NAMES ITS SUBJECT BY SYMBOL REPORTS A MOVED SYMBOL AS A BROKEN
       PROPERTY.** `tests/static/check_bench_e2e_publish.sh` reads the kernel body that must reach
       the end-to-end park mark between taking the kernel lock and blocking, and names that body by
       its mangled symbol. This milestone split the untimed IRQ wait into a forwarder over a timed
@@ -3614,6 +4056,17 @@ the ABI moves once rather than twice.
       the body it was given contains neither, and say that it cannot see the bracket rather than
       that the bracket is empty. A gate whose blindness and whose alarm are the same output is
       the defect family this milestone already met five times in the bench instrument.
+      **DONE AT M8.13, AND THE NEW REFUSAL CAUGHT A LIVE BLIND PASS ON ITS FIRST RUN.** The
+      reader now separates a body carrying NEITHER landmark from one carrying only the
+      opening or only the closing one, and each is UNKNOWN rather than a verdict. The
+      widening past the item's "neither" is deliberate: a missing CLOSING landmark is the
+      worse case, because the window then runs silently to the end of the body and passes.
+      That is exactly what was happening. The gate's closing landmark named
+      `wq_block` by a mangled spelling that predates its gaining a `Thread const*`, and
+      `irq_wait_timed` does not call `wq_block` at all, blocking with `park_queueless`. So
+      the arm has been bracketing from the lock to the end of the body and passing on a
+      window wider than the rule states. Both halves fixed, three plants, proved both ways
+      on rv64imac and armv8a.
 
 ## M8.10 -- translating boards and SMP
 
@@ -3646,7 +4099,7 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       armv8a's release is one instruction. That is an `arch/` change and belongs to whoever
       opens the rv64 window seam next.
 
-- [ ] **THE DRIVER-FACING MAPPING API HAS A SKETCH, AND ITS MCU ARM IS THE INTERESTING HALF.** The
+- [x] **THE DRIVER-FACING MAPPING API HAS A SKETCH, AND ITS MCU ARM IS THE INTERESTING HALF.** The
       maintainer's target shape for a driver taking a 4 KiB MMIO window, an i.MX8MP SPI module being
       the worked example:
 
@@ -3662,8 +4115,12 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       kernel. `kos_memmap` then becomes the grant on a region board and a real mapping on a
       translating one. **It is not only a driver API**: anything wanting a window in an address
       space calls it, so the MCU arm cannot be specified from the driver case alone.
+      **ASSIGNED TO THE DRIVER ERA AT M8.13.** That milestone owns the driver model and the
+      worked example above is one of its own, so the MCU arm gets specified beside a real
+      second consumer rather than from the driver case alone. The direction above stands as
+      the target shape.
 
-- [ ] **P1: ASID/PCID IS A DESIGN ITEM, NOT A BUG FIX -- THE LEVER IS PROBED BUT NEVER
+- [x] **P1: ASID/PCID IS A DESIGN ITEM, NOT A BUG FIX -- THE LEVER IS PROBED BUT NEVER
       WRITTEN, AND IT NOW OWES A PEER-TLB IPI TOO.** ASID support is probed at boot but never
       programmed; every root switch pays a full `tlbi vmalle1`. The same lever exists on rv64
       (`sfence.vma` with a zero ASID). No allocator or generation scheme exists for either, so this
@@ -3674,8 +4131,13 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       becomes newly necessary and is folded into this design rather than tracked apart from it.
       Direction: design the allocator and generation scheme for A64 and rv64 together, after P3/P4
       land, carrying the peer-TLB IPI as part of the same design.
+      **CLOSED: all three premises are false now.** The lever is programmed on armv8a and on
+      rv64, the allocator is `take_identifier` in `arch/include/kickos/arch/aspace_residency.h`
+      with a bitmap release and a fallback to identifier 0, and the peer-TLB half is wired
+      through the residency mask. What the design still marks unwitnessed is carried by the
+      translating-RV64-board item below and not by this one.
 
-- [ ] **RV64 FENCE.I EXTENDS THE EXISTING ITEM ABOVE (M7): MOVED FROM OPTIMISATION TO
+- [x] **RV64 FENCE.I EXTENDS THE EXISTING ITEM ABOVE (M7): MOVED FROM OPTIMISATION TO
       CORRECTNESS.** `klock_rv64imac.cc` 343-345. The doorbell service body carries `SFENCE.VMA`,
       which orders translation and which the ISA gives no way for one hart to perform for another;
       the instruction-side half is `FENCE.I`, and Zifencei is absent from
@@ -3686,6 +4148,10 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       would put an untrue contract statement in the tree. Direction unchanged from the existing item:
       raise the march baseline (a real option, measured against the toolchain's exact multilib
       strings, not assumed free) when the first instruction-side caller lands.
+      **CLOSED AT M8.13 AS A STANDING CONDITION, not as work.** No instruction-side caller
+      exists, so there is nothing to raise the baseline for and no contract statement in the
+      tree is untrue today. The obligation sits on the first caller that lands, which is where
+      the march decision can be measured instead of assumed.
 
 - [x] **AN X86_64 `KERNEL_CORES > 1` CONFIGURE REFUSAL IS OWED BY NAME, THE SAME SHAPE AS
       G-06.** x86_64 remote `invlpg` is local-only, and today that is moot because no x86 SMP build
@@ -3701,7 +4167,7 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       and the refusal would have gone on resting on the absent `smp.cmake`. `aspace_x86_64.cc`
       carries the same clause as a `static_assert`, as `syscall_ipc_fast.cc` does for the fastpath.
 
-- [ ] **`KICKOS_MAX_DOMAINS` AND `KICKOS_MAX_TASKS` ARE DERIVED FROM THE THREAD COUNT, AND THE
+- [x] **`KICKOS_MAX_DOMAINS` AND `KICKOS_MAX_TASKS` ARE DERIVED FROM THE THREAD COUNT, AND THE
       MODEL SAYS THEY MUST NOT BE.** `config/system.h` 92-116 sets `KICKOS_MAX_TASKS` to
       `KICKOS_THREAD_SLOTS + 1` on the stated ground that there is "one task per LIVE THREAD, since
       grouping is implicit today", and `KICKOS_MAX_DOMAINS` to that plus two. **Ruled 2026-09-18: a
@@ -3721,8 +4187,12 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       translating board a domain carries an address space and the identifier pool is sized from
       the domain count: a pool sized from threads is sized from the wrong number the day a task
       holds more than one.
+      **CLOSED, BOTH HALVES.** Both counts are literals in `config/system.h`, neither derived
+      from the thread count, and the identifier pool is sized from the domain bound alone. The
+      model half is exercised rather than implicit: a plain spawn joins an existing task, and
+      only an explicit task or a separate grant takes a slot.
 
-- [ ] **A TRANSLATING RV64 BOARD IS THE ONLY THING THAT CAN ANSWER TWO OF THE DESIGN'S NAMED
+- [x] **A TRANSLATING RV64 BOARD IS THE ONLY THING THAT CAN ANSWER TWO OF THE DESIGN'S NAMED
       BLIND SPOTS.** The design records that no emulator property on this bench narrows the ASID
       field (`asid-bits=off`, `asid_bits=off` and `asidlen=off` each refused while `sv48=off` on
       the same command line is accepted), so the narrow-field and zero-width arms are reachable
@@ -3734,6 +4204,9 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       a boot path and a console come first, and the SD-card boot shape these parts use is not one
       this tree has a board for yet. Take it as the witness for the arms the design marks unwitnessed,
       not as a milestone dependency.
+      **CLOSED AT M8.13 AS A REFUSAL.** No such part is on this bench, so the two arms stay
+      marked unwitnessed in the design and the bring-up stays its own work for whenever one
+      arrives. A witness that cannot be taken is not a debt to carry.
 
 ### The maintainer's rulings on the M8.10 design's five open questions (2026-09-18)
 
@@ -3767,7 +4240,7 @@ configure refusal yet and depends on G-06 (M8.4) landing first, so it is not sch
 The RISC-V context-switch item (P9) is tracked in the retagged "RISC-V context-switch cost" entry
 below, not duplicated in this section.
 
-- [ ] **P6: HOISTING THE DOORBELL PAYLOAD COPY OUT OF THE MASKED BODY IS AN ISR-LATENCY ITEM,
+- [x] **P6: HOISTING THE DOORBELL PAYLOAD COPY OUT OF THE MASKED BODY IS AN ISR-LATENCY ITEM,
       NOT A THROUGHPUT ONE, AND NEEDS A RING-LIFETIME CHANGE TO WORK AT ALL.** Up to two 256-byte
       copies happen per message under the masked body today, plus a `sched::wake` call from the
       handler; REPLY slots are released as the tail advances immediately after the copy, so deferring
@@ -3784,8 +4257,10 @@ below, not duplicated in this section.
       that cannot fill, the drain budget); building it here would settle that contract ahead of the
       milestone that owns it, and a staging queue is a copy again. So the number is banked and the
       mechanism waits.
+      **REASSIGNED TO M9.3 AT M8.13.** The measurement is taken and the mechanism is the ring
+      lifetime that milestone designs.
 
-- [ ] **PERF-8: THE ARMV8A SWITCH SAVES AND RESTORES ALL 32 Q REGISTERS (512 BYTES)
+- [x] **PERF-8: THE ARMV8A SWITCH SAVES AND RESTORES ALL 32 Q REGISTERS (512 BYTES)
       UNCONDITIONALLY, VOLUNTARY OR NOT, AND THE FILE RULES OUT A CALLEE-SAVED SUBSET.**
       `arch/arm64/armv8a/switch.S` 61-96, 110-125. Every switch saves and restores 31 GPRs and the
       full q-register file regardless of whether the outgoing thread touched SIMD/FP at all. Severity
@@ -3906,7 +4381,7 @@ the three that have no fastpath and the declaration really is conditional.
 
 ## M8.1.1-era finding, assigned to M8.6: weak linkage goes, and the build chooses the symbol
 
-- [ ] **THE CHEAP HALF IS DONE (M8.10). WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE
+- [x] **THE CHEAP HALF IS DONE (M8.10). WEAK UNDEFINED SYMBOLS ARE NOT PORTABLE AND THEY HIDE
       ABSENCE, WHICH THIS TREE HAS ALREADY BEEN BITTEN BY ONCE.** All nine raw declarations now go
       through the macro, so the decision it centralises IS central and the one place to change is
       one place. **What remains is the expensive half and it is what the item is really for**: the
@@ -3963,6 +4438,44 @@ the three that have no fastpath and the declaration really is conditional.
       is what makes empty distinct from absent at link time. Routing the nine through
       `KICKOS_LINK_OPTIONAL` first is the cheap half and changes behaviour only on x86_64,
       where hidden is what the toolchain file says such a declaration owes.
+      **DONE AT M8.13, AND THE SET ABOVE WAS WRONG TWICE.** Eleven bounds converted to
+      `KICKOS_LINK_BOUND`, strong and hidden, stated by every chip script with an empty
+      window where the window is empty. `kickos_app_build_time` is NOT one of them and
+      stays weak: it is hand-rolled vague linkage emitted by every app translation unit
+      defining `main`, no script can state it, and a strong reference would make an app
+      defining no `main` unlinkable and kill a live branch in `kbanner`. The allowlist had
+      it classified correctly all along and this item did not.
+      **AND `KICKOS_LINK_OPTIONAL` DOES NOT GO**, against this item's own claim that it
+      exists only to serve the weak form. Two reasons from the tree: the x86_64 toolchain
+      file records that an undefined external stays GOT-indirect whatever the visibility
+      flag says, so hidden is owed on a STRONG bound there too, and the MMU design records,
+      measured both ways, that hidden does not save a weak undef on PE32+. So the macro
+      survives with exactly one user and its header says which.
+      **THE LATENT DEFECT THE CONVERSION EXPOSED IS THE REAL FIND.** Seven of eighteen chip
+      scripts defined the code and appdata bounds only inside `#if KICKOS_HAVE_MPU` with no
+      `#else`, so EVERY `-flat` preset in the fleet was running on the weak-null path
+      today. That is the forgotten-board case, already present and invisible, and it is
+      what the weak reference was hiding.
+      **WHAT IS NOT TOTAL BY CONSTRUCTION, and it is owed.** A declaration emits nothing:
+      only a USE emits a relocation, and the app-split FIVE are read behind
+      `#if !KICKOS_MEMORY_ENFORCED`. So a missing bound is a link error only on a posture
+      that compiles the reader. Every MPU chip in the tree has a `-flat` preset today and
+      the other bounds are read unconditionally, so coverage is total NOW; a future MPU
+      chip shipping no flat variant would go unwitnessed. Closing it means asserting over
+      the PREPROCESSED chip script, where the `#if` is already resolved, that each bound is
+      assigned.
+      **THAT GATE IS IN (M8.13), and it reads the script the LINK reads.** It takes
+      `KICKOS_LINKER_SCRIPT`, the same generated file `-T` is handed, rather than re-deriving
+      a path, so it cannot disagree with what was linked. A grep over the SOURCE script would
+      answer the wrong question: it cannot tell a bound assigned in the branch that survived
+      from one assigned only in the branch that did not, which is the exact shape of the
+      defect above. It accepts the RX psABI spelling on every target rather than being told
+      which target is RX, and `arch/x86/x86_64/pe_image.ld` is a STATED exception carrying
+      its reason: that image links through a raw `ld -m i386pep` command and never through
+      cpp, and it omits the app-split bounds on purpose.
+      **AND THE COUNT IN THIS ITEM AND IN `invariants.md` WAS WRONG: it is FIVE, not four.**
+      `__kickos_app_load_delta` is declared in the same `#if KICKOS_HAVE_ASPACE` block as the
+      other four and is stated by no x86_64 script either. Both texts now say five.
 
 ## M8.2 pickups
 
@@ -4000,14 +4513,19 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       seam's rule rather than as a licence a backend may take. rv64's `arch_aspace_unmap` already
       preflighted, but that is the UNMAP's own "wholly mapped" rule and left `map` unguarded.
 
-- [ ] **THE PARTIAL-RANGE PREFLIGHT IS A NEW LINEAR TERM ON EVERY MAP, AND IT IS UNMEASURED.**
+- [x] **THE PARTIAL-RANGE PREFLIGHT IS A NEW LINEAR TERM ON EVERY MAP, AND IT IS UNMEASURED.**
       It now rides all three translating backends, not arm64 alone (the row above). The
       partial-range scan walks one leaf table per page before any edit. Inputs are bounded by
       allocated runs so it is finite and was accepted, but it is a per-page cost added to a path that
       had none, and no figure exists for it. Take it with the M8.7 baseline rather than separately, so
       the map path carries a number before M8.8 through M8.11 start changing costs around it.
+      **THAT WINDOW IS GONE AND THE ITEM IS REASSIGNED TO M9's EXIT MEASUREMENT.** Both M8
+      baselines are frozen and neither carries this figure, so it cannot be taken with either
+      without reopening a frozen table. No bench preset drives the map path today, so the figure
+      needs a vehicle that does not exist here and M9 has to build one for the lock question
+      anyway.
 
-- [ ] **THE RESIDENCY LOOKUP IS A LINEAR SCAN ON THE ROOT-CHANGE PATH, AND ON THIS BENCH IT WILL
+- [x] **THE RESIDENCY LOOKUP IS A LINEAR SCAN ON THE ROOT-CHANGE PATH, AND ON THIS BENCH IT WILL
       LOOK LIKE A REGRESSION WHILE BEING A WIN.** The side table is associative rather than
       slot-indexed, because the frame pool's bounds are link-time symbols and the boot root is not
       a pool frame on any of the three backends, so there is no compile-time index. Occupied rows
@@ -4027,8 +4545,13 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       find it. And if the scan is ever worth removing, the repair is to hand the row back from
       `arch_aspace_acquire` rather than to re-look it up, which needs the same arch seam PERF-3
       declined to open.
+      **THE CONCRETE ASK IS DONE: `docs/archive/M8.12_meas.md` now says it**, under what those
+      figures may not be used for, including that the record prices tagging in neither
+      direction and why the one vehicle that could would report a loss. The repair itself is
+      not taken and is not scheduled: it needs the arch seam, and no figure on this bench
+      argues for opening one.
 
-- [ ] **THE MAP UNWIND'S PEER MASK IS SAMPLED BEFORE THE EDITS, AND ONLY THE KERNEL LOCK STOPS A
+- [x] **THE MAP UNWIND'S PEER MASK IS SAMPLED BEFORE THE EDITS, AND ONLY THE KERNEL LOCK STOPS A
       HART JOINING AFTER IT.** rv64's `arch_aspace_map` samples the resident set, edits, and on a
       failure frees the tables it allocated using that sample. A hart installing the space between
       the sample and the unwind is not in the mask, so it could cache a walk into a table the
@@ -4039,6 +4562,8 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       rv64 is the sharper case: armv8a's mask drives an instruction-side hint, rv64's gates frame
       reclamation. The new `mapfence` seam witnesses the sampling POINT but cannot witness that the
       point is right, so re-reading this is owed to whoever narrows the lock, not to a later sweep.
+      **REASSIGNED TO M9 AT M8.13.** The window opens the day the per-core ready queues land,
+      and it is unreachable until then, so the re-read belongs to that change.
 
 ## M8.12 -- the M8 exit measurement, frozen
 
@@ -4124,7 +4649,7 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
         campaign refuses a dirty tree outright and refuses any run whose banner does not name the
         tree, and it rebuilds before it measures.
 
-- [ ] **ROWS WHOSE SPAN CHANGED ON THE WAY INTO M8.12, SO THE RE-RUN ABOVE IS LIKE FOR LIKE ON
+- [x] **ROWS WHOSE SPAN CHANGED ON THE WAY INTO M8.12, SO THE RE-RUN ABOVE IS LIKE FOR LIKE ON
       EVERY OTHER ROW AND NOT ON THESE.** Each is named here so the published delta excludes it
       by name rather than by a reader noticing a figure that grew out of nowhere.
       - **`REENT_SEAT` IS A NEW ROW, AND `SWITCH_TO`'s `k` GAINS ONE WITH IT.** PERF-3's block
@@ -4168,12 +4693,9 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
         commits do. NO IN-TREE PRESET BUILDS RX WITH `KICKOS_BENCH`, so there is no RX phase
         table at M8.7 and none at M8.12: the bracket is in place for whenever the first RX
         capture is taken, and it is a delta against nothing.
-        - **An rxv3 bench preset owes the trap red zone a re-measurement before it is used.**
-          `kickos_arch_mpu_commit` is a hard PENDSW root and now carries the
-          `kickos_bench_mpu_commit` tail below it under the bench knob, while
-          `trap_redzone_roots.txt` declares no rxv3 preset that turns that knob on. So
-          `KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW` is measured over a graph that cannot reach it.
-          armv7m has `f411disco-bench` declared and is covered.
+        The trap red-zone obligation this leaves is carried by the rxv3 and LX6 bracket item
+        under *Found landing M8.4's gates*, which is the item whose work would create the
+        preset that fires it.
       - **`REPLY_LOCKED`, and two bracket counts with it.** The bracket sat in the standalone
         reply wrapper, which a fused reply-receive never enters, so the row counted only the
         one terminal answer a server loop sends and missed every fused reply. It now sits in
@@ -4245,6 +4767,378 @@ M8.12 is the M8-EXIT measurement, taken after them, and it is the one M9 is judg
         populations, and a bracket around the fused reply leg alone would just be
         `REPLY_LOCKED` twice. A near-empty `REPLY_TOTAL` in an M8.12 capture is the server
         loop having adopted the fused call, not a blind instrument.
+
+## Found closing the M8 tail (M8.13)
+
+A sweep of all 73 gates under `tests/static/` for the shape the callgraph-gate item names, a
+reader whose blindness and whose alarm are the same output. 32 are already guarded and separate
+"cannot see it" from "it is broken" by name; `check_arm64_entry_order.sh` is the reference and
+invented `NOOPEN`/`NOCLOSE` for exactly this. 35 are not this shape. No blind PASS was found
+outside the one the e2e gate was already hiding. What is left is below.
+
+- [x] **`check_x86_64_entry_cld.sh` FOLDS AN ABSENT SYMBOL INTO A SECURITY FINDING.** Its
+      `window()` answers `none` both for "this object does not carry the symbol" and for "the
+      body ran out", and the caller folds `none` into `the interrupt entry reaches C without
+      clearing the direction flag`. Its OWN control proves `none` means an absent symbol, and
+      the caller then discards the distinction. So a renamed or inlined entry reports a
+      direction-flag violation that did not happen, on the one arch whose entry nobody reads by
+      hand.
+
+- [x] **`check_bench_xtensa_stamp.sh` HAS NO `NOINSN` ARM, WHERE EVERY SIBLING DOES.** Its
+      reader ends on `NOSYM` alone, so a body that decodes to no instruction emits a zeroed
+      record and the gate reports that the image banks no switch cost at all. The LX6 has no
+      emulator in this tree, so nothing else would contradict it.
+
+- [x] **`check_bench_stamp_percore.sh` REPORTS A LANDMARK COUNT OF ZERO AS THE FINDING**, with
+      prose that says in its own words that it may be blindness instead. Saying so is not the
+      same as refusing.
+
+- [x] **`check_bench_a53_pmcr.sh`, RESIDUAL ONLY.** A two-instruction tail-call thunk passes its
+      branch pre-check and is then reported as writing `PMCR_EL0` zero times.
+
+- [x] **`check_death_stack_seating.sh`, MINOR RESIDUAL.** Its `#if KICKOS_KERNEL_STACKS`
+      sub-region is keyed on the knob's spelling, so an empty arm is reported as the defect.
+
+- [x] **AND THE REASON THE SAME HOLE KEEPS APPEARING IS STRUCTURAL, WHICH IS A DECISION AND NOT
+      A FIX.** `tests/lib/objdump_scope.awk` gives every reader a `seen` flag, so level one, the
+      SYMBOL, can always refuse. There is no shared mechanism at all for level two, a WINDOW
+      named by landmarks inside that symbol, so each gate invents its own refusal or forgets to.
+      Every finding above is a gate that forgot. Either the shared library grows a landmark
+      window with its own refusal, which every such gate then inherits, or each gate keeps
+      writing one and the next sweep finds the next one that did not.
+      **RULED AND BUILT: `tests/lib/objdump_window.awk` IS LEVEL TWO**, loaded between the
+      scope and the reader so every reader inherits the refusals whether or not it names a
+      landmark. **The rule it encodes is the one the two correct gates needed in opposite
+      directions: a landmark NOT GIVEN is an anchor, a landmark NOT FOUND is a refusal.**
+      `_start`'s rule is "before the first write to SP" and has no opening landmark; the
+      end-to-end park mark runs to the end of its body and has no closing one. Collapse the
+      two and you refuse every open-ended rule or pass every blind one.
+      **A FOURTH CASE NEITHER REFERENCE GATE HAD**: both landmarks present with the closing
+      one standing ONLY AHEAD of the opening one. Testing "a close was seen at all" passes
+      that and the window then runs to the end of the body, which is the refusal that reads
+      as a pass. The library tests for a close PAST the open.
+      The whole form rests on `exit` in one `END` block skipping a later one; gawk, mawk and
+      busybox awk were all checked, since the tree gates awk portability.
+
+- [x] **THE RE-SWEEP FOUND TWO MORE, AND BOTH FOLDED TOWARDS GREEN.** `extern_c_linkage` was
+      the worse: every hit is gated on a block its scanner TAGGED, so anything standing
+      between the `extern "C"` spec and its brace left the file untagged, an anonymous
+      namespace nested inside went unjudged, and the banner then claimed a pairing the
+      scanner never opened. It reports untagged braces now and refuses them by name. And
+      `object_budget_asserts` reported that NO static_assert holds a budget below its pool
+      when what happened is that it could not PARSE the one that does, and separately read
+      zero charged kinds when its landmark function was renamed. Both say UNKNOWN now.
+      Every other reader in `tests/static` already carries a named refusal or a vacuity
+      floor.
+
+- [x] **M8.13 BROKE `bluepill-c8-st` AND THE MILESTONE'S OWN VERIFICATION COULD NOT SEE IT.**
+      The arms that detect a lost timing window grew region 2 of the split selftest, and
+      `selftest_p2` overflowed a 64 KiB board's FLASH by 924 bytes. Clean at the M8.12 merge,
+      broken at the M8.13 tip, bisected to the commit and narrowed inside it by reverting one
+      file. **NOTHING WAS GOING TO CATCH IT**: the board has no unit on this bench, it is
+      build-only, and it is in no CI job, so only a fleet sweep covers it. This is the third
+      time this class has bitten, and the reason is arithmetic rather than carelessness: the
+      thinnest of the three images had 980 free bytes of 65,536 and the suite only grows.
+      Fixed by moving BOTH cuts, which evened the three to 2,380 / 2,940 / 2,892. Two rules
+      the repair had to obey and the first attempt did not: a boundary moves only between two
+      ADJACENT registrations, or arms change place relative to one another and
+      `docs/reference/boards.md`'s stated order property goes quietly false; and the
+      free-byte figures in that page are a MEASUREMENT, so the re-cut is recorded beside the
+      earlier one rather than overwriting it.
+
+- [x] **`bench.sh` DELIVERS NO VERDICT ON A TAGGED TREE, AND SAYS SO AS A REFUSAL.** Found at
+      M8.13 capturing the M8.8 tree, which carries the annotated tag `m8.8-meas-source`. The
+      build stamp is then a `git describe` string rather than an 8-hex commit, and the
+      verdict's own plant machinery trips on it: every run ended `REFUSING: the bench verdict
+      refuses a planted 'good' report`. The captures were complete and correct and were
+      validated by hand instead. So any capture taken on a tagged tree loses its automated
+      verdict, which is exactly the tree a re-measurement of an archived campaign runs on.
+      **MECHANISM ESTABLISHED AND FIXED (M8.13), AND THE STAMP HAS THREE SHAPES, NOT TWO.**
+      `git describe --dirty --always` yields a bare abbreviation with no tag reachable (and
+      the abbreviation length is git's, not always eight), `<tag>-<n>-g<hash>` past a tag, and
+      the BARE TAG sitting on one. The capture script recognised the label by HEX SHAPE in
+      three places, so the `g` prefix defeated even its damaged-banner recovery and a bare tag
+      matched nothing at all. The label is an opaque token now, in one expression the three
+      sites share, with a third recovery clause for a tag, which has no shape to recover by.
+      **THE REASON IT PRESENTED AS A CATASTROPHE is that the plant battery builds its own
+      `good` report from the wanted label, so the FIRST CONTROL refused before any real input
+      was read.** That is the instrument refusing itself, and it reads as a broken tree.
+      A label of `nogit` is refused outright now: widening the match would otherwise have
+      turned a label naming no tree into a pass.
+
+- [x] **A FLEET BENCH PASS FLASHES A FRACTION OF THE SUITE ON EVERY SPLIT BOARD, AND HAS FOR
+      TWO SPLITS.** `tools/bench/bench-fleet.sh` carries a `two_image()` naming
+      `f302nucleo|bluepill-c8` and flashes `selftest` plus `selftest_p2`, with a comment saying
+      the suite ships as two images. It was already wrong when those boards went to three and
+      it is wrong by two now they are at four. **`esp32c6-wroom` IS WORSE**: it ships as three
+      images, it is in the fleet list, and it is in no branch of `two_image()`, so a fleet pass
+      has only ever flashed its FIRST image. TAP numbering restarts at 1 in each image, which
+      is exactly why a short pass reads as a complete one.
+      So a green fleet bench pass has never witnessed what its name claims on any split board.
+      Direction: the image list is a property of the configured build, not of a list in a
+      script. The app now publishes `KICKOS_SELFTEST_IMAGES` and `bench.sh` already resolves a
+      `_p4` name, so the pass can ask the tree instead of restating it; a board list here is
+      the second authority that produced this.
+      NOT FIXED HERE because it changes what a pass flashes on the rig, which is a bench-time
+      decision rather than a build one.
+      **DONE AT M8.13: THE PASS ASKS THE TREE.** The board list is gone; a listing mode
+      configures and prints the images that board carries, from a manifest the selftest gate
+      writes out of the global property the app publishes. It cannot go stale because the
+      rows are written by the loop that reads the targets, and a board's image count is
+      computed from its own chip and posture. **It REFUSES rather than defaulting**: no
+      manifest, or no row, is a nonzero exit naming the file, since a caller reading silence
+      as one image would recreate the bug exactly.
+      **THE SIZE OF WHAT WAS MISSED, measured by a dry run over the whole board list: 19
+      images against the 13 the old script flashed.** The six never flashed are `f302nucleo`
+      parts 3 and 4, and `esp32c6-wroom` parts 2 and 3 in EACH of its two service lists.
+
+- [x] **A SILICON SELFTEST CAN BE TWO TAP LINES SHORT OF ITS OWN PLAN AND EVERY VERDICT STILL
+      READS CLEAN.** Found at M8.13 on `f411disco`, twice, at two commits, so neither new nor a
+      flake. The capture reports `ok: 123` against a plan of `1..125`, and the numbers 120 and
+      124 appear NOWHERE in the log, as neither `ok` nor `not ok`. Worse than the absence: the
+      app's own trailer says `# partial: 1` and `# 1 test(s) failed` while the runner's summary
+      says `not ok: 0`, `part: 0` and exits 0. **So the producer and the reader disagree about
+      whether the run failed, and the reader wins silently.**
+      This is NOT the recorded `rx72m` and `esp32-wroom` line-dropping entry, which names those
+      two consoles, no ARM board, and no trailer contradiction. Direction: a plan not accounted
+      for line by line is an UNKNOWN verdict and must refuse, and the trailer's counts are a
+      second statement of the same run that nothing reconciles against the lines.
+      **ONE CAUSE IS REFUTED, so nobody re-chases it.** `tap.cc`'s `emitf` assembles a whole
+      line into a 224-byte buffer and a longer one loses its own newline, which would merge
+      two result lines and make the second uncountable. That is a real defect and it is NOT
+      this one: the longest line in the capture is 76 characters. Checked further, the two
+      numbers appear NOWHERE in the file in any form, not at line start and not merged into a
+      neighbour, and the surrounding lines are intact CRLF with nothing truncated. The
+      numbers are CONSUMED, 119 running to 121 and 123 to 125, so the arms ran and their
+      result lines did not reach the wire.
+      That is the shape the `rx72m` and `esp32-wroom` entry in the local notes describes, on
+      a THIRD board and a different console, which widens that entry from two consoles to a
+      property no board is known to be free of.
+      **SETTLED AND FIXED AT M8.13, AND IT WAS NEVER THE CONSOLE.** The producer drops the
+      line in software: the TX ring refuses a line WHOLE when it does not fit, which is its
+      stated contract, and `kconsole_write_all` retried for a count of YIELDS and then
+      returned, discarding the remainder silently. A yield count is not a duration, and on an
+      idle box 256 of them is very nearly no time.
+      **THE RING WAS NEVER THE DEFECT, IT ONLY MASKED ONE.** Dose-response on one board, one
+      variable: 256 and 512 lose lines, 1024 loses fewer, 2048 and 4096 lose none, AND the
+      stock 512 with only the retry bound raised also loses none.
+      **THE BOUND IS THE WIRE NOW**, a full ring's drain at the fleet's baud, 44.4 ms at the
+      default. It is not a fudge factor: past it every byte queued when the stall began has
+      had time to leave, so a ring still refusing is not draining, and no chunk ever needs
+      more than a ring to fit. Any accepted byte resets the deadline, since progress proves
+      the drain is alive.
+      **AND A GIVE-UP IS NO LONGER SILENT.** The bytes are counted and announced at the top of
+      the next write as a TAP comment, so a stream carrying it still reconciles and only the
+      gate refuses; `check_tap_stream.sh` refuses on the marker BEFORE reading the verdict, so
+      a truncated capture is named as truncated rather than as a plan that does not add up.
+      The count is a FLOOR and not a tally, userspace having no read-modify-write and armv6m
+      no instruction for one, which is stated where it is declared.
+      **SILICON, stock ring: `f411disco` 125 of 125, `rx72m` 125 of 125 where it gave 118,
+      `esp32-wroom` 120 of 120 where it gave 118.** The witness that matters is the mutation:
+      with the bound cut to 1 ns the same board reported 115 cases against its plan, carried
+      one `# console dropped 153 byte(s)`, and the gate refused on the marker.
+      **`confused_deputy` WAS TESTING RING PRESSURE.** It asserted a FULL write from a syscall
+      whose documented answer under pressure is a short count, while its own comment said it
+      meant acceptance. That is why a bigger ring made it pass and a longer retry made it
+      fail. It asserts the sign now, which is what a reject is and a short count never.
+      **WHERE THE BOUND IS STILL WRONG, named**: `sam3x8e` cannot reach the fleet's baud on
+      its fast RC, so there it is short of its own wire; the sim's drain is a synthetic slot
+      budget with no wire behind it; and an RTT-only console never returns 0, so the bound is
+      inert and unmeasured there.
+
+- [x] **THE NOTIFICATION MOVE LEFT A DELEGATED HANDLE NOTHING READS, AND IT BROKE A BOARD.**
+      `f411spi` kept the handle it used for the ack after the ack was gone, which
+      `-Werror=unused-variable` turns into a build failure on every `f411disco` preset, taking
+      the red-zone runs and the bench capture with it. The driver is correct without it, the
+      wait re-arming the line, so unlike two of its siblings it owes no ack at all. Caught by
+      the first pass that tried to build that board, which neither the milestone's own preset
+      set nor the feature's own contained: a board outside the set is covered by nothing until
+      the fleet sweep runs.
+
+- [x] **`amp_far_reply_guard` WAS LOAD-SENSITIVE, AND NEITHER ITS SOURCE NOR THIS ITEM SAID WHY.** Measured at
+      M8.13 over 280 alternating runs under 24-way load: 1 red in 140 on the M8.12 merge and 5
+      in 140 on the tip, every one the same arm and the same line, the dropped-reply count. The
+      arm's own comment documents the race: the peer services a call it was never poked for,
+      which lands as one more dropped reply AFTER the count was read. **The base reproduces it,
+      so it is pre-existing**, and 5 against 1 at that sample is not a significant difference
+      (Fisher p about 0.2) rather than an exoneration. It is the vacuity-skip shape: the arm
+      asserts a count a starved box can make wrong after it has been read.
+      **INVESTIGATED AT M8.13 AND DELIBERATELY NOT CONVERTED. The obvious fix is UNSOUND and
+      the reason is worth more than the fix would have been.**
+      **THE DIRECTION IN THIS ITEM IS WRONG.** `TAP_CHECK` prints the expression and not the
+      values, which is why 280 runs established a rate and no mechanism. Instrumented, the
+      failure is an UNDER-count, fewer drops than expected. The comment's story, a peer
+      servicing a late call, describes a drop landing AFTER the count is read, which cannot
+      move the delta at all.
+      **A DISCRIMINATOR WAS BUILT AND IT FAILED ITS OWN TEST.** Counters bracketing the
+      window were meant to separate the guard refusing what it did not count from a forge
+      whose slot a concurrent service ate. Over 416 loaded boots it produced BOTH shapes,
+      including the genuine-defect reading arising purely from load, because a take count is
+      a WINDOW SUM and not an attribution: one forge losing its slot while one foreign
+      message is taken reads exactly like every forge arriving. A skip keyed on it would have
+      turned the defect this arm exists for into a permanent green.
+      **AND THE CONVERSION WOULD NOT EVEN HAVE GREENED THE GATE.** `check_amp_peer_arms.sh`
+      refuses a vacuity skip for these arms DELIBERATELY and says so in its own words, so the
+      category would have changed the message and not the verdict.
+      **WHAT LANDED IS INSTRUMENTATION, not a verdict change**: the failure now carries every
+      number, so the next campaign reads the direction off the log instead of re-deriving it,
+      and it still reds for a genuine guard failure, witnessed by mutating the kernel to
+      refuse without counting.
+      **THE REAL FIX IS A STAGING REDESIGN**, the shape the slice arm needed: a take-and-drop
+      bracket around EACH forge with a bounded retry behind it, so that all of them were
+      offered to the guard becomes a fact rather than a hope. It needs its own campaign.
+      One more load-sensitive decline sits in the same arm and is not what this item names: a
+      plain skip for no caller reaching the far park, 4 in 416 loaded runs and never idle,
+      which that same gate also refuses outright.
+      **CLOSED AT M8.13, AND THE CAUSE WAS NEVER THE GUARD.** The caller's far call carries a
+      DEADLINE and the forge sequence raced it: a forge arriving after that deadline had
+      expired routed nothing, published nothing, and returned the SAME EMPTY VERDICT A
+      REFUSAL RETURNS. So the sequence came up short of drops with every per-forge check
+      still passing. The under-count direction this item recorded was right; its mechanism
+      was not, and neither was the source comment it rested on.
+      **THE EXCLUSIVE BRACKET ALREADY EXISTED AND THE ABI WAS NOT REPORTING IT.** The forge
+      publishes, takes its own publication back and dispatches it inside ONE lock, so no
+      service on this core interleaves and no peer writes this row. It simply collapsed three
+      outcomes into one false. The kernel now answers per forge: whether the guard judged it,
+      whether the refusal moved the counter by exactly one, whether a caller was parked at
+      all, whether the partition holds the ring, and whether a caller was still parked when
+      the dispatch returned. **The arm asserts per forge and sums nothing**, the window total
+      surviving as a diagnostic.
+      **THE RETRY IS BOUNDED BY THE VEHICLE'S OWN ARITHMETIC**, not a duration and not a
+      picked attempt count: a park occupies one slot of the held peer's call ring, so the
+      ring's slot count is how many parks can be outstanding, one of them the sequence's own
+      and the rest replacements shared across it.
+      **THE COLLISION IS GONE AND IT WAS EXACT.** A partial guard defect printed
+      `2 reply drop(s) of 3 expected, with 3 take(s)` byte for byte identical to what pure
+      load produced on three of five baseline reds. Same line, same numbers, two causes. The
+      retry triggers and the failure triggers are disjoint now, so a lapse is never read as a
+      missing drop and a defect is never retried into a green; a defect coinciding with a
+      lapse survives the replay and still reds. Four mutants witness it, including one that
+      breaks a single validation arm and is named by the forge it broke.
+      **THE FIRST ATTEMPT MOVED THE HOPE RATHER THAN KILLING IT**, and a constructed case
+      caught it before the campaign did: the still-parked reading is itself load-sensitive,
+      since a caller can leave on its own deadline, so it triggers the replay now instead of
+      a failure.
+      **THE RATES CORROBORATE AND DO NOT CARRY THE CLAIM.** Alternating over 140 pairs: base
+      2 red and 1 decline, tip 0 and 0 with the retry firing on three and recovering all
+      three. A sequential capture before it read base 5 in 140. The base's own rate is not
+      stable between the two, so neither is worth much alone and the paired result is not
+      significant by itself. The mutation pair is the evidence.
+      **STILL UNATTRIBUTABLE, named**: the precondition skip for no caller reaching the far
+      park keeps its ordinary category and its cause is reduced rather than removed; a vCPU
+      starved past the whole budget is reported as the lapse it is and still reds, which is
+      correct; the lost-publication case never fired in 280 boots and is encoded anyway,
+      because it is exactly what the earlier discriminator could not see; and the instrument
+      trusts the kernel's own counter, which the mutation runs are what keep non-vacuous.
+
+- [x] **A TAP LINE LONGER THAN THE ASSEMBLY BUFFER LOSES ITS OWN NEWLINE AND SWALLOWS THE NEXT
+      ONE.** `tests/tap/tap.cc`'s `emitf` formats the whole line into `char b[224]` and
+      truncates at that width, so a line reaching it drops the trailing newline and the
+      following result line continues it. The reader then counts one result where two ran, and
+      the swallowed one is invisible at line start. Found at M8.13 by a skip reason long enough
+      to hit it; the reasons were shortened and the constraint noted at the call site, which is
+      an author remembering rather than a mechanism.
+      It is NOT the cause of the `f411disco` plan gap above, which was checked and refuted.
+      Direction: the emitter owes a refusal or a newline it cannot lose, since every arm that
+      prints a formatted reason is one long string from tripping it.
+      **DONE AT M8.13: A NEWLINE IT CANNOT LOSE, made visible in band, with the refusal in the
+      gate.** The emitter owns the terminator outright and stamps a marker over the tail when
+      a format overran, so no caller holds a newline it can drop. What it gives up is the
+      tail of an overlong line; what it keeps is COUNTABILITY, and the loss is no longer
+      invisible. The refusal sits in the shell and not in the app on purpose: refusing inside
+      the run either moves the plan, which is the producer-versus-reader disagreement the
+      console item above is about, or fakes a test failure.
+      **THE SECOND BUFFER DID NOT HAVE THIS DEFECT and had the sibling one.** The diagnostic
+      body could never reach the emitter's limit, so it never lost a newline; it cut silently
+      at its own width with no trace. It has no buffer of its own now, assembling through the
+      one path, so its cut is marked too and the nested pair collapses to one.
+      **PROVED ON THE REAL TRIGGER SHAPE**, a reason one byte over: before, the plan claimed
+      126 and the reader counted 125 with the last result fused onto the line above, and the
+      gate refused BLAMING THE PLAN. After, 126 of 126, the cut line carries its marker, and
+      the gate names the real cause. Cost is 92 bytes of text per image on a 64 KiB board,
+      against about 7.5 KiB of headroom, with data and bss unmoved.
+
+- [x] **`dash_punct` HAS A THIN TIMEOUT AND A CONTENDED BOX REACHES IT.** Found at M8.13: the
+      gate carries `TIMEOUT 120` and took 117 s standalone while the box sat at load 62 to 98 on
+      24 cores. It failed as a TIMEOUT twice in full runs and passed on an isolated re-run of
+      the same tree, so the tell is the verdict word and not a finding about the corpus. A gate
+      whose budget a loaded box can exhaust reports a corpus defect that did not happen, which
+      is the family this milestone spent itself on, one level out.
+      **MEASURED AND RAISED TO 300 AT M8.13.** It is the heaviest corpus scan in the set by a
+      wide margin: 21 s idle against 6 s for the next and 0 to 7 s for the rest, so it is the
+      one gate whose budget is thin rather than a property of the class. The number is the
+      measurement and not a round guess: about 2.5 times the 117 s a contended box produced.
+      What makes a timeout worth a fix at all is that anything COUNTING failures reports it
+      as one, so a sweep summary turns it into a corpus defect even though ctest itself names
+      the verdict correctly.
+
+## M8.13 external audit: the object budget did not count what a binding keeps alive
+
+One actionable finding over the whole branch, and it is against the notification object M8.13
+added rather than against anything the tail closed.
+
+- [x] **A BINDING KEEPS ITS NOTIFICATION ALLOCATED AND THE BUDGET STOPPED COUNTING IT.**
+      `task_object_holds` derived a task's holds from its members' capability tables alone. A
+      thread bind and an IRQ attach each take a reference of their own -- deliberately, so the
+      object survives its last capability -- so closing that capability dropped the charge while
+      the pool slot stayed allocated. Reproduced by the auditor on the ordinary sim posture, with
+      no IRQ operation and no elevated authority: one task bound a notification, closed its
+      capability, and then created seven more, holding all eight slots of a pool its budget caps
+      at seven; a second task's first create answered -KOS_ENOMEM. That is the exact denial the
+      budget exists to prevent -- a supervisor that cannot make the notification a driver restart
+      needs -- and the build-time assert that each budget is strictly below its pool does not
+      reach it, since the assert bounds what a task may TAKE and this bypassed what it HOLDS.
+      The IRQ route is the same hole with a different name, and closing only the thread-binding
+      one would have left it open.
+      **FIXED AT M8.13, AND THE WALK IS STILL THE WHOLE ACCOUNTING.** The walk now also marks
+      each member's `Thread::notify_bound` and, for each held `CAP_IRQ`, the notification its
+      binding raises into. Nothing records a charge anywhere still holds, so the release stays
+      free: the charge goes when the reference goes. The hold sets are bit-per-slot, so an
+      object a task holds by capability and by binding at once still costs it one -- and that is
+      an arm rather than a claim, beside a release arm, because the plausible over-fix is a
+      charge that sticks or doubles.
+      Both hole arms redden against the pre-fix kernel and both control arms pass either way,
+      which is what says the four are measuring the fix and not the fixture.
+      **AND IN THE AUDITOR'S OWN TERMS**: of the four probes filed with the finding, the one
+      that asserts the intended guarantee directly now passes, and the three exploit sequences
+      can no longer be CONSTRUCTED -- each stops with -KOS_EOVERFLOW at the create that would
+      have carried its task past the budget, so the denial they end by asserting is out of
+      reach.
+
+- [x] **AND COUNTING IT WAS NOT ADMITTING IT: THE SECOND PASS FOUND BOTH OWNERSHIP CHANGES.**
+      The walk charged a held line's notification correctly, and only once that line was
+      already installed. Two orderings walked past it. A spawn's grant list admitted each
+      incoming object against its own kind alone, so a `CAP_IRQ` entered a destination already
+      at its notification ceiling and brought a distinct object with it; the creates that then
+      saw the excess refused, but nothing undid the ownership. And the reverse order worked too:
+      delegate a line carrying nothing, fill the recipient's notification budget, then attach
+      through the capability the donor kept -- `irq_bind_notify` asked no ceiling at all,
+      because the attacher holds both capabilities and pays nothing for either.
+      **FIXED AT M8.13: THE GRANT STAGES THE OBJECT THE LINE CARRIES, AND THE ATTACH ASKS EVERY
+      HOLDER.** The grant list stages the retained notification beside the binding, so a line is
+      two slots where it is attached and one where it is not, deduplicated against the
+      destination's holds and against the rest of the list. The attach asks the notification
+      ceiling of every task holding that binding rather than of the caller's, the caller's own
+      passing trivially since it holds the capability it is attaching.
+      The two hole arms redden against the first-round kernel, and the three controls -- the
+      in-budget grant, the grant naming an object the destination already holds, and the attach
+      a peer has room for -- pass against both, which is what says they bound the fix rather
+      than describe it. Of the auditor's four probes, the two that assert the guarantee now
+      pass and the two exploit sequences stop at the admission that refuses them.
+      **THE GENERALISATION IS SHARPER THAN THE FIRST ROUND'S.** Counting an indirect hold in
+      the walk is half the mechanism: admission must be asked wherever a task can COME to hold
+      a slot, and for an object held through another object that is three places and not one --
+      the creator, the grant, and the operation that later attaches the object to the thing
+      already delegated.
+
+- [x] **AND THE INVARIANT PAGE HAD SAID FOUR CHARGED POOLS SINCE THE NOTIFICATION OBJECT
+      LANDED.** `object-pool-keeps-a-slot-from-any-one-task` named the semaphore, mutex,
+      endpoint and IRQ-binding pools, four figures, four asserts and four creators; the
+      notification pool has been charged, with a budget and an assert of its own, since the
+      commit that introduced it earlier in this same milestone. The page is code-synced, so this
+      was a defect and not a gap, and it is the kind a reader would have had to find by reading
+      the code the page stands for. Corrected with the accounting fix, which also gave the page
+      the binding-retention rule and the admission's new cost.
 
 ## M9 -- kernel concurrency, and what the big kernel lock actually costs
 
@@ -7534,6 +8428,12 @@ coalesced drain reproduces the intended order instead of inverting it.
         and a 4u post-recv spin against a 5u spoiler wake.
       - `mutex_pi_donation`, `mutex_multi_held`, `mutex_owner_died`: a low holder's spin against a
         higher waiter's wake.
+        **STALE FOR THE FIRST TWO, CORRECTED AT M8.13.** Both are fully rendezvous-staged
+        already, on `stage_wait`/`stage_release` plus a per-arm semaphore, and neither the
+        workers nor the arm bodies carry a sleep or a spin, so there is no duration margin
+        left in either to lose. Only `mutex_owner_died` had one, and it now detects losing
+        it. Note for a reader grepping the list: `mutex_pi_donation` is the TAP name and
+        `t_mutex_pi` is the function.
       - `cap_reply_bound_fast` / `_slow`: a second caller's call must land inside the window a
         first reply cap is live.
       - `rr_interleave`: SUPERSEDED 2026-08-30, and by more than a repair. The per-iteration burn
@@ -11848,9 +12748,10 @@ context (`(PSP)`, `IPSR == 0`), both AT A SYSCALL STUB:
 | tree | PC | LR (caller) | R0 |
 | --- | --- | --- | --- |
 | `a1220233` pre-rework | `kos_call`, `syscall_stubs.cc:142` | `uart_call`, `usbcdcwit/main.cc:60` -- the APP | `0x0` |
-| `aa38390a` post-rework | `kos_irq_notify`, `syscall_stubs.cc:317` | `usb::serve_one`, `usb_cdc_service.h:702` -- the SERVICE thread | **`0x2b`** |
+| `aa38390a` post-rework | the doorbell raise, `syscall_stubs.cc:317` | `usb::serve_one`, `usb_cdc_service.h:702` -- the SERVICE thread | **`0x2b`** |
 
-**`0x2b` is 43, and `KOS_SYS_IRQ_NOTIFY = 43`** (`abi.h:119`). So `R0` holds the syscall number at
+**`0x2b` is 43, and 43 is the doorbell raise's syscall number** (`KOS_SYS_NOTIFY` today; that
+tree spelled the same number for the per-line post). So `R0` holds the syscall number at
 the moment of the fault: the `svc` escalated to a HardFault instead of dispatching. That is the
 shape to chase, and it is an armv6m-specific one.
 
@@ -13094,7 +13995,7 @@ follows is what survived that.
       core, and both are unchanged by this work. `rxv3`, the LX6 and x86_64 were built and not
       booted here, so nothing is claimed about them.
 
-- [ ] **NO CI JOB RUNS `*_bench_irqspan` ON ANY PRESET, SO THIS ARM IS REGISTERED AND UNRUN.**
+- [x] **NO CI JOB RUNS `*_bench_irqspan` ON ANY PRESET, SO THIS ARM IS REGISTERED AND UNRUN.**
       The string `irqspan` does not appear in `.github/workflows/ci.yml`. Its `bench:` job boots
       only `*_bench_lock` and `*_bench_cyccnt`, on the one-core presets; the benchsmp presets and
       `qemu-riscv-bench` get `ctest -L host -LE tree`, which is link surface alone. That predates
@@ -13124,9 +14025,16 @@ follows is what survived that.
       comparison) held back, and that is a mode `check_bench_irqspan.sh` does not have. Adding
       one is an edit to the gate plus a judgement on whether a half-run gate is worth its
       emulator minutes. NOT TAKEN HERE, and no timing assertion was added to CI.
+      **RULED AT M8.13: THE HALF-RUN MODE IS NOT BUILT.** The written statement is the branch
+      this bullet offered and it is the one taken: the IRQ block is witnessed by hand at each
+      rebaseline and CI keeps the parser half alone. What that accepts is named rather than
+      left implicit: `probe`, `fields`, `population`, `passes` and the two e2e accounting
+      clauses are witnessed against planted reports and against no report a kernel printed.
 
-- [ ] **TWO ARCH QUESTIONS THE INSTRUMENT NOW ASKS AND CANNOT ANSWER.** Whether `arch_irq_unmask`
+- [x] **TWO ARCH QUESTIONS THE INSTRUMENT NOW ASKS AND CANNOT ANSWER.** Whether `arch_irq_unmask`
       on armv8a should route a global line to the core that unmasks it rather than leaving it
       where the first unmask put it, and whether rv64imac's raised set should be per hart rather
       than one word. Neither is the bench's to change. Recorded because the refusals name them:
       an `irq-probe` reading `on=3 hcore=0` is the first and `hcore=mixed` is the second.
+      **REASSIGNED TO M9 AT M8.13.** Both are questions about how a line is placed across cores,
+      which is the surface M9 reworks; neither is answerable by the instrument that raised them.

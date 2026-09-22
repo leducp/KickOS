@@ -280,14 +280,22 @@ tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
     fi
 }
 
-# THE OBJDUMP READER'S SCOPE, shared so a listing-shape fix is made once. The reader awk a
-# caller passes carries the per-arch mnemonic match and the END verdict, which are bespoke;
-# what it does NOT carry is finding the body, and getting that wrong reads as a clean body.
-# tests/lib/objdump_scope.awk documents what the reader inherits and why the -f order matters.
+# THE OBJDUMP READER'S SCOPE AND ITS WINDOW, shared so a listing-shape fix is made once. The
+# reader awk a caller passes carries the per-arch mnemonic match and the END verdict, which are
+# bespoke; what it does NOT carry is finding the body, or finding the landmarks that delimit a
+# region inside it, and getting either wrong reads as a clean body.
+#
+# THREE PROGRAMS IN THIS ORDER, and they are not interchangeable: the scope drops everything
+# that is not an instruction of the wanted body, the window numbers what is left and refuses a
+# landmark it was told to find and did not, and the reader counts. tests/lib/objdump_scope.awk
+# documents `seen`; tests/lib/objdump_window.awk documents win_open, win_close and what a
+# reader inherits from them. The window's END runs first and exits on a refusal, so the reader
+# never sees a body it could not read.
 #
 # Extra `-v` assignments go after the three fixed arguments, before the program files, POSIX
 # putting every assignment ahead of the first -f.
 KOS_OBJDUMP_SCOPE="$(dirname "$0")/../lib/objdump_scope.awk"
+KOS_OBJDUMP_WINDOW="$(dirname "$0")/../lib/objdump_window.awk"
 
 scoped_body() { # <reader.awk> <listing> <symbol> [-v name=value]...
     _sb_prog="$1"
@@ -296,8 +304,11 @@ scoped_body() { # <reader.awk> <listing> <symbol> [-v name=value]...
     shift 3
     [ -r "$KOS_OBJDUMP_SCOPE" ] || fail "$KOS_OBJDUMP_SCOPE is unreadable, so no reader can
       find a body and every one of them would report the symbol as absent"
+    [ -r "$KOS_OBJDUMP_WINDOW" ] || fail "$KOS_OBJDUMP_WINDOW is unreadable, so no reader can
+      refuse a landmark it cannot find and every window would read as an empty one"
     [ -r "$_sb_prog" ] || fail "$_sb_prog is unreadable; the reader has no verdict half"
-    awk -v sym="$_sb_sym" "$@" -f "$KOS_OBJDUMP_SCOPE" -f "$_sb_prog" "$_sb_list"
+    awk -v sym="$_sb_sym" "$@" \
+        -f "$KOS_OBJDUMP_SCOPE" -f "$KOS_OBJDUMP_WINDOW" -f "$_sb_prog" "$_sb_list"
 }
 
 # THE DEAD-READER CONTROL, which no planted body can stand in for: a reader handed a symbol

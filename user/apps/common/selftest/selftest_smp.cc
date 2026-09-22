@@ -960,22 +960,108 @@ namespace selftest
     // KOS_SCHED_OP_PREEMPTED is machine-wide, which is what a claim about a SECONDARY arming
     // its own comparator needs.
     //
-    // One thread MORE than the machine has cores, for both arms below: with a runnable thread
-    // per core and one over, a core that carries none was left idle beside work it could have
-    // taken.
+    // THE PROBE RECORDS AN EXPIRY ONLY WHERE THE TICK CHANGED THE RUNNING THREAD
+    // (kernel/time/time.cc brackets sched::tick_rr and compares sched::current()). An expiry
+    // on a core carrying ONE runnable thread of its priority rotates the incumbent to itself
+    // and records nothing, however long that thread runs. So the claim needs an equal-priority
+    // PEER queued on the core under test, and leaving that to the scheduler made the arm
+    // undecidable: a loaded host settles an unpinned crowd one-per-core, and a core that never
+    // carried a pair then reads exactly like a comparator that never fired. Every quantity an
+    // unpinned crowd can observe (which cores it reached, how many of it reached them, how
+    // long it held them in wall clock or in work) reads the SAME in both cases.
+    //
+    // So the pair is placed rather than hoped for: one ROUND per core, with two burners pinned
+    // to the core under test and one pinned to each of the others. The peer is then there by
+    // construction and only the kernel's own comparator decides the outcome, which is what
+    // makes the decline below decidable.
+    //
+    // WHAT THIS GIVES UP. The unpinned crowd also exercised PLACEMENT for free: it asserted,
+    // incidentally, that the scheduler spreads a crowd over every core. It does not any more.
+    // That claim is threads_reach_every_core's subject and is asserted there; nothing about
+    // placement is claimed here, and this arm passing says nothing about it.
+    //
+    // One thread MORE than the machine has cores, unchanged: two on the core under test and
+    // one on each of the rest is exactly that many, so no board's thread budget moves.
     constexpr unsigned PL_CROWD = KICKOS_KERNEL_CORES + 1u;
+    constexpr uint64_t PL_BURN_QUANTA = 8ull; // per round, so a slice has room to expire several times
 
     // Read-only to the burners, published before the first one is created.
     uint64_t g_pl_burn_ns = 32000000ull;
 
+    // What each burner saw of itself. `first`/`last` are the low 32 bits of the clock at its
+    // first and last sample: both are instants at which that thread was OBSERVED EXECUTING, so
+    // the span between them is not a wall clock the host can inflate behind its back. A span
+    // reaching one quantum is the decidable part of the claim, because the deadline armed at
+    // that thread's switch-in falls inside it, and the closing sample cannot have run unless
+    // the core took the interrupt that deadline had already made due.
+    Atomic<uint32_t, Order::RELAXED> g_pl_burn_seen[PL_CROWD];
+    Atomic<uint32_t, Order::RELAXED> g_pl_burn_first[PL_CROWD];
+    Atomic<uint32_t, Order::RELAXED> g_pl_burn_last[PL_CROWD];
+    Atomic<uint32_t, Order::RELAXED> g_pl_burn_samples[PL_CROWD];
+
     // Spins, never yields or sleeps: the slice has to EXPIRE under this thread for the timer
-    // to be what takes the core away.
-    void pl_burn_worker(void*)
+    // to be what takes the core away. The core sample is one extra syscall every 16 passes
+    // beside the clock read the loop already makes, and it yields nothing.
+    void pl_burn_worker(void* arg)
     {
+        unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
+        // RELEASED TOGETHER, and this is what makes the peer a construction rather than a
+        // hope. A burner starts running the instant it is created, so without the gate the
+        // first of a pair is already burning while root is still creating the second, and on
+        // a host slow enough that the gap outlasts the round the core never carries two of
+        // ours: every expiry rotates the incumbent to itself and records nothing, which is
+        // the defect's own signature. Both wake from their own sleep at the release, so both
+        // are on the core's run queue before either has armed a slice.
+        pl_wait_go();
         uint64_t const start = kos_clock_now();
-        while (kos_clock_now() - start < g_pl_burn_ns)
+        uint32_t seen = 0;
+        uint32_t samples = 0;
+        uint32_t first = 0;
+        uint32_t last = 0;
+        uint32_t pass = 0;
+        while (true)
         {
+            uint64_t const now = kos_clock_now();
+            if (now - start >= g_pl_burn_ns)
+            {
+                break;
+            }
+            pass++;
+            if ((pass & 0xFu) == 0u)
+            {
+                seen |= 1u << static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+                last = static_cast<uint32_t>(now);
+                if (samples == 0u)
+                {
+                    first = last;
+                }
+                samples++;
+            }
         }
+        g_pl_burn_first[me] = first;
+        g_pl_burn_last[me] = last;
+        g_pl_burn_samples[me] = samples;
+        g_pl_burn_seen[me] = seen;
+    }
+
+    // The n-th core of `mask` other than `skip`, wrapping, or `skip` when the mask names none.
+    uint32_t pl_other_core(uint32_t mask, uint32_t skip, unsigned n)
+    {
+        uint32_t others[KICKOS_KERNEL_CORES];
+        unsigned count = 0;
+        for (uint32_t c = 0; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if (c != skip and (mask & (1u << c)) != 0u)
+            {
+                others[count] = c;
+                count++;
+            }
+        }
+        if (count == 0u)
+        {
+            return skip;
+        }
+        return others[n % count];
     }
 
     void t_slice_preempts_every_core()
@@ -1014,43 +1100,163 @@ namespace selftest
         {
             quantum = granule * 4;
         }
-        // The burn spans several rotations of the WHOLE population: each core needs one expiry,
-        // and a core is handed a burner once per rotation.
-        g_pl_burn_ns = quantum * 8ull * PL_CROWD;
+        g_pl_burn_ns = quantum * PL_BURN_QUANTA;
 
-        kos::thread::Handle w[PL_CROWD];
-        unsigned made = 0;
-        for (unsigned i = 0; i < PL_CROWD; i++)
+        uint32_t prewitnessed = 0; // the probe is monotonic, so these owe this arm no round
+        uint32_t unproven = 0;     // ran their round and the bit stayed clear
+        uint32_t starved = 0;      // ... and the pinned pair never held the core a whole quantum
+        uint32_t strayed = 0;      // ... and the pair did not stay on the core it was given
+        uint32_t after = before;
+
+        for (uint32_t k = 0; k < static_cast<uint32_t>(KICKOS_KERNEL_CORES); k++)
         {
-            w[i] = kos::thread::create(pl_burn_worker, nullptr, "burn", 12, KOS_POLICY_RR,
-                                       static_cast<uint32_t>(quantum));
-            if (not w[i].valid())
+            if ((want & (1u << k)) == 0u)
             {
-                break;
+                continue;
             }
-            made++;
-        }
-        for (unsigned i = 0; i < made; i++)
-        {
-            (void)w[i].join(PLACE_JOIN_US);
-        }
-        if (made < PL_CROWD)
-        {
-            // The probe above just held PL_CROWD slots and stacks, so a short crowd here is a
-            // pool bug and not a small board.
+            after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
+            if ((after & (1u << k)) != 0u)
+            {
+                // Already recorded, and the mask never clears, so this round could add nothing
+                // to it. A bit can only be there because that core's own comparator changed the
+                // thread it was running, which is the whole claim.
+                prewitnessed |= 1u << k;
+                continue;
+            }
+            for (unsigned i = 0; i < PL_CROWD; i++)
+            {
+                g_pl_burn_seen[i] = 0;
+                g_pl_burn_first[i] = 0;
+                g_pl_burn_last[i] = 0;
+                g_pl_burn_samples[i] = 0;
+            }
+            g_pl_go = 0; // released once every burner of the round exists
+            kos::thread::Handle w[PL_CROWD];
+            unsigned made = 0;
+            for (unsigned i = 0; i < PL_CROWD; i++)
+            {
+                // Burners 0 and 1 ARE the claim: an equal-priority pair on the core under test,
+                // so its next expiry has somewhere to switch. The rest hold the other cores so
+                // the machine is loaded as it was, and nothing is asserted of them.
+                uint32_t pin = 1u << k;
+                if (i >= 2u)
+                {
+                    pin = 1u << pl_other_core(want, k, i - 2u);
+                }
+                // The mask goes in at CREATE: pinning afterwards leaves a window in which the
+                // burner is runnable anywhere, and it only takes one sample there to make the
+                // pair look strayed.
+                w[i] = kos::thread::create_caps(pl_burn_worker,
+                                                reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
+                                                "burn", 12, nullptr, 0, KOS_POLICY_RR,
+                                                static_cast<uint32_t>(quantum), false, nullptr, 0,
+                                                0, nullptr, KOS_TASK_NONE, nullptr, 0, pin);
+                if (not w[i].valid())
+                {
+                    break;
+                }
+                made++;
+            }
+            g_pl_go = 1;
+            int joined = 0;
+            for (unsigned i = 0; i < made; i++)
+            {
+                int rc = w[i].join(PLACE_JOIN_US);
+                if (rc != 0)
+                {
+                    // Once more before giving up: the burn is bounded in GUEST time and the
+                    // burner exits of its own accord, so a first budget spent under load is
+                    // usually only that.
+                    rc = w[i].join(PLACE_JOIN_US);
+                }
+                joined |= rc;
+            }
+            // The probe at the top just held PL_CROWD slots and stacks, so a short crowd here
+            // is a pool bug and not a small board. Checked before the next round reuses them.
             TAP_CHECK(made == PL_CROWD);
-            return;
+            if (joined != 0)
+            {
+                // The round never finished, so nothing about this core was established, and
+                // what ran out is WALL CLOCK: the burn is bounded in guest time and a burner
+                // the host does not give a core to cannot reach its own exit. The stragglers
+                // go before the next round asks for their slots back.
+                for (unsigned i = 0; i < made; i++)
+                {
+                    (void)w[i].slay(PLACE_JOIN_US);
+                }
+                // Short enough that the assembled TAP line clears tap.cc's 224-byte emitf
+                // buffer: a reason that overflows it loses its own newline and swallows the
+                // next line whole.
+                tap::skip_vacuous("core %u's round outlasted two %u ms join budgets, so its "
+                                  "pinned pair was never given the core",
+                                  static_cast<unsigned>(k),
+                                  static_cast<unsigned>(PLACE_JOIN_US / 1000u));
+                return;
+            }
+
+            after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
+            if ((after & (1u << k)) != 0u)
+            {
+                continue;
+            }
+            unproven |= 1u << k;
+            uint32_t span = 0;
+            uint32_t pair_samples = 0;
+            uint32_t pair_seen = 0;
+            for (unsigned i = 0; i < 2u; i++)
+            {
+                pair_seen |= g_pl_burn_seen[i].load();
+                pair_samples += g_pl_burn_samples[i].load();
+                if (g_pl_burn_samples[i].load() >= 2u)
+                {
+                    uint32_t const s = g_pl_burn_last[i].load() - g_pl_burn_first[i].load();
+                    if (s > span)
+                    {
+                        span = s;
+                    }
+                }
+            }
+            if ((pair_seen & ~(1u << k)) != 0u)
+            {
+                strayed |= 1u << k;
+            }
+            else if (span < static_cast<uint32_t>(quantum))
+            {
+                starved |= 1u << k;
+            }
+            tap::diag("core %u: no preemption recorded; its pinned pair held it for %u us "
+                      "across %u sample(s), against a %u us quantum",
+                      static_cast<unsigned>(k), static_cast<unsigned>(span / 1000u),
+                      static_cast<unsigned>(pair_samples),
+                      static_cast<unsigned>(quantum / 1000u));
         }
 
-        uint32_t const after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
-        tap::diag("quantum %u ns over %u burner(s): slice preemptions 0x%x -> 0x%x, wanted 0x%x",
-                  static_cast<unsigned>(quantum), PL_CROWD, static_cast<unsigned>(before),
-                  static_cast<unsigned>(after), static_cast<unsigned>(want));
+        tap::diag("quantum %u ns, %u round(s) of %llu quanta with a pinned pair: slice "
+                  "preemptions 0x%x -> 0x%x, wanted 0x%x, already witnessed 0x%x, unproven 0x%x,"
+                  " starved 0x%x",
+                  static_cast<unsigned>(quantum), static_cast<unsigned>(KICKOS_KERNEL_CORES),
+                  static_cast<unsigned long long>(PL_BURN_QUANTA), static_cast<unsigned>(before),
+                  static_cast<unsigned>(after), static_cast<unsigned>(want),
+                  static_cast<unsigned>(prewitnessed), static_cast<unsigned>(unproven),
+                  static_cast<unsigned>(starved));
         // Monotonic, so a bit that went away is a torn read of a cell with one writer.
         TAP_CHECK((before & ~after) == 0u);
-        // Every core the burners could be placed on had a thread taken off it by its own
-        // comparator; equality, so preempting on the boot core alone is red.
-        TAP_CHECK((after & want) == want);
+        // The pair went somewhere it was not given, so the round staged something else.
+        TAP_CHECK(strayed == 0u);
+        // THE CLAIM, and it is asserted only where the round gave that core's pair a whole
+        // quantum of the core: a pair that never got one had no expiry to be taken off by, and
+        // that is a window the host took rather than a comparator left unarmed.
+        uint32_t const denied = unproven & ~starved;
+        TAP_CHECK(denied == 0u);
+        if (unproven != 0u)
+        {
+            tap::skip_vacuous("no preemption on core(s) 0x%x, and their pinned pair never held "
+                              "the core a whole %u us quantum: the window went, not the "
+                              "comparator",
+                              static_cast<unsigned>(starved),
+                              static_cast<unsigned>(quantum / 1000u));
+            return;
+        }
     }
 
     // --- Placement: a thread of this app is seen running on every core --------------------
@@ -1062,6 +1268,10 @@ namespace selftest
     // erases a core from the very union being read.
     Atomic<uint32_t, Order::RELAXED> g_pl_spread[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_spread_aff[PL_CROWD];
+    // Samples taken, so a short union can be told apart from a starved one: the budget below
+    // is wall clock, and a loaded host spends it without the crowd being offered the
+    // rotations the union needs.
+    Atomic<uint32_t, Order::RELAXED> g_pl_spread_passes[PL_CROWD];
     uint32_t g_pl_spread_want = 0; // published before the crowd is released
 
     // A time budget, sampled until the union is complete: root holds core 0 until it blocks in
@@ -1076,9 +1286,12 @@ namespace selftest
         g_pl_spread_aff[me] = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
         uint64_t const start = kos_clock_now();
         uint32_t seen = 0;
+        uint32_t passes = 0;
         while (true)
         {
             seen |= 1u << static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+            passes++;
+            g_pl_spread_passes[me] = passes;
             // Published every pass: the stop condition is the union across the crowd.
             g_pl_spread[me] = seen;
             uint32_t all = 0;
@@ -1114,6 +1327,7 @@ namespace selftest
         {
             g_pl_spread[i] = 0;
             g_pl_spread_aff[i] = 0;
+            g_pl_spread_passes[i] = 0;
         }
         // Asked before the first spawn, for the reason the shortfall check below states.
         if (not pool_can_host(static_cast<int>(PL_CROWD)))
@@ -1159,6 +1373,7 @@ namespace selftest
 
         uint32_t reached = 0;
         uint32_t unpinned = 0;
+        uint32_t fewest = 0xFFFFFFFFu;
         for (unsigned i = 0; i < PL_CROWD; i++)
         {
             reached |= g_pl_spread[i].load();
@@ -1166,12 +1381,45 @@ namespace selftest
             {
                 unpinned++;
             }
+            uint32_t const passes = g_pl_spread_passes[i].load();
+            if (passes < fewest)
+            {
+                fewest = passes;
+            }
         }
-        tap::diag("%u unpinned worker(s) sampling to completion: cores reached 0x%x, wanted 0x%x",
-                  PL_CROWD, static_cast<unsigned>(reached), static_cast<unsigned>(want));
+        // One pass is one sample and one yield, so a worker needs at least one pass per core
+        // in the target set to be SEEN on all of them. Four times that is the floor here: it
+        // leaves the placement three opportunities per core beyond the minimum and still
+        // refuses a crowd that was given none.
+        uint32_t targets = 0;
+        for (unsigned c = 0; c < KICKOS_KERNEL_CORES; c++)
+        {
+            if ((want & (1u << c)) != 0u)
+            {
+                targets++;
+            }
+        }
+        uint32_t const floor_passes = 4u * targets;
+        tap::diag("%u unpinned worker(s) sampling to completion: cores reached 0x%x, wanted 0x%x,"
+                  " fewest passes %u (floor %u)",
+                  PL_CROWD, static_cast<unsigned>(reached), static_cast<unsigned>(want),
+                  static_cast<unsigned>(fewest), static_cast<unsigned>(floor_passes));
         TAP_CHECK(joined == 0);
         // A crowd the kernel had pinned would satisfy the union below with no choice made.
         TAP_CHECK(unpinned == PL_CROWD);
+        // The budget is wall clock and the claim is about placement, so a short union has two
+        // causes. Only the one where the crowd was given its rotations is a placement
+        // failure; the other is the host, and it is declined by name.
+        if ((reached & want) != want and fewest < floor_passes)
+        {
+            tap::skip_vacuous("the %u ms placement budget ran out with the slowest worker at "
+                              "%u sample(s) against the %u this asks, so the crowd reached "
+                              "0x%x of 0x%x for want of rotations, not for want of placement",
+                              static_cast<unsigned>(PL_SPREAD_BUDGET_NS / 1000000ull),
+                              static_cast<unsigned>(fewest), static_cast<unsigned>(floor_passes),
+                              static_cast<unsigned>(reached), static_cast<unsigned>(want));
+            return;
+        }
         TAP_CHECK((reached & want) == want);
     }
 

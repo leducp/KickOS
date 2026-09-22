@@ -30,13 +30,18 @@
 #include <kickos/chip_limits.h>
 #endif
 
-// Which region of the registration list at the bottom of this file to register: 0 (the
-// default) is all of it, 1 and 2 are the two contiguous regions the 64 KiB FLASH parts
-// build as separate images. TAP_ADD is REDEFINED at the boundary, so an arm belongs to the
-// part its line sits in.
-#ifndef KICKOS_SELFTEST_PART
-#define KICKOS_SELFTEST_PART 0
+// The registration list in main.cc is cut into KICKOS_SELFTEST_REGIONS contiguous regions,
+// and this image carries the run [KICKOS_SELFTEST_FIRST_REGION, KICKOS_SELFTEST_LAST_REGION].
+// TAP_ADD is REDEFINED at every boundary, so an arm belongs to the region its line sits in.
+// All three come from user/apps/common/selftest/CMakeLists.txt: an image built without them
+// would register no arm at all and still plan and pass, so they are required rather than
+// defaulted.
+#if not defined(KICKOS_SELFTEST_REGIONS) or not defined(KICKOS_SELFTEST_FIRST_REGION)         \
+    or not defined(KICKOS_SELFTEST_LAST_REGION)
+#error "the selftest region bounds are missing; build this app through its own CMakeLists"
 #endif
+#define KICKOS_SELFTEST_REGION(n)                                                             \
+    ((n) >= KICKOS_SELFTEST_FIRST_REGION and (n) <= KICKOS_SELFTEST_LAST_REGION)
 
 // Unevaluated operand: counts as a use for -Wunused-function without emitting the body.
 #define TAP_ELIDE(fn) ((void)sizeof(&(fn)))
@@ -83,7 +88,9 @@ namespace selftest
     constexpr int CH_LOCK = 2;  // delegated SECOND (logging workers only)
     constexpr int CH_AUX = 3;
     constexpr int CH_READY = 2; // IRQ-driver tests
-    constexpr int CH_IRQ = 3;   // IRQ-driver tests
+    constexpr int CH_IRQ = 3;   // IRQ-driver tests: the LINE, for ack and discard
+    constexpr int CH_NOTE = 4;  // IRQ-driver tests: the notification that line signals, which
+                                // is what the driver binds and waits on
     constexpr int CH_REL = 4;   // root-to-child release, where the child has no other park
                                 // between signaling readiness and waiting for release
     constexpr uint8_t CH_FULL =

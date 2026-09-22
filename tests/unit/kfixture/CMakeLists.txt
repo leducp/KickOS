@@ -19,6 +19,7 @@ kickos_add_kernel_host_lib(kickos_kseam
     "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
     "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
     "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
+    "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
     "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
     "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc"
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}")

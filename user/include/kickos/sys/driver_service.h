@@ -30,22 +30,31 @@ enum
 {
     KOS_DRV_LINES_MAX = 2,
     KOS_DRV_THREADS_MAX = 3,
-    KOS_DRV_CAPS_MAX = 2
+    KOS_DRV_CAPS_MAX = 3
 };
 
 // What a per-thread cap entry NAMES. A thread's caps[] index IS its child cap index offset
 // from KOS_SPAWN_DELEGATED_CAP0: caps[0] lands at index 1, caps[1] at index 2.
+//
+// KOS_DRV_RES_NOTIFY is the one notification this bring-up creates. EVERY CLAIMED LINE
+// SIGNALS IT, line i on BIT i, so a driver's badge space starts at bit line_count and the
+// validator refuses a doorbell badge below that.
 enum
 {
     KOS_DRV_RES_EP = 0,
-    KOS_DRV_RES_LINE0 = 1,
-    KOS_DRV_RES_LINE1 = 2
+    KOS_DRV_RES_NOTIFY = 1,
+    KOS_DRV_RES_LINE0 = 2,
+    KOS_DRV_RES_LINE1 = 3
 };
 
 struct Cap
 {
-    uint8_t resource; // KOS_DRV_RES_EP, or KOS_DRV_RES_LINE0 + i
+    uint8_t resource; // KOS_DRV_RES_EP, KOS_DRV_RES_NOTIFY, or KOS_DRV_RES_LINE0 + i
     uint8_t rights;   // a kos_cap_rights subset
+    // KOS_DRV_RES_NOTIFY only: the badge this copy carries, as BIT + 1, so 0 is the
+    // unbadged object capability. The bring-up mints the copy; a badged one reaches its own
+    // bit and no other.
+    uint8_t badge;
 };
 
 struct Line
@@ -118,6 +127,24 @@ struct Descriptor
 // ---------------------------------------------------------------------------------
 // The validator.
 
+// The badge a DOORBELL takes on a driver claiming `line_count` lines: the first bit above
+// the lines, stored as bit + 1. Leg L13 refuses anything lower, a badge inside the lines'
+// range being one a servicer would read as a device interrupt.
+constexpr uint8_t doorbell_badge(uint8_t line_count)
+{
+    return static_cast<uint8_t>(line_count + 1u);
+}
+
+// The bit a badge field names, or 0 for the unbadged capability.
+constexpr uint8_t badge_bit(uint8_t badge)
+{
+    if (badge == 0u)
+    {
+        return 0;
+    }
+    return static_cast<uint8_t>(badge - 1u);
+}
+
 // True when `t` holds `resource` carrying every bit of `rights`.
 constexpr bool holds(Thread const& t, uint8_t resource, uint8_t rights)
 {
@@ -170,6 +197,49 @@ constexpr uint8_t window_holder_count(Descriptor const& d)
     return n;
 }
 
+constexpr uint8_t notify_holder_count(Descriptor const& d, uint8_t rights)
+{
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        if (holds(d.threads[i], KOS_DRV_RES_NOTIFY, rights))
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
+// Does this driver need a notification at all? A descriptor with no line and no thread
+// naming one creates none: the sim console is such a driver.
+constexpr bool notify_used(Descriptor const& d)
+{
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
+        {
+            if (d.threads[i].caps[j].resource == KOS_DRV_RES_NOTIFY)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Index of the thread that WAITS on the notification, or thread_count when none does.
+constexpr uint8_t notify_waiter(Descriptor const& d)
+{
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        if (holds(d.threads[i], KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT))
+        {
+            return i;
+        }
+    }
+    return d.thread_count;
+}
+
 constexpr uint8_t line_waiter_count(Descriptor const& d, uint8_t l)
 {
     uint8_t n = 0;
@@ -200,11 +270,17 @@ constexpr bool valid_l2(Descriptor const& d)
         }
         for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
         {
-            if (d.threads[i].caps[j].resource >= 1u + d.line_count)
+            if (d.threads[i].caps[j].resource >= KOS_DRV_RES_LINE0 + d.line_count)
             {
                 return false;
             }
             if (d.threads[i].caps[j].rights == 0u)
+            {
+                return false;
+            }
+            // A badge on anything but the notification would be silently ignored.
+            if (d.threads[i].caps[j].resource != KOS_DRV_RES_NOTIFY
+                and d.threads[i].caps[j].badge != 0u)
             {
                 return false;
             }
@@ -279,7 +355,7 @@ constexpr bool valid_l5(Descriptor const& d)
         for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
         {
             uint8_t const res = d.threads[i].caps[j].resource;
-            if (res == KOS_DRV_RES_EP)
+            if (res == KOS_DRV_RES_EP or res == KOS_DRV_RES_NOTIFY)
             {
                 continue;
             }
@@ -378,10 +454,11 @@ constexpr bool valid_l11(Descriptor const& d)
     return d.ep_posture != KOS_DRV_EP_HANDOVER or d.svc_kind == KOS_SVC_CONSOLE;
 }
 
-// L12, THE LINE-ROLE RULE. A claimed line comes back MASKED and only its waiter's first
-// irq_wait arms it, so a line no thread waits on stays masked forever and every event on it
-// is lost with no diagnostic. Two line caps swapped breaks the count on BOTH lines at once,
-// which is why this leg needs no per-chip knowledge of which line is transmit.
+// L12, THE LINE-ROLE RULE. A claimed line comes back MASKED and only a notify_wait that
+// accepts its bit arms it, so a line whose ack-and-discard cap no thread holds has no
+// servicer and every event on it is lost with no diagnostic. Two line caps swapped breaks
+// the count on BOTH lines at once, which is why this leg needs no per-chip knowledge of
+// which line is transmit.
 constexpr bool valid_l12(Descriptor const& d)
 {
     for (uint8_t l = 0; l < d.line_count; l++)
@@ -394,20 +471,77 @@ constexpr bool valid_l12(Descriptor const& d)
     return true;
 }
 
+// L13, THE NOTIFICATION RULE, in four parts.
+//
+// A claimed line signals the notification and nothing else, so a descriptor that claims one
+// and names no notification leaves every line masked forever. One WAITER, for the same
+// reason L6 admits one endpoint receiver: the object takes exactly one bound thread. That
+// waiter must also be the thread holding the lines, because the rearm a wait issues and the
+// ack a driver issues are the same controller access and only a line's holder may make it.
+// And a badge below line_count would ALIAS a line's own bit, so a doorbell would read as a
+// device interrupt and the servicer would touch a device nothing raised.
+constexpr bool valid_l13(Descriptor const& d)
+{
+    uint8_t const waiters = notify_holder_count(d, KOS_CAP_WAIT);
+    if (d.line_count != 0u and waiters != 1u)
+    {
+        return false;
+    }
+    if (waiters > 1u)
+    {
+        return false;
+    }
+    uint8_t const w = notify_waiter(d);
+    for (uint8_t l = 0; l < d.line_count; l++)
+    {
+        if (not holds(d.threads[w], static_cast<uint8_t>(KOS_DRV_RES_LINE0 + l), KOS_CAP_WAIT))
+        {
+            return false;
+        }
+    }
+    uint32_t seen = 0;
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        for (uint8_t j = 0; j < d.threads[i].cap_count; j++)
+        {
+            if (d.threads[i].caps[j].resource != KOS_DRV_RES_NOTIFY)
+            {
+                continue;
+            }
+            uint8_t const b = d.threads[i].caps[j].badge;
+            if (b == 0u)
+            {
+                continue; // the unbadged object capability, which the waiter takes
+            }
+            uint8_t const bit = badge_bit(b);
+            if (bit < d.line_count or bit >= 32u)
+            {
+                return false;
+            }
+            if ((seen & (1u << bit)) != 0u)
+            {
+                return false; // two signallers on one bit cannot be told apart
+            }
+            seen = seen | (1u << bit);
+        }
+    }
+    return true;
+}
+
 // The legs are ordered, not just conjoined: L1 bounds the counts L2 walks, and L2 bounds the
-// resource ids L5 and L12 use to index lines[] and caps[].
+// resource ids L5, L12 and L13 use to index lines[] and caps[].
 constexpr bool valid(Descriptor const& d)
 {
     return valid_l1(d) and valid_l2(d) and valid_l3(d) and valid_l4(d) and valid_l5(d)
            and valid_l6(d) and valid_l7(d) and valid_l8(d) and valid_l9(d) and valid_l10(d)
-           and valid_l11(d) and valid_l12(d);
+           and valid_l11(d) and valid_l12(d) and valid_l13(d);
 }
 
 // ---------------------------------------------------------------------------------
 // NOT a leg of valid(): the cap layout uart_service.h and usb_cdc_service.h SHARE and
-// spi_service.h does not. A ring plus a doorbell, one service thread receiving on caps[0] and
-// ringing caps[1], every other thread parked in irq_wait on its own caps[0] and, when it
-// relays, posting its own caps[1].
+// spi_service.h does not. A ring plus a doorbell, one service thread receiving on caps[0]
+// and ringing its BADGED notification copy at caps[1], and one IRQ thread bound to that
+// notification at its own caps[0] with the lines it services at caps[1..].
 //
 // `ready_offset` and `block_size` are the CALLER's class constants: a descriptor writing
 // either as a literal is what the first arm refuses.
@@ -437,7 +571,10 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
     {
         return false;
     }
-    if (d.threads[svc].caps[1].resource == KOS_DRV_RES_EP
+    // The doorbell: a BADGED copy of the notification, so its raise is one bit and not the
+    // bit a line owns. An unbadged copy here would ring bit 0, which is line 0's.
+    if (d.threads[svc].caps[1].resource != KOS_DRV_RES_NOTIFY
+        or d.threads[svc].caps[1].badge == 0u
         or (d.threads[svc].caps[1].rights & KOS_CAP_SIGNAL) == 0u)
     {
         return false;
@@ -448,21 +585,22 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
         {
             continue;
         }
-        if (d.threads[i].cap_count == 0u
-            or d.threads[i].caps[0].resource == KOS_DRV_RES_EP
+        // The waiter takes the UNBADGED capability: it binds and waits on the whole object,
+        // and a badge would say it signals one bit instead.
+        if (d.threads[i].cap_count < 2u
+            or d.threads[i].caps[0].resource != KOS_DRV_RES_NOTIFY
+            or d.threads[i].caps[0].badge != 0u
             or (d.threads[i].caps[0].rights & KOS_CAP_WAIT) == 0u)
         {
             return false;
         }
-        if (d.threads[i].cap_count < 2u)
+        for (uint8_t j = 1; j < d.threads[i].cap_count; j++)
         {
-            continue;
-        }
-        // edge_relay_thread posts KOS_SPAWN_DELEGATED_CAP0 + 1 unconditionally.
-        if (d.threads[i].caps[1].resource == KOS_DRV_RES_EP
-            or (d.threads[i].caps[1].rights & KOS_CAP_SIGNAL) == 0u)
-        {
-            return false;
+            if (d.threads[i].caps[j].resource < KOS_DRV_RES_LINE0
+                or (d.threads[i].caps[j].rights & KOS_CAP_WAIT) == 0u)
+            {
+                return false;
+            }
         }
     }
     return true;
@@ -483,10 +621,6 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 // recovers.
 int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task);
 
-// A cap-to-cap edge converter: wait on one line, post another. PRECONDITION, enforced by leg
-// L5: the waited line must be EDGE.
-void edge_relay_thread(void*);
-
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
 constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;   // ~1 s total
 
@@ -499,11 +633,15 @@ bool wait_ready(void const* blk, uint16_t off);
 // CLOSE BEFORE CANCELLING AND BEFORE PRINTING: closing takes the endpoint's last receiver
 // holder to 0, which notes the console dead and reclaims it, so the tag the caller prints
 // next reaches the wire.
-void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t task);
+void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note,
+            kos_task_t task);
 
-// Spawn one descriptor thread into `task` with its per-thread grants and cap roles.
+// Spawn one descriptor thread into `task` with its per-thread grants and cap roles. A
+// KOS_DRV_RES_NOTIFY cap with a badge is MINTED from `note` for the spawn and closed after
+// it; an unbadged one takes `note` itself. KOS_CAP_NONE where the descriptor names none.
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, kos_task_t task);
+                              kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
+                              kos_task_t task);
 
 // The whole choreography. Returns 0, or a negative failure code: a bad descriptor or a failed
 // step prints its own diagnostic; a handover probe refusal is returned unchanged.

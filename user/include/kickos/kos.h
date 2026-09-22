@@ -219,7 +219,7 @@ namespace kos
     // IRQ line capability (tier-1 userspace driver). Two ways in:
     //   root:   auto irq = kos::Irq::claim(line);        // needs KOS_AUTH_IRQ
     //   driver: auto irq = kos::Irq::adopt(cap_index);   // a cap delegated at spawn
-    // then irq.wait(); ...; irq.ack();
+    // then irq.bind_notify(n); n.wait(mask, ...); ...; irq.ack();
     // OWNING and move-only: the destructor closes the cap, which drops the binding's
     // last reference and hands the line back if this was the only holder.
     class Irq
@@ -258,32 +258,15 @@ namespace kos
         {
             close();
         }
-        // Bind IRQ delivery to this thread; optionally return the notification mask.
-        int attach(uint32_t* out_mask = nullptr)
+        // Attach this line to a notification, as one signaller among others. The ISR raises
+        // that capability's badge bit there.
+        int bind_notify(kos_cap_t notify_cap)
         {
-            uint32_t mask = 0;
-            int const rc = kos_irq_attach(h_, &mask);
-            if (out_mask != nullptr)
-            {
-                *out_mask = mask;
-            }
-            return rc;
-        }
-        int wait()
-        {
-            return kos_irq_wait(h_);
-        }
-        int wait_timed(uint32_t timeout_us)
-        {
-            return kos_irq_wait_timed(h_, timeout_us);
+            return kos_irq_bind_notify(h_, notify_cap);
         }
         int ack()
         {
             return kos_irq_ack(h_);
-        }
-        int notify()
-        {
-            return kos_irq_notify(h_);
         }
         int discard()
         {
@@ -305,6 +288,102 @@ namespace kos
 
     private:
         Irq(kos_cap_t h, int err)
+            : h_(h), err_(err)
+        {
+        }
+        void close()
+        {
+            if (h_ != KOS_CAP_NONE)
+            {
+                kos_handle_close(h_);
+                h_ = KOS_CAP_NONE;
+            }
+        }
+        kos_cap_t h_;
+        int err_;
+    };
+
+    // A notification object. Two ways in, as with Irq:
+    //   auto n = kos::Notification::create();
+    //   auto n = kos::Notification::adopt(cap_index);   // a cap delegated at spawn
+    // OWNING and move-only: the destructor closes the capability, which drops one reference.
+    // A BINDING is not a capability and is not closed here; it ends at kos_notify_unbind or
+    // at the thread's death.
+    class Notification
+    {
+    public:
+        static Notification create()
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            int const rc = kos_notify_create(&h);
+            return Notification(h, rc);
+        }
+        static Notification adopt(kos_cap_t notify_cap)
+        {
+            return Notification(notify_cap, 0);
+        }
+        Notification(Notification&& o)
+            : h_(o.h_), err_(o.err_)
+        {
+            o.h_ = KOS_CAP_NONE;
+        }
+        Notification& operator=(Notification&& o)
+        {
+            if (this != &o)
+            {
+                close();
+                h_ = o.h_;
+                err_ = o.err_;
+                o.h_ = KOS_CAP_NONE;
+            }
+            return *this;
+        }
+        Notification(Notification const&) = delete;
+        Notification& operator=(Notification const&) = delete;
+        ~Notification()
+        {
+            close();
+        }
+        // Mint a badged second name for the same object. This capability must be unbadged.
+        static Notification badge(kos_cap_t source_cap, uint32_t bit)
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            int const rc = kos_notify_badge(source_cap, bit, &h);
+            return Notification(h, rc);
+        }
+        int signal()
+        {
+            return kos_notify(h_);
+        }
+        int bind()
+        {
+            return kos_notify_bind(h_);
+        }
+        int unbind()
+        {
+            return kos_notify_unbind(h_);
+        }
+        int wait(uint32_t mask, uint32_t timeout_us = KOS_TIMEOUT_NONE,
+                 uint32_t* out_bits = nullptr)
+        {
+            return kos_notify_wait(h_, mask, timeout_us, out_bits);
+        }
+        kos_cap_t handle() const
+        {
+            return h_;
+        }
+        bool valid() const
+        {
+            return h_ != KOS_CAP_NONE;
+        }
+        // The code kos_notify_create returned; 0 for an adopted cap.
+        int error() const
+        {
+            return err_;
+        }
+
+    private:
+        Notification(kos_cap_t h, int err)
             : h_(h), err_(err)
         {
         }

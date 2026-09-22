@@ -94,7 +94,14 @@ int main(int argc, char** argv)
         rep[1] = 0xB1u;
         rep[2] = 0xB2u;
         rep[3] = 0xB3u;
+        // FOR A HUMAN READING A HANG and for nothing else: it is the only line that says this
+        // node answered, and no gate counts it. What a gate reads is the row bumped below.
         printf("  serve %u -> %u\n", (unsigned)msg[0], (unsigned)rep[0]);
+#if defined(KICKOS_ENABLE_SELFTEST)
+        // AHEAD OF THE REPLY. The caller reads this row as soon as its answer lands, so a bump
+        // placed after kos_reply is a row that has not moved yet.
+        (void)kos_amp_probe(KOS_AMP_OP_APP_SERVED_BUMP, 0);
+#endif
         (void)kos_reply(opts.info.reply_cap, rep, sizeof(rep));
     }
     return 0;

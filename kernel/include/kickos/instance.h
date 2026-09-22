@@ -23,6 +23,7 @@
 #include <kickos/instance_local.h>
 #include <kickos/irq.h>
 #include <kickos/list.h>
+#include <kickos/notify.h>
 #include <kickos/slotpool.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -140,6 +141,13 @@ namespace kickos
         uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
 
+        // --- notification objects (notify.cc) ---
+        // The object a driver waits on, and the object an IRQ binding signals. Same shape as
+        // the pools above; the refcount counts every capability naming a slot, the BIND, and
+        // each attached IRQ binding.
+        SlotPool<Notification, KICKOS_MAX_NOTIFY> notifies;
+        uint8_t notify_refs[KICKOS_MAX_NOTIFY] = {};
+
     };
 
     // `task_holds` costs nothing only while it occupies the two bytes of padding that a
@@ -174,7 +182,8 @@ namespace kickos
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
     // backstop for a board_config.h that defines a width directly.
     static_assert(KICKOS_MAX_SEMAPHORES <= 32 and KICKOS_MAX_MUTEXES <= 32
-                      and KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32,
+                      and KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32
+                      and KICKOS_MAX_NOTIFY <= 32,
                   "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "
                   "or widen TaskObjectHolds in cap.h and this assert together");
 

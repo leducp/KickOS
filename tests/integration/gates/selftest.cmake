@@ -192,6 +192,37 @@ set(_selftest_env
   "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
   "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
+# THE SAME EXPECTATIONS WHERE A CAPTURE OFF SILICON CAN READ THEM. A board with no emulator
+# reaches no entry below, so until now nothing judged its TAP stream at all and
+# tools/bench/bench-capture.sh counted `ok` lines instead: a capture that LOST lines has fewer
+# of them, so the count shrank with the loss while the harness's own trailer kept the truth, and
+# the reader outvoted the producer. The manifest is what lets the bench path run
+# tests/integration/check_tap_stream.sh with the arguments this file would have given it.
+#
+# NOTHING IS STATED HERE THAT IS NOT ALREADY STATED: the arm count comes off each image target,
+# where the app recorded it, and the three sets are the very variables handed to the entries
+# below. The permission sets are per BOARD and derived from that board's own knobs; the only
+# per-IMAGE figure is the arm count, and a split image plans its own.
+#
+# One row per image, `|` separated because the sets are comma-joined and any of them may be
+# empty.
+get_property(_selftest_manifest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
+set(_selftest_manifest "")
+foreach(_mf_img IN LISTS _selftest_manifest_images)
+  get_target_property(_mf_arms ${_mf_img} KICKOS_TAP_ARMS)
+  # get_target_property hands back `<var>-NOTFOUND` for a property never set, which is a
+  # non-empty string: written out it would reach the capture as an arm count and be compared
+  # against the plan as one.
+  if(NOT _mf_arms MATCHES "^[0-9]+$")
+    message(FATAL_ERROR
+      "selftest: the image ${_mf_img} records no KICKOS_TAP_ARMS, so a capture of it could be "
+      "checked against nothing. user/apps/common/selftest/CMakeLists.txt sets it per image.")
+  endif()
+  string(APPEND _selftest_manifest "${_mf_img}|${_mf_arms}|${KICKOS_EXPECT_SKIPS}|"
+                                   "${KICKOS_EXPECT_PARTIALS}|${KICKOS_EXPECT_FAULTS}\n")
+endforeach()
+file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
+
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME selftest
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_selftest.sh" "${_selftest_elf}"
@@ -212,8 +243,9 @@ if(KICKOS_ARCH STREQUAL "sim")
 
 endif()
 
-# Register each board's self-test image and expected test count. The 64 KiB
-# microbit splits the suite across three images.
+# Register each board's self-test image and expected arm count. A split board runs one image
+# per part; microbit is the only one of them with a QEMU machine, so it is the only one whose
+# later parts reach a gate here.
 # Keep TIMEOUT above check_qemu_selftest.sh's 180-second limit so the script
 # can report the failure before CTest stops it.
 if(NOT KICKOS_BOARD STREQUAL "microbit")
@@ -227,42 +259,74 @@ if(NOT KICKOS_BOARD STREQUAL "microbit")
 endif()
 
 if(KICKOS_BOARD STREQUAL "microbit")
-  # The sets below are partitioned BY REGION, NOT BY NAME: an arm belongs to the part whose
-  # region holds its TAP_ADD line in main.cc. check_tap_stream.sh reports a name declared in
-  # the wrong part as a NOTE and not a failure, so only that rule catches one.
+  # The sets below are partitioned BY REGION, NOT BY NAME: an arm belongs to the region whose
+  # `#undef TAP_ADD` bounds hold its TAP_ADD line in main.cc, and an image declares the UNION
+  # over the regions it carries. check_tap_stream.sh reports a name declared in the wrong
+  # image as a NOTE and not a failure, so only that rule catches a mistake.
   #
   # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE,
   # so a stale list quietly permits a regression.
-  set(_mb_skips_selftest "")
-  set(_mb_partials_selftest "")
-  set(_mb_skips_selftest_p2 "uart_service")
-  set(_mb_partials_selftest_p2 "")
+  set(_mb_skips_r1 "")
+  set(_mb_partials_r1 "")
+  set(_mb_skips_r2 "")
+  set(_mb_partials_r2 "")
+  set(_mb_skips_r3 uart_service)
+  set(_mb_partials_r3 "")
   # irq_as_event asks the arena for a 4 KiB MMIO page after the suite's threads have taken
   # their stacks from it, and on 32 KiB it no longer fits: this board's console TX ring costs
   # 256 bytes of .bss, which is what that page stood on. The arm sees the alloc fail and skips
   # itself by name. Measured: a 128-byte ring restores it, and that needs a 64-byte line
   # bound, below the fault reporter's own KDIAG_FAULT_LINE_MAX.
-  set(_mb_skips_selftest_p3 "domain_share,confused_deputy,mem_self_grant,irq_as_event")
-  set(_mb_partials_selftest_p3 "caller_stack,mmio_grant")
-  # DERIVED from the decision above rather than restated: these three sets are literals, so a
+  # mem_self_grant is NOT here: its decline became a vacuity skip, which is permitted and
+  # never expected, so a name for it in this list could never fire and would sit widening the
+  # permission. The arm still declines on this board; it declines in the other category.
+  set(_mb_skips_r4 domain_share confused_deputy irq_as_event)
+  set(_mb_partials_r4 caller_stack mmio_grant)
+  # DERIVED from the decision above rather than restated: these sets are literals, so a
   # permission appended to the whole-suite list reached every other board and not this one,
-  # and a partitioned board's gate reported that as a failure. Region 3 holds the arm's
-  # TAP_ADD line, so this is the part that carries it.
+  # and a partitioned board's gate reported that as a failure. Region 4 holds the arm's
+  # TAP_ADD line, so this is the region that carries it.
   if(_selftest_kernel_line_partial)
-    set(_mb_partials_selftest_p3
-        "${_mb_partials_selftest_p3},irq_kernel_line_reserved")
+    list(APPEND _mb_partials_r4 irq_kernel_line_reserved)
   endif()
-  foreach(_img selftest selftest_p2 selftest_p3)
+  # The image list and each image's run of regions come off the targets the app declared, so
+  # nothing here states again how many images this board ships or which arms are in one.
+  get_property(_selftest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
+  # This board's rows replace the ones written above, for the same reason its entries take
+  # these sets rather than the fleet-wide ones: a manifest that disagreed with the gate would
+  # be a second answer to the same question.
+  set(_selftest_manifest "")
+  foreach(_img IN LISTS _selftest_images)
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
+    get_target_property(_mb_lo ${_img} KICKOS_SELFTEST_FIRST_REGION)
+    get_target_property(_mb_hi ${_img} KICKOS_SELFTEST_LAST_REGION)
+    set(_mb_skips "")
+    set(_mb_partials "")
+    foreach(_mb_region RANGE ${_mb_lo} ${_mb_hi})
+      if(NOT DEFINED _mb_skips_r${_mb_region} OR NOT DEFINED _mb_partials_r${_mb_region})
+        message(FATAL_ERROR
+          "selftest: ${_img} carries region ${_mb_region}, which declares no skip or partial "
+          "set in ${CMAKE_CURRENT_LIST_FILE}. An undeclared region reads as permitting "
+          "nothing, so an arm that has always skipped there would fail this board's gate.")
+      endif()
+      list(APPEND _mb_skips ${_mb_skips_r${_mb_region}})
+      list(APPEND _mb_partials ${_mb_partials_r${_mb_region}})
+    endforeach()
+    # Comma-separated for the same reason the fleet-wide sets above are.
+    list(JOIN _mb_skips "," _mb_skips)
+    list(JOIN _mb_partials "," _mb_partials)
     kickos_add_qemu_test(TARGET ${_img}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
       TIMEOUT 240
       ARGS ${_mb_arms})
     set_property(TEST microbit_${_img} APPEND PROPERTY ENVIRONMENT
-      "EXPECT_SKIPS=${_mb_skips_${_img}}"
-      "EXPECT_PARTIALS=${_mb_partials_${_img}}"
+      "EXPECT_SKIPS=${_mb_skips}"
+      "EXPECT_PARTIALS=${_mb_partials}"
       "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
+    string(APPEND _selftest_manifest "${_img}|${_mb_arms}|${_mb_skips}|"
+                                     "${_mb_partials}|${KICKOS_EXPECT_FAULTS}\n")
   endforeach()
+  file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
 endif()
 
 # The out-of-tree package gate, on ONE BOARD PER KICKOS_ARCH. Registered on two of the

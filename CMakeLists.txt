@@ -836,7 +836,11 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME dash_punct
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_dash_punct.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(dash_punct PROPERTIES TIMEOUT 120 LABELS "host;tree")
+  # 300 and not the 120 its siblings take, measured rather than guessed: this is the heaviest
+  # corpus scan in the set at 21 s idle against 6 s for the next, and a contended box has taken
+  # it to 117 s. A gate that runs out of budget is reported as a FAILURE by anything counting
+  # failures, so a thin budget here reads as a corpus defect that did not happen.
+  set_tests_properties(dash_punct PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
   _add_test(NAME ternary
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ternary.sh"

@@ -11,6 +11,7 @@
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
@@ -361,6 +362,9 @@ namespace kickos
                                  uintptr_t badge_out, uint32_t timeout_us, DeferredWake* dw,
                                  bool* parked, uint32_t* epoch)
     {
+        // RECV_LOCKED and RECV_SCAN close on the parking path and on the error arms only. A
+        // served return leaves both marks unconsumed on purpose: closing them mixes a scan
+        // that stopped on a hit into rows that otherwise describe a scan run to empty.
         KICKOS_BENCH_MARK(bm_rlocked);
         *parked = false;
         KICKOS_BENCH_MARK(bm_rresolve);
@@ -369,6 +373,8 @@ namespace kickos
             cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT, &err));
         if (e == nullptr)
         {
+            KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
+            KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
             return -err; // EBADF (bad cap) or EPERM (no WAIT right)
         }
         endpoint_server_set(e, c); // Set the target for server priority donation.
@@ -455,6 +461,8 @@ namespace kickos
                     {
                         dw->offer(s);
                     }
+                    KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
+                    KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
                     return -KOS_EFAULT;
                 }
                 s->ipc.len = s->call_rx_cap;
@@ -481,6 +489,8 @@ namespace kickos
                 {
                     dw->offer(s);
                 }
+                KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
+                KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
                 return -KOS_EFAULT;
             }
             (void)write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, KCAP_INVALID);
@@ -604,6 +614,10 @@ namespace kickos
                 epoch = c->switch_count;
                 park_queueless(c, WAIT_EP_FAR_REPLY, e);
                 park_deadline_arm(c, timeout_us);
+                // Close ahead of the reschedule: a switch inside the bracket would charge the
+                // whole parked wait for the far reply to these two rows.
+                KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
+                KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
                 // No wake schedules this park; request a switch explicitly.
                 sched::reschedule();
             }
@@ -640,6 +654,7 @@ namespace kickos
                 KICKOS_BENCH_MARK(bm_copy);
                 if (not ep_copy(ipc_buf_space(w), w->ipc.buf, user_space_of(c), buf, n))
                 {
+                    KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                     // The caller is unchanged. Wake the receiver because it has left recv_waiters.
                     w->wait_result = -KOS_EFAULT;
                     sched::wake(w);
@@ -657,6 +672,8 @@ namespace kickos
                 KICKOS_BENCH_MARK(bm_mint_info);
                 if (not write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, rcap))
                 {
+                    KICKOS_BENCH_SPAN(PH_CALL_MINT_INFO, bm_mint_info);
+                    KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                     // Revoke the undisclosed capability and fail both ends.
                     // The receiver has left recv_waiters, but the caller has not parked.
                     bool const undone = cap_uninstall_reply(w, rcap, c);
@@ -958,10 +975,11 @@ namespace kickos
                     }
                     if (not reply_refused)
                     {
-                        // Accept only this thread's bound lines and rearm consumed events.
-                        // The matching leave consumes bits and marks them for the next rearm.
-                        opened = irq_notify_wait_enter(c, admit);
-                        if ((c->notify_pending & opened) != 0u)
+                        // Open the mask on whatever notification this thread is bound to and
+                        // rearm the signallers it covers. The matching leave consumes bits and
+                        // marks them for the next rearm.
+                        opened = notify_wait_enter(c, admit);
+                        if ((notify_pending_of(c) & opened) != 0u)
                         {
                             // Return the notification now; a queued message can be received next time.
                             rc = -KOS_ENOTIFY;
@@ -974,7 +992,7 @@ namespace kickos
                         if (not parked)
                         {
                             // No park occurred, so pending bits can be consumed under this lock.
-                            notify_bits = irq_notify_wait_leave(c, opened);
+                            notify_bits = notify_wait_leave(c, opened);
                         }
                     }
                 }
@@ -995,7 +1013,7 @@ namespace kickos
                     // run when wq_block returns. The barrier needs interrupts enabled so that
                     // switch can run before this thread reads its wake result.
                     IrqLock lock;
-                    notify_bits = irq_notify_wait_leave(c, opened);
+                    notify_bits = notify_wait_leave(c, opened);
                 }
                 KICKOS_BENCH_SPAN(PH_REPLY_RECV_TAIL, bm_frtail);
             }

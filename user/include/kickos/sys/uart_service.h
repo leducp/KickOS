@@ -29,16 +29,23 @@
 namespace kickos::uart
 {
 
-// Child cap indices the two threads read. LINE and EP share an index because they are
-// different threads' cap tables.
+// Child cap indices the two threads read. NOTIFY and EP share an index, and LINE shares one
+// with the doorbell, because they are different threads' cap tables.
 enum
 {
-    // Service thread: the request endpoint (WAIT) and the line cap it rings (SIGNAL).
+    // Service thread: the request endpoint (WAIT) and the badged notification copy it rings
+    // (SIGNAL).
     KOS_UART_CAP_EP = console::KOS_CONSOLE_CAP_EP,
     KOS_UART_CAP_DOORBELL = console::KOS_CONSOLE_CAP_DOORBELL,
-    // IRQ thread: the line cap it waits on (WAIT).
-    KOS_UART_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0
+    // IRQ thread: the notification it binds and waits on (WAIT), and the line it acks (WAIT).
+    KOS_UART_CAP_NOTIFY = KOS_SPAWN_DELEGATED_CAP0,
+    KOS_UART_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 1
 };
+
+// EVERY bit of the object. It is this driver's own, nothing else raises into it, and the
+// pass below services whatever the device has: a mask naming particular bits would be a
+// second statement of which lines the descriptor claims and could only drift from it.
+constexpr uint32_t KOS_UART_ACCEPT = 0xFFFFFFFFu;
 
 // The shared block, in ONE power-of-two naturally-aligned allocation: the RAM arm of
 // grant_region_admissible requires that of every caller, privileged included.
@@ -106,7 +113,7 @@ int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud
 constexpr uint32_t KOS_UART_IRQ_SEG = 64;
 
 // One service pass: fill RX, then drain TX. A wake is not proof of a hardware event
-// (kos_irq_notify is a pure post), so both transfers must tolerate an idle device and both
+// (kos_notify is a pure raise), so both transfers must tolerate an idle device and both
 // rings a zero-length move.
 //
 // THIS DECLARATION MUST STAY AHEAD OF THE TEMPLATE BELOW: without it a call with a
@@ -138,8 +145,9 @@ inline void dev_shutdown(Uart*)
 template <typename Uart>
 void irq_loop(Uart& dev, Shared* sh)
 {
-    // Bind before signaling readiness and waiting; binding delivers pending doorbells.
-    if (kos_irq_attach(KOS_UART_CAP_LINE, nullptr) != 0)
+    // Bind before signaling readiness and waiting: a raise before the bind is LATCHED in the
+    // object and delivered to whoever binds next, so nothing is lost either way.
+    if (kos_notify_bind(KOS_UART_CAP_NOTIFY) != 0)
     {
         dev_shutdown(&dev);
         return;
@@ -148,8 +156,10 @@ void irq_loop(Uart& dev, Shared* sh)
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no window
-        // exists in which it is armed and unowned.
-        if (kos_irq_wait(KOS_UART_CAP_LINE) != 0)
+        // exists in which it is armed and unowned. One wait covers the line and the
+        // doorbell, which is why this class needs no relay thread.
+        if (kos_notify_wait(KOS_UART_CAP_NOTIFY, KOS_UART_ACCEPT, KOS_TIMEOUT_NONE, nullptr)
+            != 0)
         {
             break; // the cap went away: the line is gone, so this thread has no work
         }

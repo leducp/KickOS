@@ -172,11 +172,31 @@ lines at the default 256-byte bound and about five on a board that lowers it, wh
 the length of the shorter blocks.
 
 The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing
-counts it. The USER path is different and already settled: `kos_kconsole_write` splits
-a write into chunks, and the syscall STOPS at the first chunk the ring refused and
-returns how much landed, so userspace retries or gives up. Carrying on past a refusal
-would put a hole in the middle of a line whose tail arrived, which is worse than losing
-the line.
+counts it. The USER path is different: `kos_kconsole_write` splits a write into chunks,
+and the syscall STOPS at the first chunk the ring refused and returns how much landed,
+so userspace retries or gives up. Carrying on past a refusal would put a hole in the
+middle of a line whose tail arrived, which is worse than losing the line.
+
+**What userspace does with that short count is `kconsole_write_all`
+(`<kickos/sys/emit.h>`), and it is the one copy of the policy for every producer**: the TAP
+harness, the freestanding `emit()` and libc's `_write` all reach it. It offers the remainder
+again, yielding between attempts, until a byte is accepted or ONE FULL RING'S WIRE TIME has
+passed with none. That bound is `KICKOS_CONSOLE_TX_SIZE` byte times at 115200 8N1, 44.4 ms
+at the 512-byte default: past it every byte that was queued when the stall began has had
+time to leave, so a ring still refusing is not draining, and no one chunk ever needs more
+than a ring to fit. It is `kprintf_paced`'s reasoning above in the only currency userspace
+has. A COUNT OF YIELDS IS NOT ONE, an idle single-core board spending 256 of them in far
+less than a single byte time, and that is what made the give-up silent and routine: a
+selftest capture on any board whose TAP routes through this console lost whole lines, and
+neither end said so.
+
+**A give-up is now ANNOUNCED.** The bytes dropped are counted and reach the wire as
+`# console dropped N byte(s)` on the first write that fits afterwards; the console being the
+only way to say anything, and the thing that was full, the marker cannot go out where the
+loss happened. It opens with a newline of its own because the write that was cut may have
+ended mid-line. `tests/integration/check_tap_stream.sh` refuses any capture carrying it:
+every other count in that gate reconciles against the lines that SURVIVED, so without the
+marker a capture missing whole lines satisfies all of them and reads clean.
 
 RTT drops on a full ring for its own reason: its host may be detached, so a blocking
 writer would hang forever. A channel that never frees a slot makes the producer drain

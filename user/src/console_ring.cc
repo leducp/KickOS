@@ -59,7 +59,7 @@ uint32_t tx_write(struct kos_byte_ring* tx, struct kos_uart_stats* stats,
 {
     uint32_t const took = kos_byte_ring_push(tx, p, n);
     kos_counter_increment(&stats->tx_bytes, took);
-    (void)kos_irq_notify(KOS_CONSOLE_CAP_DOORBELL);
+    (void)kos_notify(KOS_CONSOLE_CAP_DOORBELL);
     return took;
 }
 
@@ -76,7 +76,7 @@ uint32_t flush(struct kos_byte_ring* tx, Atomic<uint32_t, Order::RELAXED> const*
         {
             return 0;
         }
-        (void)kos_irq_notify(KOS_CONSOLE_CAP_DOORBELL);
+        (void)kos_notify(KOS_CONSOLE_CAP_DOORBELL);
         kos_sleep_ns(KOS_CONSOLE_FLUSH_SLEEP_NS);
     }
     uint32_t left = kos_byte_ring_used(tx);

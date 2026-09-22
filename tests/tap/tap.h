@@ -36,6 +36,20 @@ namespace tap
     // Like tap::fail it only records and does NOT return: follow it with `return`.
     void skip(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+    // Mark the CURRENT test SKIPPED FOR VACUITY: the timing window its claim rests on did
+    // not hold on this run, so the arm could assert nothing. The harness emits
+    // `ok N - name # SKIP VACUOUS <reason>`, counts it apart from the ordinary skips and
+    // states that count as `# vacuous: N`. It stays a SKIP on the wire on purpose: a reader
+    // that does not know the category still refuses it rather than reading a pass.
+    //
+    // A gate PERMITS one whatever its name and never expects one, which a provisioning skip
+    // is not. Naming such an arm in EXPECT_SKIPS instead would make an arm gone PERMANENTLY
+    // vacuous read green forever, since a declared arm that did not skip is only a note.
+    // The reason must say how far outside the window the run fell, or the permission hides
+    // the same gap the missing detection did.
+    // Like tap::skip it only records and does NOT return: follow it with `return`.
+    void skip_vacuous(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+
     // Mark the CURRENT test PARTIAL with a printf-style reason: it ran its invariant
     // but left a sub-case unexercised on this board. The harness emits
     // `ok N - name # PARTIAL <reason>` and counts it separately; it stays a PASS and
@@ -55,9 +69,10 @@ namespace tap
     void set_after_failure(TestFn fn);
 
     // Run every registered test in order, emit TAP, and return the number that
-    // FAILED (0 == all passed). Skips and partials are counted but are not failures;
-    // the per-board lists of ALLOWED ones, by name, live in the CTest gate
-    // (EXPECT_SKIPS / EXPECT_PARTIALS, checked by tests/integration/check_tap_stream.sh).
+    // FAILED (0 == all passed). Skips, vacuity skips and partials are counted but are not
+    // failures; the per-board lists of ALLOWED ordinary skips and partials, by name, live in
+    // the CTest gate (EXPECT_SKIPS / EXPECT_PARTIALS, checked by
+    // tests/integration/check_tap_stream.sh). A vacuity skip has no list anywhere.
     int run_all();
 }
 

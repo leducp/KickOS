@@ -203,3 +203,9 @@ ASSERT(__kickos_ram_end >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ES
 
 ASSERT(_kickos_vectors >= KICKOS_ESP32_ISRAM_TEXT_FLOOR && ADDR(.text) + SIZEOF(.text) <= KICKOS_ESP32_ISRAM_TEXT_CEIL,
        "KickOS: kernel text leaves internal SRAM, or reaches into the SRAM0 cache pool. Both CPUs fetch it directly and neither can invalidate the other's copy; the only flush this part has discards dirty data")
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+KICKOS_APP_CODE_WINDOW_NONE()
+KICKOS_APP_DATA_WINDOW_NONE()
+KICKOS_APP_IMAGE_SPLIT_NONE()

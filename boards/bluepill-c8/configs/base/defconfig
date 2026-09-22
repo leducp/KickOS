@@ -10,11 +10,13 @@ CONFIG_KICKOS_MAX_DOMAINS=4
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4
 CONFIG_KICKOS_MAX_IRQ_HANDLES=4
+CONFIG_KICKOS_MAX_NOTIFY=4
 # One below each pool above, which the build requires: a budget that reached a pool would
 # let one task take its last slot.
 CONFIG_KICKOS_TASK_SEMAPHORE_BUDGET=3
 CONFIG_KICKOS_TASK_MUTEX_BUDGET=3
 CONFIG_KICKOS_TASK_IRQ_HANDLE_BUDGET=3
+CONFIG_KICKOS_TASK_NOTIFY_BUDGET=3
 CONFIG_KICKOS_CAP_TABLE_SUPPLY=7
 # selftest_p2 leaves 3232 arena bytes after boot and pool stacks.
 # Each 2048-byte thread stack reserves 180 bytes for the trap red zone.

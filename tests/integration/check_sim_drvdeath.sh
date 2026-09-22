@@ -125,7 +125,7 @@ fi
 # ---------------------------------------------------------------------------------
 # Case 3: a TWO-THREAD driver, which is the shape every silicon console driver has. A
 # service thread receives; a second thread holds the register window and parks in
-# kos_irq_wait. This is the only case that reaches the reclaim's device precondition, since
+# the notification wait. This is the only case that reaches the reclaim's device precondition, since
 # the driver in cases 1 and 2 is one thread with no window.
 #
 # The three markers are ONE assertion, not three:
@@ -139,7 +139,7 @@ fi
 # marker appears too.
 #
 # The third marker is what proves the KILL primitive: without it the window thread parks
-# in kos_irq_wait forever, nothing releases the window, and the console never returns.
+# in that wait forever, nothing releases the window, and the console never returns.
 echo "== case 3: a two-thread driver, the register window outliving the receiver =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build3" \
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
@@ -181,7 +181,7 @@ fi
 
 # The kill primitive did its job: cancelled, exited, window released.
 has '\[simcon\] window thread cancelled, releasing the registers' \
-  || fail "case 3: the window thread was never cancelled out of kos_irq_wait"
+  || fail "case 3: the window thread was never cancelled out of its notification wait"
 has '\[drvdeath\] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted' \
   || fail "case 3: the thread_kill gate matrix did not pass"
 
@@ -209,7 +209,7 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 #   - the kill is not optional: the note alone leaves the console USER_OWNED because the
 #     wedged thread still holds the window (dev_window_free in kernel/init/console.cc).
 #
-# The wedge parks IN kos_irq_wait, the one shape thread_kill can cancel. Wedged before that
+# The wedge parks IN a notification wait, the one shape thread_kill can cancel. Wedged before that
 # first wait it is marked rather than killed, nothing releases the window and the tag is
 # legitimately lost (xmcuartirq.cc).
 #
@@ -235,7 +235,7 @@ RC=$?
 set -e
 printf '%s\n' "$OUT"
 
-# Premise. Parked means the thread holds the window AND sits in kos_irq_wait, so the cancel
+# Premise. Parked means the thread holds the window AND sits in a notification wait, so the cancel
 # below is possible and the timeout is not a spawn failure.
 has '\[simcon\] wedge irq thread parked, ready never set' \
   || fail "case 4: the wedge irq thread never parked (no DEV window, or no line?)"
@@ -268,7 +268,7 @@ COUNT="$(count_of '\[simcon\] ERROR: IRQ thread never reached its loop')"
 # The cancel is observable, and it must PRECEDE the tag: releasing the window is what lets
 # the already-noted death reclaim the console.
 has '\[simcon\] wedge irq thread cancelled, releasing the registers' \
-  || fail "case 4: the wedged irq thread was never cancelled out of kos_irq_wait, so nothing released the register window"
+  || fail "case 4: the wedged irq thread was never cancelled out of its notification wait, so nothing released the register window"
 CANCEL_AT="$(line_of 'wedge irq thread cancelled')"
 TAG_AT="$(line_of 'ERROR: IRQ thread never reached its loop')"
 { [ -n "$CANCEL_AT" ] && [ -n "$TAG_AT" ] && [ "$CANCEL_AT" -lt "$TAG_AT" ]; } \

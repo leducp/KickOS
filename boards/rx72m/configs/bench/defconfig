@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_RX72M=y
+
+# Enforcing RXv3 microbench: the RX-MPU posture of the base variant plus the switch
+# brackets, timed off the free-running CMTW1.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y

@@ -16,6 +16,10 @@
 #                                   IRQ kind ever resolves to another pool's figure
 #   KICKOS_MAX_IRQ_HANDLES=6        wider than that budget, so the IRQ refusal cannot be an
 #                                   exhausted binding pool either
+#   KICKOS_TASK_NOTIFY_BUDGET=4     a FOURTH distinct ceiling, so the notification arm reddens
+#                                   if that kind ever resolves to another pool's figure
+#   KICKOS_MAX_NOTIFY=7             wider than that budget, so its refusal cannot be an
+#                                   exhausted notification pool either
 # The pool sizes size `struct Kernel`, so they cannot be a bare DEFINITIONS on a target
 # linking the shared kickos_kseam: the fixture and the arm would disagree on the layout.
 kickos_add_kernel_host_lib(kickos_kseam_budget
@@ -30,13 +34,15 @@ kickos_add_kernel_host_lib(kickos_kseam_budget
     "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_obj.cc"
     "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
     "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
+    "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
     "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
     "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
   POSTURE KICKOS_TASK_SEMAPHORE_BUDGET=2 KICKOS_MAX_SEMAPHORES=8
           KICKOS_TASK_MUTEX_BUDGET=1 KICKOS_MAX_MUTEXES=4
           KICKOS_TASK_ENDPOINT_BUDGET=2
-          KICKOS_TASK_IRQ_HANDLE_BUDGET=3 KICKOS_MAX_IRQ_HANDLES=6)
+          KICKOS_TASK_IRQ_HANDLE_BUDGET=3 KICKOS_MAX_IRQ_HANDLES=6
+          KICKOS_TASK_NOTIFY_BUDGET=4 KICKOS_MAX_NOTIFY=7)
 
 # syscall_obj.cc is in that set and not in kickos_kseam's: sem_create and mutex_create are
 # two of the four charged creators, and the third (endpoint_create) sits in syscall_ipc.cc

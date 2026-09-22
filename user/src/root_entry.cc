@@ -26,6 +26,8 @@ extern "C"
     // Weak: null in a freestanding image, and on a target whose unwinder finds the tables another
     // way.
     extern unsigned char __eh_frame_start[];
+    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
+    // and optional by libgcc's own contract, so no linker script can state it.
     void __register_frame(void*) __attribute__((weak));
 #endif
 }

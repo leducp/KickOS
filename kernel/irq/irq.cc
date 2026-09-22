@@ -196,6 +196,14 @@ namespace kickos
             {
                 return;
             }
+            if (b->notify == nullptr)
+            {
+                // A line that signals nothing must stay masked: unmasking it would open a
+                // source whose raise has nowhere to land, which is a LOST interrupt rather
+                // than a deferred one. irq_ack refuses ahead of this; the ISR's own null test
+                // is what makes that refusal total.
+                return;
+            }
             b->needs_rearm = false;
             if (not b->armed_once or b->trigger == IRQ_LEVEL)
             {
@@ -205,52 +213,22 @@ namespace kickos
             irq_line_op(b->line, LineOp::UNMASK);
         }
 
-        // Post to the bound server and wake it if its wait accepts this line.
-        // Returns false if already pending. Takes IrqLock to protect against
-        // concurrent teardown; calls from the doorbell syscall nest the lock.
-        bool notify_post(IrqBinding* b)
-        {
-            IrqLock lock;
-            Thread* const t = b->notify_target;
-            if (t == nullptr)
-            {
-                // Keep the event pending until a server binds.
-                bool const changed = not b->pending;
-                b->pending = true;
-                return changed;
-            }
-            uint32_t const bit = 1u << b->notify_bit;
-            bool const changed = (t->notify_pending & bit) == 0u;
-            t->notify_pending = t->notify_pending | bit;
-            if (t->wait_irq_binding() == b)
-            {
-                // Normal IRQ delivery preserves wait_result; only an early wake changes it.
-                t->clear_wait_edge();
-                sched::wake(t);
-                return changed;
-            }
-            // Wake an accepting receive with -KOS_ENOTIFY; opts carries the pending bits.
-            if (b->notify_wake and t->state == ThreadState::BLOCKED
-                and t->wait_kind == WAIT_EP_RECV)
-            {
-                t->wait_queue->unlink(&t->link);
-                t->clear_wait_edge();
-                t->wait_result = -KOS_ENOTIFY;
-                sched::wake(t);
-                return changed;
-            }
-            // Keep the bit pending until a wait accepts it.
-            return changed;
-        }
-
         // ISR context. `arg` is the pre-bound binding, not a line number.
-        // Masks the line; the matching unmask is rearm_locked, on wait return.
+        // Masks the line; the matching unmask is rearm_locked, on the next wait or ack.
+        // It reads the binding's OWN copy of the object pointer and the badge, seated at
+        // attach: this path may resolve no capability and walk no pool.
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
             KICKOS_BENCH_E2E_ISR_MARK();
             irq_line_op_local(b->line, LineOp::MASK);
-            (void)notify_post(b);
+            if (b->notify == nullptr)
+            {
+                // Unreachable: rearm_locked refuses to open a line that signals nothing, so
+                // an unattached binding's line is never unmasked. Masked above regardless.
+                return;
+            }
+            (void)notify_raise(b->notify, 1u << b->badge);
         }
 
         // Null-object default bound to every line with no driver. An unhandled enabled line
@@ -327,6 +305,13 @@ namespace kickos
             g_pub_line[slot] = -1;
             if (g_pub_binding[slot] >= 0)
             {
+                // No dispatch can still hold this slot's address, so the object pointer the
+                // ISR read out of it is now unreachable and the reference may go.
+                int const bidx = kernel().irq_bindings.live_index(g_pub_binding[slot]);
+                if (bidx >= 0)
+                {
+                    irq_detach_notify(bidx);
+                }
                 kernel().irq_bindings.free(g_pub_binding[slot]);
             }
             g_pub_binding[slot] = -1;
@@ -623,10 +608,9 @@ namespace kickos
 #endif
             return -KOS_ENOMEM;
         }
-        b->notify_target = nullptr;
-        b->pending = false;
-        b->notify_wake = false;
-        b->notify_bit = static_cast<uint8_t>(i);
+        b->notify = nullptr;
+        b->next_signaller = NOTIFY_SIGNALLER_NONE;
+        b->badge = 0;
         b->line = line;
         // The first irq_wait arms the line: a claim leaves it masked, so there is no window
         // in which the line is armed and unowned.
@@ -664,199 +648,205 @@ namespace kickos
         return 0;
     }
 
-    int irq_notify_bind(Thread* c, uint32_t cap_handle, uint32_t* out_mask)
+    namespace
+    {
+        // Decode a signaller link; return null for the sentinel or an invalid slot.
+        // Valid links are in [1, KICKOS_MAX_IRQ_HANDLES].
+        // Stop on an invalid link rather than panic in the interrupt-masked wait path.
+        // The null check also prevents GCC from adding an abort call on RX.
+        IrqBinding* signaller_at(uint8_t ref)
+        {
+            if (ref == NOTIFY_SIGNALLER_NONE)
+            {
+                return nullptr;
+            }
+            return kernel().irq_bindings.at(notify_signaller_index(ref));
+        }
+
+        IrqBinding* signaller_first(Notification const* n)
+        {
+            return signaller_at(n->signallers);
+        }
+
+        IrqBinding* signaller_next(IrqBinding const* b)
+        {
+            return signaller_at(b->next_signaller);
+        }
+    }
+
+    int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap)
     {
         IrqLock lock;
-        *out_mask = 0;
         int err = 0;
-        IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
+        IrqBinding* const b = binding_of_cap(c, irq_cap, CAP_WAIT, &err);
         if (b == nullptr)
         {
             return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
         }
-        if (b->notify_target != nullptr and b->notify_target != c)
+        // The attachment lasts until the binding is released, keeping the ISR pointer valid.
+        if (b->notify != nullptr)
         {
-            return -KOS_EBUSY; // one server per line
+            return -KOS_EALREADY;
         }
-        b->notify_target = c;
-        uint32_t const bit = 1u << b->notify_bit;
-        if (b->pending)
+        Notification* const n = static_cast<Notification*>(
+            cap_resolve_e(c, notify_cap, CapType::CAP_NOTIFY, CAP_SIGNAL, &err));
+        if (n == nullptr)
         {
-            // Deliver any notification posted before the server bound.
-            b->pending = false;
-            c->notify_pending = c->notify_pending | bit;
+            return -err;
         }
-        *out_mask = bit;
-        return 0;
-    }
-
-    void irq_notify_release(Thread* c, int obj_handle)
-    {
-        IrqBinding* const b = kernel().irq_bindings.resolve(obj_handle);
-        if (b == nullptr or b->notify_target != c)
+        CapEntry const* const ne = cap_lookup(c, notify_cap);
+        int const obj = static_cast<int>(ne->obj);
+        uint8_t const stored = cap_badge(*ne);
+        uint8_t bit = 0;
+        if (stored != KCAP_BADGE_NONE)
         {
-            return;
+            bit = static_cast<uint8_t>(stored - 1u);
         }
-        uint32_t const bit = 1u << b->notify_bit;
-        // Preserve unconsumed events for the next server. The line remains masked
-        // until that server consumes the event and then rearms it.
-        if ((c->notify_pending & bit) != 0u)
+        int const idx = kernel().irq_bindings.index_of(b);
+        if (idx < 0)
         {
-            c->notify_pending = c->notify_pending & ~bit;
-            b->pending = true;
+            return -KOS_EBADF;
         }
-        b->notify_target = nullptr;
-        b->notify_wake = false;
-    }
-
-    namespace
-    {
-        // Look up the binding by bit index, returning nullptr unless c serves it.
-        // This prevents a supplied mask from accessing another thread's lines.
-        IrqBinding* notify_binding_of(Thread* c, uint32_t bit)
+#if KICKOS_KERNEL_CORES > 1
+        // All signallers for a notification must route to the same core.
+        int const dev_core = arch_irq_line_core(b->line);
+        for (IrqBinding const* on = signaller_first(n); on != nullptr;
+             on = signaller_next(on))
         {
-            unsigned index = 0;
-            uint32_t probe = bit;
-            while ((probe & 1u) == 0u)
-            {
-                probe = probe >> 1;
-                index++;
-            }
-            if (index >= static_cast<unsigned>(KICKOS_MAX_IRQ_HANDLES))
-            {
-                return nullptr;
-            }
-            IrqBinding* const b = kernel().irq_bindings.at(static_cast<int>(index));
-            if (b == nullptr or b->notify_target != c)
-            {
-                return nullptr;
-            }
-            return b;
-        }
-    }
-
-    uint32_t irq_notify_wait_enter(Thread* c, uint32_t mask)
-    {
-        uint32_t opened = 0;
-        uint32_t rest = mask;
-        while (rest != 0)
-        {
-            uint32_t const bit = rest & (0u - rest);
-            rest = rest & ~bit;
-            IrqBinding* const b = notify_binding_of(c, bit);
-            if (b == nullptr)
-            {
-                continue;
-            }
-            // Rearm after the previous event was consumed, as irq_wait does.
-            rearm_locked(b);
-            b->notify_wake = true;
-            opened = opened | bit;
-        }
-        return opened;
-    }
-
-    uint32_t irq_notify_wait_leave(Thread* c, uint32_t opened)
-    {
-        uint32_t taken = 0;
-        uint32_t rest = opened;
-        while (rest != 0)
-        {
-            uint32_t const bit = rest & (0u - rest);
-            rest = rest & ~bit;
-            IrqBinding* const b = notify_binding_of(c, bit);
-            if (b == nullptr)
-            {
-                continue;
-            }
-            b->notify_wake = false;
-            if ((c->notify_pending & bit) == 0u)
-            {
-                continue;
-            }
-            c->notify_pending = c->notify_pending & ~bit;
-            // Allow rearm only after the event is consumed.
-            b->needs_rearm = true;
-            taken = taken | bit;
-        }
-        return taken;
-    }
-
-    // The ONE cancellation point in the kernel. Do NOT fold back into sem_wait: sem_wait
-    // returns void and never reads wait_result, so an early wake would look like a post.
-    int irq_wait_timed(Thread* c, uint32_t cap_handle, uint32_t timeout_us)
-    {
-        int const prc = pin_to_line_core(c, cap_handle);
-        if (prc != 0)
-        {
-            return prc;
-        }
-        IrqBinding* b = nullptr;
-        uint32_t bit = 0;
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            int err = 0;
-            b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
-            if (b == nullptr)
-            {
-                return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
-            }
-            // Cancellation takes precedence over a missing binding.
-            if (park_cancel_pending(c))
-            {
-                return -KOS_ECANCELED;
-            }
-            // Only the bound server can receive this line's notifications.
-            if (b->notify_target != c)
+            int const other = arch_irq_line_core(on->line);
+            if (other >= 0 and dev_core >= 0 and other != dev_core)
             {
                 return -KOS_EPERM;
             }
-            rearm_locked(b);
-            bit = 1u << b->notify_bit;
-            if ((c->notify_pending & bit) != 0)
-            {
-                // Flag for rearm exactly as the parked path does on resume.
-                c->notify_pending = c->notify_pending & ~bit;
-                b->needs_rearm = true;
-                return 0;
-            }
-            // `b` survives the park: this waiter's own cap holds a reference to the slot.
-            c->wait_result = 0; // normal delivery leaves this result unchanged
-            epoch = c->switch_count;
-            // Under THIS lock and ahead of the block: the post that wakes this thread takes
-            // the same lock, so nothing delivered past this mark can arrive before the park.
-            KICKOS_BENCH_E2E_PARK_MARK();
-            // WAIT_IRQ supports early wake results. No queue is needed for one bound server.
-            park_queueless(c, WAIT_IRQ, b);
-            if (timeout_us != KOS_TIMEOUT_NONE)
-            {
-                ktime_deadline_arm(c, timeout_us);
-            }
-            sched::reschedule();
         }
-        // Mandatory, and OUTSIDE the lock: where the switch is only pended when the block
-        // scope's lock drops, a wait_result read before this returns the pre-block value.
-        wq_confirm_resume(c, epoch);
+#endif
+        // Signallers may share a badge bit; rearming visits every matching line.
+        // Check all tasks holding this IRQ before adding the notification to their holds.
+        if (not task_object_admit_binding_notify(idx, obj))
         {
-            IrqLock lock;
-            if (c->wait_result != 0)
-            {
-                // Left as the rearm above set it: the exiting thread's cap drop detaches
-                // and masks the line.
-                return static_cast<int>(c->wait_result);
-            }
-            c->notify_pending = c->notify_pending & ~bit;
-            // Flag for rearm HERE, never in the ISR: that is what makes ack;compute;wait
-            // phantom-free.
-            b->needs_rearm = true;
+            return -KOS_EOVERFLOW;
         }
+        // The binding retains the notification independently of its capabilities.
+        if (not obj_ref_inc(CapType::CAP_NOTIFY, obj, 0))
+        {
+            return -KOS_EOVERFLOW;
+        }
+        b->badge = bit;
+        b->notify = n;
+        b->next_signaller = n->signallers;
+        n->signallers = notify_signaller_ref(idx);
         return 0;
     }
 
-    int irq_wait(Thread* c, uint32_t cap_handle)
+    void irq_signallers_rearm(Notification* n, uint32_t mask)
     {
-        return irq_wait_timed(c, cap_handle, KOS_TIMEOUT_NONE);
+        for (IrqBinding* b = signaller_first(n); b != nullptr; b = signaller_next(b))
+        {
+            if ((mask & (1u << b->badge)) != 0u)
+            {
+                rearm_locked(b);
+            }
+        }
+    }
+
+    void irq_signallers_owe_rearm(Notification* n, uint32_t taken)
+    {
+        for (IrqBinding* b = signaller_first(n); b != nullptr; b = signaller_next(b))
+        {
+            if ((taken & (1u << b->badge)) != 0u)
+            {
+                b->needs_rearm = true;
+            }
+        }
+    }
+
+    void irq_unchain_signaller(int index)
+    {
+        IrqBinding* const b = kernel().irq_bindings.at(index);
+        if (b == nullptr or b->notify == nullptr)
+        {
+            return;
+        }
+        uint8_t const self = notify_signaller_ref(index);
+        Notification* const n = b->notify;
+        // The head is its own case because it lives in the OBJECT and not in a binding, which
+        // is why this cannot be one pointer-to-link walk over the whole chain.
+        if (n->signallers == self)
+        {
+            n->signallers = b->next_signaller;
+        }
+        else
+        {
+            for (IrqBinding* p = signaller_first(n); p != nullptr; p = signaller_next(p))
+            {
+                if (p->next_signaller == self)
+                {
+                    p->next_signaller = b->next_signaller;
+                    break;
+                }
+            }
+        }
+        b->next_signaller = NOTIFY_SIGNALLER_NONE;
+    }
+
+    void irq_detach_notify(int index)
+    {
+        IrqBinding* const b = kernel().irq_bindings.at(index);
+        if (b == nullptr or b->notify == nullptr)
+        {
+            return;
+        }
+        Notification* const n = b->notify;
+        b->notify = nullptr;
+        int const idx = kernel().notifies.index_of(n);
+        if (idx >= 0)
+        {
+            notify_ref_drop(kernel().notifies.handle_for(idx), true);
+        }
+    }
+
+    int irq_pin_to_chain_core(Thread* c, uint32_t cap_handle)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t effective = 0;
+        {
+            IrqLock lock;
+            int err = 0;
+            Notification const* const n = static_cast<Notification*>(
+                cap_resolve_e(c, cap_handle, CapType::CAP_NOTIFY, CAP_WAIT, &err));
+            if (n == nullptr)
+            {
+                return 0; // the wait itself reports the refusal, with its own taxonomy
+            }
+            int dev_core = -1;
+            for (IrqBinding const* on = signaller_first(n); on != nullptr;
+                 on = signaller_next(on))
+            {
+                int const one = arch_irq_line_core(on->line);
+                if (one >= 0)
+                {
+                    dev_core = one; // irq_bind_notify refuses a chain that spans two
+                }
+            }
+            if (dev_core < 0)
+            {
+                return 0;
+            }
+            int const arc = sched_admit_mask(1u << static_cast<unsigned>(dev_core),
+                                             task_core_set(c->task), MaskBound::SUBSET,
+                                             &effective);
+            if (arc != 0)
+            {
+                return arc;
+            }
+        }
+        // OUTSIDE the lock: set_affinity may reschedule.
+        sched::set_affinity(c, effective);
+#else
+        (void)c;
+        (void)cap_handle;
+#endif
+        return 0;
     }
 
     int irq_ack(Thread* c, uint32_t cap_handle)
@@ -872,6 +862,11 @@ namespace kickos
         if (b == nullptr)
         {
             return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
+        }
+        // A line that signals nothing must never be opened: the raise would land nowhere.
+        if (b->notify == nullptr)
+        {
+            return -KOS_EINVAL;
         }
         // Optional and idempotent: a double ack, or an ack after auto-rearm, is a no-op.
         rearm_locked(b);
@@ -899,26 +894,9 @@ namespace kickos
         return 0;
     }
 
-    int irq_notify(Thread* c, uint32_t cap_handle)
-    {
-        IrqLock lock;
-        int err = 0;
-        IrqBinding* b = binding_of_cap(c, cap_handle, CAP_SIGNAL, &err);
-        if (b == nullptr)
-        {
-            return -err; // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
-        }
-        // The controller is NOT touched: the waiter wakes with nothing asserted and must be
-        // idempotent about finding no work. A notify must never unmask an unserviced line.
-        if (not notify_post(b))
-        {
-            return -KOS_EALREADY; // notification already pending
-        }
-        return 0;
-    }
-
     void irq_ref_drop(int obj_handle, bool teardown)
     {
+        (void)teardown; // no arm left reads it: nothing here can strand a waiter
         Kernel& k = kernel();
         IrqBinding* b = k.irq_bindings.resolve(obj_handle);
         int const idx = k.irq_bindings.index_of(b);
@@ -933,13 +911,15 @@ namespace kickos
         }
         if (r == 0)
         {
-            if (b->notify_target != nullptr and b->notify_target->wait_irq_binding() == b)
-            {
-                KICKOS_ASSERT(teardown);
-                r = 1; // leak, never strand
-                return;
-            }
-            b->notify_target = nullptr;
+            // NO leak-don't-strand arm and none owed: a waiter is parked on the OBJECT, not
+            // on this line, and the object's own reference count keeps it alive. Dropping the
+            // last capability naming this line while a driver waits strands nobody; it takes
+            // the line away, which is what closing that capability says.
+            //
+            // Unchained HERE and released at the slot free below: a rearm must not reach a
+            // line that is going away, but a dispatch on another core may already hold this
+            // binding's object pointer and must find the object still there.
+            irq_unchain_signaller(idx);
             // The budget comes back HERE and not at the pool free below, which above one
             // kernel core happens later, from a reclamation: the binding is unreachable from
             // this instant and holding its owner until the slot returns would keep charging a
@@ -954,6 +934,7 @@ namespace kickos
             // to the pool. The detach also masks the line and restores the null-object,
             // which is what lets a later irq_claim of the same line pass its EBUSY test.
             irq_detach(b->line);
+            irq_detach_notify(idx);
             k.irq_bindings.free(obj_handle);
 #endif
         }

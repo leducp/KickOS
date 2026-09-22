@@ -2,7 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # The interrupt entry against a concurrent teardown. kernel/irq/irq.cc is compiled here as the
-# real kernel translation unit, and irq_seam.cc answers its whole undefined set.
+# real kernel translation unit, and irq_seam.cc answers its whole undefined set. The
+# notification layer is SEAMED and not compiled in: pulling notify.cc would pull the whole
+# capability layer behind it, and nothing here is about what a raise does once it lands.
 #
 # AT TWO KERNEL CORES, which is the point and is why this gate compiles its own copy rather
 # than joining the K-seam fixture: that library takes the preset's core count, and the sim

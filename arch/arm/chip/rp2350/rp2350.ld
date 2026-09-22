@@ -418,3 +418,10 @@ ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
 
 ASSERT(g_image_def < ORIGIN(FLASH) + 0x1000,
        "KickOS: RP2350 IMAGE_DEF must be within the bootrom's first-4-KiB scan window")
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+#if !KICKOS_HAVE_MPU
+KICKOS_APP_DATA_WINDOW_NONE()
+#endif
+KICKOS_APP_IMAGE_SPLIT_NONE()

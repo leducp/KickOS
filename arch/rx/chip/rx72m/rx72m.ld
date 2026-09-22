@@ -24,6 +24,9 @@
  * symbols (e.g. _istack) are used verbatim and take no extra prefix.
  */
 
+/* sections.ld.h's window macros spell their C names through this. */
+#define KICKOS_LD_C_SYM(name) _##name
+
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -363,3 +366,10 @@ ASSERT(__ebss > __sbss,
 ASSERT(__kickos_heap_limit - __kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")
 #endif
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+#if !KICKOS_HAVE_MPU
+KICKOS_APP_DATA_WINDOW_NONE()
+#endif
+KICKOS_APP_IMAGE_SPLIT_NONE()

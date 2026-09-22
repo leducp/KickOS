@@ -32,6 +32,9 @@ struct kos_seam_control
     // number of calls made is silently no failure, so a stale knob reads as a happy path
     // and NOT as a spurious red.
     uint32_t irq_claim_fail_at;
+    bool notify_create_fails;
+    bool notify_badge_fails;
+    bool irq_bind_notify_fails;
     uint32_t spawn_fail_at;
 
     bool task_create_fails;

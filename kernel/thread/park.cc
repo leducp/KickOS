@@ -123,14 +123,15 @@ namespace kickos
                 t->clear_wait_edge();
                 break;
             }
-            case WAIT_IRQ:
+            case WAIT_NOTIFY:
             case WAIT_SLEEP:
             case WAIT_JOIN:
             case WAIT_LIVE_LAST:
             case WAIT_TASK_EMPTY:
             {
-                // Sleep and IRQ waits have no wait queue. wake removes the timer entry.
-                // An IRQ bit remains pending for the next wait if cancellation races delivery.
+                // Sleep and notification waits have no wait queue. wake removes the timer
+                // entry. A raised bit remains pending in the OBJECT for the next wait if
+                // cancellation races delivery.
                 t->clear_wait_edge();
                 break;
             }

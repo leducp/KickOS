@@ -288,23 +288,43 @@ extern "C"
         return g_seam.send_timed_rc;
     }
 
-    // edge_relay_thread's two, present so the TU carrying bring_up links.
-    int kos_irq_attach(kos_cap_t, uint32_t* out_mask)
+    // The notification bring_up creates for the whole driver, and the badged copies it mints
+    // per signaller. Both are handles this seam hands out, so the trace can tell the mint
+    // from the create and a leaked copy shows as a "close" that never comes.
+    int kos_notify_create(kos_cap_t* out_cap)
     {
-        if (out_mask != nullptr)
+        if (g_seam.notify_create_fails)
         {
-            *out_mask = 1u;
+            note("note!");
+            return -KOS_ENOMEM;
         }
+        *out_cap = g_next_cap;
+        g_next_cap++;
+        note_id("note", *out_cap);
         return 0;
     }
 
-    int kos_irq_wait(kos_cap_t)
+    int kos_notify_badge(kos_cap_t, uint32_t bit, kos_cap_t* out_cap)
     {
-        return -KOS_EBADF;
+        if (g_seam.notify_badge_fails)
+        {
+            note("badge!");
+            return -KOS_EMFILE;
+        }
+        *out_cap = g_next_cap;
+        g_next_cap++;
+        note_id("badge", bit);
+        return 0;
     }
 
-    int kos_irq_notify(kos_cap_t)
+    int kos_irq_bind_notify(kos_cap_t, kos_cap_t)
     {
-        return -KOS_EBADF;
+        if (g_seam.irq_bind_notify_fails)
+        {
+            note("bind!");
+            return -KOS_EALREADY;
+        }
+        note("bind");
+        return 0;
     }
 }

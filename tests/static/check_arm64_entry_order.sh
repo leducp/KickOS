@@ -36,6 +36,8 @@
 #
 # AN EMPTY WINDOW IS A FAILURE, not a pass. A body whose opening instruction is absent, or whose
 # window never closes, says the symbol moved or the code shape changed, and that is UNKNOWN.
+# Those three refusals are tests/lib/objdump_window.awk's, shared with every other landmark
+# reader in this tree rather than invented here.
 #
 # usage: check_arm64_entry_order.sh <elf> <nm> <objdump>
 
@@ -60,42 +62,29 @@ scratch_dir
 # --- the reader ---------------------------------------------------------------
 # Ordinals, not addresses: every verdict is an ORDER. Emits exactly one record.
 #
-# open   the instruction the window starts AFTER. Empty means the body's first instruction, which
-#        is how a rule of the form "before the first X" is spelled.
-# need   the instruction that must stand in the window.
-# close  the instruction the window ends at, whose effect the need protects.
+# The window's own two landmarks are the shared ones: win_open is the instruction the window
+# starts after, empty for the body's first, which is how a rule of the form "before the first X"
+# is spelled; win_close is the instruction whose effect the need protects. THE NEED IS SEARCHED
+# OVER THE WHOLE BODY PAST THE OPEN AND NOT INSIDE THE WINDOW, because a need standing past the
+# close is the DEFECT this gate reports and not an absence: restricted to the window it would
+# come back as NONEED, and a barrier in the wrong place would be filed as a barrier deleted.
 #
 # Matched against the instruction TEXT and not the mnemonic alone: `mov sp, x0` is a write to SP
 # and `mov x0, sp` is not, and a mnemonic-only reader cannot tell them apart.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
-# tests/lib/objdump_scope.awk ahead of this file.
+# HALF A PROGRAM: `seen`, the body scope, win_text and every refusal but NONEED come from
+# gate.sh's scoped_body, which reads tests/lib/objdump_scope.awk and
+# tests/lib/objdump_window.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
-{
-    text = $0
-    sub(/^[^:]*:[ \t]*/, "", text)
-    sub(/[ \t]*\/\/.*$/, "", text)
-    sub(/[ \t]*#.*$/, "", text)
-    sub(/[ \t]+$/, "", text)
-    gsub(/[ \t]+/, " ", text)
-    n++
-    if (openre != "" && opened == 0 && text ~ openre) { opened = n; next }
-    if (openre != "" && opened == 0) { next }
-    if (need_at == 0 && text ~ needre) { need_at = n }
-    if (close_at == 0 && text ~ closere) { close_at = n }
-}
+win_n > win_open_n && need_at == 0 && win_text ~ needre { need_at = win_n }
 END {
-    if (!seen) { print "NOSYM"; exit }
-    if (n == 0) { print "NOINSN"; exit }
-    if (openre != "" && opened == 0) { print "NOOPEN " n; exit }
-    if (close_at == 0) { print "NOCLOSE " n; exit }
-    if (need_at == 0) { print "NONEED " close_at " " n; exit }
-    print "ORDER " need_at " " close_at " " n
+    if (need_at == 0) { print "NONEED " win_close_n " " win_n; exit }
+    print "ORDER " need_at " " win_close_n " " win_n
 }
 AWK
 
 read_body() { # <listing> <symbol> <open-ere> <need-ere> <close-ere>
     scoped_body "$TMP/reader.awk" "$1" "$2" \
-        -v openre="$3" -v needre="$4" -v closere="$5"
+        -v win_open="$3" -v needre="$4" -v win_close="$5"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -133,6 +122,19 @@ cat > "$TMP/ctl_noclose" <<'EOF'
     1000:	msr	cntp_ctl_el0, x0
     1004:	isb
     1008:	nop
+EOF
+# The forwarder: neither landmark, which is one record and not two absences.
+cat > "$TMP/ctl_nobracket" <<'EOF'
+0000000000001000 <planted_body>:
+    1000:	mov	x0, x19
+    1004:	nop
+EOF
+# The close standing only AHEAD of the open, so the window would run to the end of the body.
+cat > "$TMP/ctl_closefirst" <<'EOF'
+0000000000001000 <planted_body>:
+    1000:	b	1200 <planted_callee>
+    1004:	msr	cntp_ctl_el0, x0
+    1008:	isb
 EOF
 # The SP rule's own shape: no opening instruction, and the closing one distinguished by its
 # DESTINATION. The second listing is the defect, `mov sp` standing ahead of the select.
@@ -186,6 +188,16 @@ expect "body whose window never closes" \
     "$(read_body "$TMP/ctl_noclose" planted_body "$O_TIMER" "$N_ISB" "$C_DEVICE")" \
     "NOCLOSE 3" \
     "a body that no longer reaches the write the barrier protects would read as clean"
+
+expect "two-instruction forwarder carrying neither landmark" \
+    "$(read_body "$TMP/ctl_nobracket" planted_body "$O_TIMER" "$N_ISB" "$C_DEVICE")" \
+    "NOBRACKET 2" \
+    "a body moved behind a forwarder would be reported as one missing its barrier"
+
+expect "body whose closing instruction stands only AHEAD of the opening one" \
+    "$(read_body "$TMP/ctl_closefirst" planted_body "$O_TIMER" "$N_ISB" "$C_DEVICE")" \
+    "NOCLOSE 3" \
+    "the window would run to the end of the body and count a barrier the rule does not reach"
 
 expect "renamed body" \
     "$(read_body "$TMP/ctl_ok" a_symbol_no_listing_carries "$O_TIMER" "$N_ISB" "$C_DEVICE")" \
@@ -253,6 +265,11 @@ judge() {
         NOINSN)
             fail "the body of '$_sym' in $elf disassembles to no instruction at all, so the
   corpus is UNKNOWN rather than empty" ;;
+        NOBRACKET)
+            fail "across the $_f2 instruction(s) of '$_sym' in $elf nothing matches /$_open/ and
+  nothing matches /$_close/, so this gate can see neither end of the window the ordering sits
+  in. That is UNKNOWN, not a pass: the symbol names a forwarder over the real body, or both
+  landmarks moved at once" ;;
         NOOPEN)
             fail "across the $_f2 instruction(s) of '$_sym' in $elf nothing matches /$_open/, so
   the window this ordering is about never opens. That is UNKNOWN, not a pass: the body no longer

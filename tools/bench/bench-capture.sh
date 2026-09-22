@@ -41,6 +41,10 @@
 #   EXPECT_COMMIT  the label cmake/build_stamp.cmake stamped into the image, which the banner
 #               must carry. Default: this ROOT's own `git describe --dirty --always`, which is
 #               right only when the image was built here.
+#   EXPECT_ARMS how many arms THIS IMAGE plans, and EXPECT_SKIPS / EXPECT_PARTIALS /
+#               EXPECT_FAULTS the permission sets, all read by bench.sh out of the build's own
+#               kickos-selftest-manifest.txt. A `selftest*` capture without EXPECT_ARMS is
+#               refused: a stream checked only against itself passes whatever it lost.
 #   TEENSY_LOAD_SECS  per-load bound for teensy41's HalfKay flash. Default 60.
 set -u
 
@@ -495,9 +499,9 @@ BYTES=$(wc -c < "$LOG")
 
 # NEVER count across plan lines. A log holding two runs sums into something that reads as one
 # clean pass, so the authoritative run is the LAST plan line to end of file, and a precursor
-# is reported rather than added. The two-image boards run their images as separate invocations
-# into separate logs, so one log normally owes exactly one plan line, and more than one means
-# the board restarted inside the window.
+# is reported rather than added. A split board runs each of its images as its own invocation
+# into its own log, so one log normally owes exactly one plan line, and more than one means the
+# board restarted inside the window.
 RUNS=$(grep -acE '^1\.\.[0-9]+' "$LOG")
 LAST=$(grep -anE '^1\.\.[0-9]+' "$LOG" | tail -1 | cut -d: -f1)
 RUN="$LOG"
@@ -522,8 +526,16 @@ NOTOKC=$(grep -acE '^not ok ' "$RUN")
 # --always`), or empty. Split out from the line it is printed on because the bench verdict
 # below compares it against the tree that built the image, and must run over a planted log as
 # well as over this one.
-banner_label() { # <log>
-  _bl=$(grep -aoE 'commit +[0-9a-f]{7,}(-dirty)?' "$1" | tail -1)
+#
+# THE LABEL IS A HASH ONLY WHILE NO TAG IS REACHABLE. `git describe` answers `<tag>` on a tree
+# sitting on one and `<tag>-<n>-g<hash>` past it, so a recogniser keyed on the hex shape reads a
+# capture that carries a banner as carrying none, and the plant machinery below then refuses its
+# own 'good' control and every capture with it. A tagged tree is exactly what a re-measurement
+# of an archived campaign runs on.
+BANNER_COMMIT_RE='commit +[A-Za-z0-9._/+-]+'
+
+banner_label() { # <log> [expected label]
+  _bl=$(grep -aoE "$BANNER_COMMIT_RE" "$1" | tail -1)
   if [ -n "$_bl" ]; then
     printf '%s\n' "${_bl##* }"
     return 0
@@ -541,6 +553,20 @@ banner_label() { # <log>
   _br=$(grep -av ':' "$1" \
     | grep -aoE '(^|[^0-9a-z])[0-9a-f]{8}(-dirty)?([^0-9a-z]|$)' \
     | grep -oE '[0-9a-f]{8}(-dirty)?' | tail -1)
+  # A DESCRIBE LABEL CARRIES NO SHAPE TO RECOVER BY: a tag is an arbitrary string, so the only
+  # thing the surviving bytes can be held against is the label the build stamped. Last, so a
+  # capture of ANOTHER commit still reports as a mismatch rather than as an absence. The CR is
+  # part of the last field and is taken off here; a `$` anchor would answer differently to the
+  # two greps this chain runs under.
+  _bw="${2:-}"
+  _bw="${_bw%-dirty}"
+  if [ -z "$_br" ] && [ -n "$_bw" ]; then
+    _br=$(awk -v want="$_bw" '
+        index($0, ":") { next }
+        { _t = $NF; sub(/\r/, "", _t)
+          if (_t == want || _t == want "-dirty") { hit = _t } }
+        END { if (hit != "") { print hit } }' "$1")
+  fi
   if [ -z "$_br" ]; then
     return 0
   fi
@@ -550,7 +576,7 @@ banner_label() { # <log>
   esac
 }
 
-LABEL=$(banner_label "$LOG")
+LABEL=$(banner_label "$LOG" "${EXPECT_COMMIT:-}")
 BANNER=""
 case "$LABEL" in
   "") ;;
@@ -559,7 +585,7 @@ case "$LABEL" in
     BANNER="commit $LABEL"
     # A label recovered with its `-dirty` intact is verified; it still arrived damaged and the
     # line says so, which the UNVERIFIED spelling above already carries for the other case.
-    if ! grep -aqE 'commit +[0-9a-f]{7,}(-dirty)?' "$LOG"; then
+    if ! grep -aqE "$BANNER_COMMIT_RE" "$LOG"; then
       BANNER="$BANNER (banner damaged in transit)"
     fi
     ;;
@@ -597,11 +623,13 @@ bench_window_markers() {
 # one-per-boot counts inside the slice are what then refuse a slice spanning two boots.
 bench_boot_start() { # <log>
   _bs_t=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
-  _bs_c=$(grep -anE 'commit +[0-9a-f]{7,}(-dirty)?' "$1" | tail -1 | cut -d: -f1)
+  _bs_c=$(grep -anE "$BANNER_COMMIT_RE" "$1" | tail -1 | cut -d: -f1)
   if [ -z "$_bs_c" ]; then
-    # The same banner-block restriction banner_label recovers under, and it has to be the same
-    # one: a boot start found on a line that label search will not read leaves the slice
-    # beginning after its own banner.
+    # The same banner-block restriction banner_label recovers under: a boot start found on a
+    # line that label search will not read leaves the slice beginning after its own banner.
+    # This one has no expected label to hold the bytes against, so it cannot reach a damaged
+    # DESCRIBE label the way banner_label does; what that costs is a refusal for want of a boot
+    # start where the title line went too, never a slice that reads across a boundary.
     _bs_c=$(grep -anv ':' "$1" \
       | grep -aE '(^|[^0-9a-z])[0-9a-f]{8}(-dirty)?([^0-9a-z]|$)' | tail -1 | cut -d: -f1)
   fi
@@ -836,7 +864,7 @@ EOF
   # that built the image, and the `-dirty` suffix is part of that label. So the arm is one
   # equality over the whole label, and the suffix rides in it. The label is read out of the
   # SLICE, so a last boot whose own banner is gone has none rather than the previous boot's.
-  _bv_got=$(banner_label "$_bv_log")
+  _bv_got=$(banner_label "$_bv_log" "$_bv_want")
   if [ -z "$_bv_got" ]; then
     echo "  no banner in the last boot: the run being read carries no commit of its own, so it" >&2
     echo "    belongs to no tree and an earlier boot's label may not stand in for it" >&2
@@ -1032,78 +1060,9 @@ EOF
   return 0
 }
 
-# Same damage, same recovery: the posture line reaches the f302nucleo log as "m off".
-# NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
-# line while this box's grep (ugrep) does not, so an anchored pattern passes a local test and
-# fails on the bench host against byte-identical input.
-MPU=$(grep -aoE 'mpu +(enforce|off)' "$LOG" | tail -1)
-if [ -z "$MPU" ]; then
-  MPU=$(grep -aoE '^m (enforce|off)' "$LOG" | tail -1)
-fi
-
-printf 'bytes:  %s\n' "$BYTES"
-printf 'runs:   %s\n' "$RUNS"
-printf 'ok:     %s\n' "$OKC"
-printf 'not ok: %s\n' "$NOTOKC"
-printf 'plan:   %s\n' "$(grep -aoE '^1\.\.[0-9]+' "$RUN" | tail -1)"
-printf 'skip:   %s\n' "$(grep -acE '# SKIP' "$RUN")"
-printf 'part:   %s\n' "$(grep -acE '# PARTIAL' "$RUN")"
-printf 'banner: %s\n' "$BANNER"
-printf 'mpu:    %s\n' "$MPU"
-echo "log: $LOG"
-
-if [ "$RUNS" -gt 1 ]; then
-  echo "NOTE: $RUNS plan lines. The counts above are the LAST run only; the earlier one(s)" >&2
-  echo "  are a board restart inside the capture window, not extra arms." >&2
-fi
-# A TAP VERDICT IS OWED ONLY BY A TAP APP. The diagnostic apps announce no plan by design. The
-# EXPECTATION comes from the app name; the verdict still comes from the log, so a non-TAP app
-# that does emit a plan is judged on it anyway.
-#
-# A BENCH APP OWES A BENCH REPORT. The two expectations are separate: `bench` announces no
-# plan AND owes every marker below.
-case $APP in
-  selftest*) WANT_TAP=1; WANT_BENCH=0 ;;
-  bench*)    WANT_TAP=0; WANT_BENCH=1 ;;
-  *)         WANT_TAP=0; WANT_BENCH=0 ;;
-esac
-if [ -z "$LAST" ]; then
-  if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
-    # A console that IS the device cannot deliver its own head, so the plan line is gone
-    # and demanding one refuses every capture taken this way. The verdict falls back to the
-    # ok count alone; reconcile the arm total by eye against the count
-    # user/apps/common/selftest/CMakeLists.txt hands the gates.
-    if [ "$OKC" -eq 0 ]; then
-      say_kickos_lines
-      refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
-    fi
-    echo "NOTE: no plan line; a USB CDC console loses the head of every capture, this one" >&2
-    echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for;" >&2
-    echo "  derive the expected count and check it by hand." >&2
-  elif [ "$WANT_TAP" -eq 1 ]; then
-    say_kickos_lines
-    refuse "$LOG has no plan line at all: the suite never announced itself"
-  else
-    echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
-  fi
-elif [ "$OKC" -eq 0 ]; then
-  say_kickos_lines
-  refuse "the last run in $LOG carries a plan line but no ok lines"
-fi
-
-if [ "$WANT_BENCH" -eq 1 ]; then
-  # THE TREE THAT BUILT THE IMAGE, and it is not necessarily the tree this script is running
-  # from: bench.sh builds where the toolchains are and ships the image, so it passes the label
-  # it stamped. The local fallback is for a board on this box. A bench capture with NEITHER is
-  # refused rather than judged on its own say-so: a banner nothing compares against says only
-  # that some tree printed it.
-  if [ -z "${EXPECT_COMMIT:-}" ]; then
-    EXPECT_COMMIT=$(git -C "$ROOT" describe --dirty --always 2>/dev/null || true)
-  fi
-  [ -n "$EXPECT_COMMIT" ] || refuse "no EXPECT_COMMIT and $ROOT is not a git tree, so the
-  banner in $LOG can be read but not checked against anything. Pass the label
-  cmake/build_stamp.cmake stamped into the image."
-
+# THE PLANT BATTERY: every plant is text, so no arm below reads a board. A function rather than a
+# run of statements, so a caller can drive it over a label of its choosing.
+bench_controls() {
   # THE VERDICT IS PROVEN BEFORE IT IS TRUSTED. Each plant below is a complete report that
   # differs from the one above it in one way, and a check that does not fire on its own plant
   # reports every real capture clean. CRLF throughout, because that is what a console under
@@ -1385,6 +1344,118 @@ if [ "$WANT_BENCH" -eq 1 ]; then
   echo "  constant in the windows after it, refuses a moving-then-frozen report read whole and" >&2
   echo "  read as its last boot alone, and refuses a frozen-then-moving one read whole while" >&2
   echo "  passing the live last boot it is handed" >&2
+}
+
+# Same damage, same recovery: the posture line reaches the f302nucleo log as "m off".
+# NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
+# line while this box's grep (ugrep) does not, so an anchored pattern passes a local test and
+# fails on the bench host against byte-identical input.
+MPU=$(grep -aoE 'mpu +(enforce|off)' "$LOG" | tail -1)
+if [ -z "$MPU" ]; then
+  MPU=$(grep -aoE '^m (enforce|off)' "$LOG" | tail -1)
+fi
+
+printf 'bytes:  %s\n' "$BYTES"
+printf 'runs:   %s\n' "$RUNS"
+printf 'ok:     %s\n' "$OKC"
+printf 'not ok: %s\n' "$NOTOKC"
+printf 'plan:   %s\n' "$(grep -aoE '^1\.\.[0-9]+' "$RUN" | tail -1)"
+# `skip:` counts EVERY SKIP directive, the vacuity ones included, so a reader who does not know
+# the second category still sees them. `vac:` is how many of them are an arm declining a timing
+# window it did not get on this run rather than a board that cannot host it.
+printf 'skip:   %s\n' "$(grep -acE '# SKIP' "$RUN")"
+printf 'vac:    %s\n' "$(grep -acE '# SKIP VACUOUS ' "$RUN")"
+printf 'part:   %s\n' "$(grep -acE '# PARTIAL' "$RUN")"
+printf 'banner: %s\n' "$BANNER"
+printf 'mpu:    %s\n' "$MPU"
+echo "log: $LOG"
+
+if [ "$RUNS" -gt 1 ]; then
+  echo "NOTE: $RUNS plan lines. The counts above are the LAST run only; the earlier one(s)" >&2
+  echo "  are a board restart inside the capture window, not extra arms." >&2
+fi
+# A TAP VERDICT IS OWED ONLY BY A TAP APP. The diagnostic apps announce no plan by design. The
+# EXPECTATION comes from the app name; the verdict still comes from the log, so a non-TAP app
+# that does emit a plan is judged on it anyway.
+#
+# A BENCH APP OWES A BENCH REPORT. The two expectations are separate: `bench` announces no
+# plan AND owes every marker below.
+case $APP in
+  selftest*) WANT_TAP=1; WANT_BENCH=0 ;;
+  bench*)    WANT_TAP=0; WANT_BENCH=1 ;;
+  *)         WANT_TAP=0; WANT_BENCH=0 ;;
+esac
+if [ -z "$LAST" ]; then
+  if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+    # A console that IS the device cannot deliver its own head, so the plan line is gone
+    # and demanding one refuses every capture taken this way. The TAP verdict below needs a
+    # plan, so this route reaches NO verdict at all: what is left is the ok count, which is a
+    # count of the lines that arrived. Reconcile the arm total by eye against the manifest.
+    if [ "$OKC" -eq 0 ]; then
+      say_kickos_lines
+      refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
+    fi
+    echo "NOTE: no plan line; a USB CDC console loses the head of every capture, this one" >&2
+    echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for," >&2
+    echo "  and the TAP verdict needs the plan, so THIS CAPTURE IS NOT JUDGED: derive the" >&2
+    echo "  expected count and check it by hand." >&2
+  elif [ "$WANT_TAP" -eq 1 ]; then
+    say_kickos_lines
+    refuse "$LOG has no plan line at all: the suite never announced itself"
+  else
+    echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
+  fi
+elif [ "$OKC" -eq 0 ]; then
+  say_kickos_lines
+  refuse "the last run in $LOG carries a plan line but no ok lines"
+fi
+
+# THE PRODUCER'S OWN VERDICT, NOT THIS SCRIPT'S COUNT OF THE LINES THAT SURVIVED. Everything
+# printed above is a grep over the capture, so a console that dropped whole lines under producer
+# pressure shrinks `ok:` and `part:` with the loss while the harness's trailer, computed inside
+# the image before anything went missing, still says what happened. Read on their own the two
+# agree, and the reader silently outvotes the producer: `ok: 123` against a plan of `1..125` with
+# `# 1 test(s) failed` in the same log exited 0 here. check_tap_stream.sh reconciles the trailer,
+# the plan, the case count, the numbering and every directive against the arm count the build
+# recorded, and it is the same script the sim and QEMU gates run.
+if [ "$WANT_TAP" -eq 1 ] && [ -n "$LAST" ]; then
+  TAPGATE="$ROOT/tests/integration/check_tap_stream.sh"
+  [ -r "$TAPGATE" ] || refuse "no $TAPGATE: this ROOT does not carry the TAP verdict, so the
+  stream above is a count of the lines that arrived and nothing checked it against the suite
+  the build planned. bench.sh ships tests/ beside tools/ and boards/."
+  # An arm count is not optional and there is no defaulting to the plan the capture announced:
+  # a suite that lost an arm at BUILD time shrinks the plan and the case count in lockstep, and
+  # only a number from outside the image can see it.
+  [ -n "${EXPECT_ARMS:-}" ] || refuse "$APP is a TAP app and EXPECT_ARMS is unset, so nothing
+  says how many arms this image plans and the stream can only be checked against itself.
+  bench.sh reads it out of the build's own kickos-selftest-manifest.txt."
+  if ! EXPECT_SKIPS="${EXPECT_SKIPS:-}" EXPECT_PARTIALS="${EXPECT_PARTIALS:-}" \
+       EXPECT_FAULTS="${EXPECT_FAULTS:-}" \
+       sh "$TAPGATE" "$BOARD/$APP" "$EXPECT_ARMS" < "$RUN"; then
+    say_kickos_lines
+    refuse "$LOG is not a clean run of $APP on $BOARD; the findings are above."
+  fi
+fi
+
+if [ "$WANT_BENCH" -eq 1 ]; then
+  # THE TREE THAT BUILT THE IMAGE, and it is not necessarily the tree this script is running
+  # from: bench.sh builds where the toolchains are and ships the image, so it passes the label
+  # it stamped. The local fallback is for a board on this box. A bench capture with NEITHER is
+  # refused rather than judged on its own say-so: a banner nothing compares against says only
+  # that some tree printed it.
+  if [ -z "${EXPECT_COMMIT:-}" ]; then
+    EXPECT_COMMIT=$(git -C "$ROOT" describe --dirty --always 2>/dev/null || true)
+  fi
+  [ -n "$EXPECT_COMMIT" ] || refuse "no EXPECT_COMMIT and $ROOT is not a git tree, so the
+  banner in $LOG can be read but not checked against anything. Pass the label
+  cmake/build_stamp.cmake stamped into the image."
+  # `nogit` is what that stamp writes when git could not answer, so it names no tree and the
+  # equality below would hold between two images built from anything at all.
+  [ "$EXPECT_COMMIT" != "nogit" ] || refuse "the image is stamped 'nogit': git could not name
+  the tree it was built from, so the banner in $LOG identifies nothing and a capture checked
+  against it is a witness for no tree."
+
+  bench_controls
 
   # RECORDED, NOT RAISED YET. The cycle judgement below is the more specific refusal
   # and it names the board's counter; a capture that is both truncated and dead-countered must

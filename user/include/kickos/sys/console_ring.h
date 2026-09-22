@@ -30,8 +30,8 @@
 namespace kickos::console
 {
 
-// The line cap the service thread rings to wake the consumer. Every buffered console
-// driver's two-thread spawn puts it at this index.
+// The BADGED notification copy the service thread rings to wake the consumer. Every
+// buffered console driver's two-thread spawn puts it at this index.
 enum
 {
     KOS_CONSOLE_CAP_DOORBELL = KOS_SPAWN_DELEGATED_CAP0 + 1

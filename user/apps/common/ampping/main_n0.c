@@ -165,6 +165,7 @@ int main(int argc, char** argv)
     printf("ampping: node %u calls node %u port %u\n", (unsigned)KOS_AMP_SELF_NODE,
            (unsigned)peer, (unsigned)port);
 
+    unsigned answered = 0;
     int round;
     for (round = 1; round <= AMPPING_ROUNDS; round++)
     {
@@ -199,9 +200,54 @@ int main(int argc, char** argv)
         {
             printf("  (node %u answered on attempt %d)\n", (unsigned)peer, tries);
         }
+        // ASSERTED HERE AND NOT BY A GATE READING THE LINE BELOW. The answer is the peer's own
+        // transformation of the payload, which is what separates a served call from a wake, and
+        // the summary after this loop is printed only for rounds that carried it.
+        if ((size_t)n != sizeof(msg))
+        {
+            printf("ampping: round %d came back with %ld of %u byte(s)\n", round, (long)n,
+                   (unsigned)sizeof(msg));
+            return 1;
+        }
+        if (msg[0] != (unsigned char)(round + 1))
+        {
+            printf("ampping: round %d came back as %u, not %u\n", round, (unsigned)msg[0],
+                   (unsigned)(round + 1));
+            return 1;
+        }
+        answered++;
+        // FOR A HUMAN READING A HANG. No gate counts these.
         printf("  ping %d -> pong %u from node %u (%ld byte(s))\n", round, (unsigned)msg[0],
                (unsigned)peer, (long)n);
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // WHAT WITNESSES THE CROSSING, and the console is not it (docs/design-multicore.md N6h):
+    // a peer is witnessed through a counter the other node reads and never through what it
+    // printed. The serving app bumps its own row ahead of every reply, so the row a reader on
+    // this node holds cannot be cut in half by a peer writing the same UART, where every line
+    // above can. This is the same record the app-alive sweep reads and the same one-writer-per-
+    // row rule; no second channel and nothing new crosses.
+    //
+    // POLLED RATHER THAN READ ONCE: the row is stored relaxed, so a run where this node holds
+    // the answer before the peer's store is visible reads again instead of reporting a short
+    // row. A row still short after the last try is REPORTED as it stands, the gate's clause
+    // being what fails on it.
+    unsigned long served = 0;
+    int wait;
+    for (wait = 0; wait < AMPPING_TRIES; wait++)
+    {
+        served = (unsigned long)kos_amp_probe(KOS_AMP_OP_APP_SERVED, peer);
+        if (served >= (unsigned long)answered)
+        {
+            break;
+        }
+        kos_sleep_ns(AMPPING_SETTLE_NS);
+    }
+    printf("ampping: node %u answered %u round(s), its own record says %lu\n", (unsigned)peer,
+           answered, served);
+#endif
+
     printf("ampping: node %u done, %d round(s) across the partition\n",
            (unsigned)KOS_AMP_SELF_NODE, AMPPING_ROUNDS);
 

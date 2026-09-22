@@ -33,15 +33,16 @@ extern "C"
     // Generated per build by cmake/build_stamp.cmake.
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
-    // Null when no app TU defines it; the optional reference is declared in
-    // tests/static/weak_allowlist.txt.
+    // NOT a linker bound: kickos/app.h emits this definition in every app TU that defines
+    // main, so weak is the vague linkage that merges the duplicates, and an app defining no
+    // main supplies none. Null then, which kbanner tests for.
     extern char const kickos_app_build_time[] KICKOS_LINK_OPTIONAL;
 
-    // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit). Both
-    // null where no window is carved, and the banner then reports "none". RX prepends one
+    // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit), equal
+    // where no window is carved, and the banner then reports "none". RX prepends one
     // underscore, matching its .ld symbol.
-    extern char _kickos_heap_start[] KICKOS_LINK_OPTIONAL;
-    extern char _kickos_heap_limit[] KICKOS_LINK_OPTIONAL;
+    extern char _kickos_heap_start[] KICKOS_LINK_BOUND;
+    extern char _kickos_heap_limit[] KICKOS_LINK_BOUND;
 }
 
 #include <stdint.h>

@@ -43,6 +43,8 @@ namespace
         cfg.base = reinterpret_cast<uintptr_t>(arg);
         cfg.ep = KOS_CAP_NONE;  // a local engine reaches no endpoint
         cfg.irq = KOS_CAP_NONE; // the DSPI pump polls its FIFOs
+        cfg.notify = KOS_CAP_NONE; // and so blocks on nothing
+        cfg.notify_bit = 0;
 
         struct kos_spi_bus bus;
         if (kos_spi_bus_open(&bus, &cfg) < 0)
@@ -89,7 +91,7 @@ namespace
                      .window_grant = true,
                      .cap_count = 1,
                      // WAIT only: the driver receives, it does not send or re-delegate.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 

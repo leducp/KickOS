@@ -413,43 +413,67 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
                      reinterpret_cast<uintptr_t>(opts)));
 }
 
-int kos_irq_attach(kos_cap_t irq_cap, uint32_t* out_mask)
+int kos_notify_create(kos_cap_t* out_cap)
 {
-    // Supply a writable output even when the caller does not need the mask.
+    cap_out_clear(out_cap);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_NOTIFY_CREATE, reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
+}
+
+int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap)
+{
+    cap_out_clear(out_cap);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_NOTIFY_BADGE, static_cast<uintptr_t>(source_cap),
+                     static_cast<uintptr_t>(bit), reinterpret_cast<uintptr_t>(out_cap), 0));
+}
+
+int kos_notify(kos_cap_t notify_cap)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_NOTIFY, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+}
+
+int kos_notify_bind(kos_cap_t notify_cap)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_NOTIFY_BIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+}
+
+int kos_notify_unbind(kos_cap_t notify_cap)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_NOTIFY_UNBIND, static_cast<uintptr_t>(notify_cap), 0, 0, 0));
+}
+
+int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
+                    uint32_t* out_bits)
+{
+    // Supply a writable output even where the caller does not need the bits: the kernel
+    // validates the word ahead of the park and would otherwise refuse the wait.
     uint32_t local = 0;
-    if (out_mask == nullptr)
+    if (out_bits == nullptr)
     {
-        out_mask = &local;
+        out_bits = &local;
     }
-    *out_mask = 0;
+    *out_bits = 0;
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_ATTACH, static_cast<uintptr_t>(irq_cap),
-                     reinterpret_cast<uintptr_t>(out_mask), 0, 0));
+        arch_syscall(KOS_SYS_NOTIFY_WAIT, static_cast<uintptr_t>(notify_cap),
+                     static_cast<uintptr_t>(mask), static_cast<uintptr_t>(timeout_us),
+                     reinterpret_cast<uintptr_t>(out_bits)));
 }
 
-int kos_irq_wait(kos_cap_t irq_cap)
+int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_WAIT, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
-}
-
-int kos_irq_wait_timed(kos_cap_t irq_cap, uint32_t timeout_us)
-{
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_WAIT_TIMED, static_cast<uintptr_t>(irq_cap),
-                     static_cast<uintptr_t>(timeout_us), 0, 0));
+        arch_syscall(KOS_SYS_IRQ_BIND_NOTIFY, static_cast<uintptr_t>(irq_cap),
+                     static_cast<uintptr_t>(notify_cap), 0, 0));
 }
 
 int kos_irq_ack(kos_cap_t irq_cap)
 {
     return static_cast<int>(
         arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
-}
-
-int kos_irq_notify(kos_cap_t irq_cap)
-{
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_NOTIFY, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
 
 int kos_irq_discard(kos_cap_t irq_cap)

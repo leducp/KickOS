@@ -30,8 +30,16 @@ namespace kickos::spi
 // the endpoint alone.
 enum
 {
-    KOS_SPI_CAP_EP = KOS_SPAWN_DELEGATED_CAP0,      // the request endpoint (WAIT)
-    KOS_SPI_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 1 // the tier-1 line, when the bus has one
+    KOS_SPI_CAP_EP = KOS_SPAWN_DELEGATED_CAP0,        // the request endpoint (WAIT)
+    // Both present exactly when the bus has a line: the object the engine waits on, and the
+    // line cap it acks. The bring-up puts LINE 0 on BIT 0.
+    KOS_SPI_CAP_NOTIFY = KOS_SPAWN_DELEGATED_CAP0 + 1,
+    KOS_SPI_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 2
+};
+
+enum
+{
+    KOS_SPI_BIT_LINE = 1u << 0
 };
 
 // THE BODIES BELOW STAY IN THIS HEADER. A SPI service target renames the class symbols it
@@ -238,7 +246,8 @@ inline void serve_loop(struct kos_spi_bus* bus)
 // ---------------------------------------------------------------------------------
 // The class-side half of the descriptor check. The generic validator cannot know that
 // serve_loop receives on KOS_SPI_CAP_EP == 1 and that a bus config naming a line names
-// KOS_SPI_CAP_LINE == 2, so a descriptor granting the right caps in the wrong ORDER passes
+// KOS_SPI_CAP_NOTIFY == 2 and KOS_SPI_CAP_LINE == 3, so a descriptor granting the right caps
+// in the wrong ORDER passes
 // valid() and stalls silently.
 constexpr bool desc_ok(driver::Descriptor const& d)
 {
@@ -260,8 +269,9 @@ constexpr bool desc_ok(driver::Descriptor const& d)
     {
         return false;
     }
-    // One cap per resource this bus has, and nothing spare.
-    if (d.threads[0].cap_count != 1u + d.line_count)
+    // One cap per resource this bus has, and nothing spare. A line brings TWO: the object
+    // the engine waits on and the line cap it acks.
+    if (d.threads[0].cap_count != 1u + 2u * d.line_count)
     {
         return false;
     }
@@ -270,10 +280,20 @@ constexpr bool desc_ok(driver::Descriptor const& d)
     {
         return false;
     }
+    if (d.line_count == 0u)
+    {
+        return true;
+    }
+    // UNBADGED: this thread binds the whole object rather than signalling one bit of it.
+    if (d.threads[0].caps[1].resource != driver::KOS_DRV_RES_NOTIFY
+        or d.threads[0].caps[1].badge != 0u
+        or (d.threads[0].caps[1].rights & KOS_CAP_WAIT) == 0u)
+    {
+        return false;
+    }
     // WAIT, never SIGNAL: the driver services the line, it does not ring its own doorbell.
-    if (d.line_count != 0u
-        and (d.threads[0].caps[1].resource != driver::KOS_DRV_RES_LINE0
-             or (d.threads[0].caps[1].rights & KOS_CAP_WAIT) == 0u))
+    if (d.threads[0].caps[2].resource != driver::KOS_DRV_RES_LINE0
+        or (d.threads[0].caps[2].rights & KOS_CAP_WAIT) == 0u)
     {
         return false;
     }

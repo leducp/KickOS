@@ -313,3 +313,10 @@ ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
 /* The vector table must sit immediately after the 256-byte boot2. */
 ASSERT(ADDR(.text) == ORIGIN(FLASH) + 0x100,
        "KickOS: RP2040 vector table must be at 0x1000_0100 (after boot2)")
+
+/* The app windows this script does not carve, stated EMPTY rather than left absent:
+   the kernel's references are strong, so an omitted bound is a link error. */
+#if !KICKOS_HAVE_MPU
+KICKOS_APP_DATA_WINDOW_NONE()
+#endif
+KICKOS_APP_IMAGE_SPLIT_NONE()

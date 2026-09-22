@@ -223,6 +223,7 @@ arch    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h
 preset  rxv3 rx72m
 preset  rxv3 rx72m-st
 preset  rxv3 rx72m-flat
+preset  rxv3 rx72m-bench
 class   rxv3 PENDSW   frame=KICKOS_RX_TRAP_FRAME_PENDSW   depth=KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW
 class   rxv3 SYS      frame=KICKOS_RX_TRAP_NEST_SYS       depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
 class   rxv3 SYS_FAST frame=KICKOS_RX_TRAP_FRAME_SYS_FAST depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST
@@ -467,7 +468,7 @@ preset  lx6 esp32-wroom-bench
 floor   armv7m   files=85 nodes=600 reason: all 38 declared armv7m presets swept 2026-09-12; smallest 107 files on teensy41-flat and 815 nodes on bluepill-c8 and due, largest 158 files on xmc4800-relax-bench and 1067 nodes on pizero2350-amp2-n0
 floor   armv6m   files=85 nodes=600 reason: all 4 declared armv6m presets swept 2026-09-12; smallest 109 files/836 nodes on picopi-flat, largest 138 files on microbit and 974 nodes on picopi-st
 floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swept 2026-09-12; smallest 99 files/830 nodes on esp32c6-wroom-flat, largest 134 files on esp32c6-wroom-st and 971 nodes on qemu-riscv-bench
-floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-09-12; smallest 99 files/852 nodes on rx72m-flat, largest 123 files/979 nodes on rx72m-st
+floor   rxv3     files=75 nodes=650 reason: all 4 declared rxv3 presets swept, the first three 2026-09-12 and rx72m-bench 2026-09-20; smallest 99 files/852 nodes on rx72m-flat, largest 127 files/1101 nodes on rx72m-bench
 floor   lx6      files=75 nodes=650 reason: all 4 declared lx6 presets swept, the first three 2026-09-12 and esp32-wroom-bench 2026-09-13; smallest 103 files/909 nodes on esp32-wroom, largest 124 files/1042 nodes on esp32-wroom-bench
 class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
 class   lx6 PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic

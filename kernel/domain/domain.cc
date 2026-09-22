@@ -395,14 +395,14 @@ namespace kickos
     }
 }
 
-// Load app RX and RW-NX regions from optional linker bounds.
+// Load app RX and RW-NX regions from the linker bounds.
 // Use end > start: a zero start is valid on flash-at-zero targets.
 extern "C"
 {
-    extern unsigned char __kickos_code_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_code_end[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_appdata_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_appdata_end[] KICKOS_LINK_OPTIONAL;
+    extern unsigned char __kickos_code_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_code_end[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_appdata_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_appdata_end[] KICKOS_LINK_BOUND;
 
     size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max)
     {

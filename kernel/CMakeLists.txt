@@ -43,6 +43,7 @@ set(KICKOS_KERNEL_SOURCES
   syscall/syscall_thread.cc
   syscall/cap.cc
   irq/irq.cc
+  notify/notify.cc
   irq/irq_route.cc)
 
 # Microbenchmark accumulator, paired with the cycle-counter bracket in switch.S. On M0 and

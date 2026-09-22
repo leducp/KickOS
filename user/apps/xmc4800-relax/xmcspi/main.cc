@@ -126,10 +126,11 @@ namespace
         volatile uint32_t* rbuf = reinterpret_cast<volatile uint32_t*>(win + off::RBUF);
         volatile uint32_t* tbuf0 = reinterpret_cast<volatile uint32_t*>(win + off::TBUF0);
 
-        int const h = KOS_SPAWN_DELEGATED_CAP0; // the only delegated cap: the line
-        if (kos_irq_attach(h, nullptr) != 0)
+        int const h = KOS_SPAWN_DELEGATED_CAP0;      // the line, for the ack
+        int const n = KOS_SPAWN_DELEGATED_CAP0 + 1;  // the object it raises, on bit 0
+        if (kos_notify_bind(n) != 0)
         {
-            kos_panic("[xmcspi] irq_attach refused the delegated line");
+            kos_panic("[xmcspi] notify_bind refused the delegated object");
         }
 
         // The line must be owned before bring_up's last act arms CCR.RIEN/AIEN and the
@@ -140,7 +141,7 @@ namespace
         }
 
         // Must print before the first blocking wait: if SR1/NVIC 85 never fires
-        // (misrouted node / RINP/AINP) the driver hangs in kos_irq_wait, and without
+        // (misrouted node / RINP/AINP) the driver hangs in the notification wait, and without
         // this line a board hung on the IRQ looks like a dead one.
         kos::print("[xmcspi] starting SSC loopback (blocking on USIC0 SR1 IRQ 85)\n");
 
@@ -153,7 +154,7 @@ namespace
 
             *tbuf0 = tx; // load TX buffer -> TDV=1 -> master clocks one 8-bit frame
 
-            kos_irq_wait(h);             // block until AIF/RIF raises NVIC 85
+            (void)kos_notify_wait(n, 1u, KOS_TIMEOUT_NONE, nullptr);             // block until AIF/RIF raises NVIC 85
             uint32_t rx = *rbuf & 0xFFu; // read RX: releases the standard buffer
 
             *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE the ack, so the flag is already
@@ -219,7 +220,12 @@ int main(int, char**)
         ksnprintf(e, sizeof(e), "[xmcspi] irq_claim(85) refused, errno %d", -irq_rc);
         kos_panic(e);
     }
-    kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
+    kos_cap_t note = KOS_CAP_NONE;
+    if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    {
+        kos::print("[xmcspi] ERROR: the line could not be attached to a notification\n");
+    }
+    kos_cap_grant const caps[2] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
 
     // The driver ends on the negative test's fault, and a fault cancels the faulting
     // thread's whole TASK: spawned plain it would join root's task and take root with it,
@@ -236,7 +242,7 @@ int main(int, char**)
                                    /*mem=*/nullptr, /*mem_size=*/0,
                                    /*stack=*/nullptr, /*stack_size=*/0,
                                    /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
-                                   caps, 1, /*authority=*/0, /*cap_dest=*/nullptr, victim);
+                                   caps, 2, /*authority=*/0, /*cap_dest=*/nullptr, victim);
     if (not drv.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1, which this app needs exclusively,

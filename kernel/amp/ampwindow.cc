@@ -354,6 +354,11 @@ namespace kickos
         {
             g_counts[self()].app_alive.store(mark);
         }
+
+        void app_served_bump(void)
+        {
+            count_up(g_counts[self()].app_served);
+        }
 #endif
 
         namespace
@@ -922,12 +927,13 @@ namespace kickos
             return v;
         }
 
-        bool forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len)
+        ForgedReply forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len)
         {
+            ForgedReply f = {};
             uint32_t const me = self();
             if (from >= NODE_MAX or from == me or len > SLOT_BYTES)
             {
-                return false;
+                return f;
             }
             Ring& r = ring_for(Class::REPLY, me, from);
             forge_reset(Class::REPLY, r, me, from);
@@ -941,6 +947,7 @@ namespace kickos
                 s.payload[i] = static_cast<uint8_t>(0xC0u + i);
             }
             r.head.v.store(1u);
+            f.published = true;
 
             uint8_t buf[SLOT_BYTES];
             uint32_t got_len = 0;
@@ -948,9 +955,18 @@ namespace kickos
             ReplyTag got_tag = {};
             if (take_reply(from, buf, &got_len, &got_port, &got_tag) != Verdict::TOOK)
             {
-                return false;
+                return f;
             }
-            return dispatch_reply(from, got_tag, buf, got_len);
+            f.offered = true;
+            // The bracket that attributes ONE refusal. Every forge is driven under the
+            // caller's IrqLock, so nothing else on this core runs between the two reads and
+            // this row is written by this node alone: the delta is exclusive where a delta
+            // read across a whole forge sequence is a window sum (docs/design-multicore.md
+            // N6f).
+            uint32_t const dropped = g_counts[me].reply_drop.load();
+            f.delivered = dispatch_reply(from, got_tag, buf, got_len);
+            f.counted = (g_counts[me].reply_drop.load() == dropped + 1u);
+            return f;
         }
 
         Verdict forge_class_take(uint32_t from)

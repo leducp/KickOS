@@ -43,6 +43,8 @@ namespace
         bcfg.base = 0u; // a proxy reaches no register window
         bcfg.ep = SPI_EP;
         bcfg.irq = KOS_CAP_NONE;
+        bcfg.notify = KOS_CAP_NONE;
+        bcfg.notify_bit = 0;
         int32_t const brc = kos_spi_bus_open(bus, &bcfg);
         if (brc < 0)
         {

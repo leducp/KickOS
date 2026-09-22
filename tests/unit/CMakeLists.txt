@@ -19,7 +19,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
+      cancelkind capbadge capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
       schedwake slayhook taskdeath taskpool wildstack)
     add_subdirectory(${_unit})
   endforeach()

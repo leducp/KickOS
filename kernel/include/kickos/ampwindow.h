@@ -457,6 +457,15 @@ namespace kickos
             // NOT gated on the selftest knob, unlike its writer: the shared region's layout is
             // the partition's and must not move with a test option.
             Atomic<uint32_t, Order::RELAXED> app_alive;
+            // CALLS A THREAD ON THIS NODE ANSWERED ITSELF, which no other field here says:
+            // `took` moves for a call the doorbell drained whether or not any thread received
+            // it, this node's kernel answering an unreceived one with an empty reply of its
+            // own, and `sent` counts that refusal as a publication too. So a peer reading
+            // either learns that a message crossed and not that an application served it.
+            // Bumped from app_served_bump below and from nowhere else, ahead of the reply, so
+            // a caller holding the answer finds the row already moved.
+            // NOT gated on the selftest knob, unlike its writer, for app_alive's reason.
+            Atomic<uint32_t, Order::RELAXED> app_served;
         };
 
         Counts const& counts(uint32_t node);
@@ -470,6 +479,10 @@ namespace kickos
         // writer per row is the whole of why a row may sit where a peer reads it, and a caller
         // that could name the row would be able to speak for a peer.
         void app_alive_set(uint32_t mark);
+
+        // Count one call a thread on THIS node answered. The node is derived, for the reason
+        // above.
+        void app_served_bump(void);
 #endif
 
         // Drain every inbox of THIS node, routing a PORT_REPLY to whatever local caller its tag
@@ -513,13 +526,24 @@ namespace kickos
         // is only who the doorbell would reach had the send not been refused.
         Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump);
 
+        // What one reply forge did. `delivered` alone reads the same for a reply the guard
+        // refused and for a publication the forge never got back, and those are the two a
+        // caller has to tell apart.
+        struct ForgedReply
+        {
+            bool published;
+            bool offered; // this call took its own publication back, so the guard judged it
+            bool delivered;
+            bool counted; // the refusal moved this node's dropped-reply count by exactly one
+        };
+
         // Publish ONE PORT_REPLY of `len` bytes into THIS node's inbox from `from` carrying
         // `tag`, then take it and route it exactly as node_service does, so a HOSTILE reply is
-        // playable at a caller that is genuinely parked. True where it reached one. A `len` of
-        // zero is the answer a serving node publishes for a call refused past the take.
+        // playable at a caller that is genuinely parked. A `len` of zero is the answer a
+        // serving node publishes for a call refused past the take.
         //
         // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
-        bool forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len);
+        ForgedReply forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len);
 
         // Publish a REPLY-class port into the CALL ring and take it. Both untrusted fields are
         // well-formed, so only the class clause can refuse this.

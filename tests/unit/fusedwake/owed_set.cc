@@ -15,6 +15,7 @@
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/klock.h>
 #include <kickos/sched.h>
@@ -145,10 +146,11 @@ namespace
     {
         Thread* server;
         uint32_t irq;
+        uint32_t note;
         uint32_t bit;
     };
 
-    // Use a real bound line so the kernel can rearm and consume its bit.
+    // Use a real attached line and a real bind, so the kernel can rearm and consume its bit.
     void seat_server_with_a_line(Line* l)
     {
         l->server = seat_pool(0, PRIO_SERVER);
@@ -158,11 +160,13 @@ namespace
             sched::reschedule();
         }
         l->irq = KCAP_INVALID;
-        l->bit = 0;
+        l->note = KCAP_INVALID;
+        l->bit = 1u << 0; // irq_bind_notify copies the capability's badge; unbadged is bit 0
         ASSERT_EQ(irq_claim(l->server, 5, 0, &l->irq), 0);
-        ASSERT_EQ(irq_notify_bind(l->server, l->irq, &l->bit), 0);
-        ASSERT_NE(l->bit, 0u);
-        ASSERT_EQ(l->server->notify_pending, 0u);
+        ASSERT_EQ(notify_create(l->server, &l->note), 0);
+        ASSERT_EQ(irq_bind_notify(l->server, l->irq, l->note), 0);
+        ASSERT_EQ(notify_bind(l->server, l->note), 0);
+        ASSERT_EQ(notify_pending_of(l->server), 0u);
     }
 
     // Combine a valid flag with an unknown bit to test unknown-bit rejection.
@@ -313,8 +317,8 @@ TEST_F(FusedWake, a_consumed_notification_is_still_reported)
 {
     Line l{};
     ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
-    ASSERT_EQ(irq_notify(l.server, l.irq), 0);
-    ASSERT_EQ(l.server->notify_pending & l.bit, l.bit);
+    ASSERT_EQ(notify_signal(l.server, l.note), 0);
+    ASSERT_EQ(notify_pending_of(l.server) & l.bit, l.bit);
 
     kos_reply_recv_opts opts{};
     kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);

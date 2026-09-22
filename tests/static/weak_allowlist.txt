@@ -26,35 +26,12 @@ kickos_app_build_time
 _kickos_app_build_time
 
 # --- optional-symbol references (weak undefined, absence is legal) ------------
-# Provided by the chip linker script; the host/sim link has no linker script, and
-# kernel/domain/domain.cc + kernel/init/kmain.cc null-check every one of them.
-__kickos_code_start
-___kickos_code_start
-__kickos_code_end
-___kickos_code_end
-__kickos_appdata_start
-___kickos_appdata_start
-__kickos_appdata_end
-___kickos_appdata_end
-_kickos_heap_start
-__kickos_heap_start
-_kickos_heap_limit
-__kickos_heap_limit
-# The app's own low window, carved only where a translating backend splits the image.
-__kickos_app_rom_start
-___kickos_app_rom_start
-__kickos_app_rom_end
-___kickos_app_rom_end
-__kickos_app_sram_start
-___kickos_app_sram_start
-__kickos_app_sram_end
-___kickos_app_sram_end
-# Added to an app VIRTUAL address to name the frame the loader put those bytes in; absent is
-# zero (kernel/mem/aspace.cc).
-__kickos_app_load_delta
-___kickos_app_load_delta
+# The image's own layout bounds are NOT here. They are strong references against a window
+# every linker script states, empty where it carves none (include/kickos/klink.h,
+# arch/common/sections.ld.h), so a script that omits one fails the link.
+#
 # libgcc's unwinder registration, called by the RISC-V chip bring-up only when the link
-# supplied it.
+# supplied it. Optional by libgcc's contract and not by ours, so no script can state it.
 __register_frame
 ___register_frame
 

@@ -156,4 +156,41 @@
     ASSERT(SIZEOF(.tbss) == 0 || ALIGNOF(.tbss) <= 8,                         \
            "KickOS: a thread_local needs more than 8-byte alignment, which moves the ABI bias below the thread pointer and every TLS offset with it. KICKOS_ARCH_TLS_TCB states a fixed bias, so this is refused rather than mis-seated.")
 
+/* KICKOS_LD_C_SYM spells a C identifier the way the backend's psABI does. rx-elf prepends one
+ * underscore to every C name, so the rxv3 chip script defines this before including this file.
+ */
+#ifndef KICKOS_LD_C_SYM
+#define KICKOS_LD_C_SYM(name) name
+#endif
+
+/* THE WINDOWS A CHIP DOES NOT CARVE, STATED EMPTY.
+ *
+ * kernel/domain/domain.cc, kernel/mem/aspace.cc and arch/common/arch_ram_common.cc reference
+ * every bound below STRONGLY (include/kickos/klink.h), so a script that states none fails the
+ * link naming the symbol. These bounds were once weak undefined references, which collapsed
+ * absent into a zero indistinguishable from an empty window; that is how a monolithic
+ * .init_array once ran every app constructor privileged and skipped the late walk with no
+ * diagnostic (docs/reference/invariants.md, ctors-run-before-init-entry).
+ *
+ * Every reader tests end > start, so a pair of zeros admits nothing, which is what an absent
+ * weak reference used to produce.
+ */
+#define KICKOS_APP_CODE_WINDOW_NONE()                                         \
+    KICKOS_LD_C_SYM(__kickos_code_start) = 0;                                 \
+    KICKOS_LD_C_SYM(__kickos_code_end) = 0;
+
+#define KICKOS_APP_DATA_WINDOW_NONE()                                         \
+    KICKOS_LD_C_SYM(__kickos_appdata_start) = 0;                              \
+    KICKOS_LD_C_SYM(__kickos_appdata_end) = 0;
+
+/* An image no loader splits: no app-only rom/sram window, and an app virtual address already
+ * names the frame it was loaded into, so the delta is zero.
+ */
+#define KICKOS_APP_IMAGE_SPLIT_NONE()                                         \
+    KICKOS_LD_C_SYM(__kickos_app_rom_start) = 0;                              \
+    KICKOS_LD_C_SYM(__kickos_app_rom_end) = 0;                                \
+    KICKOS_LD_C_SYM(__kickos_app_sram_start) = 0;                             \
+    KICKOS_LD_C_SYM(__kickos_app_sram_end) = 0;                               \
+    KICKOS_LD_C_SYM(__kickos_app_load_delta) = 0;
+
 #endif

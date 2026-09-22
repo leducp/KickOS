@@ -56,6 +56,10 @@ namespace
         cfg.base = reinterpret_cast<uintptr_t>(arg);
         cfg.ep = KOS_CAP_NONE; // a local engine reaches no endpoint
         cfg.irq = spi::KOS_SPI_CAP_LINE;
+        // The bring-up attached LINE 0 to this object on BIT 0 and handed the unbadged
+        // capability here: this thread binds it and waits on that bit.
+        cfg.notify = spi::KOS_SPI_CAP_NOTIFY;
+        cfg.notify_bit = 0;
 
         struct kos_spi_bus bus;
         if (kos_spi_bus_open(&bus, &cfg) < 0)
@@ -96,11 +100,13 @@ namespace
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
-                     .cap_count = 2,
-                     // Both WAIT only: the driver receives and services, it does not send,
-                     // ring its own doorbell, or re-delegate.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}}},
+                     .cap_count = 3,
+                     // All WAIT only: the driver receives and services, it does not send,
+                     // ring its own doorbell, or re-delegate. The notification is UNBADGED:
+                     // this thread binds the whole object rather than signalling one bit.
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 

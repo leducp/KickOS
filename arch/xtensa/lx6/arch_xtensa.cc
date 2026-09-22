@@ -275,6 +275,13 @@ extern "C"
     void xtensa_switch(struct arch_context* from, struct arch_context* to);
     void _thread_trampoline(void);
 
+#if KICKOS_BENCH
+    // The switch bracket's END cell (kernel/bench/bench.cc). switch.S opens the window at the
+    // switch entry and cannot close it: the close has to stand past the retw, which is in
+    // arch_switch below. Per core; switch.S reads it through PERCPU_CELL.
+    extern uint32_t g_bench_sw_end[KICKOS_NUM_CORES];
+#endif
+
     // Chip device dispatch: ISR context, once per asserted device CPU interrupt. The chip
     // reads its own peripheral status, calls kickos_isr_irq() once per asserted sub-source
     // (0..N logical lines), and owns the per-source clear discipline. A chip that binds a
@@ -460,6 +467,14 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     }
     g_arch_current[core] = to;
     xtensa_switch(from, to);
+#if KICKOS_BENCH
+    // Closes the switch window that RESUMED this thread, not the one opened above: only the
+    // cooperative retw returns here. The count is read before anything else so the windowed
+    // return and its underflow are the last thing inside the span, and the core is re-read
+    // because the resuming switch ran on whichever core is executing now.
+    uint32_t const at = rd_ccount();
+    g_bench_sw_end[arch_cpu_id()] = at;
+#endif
 }
 
 int arch_in_isr(void)

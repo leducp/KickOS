@@ -111,8 +111,12 @@ namespace
     // The waiter holds the line, so nothing else in the image may.
     constexpr int CH_E2E_IRQ = 1;   // waiter: the claimed line, WAIT only
     constexpr int CH_E2E_READY = 2; // waiter: posted once, after the tare, before the first park
+    constexpr int CH_E2E_NOTE = 3;  // waiter: the object that line signals, WAIT only
     constexpr int CH_E2E_GO = 1;    // raiser: one post per pass
     constexpr int CH_E2E_PASS = 2;  // raiser: posted when a pass has run its samples
+
+    // Root attaches the line with an UNBADGED copy, so it raises bit 0.
+    constexpr uint32_t E2E_LINE_BIT = 1u << 0;
 
     void* g_e2e_dev = nullptr;
     kos_thread_t g_e2e_tid = KOS_THREAD_NONE;
@@ -128,8 +132,13 @@ namespace
 
     void e2e_waiter(void*)
     {
-        auto irq = kos::Irq::adopt(CH_E2E_IRQ);
-        irq.attach();
+        // The line is attached to this object by root; the waiter only has to become its
+        // bound thread. The line raises BIT 0, root having attached it with an unbadged copy.
+        if (kos_notify_bind(CH_E2E_NOTE) != 0)
+        {
+            kos_sem_post(CH_E2E_READY);
+            return;
+        }
         // Under an MPU reachability is per THREAD, so root's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
@@ -150,9 +159,9 @@ namespace
         while (g_e2e_stop == 0)
         {
             (void)kos_bench(KOS_BENCH_OP_E2E_ARM, CH_E2E_IRQ, 0);
-            if (irq.wait() != 0)
+            if (kos_notify_wait(CH_E2E_NOTE, E2E_LINE_BIT, KOS_TIMEOUT_NONE, nullptr) != 0)
             {
-                break; // cancelled, or the binding died: nothing left to wake for
+                break; // cancelled, or the object went away: nothing left to wake for
             }
             // THE CLOSING STAMP IS THE NEXT INSTRUCTION AFTER THIS READ, so the span carries
             // the read and one trap and nothing else of this thread's.
@@ -219,18 +228,31 @@ namespace
             kickos::emit(cs);
             return false;
         }
+        kos_cap_t note = KOS_CAP_NONE;
+        if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+        {
+            kos_handle_close(note);
+            kos_handle_close(irq);
+            kickos::emit("  e2e: SKIP (the line could not be attached to a notification)\n");
+            return false;
+        }
         // The claim leaves the line MASKED and the waiter's first arm happens after the ready
         // handshake, so a raise before that would land on a masked line and be discarded.
+        // Arming needs the line attached, which is why this follows the attach.
         kos_irq_ack(irq);
         if (kos_sem_create(0, &g_e2e_ready) != 0)
         {
+            kos_handle_close(note);
             kos_handle_close(irq);
             return false;
         }
-        kos_cap_grant caps[] = {{irq, KOS_CAP_WAIT}, {g_e2e_ready, CH_FULL}};
-        auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 2,
+        kos_cap_grant caps[] = {{irq, KOS_CAP_WAIT},
+                                {g_e2e_ready, CH_FULL},
+                                {note, KOS_CAP_WAIT}};
+        auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 3,
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
                                           KOS_AUTH_MEMORY);
+        kos_handle_close(note); // the waiter's bind and the line's attach both hold their own
         kos_handle_close(irq); // the waiter is the sole holder: its exit frees the line
         if (not w.valid())
         {

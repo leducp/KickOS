@@ -42,6 +42,8 @@ extern "C"
     // kickos_cxx app pulls _Unwind_Find_FDE from the same object, defining
     // __register_frame, so the ref resolves and registration runs.
     extern uint32_t __eh_frame_start;
+    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
+    // and optional by libgcc's own contract, so no linker script can state it.
     void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (virt.ld). .appdata holds the app + C++-runtime .data and

@@ -69,31 +69,80 @@ int g;
 }
 EOF
 
+# Sets CTL_HITS to the `<file>:<line>` hits and CTL_EXT to the trailing `<tagged> <gaps>`
+# record. NOT through a command substitution at the call site, which would run it in a subshell
+# and leave CTL_EXT unset in the caller.
 scan_ctl() { # <file>
-    awk -v FNAME="$1" -f "$AWK_PROG" "$1" 2>"$TMP/ctl.err"
-    _rc=$?
+    if awk -v FNAME="$1" -f "$AWK_PROG" "$1" > "$TMP/ctl.out" 2>"$TMP/ctl.err"; then
+        _rc=0
+    else
+        _rc=$?
+    fi
     if [ "$_rc" -ne 0 ]; then
         sed 's/^/      /' "$TMP/ctl.err" >&2
         fail "the scanner exited $_rc on the planted $1, so it cannot count a file of that
     shape and its verdict over the corpus below would be UNKNOWN"
     fi
+    CTL_EXT="$(sed -n 's/^EXT //p' "$TMP/ctl.out")"
+    [ -n "$CTL_EXT" ] || fail "the scanner printed no EXT record for the planted $1, so nothing
+    below can tell a file it found no linkage block in from one it could not read"
+    CTL_HITS="$(grep -v '^EXT ' "$TMP/ctl.out" || :)"
 }
 
-ctl="$(scan_ctl "$TMP/ctl_hit.cc")"
+scan_ctl "$TMP/ctl_hit.cc"
+ctl="$CTL_HITS"
 [ "$ctl" = "$TMP/ctl_hit.cc:2" ] || fail "the scanner reported [$ctl] for a planted anonymous
     namespace INSIDE an extern \"C\" block, rather than its line 2. That is the one defect this
     gate exists to catch, so a scanner that misses it cannot go red"
+[ "$CTL_EXT" = "1 0" ] || fail "the scanner tagged and gapped [$CTL_EXT] rather than [1 0] on a
+    planted file carrying one plain extern \"C\" block, so neither count says anything"
 
-ctl="$(scan_ctl "$TMP/ctl_clean.cc")"
+scan_ctl "$TMP/ctl_clean.cc"
+ctl="$CTL_HITS"
 [ -z "$ctl" ] || fail "the scanner reported [$ctl] for a planted anonymous namespace OUTSIDE the
     extern \"C\" block, which is the legitimate spelling every arch backend uses"
 
-ctl="$(scan_ctl "$TMP/ctl_contd.cc")"
+scan_ctl "$TMP/ctl_contd.cc"
+ctl="$CTL_HITS"
 [ "$ctl" = "$TMP/ctl_contd.cc:5" ] || fail "the scanner reported [$ctl] rather than line 5 for a
     planted file whose LINE-CONTINUED preprocessor directive leaves an apostrophe unpaired. The
     continuation is not a directive line and is scanned as code, so an unpaired quote or
     apostrophe there shifts the state machine and no brace after it is counted: the file, and
     every hit in it, then reads as clean at depth 0"
+
+# THE BLIND FILE: a linkage block this scanner reads as an ordinary one, because something
+# stands between the spec and the brace. Every hit is gated on the tag, so the anonymous
+# namespace inside it is reported by nothing and the file reads as clean.
+cat > "$TMP/ctl_gap.cc" <<'EOF'
+extern "C" KICKOS_CTL_MACRO {
+namespace {
+int g;
+}
+}
+EOF
+scan_ctl "$TMP/ctl_gap.cc"
+ctl="$CTL_HITS"
+[ -z "$ctl" ] || fail "the scanner reported [$ctl] for a planted linkage block it does not tag,
+    so the gap count below is measuring nothing"
+[ "$CTL_EXT" = "0 1" ] || fail "the scanner tagged and gapped [$CTL_EXT] rather than [0 1] on a
+    planted extern \"C\" block with a macro between the spec and the brace. That file carries
+    the defect and reports no hit, so without the gap count it reads as clean"
+
+# AND A DECLARATOR IS NOT A GAP, or every file defining a function with C linkage is refused.
+cat > "$TMP/ctl_fndef.cc" <<'EOF'
+extern "C" void kos_ctl_f(void) {
+}
+namespace {
+int g;
+}
+EOF
+scan_ctl "$TMP/ctl_fndef.cc"
+ctl="$CTL_HITS"
+[ -z "$ctl" ] || fail "the scanner reported [$ctl] for a planted function definition with C
+    linkage, which opens no block and nests nothing"
+[ "$CTL_EXT" = "0 0" ] || fail "the scanner tagged and gapped [$CTL_EXT] rather than [0 0] on a
+    planted function definition with C linkage. It is not a linkage block and not a gap, and a
+    gap count that says otherwise refuses every backend in the tree"
 
 # `git ls-files`, not find: an untracked scratch file is neither gated nor counted.
 corpus "$TMP/all" "C/C++ file" '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp'
@@ -120,16 +169,38 @@ cand="$(wc -l < "$TMP/cand" | tr -d ' ')"
 
 : > "$TMP/hits"
 : > "$TMP/refused"
+: > "$TMP/gapped"
+TAGGED=0
 while IFS= read -r f; do
     # A refusal (exit 2) means the file could not be counted, NOT that it is clean, so it is
     # collected and failed on separately below.
-    if awk -v FNAME="$f" -f "$AWK_PROG" "$f" >> "$TMP/hits" 2>> "$TMP/refused"; then
-        :
+    if awk -v FNAME="$f" -f "$AWK_PROG" "$f" > "$TMP/one" 2>> "$TMP/refused"; then
+        _ext="$(sed -n 's/^EXT //p' "$TMP/one")"
+        [ -n "$_ext" ] || fail "the scanner printed no EXT record for $f, so what it tagged
+      there is unknown"
+        _t="${_ext%% *}"
+        _g="${_ext##* }"
+        require_number "$_t" "the linkage blocks tagged in $f"
+        require_number "$_g" "the untagged linkage braces in $f"
+        TAGGED=$((TAGGED + _t))
+        [ "$_g" -eq 0 ] || printf '%s: %s brace(s)\n' "$f" "$_g" >> "$TMP/gapped"
+        grep -v '^EXT ' "$TMP/one" >> "$TMP/hits" || :
     else
         rc=$?
         [ "$rc" -eq 2 ] || fail "awk exited $rc scanning $f"
     fi
 done < "$TMP/cand"
+
+# A BRACE THE SCANNER HALF READ IS UNKNOWN, NOT CLEAN. Every hit is gated on a block tagged as
+# language linkage, so a spelling the tag regex misses hides whatever is nested in it.
+if [ -s "$TMP/gapped" ]; then
+    echo "FAIL: an open brace whose code text carries extern \"C\" without ending in it, so" >&2
+    echo "      this scanner read it as an ordinary block and anything nested inside it went" >&2
+    echo "      unjudged. That is UNKNOWN, not clean. Put the brace directly after the" >&2
+    echo "      linkage spec, or teach the tag regex in tests/static/extern_c_linkage.awk:" >&2
+    sed 's/^/      /' "$TMP/gapped" >&2
+    exit 1
+fi
 
 if [ -s "$TMP/refused" ]; then
     n="$(wc -l < "$TMP/refused" | tr -d ' ')"
@@ -148,5 +219,13 @@ if [ -s "$TMP/hits" ]; then
     exit 1
 fi
 
-echo "PASS: $cand of $corpus tracked C/C++ files pair an extern \"C\" block with a namespace;"
-echo "      none of them nests an anonymous namespace inside the block"
+# WHAT THE SCANNER SAW, not what the pre-filter selected: the pre-filter matches a textual
+# `extern "C"`, a declaration included, and a banner counting those asserts a pairing the
+# scanner may never have opened a block for.
+[ "$TAGGED" -gt 0 ] || fail "the scanner tagged no extern \"C\" block anywhere in the $cand
+      candidate file(s) this tree's pre-filter selected, so every one of them reported no hit
+      for want of a window rather than for want of a defect"
+
+echo "PASS: $cand of $corpus tracked C/C++ files pair an extern \"C\" with a namespace, and the"
+echo "      scanner tagged $TAGGED linkage block(s) across them; none nests an anonymous"
+echo "      namespace inside one, and no brace was half read"

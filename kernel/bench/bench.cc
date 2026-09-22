@@ -426,9 +426,9 @@ extern "C"
     // Xtensa cannot call from the windowed exit. Record the end in switch.S and
     // add the interval at the next switch entry.
     constinit uint32_t g_bench_sw_end[KICKOS_NUM_CORES] = {};
-    // RV32 is single-core. Save the save/swap and restore timestamps separately
-    // because the trap exit has no free register. Record the completed interval
-    // at the next switch, where a call is possible.
+    // RV32 and RXv3 are single-core here. Save the save/swap and restore timestamps
+    // separately because the exit that reloads the frame has no register left to hold a
+    // sum. Record the completed interval at the next switch, where a call is possible.
     constinit uint32_t g_bench_sw_half = 0;
     constinit uint32_t g_bench_sw_rstart = 0;
     constinit uint32_t g_bench_sw_pend = 0;
@@ -614,7 +614,7 @@ namespace kickos
     {
         // Mask local updates while clearing rows. Peer cores can still add samples.
         IrqLock lock;
-        // Discard delayed Xtensa and RV32 switch samples from the previous window.
+        // Discard delayed Xtensa, RV32 and RXv3 switch samples from the previous window.
         for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
         {
             g_bench_sw_end[c] = 0;

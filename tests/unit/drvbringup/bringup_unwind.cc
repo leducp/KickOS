@@ -9,8 +9,8 @@
 // before the diagnostic print), and a counter or a substring test drops it.
 //
 // What the trace witnesses is the ORDER of the unwind calls. Whether kos_thread_kill is
-// honoured (cancellation is cooperative, taken inside kos_irq_wait, and no spawned thread
-// runs here) and whether a close reclaims the console are settled by
+// honoured (cancellation is cooperative, taken inside a notification wait, and no spawned
+// thread runs here) and whether a close reclaims the console are settled by
 // tests/integration/check_sim_drvdeath.sh.
 
 #include <kickos/sys/driver_service.h>
@@ -74,16 +74,17 @@ namespace
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT}}},
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
                     {.entry = t_console,
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = block_init
     };
 
@@ -105,16 +106,17 @@ namespace
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT}}},
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
                     {.entry = t_console,
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = block_init
     };
 
@@ -137,9 +139,10 @@ namespace
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
-                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT}}},
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
                     {.entry = t_worker,
                      .name = "drvwork",
                      .prio_delta = 0,
@@ -153,7 +156,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = block_init
     };
 
@@ -177,7 +180,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = block_init
     };
 
@@ -201,7 +204,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 
@@ -225,7 +228,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = block_init
     };
 
@@ -257,7 +260,7 @@ namespace
                      .arg = drv::KOS_DRV_ARG_NONE,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 
@@ -291,8 +294,9 @@ TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0) << "a complete bring-up returns 0";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
-                 " close11 close12 close10 probe")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51"
+                 " close11 close12 close13 close10 probe")
         << "a complete bring-up makes the group, claims, spawns, drops its lines and probes";
     EXPECT_STREQ(kos_seam_msg(), "") << "a complete bring-up prints no diagnostic";
 }
@@ -316,8 +320,9 @@ TEST_F(DrvBringup, a_non_cacheable_block_carries_the_flag_on_BOTH_of_its_grants)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two_nocache, &cfg, nullptr), 0);
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grantnc taskmemnc90 ep10 pub10 claim11 claim12 spawn50 spawn51"
-                 " close11 close12 close10 probe")
+                 "alloc grantnc taskmemnc90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51"
+                 " close11 close12 close13 close10 probe")
         << "the self-grant and the task grant must both carry KOS_MEM_NOCACHE";
 }
 
@@ -352,7 +357,7 @@ TEST_F(DrvBringup, flags_on_a_block_that_does_not_exist_are_refused_by_the_valid
                      .arg = drv::KOS_DRV_ARG_NONE,
                      .window_grant = false,
                      .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
     EXPECT_FALSE(drv::valid(d)) << "flags with no block would be ignored in silence";
@@ -429,8 +434,10 @@ TEST_F(DrvBringup, the_first_spawn_fails)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1)
         << "a refused first spawn fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn!"
-                                   " close11 close12 close10 tkill90 print print")
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn!"
+                 " close11 close12 close13 close10 tkill90 print print")
         << "a refused first spawn closes both lines and cancels nobody";
     EXPECT_PRED2(says, kos_seam_msg(), "spawn failed")
         << "the diagnostic names the failed spawn";
@@ -444,8 +451,9 @@ TEST_F(DrvBringup, a_later_spawn_fails_and_the_peer_is_cancelled)
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1)
         << "a refused later spawn fails bring-up";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn!"
-                 " close11 close12 close10 tkill90 print print")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn!"
+                 " close11 close12 close13 close10 tkill90 print print")
         << "a refused later spawn closes the endpoint BEFORE ending the group";
 }
 
@@ -457,8 +465,9 @@ TEST_F(DrvBringup, two_live_peers_are_ended_by_one_group_kill)
     EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), -1)
         << "a refused third spawn fails bring-up";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51 spawn!"
-                 " close11 close12 close10 tkill90 print print")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51 spawn!"
+                 " close11 close12 close13 close10 tkill90 print print")
         << "two live peers are ended by one kill naming the task, not the threads";
 }
 
@@ -482,8 +491,9 @@ TEST_F(DrvBringup, a_thread_that_never_reaches_its_loop)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "an unset latch fails bring-up";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 sleep*1000"
-                 " close11 close12 close10 tkill90 print print")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 sleep*1000"
+                 " close11 close12 close13 close10 tkill90 print print")
         << "the readiness poll sleeps its full budget, then ends the group";
     EXPECT_PRED2(says, kos_seam_msg(), "never reached its loop")
         << "the diagnostic names the readiness timeout";
@@ -574,8 +584,9 @@ TEST_F(DrvBringup, the_handover_probe_reports_a_dead_driver)
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_EPIPE)
         << "an EPIPE probe returns EPIPE unchanged";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
-                 " close11 close12 close10 probe tkill90 print print")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51"
+                 " close11 close12 close13 close10 probe tkill90 print print")
         << "an EPIPE probe ends the whole group, after the close and after the probe";
     EXPECT_PRED2(says, kos_seam_msg(), "died during bring-up")
         << "the diagnostic names the dead thread";
@@ -588,8 +599,9 @@ TEST_F(DrvBringup, a_timed_out_handover_probe_cancels_nothing)
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_ETIMEDOUT)
         << "a timed-out probe returns ETIMEDOUT unchanged";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
-                 " close11 close12 close10 probe")
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12"
+                 " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51"
+                 " close11 close12 close13 close10 probe")
         << "a timed-out probe leaves the group alone and prints nothing";
     EXPECT_STREQ(kos_seam_msg(), "") << "a timed-out probe prints no diagnostic";
 }

@@ -19,6 +19,7 @@
 #include <kickos/time.h>
 #include <kickos/kernel.h>
 #include <kickos/irq.h>
+#include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
 #include <kickos/ramown.h>
@@ -1223,17 +1224,71 @@ uint64_t syscall_body(uintptr_t nr,
             user_panic(a0); // noreturn
             return 0;
         }
-        case KOS_SYS_IRQ_ATTACH:
+        case KOS_SYS_NOTIFY_CREATE:
         {
-            // CAP_WAIT authorizes binding. Validate out_mask before changing the binding.
-            int rc = cap_out_check(a1);
+            int rc = cap_out_check(a0);
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);
             }
-            uint32_t mask = 0;
-            rc = irq_notify_bind(sched::current(), static_cast<uint32_t>(a0), &mask);
-            return cap_out_deliver(a1, rc, mask);
+            uint32_t h = KCAP_INVALID;
+            rc = notify_create(sched::current(), &h);
+            return cap_out_deliver(a0, rc, h);
+        }
+        case KOS_SYS_NOTIFY_BADGE:
+        {
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = notify_badge(sched::current(), static_cast<uint32_t>(a0),
+                              static_cast<uint32_t>(a1), &h);
+            return cap_out_deliver(a2, rc, h);
+        }
+        case KOS_SYS_NOTIFY:
+        {
+            return static_cast<uint64_t>(
+                notify_signal(sched::current(), static_cast<uint32_t>(a0)));
+        }
+        case KOS_SYS_NOTIFY_BIND:
+        {
+            return static_cast<uint64_t>(
+                notify_bind(sched::current(), static_cast<uint32_t>(a0)));
+        }
+        case KOS_SYS_NOTIFY_UNBIND:
+        {
+            return static_cast<uint64_t>(
+                notify_unbind(sched::current(), static_cast<uint32_t>(a0)));
+        }
+        case KOS_SYS_NOTIFY_WAIT:
+        {
+            // The out-word is validated BEFORE the park: a caller that cannot be written to
+            // must not be blocked first and refused after.
+            int rc = cap_out_check(a3);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            // The rearms this wait issues reach the controller, whose mask and pending state
+            // are shared across the image, so the waiter goes to the routed core first.
+            rc = irq_pin_to_chain_core(sched::current(), static_cast<uint32_t>(a0));
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t bits = 0;
+            rc = notify_wait(sched::current(), static_cast<uint32_t>(a0),
+                             static_cast<uint32_t>(a1), static_cast<uint32_t>(a2), &bits);
+            return cap_out_deliver(a3, rc, bits);
+        }
+        case KOS_SYS_IRQ_BIND_NOTIFY:
+        {
+            IrqLock lock;
+            return static_cast<uint64_t>(irq_bind_notify(sched::current(),
+                                                         static_cast<uint32_t>(a0),
+                                                         static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_IRQ_CLAIM:
         {
@@ -1252,23 +1307,9 @@ uint64_t syscall_body(uintptr_t nr,
                            static_cast<unsigned int>(a1), &h);
             return cap_out_deliver(a2, rc, h);
         }
-        case KOS_SYS_IRQ_WAIT_TIMED:
-        {
-            return static_cast<uint64_t>(irq_wait_timed(sched::current(),
-                                                        static_cast<uint32_t>(a0),
-                                                        static_cast<uint32_t>(a1)));
-        }
-        case KOS_SYS_IRQ_WAIT:
-        {
-            return static_cast<uint64_t>(irq_wait(sched::current(), static_cast<uint32_t>(a0)));
-        }
         case KOS_SYS_IRQ_ACK:
         {
             return static_cast<uint64_t>(irq_ack(sched::current(), static_cast<uint32_t>(a0)));
-        }
-        case KOS_SYS_IRQ_NOTIFY:
-        {
-            return static_cast<uint64_t>(irq_notify(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_DISCARD:
         {

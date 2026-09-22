@@ -71,6 +71,11 @@ printf '%s\n' "$OUT" | grep -qE 'amp window: [1-9][0-9]* of [0-9]+ peer node\(s\
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.
+#
+# A VACUITY skip (`# SKIP VACUOUS`, permitted by name nowhere) is caught here as well, and that
+# is deliberate rather than an oversight of the category: these arms are run against a peer that
+# answers, so one of them declining for want of a window is this vehicle's own defect and may
+# not be waved through on a permission the rest of the fleet carries.
 armed() { # <arm>
     printf '%s\n' "$OUT" | grep -E "^ok [0-9]+ - $1( |\$)" | grep -qv '# SKIP'
 }

@@ -17,14 +17,14 @@
 
 extern "C"
 {
-    // The chip linker script's app image split; a chip that carves no window leaves all four zero.
-    extern unsigned char __kickos_app_rom_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_rom_end[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_sram_start[] KICKOS_LINK_OPTIONAL;
-    extern unsigned char __kickos_app_sram_end[] KICKOS_LINK_OPTIONAL;
+    // The chip linker script's app image split, stated all-zero by a chip that carves none.
+    extern unsigned char __kickos_app_rom_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_rom_end[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_sram_start[] KICKOS_LINK_BOUND;
+    extern unsigned char __kickos_app_sram_end[] KICKOS_LINK_BOUND;
 
     // Added to an app virtual address to name the frame the loader put those bytes in.
-    extern unsigned char __kickos_app_load_delta[] KICKOS_LINK_OPTIONAL;
+    extern unsigned char __kickos_app_load_delta[] KICKOS_LINK_BOUND;
 
     // The kernel address that corresponds to physical address 0 for the image's own DRAM.
     extern unsigned char __kickos_frame_pool_delta[];

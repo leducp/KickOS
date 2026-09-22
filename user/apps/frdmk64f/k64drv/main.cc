@@ -52,18 +52,19 @@ namespace
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // PIT ch2 window base
         volatile uint32_t* tflg2 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
 
-        int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
-        if (kos_irq_attach(h, nullptr) != 0)
+        // The line is attached to this object by root, on BIT 0; this thread only binds it.
+        int const n = KOS_SPAWN_DELEGATED_CAP0 + 1; // claimed by root, delegated at spawn
+        if (kos_notify_bind(n) != 0)
         {
-            kos_panic("[k64drv] irq_attach refused the delegated line");
+            kos_panic("[k64drv] notify_bind refused the delegated object");
         }
 
-        // kos_irq_wait auto-re-arms the consumed line on return, so no explicit kernel
-        // ack. The peripheral W1C must still clear the TIF level BEFORE the next
-        // kos_irq_wait re-arms the line, else the level re-fires at once.
+        // The wait auto-re-arms the consumed line on return, so no explicit kernel ack. The
+        // peripheral W1C must still clear the TIF level BEFORE the next wait re-arms the
+        // line, else the level re-fires at once.
         for (int tick = 0; tick < DRIVER_TICKS; tick++)
         {
-            kos_irq_wait(h);
+            (void)kos_notify_wait(n, 1u, KOS_TIMEOUT_NONE, nullptr);
             *tflg2 = 1u; // W1C TIF
             kos::kernel_diag_led_toggle();
             char s[48];
@@ -116,19 +117,29 @@ int main(int, char**)
     {
         kos::print("[k64drv] ERROR: irq_claim(PIT2) failed\n");
     }
-    kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
+    // The object the line raises into, attached with an UNBADGED copy so it lands on bit 0.
+    kos_cap_t note = KOS_CAP_NONE;
+    if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    {
+        kos::print("[k64drv] ERROR: the line could not be attached to a notification\n");
+    }
+    kos_cap_grant const caps[2] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
 
     auto drv = kos::thread::create(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
                                    KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                    /*mem=*/nullptr, /*mem_size=*/0,
                                    /*stack=*/nullptr, /*stack_size=*/0,
                                    /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
-                                   caps, 1);
+                                   caps, 2);
     if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn
         // and a dead board read the same.
         kos::print("[k64drv] ERROR: driver spawn failed\n");
+    }
+    if (note != KOS_CAP_NONE)
+    {
+        kos_handle_close(note); // the driver's bind and the line's attach hold their own
     }
     if (irq != KOS_CAP_NONE)
     {

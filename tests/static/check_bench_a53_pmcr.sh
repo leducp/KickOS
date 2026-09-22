@@ -10,6 +10,11 @@
 # one that writes it without D provably clear, one that writes it more than once, a body
 # carrying any branch but a terminal unconditional one, and a body this reader cannot decode.
 #
+# A BODY THAT NEVER WRITES PMCR_EL0 IS UNKNOWN AND NOT A FINDING. The write is the window's
+# opening landmark, so a two-instruction tail-call thunk over the real per-core init passes the
+# branch pre-check below and would otherwise be reported as programming the PMU zero times.
+# tests/lib/objdump_window.awk refuses it by name instead.
+#
 # WHY THIS IS STATIC AND NOT A RUNTIME ARM. QEMU makes LC writable and returns PMCCNTR_EL0 at
 # its full 64 bits whatever LC holds, so an image that clears the bit reports the same
 # distribution, the same sat-probe and the same rate line as one that sets it, on the only
@@ -32,6 +37,8 @@ arch="${3:?$_usage}"
 SYM=kickos_armv8a_percore_init
 # E (bit 0), C (bit 2) and LC (bit 6), as arch/arm64/common/arch_arm64_a53.cc ORs in from one
 # immediate; D (bit 3) is the bit that same body clears first.
+# The opening landmark, as an ERE over the text tests/lib/objdump_window.awk normalises.
+W_PMCR='^msr pmcr_el0,'
 
 case "$arch" in
     armv8a) ;;
@@ -65,7 +72,8 @@ scratch_dir
 # this reader does not model. Only an unconditional branch as the body's LAST instruction is
 # analysable, the tail call the compiler emits for this body's own final call; `brmid` counts
 # every other branch and `brcond` every conditional one, and the gate refuses on either.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body.
+# HALF A PROGRAM: `seen`, the body scope and the refusal above come from gate.sh's scoped_body,
+# which reads tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 function regnum(t,   s) {
     s = t
@@ -228,8 +236,6 @@ function and_bit(a, b) {
     sE[d] = "U"; sC[d] = "U"; sD[d] = "U"; sLC[d] = "U"
 }
 END {
-    if (!seen) { print "NOSYM"; exit }
-    if (n == 0) { print "NOINSN"; exit }
     brmid = brtot + 0
     if (brtot > 0 && brlast == n) { brmid = brtot - 1 }
     printf "COUNTS %d %d %d %d %d %d\n", n, wr + 0, wrbits + 0, wrdclear + 0, brmid, brcond + 0
@@ -237,7 +243,7 @@ END {
 AWK
 
 read_body() { # <listing> <symbol>
-    scoped_body "$TMP/reader.awk" "$1" "$2"
+    scoped_body "$TMP/reader.awk" "$1" "$2" -v win_open="$W_PMCR"
 }
 
 # --- the reader's controls, before the image is read --------------------------
@@ -357,9 +363,27 @@ esac
 
 ctl="$(read_body "$TMP/ctl_nowrite" planted_init)"
 case "$ctl" in
-    "COUNTS 2 0 0 0 0 0") ;;
-    *) fail "the reader answered [$ctl] for a planted body carrying the immediate and no write,
-  so an image that computes the value and programs nothing would not be reported as such" ;;
+    "NOOPEN 2") ;;
+    *) fail "the reader answered [$ctl] for a planted body carrying the immediate and no write.
+  Read as a record it reports the PMU programmed zero times, which is a claim about the image;
+  what it is, is a body this gate could not find the write in" ;;
+esac
+
+# THE RESIDUAL THIS WINDOW EXISTS FOR: a two-instruction tail-call thunk over the real body. It
+# carries one unconditional branch as its last instruction, which the branch pre-check excuses,
+# and then reports the PMU as never programmed.
+{
+    echo '0000000000001000 <planted_init>:'
+    echo "    1000:	mov	x0, x19"
+    echo "    1004:	b	2000 <planted_init_real>"
+} > "$TMP/ctl_thunk"
+
+ctl="$(read_body "$TMP/ctl_thunk" planted_init)"
+case "$ctl" in
+    "NOOPEN 2") ;;
+    *) fail "the reader answered [$ctl] for a planted two-instruction thunk over the real
+  per-core init. Its one branch is terminal, so the branch pre-check passes it, and every bit
+  arm below then reads zero writes as a PMU nobody programmed" ;;
 esac
 
 ctl="$(read_body "$TMP/ctl_decoy" planted_init)"
@@ -438,6 +462,13 @@ case "$kind" in
     NOINSN)
         fail "the body of '$SYM' in $elf disassembles to no instruction at all, so the corpus
   is UNKNOWN rather than empty" ;;
+    NOOPEN)
+        fail "the body of '$SYM' in $elf writes PMCR_EL0 nowhere across its $total
+  instruction(s), so this gate has no write to read the value of. That is UNKNOWN and not a PMU
+  left at its reset state: the symbol names a thunk over the real per-core init, the
+  programming moved to a callee, or the register spelling in this disassembler moved. A
+  two-instruction tail call carries one terminal branch, which the branch pre-check below
+  excuses, so nothing else here would catch it" ;;
     COUNTS) ;;
     *)
         fail "the reader emitted [$rec] for '$SYM', a record this gate does not model" ;;
@@ -466,10 +497,12 @@ fi
 
 rc=0
 
-if [ "$writes" -ne 1 ]; then
+# Zero writes is refused above as UNKNOWN, so what reaches here is a body that programs the PMU
+# more than once and leaves the last write deciding.
+if [ "$writes" -gt 1 ]; then
     bad "the body of '$SYM' in $elf writes PMCR_EL0 $writes time(s) where it owes exactly one.
-  A body that writes it twice leaves the last write deciding, and one that writes it not at all
-  leaves D at a reset value the architecture calls UNKNOWN, which divides the count by 64"
+  The last write decides, and the bit arms below are stated over all of them, so a correct
+  value followed by a wrong one satisfies neither this arm nor them by halves"
 fi
 
 if [ "$wrbits" -ne "$writes" ]; then

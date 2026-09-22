@@ -29,9 +29,11 @@
 
 namespace
 {
-    // The single delegated cap lands at child table index 1. Which cap it IS is the build's
-    // choice: the service endpoint's SIGNAL copy, or the USIC0 SR1 line.
+    // The delegated caps land at child table indices 1 and up. Which they ARE is the build's
+    // choice: the service endpoint's SIGNAL copy, or the USIC0 SR1 line plus the notification
+    // it signals.
     constexpr kos_cap_t CLIENT_CAP0 = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr kos_cap_t CLIENT_CAP1 = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     // The single device on the bench's bus; a slot is per device and stays < KOS_BUS_DEV_MAX.
     constexpr uint8_t SPI_SLOT = 0u;
@@ -90,11 +92,15 @@ namespace
         bcfg.base = reinterpret_cast<uintptr_t>(arg); // the granted window, as a VALUE
         bcfg.ep = KOS_CAP_NONE;
         bcfg.irq = CLIENT_CAP0;
+        bcfg.notify = CLIENT_CAP1;
+        bcfg.notify_bit = 0;
 #else
         (void)arg;
         bcfg.base = 0u;
         bcfg.ep = CLIENT_CAP0;
         bcfg.irq = KOS_CAP_NONE;
+        bcfg.notify = KOS_CAP_NONE;
+        bcfg.notify_bit = 0;
 #endif
         struct kos_spi_bus bus;
         int32_t const brc = kos_spi_bus_open(&bus, &bcfg);
@@ -208,25 +214,35 @@ int main(int, char**)
     // Claim the line here: minting needs AUTH_IRQ and the client runs at authority 0. No SSC
     // service may be running in this image, one owner per block.
     kos_cap_t irq = KOS_CAP_NONE;
+    kos_cap_t note = KOS_CAP_NONE;
     if (kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos::print("[xmcssc] ERROR: irq_claim(USIC0 SR1) failed\n");
     }
+    else if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    {
+        // The unbadged capability, so the line raises BIT 0.
+        kos::print("[xmcssc] ERROR: the line could not be attached to a notification\n");
+        kos_handle_close(note);
+        kos_handle_close(irq);
+    }
     else
     {
-        kos_cap_grant const caps[1] = {
+        kos_cap_grant const caps[2] = {
             { .source_cap = irq, .rights_mask = KOS_CAP_WAIT },
+            { .source_cap = note, .rights_mask = KOS_CAP_WAIT },
         };
         auto const c = kos::thread::create(
             spi_client, reinterpret_cast<void*>(U0C1_BASE), "xmcssc-cli", 9, KOS_POLICY_FIFO,
             /*quantum_ns=*/0, /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
             /*stack=*/nullptr, /*stack_size=*/0, reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
-            caps, /*cap_count=*/1);
+            caps, /*cap_count=*/2);
         if (not c.valid())
         {
             kos::print("[xmcssc] ERROR: client spawn failed\n");
         }
-        // Root drops its own copy so the line returns to the pool when the client dies.
+        // Root drops its own copies so the line and the object go with the client.
+        kos_handle_close(note);
         kos_handle_close(irq);
     }
 #else

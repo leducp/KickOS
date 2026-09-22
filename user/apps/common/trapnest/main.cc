@@ -75,7 +75,8 @@ namespace
 
     uintptr_t g_tn_stack_lo = 0;
 
-    constexpr kos_cap_t TN_CAP = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr kos_cap_t TN_CAP = KOS_SPAWN_DELEGATED_CAP0;      // the line, for the ack
+    constexpr kos_cap_t TN_NOTE = KOS_SPAWN_DELEGATED_CAP0 + 1; // the object it raises, bit 0
 
     // Nothing may touch memory between the sp move and the trap. a0 is the syscall number and
     // a1..a4 the arguments (sys/abi.h); the unused ones are ZEROED, as the arch_syscall stub
@@ -136,16 +137,16 @@ namespace
                   static_cast<unsigned>(TN_PARK_ROOM));
         emit(msg);
         // Bind delivery to this worker before waiting.
-        if (kos_irq_attach(TN_CAP, nullptr) != 0)
+        if (kos_notify_bind(TN_NOTE) != 0)
         {
-            emit("[trapnest] ERROR: irq_attach refused the delegated line\n");
+            emit("[trapnest] ERROR: notify_bind refused the delegated object\n");
             return;
         }
         for (uint32_t i = 0; i < TN_INJECTS; i++)
         {
             inject_from(low, KOS_SYS_IRQ_INJECT, static_cast<uint32_t>(TN_LINE));
             // Consume and rearm after each injection; the ISR leaves the line masked.
-            kos_irq_wait(TN_CAP);
+            (void)kos_notify_wait(TN_NOTE, 1u, KOS_TIMEOUT_NONE, nullptr);
             kos_irq_ack(TN_CAP);
         }
         // Real switches and timer ticks too, so the tally also covers a tick taken in the idle
@@ -200,8 +201,14 @@ int main(int, char**)
         emit("[trapnest] ERROR: irq_claim refused, so the line stays masked\n");
         return 1;
     }
+    kos_cap_t note = KOS_CAP_NONE;
+    if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(line, note) != 0)
+    {
+        emit("[trapnest] ERROR: the line could not be attached to a notification\n");
+        return 1;
+    }
     kos_irq_ack(line); // a claim leaves the line masked, and the worker injects into it
-    kos_cap_grant const wcaps[] = {{line, KOS_CAP_WAIT}};
+    kos_cap_grant const wcaps[] = {{line, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
 
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "tntick", 20);
     if (not tk.valid())
@@ -210,7 +217,7 @@ int main(int, char**)
         return 1;
     }
     kos::thread::Handle const w = kos::thread::create_caps(
-        worker, nullptr, "tnwork", 10, wcaps, 1, KOS_POLICY_FIFO, 0,
+        worker, nullptr, "tnwork", 10, wcaps, 2, KOS_POLICY_FIFO, 0,
         /*privileged=*/false, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
         reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())

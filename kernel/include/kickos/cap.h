@@ -77,8 +77,8 @@ namespace kickos
     // the type and the rights instead (CapEntry below), so no width of the thread index can
     // truncate the thread generation.
     static constexpr int KCAP_REPLY_SEQ_BITS = 8;
-    static constexpr int KCAP_REPLY_SEQ_LO_BITS = 5; // spare beside CapType's 3
-    static constexpr int KCAP_REPLY_SEQ_HI_BITS = 3; // spare beside CapRights' 3
+    static constexpr int KCAP_REPLY_SEQ_LO_BITS = 4; // spare beside CapType's 4
+    static constexpr int KCAP_REPLY_SEQ_HI_BITS = 4; // spare beside CapRights' 3
     static_assert(KCAP_REPLY_SEQ_LO_BITS + KCAP_REPLY_SEQ_HI_BITS == KCAP_REPLY_SEQ_BITS,
                   "the two halves of the packed call sequence must exhaust it");
     // What a LOCAL arm may ask cap_reply_thread to compare, which is narrower than the whole
@@ -86,7 +86,7 @@ namespace kickos
     // field whole and asks for amp::REPLY_SEQ_MASK instead.
     static constexpr uint32_t KCAP_REPLY_SEQ_MASK = (1u << KCAP_REPLY_SEQ_BITS) - 1u;
 
-    static constexpr int KCAP_TYPE_BITS = 3;
+    static constexpr int KCAP_TYPE_BITS = 4;
     static constexpr int KCAP_RIGHTS_BITS = 3;
     static_assert(KCAP_TYPE_BITS + KCAP_REPLY_SEQ_LO_BITS == 8,
                   "type plus its share of the call sequence must fill exactly one byte");
@@ -104,6 +104,8 @@ namespace kickos
         CAP_FRAME,    // a RUN of physical frames; `obj` names a frame-run pool slot, and the
                       // run's physical base is a field of that object, never a number here
         CAP_ASPACE,   // an address space; `obj` names a DOMAIN slot by generational handle
+        CAP_NOTIFY,   // a notification object; `obj` names a slot in the notification pool.
+                      // The entry's spare bits carry this cap's BADGE (cap_badge_seat below)
         CAP_KIND_MAX  // never stored: STAYS LAST, and the assert below reads it
     };
     // Keyed on the sentinel and never on the last kind by name: an assert naming CAP_IRQ
@@ -111,6 +113,15 @@ namespace kickos
     static_assert(static_cast<uint8_t>(CapType::CAP_KIND_MAX) <= (1u << KCAP_TYPE_BITS),
                   "a CapType no longer fits the entry's type field: the call sequence packed "
                   "beside it would be overwritten");
+
+    // A SPAWN'S GRANT LIST IS STAGED ON THE SPAWNER'S OWN STACK, which is the syscall descent
+    // the ARMv7-M trap red zone measures, so its per-grant bytes are PACKED exactly as
+    // CapEntry packs the same two fields: one byte carries the kind and its rights. A third
+    // array would have cost eight bytes of frame on every board and 64 per thread stack on
+    // the six that enforce the SVC class, the reservation moving to the next 64-byte step.
+    constexpr uint8_t kcap_grant_pack(uint8_t type, uint8_t rights);
+    constexpr uint8_t kcap_grant_type(uint8_t packed);
+    constexpr uint8_t kcap_grant_rights(uint8_t packed);
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
     // enforced at the delegate site instead.
@@ -126,6 +137,23 @@ namespace kickos
     static_assert(CAP_RIGHTS_ALL < (1u << KCAP_RIGHTS_BITS),
                   "a rights bit no longer fits the entry's rights field: the call sequence "
                   "packed beside it would be overwritten");
+
+    static_assert(KCAP_TYPE_BITS + KCAP_RIGHTS_BITS <= 8,
+                  "a staged grant packs its kind and its rights into ONE byte, as CapEntry "
+                  "does; widen the staging arrays and the frame together or not at all");
+
+    constexpr uint8_t kcap_grant_pack(uint8_t type, uint8_t rights)
+    {
+        return static_cast<uint8_t>((type << KCAP_RIGHTS_BITS) | rights);
+    }
+    constexpr uint8_t kcap_grant_type(uint8_t packed)
+    {
+        return static_cast<uint8_t>(packed >> KCAP_RIGHTS_BITS);
+    }
+    constexpr uint8_t kcap_grant_rights(uint8_t packed)
+    {
+        return static_cast<uint8_t>(packed & ((1u << KCAP_RIGHTS_BITS) - 1u));
+    }
 
     // The thread's authority word, held in Thread::authority: its own field, sharing no
     // numbering with CapRights. Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*; the two
@@ -161,9 +189,11 @@ namespace kickos
         // entry holds the run's free-list links here instead (kcap_free_link below).
         int32_t obj;
         uint8_t type : KCAP_TYPE_BITS;
-        uint8_t seq_lo : KCAP_REPLY_SEQ_LO_BITS; // CAP_REPLY call sequence, low half
+        // CAP_REPLY's call sequence, or CAP_NOTIFY's badge; low half. cap_install_at seats
+        // both halves from its own parameter, so no entry inherits the slot's last occupant.
+        uint8_t seq_lo : KCAP_REPLY_SEQ_LO_BITS;
         uint8_t rights : KCAP_RIGHTS_BITS;
-        uint8_t seq_hi : KCAP_REPLY_SEQ_HI_BITS; // CAP_REPLY call sequence, high half
+        uint8_t seq_hi : KCAP_REPLY_SEQ_HI_BITS; // the same field's high half
         uint16_t gen;                            // per-slot cap generation
     };
     static_assert(sizeof(CapEntry) == 8, "CapEntry must stay 8 bytes (frozen ABI, section 5)");
@@ -191,6 +221,25 @@ namespace kickos
     inline uint32_t cap_reply_handle(CapEntry const& e)
     {
         return static_cast<uint32_t>(e.obj);
+    }
+
+    // A CAP_NOTIFY entry spends the SAME spare bits on its badge, which a CAP_REPLY entry
+    // spends on the call sequence: the two kinds never coexist in one slot. The badge is
+    // stored as `bit + 1`, so the zero a fresh install leaves means UNBADGED and needs no
+    // sentinel beside it.
+    static constexpr uint8_t KCAP_BADGE_NONE = 0;
+    static constexpr uint32_t KCAP_BADGE_BITS = 32; // one per bit of Notification::pending
+    static_assert(KCAP_BADGE_BITS < (1u << KCAP_REPLY_SEQ_BITS),
+                  "a badge stored as bit + 1 must fit the spare field with the unbadged zero "
+                  "left over");
+
+    inline void cap_badge_seat(CapEntry* e, uint8_t badge)
+    {
+        cap_reply_seq_seat(e, badge);
+    }
+    inline uint8_t cap_badge(CapEntry const& e)
+    {
+        return cap_reply_seq(e);
     }
 
     // Allocate each thread's capability chunks at spawn and return them at reclaim.
@@ -536,7 +585,13 @@ namespace kickos
     // Install at a specified empty index without changing the refcount.
     // Delegated cap i uses child index i+1. Returns the entry, or nullptr for an
     // invalid index. Asserts that the slot is empty to protect the free list.
-    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights);
+    //
+    // `badge` is NOT defaulted, and that is the whole of it: a released entry keeps the spare
+    // bits its last occupant left, so every install site has to say what this one carries.
+    // KCAP_BADGE_NONE for every kind but a badged CAP_NOTIFY; a CAP_REPLY's sequence is
+    // seated by cap_install_reply straight after.
+    CapEntry* cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights,
+                             uint8_t badge);
 
     // Mint a one-shot CAP_REPLY into c's table naming parked caller `caller`: its whole
     // 32-bit generational thread handle in the entry's obj, its call_seq low byte in the
@@ -650,12 +705,9 @@ namespace kickos
     // teardown finishes, or its still-allocated objects disappear from the budget.
     // Clear the pointer early only when the task becomes empty and may be reused.
 
-    // The most slots of `kind`'s pool one task may hold. THE ONLY CEILING there is: no pool
-    // width is read here, the relation between the two being settled at build time by the
-    // asserts below rather than clamped at every creator. An uncharged kind never reaches
-    // this, charged_pool refusing it first; the default arm answers 0 so a charged kind added
-    // there and forgotten here refuses every create rather than admitting one, and it carries
-    // no assert because kpanic on the syscall descent is what the trap red zone measures.
+    // Maximum slots per task for each charged pool.
+    // The static assertions below require each budget to be smaller than its pool.
+    // Unknown kinds return zero so a missing case cannot allow unbounded allocation.
     constexpr int task_object_ceiling(CapType kind)
     {
         switch (kind)
@@ -675,6 +727,10 @@ namespace kickos
         case CapType::CAP_IRQ:
         {
             return KICKOS_TASK_IRQ_HANDLE_BUDGET;
+        }
+        case CapType::CAP_NOTIFY:
+        {
+            return KICKOS_TASK_NOTIFY_BUDGET;
         }
         default:
         {
@@ -708,21 +764,27 @@ namespace kickos
                   "KICKOS_TASK_IRQ_HANDLE_BUDGET reaches KICKOS_MAX_IRQ_HANDLES: one task "
                   "could take the pool's last slot. Lower the budget below the pool width, or "
                   "widen the pool above the budget");
+    static_assert(KICKOS_MAX_NOTIFY == 0 or KICKOS_TASK_NOTIFY_BUDGET < KICKOS_MAX_NOTIFY,
+                  "KICKOS_TASK_NOTIFY_BUDGET reaches KICKOS_MAX_NOTIFY: one task could take "
+                  "the pool's last slot, which is the notification a supervisor respawning a "
+                  "driver needs. Lower the budget below the pool width, or widen the pool "
+                  "above the budget");
 
-    // Whether task `t` may come to hold one more slot of `kind`'s pool. Asked BEFORE the
-    // allocation at every creator, so a task at its ceiling is refused without churning a
-    // slot and the answer does not depend on how full the pool happens to be. An uncharged
-    // kind and a null task are both admitted, the second being the boot window before a task
-    // exists. Caller holds IrqLock.
+    // Check the task budget before allocating an object of `kind`.
+    // Uncharged kinds and a null task are allowed. Caller holds IrqLock.
     [[nodiscard]] bool task_object_admit(CapType kind, Task const* t);
 
-    // Whether task `t` may come to hold every charged object in a spawn's grant list, which
-    // is admitted as ONE take: a grant naming a slot the task already holds costs nothing,
-    // and two grants naming one slot cost one. A DELEGATION IS A TAKE, or a task at its
-    // ceiling would pass its objects to a second task and take its whole ceiling again.
+    // Check a spawn's grants against the destination task's budgets.
+    // Count each object once, including notifications retained by granted IRQs.
+    // `packed` contains kcap_grant_pack bytes; only the kind is used.
     // Caller holds IrqLock.
-    [[nodiscard]] bool task_object_admit_grants(Task const* t, uint8_t const* types,
+    [[nodiscard]] bool task_object_admit_grants(Task const* t, uint8_t const* packed,
                                                 int const* objs, int n);
+
+    // Check whether each task holding this IRQ can also hold the notification.
+    // Used before attachment, including when the IRQ has already been delegated.
+    // Caller holds IrqLock.
+    [[nodiscard]] bool task_object_admit_binding_notify(int binding_slot, int notify_handle);
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or more
     // AUTH_* bits)? True if it is privileged, or if its authority word carries every requested

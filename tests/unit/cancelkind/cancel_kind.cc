@@ -3,12 +3,13 @@
 //
 // Test monotonic cancellation (NONE < KILL < SLAY) and rejection of re-blocking
 // for every nonzero kind. KILL must not restore a cleanup window after SLAY.
-// Exercise irq_wait with the real IRQ code. Syscall death-point behavior is
+// Exercise notify_wait with the real notification code. Syscall death-point behavior is
 // covered by sim_driver_death and task_group_kill.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
@@ -44,22 +45,27 @@ namespace kickos
             static_assert(CANCEL_NONE == 0,
                           "the thread_create memset must leave a fresh TCB un-cancelled");
 
-            uint32_t g_line_note = 0;
+            constexpr uint32_t LINE_BIT = 1u << 0;
 
-            // The line cap the arms below wait on, owned by `owner` and current.
+            // The notification the arms below wait on, with the line attached to it on bit 0
+            // and `owner` bound. Answers the notification capability, which is what the wait
+            // takes.
             uint32_t claim_the_line(Thread* owner)
             {
                 attach_caps(owner, CAP_WIDTH);
-                uint32_t cap = 0;
-                EXPECT_EQ(irq_claim(owner, CONSOLE_LINE, 0, &cap), 0)
+                uint32_t line = 0;
+                EXPECT_EQ(irq_claim(owner, CONSOLE_LINE, 0, &line), 0)
                     << "fixture: the waiter owns the line";
-                g_line_note = 0;
-                EXPECT_EQ(irq_notify_bind(owner, cap, &g_line_note), 0)
-                    << "fixture: the waiter serves the line it waits on";
-                return cap;
+                uint32_t note = 0;
+                EXPECT_EQ(notify_create(owner, &note), 0);
+                EXPECT_EQ(irq_bind_notify(owner, line, note), 0)
+                    << "fixture: the line signals the object the waiter waits on";
+                EXPECT_EQ(notify_bind(owner, note), 0)
+                    << "fixture: the waiter is that object's bound thread";
+                return note;
             }
 
-            // The waiter must be CURRENT, since irq_wait parks whoever calls it, and the peer
+            // The waiter must be CURRENT, since notify_wait parks whoever calls it, and the peer
             // must be the only other runnable thread, so the scheduler picking it is what
             // resolves the park (kfixture.h note 2).
             Thread* seat_waiter_over_a_peer()
@@ -78,12 +84,15 @@ namespace kickos
             }
 
             // The event side of the wait: ends the park with the "consumed" result, which is
-            // what irq_wait reads as a raise rather than a cancel.
+            // what notify_wait reads as a raise rather than a cancel.
             void hand_the_waiter_its_event(Thread* parked)
             {
-                // IRQ waits have no queue. The binding identifies the server; the bit
-                // distinguishes an event from cancellation.
-                parked->notify_pending = parked->notify_pending | g_line_note;
+                // Notification waits have no queue. The object identifies the waiter; the
+                // bit distinguishes an event from cancellation.
+                Notification* const n =
+                    kernel().notifies.resolve(notify_bound_handle(parked->notify_bound));
+                ASSERT_NE(n, nullptr) << "fixture: the waiter is bound to a live object";
+                n->pending = n->pending | LINE_BIT;
                 parked->clear_wait_edge();
                 parked->wait_result = 0;
                 {
@@ -252,7 +261,9 @@ namespace kickos
             // dropped at reset().
             wake_next_park(hand_the_waiter_its_event);
 
-            EXPECT_EQ(irq_wait(waiter, cap), -KOS_ECANCELED)
+            uint32_t bits = 0;
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits),
+                      -KOS_ECANCELED)
                 << "a killed thread is refused the re-block";
             EXPECT_EQ(g_switches, 0u) << "and refused BEFORE parking, not woken out of one";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
@@ -269,7 +280,9 @@ namespace kickos
             waiter->cancel_kind = CANCEL_SLAY;
             wake_next_park(hand_the_waiter_its_event); // as above: keep the failure an assertion
 
-            EXPECT_EQ(irq_wait(waiter, cap), -KOS_ECANCELED)
+            uint32_t bits = 0;
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits),
+                      -KOS_ECANCELED)
                 << "every non-zero kind is refused, not just the cooperative one";
             EXPECT_EQ(g_switches, 0u) << "and refused before parking";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
@@ -283,7 +296,10 @@ namespace kickos
             uint32_t const cap = claim_the_line(waiter);
             wake_next_park(hand_the_waiter_its_event);
 
-            EXPECT_EQ(irq_wait(waiter, cap), 0) << "CANCEL_NONE is not a death sentence";
+            uint32_t bits = 0;
+            EXPECT_EQ(notify_wait(waiter, cap, LINE_BIT, KOS_TIMEOUT_NONE, &bits), 0)
+                << "CANCEL_NONE is not a death sentence";
+            EXPECT_EQ(bits, LINE_BIT) << "and the raise it parked for is what it consumed";
             EXPECT_EQ(g_switches, 2u) << "the park switched away and the event switched back";
             EXPECT_EQ(waiter->cancel_kind, CANCEL_NONE) << "a park writes no kind";
         }

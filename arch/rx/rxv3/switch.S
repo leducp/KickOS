@@ -232,15 +232,30 @@ _kickos_rx_pendsw:
     mov.l   r15, [r14]         /* g_arch_current = incoming */
     mov.l   [r15], r0          /* R0 = incoming->sp */
 #if KICKOS_BENCH
-    /* CMTW1 ticks scaled to ICLK cycles (ICLK 240 MHz = CMTW1 7.5 MHz x32). R0 = incoming
-       sp = the bottom of the frame, so the bsr's own frame lands below it. */
+    /* The SAVE AND SWAP half of the switch span. The restore half is added where the frame
+       comes back, and the sum is banked one switch late: a call made here would stand inside
+       the window it is about to report. Cells hold raw CMTW1 ticks; the x32 to ICLK cycles
+       (ICLK 240 MHz = CMTW1 7.5 MHz x32) is applied once, at the bank below.
+       R0 = incoming sp = the bottom of the frame, so the bsr's own frame lands below it. */
     mov.l   #CMTW1_CMWCNT, r1
     mov.l   [r1], r1
     mov.l   #_g_bench_sw_start, r2
     mov.l   [r2], r2
-    sub     r2, r1             /* r1 = delta (CMTW1 ticks) */
-    shll    #5, r1             /* x32 -> ~ICLK cycles */
+    sub     r2, r1
+    mov.l   #_g_bench_sw_half, r2
+    mov.l   r1, [r2]
+    /* THE PENDING SAMPLE IS CONSUMED ON READ. Only the restore below refreshes it, and the
+       fastpath, arch_start and the two refusal arms reach that restore without opening a
+       window, so a cell left standing would be subtracted from a later switch's close and
+       banked as a delta near the counter's width. */
+    mov.l   #_g_bench_sw_pend, r2
+    mov.l   [r2], r1
+    cmp     #0, r1
+    beq     .Lbench_no_pend
+    mov.l   #0, [r2]
+    shll    #5, r1
     bsr.a   _kickos_bench_switch_done
+.Lbench_no_pend:
     mov.l   #_g_arch_current, r14
     mov.l   [r14], r15
     mov.l   [r15], r0          /* reload R0 = incoming->sp */
@@ -266,6 +281,14 @@ _kickos_rx_restore:
     mov.l   #_g_arch_current, r15
     mov.l   [r15], r15
     mov.l   [r15], r0          /* R0 = incoming->sp (frame base for the pops) */
+#if KICKOS_BENCH
+    /* The RESTORE half opens past the MPU commit, which is charged to PH_MPU_COMMIT and
+       belongs to no switch. Every register here is dead until the frame reloads it. */
+    mov.l   #CMTW1_CMWCNT, r15
+    mov.l   [r15], r14
+    mov.l   #_g_bench_sw_rstart, r15
+    mov.l   r14, [r15]
+#endif
 #if defined(__RX_DFPU_INSNS__)
     /* The DPFPU file is the lowest part of the frame, so it reloads first. */
     dpopm.l  dpsw-decnt
@@ -285,7 +308,31 @@ _kickos_rx_restore:
     mvtacgu r15, a1
     pop     r15
     mvtc    r15, fpsw
+#if KICKOS_BENCH
+    /* THE SWITCH WINDOW CLOSES HERE, with the whole frame reloaded. The pop is split so R14
+       and R15 are still free for the close; nothing but the rte stands below a full
+       popm r1-r15, and the rte has no register at all. A restore reached without an open
+       window finds no half and leaves the pending cell alone. */
+    popm    r1-r13
+    mov.l   #CMTW1_CMWCNT, r15
+    mov.l   [r15], r14
+    mov.l   #_g_bench_sw_rstart, r15
+    mov.l   [r15], r15
+    sub     r15, r14
+    mov.l   #_g_bench_sw_half, r15
+    mov.l   [r15], r15
+    cmp     #0, r15
+    beq     .Lbench_no_half
+    add     r15, r14           /* the restore half plus the save and swap half */
+    mov.l   #_g_bench_sw_half, r15
+    mov.l   #0, [r15]
+    mov.l   #_g_bench_sw_pend, r15
+    mov.l   r14, [r15]
+.Lbench_no_half:
+    popm    r14-r15
+#else
     popm    r1-r15             /* R1..R15 (R0/SP is not in the frame) */
+#endif
     rte                        /* pops PC then PSW -> resume incoming */
 
 /* The guard refused the outgoing thread's USP. R14 is banked on the ISP above, so drop it,
