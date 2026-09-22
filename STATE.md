@@ -16,13 +16,20 @@ does NOT say.
 
 ## Where we are
 
+**M8 HAS MERGED AND M9 IS OPEN, AND M9.0 HAS LANDED.** M9 asks what the big kernel lock actually
+costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
+than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
+assigned; M9.0 is read-only and every stage below it is assigned and not approved. The M9.0 section
+at the bottom of this file carries what the survey, the stack verdict and the entry envelope
+established, and what a reader of the numbers alone would get wrong.
+
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
 in. **What follows is only the causes, measurements, traps and declines that a green run does not
 say and no command re-derives.** The two M7.11 and three M7.12 sections at the bottom of this file
 carry the AMP window and the RP2350 port.
 
-**EVERY M7 SUB-MILESTONE HAS MERGED AND M8 IS OPEN, BUT M7'S REVIEW HANDED DEFECTS FORWARD RATHER
+**EVERY M7 SUB-MILESTONE MERGED, BUT M7'S REVIEW HANDED DEFECTS FORWARD RATHER
 THAN CLOSING CLEAN**, which is why M8 is cut to run fixes first, then de-duplication, then
 optimisation, across eleven sub-milestones. `roadmap.md`'s `### M8` section is the ledger and the
 only place those numbers are assigned; the M8 section at the bottom of this file carries what
@@ -3248,6 +3255,81 @@ device ISR racing a bind, the reference ceiling and two signallers sharing a bit
 and unwitnessed, because no board on this bench can pose them. A fleet bench pass still flashes a
 fraction of the suite on every split board and has since the first split, so no silicon selftest
 figure on `esp32c6-wroom` covers more than its first image.
+
+## M9.0: the survey, the stack verdict and the envelope, and what a read-only stage does NOT say
+
+**M9.0 RAN NO CODE, SO NOTHING HERE IS WITNESSED BY ANYTHING.** Three read-only deliverables: a
+reference-kernel survey, a verdict on shared kernel stacks, and the entry envelope every stage
+below is gated on. What follows is what they established and what a reader of the numbers alone
+would get wrong.
+
+**THE FRACTION THAT LANDED IS NOT THE ONE THE PLANNING DOCUMENTS REST ON, AND THAT IS THE RESULT.**
+The recomputed locked fraction is the PING-PONG THROUGHPUT workload's. The 0.53 and 0.43 that the
+SMP and multicore records plan against are the CALL/REPLY round trip's, and the multicore contract
+already rules that the fraction is a property of the workload. They are not versions of one number,
+and the lower figure is not good news. **The call/reply fraction still cannot be produced**, but
+only one of the three reasons first given for that survives: the bracket count is derivable and the
+inside-the-lock leaf membership is settled by the code, so what blocks it is decomposing an
+aggregated phase table down to the round trip's own slice -- arithmetic nobody has done rather than
+a measurement nobody has taken.
+
+**AND THE ENVELOPE'S OWN LIST OF MISSING INPUTS WAS WRONG FIVE TIMES OUT OF FOURTEEN, WHICH IS THE
+DURABLE LESSON.** Every one that failed had the same shape: a claim about what a RECORD prints,
+written as a claim about what the project can KNOW. A figure absent from a published table is not
+absent from the capture it was extracted from; a fact unstated in a measurement record is not
+underivable from the source it measures. **A gating document whose absences are unverified is the
+same class of artifact as the derived fraction it exists to replace**, so the list now carries a
+verdict per input.
+
+**NO BOARD'S `lock-hold` MAXIMUM CAN STAND IN FOR A WORST CRITICAL SECTION, AND M9.1 IS THE STAGE
+THAT WOULD REACH FOR ONE.** On `esp32c6-wroom` that maximum is the console reporting how many bytes
+it printed. On both SMP presets it is a multi-million-cycle spin -- about 163 times the median --
+with no attributed site, and the three candidates that would explain it all fail against the frozen
+bytes: no lock-site line is printed, no saturation column exists on that row, and the counter rate
+is zero so it cannot be put against wall clock. **The hold bracket CONTAINS the wait**, which is why
+the spin lands there: the lock's own constructor masks, opens the bracket, then spins. So the
+critical section proper is hold minus wait, and at the median half the arm64 four-core hold is spin
+rather than work.
+
+**FIVE OF THE SIX EMULATOR PRESETS CONVERT NO READING AT ALL.** They declare a cycle counter of
+0 Hz, so the hold is in cycles, the period is in nanoseconds and nothing joins them. That is why the
+locked fraction is absent on every multi-core configuration the project has, and no re-read of the
+captures fixes it. The one preset that declares a rate is single-core and its fraction sits ABOVE
+both silicon boards on the same workload, which is recorded and not explained.
+
+**THE EMULATOR TABLE IS MIXED AND BOTH RECORDS THAT LABEL IT ARE WRONG.** The extractor takes field
+one of the triple, the last report window, the median over five runs, in whatever unit the row
+itself prints -- cycles for the switch, hold, wait and doorbell columns, nanoseconds for the
+end-to-end ones, and the two round-trip columns are a MEAN and not a percentile at all. A blanket
+"p50, in nanoseconds" of a table of that shape is wrong in both halves.
+
+**"seL4 IS VERIFIED" IS NOT A CLAIM ABOUT ITS SMP CONFIGURATION, AND THE PROJECT SAYS SO.** Its own
+caveats state that SMP is supported and not verified, that ordinary C defects are possible there and
+not excluded as they are in the verified configurations, and that the intended route to assurance on
+multicore hardware is a static multi-kernel, one instance per core over disjoint memory. That is
+architecturally this tree's AMP shape rather than its shared kernel. Its IPC fastpath takes no
+separate queue lock -- there is no second exclusion primitive anywhere in that kernel -- and it bails
+to the slow path when sender and receiver differ in affinity, **so the fast-IPC figure everyone
+quotes is a same-core figure taken while holding a lock every other core needs.**
+
+**THE PUBLISHED INBOX IS WHAT A PROJECT BUILDS WHEN IT HAS NO LOCK OVER THE PEER'S STATE, AND THIS
+TREE PROPOSES TO BUILD ONE WHILE KEEPING THE LOCK.** The three surveyed projects that publish into
+something the target owns each lack that lock by construction. The combination the ownership and
+ring stages describe is not one the surveyed set demonstrates. That is not an argument against it --
+it is the argument for landing the protocol while there is still one lock and no race to chase.
+
+**THE STACK VERDICT IS TO KEEP THE PER-THREAD CONTINUATION, AND THE BOARD EVERYONE CITES FOR IT
+CARVES NO KERNEL STACKS.** `f302nucleo-st` selects no MPU, so the blocks resolve away entirely and
+the size knob reaches nothing there: its lost thread slot has no established cause, and the probe
+that looked inconclusive was void. The exemplar for that axis is `microbit`. Every surveyed kernel
+but one keeps per-thread privileged state, and the one that shares makes long operations restartable
+rather than resumable -- a property this tree's syscalls do not have.
+
+**AND THE FROZEN MEASUREMENT'S COMMIT IS NOT REACHABLE FROM THIS BRANCH.** `b356b18d` is a COMMIT,
+not a tree, and the records that call it one are loose in exactly the way this branch just rekeyed
+three sweep tools to avoid. It is an ancestor of nothing on master or M9 and survives only on three
+local M8.12 branches, none of them on the remote, so a fresh clone cannot reach it at all. Every
+record that cites it has to carry its own content.
 
 ## Where to go next
 

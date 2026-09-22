@@ -1458,6 +1458,8 @@ inside the tree.
       rp2350 arbitrates a shared console and `qemu-arm64-amp2` puts two images on one UART with
       no claim of any kind, so what M9 owns is a partition-wide contract for who may speak and
       not a lock.
+      **AND IT IS M9.6, A STAGE OF ITS OWN.** It needs neither the lock nor the scheduler, so it
+      attaches to nothing and depends on nothing above it.
 
 - [x] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
       THE NEXT SPAWN.** `user/apps/common/selftest/main.cc` (`join_stale_gen`), 5 runs in 320 at
@@ -3288,6 +3290,8 @@ that finds this class. None is an M8.7 regression; the first two are in checks M
       Direction: pass the binding through to the stamp so a foreign line cannot write it. Target
       M9, with the rest of the protocol.
       **REASSIGNED TO M9 AT M8.13**, with the two carried e2e rulings it sits beside.
+      **LANDS AT M9.1**, which is the first stage that takes a new cross-core capture and so the
+      first whose numbers this cell can spoil.
 
 - [x] **`docs/reference/boards.md`'s CI-COVERAGE COLUMN DOES NOT CARRY THE BENCH JOB.** The armv8a
       and LX6 rows still describe the coverage that existed before the bench job was added, so
@@ -3409,7 +3413,9 @@ the skip half is closed refuted there.
 - [x] **P2: THE MPU-APPLY SKIP ON MMU BOARDS IS A TWO-LINE WIN, NOT A PLAN ITEM ON ITS OWN --
       THE PRIOR SIZING WAS TAKEN FROM THE STALE 886-CYCLE FIGURE.** The `KICKOS_HAVE_MPU` stub
       that MMU-board switches pay is an out-of-line call of ~5-10 cycles; the real remaining MPU cost
-      on region boards is 94 cycles a switch after the PMP precompute (M8.4's doc-drift item).
+      after the PMP precompute (M8.4's doc-drift item) is 94 cycles a switch on `esp32c6-wroom`,
+      and 210 on `f411disco` and 226 on `xmc4800-relax`: 94 is a PMP figure and the two armv7m
+      region boards are 2.2 and 2.4 times it, apply and commit summed off M8.12.
       `MpuSet::apply` is now empty without an MPU, which took a translating board's switch from 10
       instructions to 1. The region-board half of this item, the same-set skip, is closed refuted;
       its successor is the per-descriptor write in the attribution-residue section below.
@@ -3716,6 +3722,8 @@ M8.8. None is a regression this milestone introduced unless it says so.
       **REASSIGNED TO M9 AT M8.13.** The gate is the backstop the caller-held API ruling above
       declines to buy with a naming rule, so it lands with the lock rework that makes the roots
       stop moving.
+      **LANDS AT M9.7**: the roots keep moving until the escape is settled, so an earlier stage
+      would write the gate against a set it then has to rewrite.
 
 - [x] **A TEAR ON THE AMP BARRIER LINE REDDENS THE GATE OUTRIGHT.** `check_amp_partition.sh`'s
       app-alive sweep line was matched anchored, in both the clause and the ordering loop,
@@ -3820,6 +3828,7 @@ M8.8. None is a regression this milestone introduced unless it says so.
       **REASSIGNED TO M9 AT M8.13.** Both candidate shapes land on that guard, which is the
       scheduler surface M9 reworks, so taking either here would settle a contract ahead of the
       milestone that owns it. The limitation stays recorded in `kickos/sched.h`.
+      **LANDS AT M9.2**, which owns the wait edge that guard sits on.
 
 - [x] **THE AMP GATE'S TOLERANCE RESTS ON ITS PATTERNS AND NOT ON THE PEERS BEING QUIET.**
       `tests/integration/check_amp_partition.sh` reads lines node 0 prints after its app-alive
@@ -3887,6 +3896,7 @@ M8.8. None is a regression this milestone introduced unless it says so.
       it closes is unbounded, and that trade was made deliberately.
       **REASSIGNED TO M9 AT M8.13**, which is the milestone that reworks the lock and the
       scheduler together and so the only one that can hold the set the cheap answer would read.
+      **LANDS AT M9.2**: that set is what per-core ready queues are.
 
 
 ## M8.9 -- IPC structure
@@ -4519,10 +4529,10 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       allocated runs so it is finite and was accepted, but it is a per-page cost added to a path that
       had none, and no figure exists for it. Take it with the M8.7 baseline rather than separately, so
       the map path carries a number before M8.8 through M8.11 start changing costs around it.
-      **THAT WINDOW IS GONE AND THE ITEM IS REASSIGNED TO M9's EXIT MEASUREMENT.** Both M8
-      baselines are frozen and neither carries this figure, so it cannot be taken with either
-      without reopening a frozen table. No bench preset drives the map path today, so the figure
-      needs a vehicle that does not exist here and M9 has to build one for the lock question
+      **THAT WINDOW IS GONE AND THE ITEM IS REASSIGNED TO M9's EXIT MEASUREMENT, WHICH IS M9.7.**
+      Both M8 baselines are frozen and neither carries this figure, so it cannot be taken with
+      either without reopening a frozen table. No bench preset drives the map path today, so the
+      figure needs a vehicle that does not exist here and M9 has to build one for the lock question
       anyway.
 
 - [x] **THE RESIDENCY LOOKUP IS A LINEAR SCAN ON THE ROOT-CHANGE PATH, AND ON THIS BENCH IT WILL
@@ -4564,6 +4574,7 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       point is right, so re-reading this is owed to whoever narrows the lock, not to a later sweep.
       **REASSIGNED TO M9 AT M8.13.** The window opens the day the per-core ready queues land,
       and it is unreachable until then, so the re-read belongs to that change.
+      **LANDS AT M9.2**, the stage that lands those queues.
 
 ## M8.12 -- the M8 exit measurement, frozen
 
@@ -5146,24 +5157,40 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**THE LEDGER GAINED SIX ROWS ON 2026-09-08 AND ONLY M9.0 IS STARTABLE.** `roadmap.md` now assigns
+**THE LEDGER IS EIGHT ROWS AND M9.0 HAS LANDED, SO THE REST ARE ASSIGNED AND UNAPPROVED.** `roadmap.md` assigns
 M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived from the
 mask, per-core ready queues, the wait-edge rule), M9.3 (the per-pair rings), M9.4 (the local
-scheduler leaves the lock), M9.5 (same-owner IPC leaves the lock) and M9.6 (write-up and exit
-measurement), and it carries each stage's content, its evidence gate and the rulings behind it --
-including the ones a session might otherwise reopen: ownership and the rings land UNDER the lock in
-both outcomes, an endpoint's owner is the home of its first receiver, cross-core inheritance is a
-ring kind with a ceiling as an admission rule, a line follows its claimer and a waiter follows its
-line, eight cores is a scenario and not a target, and capability lifetime is a named precondition of
-M9.5 rather than a decision anyone has taken. **Granular items are not written here for those
-stages yet, deliberately**: they are sized from measurement, and an item written against today's
-figures would carry a number the rebaseline replaces. What IS actionable now is M9.0, plus the
-instrument constants M8.7 owes this milestone (see that section) and G-06. **The ladder itself
-adapts as the work lands**, the same way every milestone in this file has: `roadmap.md` says so at
-the ledger, and a stage found to be two stages, or already answered by the one before it, is re-cut
-rather than defended.
+scheduler leaves the lock), M9.5 (same-owner IPC leaves the lock), M9.6 (the console contract
+across cores) and M9.7 (write-up and exit measurement), and it carries each stage's content, its
+evidence gate and the rulings behind it -- including the ones a session might otherwise reopen:
+ownership and the rings land UNDER the lock in both outcomes, an endpoint's owner is the home of its
+first receiver, cross-core inheritance is a ring kind with a ceiling as an admission rule, a line
+follows its claimer and a waiter follows its line, eight cores is a scenario and not a target, and
+capability lifetime is a named precondition of M9.5 rather than a decision anyone has taken.
+**Granular items are not written here for those stages yet, deliberately**: they are sized from
+measurement, and an item written against today's figures would carry a number the rebaseline
+replaces. **The ladder itself adapts as the work lands**, the same way every milestone in this file
+has: `roadmap.md` says so at the ledger, and a stage found to be two stages, or already answered by
+the one before it, is re-cut rather than defended.
 
-- [ ] **M9.0: THE REFERENCE-KERNEL SURVEY, CITE BY PATH AND NEVER COPY.** `roadmap.md`'s M9.0 row
+**WHAT M8 HANDED THIS MILESTONE NOW NAMES A STAGE, AND THE RE-CUT IS WHY.** M8.13 reassigned nine
+items here as a list with no stage, which is the state M8 itself was in before it needed a tail. A
+list with no stage is not an assignment: it is a promise that somebody will find them. So each now
+names one, `roadmap.md` carries the mapping, and each item's own entry in this file says where it
+lands beside the evidence that raised it. The count per stage is worth knowing before the work
+starts: **M9.2 takes four of the nine**, which makes the widest stage in the ladder wider still.
+
+**AND ONE STAGE WAS ADDED RATHER THAN AN ITEM ATTACHED.** The console tear across cores needs
+neither the lock nor the scheduler -- what it owes is a partition-wide contract for who may speak,
+in the SMP shape and the AMP one -- so it is M9.6 and the write-up moved to M9.7. Nothing else
+renumbered: the five lock stages keep the numbers their evidence gates were written against.
+
+**TWO LINES WENT BECAUSE THEY WERE STALE.** This section used to say the instrument constants M8.7
+owes this milestone and G-06 were actionable alongside M9.0. The five constants landed inside M8.7's
+own pass, folded into the spans it was already opening, and G-06 was decided at M8.4. Neither is
+owed.
+
+- [x] **M9.0: THE REFERENCE-KERNEL SURVEY, CITE BY PATH AND NEVER COPY.** `roadmap.md`'s M9.0 row
       names seL4, Fiasco.OC, NuttX, RIOT, Zephyr, ThreadX, RTEMS, RT-Thread, ChibiOS and FreeRTOS;
       revision-pinned checkouts sit on the development box (`CONTEXT.local.md` names them and their
       revisions, gitignored). The survey extracts lock domains, acquisition order, remote wake,
@@ -5181,16 +5208,27 @@ rather than defended.
       and flush after an inter-processor interrupt, both of which are checked out on this box
       already; the tree's OWN AMP window, whose per-pair rings and publication rules M9.3 reuses as
       written; and the tree's own routed controller-mask touch, which is the one blocking cross-core
-      wait that exists here. And four are named as references that are NOT on the box, so that their
-      absence is a recorded gap rather than an implied verdict: a multikernel with a published
-      crossover between shared memory with locks and message passing, a capability kernel that binds
-      every execution context to a core, a scheduling-context and budget design that lives inside a
-      project already on the list, and a message-passing system with priority inheritance across the
-      message path. **Two claims must be checked before either is cited**: whether the most-cited
-      precedent's IPC fastpath takes its queue lock on the same acquisition, and what that project's
-      own documents say the verification envelope excludes.
+      wait that exists here. And five are named at the end so that a gap is a recorded one rather
+      than an implied verdict: a multikernel with a published crossover between shared memory with
+      locks and message passing, a capability kernel that binds every execution context to a core,
+      and a message-passing system with priority inheritance across the message path, none of which
+      is on the box; plus seL4's mixed-criticality scheduling contexts and Fiasco.OC's scheduling
+      contexts, which ARE both on the box in two different shapes and are missing, respectively, the
+      paper that argues the first and the L4Re userland that programs the second.
+      **Two claims must be checked before either is cited**: whether the most-cited precedent's IPC
+      fastpath takes its queue lock on the same acquisition, and what that project's own documents
+      say the verification envelope excludes.
+      **LANDED. The survey is [`docs/design-m9-reference-kernels.md`](docs/design-m9-reference-kernels.md).**
+      Nineteen rows, each carrying a licence, cited by path into the checkouts and copied from
+      nowhere. Both claims answered in the seL4 row: there is no separate endpoint or queue lock
+      anywhere in that kernel, the fastpath runs on the same acquisition as the rest of the entry
+      under the one big lock and bails to the slowpath when sender and receiver differ in affinity,
+      so its fast-IPC figure is a same-core figure; and the project's own caveats state that SMP is
+      supported and NOT verified, that ordinary C defects are not excluded there as they are in the
+      verified configurations, and that the intended route to assurance on multicore is a static
+      multi-kernel over disjoint memory.
 
-- [ ] **M9 RESEARCH, AFTER M8.12: STACK OWNERSHIP AND BLOCKING COMPLETION.** Revisit
+- [x] **M9 RESEARCH, AFTER M8.12: STACK OWNERSHIP AND BLOCKING COMPLETION.** Revisit
       [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) as part of
       M9.0's reference survey. Evaluate shared per-CPU kernel stacks against the current
       per-thread continuations, including RAM/flash, IRQ and IPC latency, timeout/cancellation,
@@ -5198,6 +5236,54 @@ rather than defended.
       before combining them. This is an investigation, not approval to rewrite the kernel;
       retaining the current design is a valid outcome. The report also preserves independent
       stack-test improvements and the dated M8.9 audit findings.
+      **LANDED as section 8 of
+      [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md), and the
+      verdict is to KEEP the per-thread continuation.** The RAM the experiment is run for lands on
+      one board that already names the trade in its own defconfig, while the change would replace a
+      completion mechanism the resume barrier, the timeout deadline, the cancellation edge and the
+      death-path stack relocation all depend on, with one this tree has built once, for a single
+      untimed operation, on four of nine backends. Nine of the surveyed kernels keep per-thread
+      privileged state; the one that shares makes long operations restartable rather than resumable,
+      which is a property this tree's syscalls do not have. Eight measurements are named as owed
+      before any implementation could be proposed, starting with a fleet footprint baseline that
+      does not exist.
+      **And it found that the board most cited as this axis's exemplar carves no kernel stacks at
+      all**, which is corrected at the `f302nucleo-st` item below.
+
+- [x] **M9.0: THE ENTRY ENVELOPE, RECOMPUTED AGAINST M8.12, AND IT GATES EVERY STAGE BELOW IT.**
+      `roadmap.md`'s M9 section names the four entry metrics -- the M8.12 locked fraction, the
+      lock-wait cycles under contention, and p50/p99/max for both IRQ-to-user and the IPC round
+      trip -- and rules that the envelope belongs to whoever recomputes it, because the scenario
+      arithmetic that sizes M9 rested on a DERIVED fraction and `MPU_APPLY` had already shown what
+      that costs. Direction: recompute each value, name each input, and say which ones M8.12 does
+      not carry.
+      **LANDED. The envelope is
+      [`docs/design-m9-entry-envelope.md`](docs/design-m9-entry-envelope.md), and it approves
+      nothing.** The fraction is 0.380 on `f411disco` and 0.342 on `esp32c6-wroom`, both floors in
+      two independent senses. It is ABSENT on every MULTI-CORE configuration this project has, and
+      the cause is the counter rate rather than a missing column: five of the six emulator presets
+      print `cycle counter: 0 Hz`, so the hold is in cycles, the period is in nanoseconds and
+      nothing joins them. `qemu-x86_64-bench` is the one preset that declares a rate and the only
+      one where the fraction forms, and it is single-core.
+      **THE FRACTION THAT LANDED IS NOT THE ONE THE PLANNING DOCUMENTS QUOTE, AND THAT IS THE
+      HEADLINE.** 0.380 and 0.342 are the ping-pong throughput workload's; the 0.53 and 0.43 that
+      `docs/design-m7-smp.md` and `docs/design-multicore.md` plan against are the call/reply round
+      trip's, and `docs/design-multicore.md` already rules that the fraction is a property of the
+      workload. They are not versions of one number and the lower one is not good news. The
+      call/reply fraction CANNOT be recomputed from M8.12: the bracket count per locked leg is
+      unpublished, the inside-the-lock leaf membership at that tree is unstated, and the three legs'
+      populations no longer match.
+      **Fourteen inputs are named absent**, and the load-bearing ones are the emulator period, a
+      round-trip DISTRIBUTION anywhere, any silicon lock-wait, and lock-wait at more than one
+      contention level. **So the stop condition has no input on either side of its comparison**:
+      M9.4 and M9.5 cannot be spoken to, M9.2/M9.3/M9.6 need no payoff figure and land under the
+      lock regardless, and M9.1 is the stage the numbers argue for -- by absence, it being the
+      metric the envelope most lacks.
+      **AND THE ROADMAP'S CLAIM TO HAVE REPAIRED THE LAST FIGURE OF THAT KIND DOES NOT HOLD.**
+      Three more terms of the same family are named there, one of them corrected in the P2 item
+      above and one of them the `esp32c6-wroom` lock-hold maximum, which M8.13 attributed to the
+      console and which may therefore not stand in for a worst critical section when M9.1 derives
+      its bound.
 
 - [ ] **P5 (= M9.2): PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
       LOCK-PARTITION DESIGN, AND BUILDING THEM UNDER ONE LOCK FIRST BUILDS THEM TWICE.** Under
@@ -5216,6 +5302,25 @@ rather than defended.
       may land a behaviour-preserving preparatory layout under the still-single lock and nothing
       more -- no remote wake, no migration, no per-core lock -- explicitly labelled as prep for this
       M9 item rather than as the partition itself.
+
+- [x] **THE FLEET SWEEP KEYS ITS RECORDED STATUS ON A COMMIT AND ITS OWN COMMENT SAYS IT BELONGS
+      TO A TREE.** `tools/sweep_host_gates.sh` and `tools/sweep_image_gates.sh` both build
+      `TREE_ID` from `git rev-parse HEAD` plus a cksum of `git status --porcelain`, three lines
+      under a comment reading "THE RECORDED STATUS BELONGS TO A TREE". So a squash, a rebase or a
+      re-message discards all 79 recorded passes and rebuilds the fleet to learn what it already
+      knew: measured at M8.13's squash, which changed not one byte and cost a full sweep. It errs
+      in the SAFE direction -- keying too narrowly makes it under-reuse and never report a stale
+      pass -- which is the whole reason it was left rather than fixed inside a branch three audit
+      passes had cleared. Direction: `rev-parse HEAD^{tree}`, one line in each tool, with the
+      dirty-tree cksum kept as it is. Anytime; attached to no stage.
+      **LANDED, and it is THREE tools rather than two**: `tools/sweep_service_lists.sh` carries the
+      identical construct under the identical comment. All three key on the tree object, so a
+      rewritten commit reuses the preset passes it already recorded.
+      **AND THE DIRTY-TREE HALF WAS NOT CONTENT-ADDRESSED EITHER.** `git status --porcelain` prints
+      names and status codes and never content, so two different edits to one tracked file keyed
+      the same stamp while the header promised a tree byte for byte. A `git diff HEAD` cksum sits
+      beside it now; untracked files remain keyed by name, which is stated rather than implied.
+
 
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
 
@@ -5314,12 +5419,15 @@ Deliberately left for its own milestone.
       `f302nucleo-st`, which had no arena slack, that tipped the link-time assert refusing a
       board that advertises more thread slots than it can seat. Measured rather than guessed:
       at three threads the link fails at user stacks of 1024, 896 and 768 alike, so the user
-      stack is NOT the lever; two threads at 1024 links. The dominant term is the KERNEL stack
-      each slot also carries in `.bss` below the arena, which the assert names itself.
-      **What is NOT established**: whether a smaller `KICKOS_KERNEL_STACK_SIZE` would buy the
-      third slot back. The probe was inconclusive because that knob is read from the generated
-      board config rather than the CMake cache, so a `-D` may never have reached it, and a
-      failed probe there cannot be told from an inert one.
+      stack is NOT the lever; two threads at 1024 links.
+      **THE DOMINANT TERM IS NOT ESTABLISHED, AND THE KERNEL STACK IS NOT IT.** `CHIP_STM32F302`
+      selects no `HAS_MPU` and armv7m does not make the blocks mandatory, so
+      `KICKOS_KERNEL_STACKS` resolves 0 here and this board carves no per-slot kernel stack at
+      all. The arena assert's remedy clause names the blocks conditionally, and reading that
+      clause as a diagnosis is what produced the earlier attribution. The same resolution voids
+      the `KICKOS_KERNEL_STACK_SIZE` probe rather than leaving it open: that knob reaches
+      nothing on this board, so an inert probe was the answer and not a tooling failure. What
+      the board spends its arena on instead is open.
       **The cost of the drop**: this board's selftest skip set grows by whatever needs a third
       thread, and the size of that set is unwitnessed -- `f302nucleo` is main-bench only and
       has no emulator, so only a silicon run names it. Any record saying this board runs three
@@ -14038,3 +14146,5 @@ follows is what survived that.
       an `irq-probe` reading `on=3 hcore=0` is the first and `hcore=mixed` is the second.
       **REASSIGNED TO M9 AT M8.13.** Both are questions about how a line is placed across cores,
       which is the surface M9 reworks; neither is answerable by the instrument that raised them.
+      **LAND AT M9.2**, which already carries "a line follows its claimer and a waiter follows its
+      line" as a recorded ruling; these two are that rule asked of two backends.
