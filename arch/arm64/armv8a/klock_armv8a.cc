@@ -2,14 +2,17 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What the cross-core doorbell and the kernel lock coupled to it cost on armv8a: the GIC's
-// clear and raise, the service body's context synchronization event, the lock word's exclusive
-// pair, and the secondary park. The protocol over them is in arch/common/doorbell_protocol.cc.
+// clear and raise, the service body's context synchronization event, the ticket draw's
+// exclusive pair, and the secondary park. The protocol over them is in
+// arch/common/doorbell_protocol.cc.
 //
 // THE RENDEZVOUS IS SHARED MEMORY. Neither GIC version reports that a target has SERVICED a
 // software-generated interrupt, and GICv2's per-source pending registers are banked to the
 // accessing core: the controller carries the wake, the answer travels in the shared cells.
 //
-// The lock word is written only through LDAXR/STXR inside this file.
+// The lock is a ticket pair: a draw takes g_next_ticket with LDXR/STXR, and the holder alone
+// advances g_now_serving with a plain load and an STLR. Both counters are written only inside
+// this file.
 
 #include <kickos/arch/arch.h>
 
@@ -30,6 +33,10 @@
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
+    // Declared rather than included: this TU is below <kickos/bench.h>.
+    void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
+#endif
 }
 
 using kickos::doorbell::g_answer;
@@ -48,28 +55,65 @@ namespace
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-    // The lock word: 0 free, 1 held, on a line of its own.
-    alignas(KICKOS_DOORBELL_LINE) uint32_t g_kernel_lock = 0;
+    // SEPARATE LINES. Every draw takes g_next_ticket's line exclusive in the inner-shareable
+    // domain, which on a shared line would invalidate it under every waiter loading
+    // g_now_serving, and DDI 0487 M.b B2.12.5 (page B2-340) asks for a reservation granule
+    // between objects reached by exclusive accesses.
+    alignas(KICKOS_DOORBELL_LINE) uint32_t g_next_ticket = 0;
+    alignas(KICKOS_DOORBELL_LINE) uint32_t g_now_serving = 0;
 
-    // LDAXR/STXR, which is architectural on ARMv8-A over one inner-shareable domain. `res` is 0
-    // only on a store that took the word, and the MOV covers the path that never stored.
-    // CLREX drops the monitor a taken branch would leave set.
-    bool kernel_lock_claim(void)
+    // The acquire half of the lock: it pairs with the STLR the holder releases with.
+    uint32_t now_serving(void)
     {
-        uint32_t res = 1u;
-        uint32_t cur = 0u;
-        __asm volatile("       mov     %w0, #1\n"
-                       "       ldaxr   %w1, [%2]\n"
-                       "       cbz     %w1, 2f\n"
-                       "       clrex\n"
-                       "       b       1f\n"
-                       "2:     stxr    %w0, %w3, [%2]\n"
-                       "1:\n"
-                       : "=&r"(res), "=&r"(cur)
-                       : "r"(&g_kernel_lock), "r"(1u)
-                       : "memory");
-        return res == 0u;
+        uint32_t v = 0;
+        __asm volatile("ldar %w0, [%1]" : "=r"(v) : "r"(&g_now_serving) : "memory");
+        return v;
     }
+
+    // LDXR AND NOT LDAXR: a drawn ticket grants nothing and so owes no acquire.
+    //
+    // NOTHING MAY ENTER THE RETRY INTERVAL. DDI 0487 M.b B2.12.5 (page B2-340), condition 2:
+    // between a Store-Exclusive returning a failing result and the retry of the corresponding
+    // Load-Exclusive there may be no direct or indirect System register write, address
+    // translation instruction, cache or TLB maintenance instruction, exception generating
+    // instruction, exception return, indirect branch or Branch with Link, or a PE without
+    // FEAT_LSE loses its forward-progress guarantee. Never put a call in this loop.
+    //
+    // The bench arm's counter is a plain ADD, which that list does not name.
+#if KICKOS_BENCH
+    uint32_t kernel_lock_draw(uint32_t& retries)
+    {
+        uint32_t tick = 0;
+        uint32_t want = 0;
+        uint32_t res = 0;
+        uint32_t tries = 0;
+        __asm volatile("1:     add     %w3, %w3, #1\n"
+                       "       ldxr    %w0, [%4]\n"
+                       "       add     %w1, %w0, #1\n"
+                       "       stxr    %w2, %w1, [%4]\n"
+                       "       cbnz    %w2, 1b\n"
+                       : "=&r"(tick), "=&r"(want), "=&r"(res), "+r"(tries)
+                       : "r"(&g_next_ticket)
+                       : "memory");
+        retries = tries - 1u;
+        return tick;
+    }
+#else
+    uint32_t kernel_lock_draw(void)
+    {
+        uint32_t tick = 0;
+        uint32_t want = 0;
+        uint32_t res = 0;
+        __asm volatile("1:     ldxr    %w0, [%3]\n"
+                       "       add     %w1, %w0, #1\n"
+                       "       stxr    %w2, %w1, [%3]\n"
+                       "       cbnz    %w2, 1b\n"
+                       : "=&r"(tick), "=&r"(want), "=&r"(res)
+                       : "r"(&g_next_ticket)
+                       : "memory");
+        return tick;
+    }
+#endif
 #endif
 }
 
@@ -226,11 +270,23 @@ uint64_t arch_ipi_counts(uint32_t core)
 // THE POLL IN THIS LOOP IS WHAT KEEPS THE COUPLING SOUND: a caller acquires with interrupts
 // masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
 // the lock waits on it.
+//
+// THE TURN TEST PRECEDES THE POLL. When the turn has come the previous holder has released, so
+// no lock-holding initiator can be waiting on this core's answer and the skipped poll strands
+// nobody. The draw itself carries no poll either, so a core observed spinning answers only
+// once it has finished drawing.
 void arch_kernel_lock(void)
 {
+#if KICKOS_BENCH
+    uint32_t retries = 0;
+    uint32_t const ticket = kernel_lock_draw(retries);
+    kickos_bench_lock_draw(retries, ticket - now_serving());
+#else
+    uint32_t const ticket = kernel_lock_draw();
+#endif
     while (true)
     {
-        if (kernel_lock_claim())
+        if (now_serving() == ticket)
         {
             return;
         }
@@ -239,12 +295,31 @@ void arch_kernel_lock(void)
     }
 }
 
-// STLR pairs with the LDAXR the claim takes the word with, so everything done under the lock
-// publishes before the word reads free.
+// STLR pairs with the LDAR the wait reads the turn with, so everything done under the lock
+// publishes before the next ticket is served.
 void arch_kernel_unlock(void)
 {
-    __asm volatile("stlr wzr, [%0]" ::"r"(&g_kernel_lock) : "memory");
+    uint32_t v = 0;
+    __asm volatile("ldr  %w0, [%1]\n"
+                   "add  %w0, %w0, #1\n"
+                   "stlr %w0, [%1]"
+                   : "=&r"(v)
+                   : "r"(&g_now_serving)
+                   : "memory");
 }
+
+#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    uint32_t next = 0;
+    __asm volatile("ldr %w0, [%1]" : "=r"(next) : "r"(&g_next_ticket) : "memory");
+    if (next == now_serving())
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
 #endif
 
 // Where a core with no thread to run waits for a doorbell. Its interface and its vectors are

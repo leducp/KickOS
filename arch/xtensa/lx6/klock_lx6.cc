@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What the cross-core doorbell and the kernel lock coupled to it cost on the Xtensa LX6: the
-// trigger's clear, the service body, the lock word's conditional store, and the secondary park.
-// The protocol over them is in arch/common/doorbell_protocol.cc.
+// trigger's clear, the service body, the ticket draw's conditional store, and the secondary
+// park. The protocol over them is in arch/common/doorbell_protocol.cc.
 //
 // THE RENDEZVOUS IS SHARED MEMORY. The trigger register reports nothing back to a sender and is
 // not even per target core, so the answer travels in the shared cells. The trigger register is
-// not such a cell and need not be: two cores only ever SET it. The lock word is written only
-// through S32C1I inside this file.
+// not such a cell and need not be: two cores only ever SET it. The lock is a ticket pair: a
+// draw takes g_next_ticket with S32C1I, and the holder alone advances g_now_serving with L32I
+// and S32RI. Both counters are written only inside this file.
 //
 // Nothing clears the trigger in hardware, so a sender setting it while a receiver clears it can
 // erase the wake. That costs a SPURIOUS ENTRY and never a lost request, since the set then
@@ -25,6 +26,10 @@
 #include <stdint.h>
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
+// Declared rather than included: this TU is below <kickos/bench.h>.
+extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
+#endif
 
 using kickos::doorbell::g_answer;
 using kickos::doorbell::g_request;
@@ -46,26 +51,64 @@ namespace
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // The lock word: 0 free, 1 held. Kernel state, so the linker rule in esp32.ld is what puts
-    // it where S32C1I's RCW transaction excludes the other CPU over it.
-    uint32_t g_kernel_lock = 0;
+    // ADJACENT AND UNPADDED. KICKOS_DOORBELL_LINE is 4 on this part because no cache covers the
+    // internal SRAM kernel state lives in, so there is no line for two counters to share and
+    // padding would only cost bytes on the part with the least RAM. Kernel state, so esp32.ld's
+    // internal-SRAM range assert is what keeps both where S32C1I's RCW transaction excludes the
+    // other CPU.
+    uint32_t g_next_ticket = 0;
+    uint32_t g_now_serving = 0;
 
     // S32C1I against SCOMPARE1 (Conditional Store Option). IT EXCLUDES ONLY WHILE ATOMCTL
     // SELECTS THE RCW BUS TRANSACTION, which kickos_lx6_init seats, refusing a core that cannot
     // confirm it.
     //
-    // The instruction returns the value it READ, so a return of 0 is the one case where the
-    // word was free and this core stored the 1. NO BARRIER EITHER SIDE: S32C1I plays the role
-    // of both acquire and release on its own (ISA summary 4.3.13.5, p.122).
-    bool kernel_lock_claim(void)
+    // THE LOAD STAYS INSIDE THE LOOP. S32C1I usually returns the current memory value, but the
+    // ISA summary (p.120) allows a few implementations to return the bitwise NOT of SCOMPARE1
+    // instead when the store is not done, so a hoisted load is not portable across them.
+    //
+    // The instruction plays the role of both acquire and release on its own (4.3.13.5, p.122),
+    // but it sits on the DRAW here, which grants nothing: the acquire is owed by the wait.
+    uint32_t kernel_lock_draw(uint32_t& retries)
     {
-        uint32_t ret = 1u;
-        __asm volatile("wsr.scompare1 %[free]\n\t"
-                       "s32c1i %[ret], %[addr], 0"
-                       : [ret] "+a"(ret)
-                       : [free] "a"(0u), [addr] "a"(&g_kernel_lock)
+        uint32_t cur = 0u;
+        uint32_t want = 0u;
+#if KICKOS_BENCH
+        uint32_t tries = 0u;
+        __asm volatile("1:  addi %[n], %[n], 1\n\t"
+                       "    l32ai %[cur], %[addr], 0\n\t"
+                       "    wsr.scompare1 %[cur]\n\t"
+                       "    addi %[want], %[cur], 1\n\t"
+                       "    s32c1i %[want], %[addr], 0\n\t"
+                       "    bne %[want], %[cur], 1b"
+                       : [cur] "=&a"(cur), [want] "=&a"(want), [n] "+a"(tries)
+                       : [addr] "a"(&g_next_ticket)
                        : "memory");
-        return ret == 0u;
+        retries = tries - 1u;
+#else
+        __asm volatile("1:  l32ai %[cur], %[addr], 0\n\t"
+                       "    wsr.scompare1 %[cur]\n\t"
+                       "    addi %[want], %[cur], 1\n\t"
+                       "    s32c1i %[want], %[addr], 0\n\t"
+                       "    bne %[want], %[cur], 1b"
+                       : [cur] "=&a"(cur), [want] "=&a"(want)
+                       : [addr] "a"(&g_next_ticket)
+                       : "memory");
+        (void)retries;
+#endif
+        return cur;
+    }
+
+    // L32AI, the Multiprocessor Synchronization Option's load-acquire (ISA summary 4.3.12,
+    // Table 49, p.117), and the acquire half of the lock.
+    uint32_t now_serving(void)
+    {
+        uint32_t v = 0u;
+        __asm volatile("l32ai %[v], %[addr], 0"
+                       : [v] "=a"(v)
+                       : [addr] "a"(&g_now_serving)
+                       : "memory");
+        return v;
     }
 #endif
 }
@@ -188,11 +231,21 @@ uint64_t arch_ipi_counts(uint32_t core)
 // THE POLL IN THIS LOOP IS WHAT KEEPS THE COUPLING SOUND: a caller acquires with interrupts
 // masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
 // the lock waits on it.
+//
+// THE TURN TEST PRECEDES THE POLL. When the turn has come the previous holder has released, so
+// no lock-holding initiator can be waiting on this core's answer and the skipped poll strands
+// nobody. The draw carries no poll either, so a core observed spinning answers only once it has
+// finished drawing.
 void arch_kernel_lock(void)
 {
+    uint32_t retries = 0u;
+    uint32_t const ticket = kernel_lock_draw(retries);
+#if KICKOS_BENCH
+    kickos_bench_lock_draw(retries, ticket - now_serving());
+#endif
     while (true)
     {
-        if (kernel_lock_claim())
+        if (now_serving() == ticket)
         {
             return;
         }
@@ -204,15 +257,34 @@ void arch_kernel_lock(void)
 // S32RI, the ISA's store-release (Multiprocessor Synchronization Option, ISA summary 4.3.12,
 // p.115), which the Conditional Store Option above has as a PREREQUISITE (4.3.13, p.118) and so
 // is present wherever S32C1I is. Deliberately not the `memw` plus plain store the compiler
-// emits for a release elsewhere in this image: one instruction, and it pairs visibly with the
-// acquire half S32C1I already carries.
+// emits for a release elsewhere in this image: it pairs visibly with the L32AI the wait reads
+// the turn with.
 void arch_kernel_unlock(void)
 {
-    __asm volatile("s32ri %[zero], %[addr], 0"
-                   :
-                   : [zero] "a"(0u), [addr] "a"(&g_kernel_lock)
+    uint32_t v = 0u;
+    __asm volatile("l32i  %[v], %[addr], 0\n\t"
+                   "addi  %[v], %[v], 1\n\t"
+                   "s32ri %[v], %[addr], 0"
+                   : [v] "=&a"(v)
+                   : [addr] "a"(&g_now_serving)
                    : "memory");
 }
+
+#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    uint32_t next = 0u;
+    __asm volatile("l32i %[v], %[addr], 0"
+                   : [v] "=a"(next)
+                   : [addr] "a"(&g_next_ticket)
+                   : "memory");
+    if (next == now_serving())
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
 #endif
 
 // Where a core with no thread to run waits for a doorbell. Its vectors, its mask and its matrix

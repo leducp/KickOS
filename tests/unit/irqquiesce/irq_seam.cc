@@ -410,6 +410,8 @@ namespace
     // The lock word. A mutex rather than a spun flag: an exchange or a compare-exchange is a
     // read-modify-write, which no tracked source in this tree may spell.
     std::mutex g_lock_word;
+    // A mutex cannot be asked whether it is locked, so the held state is kept beside it.
+    std::atomic<bool> g_lock_taken{false};
 
     // Rounds arch_ipi_wait spends on one peer before it gives up on an answer.
     constexpr unsigned DOORBELL_WAIT_SPINS = 100000u;
@@ -547,6 +549,7 @@ void arch_kernel_lock(void)
     {
         if (g_lock_word.try_lock())
         {
+            g_lock_taken.store(true);
             return;
         }
         kickos::irqfix::g_lock_blocked.store(true);
@@ -557,8 +560,20 @@ void arch_kernel_lock(void)
 
 void arch_kernel_unlock(void)
 {
+    g_lock_taken.store(false);
     g_lock_word.unlock();
 }
+
+#if KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    if (g_lock_taken.load())
+    {
+        return 1;
+    }
+    return 0;
+}
+#endif
 
 // The raise the real klock.cc restores an owed reschedule with.
 void arch_ipi_resched_self(void)

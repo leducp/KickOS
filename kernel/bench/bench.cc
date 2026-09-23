@@ -34,18 +34,22 @@
 #define BENCH_HEADLINE_MIN 1
 #define BENCH_DIST_FMT(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n"
 #define BENCH_DIST_FMT_CYC(label) "  " label " %u/%u/%u cyc  (min/avg/max, n=%u)\n"
+#define BENCH_DIST_FMT_CNT(label) "  " label " %u/%u/%u  (min/avg/max, n=%u)\n"
 #define BENCH_E2E_FMT(label) "  " label " %u/%u/%u ns  (min/avg/max, n=%u)\n"
 // The min/avg/max format does not depend on sample count.
 #define BENCH_DIST_FMT_MAX(label) BENCH_DIST_FMT(label)
 #define BENCH_DIST_FMT_CYC_MAX(label) BENCH_DIST_FMT_CYC(label)
+#define BENCH_DIST_FMT_CNT_MAX(label) BENCH_DIST_FMT_CNT(label)
 #define BENCH_E2E_FMT_MAX(label) BENCH_E2E_FMT(label)
 #else
 #define BENCH_HEADLINE_MIN 0
 #define BENCH_DIST_FMT(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (p50/p99/max, n=%u)\n"
 #define BENCH_DIST_FMT_CYC(label) "  " label " %u/%u/%u cyc  (p50/p99/max, n=%u)\n"
+#define BENCH_DIST_FMT_CNT(label) "  " label " %u/%u/%u  (p50/p99/max, n=%u)\n"
 #define BENCH_E2E_FMT(label) "  " label " %u/%u/%u ns  (p50/p99/max, n=%u)\n"
 #define BENCH_DIST_FMT_MAX(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (p50/max/max, n=%u)\n"
 #define BENCH_DIST_FMT_CYC_MAX(label) "  " label " %u/%u/%u cyc  (p50/max/max, n=%u)\n"
+#define BENCH_DIST_FMT_CNT_MAX(label) "  " label " %u/%u/%u  (p50/max/max, n=%u)\n"
 #define BENCH_E2E_FMT_MAX(label) "  " label " %u/%u/%u ns  (p50/max/max, n=%u)\n"
 #endif
 
@@ -92,8 +96,6 @@ namespace
     using E2eState = Atomic<uint32_t, Order::RELAXED>;
 #endif
     constinit E2eState g_e2e_mode = E2E_IDLE;
-    // Atomic because the reporter reads this without acquiring g_e2e_mode.
-    constinit Atomic<int32_t, Order::RELAXED> g_e2e_line = -1;
     constinit kickos::Thread* g_e2e_waiter = nullptr;
     constinit uint32_t g_e2e_epoch = 0;
     // The state publishes this 64-bit timestamp; kickos::Atomic supports only 32-bit fields.
@@ -266,11 +268,18 @@ namespace
     {{BENCH_DIST_FMT(label), BENCH_DIST_FMT_MAX(label)},          \
      {BENCH_DIST_FMT_CYC(label), BENCH_DIST_FMT_CYC_MAX(label)}}
 #define BENCH_DIST_ENTRY_NONE() {{nullptr, nullptr}, {nullptr, nullptr}}
+// A slot carrying a COUNT. The absent nanosecond pair is what dist_print_fmt reads to keep a
+// count out of the cycles-to-nanoseconds conversion.
+#define BENCH_DIST_ENTRY_CNT(label)                                   \
+    {{nullptr, nullptr},                                              \
+     {BENCH_DIST_FMT_CNT(label), BENCH_DIST_FMT_CNT_MAX(label)}}
     constexpr DistFmt DIST_FMT[kickos::BD_COUNT] = {
         BENCH_DIST_ENTRY("switch:   "),
         BENCH_DIST_ENTRY("lock-hold:"),
 #if KICKOS_KERNEL_CORES > 1
         BENCH_DIST_ENTRY("lock-wait:"),
+        BENCH_DIST_ENTRY_CNT("draw-retry:"),
+        BENCH_DIST_ENTRY_CNT("draw-queue:"),
         BENCH_DIST_ENTRY("doorbell: "),
 #endif
         BENCH_DIST_ENTRY("irq:      "),
@@ -439,6 +448,17 @@ extern "C"
         kickos::bench_phase_add(kickos::PH_MPU_COMMIT, delta);
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    // C entry point for the kernel lock's ticket draw, called once per acquisition by the
+    // backend that owns the counters.
+    void kickos_bench_lock_draw(uint32_t retries, uint32_t queued)
+    {
+        BenchRow& r = row();
+        dist_add_row(r, kickos::BD_LOCK_DRAW, retries);
+        dist_add_row(r, kickos::BD_LOCK_QUEUE, queued);
+    }
+#endif
+
     void kickos_bench_switch_done(uint32_t delta)
     {
         dist_add_row(row(), kickos::BD_SWITCH, delta);
@@ -449,6 +469,9 @@ namespace kickos
 {
     constinit BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES] = {};
     constinit Atomic<uint32_t, Order::RELAXED> g_bench_e2e_isr_core = BENCH_CORE_NONE;
+    // Atomic because the reporter reads this without acquiring g_e2e_mode, and because the
+    // ISR stamp tests it from a core the armer never synchronized with.
+    constinit Atomic<int32_t, Order::RELAXED> g_bench_e2e_line = -1;
 }
 
 namespace
@@ -486,7 +509,10 @@ namespace
 #if KICKOS_KERNEL_CORES > 1
     // Per-core rows use min/avg/max; only the aggregate has percentiles.
     // The lock-hold maximum is the longest measured IrqLock interval on that core.
-    void dist_print_rows(Acc const* snap)
+    constexpr char DIST_ROW_CYC[] = "    core %u: %u/%u/%u cyc  (min/avg/max, n=%u)\n";
+    constexpr char DIST_ROW_CNT[] = "    core %u: %u/%u/%u  (min/avg/max, n=%u)\n";
+
+    void dist_print_rows(Acc const* snap, char const* fmt)
     {
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
@@ -498,8 +524,7 @@ namespace
                 min = a.min;
                 avg = static_cast<uint32_t>(a.sum / a.count);
             }
-            kickos::kprintf_paced("    core %u: %u/%u/%u cyc  (min/avg/max, n=%u)\n",
-                            static_cast<unsigned>(c), static_cast<unsigned>(min),
+            kickos::kprintf_paced(fmt, static_cast<unsigned>(c), static_cast<unsigned>(min),
                             static_cast<unsigned>(avg), static_cast<unsigned>(a.max),
                             static_cast<unsigned>(a.count));
         }
@@ -688,7 +713,9 @@ namespace kickos
             mid = agg.max;
         }
 #endif
-        if (cyccnt_hz() == 0)
+        // A slot with no nanosecond pair carries a count, which no clock converts.
+        bool const counted = f.ns.p99 == nullptr;
+        if (cyccnt_hz() == 0 or counted)
         {
             kprintf_paced(stat_fmt(f.cyc, c), static_cast<unsigned>(lo), static_cast<unsigned>(mid),
                     static_cast<unsigned>(agg.max), static_cast<unsigned>(c));
@@ -717,7 +744,12 @@ namespace kickos
         }
 #endif
 #if KICKOS_KERNEL_CORES > 1
-        dist_print_rows(snap);
+        char const* row = DIST_ROW_CYC;
+        if (counted)
+        {
+            row = DIST_ROW_CNT;
+        }
+        dist_print_rows(snap, row);
 #endif
     }
 
@@ -1201,7 +1233,7 @@ namespace kickos
             return -KOS_EINVAL;
         }
         IrqLock lock;
-        g_e2e_line = line;
+        g_bench_e2e_line = line;
         g_e2e_waiter = sched::current();
         g_e2e_epoch = g_e2e_waiter->switch_count;
         // Clear the ISR result before publishing ARMED to the raiser.
@@ -1228,7 +1260,7 @@ namespace kickos
         {
             return -KOS_EBUSY;
         }
-        int const line = g_e2e_line;
+        int const line = g_bench_e2e_line;
         if (g_e2e_waiter == nullptr or line < 0)
         {
             return -KOS_EINVAL;
@@ -1322,7 +1354,7 @@ namespace kickos
         // Keep the method in the literal to avoid a stack-passed printf argument.
         kprintf_paced("  e2e-probe: line=%u closed=%u dropped=%u"
                 " tare=%u/%u ns  (min/avg, n=%u)\n",
-                static_cast<unsigned>(g_e2e_line), static_cast<unsigned>(g_e2e_closed),
+                static_cast<unsigned>(g_bench_e2e_line), static_cast<unsigned>(g_e2e_closed),
                 static_cast<unsigned>(g_e2e_dropped), static_cast<unsigned>(tmin),
                 static_cast<unsigned>(tavg), static_cast<unsigned>(g_e2e_tare.count));
         // Compare the requested sweep size with the accepted raise count.

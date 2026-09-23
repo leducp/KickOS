@@ -311,6 +311,157 @@ scoped_body() { # <reader.awk> <listing> <symbol> [-v name=value]...
         -f "$KOS_OBJDUMP_SCOPE" -f "$KOS_OBJDUMP_WINDOW" -f "$_sb_prog" "$_sb_list"
 }
 
+KOS_OBJDUMP_BOUNDARY="$(dirname "$0")/../lib/objdump_boundary.awk"
+
+# ONE BODY'S LISTING, RE-DECODED WHEREVER THE SWEEP STARTED ON THE WRONG BYTE. On a
+# variable-width ISA a single byte of padding shifts every decode behind it until the stream
+# realigns, and the run it prints in between is instructions that were never in the image. The
+# esp32 link leaves two zero bytes behind a relaxed jump, and one of the calls the sweep eats
+# there is the one a positional gate counts, which reads as a body that does not make it.
+#
+# tests/lib/objdump_boundary.awk names the lowest boundary the body claims and the listing does
+# not carry; a sweep started AT that address is right from there. Each pass splices one, and
+# passing it back as the floor is what bounds the loop: a splice cannot reintroduce a missing
+# boundary below its own cut, so the next one is strictly higher.
+#
+# SYNCED_N is left at the number of splices, which is a fact about the toolchain worth
+# printing: a body that needed none was read as objdump decoded it.
+#
+# An absent symbol produces an EMPTY listing here and no refusal, because scoped_body's NOSYM
+# is the one place that refusal is worded.
+synced_body() { # <outfile> <listing> <symbol> <elf> <objdump> <branch-ere>
+    _yo="$1"
+    _yl="$2"
+    _ys="$3"
+    _ye="$4"
+    _yd="$5"
+    _yb="$6"
+    [ -r "$KOS_OBJDUMP_BOUNDARY" ] || fail "$KOS_OBJDUMP_BOUNDARY is unreadable, so no body
+      could be told from one the disassembler decoded off a wrong byte and every desynced
+      listing would be read as the image"
+    : > "$_yo"
+    # The body, plus the address the NEXT symbol starts at, which bounds every re-decode. A
+    # body with no successor is refused below rather than re-decoded to the end of the image.
+    _yend="$(awk -v sym="$_ys" -v out="$_yo" '
+        /^[0-9a-f]+ <.*>:$/ {
+            n = $2
+            gsub(/[<>:]/, "", n)
+            if (inbody) { print $1; exit }
+            if (!done) { inbody = (n == sym) }
+            if (inbody) { done = 1; print > out }
+            next
+        }
+        inbody && /^[ \t]*[0-9a-f]+:/ { print > out }
+    ' "$_yl")"
+    SYNCED_N=0
+    _yfloor=""
+    while [ -s "$_yo" ]; do
+        _yt="$(awk -v sym="$_ys" -v branch_re="$_yb" -v floor="$_yfloor" \
+            -f "$KOS_OBJDUMP_BOUNDARY" "$_yo")"
+        [ -n "$_yt" ] || break
+        SYNCED_N=$((SYNCED_N + 1))
+        [ "$SYNCED_N" -le 16 ] || fail "the listing of '$_ys' in $_ye still names an
+      instruction boundary it does not carry after 16 re-decodes. Either this body is padded
+      past anything a linker produces, or the branch mnemonics this gate passes match an
+      operand that is not a target and every pass chases a new one"
+        [ -n "$_yend" ] || fail "'$_ys' is the last body in the disassembly of $_ye and names
+      an instruction boundary at $_yt that the sweep did not decode. Re-decoding it would run
+      to the end of the image and pull another body's instructions into this one, so what this
+      gate has is UNKNOWN rather than a body it can read"
+        tool_out "$_yo.re" "^[0-9a-f]+ <.*>:\$" "$_yd" -d --no-show-raw-insn \
+            --start-address="0x$_yt" --stop-address="0x$_yend" "$_ye"
+        awk -v cut="$_yt" -v re="$_yo.re" '
+            function below(x, y)
+            {
+                return (length(x) < length(y) || (length(x) == length(y) && x < y))
+            }
+            /^[0-9a-f]+ <.*>:$/ { print; next }
+            {
+                a = $0
+                sub(/:.*$/, "", a)
+                sub(/^[ \t]+/, "", a)
+                if (below(a, cut)) { print }
+            }
+            END {
+                while ((getline line < re) > 0)
+                {
+                    if (line ~ /^[ \t]*[0-9a-f]+:/) { print line }
+                }
+            }' "$_yo" > "$_yo.next"
+        mv "$_yo.next" "$_yo"
+        _yfloor="$_yt"
+    done
+}
+
+# THE RESYNC'S OWN CONTROL, because a splice that never fires and a splice that fires on a
+# pc-relative LOAD are both invisible in a green gate: the first leaves the caller reading the
+# instructions objdump invented, the second rewrites a listing that was already right. Three
+# planted listings and a stub disassembler, so nothing here needs an image. Call it before the
+# first synced_body of a run.
+synced_body_control() {
+    cat > "$TMP/sbc_objdump" <<EOF
+#!/bin/sh
+cat "$TMP/sbc_redecode"
+EOF
+    chmod +x "$TMP/sbc_objdump"
+    cat > "$TMP/sbc_redecode" <<'EOF'
+00001010 <planted_body+0x10>:
+    1010:	nop
+    1012:	ret
+EOF
+    _sbc_plant() { # <boundary-line> <mnemonic> <target>
+        {
+            echo '00001000 <planted_body>:'
+            echo "    1000:	nop"
+            echo "    1004:	$2	$3"
+            echo "    1008:	nop"
+            echo "    $1:	nop"
+            echo '00002000 <planted_next>:'
+            echo "    2000:	nop"
+        } > "$TMP/sbc_listing"
+    }
+
+    _sbc_plant 1010 bz "1010 <planted_body+0x10>"
+    synced_body "$TMP/sbc_body" "$TMP/sbc_listing" planted_body /dev/null \
+        "$TMP/sbc_objdump" '^bz$'
+    [ "$SYNCED_N" -eq 0 ] || fail "the resync re-decoded a planted body that carries every
+      boundary it names ($SYNCED_N splice(s)). It rewrites listings that were already right,
+      so what a reader sees below is not what the disassembler said"
+    if grep -q '^    1012:' "$TMP/sbc_body"; then
+        fail "the resync spliced a stub decode into a planted body that needed none, so every
+      listing it hands a reader is the stub's and not the image's"
+    fi
+
+    _sbc_plant 100e bz "1010 <planted_body+0x10>"
+    synced_body "$TMP/sbc_body" "$TMP/sbc_listing" planted_body /dev/null \
+        "$TMP/sbc_objdump" '^bz$'
+    [ "$SYNCED_N" -eq 1 ] || fail "the resync took $SYNCED_N splice(s) on a planted body that
+      names a boundary at 1010 and decodes no instruction there. It cannot tell a desynced
+      listing from a healthy one, so a body whose sweep started on the wrong byte is read as
+      the image"
+    grep -q '^    1012:' "$TMP/sbc_body" || fail "the resync spliced nothing past the boundary
+      the planted body names, so the run it exists to replace is still the one a reader counts"
+    grep -q '^    1008:' "$TMP/sbc_body" || fail "the resync dropped a planted instruction that
+      stands BELOW the boundary it spliced at, where the sweep was still in sync. It replaces
+      more of the body than the decode got wrong"
+
+    _sbc_plant 100e ldlit "1010 <planted_body+0x10>"
+    synced_body "$TMP/sbc_body" "$TMP/sbc_listing" planted_body /dev/null \
+        "$TMP/sbc_objdump" '^bz$'
+    [ "$SYNCED_N" -eq 0 ] || fail "the resync took $SYNCED_N splice(s) on a planted body whose
+      only unfound address is the operand of an instruction that is not a branch. A
+      pc-relative LOAD prints its operand in that same shape and points at DATA, so a resync
+      that chases one rewrites a correct listing from the middle of a literal pool"
+
+    _sbc_plant 100e bz "3000 <planted_other+0x10>"
+    synced_body "$TMP/sbc_body" "$TMP/sbc_listing" planted_body /dev/null \
+        "$TMP/sbc_objdump" '^bz$'
+    [ "$SYNCED_N" -eq 0 ] || fail "the resync took $SYNCED_N splice(s) on a planted body whose
+      only unfound address is a branch OUT of it. That address lands in a range this listing
+      does not carry, so it reads as missing on every pass and the loop chases it until the cap
+      refuses a body nothing was ever wrong with"
+}
+
 # THE DEAD-READER CONTROL, which no planted body can stand in for: a reader handed a symbol
 # the listing does not carry must say NOSYM, or a renamed, inlined or static body reads as a
 # clean one and the gate goes green on an image it never decoded. <prose> completes "so ...".

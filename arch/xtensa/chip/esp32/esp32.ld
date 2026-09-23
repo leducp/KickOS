@@ -196,7 +196,7 @@ ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
 #define KICKOS_ESP32_ISRAM_TEXT_CEIL   0x400C0000
 
 ASSERT(ADDR(.rodata) >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ESP32_ISRAM_DATA_CEIL,
-       "KickOS: kernel data leaves internal SRAM. Run queues, control blocks, the capability table and the kernel lock word are coherent across the two CPUs only by there being no cache over them, and the caches sit on the external path; a shared kernel over this placement loses writes with no fault")
+       "KickOS: kernel data leaves internal SRAM. Run queues, control blocks, the capability table and the kernel lock counters are coherent across the two CPUs only by there being no cache over them, and the caches sit on the external path; a shared kernel over this placement loses writes with no fault")
 
 ASSERT(__kickos_ram_end >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ESP32_ISRAM_DATA_CEIL,
        "KickOS: a boot stack leaves internal SRAM. Every core's boot and interrupt stack is carved below _estack, and the level-1 entry spills the interruptee's register windows onto whichever stack it is standing on; behind a cache neither core can invalidate, that spill is lost rather than faulted")

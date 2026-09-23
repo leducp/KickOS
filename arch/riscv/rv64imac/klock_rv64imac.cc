@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What the cross-core doorbell and the kernel lock coupled to it cost on rv64imac: the CLINT's
-// raise, sip.SSIP's clear and self-raise, the service body's translation fence, the lock word's
-// reservation pair, and the secondary park. The protocol over them is in
+// raise, sip.SSIP's clear and self-raise, the service body's translation fence, the ticket
+// draw's AMO, and the secondary park. The protocol over them is in
 // arch/common/doorbell_protocol.cc.
 //
 // THE RENDEZVOUS IS SHARED MEMORY: a CLINT msip word carries the wake and reports nothing back,
-// so the answer travels in the shared cells. The lock word is written only through LR/SC inside
-// this file.
+// so the answer travels in the shared cells. The lock is a ticket pair: a draw takes
+// g_next_ticket with AMOADD.W, and the holder alone advances g_now_serving with a plain load
+// and a plain store under a fence. Both counters are written only inside this file.
 //
 // SSIP IS DOUBLE-BOOKED ON THIS ARCH and the dispatch is where that is resolved: the same cause
 // carries a peer's raise and this hart's own device-line injection, so THE CELL and not the
@@ -28,6 +29,10 @@
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 extern "C" void kickos_rv64_init(void);
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
+// Declared rather than included: this TU is below <kickos/bench.h>.
+extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
+#endif
 
 using kickos::doorbell::g_answer;
 using kickos::doorbell::g_request;
@@ -67,29 +72,30 @@ namespace
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // The lock word: 0 free, 1 held, on a line of its own.
-    alignas(KICKOS_DOORBELL_LINE) uint32_t g_kernel_lock = 0;
+    // SEPARATE LINES so a draw's write does not invalidate the line every waiter is loading
+    // g_now_serving from. The width above is a choice and not a measurement
+    // (kickos/arch/doorbell_part.h), and no reservation granule is at stake here: the ticket
+    // takes LR/SC out of the lock entirely.
+    alignas(KICKOS_DOORBELL_LINE) uint32_t g_next_ticket = 0;
+    alignas(KICKOS_DOORBELL_LINE) uint32_t g_now_serving = 0;
 
-    // LR/SC over one coherent domain, which the A extension gives (Zalrsc in this board's
-    // baseline). `res` is 0 only on a store-conditional that took the word, and the branch that
-    // never stored leaves the 1 the first instruction put there.
-    //
-    // NOTHING MAY SIT BETWEEN THE LR AND THE SC that could make the reservation fail forever:
-    // the sequence is a handful of instructions with no load, no branch backwards and no call,
-    // which is the constrained form the ISA guarantees eventual success for.
-    bool kernel_lock_claim(void)
+    // Relaxed, with no ordering bits: a drawn ticket grants nothing and publishes nothing.
+    // zaamo is in this board's -march string (arch/riscv/chip/virt_rv64/cpu.cmake).
+    uint32_t kernel_lock_draw(void)
     {
-        uint32_t res = 1u;
-        uint32_t cur = 0u;
-        __asm volatile("       li      %0, 1\n"
-                       "       lr.w.aq %1, (%2)\n"
-                       "       bnez    %1, 1f\n"
-                       "       sc.w    %0, %3, (%2)\n"
-                       "1:\n"
-                       : "=&r"(res), "=&r"(cur)
-                       : "r"(&g_kernel_lock), "r"(1u)
+        uint32_t tick = 0;
+        __asm volatile("amoadd.w %0, %1, (%2)"
+                       : "=r"(tick)
+                       : "r"(1u), "r"(&g_next_ticket)
                        : "memory");
-        return res == 0u;
+        return tick;
+    }
+
+    uint32_t now_serving(void)
+    {
+        uint32_t v = 0;
+        __asm volatile("lw %0, 0(%1)" : "=r"(v) : "r"(&g_now_serving) : "memory");
+        return v;
     }
 #endif
 }
@@ -268,27 +274,57 @@ uint64_t arch_ipi_counts(uint32_t core)
 // THE POLL IN THIS LOOP IS WHAT KEEPS THE COUPLING SOUND: a caller acquires with interrupts
 // masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
 // the lock waits on it.
+//
+// THE TURN TEST PRECEDES THE POLL. When the turn has come the previous holder has released, so
+// no lock-holding initiator can be waiting on this hart's answer and the skipped poll strands
+// nobody. The draw carries no poll either, which here is one instruction wide.
 void arch_kernel_lock(void)
 {
+    uint32_t const ticket = kernel_lock_draw();
+#if KICKOS_BENCH
+    // amoadd.w cannot retry, so the retry figure is a structural zero on this arch.
+    kickos_bench_lock_draw(0u, ticket - now_serving());
+#endif
     while (true)
     {
-        if (kernel_lock_claim())
+        if (now_serving() == ticket)
         {
-            return;
+            break;
         }
         kickos_doorbell_poll();
         __asm volatile("nop" ::: "memory");
     }
+    // The acquire half. This baseline has no Zalasr load-acquire, so it is written as a fence.
+    __asm volatile("fence r, rw" ::: "memory");
 }
 
-// A release store, which the fence plus the plain store is on RISC-V: it pairs with the lr.w.aq
-// the claim takes the word with, so everything done under the lock publishes before the word
-// reads free.
+// A release store, which the fence plus the plain store is on RISC-V: it pairs with the fence
+// the wait leaves on, so everything done under the lock publishes before the next ticket is
+// served.
 void arch_kernel_unlock(void)
 {
-    __asm volatile("fence rw, w" ::: "memory");
-    __asm volatile("sw zero, 0(%0)" ::"r"(&g_kernel_lock) : "memory");
+    uint32_t v = 0;
+    __asm volatile("lw     %0, 0(%1)\n"
+                   "addi   %0, %0, 1\n"
+                   "fence  rw, w\n"
+                   "sw     %0, 0(%1)"
+                   : "=&r"(v)
+                   : "r"(&g_now_serving)
+                   : "memory");
 }
+
+#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    uint32_t next = 0;
+    __asm volatile("lw %0, 0(%1)" : "=r"(next) : "r"(&g_next_ticket) : "memory");
+    if (next == now_serving())
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
 #endif
 
 // Where a hart with no thread to run waits for a doorbell. Its vector and its sie are already

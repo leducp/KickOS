@@ -2,15 +2,31 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Check end-to-end benchmark publication ordering in the linked image.
-# ARM releases metadata, the waiter releases PARKED under the kernel lock,
-# RAISE acquires it then releases t0 before injection, and CLOSE acquires t0.
-# Check instruction positions between specific calls; other atomic fields
-# in the same functions must not satisfy these checks.
-# The park marker must follow locking and precede blocking, so delivery cannot
-# reach a waiter still running. Reject undecodable code and unsupported arches.
-# QEMU runtime results do not reliably expose missing memory ordering.
-# Usage: check_bench_e2e_publish.sh <elf> <objdump> <arch>
+# The end-to-end benchmark's publication ordering, read out of the LINKED IMAGE. ARM releases
+# the record, the waiter releases PARKED under the kernel lock, RAISE acquires that then
+# releases t0 before injection, and CLOSE acquires t0. Every arm counts a POSITION between two
+# named calls, so ordering another field in the same body carries cannot stand in for it. The
+# park marker must follow the lock and precede the block, or delivery can reach a waiter still
+# running. QEMU does not expose missing memory ordering, which is why this is read statically.
+#
+# AN ORDERED LOAD AND AN ORDERED STORE, HOWEVER THE ARCH SPELLS THEM, and the spelling is not
+# the claim. Three realisations are modelled below:
+#
+#   mnemonic   the direction is in the instruction itself: armv8a ldar and stlr.
+#   operand    the direction is in a separate fence's operands: rv64imac `fence r,rw` and
+#              `fence rw,w`. `rw,rw` is a full barrier and neither half of this pairing.
+#   pair       the arch has ONE barrier and it carries no direction at all, so the direction is
+#              the ACCESS BESIDE IT: an acquire is a load then the barrier, a release is the
+#              barrier then a store. lx6, whose only ordering instruction is memw.
+#
+# Under `pair` an acquire and a release cannot be told apart by mnemonic, so an arm asking for
+# one of them is answered by the shape and not by a count of barriers. What every realisation
+# still refuses identically is the RELAXED DOWNGRADE, which removes the ordering instruction
+# outright, and ordering sited outside the bracket that owes it.
+#
+# AN ARCH THIS FILE DOES NOT CARRY IS A REFUSAL.
+#
+# usage: check_bench_e2e_publish.sh <elf> <objdump> <arch>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
@@ -20,15 +36,12 @@ elf="${1:?$_usage}"
 objdump="${2:?$_usage}"
 arch="${3:?$_usage}"
 
-# The three bodies, by their MANGLED names: they are C++ and the scope reader keys on the name
+# The bodies, by their MANGLED names: they are C++ and the scope reader keys on the name
 # objdump prints.
 SYM_ARM=_ZN6kickos13bench_e2e_armEi
 SYM_PARK=_ZN6kickos19bench_e2e_park_markEv
 SYM_RAISE=_ZN6kickos15bench_e2e_raiseEv
 SYM_CLOSE=_ZN6kickos15bench_e2e_closeEv
-# Check the kernel's notification wait body. There is ONE wait and it is always timed, so
-# nothing forwards to it and the name below is the only body that can carry the mark.
-SYM_WAIT=_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj
 
 # The calls that bracket each body's ordering. Mangled for the same reason.
 C_CURRENT='<_ZN6kickos5sched7currentEv>'
@@ -41,12 +54,16 @@ C_BLOCK='<_ZN6kickos14park_queuelessEPNS_6ThreadENS_8WaitKindEPv>'
 C_PARK='<_ZN6kickos19bench_e2e_park_markEv>'
 
 # ACQ/REL: the mnemonic, and the operand where the mnemonic alone does not say the direction.
-# An empty operand means the mnemonic decides. PLAIN_*: the same access with no ordering, for
-# the planted control that proves the reader reports the downgrade.
+# An empty operand means the mnemonic decides. BAR_MNEM set instead selects the `pair` reading
+# and names the one barrier. PLAIN_*: the same access with no ordering, for the planted control
+# that proves the reader reports the downgrade. BRANCH: the mnemonics whose operand is an
+# instruction boundary, for gate.sh's synced_body. U32: how this target's toolchain mangles
+# uint32_t, which is `unsigned int` on both LP64 targets here and `unsigned long` on xtensa.
 case "$arch" in
     armv8a)
         ACQ_MNEM=ldar; ACQ_OPS=""
         REL_MNEM=stlr; REL_OPS=""
+        BAR_MNEM=""; LOAD_RE=""; STORE_RE=""
         PLAIN_LOAD='ldr	w0, [x19]'
         PLAIN_STORE='str	w0, [x19]'
         ACQ_INSN='ldar	w0, [x19]'
@@ -54,14 +71,15 @@ case "$arch" in
         CALL_ONE='bl	ffffff804001b400 <arch_clock_now>'
         CALL_TWO='bl	ffffff804001b2c8 <arch_irq_inject>'
         CALL_MARK='bl	ffffff8040017b1c <_ZN6kickos19bench_e2e_park_markEv>'
-        FWD_INSN='b	ffffff8040017c40 <_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj>'
+        FWD_OP='b	ffffff8040017c40'
         RET_INSN='ret'
+        BRANCH='^(b|bl|b[.][a-z]+|cbn?z|tbn?z)$'
+        U32=j
         ;;
     rv64imac)
-        # The fence and the access are separate instructions here, so the OPERAND is the whole
-        # direction: `rw,rw` is a full barrier and neither half of this pairing.
         ACQ_MNEM=fence; ACQ_OPS='r,rw'
         REL_MNEM=fence; REL_OPS='rw,w'
+        BAR_MNEM=""; LOAD_RE=""; STORE_RE=""
         PLAIN_LOAD='lw	a5,0(s0)'
         PLAIN_STORE='sw	a5,0(s0)'
         ACQ_INSN='fence	r,rw'
@@ -69,14 +87,43 @@ case "$arch" in
         CALL_ONE='jal	ffffffff80012070 <arch_clock_now>'
         CALL_TWO='jal	ffffffff8001077c <arch_irq_inject>'
         CALL_MARK='jal	ffffffff8000fe36 <_ZN6kickos19bench_e2e_park_markEv>'
-        FWD_INSN='j	ffffffff8000ff10 <_ZN6kickos11notify_waitEPNS_6ThreadEjjjPj>'
+        FWD_OP='j	ffffffff8000ff10'
         RET_INSN='ret'
+        BRANCH='^(j|jal|b(eq|ne|lt|ge|ltu|geu|eqz|nez|lez|gez|ltz|gtz|gt|le|gtu|leu))$'
+        U32=j
+        ;;
+    lx6)
+        # A planted acquire and release are TWO instructions here, and the separator below is
+        # what lets one control table stand for all three realisations.
+        ACQ_MNEM=""; ACQ_OPS=""
+        REL_MNEM=""; REL_OPS=""
+        BAR_MNEM=memw
+        LOAD_RE='^l(8u|16u|32)i([.]n)?$'
+        STORE_RE='^s(8|16|32)i([.]n)?$'
+        PLAIN_LOAD='l32i.n	a8, a9, 0'
+        PLAIN_STORE='s32i.n	a8, a9, 0'
+        ACQ_INSN='l32i.n	a8, a9, 0|memw'
+        REL_INSN='memw|s32i.n	a8, a9, 0'
+        CALL_ONE='call8	40081a40 <arch_clock_now>'
+        CALL_TWO='call8	40082390 <arch_irq_inject>'
+        CALL_MARK='call8	4008e474 <_ZN6kickos19bench_e2e_park_markEv>'
+        FWD_OP='j	4008ca18'
+        RET_INSN='retw.n'
+        BRANCH='^(b[a-z]*([.]n)?|j|loop[a-z]*)$'
+        U32=m
         ;;
     *)
         fail "arch '$arch' is built above one kernel core with KICKOS_BENCH and this gate
-  carries no model of its acquire and release instructions, so nothing here can say whether
-  the end-to-end protocol publishes anything. Add the arch's pair to the table in this file" ;;
+  carries no model of its acquire and release, so nothing here can say whether the end-to-end
+  protocol publishes anything. Add the arch's row to the table in this file: the mnemonic where
+  it carries the direction, the fence operands where they do, or the one barrier and the access
+  mnemonics beside it where the barrier carries no direction at all" ;;
 esac
+
+# The kernel's notification wait body. There is ONE wait and it is always timed, so nothing
+# forwards to it and the name below is the only body that can carry the mark.
+SYM_WAIT="_ZN6kickos11notify_waitEPNS_6ThreadE${U32}${U32}${U32}P${U32}"
+FWD_INSN="$FWD_OP <$SYM_WAIT>"
 
 [ -f "$elf" ] || fail "no image at $elf"
 [ -x "$objdump" ] || fail "no objdump at $objdump; there is no instruction stream to decode"
@@ -93,6 +140,9 @@ scratch_dir
 # the body was given and does not contain is its own record and never a verdict: NOBRACKET for
 # neither of them, NOOPEN and NOCLOSE for one. Without those the reader answers a renamed,
 # inlined or forwarded body with the finding it exists to report.
+# UNDER `pair` THE ORDERING IS SITED AT THE FIRST INSTRUCTION OF THE TWO, which is the one the
+# rule is stated about: the load an acquire orders, and the barrier a release publishes behind.
+# So the window flags of the PREVIOUS line decide, and the pairing is settled one line late.
 # HALF A PROGRAM: `seen`, the body scope, the window and all three of those refusals come from
 # gate.sh's scoped_body, which reads tests/lib/objdump_scope.awk and
 # tests/lib/objdump_window.awk ahead of this file. The bracket calls are EREs there rather than
@@ -108,16 +158,38 @@ cat > "$TMP/reader.awk" <<'AWK'
     ops = text
     sub(/^[^ \t]*[ \t]*/, "", ops)
     gsub(/[ \t]/, "", ops)
-    if (mnem == acq_mnem && (acq_ops == "" || ops == acq_ops))
+    if (bar_mnem == "")
     {
-        acq++
-        if (win_pre) { acq_pre++ }
-        else if (win_in) { acq_mid++ }
+        if (mnem == acq_mnem && (acq_ops == "" || ops == acq_ops))
+        {
+            acq++
+            if (win_pre) { acq_pre++ }
+            else if (win_in) { acq_mid++ }
+        }
+        if (mnem == rel_mnem && (rel_ops == "" || ops == rel_ops))
+        {
+            rel++
+            if (win_in) { rel_mid++ }
+        }
     }
-    if (mnem == rel_mnem && (rel_ops == "" || ops == rel_ops))
+    else
     {
-        rel++
-        if (win_in) { rel_mid++ }
+        is_bar = (mnem == bar_mnem)
+        if (p_load && is_bar)
+        {
+            acq++
+            if (p_pre) { acq_pre++ }
+            else if (p_in) { acq_mid++ }
+        }
+        if (p_bar && mnem ~ store_re)
+        {
+            rel++
+            if (p_in) { rel_mid++ }
+        }
+        p_load = (mnem ~ load_re)
+        p_bar = is_bar
+        p_pre = win_pre
+        p_in = win_in
     }
     if (call_mark != "" && win_in && index(text, call_mark) > 0) { mark_mid++ }
 }
@@ -131,44 +203,65 @@ read_body() { # <listing> <symbol> <opening-call> <closing-call> [<counted-call>
     scoped_body "$TMP/reader.awk" "$1" "$2" \
         -v acq_mnem="$ACQ_MNEM" -v acq_ops="$ACQ_OPS" \
         -v rel_mnem="$REL_MNEM" -v rel_ops="$REL_OPS" \
+        -v bar_mnem="$BAR_MNEM" -v load_re="$LOAD_RE" -v store_re="$STORE_RE" \
         -v win_open="$3" -v win_close="$4" -v call_mark="${5:-}"
 }
 
 # --- the reader's controls, before the image is read --------------------------
-# Planted listings in the shape the invocation below produces, which is --no-show-raw-insn.
+# Planted listings in the shape the invocation below produces, which is --no-show-raw-insn. An
+# element carrying a vertical bar plants several instructions, because an acquire and a release
+# are not one instruction on every arch; PLANT_N is what the body came to, so the expected
+# records below state the counts alone and never a length that is the table's business.
 plant() { # <file> <insn>...
     _f="$1"
     shift
     _a=4096
+    PLANT_N=0
     echo "0000000000001000 <planted_body>:" > "$_f"
     for _i in "$@"; do
-        printf '    %x:\t%s\n' "$_a" "$_i" >> "$_f"
-        _a=$((_a + 4))
+        _rest="$_i"
+        while : ; do
+            case "$_rest" in
+                *"|"*)
+                    _one="${_rest%%|*}"
+                    _rest="${_rest#*|}"
+                    ;;
+                *)
+                    _one="$_rest"
+                    _rest=""
+                    ;;
+            esac
+            printf '    %x:\t%s\n' "$_a" "$_one" >> "$_f"
+            _a=$((_a + 4))
+            PLANT_N=$((PLANT_N + 1))
+            [ -n "$_rest" ] || break
+        done
     done
 }
 
-ctl() { # <file> <expected-record> <prose>
+ctl() { # <file> <expected-counts> <prose>
     _got="$(read_body "$1" planted_body "$C_CLOCK" "$C_INJECT")"
-    [ "$_got" = "$2" ] || fail "the reader answered [$_got] and not [$2] for $3"
+    _want="BODY $PLANT_N $2"
+    [ "$_got" = "$_want" ] || fail "the reader answered [$_got] and not [$_want] for $3"
 }
 
 # The publishing shape: acquire, then the opening call, then the release, then the closing one.
 plant "$TMP/ctl_pub" "$ACQ_INSN" "$PLAIN_LOAD" "$CALL_ONE" "$PLAIN_STORE" "$REL_INSN" \
     "$CALL_TWO" "$RET_INSN"
-ctl "$TMP/ctl_pub" "BODY 7 1 1 1 0 1 0" "a planted body that acquires, reads its stamp,
+ctl "$TMP/ctl_pub" "1 1 1 0 1 0" "a planted body that acquires, reads its stamp,
   releases and then injects, so it cannot recognise the shape this gate requires and every
   verdict below is meaningless"
 
 # The consuming shape: the acquire sits INSIDE the bracket, which is what the close owes.
 plant "$TMP/ctl_mid" "$PLAIN_LOAD" "$PLAIN_LOAD" "$CALL_ONE" "$ACQ_INSN" "$REL_INSN" \
     "$CALL_TWO" "$RET_INSN"
-ctl "$TMP/ctl_mid" "BODY 7 1 1 0 1 1 0" "a planted body whose acquire sits between the two
+ctl "$TMP/ctl_mid" "1 1 0 1 1 0" "a planted body whose acquire sits between the two
   calls, which is the close's shape and would otherwise never be read"
 
 # The downgrade: the same body with both orderings dropped to plain accesses.
 plant "$TMP/ctl_relaxed" "$PLAIN_LOAD" "$PLAIN_LOAD" "$CALL_ONE" "$PLAIN_STORE" \
     "$PLAIN_STORE" "$CALL_TWO" "$RET_INSN"
-ctl "$TMP/ctl_relaxed" "BODY 7 0 0 0 0 0 0" "a planted body whose acquire and release were
+ctl "$TMP/ctl_relaxed" "0 0 0 0 0 0" "a planted body whose acquire and release were
   dropped to plain accesses. That is the defect this gate exists to catch, so a reader that
   does not report it cannot go red"
 
@@ -176,7 +269,7 @@ ctl "$TMP/ctl_relaxed" "BODY 7 0 0 0 0 0 0" "a planted body whose acquire and re
 # some other field entirely.
 plant "$TMP/ctl_outside" "$ACQ_INSN" "$REL_INSN" "$PLAIN_STORE" "$CALL_ONE" "$PLAIN_STORE" \
     "$CALL_TWO" "$RET_INSN"
-ctl "$TMP/ctl_outside" "BODY 7 1 1 1 0 0 0" "a planted body whose release sits AHEAD of the
+ctl "$TMP/ctl_outside" "1 1 1 0 0 0" "a planted body whose release sits AHEAD of the
   stamp it is meant to publish. The release then hands over a t0 the closer reads from the
   previous pass, and a reader that does not separate the two proves nothing"
 
@@ -184,27 +277,28 @@ ctl "$TMP/ctl_outside" "BODY 7 1 1 1 0 0 0" "a planted body whose release sits A
 # window runs from the identity test to the end of the body.
 plant "$TMP/ctl_tail" "$ACQ_INSN" "$CALL_ONE" "$PLAIN_STORE" "$REL_INSN" "$RET_INSN"
 _got="$(read_body "$TMP/ctl_tail" planted_body "$C_CLOCK" "")"
-[ "$_got" = "BODY 5 1 1 1 0 1 0" ] || fail "the reader answered [$_got] and not [BODY 5 1 1 1 0
-  1 0] for a planted body bracketed from its opening call to its end, which is how the park
-  mark is read"
+[ "$_got" = "BODY $PLANT_N 1 1 1 0 1 0" ] || fail "the reader answered [$_got] and not [BODY
+  $PLANT_N 1 1 1 0 1 0] for a planted body bracketed from its opening call to its end, which is
+  how the park mark is read"
 
 # The counted call, INSIDE the bracket and then on either side of it.
-ctl_mark() { # <file> <expected-record> <prose>
+ctl_mark() { # <file> <expected-counts> <prose>
     _got="$(read_body "$1" planted_body "$C_CLOCK" "$C_INJECT" "$C_PARK")"
-    [ "$_got" = "$2" ] || fail "the reader answered [$_got] and not [$2] for $3"
+    _want="BODY $PLANT_N $2"
+    [ "$_got" = "$_want" ] || fail "the reader answered [$_got] and not [$_want] for $3"
 }
 
 plant "$TMP/ctl_call_in" "$CALL_ONE" "$CALL_MARK" "$CALL_TWO" "$RET_INSN"
-ctl_mark "$TMP/ctl_call_in" "BODY 4 0 0 0 0 0 1" "a planted body whose counted call sits
+ctl_mark "$TMP/ctl_call_in" "0 0 0 0 0 1" "a planted body whose counted call sits
   between the two bracketing ones, which is the only placement the park arm accepts"
 
 plant "$TMP/ctl_call_pre" "$CALL_MARK" "$CALL_ONE" "$CALL_TWO" "$RET_INSN"
-ctl_mark "$TMP/ctl_call_pre" "BODY 4 0 0 0 0 0 0" "a planted body whose counted call sits
+ctl_mark "$TMP/ctl_call_pre" "0 0 0 0 0 0" "a planted body whose counted call sits
   AHEAD of the bracket. A reader that counted it would pass a publication made before the lock
   the waking post has to take"
 
 plant "$TMP/ctl_call_post" "$CALL_ONE" "$CALL_TWO" "$CALL_MARK" "$RET_INSN"
-ctl_mark "$TMP/ctl_call_post" "BODY 4 0 0 0 0 0 0" "a planted body whose counted call sits PAST
+ctl_mark "$TMP/ctl_call_post" "0 0 0 0 0 0" "a planted body whose counted call sits PAST
   the bracket. That is the defect this arm exists for: a mark published after the block cannot
   hold a raise off a waiter that is still running"
 
@@ -216,34 +310,55 @@ ctl_dead_reader "$(read_body "$TMP/ctl_pub" a_symbol_no_listing_carries "$C_CLOC
 # the calls and orders nothing also produces.
 plant "$TMP/ctl_fwd" "$FWD_INSN" "$RET_INSN"
 _got="$(read_body "$TMP/ctl_fwd" planted_body "$C_CLOCK" "$C_INJECT")"
-[ "$_got" = "NOBRACKET 2" ] || fail "the reader answered [$_got] and not [NOBRACKET 2] for a
-  planted two-instruction forwarder, which carries neither bracketing call. Read as a BODY it
-  reports every ordering this gate asks for as missing, so a symbol that moved behind a
-  forwarder goes red as a broken protocol"
+[ "$_got" = "NOBRACKET $PLANT_N" ] || fail "the reader answered [$_got] and not [NOBRACKET
+  $PLANT_N] for a planted two-instruction forwarder, which carries neither bracketing call.
+  Read as a BODY it reports every ordering this gate asks for as missing, so a symbol that moved
+  behind a forwarder goes red as a broken protocol"
 
 # One side of the bracket present and the other absent. The window then runs from the opening
 # call to the end of the body, or never opens at all, and neither is the stretch the rule is
 # stated over.
 plant "$TMP/ctl_open_only" "$ACQ_INSN" "$CALL_ONE" "$REL_INSN" "$RET_INSN"
 _got="$(read_body "$TMP/ctl_open_only" planted_body "$C_CLOCK" "$C_INJECT")"
-[ "$_got" = "NOCLOSE 4" ] || fail "the reader answered [$_got] and not [NOCLOSE 4] for a planted
-  body carrying the opening call and not the closing one. Read as a BODY the window silently
-  runs to the end of the body, which counts ordering the rule does not reach and turns a
-  refusal into a pass"
+[ "$_got" = "NOCLOSE $PLANT_N" ] || fail "the reader answered [$_got] and not [NOCLOSE
+  $PLANT_N] for a planted body carrying the opening call and not the closing one. Read as a
+  BODY the window silently runs to the end of the body, which counts ordering the rule does not
+  reach and turns a refusal into a pass"
 
 plant "$TMP/ctl_close_only" "$ACQ_INSN" "$CALL_TWO" "$REL_INSN" "$RET_INSN"
 _got="$(read_body "$TMP/ctl_close_only" planted_body "$C_CLOCK" "$C_INJECT")"
-[ "$_got" = "NOOPEN 4" ] || fail "the reader answered [$_got] and not [NOOPEN 4] for a planted
-  body carrying the closing call and not the opening one. The window never opens, so every
-  positional count is zero and the body reads as one that publishes nothing"
+[ "$_got" = "NOOPEN $PLANT_N" ] || fail "the reader answered [$_got] and not [NOOPEN $PLANT_N]
+  for a planted body carrying the closing call and not the opening one. The window never opens,
+  so every positional count is zero and the body reads as one that publishes nothing"
 
 # Both calls present and in the WRONG ORDER, which no count of either can see.
 plant "$TMP/ctl_close_first" "$CALL_TWO" "$ACQ_INSN" "$CALL_ONE" "$REL_INSN" "$RET_INSN"
 _got="$(read_body "$TMP/ctl_close_first" planted_body "$C_CLOCK" "$C_INJECT")"
-[ "$_got" = "NOCLOSE 5" ] || fail "the reader answered [$_got] and not [NOCLOSE 5] for a planted
-  body whose closing call stands only AHEAD of the opening one. Both calls are present, so a
-  reader counting their presence passes it, and the window then runs from the opening call to
-  the end of the body and counts ordering the rule does not reach"
+[ "$_got" = "NOCLOSE $PLANT_N" ] || fail "the reader answered [$_got] and not [NOCLOSE
+  $PLANT_N] for a planted body whose closing call stands only AHEAD of the opening one. Both
+  calls are present, so a reader counting their presence passes it, and the window then runs
+  from the opening call to the end of the body and counts ordering the rule does not reach"
+
+if [ -n "$BAR_MNEM" ]; then
+    # The barrier on the wrong SIDE of its access. Both instructions of an acquire are present
+    # and both of a release are, in the other order, so a reader counting barriers alone passes
+    # a body that publishes its store ahead of the barrier and consumes its load behind one.
+    plant "$TMP/ctl_flipped" "$PLAIN_STORE" "$BAR_MNEM" "$CALL_ONE" "$BAR_MNEM" "$PLAIN_LOAD" \
+        "$CALL_TWO" "$RET_INSN"
+    ctl "$TMP/ctl_flipped" "0 0 0 0 0 0" "a planted body whose barrier follows the store it is
+  meant to publish and precedes the load it is meant to consume. Every barrier this arch has is
+  in it, so a reader counting the barrier alone cannot tell it from the ordered shape"
+
+    # The barrier shared between an acquire and a release, which is the seq_cst load's own
+    # trailing fence ordering the store behind it. Both are real and both are counted.
+    plant "$TMP/ctl_shared_bar" "$PLAIN_LOAD" "$CALL_ONE" "$PLAIN_LOAD" "$BAR_MNEM" \
+        "$PLAIN_STORE" "$CALL_TWO" "$RET_INSN"
+    ctl "$TMP/ctl_shared_bar" "1 1 0 1 1 0" "a planted body whose one barrier stands between
+  the load it orders and the store it publishes. Counting it for one direction only drops the
+  other, and the arm that owes it then reads an unordered body"
+fi
+
+synced_body_control
 
 echo "== control: the reader reports the publishing shape, the consuming shape, the relaxed
    downgrade, ordering sited outside the bracket that owes it, an open-ended bracket, a
@@ -257,7 +372,12 @@ require_nonempty "$TMP/dis" "$objdump printed no disassembly for $elf"
 field() { printf '%s\n' "$1" | cut -d' ' -f"$2"; }
 
 record() { # <symbol> <opening-call> <closing-call> <what it carries> [<counted-call>]
-    _r="$(read_body "$TMP/dis" "$1" "$2" "$3" "${5:-}")"
+    # A linear sweep of a variable-width listing decodes forward from wherever it last stopped,
+    # and the esp32 link leaves two zero bytes behind a relaxed jump. The run behind one of
+    # those is instructions that were never in the image, and the call this gate counts is one
+    # of the ones it eats, which reads as a body that never makes it.
+    synced_body "$TMP/body" "$TMP/dis" "$1" "$elf" "$objdump" "$BRANCH"
+    _r="$(read_body "$TMP/body" "$1" "$2" "$3" "${5:-}")"
     case "$_r" in
         NOSYM)
             fail "the disassembly of $elf carries no body for '$1', which is $4. It was
@@ -296,8 +416,9 @@ record() { # <symbol> <opening-call> <closing-call> <what it carries> [<counted-
         require_number "$_f" "a count in the record for $1"
     done
     [ "$REC_N" -gt 0 ] || fail "'$1' in $elf reports zero instructions after decoding"
-    echo "   $1: $REC_N instruction(s); acquires $REC_ACQ ($REC_PRE before / $REC_MID inside
-     the bracket), releases $REC_REL ($REC_RMID inside), counted calls $REC_MARK"
+    echo "   $1: $REC_N instruction(s), $SYNCED_N re-decode(s)"
+    echo "     acquires $REC_ACQ ($REC_PRE before / $REC_MID inside the bracket), releases
+     $REC_REL ($REC_RMID inside), counted calls $REC_MARK"
 }
 
 echo "== the end-to-end protocol's publication in $elf =="

@@ -38,6 +38,7 @@ preset  armv8a   imx8mp-evk
 preset  armv8a   qemu-arm64
 preset  armv8a   qemu-arm64-smp
 preset  armv8a   qemu-arm64-benchsmp
+preset  armv8a   qemu-arm64-benchsmp2
 preset  armv8a   qemu-arm64-smpiso
 preset  armv8a   qemu-arm64-gicv3
 preset  armv8a   qemu-arm64-amp
@@ -52,6 +53,7 @@ preset  rv64imac qemu-riscv64-sv48
 preset  rv64imac qemu-riscv64-smp
 preset  rv64imac qemu-riscv64-bench
 preset  rv64imac qemu-riscv64-benchsmp
+preset  rv64imac qemu-riscv64-benchsmp2
 preset  x86_64   qemu-x86_64
 preset  x86_64   qemu-x86_64-bench
 
@@ -68,6 +70,7 @@ floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured directly 
 floor   armv8a   imx8mp-evk        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1047 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-benchsmp files=90 nodes=700 reason: measured directly on this preset, 138 .ci files and 1127 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-benchsmp2 files=90 nodes=700 reason: measured directly on this preset, 140 .ci files and 1235 nodes on 2026-09-22
 floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1111 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-amp    files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1192 nodes on 2026-09-12
@@ -82,6 +85,7 @@ floor   rv64imac qemu-riscv64-sv48 files=90 nodes=700 reason: measured directly 
 floor   rv64imac qemu-riscv64-smp  files=90 nodes=700 reason: measured directly on this preset, 134 .ci files and 1138 nodes on 2026-09-12
 floor   rv64imac qemu-riscv64-bench files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1100 nodes on 2026-09-12
 floor   rv64imac qemu-riscv64-benchsmp files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1162 nodes on 2026-09-12
+floor   rv64imac qemu-riscv64-benchsmp2 files=90 nodes=700 reason: measured directly on this preset, 138 .ci files and 1263 nodes on 2026-09-22
 floor   x86_64   qemu-x86_64       files=90 nodes=700 reason: measured directly on this preset, 130 .ci files and 958 nodes on 2026-09-12
 floor   x86_64   qemu-x86_64-bench files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 977 nodes on 2026-09-12
 

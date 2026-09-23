@@ -94,6 +94,13 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     },
     {
+      "name": "qemu-riscv64-benchsmp2",
+      "displayName": "QEMU virt (RV64, S-mode), two harts + KICKOS_BENCH",
+      "inherits": "qemu-riscv64",
+      "binaryDir": "${sourceDir}/build/qemu-riscv64-benchsmp2",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp2" }
+    },
+    {
       "name": "esp32c6-wroom-flat",
       "displayName": "ESP32-C6-WROOM-1 with no PMP enforcement",
       "inherits": "esp32c6-wroom",
@@ -117,6 +124,7 @@
     { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48" },
     { "name": "qemu-riscv64-smp", "configurePreset": "qemu-riscv64-smp" },
     { "name": "qemu-riscv64-benchsmp", "configurePreset": "qemu-riscv64-benchsmp" },
+    { "name": "qemu-riscv64-benchsmp2", "configurePreset": "qemu-riscv64-benchsmp2" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
     { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
     { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" },
@@ -130,6 +138,7 @@
     { "name": "qemu-riscv64-bench", "configurePreset": "qemu-riscv64-bench", "output": { "outputOnFailure": true } },
     { "name": "qemu-riscv64-sv48", "configurePreset": "qemu-riscv64-sv48", "output": { "outputOnFailure": true } },
     { "name": "qemu-riscv64-smp", "configurePreset": "qemu-riscv64-smp", "output": { "outputOnFailure": true } },
-    { "name": "qemu-riscv64-benchsmp", "configurePreset": "qemu-riscv64-benchsmp", "output": { "outputOnFailure": true } }
+    { "name": "qemu-riscv64-benchsmp", "configurePreset": "qemu-riscv64-benchsmp", "output": { "outputOnFailure": true } },
+    { "name": "qemu-riscv64-benchsmp2", "configurePreset": "qemu-riscv64-benchsmp2", "output": { "outputOnFailure": true } }
   ]
 }

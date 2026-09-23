@@ -218,6 +218,17 @@ void arch_kernel_unlock(void)
     g_lock_word.unlock();
 }
 
+#if KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    if (g_lock_owner.load() < 0)
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
+
 void arch_ipi_resched_self(void)
 {
 }

@@ -39,6 +39,10 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         // The spin in arch_kernel_lock.
         BD_LOCK_WAIT,
+        // Counts, not cycles: retried stores inside one ticket draw, and the tickets
+        // already ahead of that ticket when it was drawn.
+        BD_LOCK_DRAW,
+        BD_LOCK_QUEUE,
         // Request all peers, raise the doorbell and wait for every reply.
         BD_DOORBELL,
 #endif
@@ -345,8 +349,16 @@ namespace kickos
     // the ISR wake and the waiter's scheduling pass synchronize through the kernel lock.
     constexpr uint32_t BENCH_CORE_NONE = 0xFFFFFFFFu;
     extern Atomic<uint32_t, Order::RELAXED> g_bench_e2e_isr_core;
-    KICKOS_BENCH_INLINE void bench_e2e_isr_mark()
+    extern Atomic<int32_t, Order::RELAXED> g_bench_e2e_line;
+    // THE ARMED LINE AND NO OTHER. The caller is the generic event trampoline, which is the
+    // ISR of every driver-style claim, so a foreign line firing inside an open span would
+    // otherwise restamp the core and flip the sample's local/cross classification.
+    KICKOS_BENCH_INLINE void bench_e2e_isr_mark(int line)
     {
+        if (line != g_bench_e2e_line)
+        {
+            return;
+        }
         g_bench_e2e_isr_core = kickos_kernel_core();
     }
 
@@ -394,7 +406,7 @@ namespace kickos
 #define KICKOS_BENCH_LOCK_DETACH(var) uint32_t const var = ::kickos::bench_lock_detach()
 #define KICKOS_BENCH_LOCK_ATTACH(var) ::kickos::bench_lock_attach(var)
 #define KICKOS_BENCH_LOCK_DROP() ::kickos::bench_lock_drop()
-#define KICKOS_BENCH_E2E_ISR_MARK() ::kickos::bench_e2e_isr_mark()
+#define KICKOS_BENCH_E2E_ISR_MARK(line) ::kickos::bench_e2e_isr_mark(line)
 #define KICKOS_BENCH_E2E_PARK_MARK() ::kickos::bench_e2e_park_mark()
 #else
 #define KICKOS_BENCH_LOCK_OPEN() \
@@ -417,9 +429,10 @@ namespace kickos
     do                           \
     {                            \
     } while (false)
-#define KICKOS_BENCH_E2E_ISR_MARK() \
-    do                              \
-    {                               \
+#define KICKOS_BENCH_E2E_ISR_MARK(line) \
+    do                                  \
+    {                                   \
+        (void)(line);                   \
     } while (false)
 #define KICKOS_BENCH_E2E_PARK_MARK() \
     do                               \
