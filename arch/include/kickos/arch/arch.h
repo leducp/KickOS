@@ -176,6 +176,11 @@ void arch_amp_release_peers(void);
 #if KICKOS_KERNEL_CORES > 1
 void arch_kernel_lock(void);
 void arch_kernel_unlock(void);
+#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
+// Nonzero while any core holds the lock. A release taken while this reads zero hands the lock
+// to a ticket nobody drew, after which no draw ever matches and every core spins for good.
+int arch_kernel_lock_held(void);
+#endif
 #else
 #define arch_kernel_lock() ((void)0)
 #define arch_kernel_unlock() ((void)0)

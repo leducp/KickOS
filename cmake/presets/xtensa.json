@@ -34,12 +34,20 @@
       "inherits": "esp32-wroom",
       "binaryDir": "${sourceDir}/build/esp32-wroom-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
+    },
+    {
+      "name": "esp32-wroom-benchsmp",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6), both cores + KICKOS_BENCH",
+      "inherits": "esp32-wroom",
+      "binaryDir": "${sourceDir}/build/esp32-wroom-benchsmp",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     }
   ],
   "buildPresets": [
     { "name": "esp32-wroom", "configurePreset": "esp32-wroom" },
     { "name": "esp32-wroom-st", "configurePreset": "esp32-wroom-st" },
     { "name": "esp32-wroom-smp", "configurePreset": "esp32-wroom-smp" },
-    { "name": "esp32-wroom-bench", "configurePreset": "esp32-wroom-bench" }
+    { "name": "esp32-wroom-bench", "configurePreset": "esp32-wroom-bench" },
+    { "name": "esp32-wroom-benchsmp", "configurePreset": "esp32-wroom-benchsmp" }
   ]
 }

@@ -262,6 +262,22 @@ site armv8a qemu-arm64-benchsmp console_tx_insert_line@1/4   chip_virt_arm64.cc:
 site armv8a qemu-arm64-benchsmp console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-benchsmp console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
 site armv8a qemu-arm64-benchsmp console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp2 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp2 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp2 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp2 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp2 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp2 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp2 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
 
 site armv8a qemu-arm64-smpiso console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smpiso console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
@@ -500,6 +516,22 @@ site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@1/4   chip_virt_rv64.
 site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@2/4   chip_virt_rv64.cc:ns16550_tx_slot_free
 site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
 site rv64imac qemu-riscv64-benchsmp console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:wait_slot@1/1  chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp2 console_tx.cc:drain_sync@1/1 chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx_write@1/5         chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_write@2/5         chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp2 console_tx_write@3/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx_write@4/5         chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_write@5/5         chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@1/3           chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@2/3           chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx_isr@3/3           chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_flush_sync@1/1    chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_deinit@1/1        chip_virt_rv64.cc:ns16550_tx_irq_disable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@1/4   chip_virt_rv64.cc:ns16550_tx_irq_enable
+site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@2/4   chip_virt_rv64.cc:ns16550_tx_slot_free
+site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
+site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
 
 site x86_64 qemu-x86_64 console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
 site x86_64 qemu-x86_64 console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
@@ -1526,4 +1558,9 @@ site lx6 * console_tx_insert_line@4/4 chip_esp32.cc:esp32_tx_push
 # gcc emits ONE UNLOCATED __indirect_call edge out of this body while the emitted code holds no
 # indirect call at all, so NONE charges 0 for it. Re-read this body by hand if it ever gains a
 # real callback: the aggregate absorbs it and no count moves, so nothing here is refused.
+#
+# ONE ROW PER TWO-CORE LX6 PRESET, and the scope stays a preset rather than * because the body
+# only reaches a trap root where the doorbell exists, which is above one kernel core. A new
+# two-core lx6 preset owes a row here or its trap_redzone reports every figure as a lower bound.
 site lx6 esp32-wroom-smp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body
+site lx6 esp32-wroom-benchsmp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body

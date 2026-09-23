@@ -27,6 +27,7 @@ namespace kickos
 {
     constinit BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES] = {};
     constinit Atomic<uint32_t, Order::RELAXED> g_bench_e2e_isr_core = BENCH_CORE_NONE;
+    constinit Atomic<int32_t, Order::RELAXED> g_bench_e2e_line = -1;
 
     void bench_phase_add(uint32_t phase, BenchTick)
     {

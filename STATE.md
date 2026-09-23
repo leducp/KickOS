@@ -16,7 +16,7 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN, AND M9.0 HAS LANDED.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN, AND M9.0 AND M9.1 HAVE LANDED.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
 assigned; M9.0 is read-only and every stage below it is assigned and not approved. The M9.0 section
@@ -3330,6 +3330,115 @@ not a tree, and the records that call it one are loose in exactly the way this b
 three sweep tools to avoid. It is an ancestor of nothing on master or M9 and survives only on three
 local M8.12 branches, none of them on the remote, so a fresh clone cannot reach it at all. Every
 record that cites it has to carry its own content.
+
+## M9.1: the lock's own bound, and what these green runs do NOT say
+
+**THE LOCK IS A TICKET ON ALL THREE SHARED-KERNEL BACKENDS AND ONLY TWO OF THEM CAN STATE A
+BOUND.** The worst wait is `D + (N-1)*(C+H) + S`: the draw, then one critical section plus a
+hand-off per core ahead of the asker, plus one doorbell service body a successor may already be
+inside when its turn arrives. Only `D` differs per backend, and the lx6's is unbounded. That is
+the deliverable there, not a gap in it.
+
+**OUTERMOST LOCK ACQUISITIONS PER SWITCH SCALE LINEARLY WITH THE CORE COUNT, AND THIS IS THE
+FINDING THAT OUTLIVES THE STAGE.** Per core: 2.0005 at one core, 3.002 on lx6 silicon and 3.013
+on armv8a at two, 5.02 on armv8a and 4.98 on rv64imac at four. It is `N + 1` and it is not a
+denominator artifact -- at two cores each core takes about 60050 holds against about 20005 of its
+own switches, and the four-core per-core ratios are 5.33, 4.54, 4.86 and 5.45. **So the lock
+traffic a switch costs grows with the width the lock exists to serve**, and that term enters the
+locked fraction directly. **The mechanism is NOT established**: the shape matches one acquisition
+for the core's own entry, one for the resume and one per peer that asked it to reschedule, which
+would make it the reschedule ask's and would make it exactly what per-core queues and per-pair
+rings are for. Attributing it needs a capture that counts acquisitions by entry reason, which no
+instrument here takes. Do not plan against the hypothesis.
+
+**THE FIRST SHARED-KERNEL RUN ON SILICON IN THIS PROJECT, AND IT MOVES A PREMISE THREE DOCUMENTS
+REST ON.** `esp32-wroom-benchsmp` is the LX6 microbench on both cores under one kernel; this file
+previously recorded `esp32-wroom-smp` as having run as a BUILD, and `TODO.md` said no board was on
+the bench. The board is on the bench. Five captures, bit-identical across independent flashes.
+`roadmap.md` and the entry envelope both say no shared kernel has ever run on silicon, and that
+sentence carries "M9's verdict is provisional on emulation by construction" and the placement of
+the silicon re-check in M11. **It is now provisional at WIDTH, two cores on one part, rather than
+provisional entirely.**
+
+**AND IT IS THE ONLY MULTI-CORE CONFIGURATION THIS PROJECT HAS WITH A LIVE CYCLE COUNTER.** All
+five emulator presets declare `0 Hz`, which is why the envelope records the locked fraction as
+absent on every multi-core configuration that exists. It forms here, at 0.732, from 3.002 spans a
+switch and 10498 cycles a switch. **IT IS NOT THE SINGLE-CORE FRACTION AND MAY NOT BE TABLED
+BESIDE ONE**: above one core the hold bracket contains the wait, so this prices wait plus critical
+section where 0.380 and 0.342 price a critical section alone, and `hold - wait` is not derivable,
+the two rows being different populations.
+
+**THE LX6'S PREDICATE VERDICT WAS A GATE PENDING A PER-CORE DATA BOOK, AND THE RUN ANSWERS BOTH
+COLUMNS EMPIRICALLY.** The ISA defines the compare-and-swap and the processor identity as
+configurable OPTIONS and no document on this bench says whether this part realises them. Under a
+real kernel on two cores, identity works and the conditional store excluded correctly across
+161973 draws with zero retries. That is not a data book and does not close the gate as the record
+words it; it converts "unsourced" into "measured on this die".
+
+**NO DOCUMENT ON THIS BENCH CAN BOUND THE lx6 DRAW, AND THE MANUAL WAS CHECKED RATHER THAN
+ASSUMED.** "Forward progress" occurs zero times in the Xtensa ISA summary, and the conditional
+store becomes a bus transaction whose atomic compare-write external logic performs, so
+arbitration is delegated outside the processor. Every occurrence of "arbitration" in the ESP32
+technical reference manual is the I2C protocol's arbitration-lost condition or the Ethernet DMA's
+transmit/receive scheduling; the instruction, the bus and the transaction occur zero times.
+
+**`(N-1)` IS A THEOREM WHOSE HYPOTHESIS IS THE INTERRUPT MASK, WHICH IS WHY OPENING IT IS
+REFUSED.** The stage was asked to evaluate opening the mask between spin attempts and did. With a
+ticket, an interrupt handler reaching `klock_enter` on a waiting core draws a SECOND ticket on a
+core that already holds one; `now_serving` then stops at the suspended outer context's ticket for
+good. Unconditional, every backend, any width. Today's test-and-set tolerates the same nesting as
+an extra frame and an extra wait. What opening would buy is already bought by the poll: every
+device line's dispatch takes the same lock, so an opened window is consumed by a handler that
+blocks on it one frame deeper.
+
+**THE OLD armv8a ACQUIRE LOOP HAD FORFEITED ITS OWN FORWARD-PROGRESS GUARANTEE, AND NOTHING SAID
+SO.** Without the large-system extension the architecture guarantees progress for a
+load-exclusive/store-exclusive loop only if no branch-with-link, exception return, indirect branch
+or system-register write sits between a failing store-exclusive and the retry of its
+load-exclusive. The old loop called the doorbell poll in exactly that interval, and the A53 the
+emulator models has no such extension, so that was the only guarantee available. **A latent
+defect, never observed**, found by reading the manual for the bound rather than by any run.
+
+**THE MEASURED AXIOMS CAME BACK SMALL, WHICH IS A READING AND NOT A BOUND.** armv8a's draw-retry
+row reads `0/0/1` at four cores, so `R` is 1 under this workload against a term the architecture
+refuses to bound. rv64's reads `0/0/0` everywhere, maximum included, which is the ISA reading
+confirmed: an AMO has no failure encoding, where a store-conditional has one and needs a whole
+further section to bolt eventual success on. lx6's reads `0/0/0` on silicon. **None of the three
+is a bound and none may be planned against as one.**
+
+**NO BOARD'S `lock-hold` MAXIMUM IS A CRITICAL SECTION, ON ANY ISA, AND NOW EVERY ONE HAS A NAME.**
+M9.0 said the SMP maximum had no attributed site and that the three candidate explanations all
+failed against the frozen bytes; the `lock-site` line landed after M8.12 froze. On every SMP
+preset and every arch it resolves to TRAP ENTRY -- the syscall trampoline and the IRQ path, the
+supervisor vector and the two dispatches. Callers waiting, not bodies holding. At one core on
+`qemu-riscv64-bench` it resolves to the console emitter, which is M8.13's `esp32c6-wroom` finding
+on a second board.
+
+**THE TICKET HAS A PRICE AND IT IS THE `S` TERM.** Under test-and-set a core busy inside a
+doorbell service lost the race and cost nobody; under a ticket the lock is RESERVED for a named
+core, so if that core is mid-poll when its turn arrives the lock idles and everyone waits.
+Charging it once rather than per predecessor rests on an argument written into the design record,
+so a later pass can reject the argument rather than guess at the number.
+
+**AND THE DRAW CARRIES NO POLL, SO "A CORE OBSERVED SPINNING WILL ANSWER" NOW MEANS "AFTER IT
+FINISHES DRAWING".** A call inside the armv8a draw would forfeit the guarantee above. On rv64 that
+window is one instruction; on armv8a and lx6 it is the unbounded retry count. The selfcheck's
+second phase now certifies the same property more slowly, the primary being queued behind every
+peer that has already drawn.
+
+**`lock-wait` IS NOT THE SAME OBJECT EITHER SIDE OF THIS STAGE.** Before it measured barge
+contention, how long a core lost races for; after it measures queue position times predecessor
+critical sections. The row's own one-line description stays literally true, so no gate notices and
+nothing goes red. A capture from before and one from after are two different quantities.
+
+**WHAT THESE RUNS DO NOT SAY, AND THE FIRST IS THE ONE A READER WILL ASSUME.** The ticket's
+throughput cost is NOT measured: the before captures and the after tree both exist and the paired
+campaign does not. A bench build also pays two distribution updates and one extra acquire load per
+acquisition that the pre-change tree did not, about 2 us a switch at four cores, so a naive
+before-and-after difference charges the lock for the instrument. Nothing here is witnessed above
+two cores on silicon. And the doorbell gate's two-core floor was recalibrated during this stage
+because it was failing one run in five at that width on the tree BEFORE the lock changed, so it
+is a pre-existing arm surfaced by a new width and not a regression.
 
 ## Where to go next
 

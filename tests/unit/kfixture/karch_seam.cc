@@ -106,6 +106,17 @@ extern "C"
         kickos::testfix::note_klock_release();
     }
 
+#if KICKOS_DEBUG
+    int arch_kernel_lock_held(void)
+    {
+        if (kickos::testfix::klock_held())
+        {
+            return 1;
+        }
+        return 0;
+    }
+#endif
+
     void arch_ipi_resched_self(void)
     {
         kickos::testfix::g_ipi_self_raises++;

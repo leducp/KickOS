@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_ARM64=y
+
+# `benchsmp` at TWO cores. It exists so the kernel lock's arbitration is measured against core
+# COUNT rather than at one width: a ticket's worst wait is written in the number of holders
+# ahead of the asker, and a single four-core row cannot tell a bound that grows with the count
+# from one that does not.
+CONFIG_KICKOS_CORES_TWO=y
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y

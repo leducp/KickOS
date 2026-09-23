@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 44 documents = 28 LANDED + 9 ACTIVE + 7 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 45 documents = 29 LANDED + 9 ACTIVE + 7 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -53,6 +53,7 @@ Two things follow from this that are easy to get wrong:
 
 | Document | Subject |
 |---|---|
+| [`design-m9-lock-bound.md`](../design-m9-lock-bound.md) | M9.1's ticket lock: one algorithm over three backends, the worst wait derived per backend or recorded as underivable, the interrupt mask evaluated and refused, and the first shared-kernel silicon measurement this project has taken |
 | [`design-task9-mmio-driver.md`](../design-task9-mmio-driver.md) | The MMIO grant-at-spawn mechanism + the `arch_mpu_region_encodable` seam -- what makes an unprivileged userspace driver possible |
 | [`design-mpu-commit-deferred.md`](../design-mpu-commit-deferred.md) | The enforcement-soundness seam: stash the region set at the switch decision, program it from the switch epilogue |
 | [`design-cxx-under-mpu.md`](../design-cxx-under-mpu.md) | Full C++ (exceptions/STL/RTTI) from an unprivileged thread under enforcement, across four EH models |

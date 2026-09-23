@@ -46,6 +46,15 @@ namespace kickos
         // g_took[t].seq[i]: how far core t has consumed i's. Written by t, read by i.
         ReschedRow g_asked[KICKOS_KERNEL_CORES] = {};
         ReschedRow g_took[KICKOS_KERNEL_CORES] = {};
+
+        // EVERY RELEASE GOES THROUGH HERE. klock_drop releases unconditionally, and a release
+        // taken while the lock is free hands it to a ticket nobody drew, after which no draw
+        // ever matches and every core spins for good.
+        inline void release(void)
+        {
+            KICKOS_DEBUG_ASSERT(::arch_kernel_lock_held() != 0);
+            arch_kernel_unlock();
+        }
     }
 
     void klock_enter(void)
@@ -68,7 +77,7 @@ namespace kickos
         r.depth = r.depth - 1u;
         if (r.depth == 0 and r.owed == 0)
         {
-            arch_kernel_unlock();
+            release();
             // A RAISE, NOT A SCHEDULER PASS, AND THE CELL IS LEFT STANDING: only the dispatch
             // that enters the scheduler consumes the cell, so a raise a poll absorbed must be
             // carried again.
@@ -115,7 +124,7 @@ namespace kickos
         KlockRow& r = g_row[kickos_kernel_core()];
         r.depth = 0;
         r.owed = 0;
-        arch_kernel_unlock();
+        release();
     }
 
     // Called by the arch from inside the swap, once the outgoing frame is parked and this

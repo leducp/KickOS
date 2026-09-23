@@ -117,6 +117,17 @@ void arch_kernel_unlock(void)
     kickos::reschedfix::g_released++;
 }
 
+#if KICKOS_DEBUG
+int arch_kernel_lock_held(void)
+{
+    if (kickos::reschedfix::g_acquired == kickos::reschedfix::g_released)
+    {
+        return 0;
+    }
+    return 1;
+}
+#endif
+
 // The cross-core raise the ask goes over. THE CELL IS SAMPLED FROM THE TARGET'S SEAT, which is
 // what a real target's absorbing consumer would read: the raise is an edge and the poll in an
 // acquire loop acknowledges it without entering any scheduler, so the ask has to already stand

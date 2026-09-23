@@ -63,6 +63,13 @@ scratch_dir
 # The literal pool is resolved by the disassembler, which prints the symbol it points at, so
 # the end cell is named in the instruction stream and needs no symbol table of its own.
 #
+# ABOVE ONE KERNEL CORE THE CELL IS AN ARRAY AND THE POOLED ADDRESS IS ITS BASE, so the
+# register the pool loaded is scaled-added to this core's index before anything touches it. A
+# reader that treated that add as an ordinary write would lose the cell one instruction after
+# finding it and report a body that banks against nothing. The add carries the tracking to its
+# destination instead; WHETHER the index names a core is
+# tests/static/check_bench_stamp_percore.sh's claim and not this one's.
+#
 # A window rotation and a call4 both rename every register this reader is tracking, so both
 # drop the whole tracking state rather than carrying a name across.
 #
@@ -119,6 +126,15 @@ function forget(    r)
             if (o[1] in zero) { clearcell = 1 } else { stamps++ }
         }
         next
+    }
+    if (mn ~ /^add(x[248])?([.]n)?$/ && nops == 3)
+    {
+        if (endreg != "" && (o[2] == endreg || o[3] == endreg))
+        {
+            endreg = o[1]
+            delete zero[o[1]]
+            next
+        }
     }
     if (mn ~ /^call[0-9]+$/ || mn ~ /^callx[0-9]+$/)
     {
@@ -291,11 +307,93 @@ case "$ctl" in
   that banks no switch cost" ;;
 esac
 
+# The same shapes ABOVE ONE KERNEL CORE, where the pooled address is an array base and this
+# core's index reaches the slot. Every record below is the one-core record: what the scaled add
+# changes is whether this reader can still SEE the cell one instruction after the pool loaded
+# it, and a reader that loses it there reports an image that banks against nothing.
+plant_indexed() { # <clearing?>
+    echo '00001000 <planted_switch>:'
+    echo "    1000:	entry	a1, 32"
+    echo "    1004:	l32r	a6, 1100 <pool+0x0> (3ffb3b18 <$END_CELL>)"
+    echo "    1007:	rsr.prid	a5"
+    echo "    100a:	extui	a5, a5, 1, 1"
+    echo "    100d:	addx4	a6, a5, a6"
+    echo "    1010:	l32i	a4, a6, 0"
+    echo "    1013:	beqz	a4, 1030 <planted_switch+0x30>"
+    if [ "$1" = clearing ]; then
+        echo "    1016:	movi	a7, 0"
+        echo "    1019:	s32i.n	a7, a6, 0"
+    fi
+    echo "    101b:	l32r	a6, 1104 <pool+0x4> (3ffb3b1c <g_bench_sw_start>)"
+    echo "    101e:	rsr.prid	a5"
+    echo "    1021:	extui	a5, a5, 1, 1"
+    echo "    1024:	addx4	a6, a5, a6"
+    echo "    1027:	l32i.n	a6, a6, 0"
+    echo "    1029:	sub	a6, a4, a6"
+    echo "    102c:	call4	2000 <$BANK>"
+    echo "    102f:	retw.n"
+}
+
+# The resume side's index comes out of a CALL, the windowed ABI returning it in a2 rotated by
+# the call's width.
+plant_close_indexed() { # <stamping?>
+    echo '00001000 <planted_close>:'
+    echo "    1000:	entry	a1, 32"
+    echo "    1004:	call8	3000 <arch_cpu_id>"
+    echo "    1007:	rsr.ccount	a9"
+    echo "    100a:	l32r	a8, 1100 <pool+0x0> (3ffb3b18 <$END_CELL>)"
+    echo "    100d:	addx4	a10, a10, a8"
+    if [ "$1" = stamping ]; then
+        echo "    1010:	s32i.n	a9, a10, 0"
+    fi
+    echo "    1012:	retw.n"
+}
+
+plant_indexed clearing       > "$TMP/ctl_ix_consumed"
+plant_indexed stale          > "$TMP/ctl_ix_stale"
+plant_close_indexed stamping > "$TMP/ctl_ix_close"
+plant_close_indexed bare     > "$TMP/ctl_ix_close_nostore"
+
+ctl="$(read_body "$TMP/ctl_ix_consumed" planted_switch)"
+case "$ctl" in
+    "REC 1 1 0") ;;
+    *) fail "the reader answered [$ctl] for a planted entry body that reaches its end stamp
+  through a scaled add on the pooled base, which is the shape above one kernel core. Read as a
+  record it reports a bank that never touched the cell, so a correct image goes red" ;;
+esac
+
+ctl="$(read_body "$TMP/ctl_ix_stale" planted_switch)"
+case "$ctl" in
+    "REC 1 0 0") ;;
+    *) fail "the reader answered [$ctl] for a planted entry body that reaches its end stamp
+  through a scaled add and banks against it without clearing it. That is the defect this gate
+  exists to catch, in the shape the two-core image takes, so a reader that does not report it
+  cannot go red" ;;
+esac
+
+ctl="$(read_close_body "$TMP/ctl_ix_close" planted_close)"
+case "$ctl" in
+    "REC 0 0 1") ;;
+    *) fail "the reader answered [$ctl] for a planted resume body that writes a live count into
+  its own core's slot of the end cell, so it cannot see the half of the bracket that stands
+  past the retw once that cell is an array" ;;
+esac
+
+ctl="$(read_close_body "$TMP/ctl_ix_close_nostore" planted_close)"
+case "$ctl" in
+    "REC 0 0 0") ;;
+    *) fail "the reader answered [$ctl] for a planted resume body that indexes the end cell and
+  then writes nothing to it. That is the shape that leaves the bank in '$SYM' reading a cell
+  only ever cleared, so a reader counting the scaled add as the stamp cannot go red on it" ;;
+esac
+
 ctl_dead_reader "$(read_body "$TMP/ctl_consumed" a_symbol_no_listing_carries)" \
     "a renamed switch body would read as a clean one"
 
 ctl_dead_reader "$(read_close_body "$TMP/ctl_close" a_symbol_no_listing_carries)" \
     "a renamed resume body would read as one that stamps nothing"
+
+synced_body_control
 
 # --- the instruction stream ---------------------------------------------------
 tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"
@@ -303,7 +401,16 @@ require_nonempty "$TMP/dis" "$objdump printed no disassembly for $elf"
 
 echo "== the LX6 switch bracket's end stamp in $elf =="
 
-rec="$(read_body "$TMP/dis" "$SYM")"
+# A linear sweep of a variable-width listing decodes forward from wherever it last stopped, and
+# the esp32 link leaves two zero bytes behind a relaxed jump. Everything behind one of those is
+# instructions that were never in the image until the stream realigns, which reads as a body
+# that banks nothing. BRANCH names the mnemonics whose operand is an instruction boundary, and
+# gate.sh's synced_body re-decodes from the ones this listing did not carry.
+BRANCH='^(b[a-z]*([.]n)?|j|loop[a-z]*)$'
+
+synced_body "$TMP/body" "$TMP/dis" "$SYM" "$elf" "$objdump" "$BRANCH"
+entry_synced="$SYNCED_N"
+rec="$(read_body "$TMP/body" "$SYM")"
 case "$rec" in
     NOSYM)
         fail "the disassembly of $elf carries no body for '$SYM', so the reader started
@@ -337,7 +444,8 @@ stamps="$(printf '%s\n' "$rec" | cut -d' ' -f4)"
 require_number "$bankread" "the end-cell read ahead of the bank in $SYM"
 require_number "$bankclear" "the end-cell clear ahead of the bank in $SYM"
 require_number "$stamps" "the end-cell stamp count in $SYM"
-rec="$(read_close_body "$TMP/dis" "$SYM_CLOSE")"
+synced_body "$TMP/body_close" "$TMP/dis" "$SYM_CLOSE" "$elf" "$objdump" "$BRANCH"
+rec="$(read_close_body "$TMP/body_close" "$SYM_CLOSE")"
 case "$rec" in
     NOSYM)
         fail "the disassembly of $elf carries no body for '$SYM_CLOSE', so the half of the
@@ -362,7 +470,7 @@ require_number "$closestamps" "the end-cell stamp count in $SYM_CLOSE"
 
 echo "   corpus: '$SYM' reads $END_CELL $bankread time(s) and clears it $bankclear time(s)
   ahead of the bank call and re-stamps it $stamps time(s); '$SYM_CLOSE' stamps it
-  $closestamps time(s)"
+  $closestamps time(s); $entry_synced and $SYNCED_N re-decode(s)"
 
 rc=0
 

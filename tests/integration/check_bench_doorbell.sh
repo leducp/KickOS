@@ -49,9 +49,19 @@ rc=0
 
 # Read the first report window only.
 read_report() { # <report text>
+    # A ROUND IS ONE RAISE PLUS THE WAIT FOR EVERY PEER, so this floor is a property of the
+    # PEER COUNT and not a constant. At one peer the round is a raise plus a single answer and
+    # the two cost about the same, so the three-peer factor lands inside the distribution
+    # rather than under it. Measured over the M9.1 captures, 30 report windows a width: the
+    # round-to-raise minimum is 3.49 at three peers and 1.87 at one, on arm64, which is the
+    # tight arch. rv64 reads 5.52 at one peer and never approaches either figure.
+    _span_factor=2
+    if [ "$want" -le 2 ]; then
+        _span_factor=1.5
+    fi
     read -r bursts rounds misplaced shortruns unmoved dn d50 d99 dmax rows full rowsum tooshort \
             sw50 <<EOF
-$(printf '%s\n' "$1" | awk -v SPAN_FACTOR=2 '
+$(printf '%s\n' "$1" | awk -v SPAN_FACTOR="$_span_factor" '
     function tail_n(s,   t) { t = s; sub(/.*n=/, "", t); sub(/[^0-9].*$/, "", t); return t + 0 }
     function part(s, i,   f) { split(s, f, "/"); return f[i] + 0 }
 
@@ -149,7 +159,7 @@ doorbell_arms() {
     if [ "$sw50" -gt 0 ]; then
         mode="counts and cycles"
         if [ "$tooshort" -ne 0 ]; then
-            bad "$tooshort core row(s) report a minimum under twice the raise floor that core
+            bad "$tooshort core row(s) report a minimum under $_span_factor times the raise floor that core
   measured in the same burst; the bracket is closing inside the raise, before any peer could
   have answered, and every count above still reads correct"
         fi
@@ -189,6 +199,28 @@ ctl_four() {
 '  lock-site: core=1 site=0xffffffff800016a8 max=3950340' \
 '  lock-site: core=2 site=0xffffffff800016a8 max=5707700' \
 '  lock-site: core=3 site=0xffffffff80011574 max=5839840'
+}
+
+ctl_two() {
+    printf '%s\n' \
+'  throughput: 42768 ctx-sw/s  (23381 ns/sw avg over 40000 switches / 935 ms)' \
+'  doorbell-probe: asked=0 on=0 ran=64 db+64 raise=1092' \
+'  doorbell-probe: asked=1 on=1 ran=64 db+64 raise=1252' \
+'  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)' \
+'  switch:    208/512/8987 cyc  (p50/p99/max, n=40098)' \
+'    core 0: 150/238/8987 cyc  (min/avg/max, n=23712)' \
+'    core 1: 160/256/5450 cyc  (min/avg/max, n=16386)' \
+'  lock-hold: 6144/24576/417046 cyc  (p50/p99/max, n=120594)' \
+'    core 0: 531/8742/388412 cyc  (min/avg/max, n=63928)' \
+'    core 1: 501/8791/417046 cyc  (min/avg/max, n=56666)' \
+'  lock-wait: 288/11264/360940 cyc  (p50/p99/max, n=161072)' \
+'    core 0: 90/2224/360940 cyc  (min/avg/max, n=87833)' \
+'    core 1: 90/2865/335883 cyc  (min/avg/max, n=73239)' \
+'  doorbell:  4096/17763/17763 cyc  (p50/max/max, n=128)' \
+'    core 0: 2715/4423/15479 cyc  (min/avg/max, n=64)' \
+'    core 1: 4238/5132/17763 cyc  (min/avg/max, n=64)' \
+'  lock-site: core=0 site=0xffffff804001d1e0 max=388412' \
+'  lock-site: core=1 site=0xffffff804001d1e0 max=417046'
 }
 
 # <name> <kernel cores> <pass|refuse> <findings expected on a refusal> <report text>
@@ -269,6 +301,21 @@ if [ "$controls_only" -eq 1 ]; then
     # Core 1 has the largest raise floor; shorten its span without changing ordering.
     ctl 'a round trip closed inside its own raise' 4 refuse 1 \
         "$(ctl_four | sed 's|^\(    core 1: \)15340/|\16000/|')"
+
+    # 2715/1092 is 2.49 and 4238/1252 is 3.39, so the unedited two-core report clears both
+    # factors and says only that the fixture is sound.
+    ctl 'a two-core report whose rounds clear the floor' 2 pass 0 "$(ctl_two)"
+    # 1900/1092 is 1.74: inside the three-peer factor and above the one-peer factor, so it is
+    # the sample the calibration exists for.
+    ctl 'a two-core round between the two factors' 2 pass 0 \
+        "$(ctl_two | sed 's|^\(    core 0: \)2715/|\11900/|')"
+    # 1500/1092 is 1.37, under the one-peer factor, so the arm still fires at this width.
+    ctl 'a two-core round closed inside its own raise' 2 refuse 1 \
+        "$(ctl_two | sed 's|^\(    core 0: \)2715/|\11500/|')"
+    # 10000/5980 is 1.67, the same band the two-core control above is ACCEPTED in. Refused
+    # here, which is what makes the calibration per-width rather than a blanket loosening.
+    ctl 'a four-core round in the band two cores accept' 4 refuse 1 \
+        "$(ctl_four | sed 's|^\(    core 1: \)15340/|\110000/|')"
 
     echo "PASS: $_ctl_pass planted report(s) accepted and $_ctl_refuse refused, each naming its
   own arm"

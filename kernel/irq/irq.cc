@@ -220,7 +220,7 @@ namespace kickos
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
-            KICKOS_BENCH_E2E_ISR_MARK();
+            KICKOS_BENCH_E2E_ISR_MARK(b->line);
             irq_line_op_local(b->line, LineOp::MASK);
             if (b->notify == nullptr)
             {
