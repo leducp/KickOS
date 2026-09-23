@@ -177,8 +177,10 @@ void arch_amp_release_peers(void);
 void arch_kernel_lock(void);
 void arch_kernel_unlock(void);
 #if defined(KICKOS_DEBUG) && KICKOS_DEBUG
-// Nonzero while any core holds the lock. A release taken while this reads zero hands the lock
-// to a ticket nobody drew, after which no draw ever matches and every core spins for good.
+// Nonzero while THE CALLING CORE holds the lock, which is the only question a release can be
+// checked against: a release taken where this reads zero hands the lock to a ticket nobody drew,
+// after which no draw ever matches and every core spins for good. Shared across the backends
+// (<kickos/arch/klock_owner.h>), which write the cell it reads.
 int arch_kernel_lock_held(void);
 #endif
 #else
@@ -716,14 +718,30 @@ void arch_irq_unmask(int line);
 
 // Discard a pending raise where hardware allows it; native PLIC lines may
 // ignore this. Used at first registration and for level-triggered rearming.
+// Above one kernel core, run on the line's routed core, it discards every
+// raise of the line that core holds, a peer's post not yet taken included.
 void arch_irq_clear_pending(int line);
 
 // Inject a device interrupt through the ISR path. Privileged test support;
 // normal drivers register, wait and acknowledge.
 void arch_irq_inject(int irq);
 
-// Return the core assigned to line. Only that core may access the shared
-// logical-line gating state.
+// Route a global line to core, named by this kernel's own core index: the
+// claimer's at claim, KICKOS_IRQ_ROUTE_NONE at the last release. The line
+// is masked across the call; the release masks it on the core the old route
+// names before it drops the route. After a route every raise of the line,
+// arch_irq_inject's from any core included, is taken on that core.
+// KICKOS_IRQ_ROUTE_NONE returns the line to its unrouted state, so a later
+// claim routes afresh instead of inheriting the last owner. A backend whose
+// lines are not routable, or which routes by a mechanism the kernel is not
+// told about, does nothing.
+#define KICKOS_IRQ_ROUTE_NONE (0xFFFFFFFFu)
+void arch_irq_route(int line, uint32_t core);
+
+// Return the core whose logical-line gating state holds line; only that
+// core may access it. KICKOS_IRQ_LINE_CORE_NONE where that state is global.
+// A backend that pins a routed line's state to its route answers the core
+// arch_irq_route named.
 #define KICKOS_IRQ_LINE_CORE_NONE (-1)
 int arch_irq_line_core(int line);
 

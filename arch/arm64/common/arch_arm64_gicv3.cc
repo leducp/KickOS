@@ -6,13 +6,14 @@
 // core's redistributor to the next, the INTID count and the INTID the EL1 physical timer
 // asserts.
 //
-// EVERY INTID THIS BACKEND CONFIGURES IS GROUP 1. ICC_SGI1R_EL1 generates Group 1 only and a
+// Every INTID this backend configures is Group 1. ICC_SGI1R_EL1 generates Group 1 only and a
 // group mismatch drops an interrupt silently, so a timer PPI left in the group a reset chose
 // yields a machine that boots, answers doorbells and never preempts. The acknowledge and
 // end-of-interrupt registers are Group 1's for the same reason.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/doorbell_cells.h>
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 
 #include "gic.h"
 #include "gicv3.h"
@@ -33,7 +34,7 @@ extern "C"
 
 namespace
 {
-    // EVERY DEVICE REGISTER IS REACHED THROUGH THE KERNEL'S OWN HALF. The device gigabyte is
+    // Every device register is reached through the kernel's own half. The device gigabyte is
     // mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares; TTBR0
     // carries a per-process root that maps no device at all, so a low literal here would
     // translate against whatever process happened to be running.
@@ -95,20 +96,19 @@ namespace
     constexpr uintptr_t GICR_ICPENDR0 = GICR_SGI_FRAME + 0x0280;
     constexpr uintptr_t GICR_IPRIORITYR = GICR_SGI_FRAME + 0x0400;
 
-    // THE SAME WRITE IN BOTH VIEWS THIS KERNEL CAN SEE: with a single Security state bit 4 is
+    // The same write in both views this kernel can see: with a single Security state bit 4 is
     // ARE and bit 1 EnableGrp1; accessed Non-secure where two exist, bit 4 is ARE_NS and bit 1
     // EnableGrp1A. Bit 0 stays clear in both, so widening this to 0x13 enables Group 0.
     constexpr uint32_t GICD_CTLR_ARE = 1u << 4;
     constexpr uint32_t GICD_CTLR_GRP1 = 1u << 1;
-    // REGISTER WRITE PENDING, one bit per frame, covering different registers.
-    // GICD_CTLR.RWP (IHI 0069H.b 12.9.4) tracks GICD_ICENABLER<n>,
-    // GICD_CTLR[7:4], and a GICD_CTLR[2:0] group enable falling from 1 to 0. GICR_CTLR.RWP
-    // (12.11.2) tracks GICR_ICENABLER0, the GICR_CTLR.DPG bits, and EnableLPIs falling from 1
-    // to 0.
+    // Register write pending, one bit per frame, covering different registers. GICD_CTLR.RWP
+    // (IHI 0069H.b 12.9.4) tracks GICD_ICENABLER<n>, GICD_CTLR[7:4], and a GICD_CTLR[2:0] group
+    // enable falling from 1 to 0. GICR_CTLR.RWP (12.11.2) tracks GICR_ICENABLER0, the
+    // GICR_CTLR.DPG bits, and EnableLPIs falling from 1 to 0.
     //
-    // NOTHING ELSE IS TRACKED. A SET enable, a pending write, a priority, a group or a route
+    // Nothing else is tracked: a set enable, a pending write, a priority, a group or a route
     // takes effect without one, so a wait after any of those would spin on a bit that never
-    // rises. Add a wait where a DISABLE is written and nowhere else.
+    // rises. Add a wait where a disable is written and nowhere else.
     constexpr uint32_t GICD_CTLR_RWP = 1u << 31;
     constexpr uint32_t GICR_CTLR_RWP = 1u << 3;
 
@@ -117,10 +117,10 @@ namespace
 
     constexpr uint64_t GICR_TYPER_LAST = 1ull << 4;
 
-    // THE KIND, as a value range rather than a separate field (roadmap.md's `(line, kind)`).
-    // Below 32 an INTID is the calling core's own, and with affinity routing on it is reached
-    // in that core's REDISTRIBUTOR rather than in the distributor, whose first word is RES0
-    // there. At or above 32 an interrupt is global and reaches no core until GICD_IROUTER
+    // The kind, as a value range rather than a separate field. Below 32 an INTID is the calling
+    // core's own, and with affinity routing on it is reached in that core's redistributor
+    // rather than in the distributor, whose first word is RES0 there. At or above 32 an
+    // interrupt is global and reaches no core until GICD_IROUTER
     // names one. Every arch_irq_* body branches on this boundary and nothing else does.
     constexpr int GIC_BANKED_INTIDS = 32;
 
@@ -154,7 +154,7 @@ namespace
     constexpr char GICR_RWP_STUCK[] = "gicv3: GICR_CTLR.RWP never cleared\n";
     constexpr char NO_RANGE[] = "gicv3: affinity 0 above 15 with ICC_CTLR_EL1.RSS clear\n";
 
-    // Each core's RD_base, DISCOVERED rather than indexed: the redistributor frames are
+    // Each core's RD_base, discovered rather than indexed: the redistributor frames are
     // ordered by the implementation and GICR_TYPER is the only thing that says which core owns
     // one. Written by that core alone and read by that core alone, the banked registers being
     // the calling core's by definition.
@@ -164,14 +164,14 @@ namespace
     // GICR_TYPER's Affinity_Value form. Published by the core it names.
     //
     // Both nodes write it under one image per node, so it is placed with the doorbell's cells:
-    // a copy per image leaves every peer's row unseated, and the send below SKIPS an unseated
+    // a copy per image leaves every peer's row unseated, and the send below skips an unseated
     // core.
     KICKOS_AMP_SHARED("affinity")
     kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
         g_affinity[KICKOS_DOORBELL_CORES] = {};
 
-    // WHETHER THAT AFFINITY STANDS, published last. Affinity zero is a real core rather than
-    // an absence, so unlike a GICv2 target BIT the affinity word cannot say this itself, and a
+    // Whether that affinity stands, published last. Affinity zero is a real core rather than
+    // an absence, so unlike a GICv2 target bit the affinity word cannot say this itself, and a
     // send that read an unpublished zero would target core zero twice and the intended core
     // never.
     KICKOS_AMP_SHARED("affinity_seated")
@@ -183,6 +183,38 @@ namespace
     // peer that never started can be counted from.
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_deferred[KICKOS_DOORBELL_CORES] = {};
 #endif
+
+    // Which core arch_irq_route named for a global line, biased by one so that the unrouted
+    // state is zero and the array stays in .bss. Written on the claiming core and read by an
+    // arch_irq_unmask that may run on another, so the release store that seats a row is what
+    // publishes the GICD_IROUTER write ahead of it.
+    static_assert(KICKOS_MAX_IRQ > GIC_BANKED_INTIDS,
+                  "a GIC with no global INTID leaves nothing to route");
+    using RouteCell = kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
+    RouteCell g_line_row[KICKOS_MAX_IRQ - GIC_BANKED_INTIDS] = {};
+
+    // Null for a banked INTID and for one past the record, which a distributor implementing
+    // more INTIDs than the chip declares would otherwise index into.
+    inline RouteCell* route_cell(int line)
+    {
+        if (line < GIC_BANKED_INTIDS or line >= KICKOS_MAX_IRQ)
+        {
+            return nullptr;
+        }
+        return &g_line_row[line - GIC_BANKED_INTIDS];
+    }
+
+    // The kernel names a core by its own index, which is not the machine's under an own-image
+    // AMP node: that image drives one core and its kernel index is always zero.
+    inline uint32_t route_row(uint32_t core)
+    {
+#if KICKOS_AMP_OWN_IMAGE
+        (void)core;
+        return arch_doorbell_core();
+#else
+        return core;
+#endif
+    }
 
     inline uint32_t affinity_packed(uint64_t mpidr)
     {
@@ -215,11 +247,11 @@ namespace
         return g_rd_base[arch_cpu_id()];
     }
 
-    // A DISABLE IS NOT IN EFFECT UNTIL RWP READS ZERO, the propagation being asynchronous, so
+    // A disable is not in effect until RWP reads zero, the propagation being asynchronous, so
     // a mask that returns before that is not exclusion. What each RWP covers is at
     // GICD_CTLR_RWP above.
     //
-    // THE BIT IS TESTED BEFORE THE DEADLINE IS COMPUTED, so a controller that completed the
+    // The bit is tested before the deadline is computed, so a controller that completed the
     // write synchronously costs one Device read and no counter read. Folding the two tests
     // into one loop puts a counter read on every mask.
     void wait_gicd_rwp(void)
@@ -239,7 +271,7 @@ namespace
         }
     }
 
-    // THE CALLING CORE'S OWN REDISTRIBUTOR: GICR_CTLR.RWP is per frame, so it reports writes
+    // The calling core's own redistributor: GICR_CTLR.RWP is per frame, so it reports writes
     // made here and no peer's.
     void wait_gicr_rwp(uintptr_t base)
     {
@@ -258,7 +290,7 @@ namespace
         }
     }
 
-    // ICC_SRE_EL1.SRE FIRST OF ALL: while it reads clear, every other ICC_* access at EL1
+    // ICC_SRE_EL1.SRE first of all: while it reads clear, every other ICC_* access at EL1
     // traps to EL1, so a backend that set it late would fault on the register it set it with.
     // The field can be RAO or RAZ/WI, hence the read back.
     void enable_system_registers(void)
@@ -276,9 +308,9 @@ namespace
     }
 
     // The frame whose GICR_TYPER names this core, found by walking the contiguous series the
-    // chip declares. The walk stops at the Last bit and is bounded by the PART's frame count
+    // chip declares. The walk stops at the Last bit and is bounded by the part's frame count
     // either way, so a series that never sets Last cannot run off the end of the window the
-    // grant model reserved. BOUNDED ON THE PART AND NOT ON KICKOS_NUM_CORES: a core handed over
+    // grant model reserved. Bounded on the part and not on KICKOS_NUM_CORES: a core handed over
     // at EL1 on a die whose other frames this image never drove still has to reach its own.
     uintptr_t find_my_redistributor(uint32_t packed)
     {
@@ -300,7 +332,7 @@ namespace
     }
 
     // ProcessorSleep clear and ChildrenAsleep polled down: until it is, this redistributor
-    // forwards nothing to its core. BOUNDED like every other wait in this family, so a
+    // forwards nothing to its core. Bounded like every other wait in this family, so a
     // secondary whose redistributor never wakes refuses instead of hanging.
     void wake_redistributor(uintptr_t base)
     {
@@ -319,7 +351,7 @@ namespace
 
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     // A core index mask is what crosses gic.h, so a target list of 32 is the widest this
-    // backend is ever handed, at the PARTITION's width: an own-image AMP node is handed a mask
+    // backend is ever handed, at the partition's width: an own-image AMP node is handed a mask
     // naming cores its own image does not drive.
     static_assert(KICKOS_DOORBELL_CORES <= 32, "a core-index mask is 32 bits wide");
 
@@ -348,12 +380,12 @@ namespace
 extern "C"
 {
 
-// The distributor's SHARED half, one write set for the machine. Affinity routing goes on before
+// The distributor's shared half, one write set for the machine. Affinity routing goes on before
 // any line is configured: it is what makes GICD_IROUTER the routing register and the
 // distributor's first word RES0.
 //
-// ARE MOVES 0 TO 1 WITH EVERY GROUP ENABLE ALREADY CLEAR, which is the only ordering the
-// architecture makes predictable. Merging the enable into that write is UNPREDICTABLE.
+// ARE moves 0 to 1 with every group enable already clear, which is the only ordering the
+// architecture makes predictable; merging the enable into that write is UNPREDICTABLE.
 void kickos_armv8a_gic_dist_init(void)
 {
     *gicd32(GICD_CTLR) = 0;
@@ -400,7 +432,7 @@ void kickos_armv8a_gic_percore_init(void)
     *gicr32(base, GICR_ICENABLER0) = 0xFFFFFFFFu;
     wait_gicr_rwp(base);
     *gicr32(base, GICR_ICPENDR0) = 0xFFFFFFFFu;
-    // GROUP 1 FOR EVERY BANKED INTID, the timer PPI and the doorbell SGI among them.
+    // Group 1 for every banked INTID, the timer PPI and the doorbell SGI among them.
     *gicr32(base, GICR_IGROUPR0) = 0xFFFFFFFFu;
 
     // PMR wide open at 0xF0: everything here sits at priority 0, and the reset PMR of 0 blocks
@@ -424,7 +456,7 @@ void kickos_armv8a_gic_percore_init(void)
     *gicr8(base, GICR_IPRIORITYR + static_cast<uintptr_t>(GIC_SGI_DOORBELL)) = 0;
     *gicr32(base, GICR_ISENABLER0) = 1u << (GIC_SGI_DOORBELL % 32);
 
-    // A TARGET LIST ADDRESSES 16 AFFINITY 0 VALUES AND RS PICKS THE WINDOW, so a core beyond
+    // A target list addresses 16 affinity 0 values and RS picks the window, so a core beyond
     // the first window is unreachable where the interface cannot select ranges. Read on this
     // core for this core, which decides the question for the senders too: arch_cpu_id already
     // claims one cluster of symmetric cores, and RSS is a property of that cluster.
@@ -442,7 +474,7 @@ void kickos_armv8a_gic_percore_init(void)
 }
 
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-// ONE WRITE PER AFFINITY-AND-RANGE WINDOW: GICv3 has no target list spanning clusters, so how
+// One write per affinity-and-range window: GICv3 has no target list spanning clusters, so how
 // many writes a send costs is a property of the machine's topology rather than of the mask.
 //
 // A core whose affinity is unpublished contributes to no window: a zero read out of the array
@@ -473,12 +505,11 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
 {
     // The ring is the authority and this raise is a hint: a core whose affinity is unpublished
     // cannot be targeted, so its publication stands and only its notice is deferred, that peer
-    // draining what it was sent before it waits on a doorbell of any kind.
+    // draining what it was sent before it waits on a doorbell of any kind. A credit return is
+    // not a hint; deferring one is safe only because window_init services unconditionally
+    // before that peer waits.
     //
-    // A credit return is NOT a hint. Deferring one is safe only because window_init services
-    // unconditionally before that peer waits.
-    //
-    // The seating flag is MONOTONIC, only ever going unseated to seated, so a load reading
+    // The seating flag is monotonic, only ever going unseated to seated, so a load reading
     // seated is never stale and needs no barrier. A load reading unseated may be, and skipping
     // on a stale one strands a publication with no notice and no later scan, so that decision
     // alone is made behind a full barrier, pairing with the one the peer runs between seating
@@ -509,7 +540,7 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
     {
         return;
     }
-    // THE ARCHITECTURE ORDERS AN SGI AGAINST NOTHING, so the far side's view of earlier writes
+    // The architecture orders an SGI against nothing, so the far side's view of earlier writes
     // is the memory model's to order.
     __asm volatile("dsb ish" ::: "memory");
 
@@ -520,7 +551,7 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
         {
             lead++;
         }
-        // The lead leaves `pending` HERE and not in the sweep below, whose every other exit is
+        // The lead leaves `pending` here and not in the sweep below, whose every other exit is
         // a `continue`: a bound or a predicate that stopped agreeing with the mask would else
         // leave the lead bit set and spin this core masked, which is a hang, not a lost raise.
         pending &= ~(1u << lead);
@@ -528,10 +559,9 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
         uint32_t const cluster = packed & 0xFFFFFF00u;
         uint32_t const rs = (packed & 0xFFu) / SGI_TARGETS_PER_WINDOW;
         uint32_t targets = 1u << ((packed & 0xFFu) % SGI_TARGETS_PER_WINDOW);
-        // The partition's width and not this image's (docs/design-multicore.md N6c): the mask
-        // names machine cores, and an own-image AMP node drives ONE while naming peers on
-        // others, so a bound from KICKOS_NUM_CORES is 1 on the one posture with somewhere to
-        // raise.
+        // The partition's width and not this image's: the mask names machine cores, and an
+        // own-image AMP node drives one while naming peers on others, so a bound from
+        // KICKOS_NUM_CORES is 1 on the one posture with somewhere to raise.
         for (uint32_t index = lead + 1u; index < KICKOS_DOORBELL_CORES; index++)
         {
             if ((pending & (1u << index)) == 0)
@@ -589,14 +619,15 @@ void kickos_armv8a_gic_clear_pending(int intid)
 // here read-modify-writes and every store is single and aligned. Unmask writes the ENABLE
 // last, so a half-applied sequence leaves the line masked.
 //
-// MASK COSTS A COMPLETION WAIT AND THE REST OF THE TRIAD DOES NOT: RWP tracks a cleared enable
+// Mask costs a completion wait and the rest of the triad does not: RWP tracks a cleared enable
 // and nothing else, so unmask, inject and clear_pending have no bit to poll. Without that wait
 // this seam returns with delivery still possible, and the first-level ISR masks a line
 // precisely to stop it.
 //
-// WHICH CORE THIS FAMILY ACTS ON IS THE INTID'S. A line below GIC_BANKED_INTIDS is held in the
+// Which core this family acts on is the INTID's. A line below GIC_BANKED_INTIDS is held in the
 // calling core's own redistributor, so the same argument means a different interrupt on each
-// core; a line at or above it is global and arch_irq_unmask routes it to core 0.
+// core; a line at or above it is global, and the core that takes it is the one arch_irq_route
+// recorded. A global line with no record follows whichever core unmasks it.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= kickos_gicv3.intid_count)
@@ -622,20 +653,28 @@ void arch_irq_unmask(int line)
     }
     if (line < GIC_BANKED_INTIDS)
     {
-        // BYTE per INTID: a word index programs a different interrupt, and a 32-bit access is
+        // Byte per INTID: a word index programs a different interrupt, and a 32-bit access is
         // also unaligned, which on Device memory faults.
         *gicr8(my_rd_base(), GICR_IPRIORITYR + static_cast<uintptr_t>(line)) = 0;
         *gicr32(my_rd_base(), GICR_ISENABLER0) = 1u << (line % 32);
         return;
     }
     *gicd8(GICD_IPRIORITYR + static_cast<uintptr_t>(line)) = 0;
-    // A global interrupt reaches no core until one is named, and core zero's own PUBLISHED
+    RouteCell const* const cell = route_cell(line);
+    if (cell != nullptr and cell->load() != 0)
+    {
+        // GICD_IROUTER already holds what arch_irq_route wrote, and this core may not be the
+        // core it named.
+        *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
+        return;
+    }
+    // No claim named a core, so the line follows this one, and this core's own published
     // affinity is the only thing that names it.
     //
-    // DELIBERATELY UNLIKE THE GICv2 BACKEND, WHICH ENABLES THE LINE WITH AN EMPTY TARGET BYTE.
-    // A GICv2 target list is one-hot, so zero names nobody and an enabled line with no target
+    // Deliberately unlike the GICv2 backend, which enables the line with an empty target byte:
+    // a GICv2 target list is one-hot, so zero names nobody and an enabled line with no target
     // is expressible; affinity zero is a real core rather than an absence, so it is not. The
-    // line is left MASKED instead, which refuses rather than routing to a guess. Unreachable
+    // line is left masked instead, which refuses rather than routing to a guess. Unreachable
     // in practice, the primary publishing inside arch_init before anything here can run.
     if (g_affinity_seated[arch_doorbell_core()].load() == 0)
     {
@@ -644,6 +683,35 @@ void arch_irq_unmask(int line)
     *gicd64(GICD_IROUTER + static_cast<uintptr_t>(line) * 8) =
         router_value(g_affinity[arch_doorbell_core()].load());
     *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
+}
+
+// The line is masked from irq_claim until the first irq_wait arms it, so the route lands
+// while nothing can be delivered against a half-written one.
+//
+// A banked line is the claiming core's own instance: an INTID below GIC_BANKED_INTIDS lives in
+// each core's own redistributor and has no router, so it is left alone here, and a claim of it
+// claims the copy of the core the claimer is pinned to.
+void arch_irq_route(int line, uint32_t core)
+{
+    RouteCell* const cell = route_cell(line);
+    if (cell == nullptr or line >= kickos_gicv3.intid_count)
+    {
+        return;
+    }
+    if (core == KICKOS_IRQ_ROUTE_NONE)
+    {
+        *cell = 0;
+        return;
+    }
+    uint32_t const row = route_row(core);
+    if (row >= KICKOS_DOORBELL_CORES or g_affinity_seated[row].load() == 0)
+    {
+        return; // no affinity to write; the line stays unrouted and unmask decides as before
+    }
+    *gicd64(GICD_IROUTER + static_cast<uintptr_t>(line) * 8) =
+        router_value(g_affinity[row].load());
+    // LAST: the release store is what lets an unmask on another core read the write above.
+    *cell = static_cast<uint8_t>(row + 1u);
 }
 
 void arch_irq_clear_pending(int line)
@@ -711,14 +779,13 @@ void kickos_armv8a_gic_dispatch(void)
     {
         kickos_isr_irq(static_cast<int>(intid));
     }
-    // THE INTID ALONE: a GICv3 acknowledge carries no source field for an SGI, so what was
+    // The INTID alone: a GICv3 acknowledge carries no source field for an SGI, so what was
     // read back is what is ended.
     __asm volatile("msr icc_eoir1_el1, %0" ::"r"(static_cast<uint64_t>(intid)));
 #if KICKOS_KERNEL_CORES > 1
-    // AFTER THE END OF INTERRUPT AND OUTSIDE THE SERVICE BODY: this takes the kernel lock,
+    // After the end of interrupt and outside the service body: this takes the kernel lock,
     // which the service body may not, the service answering an initiator that may hold it.
-    //
-    // THE CELL IS THE AUTHORITY, NOT THE RAISE: the doorbell also carries rendezvous whose
+    // The cell is the authority, not the raise: the doorbell also carries rendezvous whose
     // targets owe no scheduler entry, and the take is what tells the two apart.
     if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL)
         and kickos_kernel_core_resched_take() != 0)

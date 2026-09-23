@@ -6,6 +6,15 @@
 
 # RISC-V RV64IMAC (QEMU virt). libgcc_rv64imac.cc holds the two compiler-runtime helpers
 # kernel text calls, which the split image cannot take from the multilib in the app's half.
+# Above one kernel core arch_rv64imac.cc is the backend for arch_irq_line_core and
+# arch_irq_route, so those two fallbacks leave the list.
+set(_rv64_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
+if(KICKOS_KERNEL_CORES GREATER 1)
+  list(REMOVE_ITEM _rv64_defaults
+    common/arch_irq_line_core_default.cc
+    common/arch_irq_route_default.cc)
+endif()
+
 set(KICKOS_ARCH_SOURCES
   riscv/rv64imac/arch_rv64imac.cc
   riscv/rv64imac/aspace_rv64imac.cc
@@ -16,4 +25,4 @@ set(KICKOS_ARCH_SOURCES
   riscv/rv64imac/trap.S
   common/arch_ram_common.cc
   common/startup_ranges.cc
-  ${KICKOS_SEAM_DEFAULTS_COMMON})
+  ${_rv64_defaults})

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// THE THREE HOLDERS of a notification's reference, one arm each and one arm for what each
-// one's release does NOT do: every capability naming it, the BIND, and each attached IRQ
-// binding. The bind's own reference is the AMP-3 lesson applied here: a bind leaning on
-// someone else's capability hands a stranger the object when that capability closes.
+// Covers the three holders of a notification's reference, one arm each: every capability
+// naming it, the bind, and each attached IRQ binding. The bind keeps its own reference
+// instead of leaning on a capability, since that capability's own close would otherwise hand
+// the object to a stranger.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -119,8 +119,8 @@ TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_binding_standing)
     EXPECT_EQ(pending_of(b.obj) & 1u, 1u);
 }
 
-// THE BIND HOLDS A REFERENCE OF ITS OWN. Closing every capability while a thread is bound
-// must NOT free the object: it is still named by that thread's TCB.
+// The bind holds a reference of its own: closing every capability while a thread is bound
+// must not free the object, since it is still named by that thread's TCB.
 TEST_F(IrqBindOwn, the_last_capability_closing_under_a_live_bind_frees_nothing)
 {
     Bound const b = bind_server();
@@ -135,8 +135,8 @@ TEST_F(IrqBindOwn, the_last_capability_closing_under_a_live_bind_frees_nothing)
     EXPECT_EQ(notify_bound_handle(b.server->notify_bound), b.obj);
 }
 
-// An unconsumed raise is LEFT for the next server when the bound thread dies. That is the
-// whole of the handover, with the transfer removed: the bits were never in the TCB.
+// An unconsumed raise is left for the next server when the bound thread dies: the bits were
+// never in the TCB.
 TEST_F(IrqBindOwn, a_bound_thread_s_death_clears_the_binding_and_leaves_the_pending)
 {
     Bound const b = bind_server();
@@ -162,7 +162,7 @@ TEST_F(IrqBindOwn, a_bound_thread_s_death_clears_the_binding_and_leaves_the_pend
     EXPECT_EQ(pending_of(b.obj) & 1u, 1u) << "the next server's event was discarded";
 }
 
-// AN ATTACHED IRQ BINDING IS THE THIRD HOLDER. With the bind gone and every capability
+// An attached IRQ binding is the third holder: with the bind gone and every capability
 // closed, the line's own reference is what is left, and it goes with the line.
 TEST_F(IrqBindOwn, the_attached_line_holds_the_last_reference_and_releases_it_at_its_own_death)
 {
@@ -218,4 +218,22 @@ TEST_F(IrqBindOwn, a_bind_is_refused_both_ways_round)
     EXPECT_EQ(notify_bind(b.server, second), -KOS_EBUSY);
     // Idempotent on the object it already holds, and it must not take a second reference.
     EXPECT_EQ(notify_bind(b.server, b.note), 0);
+}
+
+// The release masks the line before it drops the route: the seam requires the line masked
+// across the call.
+TEST_F(IrqBindOwn, the_last_close_masks_the_line_before_it_drops_the_route)
+{
+    Bound const b = bind_server();
+    ASSERT_EQ(irq_ack(b.server, b.claim), 0);
+    ASSERT_TRUE(g_line_armed[LINE]) << "the ack left the line masked, so nothing below is tested";
+    g_routed_armed = -1;
+
+    {
+        IrqLock lock;
+        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+    }
+
+    EXPECT_EQ(g_routed_armed, 0) << "the route was dropped while the line was still armed";
+    EXPECT_FALSE(g_line_armed[LINE]) << "the release left the line armed";
 }

@@ -105,7 +105,7 @@ namespace kickos
         {
             return -KOS_EBADF;
         }
-        // REFUSED, NOT RE-SEATED: a holder able to mint from a badged capability reaches
+        // Refused, not re-seated: a holder able to mint from a badged capability reaches
         // every bit of the object and the confinement a badge exists for is vacuous.
         if (cap_badge(*e) != KCAP_BADGE_NONE)
         {
@@ -176,8 +176,8 @@ namespace kickos
         // cap_lookup cannot fail here: the resolve above went through it.
         CapEntry const* const e = cap_lookup(c, cap_handle);
         uint32_t const bit = 1u << badge_bit_of(*e);
-        // NO CONTROLLER ACCESS: a signal must never unmask an unserviced line, and a waiter
-        // must be idempotent about finding no work.
+        // No controller access here: a signal must never unmask an unserviced line, and a
+        // waiter must be idempotent about finding no work.
         if (not notify_raise(n, bit))
         {
             return -KOS_EALREADY;
@@ -207,7 +207,7 @@ namespace kickos
         {
             return -KOS_EBUSY; // one object per thread: the TCB names exactly one
         }
-        // THE BIND TAKES A REFERENCE OF ITS OWN. Leaning on the binder's capability would
+        // The bind takes a reference of its own: leaning on the binder's capability would
         // hand a stranger this object the moment that capability closed.
         if (not obj_ref_inc(CapType::CAP_NOTIFY, obj, 0))
         {
@@ -228,7 +228,7 @@ namespace kickos
             n->bound = nullptr;
             n->accept = 0;
             c->notify_bound = KOS_NOTIFY_UNBOUND;
-            // pending is LEFT: it is the next server's, exactly as it was the last one's.
+            // pending is left: it is the next server's, exactly as it was the last one's.
             notify_ref_drop(obj, teardown);
         }
     }
@@ -285,10 +285,10 @@ namespace kickos
         }
         if (r == 0)
         {
-            // NO leak-don't-strand arm, and none owed. A waiter parked here is the BOUND
-            // thread, and its bind holds a reference of its own, so this count cannot reach
-            // zero under it. The same fact is what lets the last IRQ capability close while a
-            // driver is parked: the driver is parked on the OBJECT, not on the line.
+            // A waiter parked here is the bound thread, and its bind holds a reference of its
+            // own, so this count cannot reach zero under it. The same fact is what lets the
+            // last IRQ capability close while a driver is parked: the driver is parked on the
+            // object, not on the line.
             Notification const* const n = k.notifies.at(idx);
             KICKOS_ASSERT(n == nullptr or n->bound == nullptr);
             KICKOS_ASSERT(n == nullptr or n->signallers == NOTIFY_SIGNALLER_NONE);
@@ -305,6 +305,18 @@ namespace kickos
         }
         return n->pending;
     }
+
+#if KICKOS_KERNEL_CORES > 1
+    int notify_wait_admit(Thread* c)
+    {
+        Notification const* const n = bound_object_of(c);
+        if (n == nullptr)
+        {
+            return 0;
+        }
+        return irq_admit_signallers(c, n);
+    }
+#endif
 
     uint32_t notify_wait_enter(Thread* c, uint32_t mask)
     {
@@ -330,13 +342,13 @@ namespace kickos
         n->accept = 0;
         uint32_t const taken = n->pending & opened;
         n->pending = n->pending & ~taken;
-        // Flag for rearm HERE, never in the ISR: that is what makes ack;compute;wait
+        // Flag for rearm here, never in the ISR: that is what makes ack;compute;wait
         // phantom-free.
         irq_signallers_owe_rearm(n, taken);
         return taken;
     }
 
-    // The ONE cancellation point in the kernel. Do NOT fold back into sem_wait: sem_wait
+    // The one cancellation point in the kernel. Do not fold back into sem_wait: sem_wait
     // returns void and never reads wait_result, so an early wake would look like a post.
     int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,
                     uint32_t* out_bits)
@@ -356,6 +368,13 @@ namespace kickos
             {
                 return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
             }
+#if KICKOS_KERNEL_CORES > 1
+            int const arc = irq_admit_signallers(c, n);
+            if (arc != 0)
+            {
+                return arc;
+            }
+#endif
             // Cancellation takes precedence over a missing binding.
             if (park_cancel_pending(c))
             {
@@ -375,11 +394,11 @@ namespace kickos
                 return 0;
             }
             n->accept = mask;
-            // `n` survives the park: this thread's own BIND holds a reference on the object,
+            // `n` survives the park: this thread's own bind holds a reference on the object,
             // so nothing another thread can close frees it under a parked waiter.
             c->wait_result = 0; // normal delivery leaves this result unchanged
             epoch = c->switch_count;
-            // Under THIS lock and ahead of the block: the raise that wakes this thread takes
+            // Under this lock and ahead of the block: the raise that wakes this thread takes
             // the same lock, so nothing delivered past this mark can arrive before the park.
             KICKOS_BENCH_E2E_PARK_MARK();
             // WAIT_NOTIFY supports early wake results. No queue is needed for one bound
@@ -391,7 +410,7 @@ namespace kickos
             }
             sched::reschedule();
         }
-        // Mandatory, and OUTSIDE the lock: where the switch is only pended when the block
+        // Mandatory, and outside the lock: where the switch is only pended when the block
         // scope's lock drops, a wait_result read before this returns the pre-block value.
         wq_confirm_resume(c, epoch);
         {
@@ -405,7 +424,7 @@ namespace kickos
             }
             uint32_t const ready = n->pending & mask;
             n->pending = n->pending & ~ready;
-            // Flag for rearm HERE, never in the ISR: that is what makes ack;compute;wait
+            // Flag for rearm here, never in the ISR: that is what makes ack;compute;wait
             // phantom-free.
             irq_signallers_owe_rearm(n, ready);
             *out_bits = ready;

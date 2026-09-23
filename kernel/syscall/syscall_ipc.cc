@@ -31,12 +31,11 @@ namespace kickos
         // Distinct from ipc.badge_out == 0, which means the receiver asked for no info.
         constexpr uint32_t KOS_BADGE_NONE = 0;
 
-        // Defer one local reschedule until the fused operation finishes or parks.
-        // Keep the highest-priority woken thread for that reschedule and announce
-        // other woken threads to eligible peers.
-        // The destructor completes nonparking paths; take() transfers completion to
-        // wq_block. Do not call a nonreturning exit while this guard is live: it
-        // would skip the destructor. Check park_cancel_pending before constructing it.
+        // Defers one local reschedule until the fused operation finishes or parks; the
+        // other woken threads are placed across cores immediately. The destructor
+        // completes nonparking paths, take() transfers completion to wq_block. Do not
+        // call a nonreturning exit while this guard is live: it would skip the
+        // destructor. Check park_cancel_pending before constructing it.
         class DeferredWake
         {
         public:
@@ -53,24 +52,23 @@ namespace kickos
                 }
             }
 
-            // Keep the highest-priority thread for rescheduling; announce the other now.
             void offer(Thread* t)
             {
                 Thread* keep = t;
-                Thread* announce = top_;
+                Thread* other = top_;
                 if (top_ != nullptr and t->prio <= top_->prio)
                 {
                     keep = top_;
-                    announce = t;
+                    other = t;
                 }
                 top_ = keep;
 #if KICKOS_KERNEL_CORES > 1
-                if (announce != nullptr)
+                if (other != nullptr)
                 {
-                    sched::announce_ready(announce);
+                    sched::place_ready(other);
                 }
 #else
-                (void)announce;
+                (void)other;
 #endif
             }
 
@@ -93,8 +91,7 @@ namespace kickos
             }
         }
 
-        // Allocate an endpoint with all fields reset to their defaults.
-        // Return -1 without changing *out if the pool is full.
+        // Returns -1 without changing *out if the pool is full.
         [[nodiscard]] int endpoint_slot_claim(Endpoint** out)
         {
             int const i = kernel().endpoints.alloc();
@@ -109,10 +106,9 @@ namespace kickos
         }
 
 #if KICKOS_AMP_NODE
-        // Copy the caller buffer through a kernel staging buffer to the far endpoint.
-        // Return bytes sent or the mapped window error. tag identifies the reply route;
-        // REPLY_TAG_NONE means the sender does not park. The caller holds IrqLock.
-        // The stage uses KOS_EP_MSG_MAX bytes of syscall stack.
+        // tag identifies the reply route; REPLY_TAG_NONE means the sender does not park.
+        // Caller holds IrqLock. Returns bytes sent or the mapped window error; the stage
+        // uses KOS_EP_MSG_MAX bytes of syscall stack.
         int32_t far_publish(Thread* c, Endpoint const* e, uintptr_t buf, size_t len,
                             amp::ReplyTag const& tag)
         {
@@ -218,7 +214,7 @@ namespace kickos
 #endif
 
     // Create an endpoint in another node. Only privileged callers may use crossings
-    // listed in the static configuration; no capability grants a crossing (N8).
+    // listed in the static configuration; no capability grants a crossing.
     int amp_endpoint_create(uint32_t node, uint32_t port, uint32_t* out_cap)
     {
         *out_cap = KCAP_INVALID;
@@ -260,7 +256,7 @@ namespace kickos
             IrqLock lock;
             if (park_cancel_pending(c))
             {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
             int err = 0;
             Endpoint* e = static_cast<Endpoint*>(
@@ -554,7 +550,7 @@ namespace kickos
             // A nonreturning exit after those changes would strand the receiver.
             if (park_cancel_pending(c))
             {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
             KICKOS_BENCH_MARK(bm_locked);
             // Calibrate under the same interrupt mask as the measured phases.
@@ -610,7 +606,7 @@ namespace kickos
                 c->ipc.badge_out = 0;
                 c->call_rx_cap = recv_cap;
                 c->call_state = CALL_REPLY_WAIT;
-                // Cross-node calls do not donate priority to the peer scheduler (N6e).
+                // Cross-node calls do not donate priority to the peer scheduler.
                 epoch = c->switch_count;
                 park_queueless(c, WAIT_EP_FAR_REPLY, e);
                 park_deadline_arm(c, timeout_us);
@@ -956,8 +952,19 @@ namespace kickos
                 IrqLock lock;
                 if (park_cancel_pending(c))
                 {
-                    sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+                    sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
                 }
+#if KICKOS_KERNEL_CORES > 1
+                // Before the reply, so a refused wait leaves nothing half done.
+                if (admit != 0u)
+                {
+                    int const arc = notify_wait_admit(c);
+                    if (arc != 0)
+                    {
+                        return arc;
+                    }
+                }
+#endif
                 {
                     // Complete the wake before closing the total, while IrqLock is held.
                     DeferredWake dw;
@@ -1107,7 +1114,7 @@ namespace kickos
         Thread* const w = wq_pop_highest(e->recv_waiters);
         if (w == nullptr)
         {
-            return false; // No receiver is waiting.
+            return false;
         }
 
         // Always complete a receiver removed from its queue. If it cannot receive a
@@ -1171,7 +1178,8 @@ namespace kickos
         return held;
     }
 
-    // Kernel initialization only, with IrqLock held. N8 permits configured crossings.
+    // Kernel initialization only, with IrqLock held. The static configuration already
+    // permits these crossings, so no per-entry authorization check is needed here.
     int amp_port_bind_local(Thread* c, uint32_t port, uint32_t* out_cap)
     {
         *out_cap = KCAP_INVALID;

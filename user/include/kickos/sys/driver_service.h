@@ -36,8 +36,8 @@ enum
 // What a per-thread cap entry NAMES. A thread's caps[] index IS its child cap index offset
 // from KOS_SPAWN_DELEGATED_CAP0: caps[0] lands at index 1, caps[1] at index 2.
 //
-// KOS_DRV_RES_NOTIFY is the one notification this bring-up creates. EVERY CLAIMED LINE
-// SIGNALS IT, line i on BIT i, so a driver's badge space starts at bit line_count and the
+// KOS_DRV_RES_NOTIFY is the one notification this bring-up creates. Every claimed line
+// signals it, line i on bit i, so a driver's badge space starts at bit line_count and the
 // validator refuses a doorbell badge below that.
 enum
 {
@@ -63,7 +63,7 @@ struct Line
     uint8_t trigger; // KOS_IRQ_EDGE or KOS_IRQ_LEVEL
 };
 
-// WHICH POINTER THE ENTRY RECEIVES, and nothing about reach: the block is the GROUP's
+// Which pointer the entry receives, and nothing about reach: the block is the group's
 // region (Descriptor::block_size), so ARG_NONE buys a thread no isolation from it.
 enum kos_drv_arg
 {
@@ -103,8 +103,8 @@ struct Descriptor
 {
     char const* tag;         // "[c6uart] ", prefixed to every diagnostic this bring-up prints
     uintptr_t expected_base; // 0 = no guard; no granted window has base 0
-    // 0 = no ring block, no arena allocation, no self-grant. THE BLOCK IS THE GROUP'S SHARED
-    // REGION AND EVERY THREAD OF THIS DRIVER SEES ALL OF IT, whatever its arg: a task owns
+    // 0 = no ring block, no arena allocation, no self-grant. The block is the group's shared
+    // region and every thread of this driver sees all of it, whatever its arg: a task owns
     // exactly one Domain and a member may bring no grant of its own. Keep here only state the
     // whole driver may touch; a DEV window, which has one holder, is per-thread instead.
     uint32_t block_size;
@@ -639,6 +639,8 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note
 // Spawn one descriptor thread into `task` with its per-thread grants and cap roles. A
 // KOS_DRV_RES_NOTIFY cap with a badge is MINTED from `note` for the spawn and closed after
 // it; an unbadged one takes `note` itself. KOS_CAP_NONE where the descriptor names none.
+// Above one kernel core a thread holding a claimed line, or the notification one signals, is
+// spawned pinned to the core the lines were claimed on.
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
                               kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
                               kos_task_t task);
@@ -648,6 +650,9 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
 //
 // `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must be null under
 // HANDOVER. valid() cannot check that pairing, out_ep being a runtime pointer.
+//
+// Above one kernel core a descriptor with lines pins the CALLING thread to the line core for
+// the claims and then resets it to its task's default mask, whatever mask it held before.
 int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep);
 
 }

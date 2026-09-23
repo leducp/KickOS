@@ -25,7 +25,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   endforeach()
 
   add_subdirectory(exitquiesce)
-  foreach(_unit IN ITEMS heldassert migrateask slaypeer)
+  foreach(_unit IN ITEMS heldassert irqlinecore migrateask parkdeath placement slaypeer)
     add_subdirectory(${_unit})
   endforeach()
 endif()

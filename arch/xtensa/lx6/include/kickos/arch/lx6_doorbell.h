@@ -16,15 +16,15 @@
 extern "C"
 {
 
-// Raise the doorbell on every core named in `cores`, a bitmask of core indices. The CALLING
+// Raise the doorbell on every core named in `cores`, a bitmask of core indices. The calling
 // core's bit is serviced by the caller and must not be raised here.
 //
-// THE BODY OWES THE ORDERING: it makes the caller's prior stores visible BEFORE the trigger
+// The body owes the ordering: it makes the caller's prior stores visible before the trigger
 // write, or a receiver woken by the trigger reads a cell the sender has not yet published.
 void kickos_lx6_doorbell_send(uint32_t cores);
 
-// Drop the doorbell's pending state on the CALLING core, and make the drop visible before the
-// caller's next load. CALLED BEFORE THE SERVICE READS THE CELLS, never after: that order is
+// Drop the doorbell's pending state on the calling core, and make the drop visible before the
+// caller's next load. Called before the service reads the cells, never after: that order is
 // what turns the set-versus-clear race into a spurious entry instead of a lost request.
 void kickos_lx6_doorbell_clear(void);
 
@@ -41,9 +41,13 @@ uint32_t kickos_lx6_doorbell_cpu_int(void);
 // The far side, on the calling core: answers every peer that has asked. Takes NO kernel lock.
 void kickos_lx6_doorbell_service(void);
 
-// Whether any peer has asked this core for something it has not answered. THE CELL IS THE
-// AUTHORITY: a spurious raise finds nothing owed and costs one return.
+// Whether any peer has asked this core for something it has not answered. The cell is the
+// authority: a spurious raise finds nothing owed and costs one return.
 int kickos_lx6_doorbell_pending(void);
+
+// Nonzero while a peer has posted a device-line raise this core has not taken. The poll clears
+// the trigger such a post rides in on, so it must know what it did not service.
+int kickos_lx6_inject_owed(void);
 
 // Where a released secondary lands, from the chip's reset entry. Seats everything about that
 // core, publishes its arrival, and parks it on the doorbell. Never returns to the caller.

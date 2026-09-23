@@ -144,6 +144,12 @@ ask of one of these cells is therefore not whether interrupt state is per-CPU in
 whether this cell mirrors a per-CPU register; where it mirrors nothing, replication manufactures
 one answer per core to a question that has one.
 
+**KEYED BY THE LINE'S ROUTE rather than by the touching core, per-hart rows are sound**, and that
+is what rv64imac does above one kernel core. The row a line lives in is the one of the hart it is
+routed to, `arch_irq_line_core` names that hart so every mask, unmask and clear runs there, and an
+injection from another hart is posted to it. There is still one answer per line; it merely lives
+with the one core allowed to write it.
+
 Image-wide is necessary and not sufficient, and the trap is worth naming because this
 classification is where a reader stops. The kernel lock does not cover every caller: the ISR path
 brackets with an epoch instead, and masks a line from inside it, so a plain read-modify-write lets

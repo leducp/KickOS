@@ -2,40 +2,40 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The microbench switch bracket's stamp cell, read out of the LINKED IMAGE: above one kernel
-# core it must be reached PER CORE, so one core's close can never subtract another core's open.
+# The microbench switch bracket's stamp cell, read out of the linked image: above one kernel
+# core it must be reached per core, so one core's close can never subtract another core's open.
 #
-# THE CLAIM IS THE ADDRESSING AND NOT THE READINGS, and it holds whatever the lock does. A
+# The claim is the addressing and not the readings, and it holds whatever the lock does. A
 # stamp shared between cores subtracts one core's open from another's close, which wraps near
 # 2^32 when the peer opened later. That interleaving never happens: the kernel lock spans the
 # whole bracket (kickos_switch_unlock runs from inside it, below the close), so one core at a
 # time is ever between an open and a close and a shared cell reads back clean. A runtime arm on
 # the sample values would therefore pass on the defect.
 #
-# HOW A CORE IS REACHED IS THE ARCH'S BUSINESS AND NOT THE CLAIM. Two realisations are modelled
+# How a core is reached is the arch's business and not the claim. Two realisations are modelled
 # here, and mistaking either for the claim refuses a correct image:
 #
-#   base   the address comes off a per-CPU BASE REGISTER, and a link-time address in the body
+#   base   the address comes off a per-CPU base register, and a link-time address in the body
 #          is therefore a cell two cores write. armv8a and rv64imac.
 #   index  there is no per-CPU base register on the part at all, so the cell is a link-time
-#          ARRAY base INDEXED by this core's identity. A link-time address is then not merely
+#          array base indexed by this core's identity. A link-time address is then not merely
 #          tolerable, it is mandatory: Xtensa has no large immediate and forms every global
 #          address through the literal pool, so "no link-time address" is the wrong assertion
 #          and would refuse every correct lx6 image. What carries the weight instead is that
 #          every stamp base is combined with an identity-derived value before it is
 #          dereferenced. lx6.
 #
-# REFUSED: under `base`, a switch body that forms any link-time address at all and one that
+# Refused: under `base`, a switch body that forms any link-time address at all and one that
 # reads the per-CPU base only once. Under `index`, a stamp base dereferenced with no identity
 # read and no scaled add between, which is exactly the shared cell. Under both, a body this
 # reader cannot decode.
 #
-# A BODY THAT ADDRESSES NEITHER WAY IS UNKNOWN AND NOT A FINDING. The opening landmark is the
+# A body that addresses neither way is unknown and not a finding: the opening landmark is the
 # shape the rule is stated over, so a body carrying none is a forwarder or a bracket that left,
 # and tests/lib/objdump_window.awk refuses it by name rather than letting a count of zero read
 # as "the stamp is not per core".
 #
-# The per-arch table below is the whole model. AN ARCH THIS FILE DOES NOT CARRY IS A REFUSAL.
+# The per-arch table below is the whole model. An arch not in it is refused rather than skipped.
 #
 # usage: check_bench_stamp_percore.sh <elf> <objdump> <arch>
 
@@ -91,9 +91,8 @@ esac
 scratch_dir
 
 # --- the readers --------------------------------------------------------------
-# HALF A PROGRAM: `seen`, the body scope and every refusal above come from gate.sh's
-# scoped_body, which reads tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead
-# of these.
+# `seen`, the body scope and every refusal above come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead of these.
 #
 # `base` emits the body's instruction count, its per-CPU base reads and its link-time address
 # formations.
@@ -423,8 +422,8 @@ for sym in $SYMS; do
         fi
 
         # The open and the close each reach it, so one read is half a bracket. A body reading
-        # it zero times is refused above as UNKNOWN, so what reaches here is a body that
-        # addresses its stamp and does it per core on one side only.
+        # it zero times is already refused above as unknown, so what reaches here is a body
+        # that addresses its stamp and does it per core on one side only.
         if [ "$base" -lt 2 ]; then
             bad "the body of '$sym' in $elf reads the per-CPU base $base time(s), where the
   bracket's open and its close each owe one, so one half of the bracket reaches its stamp some

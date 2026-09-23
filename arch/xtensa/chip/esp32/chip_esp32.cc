@@ -86,9 +86,10 @@ namespace
 #endif
 
     // Point ONE core's matrix bank at `cpu_int` for `source` and sink it in every other
-    // core's bank. The sink write is a no-op against a map register's reset value of 16, itself
-    // one of the six sinks (TRM v5.8, the shared map-register diagram, p.262), and is made
-    // anyway so the pin is a fact of this image.
+    // core's bank. The banks are independent (TRM v5.8 8.1), so a source left mapped in both
+    // is taken by both. The sink write is what disconnects the core a previous route named;
+    // against a map register's reset value of 16, itself one of the six sinks (the shared
+    // map-register diagram, p.262), it changes nothing.
     void route_source(uint32_t source, uint32_t core, uint32_t cpu_int)
     {
         uint32_t pro = reg::dport::INTR_MAP_SINK;
@@ -105,22 +106,22 @@ namespace
         r32(reg::dport::app_intr_map(source)) = app;
     }
 
-    // Logical kernel IRQ line the console_tx drain ISR is bound to (irq_table index).
-    // DISTINCT namespace from the CPU interrupt number: on this arch the arch.h irq_*
-    // seam is a software controller over logical lines, decoupled from the physical
-    // Xtensa interrupts. See regs irq.h for the three numbering spaces.
+    // Logical kernel IRQ line the console_tx drain ISR is bound to (irq_table index), a
+    // namespace distinct from the CPU interrupt number: on this arch the arch.h irq_* seam is
+    // a software controller over logical lines, decoupled from the physical Xtensa interrupts.
+    // See regs irq.h for the three numbering spaces.
 
-    // --- Watchdogs. The ROM (running the image in flash-boot mode) leaves THREE
+    // --- Watchdogs. The ROM (running the image in flash-boot mode) leaves three
     //     watchdogs armed: the RTC WDT and the two Timer Group MWDTs (TIMG0, TIMG1).
     //     Each must be fully disabled or it resets the part within seconds of
     //     bring-up. Each register file is unlocked by writing its 32-bit write-
     //     protect key (default 0x50D83AA1), edited, then re-locked (write 0).
     //
-    //     Clearing WDT_EN alone is NOT enough: the ROM arms the stage-0 watchdog
+    //     Clearing WDT_EN alone is not enough: the ROM arms the stage-0 watchdog
     //     via the separate FLASHBOOT_MOD_EN bit (a flash-boot watchdog independent
-    //     of WDT_EN), which stays live until explicitly cleared. So each WDT needs
-    //     both WDT_EN and FLASHBOOT_MOD_EN cleared. NOTE: the classic ESP32 has NO
-    //     RTC super-watchdog (SWD); RTC_CNTL_SWD_* first appears on the ESP32-S2, so
+    //     of WDT_EN), which stays live until explicitly cleared, so each WDT needs
+    //     both WDT_EN and FLASHBOOT_MOD_EN cleared. The classic ESP32 has no RTC
+    //     super-watchdog (SWD); RTC_CNTL_SWD_* first appears on the ESP32-S2, so
     //     there is nothing more to disable here.
     void timg_wdt_disable(uintptr_t base)
     {
@@ -308,17 +309,15 @@ namespace
             reg::timg::T0_EN | reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
     }
 
-    // Read the 64-bit T0 count. The live counter is NOT directly readable: write
-    // T0UPDATE to latch it into the T0LO/T0HI shadow regs, THEN read LO+HI. A bare
-    // LO/HI read without the latch is stale. The whole latch-then-read runs under the
-    // crit section because the LO/HI shadow is one shared resource: an interleaved
-    // reader's UPDATE landing between the LO and HI reads tears the pair across a
-    // low-word rollover. On the classic ESP32 T0UPDATE has no ready/self-clearing bit
-    // (that is an S2/S3 addition); a single write latches synchronously.
-    // THE SHADOW IS ONE RESOURCE FOR BOTH CPUS: a peer's UPDATE lands between this core's LO
-    // and HI reads, and no local interrupt mask excludes it. A matching pair of HI reads means
-    // LO belongs to a latch carrying that HI. HI advances once per 2^32 ticks, about 107 s at
-    // 40 MHz.
+    // Read the 64-bit T0 count. The live counter is not directly readable: write T0UPDATE to
+    // latch it into the T0LO/T0HI shadow regs, then read LO+HI; a bare LO/HI read without the
+    // latch is stale. On the classic ESP32 T0UPDATE has no ready/self-clearing bit (that is an
+    // S2/S3 addition), so a single write latches synchronously.
+    //
+    // The shadow is one resource for both CPUs: a peer's UPDATE can land between this core's LO
+    // and HI reads, and no local interrupt mask excludes it, tearing the pair across a low-word
+    // rollover. A matching pair of HI reads means LO belongs to a latch carrying that HI. HI
+    // advances once per 2^32 ticks, about 107 s at 40 MHz.
     uint64_t timg_ticks()
     {
         while (true)
@@ -384,7 +383,7 @@ namespace
                       and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // UART0 sub-source -> logical line. Every entry currently names the ONE grouped line:
+    // UART0 sub-source -> logical line. Every entry currently names the one grouped line:
     // the kernel-owned mask is CPU int 13's INTENABLE bit, which cannot separate
     // sub-sources, so splitting them across lines would let masking one silently mask the
     // others.
@@ -400,6 +399,24 @@ namespace
         {reg::uart::FRM_ERR_INT, irq::CONSOLE_TX_LINE},
         {reg::uart::PARITY_ERR_INT, irq::CONSOLE_TX_LINE},
     };
+
+#if KICKOS_KERNEL_CORES > 1
+    constexpr bool uart0_posts_one_line()
+    {
+        for (auto const& row : UART0_LINES)
+        {
+            if (row.line != irq::CONSOLE_TX_LINE)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    // A claim routes CPU int 13 whole, so a second line posted from it would follow a claim of
+    // the bound one away from its own. kickos_lx6_bind_dev_int refuses the bind half at boot.
+    static_assert(uart0_posts_one_line(),
+                  "every line CPU int 13 posts moves with the one bound to it");
+#endif
 
     constexpr uint32_t uart0_routed_mask()
     {
@@ -426,7 +443,7 @@ namespace
                  << reg::uart::TXFIFO_EMPTY_THRHD_S;
         r32(reg::uart::CONF1) = conf1;
 
-        // Pinned to the taking core's bank, which is the form freeze N3 rests on.
+        // Pinned to the taking core's bank.
         route_source(irq::UART0_SRC, irq::CONSOLE_CORE, irq::UART0_CPU_INT);
         kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE,
                                 static_cast<int>(irq::CONSOLE_CORE));
@@ -473,6 +490,22 @@ void kickos_lx6_dispatch_dev(int cpu_int)
         kickos_isr_irq(row.line);
     }
 }
+
+#if KICKOS_NUM_CORES > 1
+// Called with the line masked, possibly while its source asserts. Nothing is stranded on the
+// core the source leaves only because the input is Level-Triggered (TRM v5.8 Table 8.3-2): that
+// core's pending bit follows the input, where an Edge-Triggered one would stay latched.
+void kickos_lx6_route_dev_int(int cpu_int, int core)
+{
+    constexpr uint32_t EDGE_INPUTS = (1u << 10) | (1u << 22) | (1u << 28) | (1u << 30);
+    static_assert(((1u << irq::UART0_CPU_INT) & EDGE_INPUTS) == 0,
+                  "a routed device line needs a Level-Triggered CPU input");
+    if (cpu_int == static_cast<int>(irq::UART0_CPU_INT))
+    {
+        route_source(irq::UART0_SRC, static_cast<uint32_t>(core), irq::UART0_CPU_INT);
+    }
+}
+#endif
 
 // --- Console reclaim: force UART0 back to a polled-ready channel --------------
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
@@ -580,15 +613,15 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 // userspace driver derives its own divisor. RTC_CNTL and DPORT are reserved blocks, so the
 // holder of a UART window cannot read the tree itself.
 //
-// THIS CHIP PUBLISHES NO APB FREQUENCY AND NO CRYSTAL FREQUENCY. APB is specified only as a
-// function of the CPU clock SOURCE (TRM v5.8 Table 7.2-4 p.169), and on the PLL branch it is
+// This chip publishes no APB frequency and no crystal frequency. APB is specified only as a
+// function of the CPU clock source (TRM v5.8 Table 7.2-4 p.169), and on the PLL branch it is
 // 80 MHz for every CPUPERIOD_SEL, independent of the crystal. That branch is a genuine
 // register-derived answer and it is the only one this returns.
 //
 // The XTAL and RC_FAST branches make APB equal to CPU_CLK, whose numerator is the crystal,
-// and the crystal is readable from NO register on this part (TRM section 7.2.2 p.167 gives
+// and the crystal is readable from no register on this part (TRM section 7.2.2 p.167 gives
 // only a 2..40 MHz range; there is no CLK_XTAL_FREQ field like the C6's). It can only be
-// ESTIMATED against the untrimmed internal RC oscillator through the TIMG calibration unit,
+// estimated against the untrimmed internal RC oscillator through the TIMG calibration unit,
 // which is several percent out and would also collide with the bring-up's use of
 // RTCCALICFG as a clock-domain barrier. APLL sits behind the analog reg-I2C bus. All three
 // answer 0: a wrong branch clock silently garbles the wire.
@@ -649,11 +682,11 @@ uint32_t arch_cpu_id(void)
 // Release APP_CPU and WAIT FOR IT TO ARRIVE. Returns the number of cores that arrived,
 // counting this one.
 //
-// Six writes, not the two freeze N5 names: the clock gate RESETS CLOSED, and the software
-// stall is split across two RTC_CNTL registers whose RELEASE value the manual never states,
-// only the value that stalls.
+// Six writes are needed, not two: the clock gate resets closed, and the software stall is
+// split across two RTC_CNTL registers whose release value the manual never states, only the
+// value that stalls.
 //
-// RELEASED IS NOT ARRIVED: every write below can succeed against a core that then executes
+// Released is not arrived: every write below can succeed against a core that then executes
 // nothing useful. The release ends in a bounded wait on a byte the far core writes only once
 // it has seated its own vectors, coprocessor, mask and doorbell route.
 uint32_t kickos_esp32_release_secondaries(void)
@@ -709,12 +742,12 @@ void arch_init(void)
     kickos_lx6_init();
     uart0_irq_setup(); // route + arm the UART0 TX-empty interrupt for the console ring
 #if KICKOS_NUM_CORES > 1
-    // AFTER the console is routed, so the release can report.
+    // After the console is routed, so the release can report.
     uint32_t const arrived = kickos_esp32_release_secondaries();
     arch_console_write_sync(ARRIVED, sizeof(ARRIVED) - 1);
     hex1(arrived);
     arch_console_write_sync(ARRIVED_TAIL, sizeof(ARRIVED_TAIL) - 1);
-    // AFTER ARRIVAL: the check needs every peer's route live and its mask open.
+    // After arrival: the check needs every peer's route live and its mask open.
     kickos_doorbell_selfcheck();
 #endif
 }

@@ -1,24 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A dying member vacates its address space BEFORE it drops the reference that can destroy it.
-//
-// The invariant: a core's translation base names the space of the thread that core is
-// running, or the boot root; and a thread that has passed task_release in exit_current is
-// running on the boot root. Therefore a space installed anywhere implies a live member, which
-// implies a positive refcount, which is the negation of the destroy precondition. Without it,
-// aspace_release's peer sweep clears a peer's BOOKKEEPING cell and cannot reach that peer's
-// translation register, so the peer keeps walking tables arch_aspace_destroy frees. On rv64
-// the kernel's own top-level entries live in the root page that gets freed.
-//
-// The placement is what carries it, and both halves are asserted: AFTER ustack_free, whose
-// maintenance is paid against the installed space, and BEFORE task_release.
-//
-// WHAT THIS GATE CANNOT WITNESS, stated as a limit and not as an omission: that a real satp
-// or TTBR0 write retires the walker's cached root, and that the freed root frame is never
-// walked afterwards. No board the host arch answers for translates at all, so the layer under
-// kernel/mem is a seam here (aspace_seam.cc). Those two are the target's, on qemu-riscv64-smp
-// and qemu-arm64-smp.
+// A dying member must leave its address space before it drops the reference that can destroy
+// it: ustack_free runs against the still-installed space, then install_boot, then
+// task_release, past which the space may be destroyed. Translation itself is a seam here
+// (aspace_seam.cc); a real satp/TTBR0 retire is out of scope.
 
 #include <string.h>
 
@@ -54,9 +40,8 @@ namespace kickos
             constexpr int SLOT_BYSTANDER = 0;
             constexpr int SLOT_DYING = 1;
             constexpr int SLOT_PEER = 2;
-            // The fixture's idle TCB carries no affinity mask, so it is placeable on no core:
-            // a two-core arm must leave one READY thread per core behind, or the second death
-            // reaches pick_next with nothing to answer.
+            // The fixture seats an idle on core 0 alone, so core 1's own structure must hold a
+            // READY thread, or the death there reaches pick_next with nothing to answer.
             constexpr int SLOT_SPARE = 3;
 
             constexpr uint8_t PRIO_LOW = 4;
@@ -115,21 +100,17 @@ namespace kickos
                 g_gap_holders = holders;
             }
 
-            // RUNNING as well as current: a peer's pick_next refuses another core's running
-            // thread, and a member left merely READY would be picked up by the core whose own
-            // member just died, which reinstalls the space legitimately.
             void run_as(uint32_t core, Thread* t)
             {
                 g_core = core;
-                kernel().current[core] = t;
-                t->state = ThreadState::RUNNING;
+                testfix::seat_running_on(t, core);
                 install_here(space_of(task_domain(t->task)));
             }
         }
 
-        // THE ORDER, which is the whole of the fix. ustack_free first, because the page
-        // maintenance it pays is against the root this core still holds; install_boot second;
-        // task_release last, because from that call the space may be destroyed under this core.
+        // The order is the fix: ustack_free first, because the page maintenance it pays is
+        // against the root this core still holds; install_boot second; task_release last,
+        // because from that call the space may be destroyed under this core.
         TEST_F(LeaveSpace, a_dying_member_leaves_its_space_before_it_leaves_its_task)
         {
             (void)seat_pool(SLOT_BYSTANDER, PRIO_LOW);
@@ -166,16 +147,18 @@ namespace kickos
             EXPECT_EQ(g_ustack_free_base, STACK_BASE);
         }
 
-        // THE PEER'S VIEW, which is the crash the audit names. One member per core in one
-        // space, and the reading is taken INSIDE the capability sweep: that is the window the
-        // hazard lives in: task_release has already run, the sweep drops IrqLock between
-        // chunks, and a peer's release is free to reach arch_aspace_destroy right there.
-        // Reading after the exit instead would prove nothing, the switch away installing the
-        // incoming thread's space in any case.
+        // The reading is taken inside the capability sweep, the window where task_release has
+        // already run and the sweep drops IrqLock between chunks, so a peer's release is free
+        // to reach arch_aspace_destroy right there. Reading after the exit instead would prove
+        // nothing, the switch away installing the incoming thread's space in any case.
         TEST_F(LeaveSpace, no_core_holds_the_root_of_a_task_that_has_lost_its_last_member)
         {
             (void)seat_pool(SLOT_BYSTANDER, PRIO_LOW);
-            (void)seat_pool(SLOT_SPARE, PRIO_LOW);
+            // A thread is published to the core that adds it.
+            g_core = 1;
+            Thread* const spare = seat_pool(SLOT_SPARE, PRIO_LOW);
+            ASSERT_EQ(spare->queue_core, 1u);
+            g_core = 0;
             Task* const group = task(0);
             ASSERT_NE(group, nullptr);
             Thread* const first = member_of(SLOT_DYING, PRIO_MID, group);
@@ -223,7 +206,7 @@ namespace kickos
             ASSERT_EQ(dying->task, nullptr);
 
             g_core = 0;
-            kernel().current[0] = dying;
+            testfix::seat_running_on(dying, 0);
             install_here(boot_space());
             trace_reset();
             run_exit(0);
@@ -247,8 +230,8 @@ namespace kickos
 
             run_as(0, dying);
             trace_reset();
-            // An ordinal no chunk boundary reaches: the arm wants the gaps TRACED, and no
-            // action taken in one.
+            // An ordinal no chunk boundary reaches: the arm wants the gaps traced, with no
+            // action taken in any of them.
             run_in_chunk_gap(nothing, 1000u);
             run_exit(0);
 

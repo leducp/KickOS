@@ -38,14 +38,16 @@ namespace kickos
         // once and klock keys its per-core row off this.
         extern thread_local uint32_t g_core;
 
-        // What arch_irq_line_core answers, and what irq_claim's pin asked for. -1 is no
-        // constraint, so an arm that leaves g_line_core alone pins nothing.
-        extern int g_line_core;
-        extern uint32_t g_pinned_mask;
-
         // The one line arch_irq_line_kernel_owned answers true for. -1 is a backend reserving
         // nothing, which is what the fallback answers and where every other arm runs.
         extern int g_kernel_owned_line;
+
+        // The last (line, core) arch_irq_route was handed. -1 is a seam never called, which is
+        // what an arm exercising only irq_attach must still see.
+        extern int g_routed_line;
+        extern uint32_t g_routed_core;
+        // Whether that line's last mask or unmask, when the route call arrived, was an unmask.
+        extern bool g_routed_armed;
 
         void reset();
 
@@ -61,8 +63,8 @@ namespace kickos
         // was left armed, which is not answerable from a count.
         int last_line_op(int line);
 
-        // A ONE-SHOT gate at arch_irq_mask, armed for one line. The next dispatch to mask that
-        // line stops BEFORE the call is recorded, so it has already read the published pair and
+        // A one-shot gate at arch_irq_mask, armed for one line. The next dispatch to mask that
+        // line stops before the call is recorded, so it has already read the published pair and
         // holds no lock, which is the only state a rebind can beat a running handler from. An
         // unreleased gate gives up on a budget and raises mask_hold_timed_out(), so a missed
         // hand-off reddens rather than hanging.
@@ -83,14 +85,14 @@ namespace kickos
         int installed_handle();
         void reset_caps();
 
-        // The ONE notification every arm's line signals. Seamed rather than pooled: this
-        // gate is about the dispatch entry against a teardown, not about what a raise does
-        // once it lands, and the real object would drag the capability layer in behind it.
+        // The one notification every arm's line signals. Seamed rather than pooled, since this
+        // gate is about the dispatch entry against a teardown, and the real object would drag
+        // the capability layer in behind it.
         kickos::Notification* the_notification();
 
-        // Doorbell pokes sent BY that core. Its own counter rather than a trace scan: the
-        // threaded arms append to the trace from two threads and a count taken across that is
-        // not one core's own tally.
+        // Doorbell pokes sent by that core. Its own counter rather than a trace scan: the
+        // threaded arms append to the trace from two threads, so a count taken across it would
+        // not be one core's own tally.
         unsigned ipi_sends(uint32_t core);
         void bump_ipi_sends(uint32_t core);
 

@@ -2,34 +2,34 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The LX6 switch bracket's END stamp, read out of the LINKED IMAGE: the cell must be CONSUMED
+# The LX6 switch bracket's end stamp, read out of the linked image: the cell must be consumed
 # by the read that banks a sample, and re-stamped on the cooperative resume alone.
 #
-# TWO BODIES, because the bracket's two halves are not in one. xtensa_switch banks the
-# PREVIOUS switch's cost on its way in, the windowed exit below it being unable to host a call.
-# The close stands PAST the retw, in arch_switch, so the windowed return and the underflow
+# Two bodies, because the bracket's two halves are not in one. xtensa_switch banks the
+# previous switch's cost on its way in, the windowed exit below it being unable to host a call.
+# The close stands past the retw, in arch_switch, so the windowed return and the underflow
 # that reloads the incoming frame are inside the measured span; a stamp back at the exit would
 # silently shorten the window to the save and the swap. So xtensa_switch owes the consuming
-# read and NO stamp, and arch_switch owes the stamp.
+# read and no stamp, and arch_switch owes the stamp.
 #
-# WHAT THE DEFECT LOOKS LIKE. A thread resumed through the interrupt frame never returns to
-# arch_switch, so the end cell still holds a stamp OLDER than the start written a few
+# What the defect looks like: a thread resumed through the interrupt frame never returns to
+# arch_switch, so the end cell still holds a stamp older than the start written a few
 # instructions below the entry; the next entry subtracts the two and banks a delta near 2^32
 # as a switch cost. The counter here is 32 bits, so nothing saturates and no column says so:
 # the row reports it as an ordinary sample.
 #
-# WHY THIS IS STRUCTURAL AND NOT A BOUND ON THE SAMPLES. There is no LX6 emulator in this
-# tree, so no run anywhere can read that row.
+# This is structural and not a bound on the samples: there is no LX6 emulator in this tree, so
+# no run anywhere can read that row.
 #
-# REFUSED: a body whose bank call reads the end cell without clearing it (the defect), one
+# Refused: a body whose bank call reads the end cell without clearing it (the defect), one
 # that banks without reading it at all, a resume path that never re-stamps the cell, an exit
 # that stamps it after all, and a body this reader cannot decode.
 #
-# THE WINDOW IS FROM THE FIRST MENTION OF THE END CELL TO THE BANK CALL, and the two landmarks
-# are how this gate tells a body that does the wrong thing from one it cannot see. A body
-# naming neither is a forwarder, one naming the cell and never reaching the bank has lost its
-# bracket, and one reaching the bank without ever naming the cell forms the address some way
-# this reader carries no model of. Each is UNKNOWN, and each refusal comes from
+# The window runs from the first mention of the end cell to the bank call, and the two
+# landmarks are how this gate tells a body that does the wrong thing from one it cannot see. A
+# body naming neither is a forwarder, one naming the cell and never reaching the bank has lost
+# its bracket, and one reaching the bank without ever naming the cell forms the address some
+# way this reader carries no model of. Each is unknown, and each refusal comes from
 # tests/lib/objdump_window.awk rather than from an arm here.
 #
 # usage: check_bench_xtensa_stamp.sh <elf> <objdump>
@@ -57,25 +57,24 @@ BANK=kickos_bench_switch_done
 scratch_dir
 
 # --- the reader ---------------------------------------------------------------
-# Emits one record: whether the bank's arm READ the end cell, whether it CLEARED it before
+# Emits one record: whether the bank's arm read the end cell, whether it cleared it before
 # banking, and how many times the cell is re-stamped from a live value.
 #
 # The literal pool is resolved by the disassembler, which prints the symbol it points at, so
 # the end cell is named in the instruction stream and needs no symbol table of its own.
 #
-# ABOVE ONE KERNEL CORE THE CELL IS AN ARRAY AND THE POOLED ADDRESS IS ITS BASE, so the
+# Above one kernel core the cell is an array and the pooled address is its base, so the
 # register the pool loaded is scaled-added to this core's index before anything touches it. A
 # reader that treated that add as an ordinary write would lose the cell one instruction after
 # finding it and report a body that banks against nothing. The add carries the tracking to its
-# destination instead; WHETHER the index names a core is
+# destination instead; whether the index names a core is
 # tests/static/check_bench_stamp_percore.sh's claim and not this one's.
 #
 # A window rotation and a call4 both rename every register this reader is tracking, so both
 # drop the whole tracking state rather than carrying a name across.
 #
-# HALF A PROGRAM: `seen`, the body scope and every refusal above come from gate.sh's
-# scoped_body, which reads tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead
-# of this file.
+# `seen`, the body scope and every refusal above come from gate.sh's scoped_body, which reads
+# tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 # The bank call is the window's closing landmark, so the snapshot is taken on the instruction
 # the shared window named and not on a second search for the same callee.
@@ -307,9 +306,9 @@ case "$ctl" in
   that banks no switch cost" ;;
 esac
 
-# The same shapes ABOVE ONE KERNEL CORE, where the pooled address is an array base and this
+# The same shapes above one kernel core, where the pooled address is an array base and this
 # core's index reaches the slot. Every record below is the one-core record: what the scaled add
-# changes is whether this reader can still SEE the cell one instruction after the pool loaded
+# changes is whether this reader can still see the cell one instruction after the pool loaded
 # it, and a reader that loses it there reports an image that banks against nothing.
 plant_indexed() { # <clearing?>
     echo '00001000 <planted_switch>:'

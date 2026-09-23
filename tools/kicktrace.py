@@ -80,7 +80,7 @@ SYSCALL_NAME = {
     61: "frame_unmap", 62: "amp_endpoint_create",
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "sched_probe",
     66: "amp_probe", 67: "doorbell_probe", 68: "reply_recv",
-    69: "notify_badge", 70: "irq_bind_notify",
+    69: "notify_badge", 70: "irq_bind_notify", 71: "thread_self",
 }
 
 TRACE_MAGIC = 0x4B545243

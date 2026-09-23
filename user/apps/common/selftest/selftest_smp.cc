@@ -75,8 +75,8 @@ namespace selftest
         }
     }
 
-    // RUNNABLE THROUGHOUT, never parked: the migration arm needs a target the kernel has to
-    // take OFF a core rather than one it can simply place at its next wake.
+    // Runnable throughout, never parked: the migration arm needs a target the kernel has to
+    // take off a core rather than one it can simply place at its next wake.
     void pl_spin_worker(void*)
     {
         // Its own mask, once: an UNPINNED spinner can be placed on the core a pin would have
@@ -164,7 +164,7 @@ namespace selftest
                   static_cast<unsigned>(iso));
         TAP_CHECK(joined == 0);
         TAP_CHECK(cores == PL_ALL);
-        // TOTAL: unpin is a mask of zero, which the kernel resolves to the task's DEFAULT set,
+        // Total: unpin is a mask of zero, which the kernel resolves to the task's DEFAULT set,
         // so there is nothing here for it to refuse. The DEFAULT and not the grant: the grant
         // names the isolated cores and a thread that never named one must not gain them here.
         TAP_CHECK(rc == 0);
@@ -274,7 +274,7 @@ namespace selftest
         }
         uint32_t const undriven = 1u << static_cast<uint32_t>(KICKOS_KERNEL_CORES);
         int const bad = kos_thread_set_affinity(w.id(), undriven);
-        // A MASK IS A SET OF ACCEPTABLE CORES, so a bit the kernel does drive alongside one it
+        // A mask is a set of acceptable cores, so a bit the kernel does drive alongside one it
         // does not names the driven one and is granted. Refusing it would make all ones a
         // magic value rather than an ordinary request for the whole grant.
         int const mixed = kos_thread_set_affinity(w.id(), undriven | 0x1u);
@@ -287,8 +287,8 @@ namespace selftest
         TAP_CHECK(good == 0);
     }
 
-    // --- Placement: a RUNNING thread is re-placed under an affinity change ---------------
-    // The move is driven by a PINNED CHILD: root holds no handle to itself, so it cannot be
+    // --- Placement: a running thread is re-placed under an affinity change ---------------
+    // The move is driven by a pinned child: root holds no handle to itself, so it cannot be
     // kept off the core the spinner is measured on. The spinner sits above root's priority and
     // the driver above the spinner, which keeps the driver scheduled once the two share the
     // destination.
@@ -404,7 +404,7 @@ namespace selftest
         TAP_CHECK(aff == (1u << away));
         TAP_CHECK(first == away);
         TAP_CHECK(rc == 0);
-        // A DEADLINE and not a park: a worker that never arrives fails here instead of
+        // A deadline and not a park: a worker that never arrives fails here instead of
         // hanging the suite.
         TAP_CHECK(g_pl_mig_arrived.load() == 1u);
     }
@@ -589,7 +589,7 @@ namespace selftest
         TAP_CHECK(rep[GW_WITHIN] == 0);
     }
 
-    // --- A SECOND grant narrows again and never re-widens -------------------------------
+    // --- A second grant narrows again and never re-widens -------------------------------
     // The caller-side check in task_sched_grant weighs a request against the CALLER's grant,
     // which root holds whole, so only task_sched_narrow's own check against the TASK's current
     // set can refuse this.
@@ -616,7 +616,7 @@ namespace selftest
     }
 
     // --- A task inherits its creator's grant --------------------------------------------
-    // Only a MEMBER of the created task can show this: every refusal path weighs the caller's
+    // Only a member of the created task can show this: every refusal path weighs the caller's
     // grant, so a task that wrongly defaulted to the whole machine is invisible until a thread
     // of it reports the set it actually got.
     enum
@@ -743,8 +743,8 @@ namespace selftest
         TAP_CHECK(busy == -KOS_EBUSY);
     }
 
-    // A task granted EXACTLY ONE isolated core. Its grant names nothing else, so the default
-    // set IS the grant and an unpinned member is pinned by construction. Only a member can show
+    // A task granted exactly one isolated core. Its grant names nothing else, so the default
+    // set is the grant and an unpinned member is pinned by construction. Only a member can show
     // it, the set a task really got being invisible from outside.
     void t_isolated_single_grant_ok()
     {
@@ -819,7 +819,7 @@ namespace selftest
         TAP_CHECK(dead == -KOS_EBADF);
     }
 
-    // THE DRIFT MECHANISM, read at the mask and then at the cores. A thread that names no core
+    // The drift mechanism, read at the mask and then at the cores. A thread that names no core
     // is given the task's set less the isolated ones, so it arrives on none of them; the cores
     // it was actually seen on are the second half, a mask that excluded them proving nothing on
     // its own if the thread never ran. It says nothing about a thread that DOES name one:
@@ -852,7 +852,7 @@ namespace selftest
         TAP_CHECK((seen & iso) == 0);
     }
 
-    // THE SAME MECHANISM READ AT THE OTHER END: a thread that WAS pinned to the isolated core
+    // The same mechanism read at the other end: a thread that was pinned to the isolated core
     // and is then unpinned. Unpin restores the DEFAULT set and not the grant, so the isolated
     // core is gone from the mask; a thread widened to the whole grant instead would keep the
     // core it already holds and go on running there. Both channels are read, the mask and the
@@ -920,9 +920,9 @@ namespace selftest
         TAP_CHECK(seen == (1u << core));
     }
 
-    // THE OTHER HALF OF THE OPT-IN, and the one the guarantee's wording turns on: an isolated
-    // core named BESIDE an ordinary one. The mask is admitted whole and lands verbatim, so
-    // that core's picker holds the thread like any other core in the set. WHICH of the two it
+    // The other half of the opt-in, and the one the guarantee's wording turns on: an isolated
+    // core named beside an ordinary one. The mask is admitted whole and lands verbatim, so
+    // that core's picker holds the thread like any other core in the set. Which of the two it
     // is seen on is the picker's and is not asserted; what is asserted is that it ran, and
     // never outside the mask.
     void t_isolated_mixed_mask_ok()
@@ -960,7 +960,7 @@ namespace selftest
     // KOS_SCHED_OP_PREEMPTED is machine-wide, which is what a claim about a SECONDARY arming
     // its own comparator needs.
     //
-    // THE PROBE RECORDS AN EXPIRY ONLY WHERE THE TICK CHANGED THE RUNNING THREAD
+    // The probe records an expiry only where the tick changed the running thread
     // (kernel/time/time.cc brackets sched::tick_rr and compares sched::current()). An expiry
     // on a core carrying ONE runnable thread of its priority rotates the incumbent to itself
     // and records nothing, however long that thread runs. So the claim needs an equal-priority
@@ -975,7 +975,7 @@ namespace selftest
     // construction and only the kernel's own comparator decides the outcome, which is what
     // makes the decline below decidable.
     //
-    // WHAT THIS GIVES UP. The unpinned crowd also exercised PLACEMENT for free: it asserted,
+    // What this gives up. The unpinned crowd also exercised PLACEMENT for free: it asserted,
     // incidentally, that the scheduler spreads a crowd over every core. It does not any more.
     // That claim is threads_reach_every_core's subject and is asserted there; nothing about
     // placement is claimed here, and this arm passing says nothing about it.
@@ -989,7 +989,7 @@ namespace selftest
     uint64_t g_pl_burn_ns = 32000000ull;
 
     // What each burner saw of itself. `first`/`last` are the low 32 bits of the clock at its
-    // first and last sample: both are instants at which that thread was OBSERVED EXECUTING, so
+    // first and last sample: both are instants at which that thread was observed executing, so
     // the span between them is not a wall clock the host can inflate behind its back. A span
     // reaching one quantum is the decidable part of the claim, because the deadline armed at
     // that thread's switch-in falls inside it, and the closing sample cannot have run unless
@@ -1005,7 +1005,7 @@ namespace selftest
     void pl_burn_worker(void* arg)
     {
         unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
-        // RELEASED TOGETHER, and this is what makes the peer a construction rather than a
+        // Released together, and this is what makes the peer a construction rather than a
         // hope. A burner starts running the instant it is created, so without the gate the
         // first of a pair is already burning while root is still creating the second, and on
         // a host slow enough that the gap outlasts the round the core never carries two of
@@ -1177,7 +1177,7 @@ namespace selftest
             if (joined != 0)
             {
                 // The round never finished, so nothing about this core was established, and
-                // what ran out is WALL CLOCK: the burn is bounded in guest time and a burner
+                // what ran out is wall clock: the burn is bounded in guest time and a burner
                 // the host does not give a core to cannot reach its own exit. The stragglers
                 // go before the next round asks for their slots back.
                 for (unsigned i = 0; i < made; i++)
@@ -1243,7 +1243,7 @@ namespace selftest
         TAP_CHECK((before & ~after) == 0u);
         // The pair went somewhere it was not given, so the round staged something else.
         TAP_CHECK(strayed == 0u);
-        // THE CLAIM, and it is asserted only where the round gave that core's pair a whole
+        // The claim, and it is asserted only where the round gave that core's pair a whole
         // quantum of the core: a pair that never got one had no expiry to be taken off by, and
         // that is a window the host took rather than a comparator left unarmed.
         uint32_t const denied = unproven & ~starved;
@@ -1562,6 +1562,317 @@ namespace selftest
         TAP_CHECK(cjoined == 0);
         // Check the reply value as well as caller completion.
         TAP_CHECK(g_xc_call_rc.load() == 5);
+    }
+
+    // --- IRQ delivery across cores ----------------------------------------------------------
+    // Every raise of a claimed line is taken on the core that claimed it, whichever core
+    // raises it, and a raise one core still holds for a released line reaches no later owner.
+    constexpr int XIRQ_LINE = KICKOS_IRQ_FREE_BASE + 5;
+    constexpr int XIRQ_STALE_LINE = KICKOS_IRQ_FREE_BASE + 8;
+    constexpr uint32_t XIRQ_CLAIM_CORE = 1;
+    constexpr uint32_t XIRQ_OTHER_CORE = 0;
+    constexpr uint32_t XIRQ_ALL = 0xFFFFFFFFu;
+    constexpr uint32_t XIRQ_WAKE_US = 200000u;
+    constexpr uint32_t XIRQ_QUIET_US = 20000u;
+    constexpr uint32_t XIRQ_JOIN_US = 2000000u;
+    constexpr uint64_t XIRQ_CLAIM_BUDGET_NS = 2000000000ull;
+    constexpr uint64_t XIRQ_CLAIM_POLL_NS = 100000ull;
+    constexpr uint8_t XIRQ_PRIO = 12;
+    constexpr int XIRQ_REL = 3; // root-to-child release, delegated after done and ready
+    constexpr int32_t XIRQ_UNSET = -99;
+
+    // A released line is claimable again only once its retirement's grace period has passed.
+    int xirq_claim(int line, kos_cap_t* out)
+    {
+        uint64_t const deadline = kos_clock_now() + XIRQ_CLAIM_BUDGET_NS;
+        int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
+        while (rc == -KOS_EBUSY and kos_clock_now() <= deadline)
+        {
+            kos_sleep_ns(XIRQ_CLAIM_POLL_NS);
+            rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
+        }
+        return rc;
+    }
+
+    // Claims `line` and makes the caller the waiter of a fresh notification it signals. 0, or
+    // the first refusal.
+    int xirq_own(int line, kos_cap_t* irq, kos_cap_t* note)
+    {
+        int rc = xirq_claim(line, irq);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        rc = kos_notify_create(note);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        rc = kos_irq_bind_notify(*irq, *note);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        return kos_notify_bind(*note);
+    }
+
+    kos::thread::Handle xirq_spawn(void (*entry)(void*), void* arg, char const* name,
+                                   kos_cap_grant const* caps, uint8_t count, uint32_t core)
+    {
+        return kos::thread::create_caps(entry, arg, name, XIRQ_PRIO, caps, count,
+                                        KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_IRQ,
+                                        nullptr, KOS_TASK_NONE, nullptr, 0, 1u << core);
+    }
+
+    uint32_t xirq_core()
+    {
+        return static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+    }
+
+    Atomic<int32_t, Order::RELAXED> g_xw_own{XIRQ_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_xw_arm{XIRQ_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_xw_first{XIRQ_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_xw_second{XIRQ_UNSET};
+    Atomic<uint32_t, Order::RELAXED> g_xw_bits{0};
+    Atomic<uint32_t, Order::RELAXED> g_xw_core{0xffu};
+    Atomic<int32_t, Order::RELAXED> g_xw_inject{XIRQ_UNSET};
+    Atomic<uint32_t, Order::RELAXED> g_xw_inject_core{0xffu};
+
+    // caps: done@1, ready@2. Armed before it reports ready, so the raise root orders next
+    // lands on an armed line and not in the latch the first arm discards.
+    void xirq_waiter(void*)
+    {
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        g_xw_own = xirq_own(XIRQ_LINE, &irq, &note);
+        if (g_xw_own.load() == 0)
+        {
+            g_xw_arm = kos_irq_ack(irq);
+        }
+        kos_sem_post(CH_READY);
+        if (g_xw_own.load() == 0 and g_xw_arm.load() == 0)
+        {
+            uint32_t bits = 0;
+            g_xw_first = kos_notify_wait(note, XIRQ_ALL, XIRQ_WAKE_US, &bits);
+            g_xw_core = xirq_core();
+            g_xw_bits = bits;
+            bits = 0;
+            g_xw_second = kos_notify_wait(note, XIRQ_ALL, XIRQ_QUIET_US, &bits);
+        }
+        kos_handle_close(irq);
+        kos_handle_close(note);
+        kos_sem_post(CH_DONE);
+    }
+
+    // caps: done@1, go@2.
+    void xirq_injector(void*)
+    {
+        kos_sem_wait(CH_READY);
+        g_xw_inject_core = xirq_core();
+        g_xw_inject = kos_irq_inject(XIRQ_LINE);
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_irq_cross_core_wake()
+    {
+        g_xw_own = XIRQ_UNSET;
+        g_xw_arm = XIRQ_UNSET;
+        g_xw_first = XIRQ_UNSET;
+        g_xw_second = XIRQ_UNSET;
+        g_xw_bits = 0;
+        g_xw_core = 0xffu;
+        g_xw_inject = XIRQ_UNSET;
+        g_xw_inject_core = 0xffu;
+        kos_cap_t ready = KOS_CAP_NONE;
+        kos_cap_t go = KOS_CAP_NONE;
+        if (kos_sem_create(0, &ready) != 0 or kos_sem_create(0, &go) != 0)
+        {
+            kos_sem_destroy(ready);
+            tap::skip("semaphore pool too small");
+            return;
+        }
+        kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {ready, CH_FULL}};
+        kos_cap_grant icaps[] = {{g_done, CH_FULL}, {go, CH_FULL}};
+        auto w = xirq_spawn(xirq_waiter, nullptr, "xirqW", wcaps, 2, XIRQ_CLAIM_CORE);
+        if (not w.valid())
+        {
+            kos_sem_destroy(ready);
+            kos_sem_destroy(go);
+            tap::skip("thread pool too small");
+            return;
+        }
+        kos_sem_wait(ready);
+        auto inj = xirq_spawn(xirq_injector, nullptr, "xirqI", icaps, 2, XIRQ_OTHER_CORE);
+        int ijoined = 0;
+        if (inj.valid())
+        {
+            kos_sem_post(go);
+            wait_n(1);
+            ijoined = inj.join(XIRQ_JOIN_US);
+        }
+        wait_n(1);
+        int const wjoined = w.join(XIRQ_JOIN_US);
+        kos_sem_destroy(ready);
+        kos_sem_destroy(go);
+        if (not inj.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        tap::diag("claimed on core %u, injected from core %u: first wait %d bits 0x%x on "
+                  "core %u, second wait %d",
+                  static_cast<unsigned>(XIRQ_CLAIM_CORE),
+                  static_cast<unsigned>(g_xw_inject_core.load()),
+                  static_cast<int>(g_xw_first.load()), static_cast<unsigned>(g_xw_bits.load()),
+                  static_cast<unsigned>(g_xw_core.load()),
+                  static_cast<int>(g_xw_second.load()));
+        TAP_CHECK(wjoined == 0);
+        TAP_CHECK(ijoined == 0);
+        TAP_CHECK(g_xw_own.load() == 0);
+        TAP_CHECK(g_xw_arm.load() == 0);
+        TAP_CHECK(g_xw_inject.load() == 0);
+        TAP_CHECK(g_xw_inject_core.load() == XIRQ_OTHER_CORE);
+        TAP_CHECK(g_xw_first.load() == 0);
+        TAP_CHECK(g_xw_bits.load() == 1u);
+        TAP_CHECK(g_xw_core.load() == XIRQ_CLAIM_CORE);
+        // Exactly once: one raise, one wake.
+        TAP_CHECK(g_xw_second.load() == -KOS_ETIMEDOUT);
+    }
+
+    enum
+    {
+        XS_OLD = 0,   // the first owner, which leaves a raise latched and releases
+        XS_OTHER = 1, // the next owner, on another core
+        XS_BACK = 2,  // the one after, back on the first owner's core
+        XS_LEGS = 3
+    };
+    Atomic<int32_t, Order::RELAXED> g_xs_own[XS_LEGS];
+    Atomic<int32_t, Order::RELAXED> g_xs_first[XS_LEGS];
+    Atomic<int32_t, Order::RELAXED> g_xs_second[XS_LEGS];
+    Atomic<uint32_t, Order::RELAXED> g_xs_core[XS_LEGS];
+
+    // caps: done@1, ready@2, release@3. Claims and attaches the line and never arms it, so the
+    // raise root lands while it is held stays latched until the release.
+    void xirq_stale_owner(void*)
+    {
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        g_xs_own[XS_OLD] = xirq_own(XIRQ_STALE_LINE, &irq, &note);
+        kos_sem_post(CH_READY);
+        kos_sem_wait(XIRQ_REL);
+        kos_handle_close(irq);
+        kos_handle_close(note);
+        kos_sem_post(CH_DONE);
+    }
+
+    // caps: done@1, ready@2. `arg` is the leg. Its first wait arms the line, and must find no
+    // raise: the only one so far was landed for an earlier owner.
+    void xirq_next_owner(void* arg)
+    {
+        int const leg = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        g_xs_own[leg] = xirq_own(XIRQ_STALE_LINE, &irq, &note);
+        if (g_xs_own[leg].load() == 0)
+        {
+            uint32_t bits = 0;
+            g_xs_first[leg] = kos_notify_wait(note, XIRQ_ALL, XIRQ_QUIET_US, &bits);
+        }
+        kos_sem_post(CH_READY);
+        if (g_xs_own[leg].load() == 0)
+        {
+            uint32_t bits = 0;
+            g_xs_second[leg] = kos_notify_wait(note, XIRQ_ALL, XIRQ_WAKE_US, &bits);
+            g_xs_core[leg] = xirq_core();
+        }
+        kos_handle_close(irq);
+        kos_handle_close(note);
+        kos_sem_post(CH_DONE);
+    }
+
+    // One later owner on `core`: its first wait must stay quiet, and the raise root lands after
+    // it must wake it there. False when the thread could not be made.
+    bool xirq_next_leg(int leg, uint32_t core, kos_cap_t ready)
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {ready, CH_FULL}};
+        auto t = xirq_spawn(xirq_next_owner, reinterpret_cast<void*>(static_cast<intptr_t>(leg)),
+                            "xirqN", caps, 2, core);
+        if (not t.valid())
+        {
+            return false;
+        }
+        kos_sem_wait(ready);
+        (void)kos_irq_inject(XIRQ_STALE_LINE);
+        wait_n(1);
+        (void)t.join(XIRQ_JOIN_US);
+        return true;
+    }
+
+    void t_irq_reclaim_stale_raise()
+    {
+        for (int leg = 0; leg < XS_LEGS; leg++)
+        {
+            g_xs_own[leg] = XIRQ_UNSET;
+            g_xs_first[leg] = XIRQ_UNSET;
+            g_xs_second[leg] = XIRQ_UNSET;
+            g_xs_core[leg] = 0xffu;
+        }
+        kos_cap_t ready = KOS_CAP_NONE;
+        kos_cap_t rel = KOS_CAP_NONE;
+        if (kos_sem_create(0, &ready) != 0 or kos_sem_create(0, &rel) != 0)
+        {
+            kos_sem_destroy(ready);
+            tap::skip("semaphore pool too small");
+            return;
+        }
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {ready, CH_FULL}, {rel, CH_FULL}};
+        auto old = xirq_spawn(xirq_stale_owner, nullptr, "xirqO", caps, 3, XIRQ_CLAIM_CORE);
+        if (not old.valid())
+        {
+            kos_sem_destroy(ready);
+            kos_sem_destroy(rel);
+            tap::skip("thread pool too small");
+            return;
+        }
+        kos_sem_wait(ready);
+        int const irc = kos_irq_inject(XIRQ_STALE_LINE);
+        kos_sem_post(rel);
+        wait_n(1);
+        int const ojoined = old.join(XIRQ_JOIN_US);
+        bool made = xirq_next_leg(XS_OTHER, XIRQ_OTHER_CORE, ready);
+        if (made)
+        {
+            made = xirq_next_leg(XS_BACK, XIRQ_CLAIM_CORE, ready);
+        }
+        kos_sem_destroy(ready);
+        kos_sem_destroy(rel);
+        if (not made)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        tap::diag("raise latched on core %u then released: core %u first wait %d, next raise "
+                  "%d on core %u; core %u first wait %d, next raise %d on core %u",
+                  static_cast<unsigned>(XIRQ_CLAIM_CORE), static_cast<unsigned>(XIRQ_OTHER_CORE),
+                  static_cast<int>(g_xs_first[XS_OTHER].load()),
+                  static_cast<int>(g_xs_second[XS_OTHER].load()),
+                  static_cast<unsigned>(g_xs_core[XS_OTHER].load()),
+                  static_cast<unsigned>(XIRQ_CLAIM_CORE),
+                  static_cast<int>(g_xs_first[XS_BACK].load()),
+                  static_cast<int>(g_xs_second[XS_BACK].load()),
+                  static_cast<unsigned>(g_xs_core[XS_BACK].load()));
+        TAP_CHECK(ojoined == 0);
+        TAP_CHECK(irc == 0);
+        for (int leg = 0; leg < XS_LEGS; leg++)
+        {
+            TAP_CHECK(g_xs_own[leg].load() == 0);
+        }
+        TAP_CHECK(g_xs_first[XS_OTHER].load() == -KOS_ETIMEDOUT);
+        TAP_CHECK(g_xs_second[XS_OTHER].load() == 0);
+        TAP_CHECK(g_xs_core[XS_OTHER].load() == XIRQ_OTHER_CORE);
+        TAP_CHECK(g_xs_first[XS_BACK].load() == -KOS_ETIMEDOUT);
+        TAP_CHECK(g_xs_second[XS_BACK].load() == 0);
+        TAP_CHECK(g_xs_core[XS_BACK].load() == XIRQ_CLAIM_CORE);
     }
 #endif
 }

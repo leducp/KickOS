@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A slay whose victim is RUNNING on a PEER core, at two kernel cores, over the real
+// A slay whose victim is RUNNING on a peer core, at two kernel cores, over the real
 // thread_cancel_kind, the real available_to and the real switch_book.
 //
-// The claim on a victim is a switch INTO it: switch_book rebuilds its context into
+// The claim on a victim is a switch into it: switch_book rebuilds its context into
 // kickos_thread_slay_exit before arch_switch. So a core that keeps re-picking its own running
 // victim never claims it, and the slayer's core reaches nothing that runs on a peer. Three
 // things have to happen, in order, and each is one line of kernel:
 //
 //   the ask          thread_cancel_kind publishes the reschedule against the victim's core.
 //   the displacement available_to refuses a slain, unclaimed current, so that core's pass
-//                    takes the victim OFF the core and owes itself one more pass.
+//                    takes the victim off the core and owes itself one more pass.
 //   the claim        the pass it owed picks the victim, now merely READY, and redirects it.
 //
-// THE SELF-OWED PASS IS A CELL AND NOT A SEND: klock_resched_ask strips the caller's own bit
-// deliberately, so switch_book publishes the cell alone and a RELEASE of the kernel lock is
-// what fires the raise. WHICH release is per backend, so this gate reads the raise as present
+// The self-owed pass is a cell and not a send: klock_resched_ask strips the caller's own bit
+// deliberately, so switch_book publishes the cell alone and a release of the kernel lock is
+// what fires the raise. Which release is per backend, so this gate reads the raise as present
 // or absent and never as a count: a swap that swaps inline releases twice over one booking
-// (kickos_switch_unlock inside the swap, then klock_leave), and one BOOKED from an interrupt
+// (kickos_switch_unlock inside the swap, then klock_leave), and one booked from an interrupt
 // releases once, klock_detach having left `owed` set across the klock_leave that follows it.
 // Both halves are read here, the cell through kickos_kernel_core_resched_owed and the raise
 // through the seam's arch_ipi_resched_self.
@@ -46,7 +46,7 @@ namespace kickos
             constexpr uint32_t CORE_ME = 0;   // the core the fixture speaks as
             constexpr uint32_t CORE_PEER = 1; // the core the victim executes on
 
-            // NOT ROOT_INDEX: ThreadPool::alloc retires root's slot, and is_root reads the
+            // Not ROOT_INDEX: ThreadPool::alloc retires root's slot, and is_root reads the
             // slot comparison, so an arm seating its threads there speaks about root.
             constexpr int SLOT_SLAYER = 1;
             constexpr int SLOT_VICTIM = 2;
@@ -64,13 +64,13 @@ namespace kickos
                           "thread the prio scan reached first");
 
             // Distinct from any real address the fixture holds, so an assertion on the stack
-            // TOP cannot be satisfied by a coincidence.
+            // top cannot be satisfied by a coincidence.
             void* const STACK_BASE = reinterpret_cast<void*>(static_cast<uintptr_t>(0x20040000u));
             void* const STACK_BASE_SLAYER =
                 reinterpret_cast<void*>(static_cast<uintptr_t>(0x20050000u));
             constexpr size_t STACK_SIZE = 0x1000u;
 
-            // The cell is keyed by TARGET and read from the target's seat, so an arm asking
+            // The cell is keyed by target and read from the target's seat, so an arm asking
             // about a peer has to speak as that peer for the length of the read.
             int owed_at(uint32_t core)
             {
@@ -91,8 +91,8 @@ namespace kickos
             }
 
             // Every counter this gate reads, back to zero, with the rows drained. An arm that
-            // seats anything after place() starts again from here: sched::add pokes every
-            // peer running below the new thread, so a seat of its own leaves a cell standing.
+            // seats anything after place() starts again from here: sched::add places the new
+            // thread and can ask a peer for it, so a seat of its own can leave a cell standing.
             void settle()
             {
                 drain(CORE_ME);
@@ -141,8 +141,7 @@ namespace kickos
                     sched::reschedule();
                 }
 
-                p.victim->state = ThreadState::RUNNING;
-                kernel().current[CORE_PEER] = p.victim;
+                testfix::seat_running_on(p.victim, CORE_PEER);
 
                 settle();
                 return p;
@@ -161,7 +160,7 @@ namespace kickos
                 g_core = was;
             }
 
-            // A slay ASKED BY THE PEER, so the identity has to hold for the whole lock span:
+            // A slay asked by the peer, so the identity has to hold for the whole lock span:
             // klock keeps a per-core row, and an acquire as one core with the release as
             // another leaves the depth of a core that never took it.
             void slay_as_peer(Thread* t)
@@ -176,7 +175,7 @@ namespace kickos
             }
 
             // seat_pool seats every core's bit, so without this a core that has displaced its
-            // own victim takes the PEER's off the ready lists on its next pass, and an arm
+            // own victim takes the peer's off the ready lists on its next pass, and an arm
             // about two cores resolving two victims would read one core doing both.
             void pin_each_to_its_core(Placed const& p)
             {
@@ -184,10 +183,14 @@ namespace kickos
                 p.victim->affinity = 1u << CORE_PEER;
             }
 
-            // A thread that outranks the victim, READY on both cores' ready lists.
+            // A thread that outranks the victim, READY on the peer's own structure: a thread is
+            // published to the core that adds it, and only its owner can pick it.
             Thread* seat_hog()
             {
+                uint32_t const was = g_core;
+                g_core = CORE_PEER;
                 Thread* const hog = seat_pool(SLOT_HOG, PRIO_HOG);
+                g_core = was;
                 settle();
                 return hog;
             }
@@ -340,7 +343,7 @@ namespace kickos
             EXPECT_EQ(g_ipi_self_raises, 0u) << "a raise was owed with no cell behind it";
         }
 
-        // The refusal has to be NARROW: an ordinary RUNNING thread keeps the core it is on,
+        // The refusal has to be narrow: an ordinary RUNNING thread keeps the core it is on,
         // which is the whole of migration (a re-mask is what moves one, not a bare pick).
         TEST_F(SlayPeer, an_unslain_running_thread_keeps_its_core_across_its_own_pass)
         {
@@ -354,8 +357,8 @@ namespace kickos
             EXPECT_EQ(g_ipi_self_raises, 0u) << "an ordinary pass owed itself another";
         }
 
-        // TWO SLAYS CROSSING, each core's current the other core's victim. The cell is keyed
-        // by the PAIR that asks and answers, so the two asks stand independently and the
+        // Two slays crossing, each core's current the other core's victim. The cell is keyed
+        // by the pair that asks and answers, so the two asks stand independently and the
         // dispatch that answers one leaves the other where it is.
         TEST_F(SlayPeer, mutual_slays_ask_each_others_core_and_neither_cell_answers_the_other)
         {
@@ -389,7 +392,7 @@ namespace kickos
         }
 
         // And each is claimed by the core its victim ran on, on that core's own stack: the
-        // claim is a switch INTO the victim, so nothing about it crosses cores.
+        // claim is a switch into the victim, so nothing about it crosses cores.
         TEST_F(SlayPeer, mutual_slays_are_each_claimed_by_the_core_their_victim_ran_on)
         {
             Placed p = place();
@@ -454,7 +457,7 @@ namespace kickos
         }
 
         // A victim no core is running needs no displacement and gets no ask: it is claimed by
-        // the first pass that would have picked it anyway, which is the pass its PRIORITY
+        // the first pass that would have picked it anyway, which is the pass its priority
         // earns it and not one the slay brings forward.
         TEST_F(SlayPeer, a_slain_ready_victim_waits_behind_higher_priority_and_asks_no_core)
         {
@@ -506,8 +509,8 @@ namespace kickos
                 << "at the TOP of its own stack, not at the depth it had reached";
         }
 
-        // The slay lands while the victim's core is already switching it out FOR A REASON OF
-        // ITS OWN, so the pass that ask names is spent on somebody else. What keeps the claim
+        // The slay lands while the victim's core is already switching it out for a reason of
+        // its own, so the pass that ask names is spent on somebody else. What keeps the claim
         // alive is the switch itself owing one: the booking is about the victim losing the
         // core unclaimed, never about where the core went instead.
         TEST_F(SlayPeer, a_slay_landing_as_the_victims_core_switches_it_out_owes_a_pass_anyway)

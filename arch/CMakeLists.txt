@@ -50,6 +50,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_diag_led_set_default.cc
   common/arch_irq_line_core_default.cc
   common/arch_irq_line_kernel_owned_default.cc
+  common/arch_irq_route_default.cc
   common/arch_fault_is_user_thread_default.cc
   common/arch_fault_redirect_to_exit_default.cc
   common/arch_periph_clock_hz_default.cc

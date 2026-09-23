@@ -3,7 +3,7 @@
 //
 // ESP32 (WROOM-32) interrupt-source numbers.
 //
-// THREE distinct numbering spaces meet on this core (the Xtensa interrupt-matrix
+// Three distinct numbering spaces meet on this core (the Xtensa interrupt-matrix
 // quirk):
 //  1. Peripheral interrupt SOURCES (DPORT interrupt matrix inputs). The matrix
 //     routes a source to a CPU interrupt via the source's DPORT map register.
@@ -45,7 +45,7 @@ namespace kickos::esp32::irq
         SW_INT_L1 = 7,     // arch/xtensa/lx6-owned (local injection); reference only
     };
 
-    // Which core takes a pinned device line (freeze N3): every route names its core.
+    // Which core takes a device line until a claim routes it: every route names its core.
     enum dev_core
     {
         CONSOLE_CORE = 0, // the console is the primary's: kmain's own output path

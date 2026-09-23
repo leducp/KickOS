@@ -28,7 +28,7 @@ namespace kickos
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need);
 
     // The same scan without the privileged and len==0 short-circuits: does a region the caller
-    // already carries describe this range with exactly `need`, MEMORY TYPE included?
+    // already carries describe this range with exactly `need`, memory type included?
     bool user_range_typed_ok(uintptr_t ptr, size_t len, uint32_t need);
 
     // A user READ buffer (name / console text): granted-region OR the app's
@@ -119,9 +119,9 @@ namespace kickos
     // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32
     // bits, so it cannot share the return value with an errno.
     //
-    // THREE EXHAUSTION ANSWERS, and each of the three creators here and irq_claim can give
-    // any of them: -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, -KOS_EOVERFLOW the
-    // calling TASK's ceiling for that pool while the pool still holds slots (task.h).
+    // Each of the three creators here and irq_claim can answer with any of three exhaustion
+    // codes: -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, -KOS_EOVERFLOW the calling
+    // task's ceiling for that pool while the pool still holds slots (task.h).
     int sem_create(int initial, uint32_t* out_cap);
     int mutex_create(uint32_t* out_cap);
 
@@ -170,18 +170,22 @@ namespace kickos
     // already exited), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EDEADLK.
     int thread_join(kos_thread_t thread, uint32_t timeout_us);
-    // Waits until the caller is the last live thread. ROOT ONLY: returns 0, or -KOS_EPERM
+    // Waits until the caller is the last live thread. Root only: returns 0, or -KOS_EPERM
     // to any other caller.
     int thread_wait_last();
 
-    // The FORCIBLE half of the pair above, and both BLOCK on the same terms as thread_join:
+    // The forcible half of the pair above, and both block on the same terms as thread_join:
     // no caller-held IrqLock. A marked target executes no further unprivileged instruction.
-    // 0 means GONE; -KOS_ETIMEDOUT means the redirect is armed and irrevocable with the
-    // capability sweep unfinished.
+    // 0 means the target is gone; -KOS_ETIMEDOUT means the redirect is armed and irrevocable
+    // with the capability sweep unfinished.
     int thread_slay(kos_thread_t thread, uint32_t timeout_us);
     // Placement and the scheduling grant. Both are total over every posture: at one kernel
     // core the placement call answers -KOS_ENOSYS and the grant carries its ceiling half only.
     int thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+#if KICKOS_KERNEL_CORES > 1
+    // The caller's own handle, so a thread can place itself.
+    uint64_t thread_self();
+#endif
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
     int task_slay(kos_task_t task, uint32_t timeout_us);
 

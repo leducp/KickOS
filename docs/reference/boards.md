@@ -469,7 +469,7 @@ assert` -- behind the tip; its tree already carried the halved heap carve, which
 banner's `heap 2 KiB` witnesses (`176109e` itself still declared 4K).
 
 **`hello` PASS is the run-floor witness.** Two threads
-(`user/apps/common/hello/main.cc:74-75`), both spawned, `printf` alive, at
+(`ping` and `pong` in `user/apps/common/hello/main.cc`), both spawned, `printf` alive, at
 `KICKOS_USER_HEAP_SIZE` 2048 (its chip default, declared in `Kconfig`) -- the halved carve
 neither starves stdio nor costs a thread stack.
 
@@ -478,13 +478,13 @@ neither starves stdio nor costs a thread stack.
     naps 0/0  handoffs 6000/6000  churn 340/340
     STRESS PASS
 
-`stress` probes the live thread budget before it sizes anything -- it spawns parked threads
-until one is refused (`user/apps/common/stress/main.cc:14-20`) -- so those counts are a
-measurement of this board, not a fixed workload: budget 2, one ping-pong pair, 6,000
-handoffs, no sleepers. `churn 340/340` is 340 spawn/exit cycles through those two slots and
-is the **thread-slot reclaim** witness: a broken reclaim exhausts the pool and a spawn
-returns -1 (`:22-25`). `naps 0/0` is what the small budget costs -- with zero sleepers the
-tickless-timer conservation arm did not run here.
+`stress` probes the live thread budget before it sizes anything: it spawns parked threads
+until one is refused (the pool-use note heading `user/apps/common/stress/main.cc`), so
+those counts are a measurement of this board, not a fixed workload: budget 2, one ping-pong
+pair, 6,000 handoffs, no sleepers. `churn 340/340` is 340 spawn/exit cycles through those two
+slots and is the **thread-slot reclaim** witness: a broken reclaim exhausts the pool and a
+spawn returns -1 (the churn-phase note in the same header). `naps 0/0` is what the small
+budget costs: with zero sleepers the tickless-timer conservation arm did not run here.
 
 **`selftest` fails 42 of 59, and every failure is a resource refusal, not a logic fault.**
 Two independent causes, both measured on the ELF at the tip:
@@ -824,7 +824,7 @@ the board".
   `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2,048 on this chip
   (`boards/f302nucleo/configs/base/defconfig:10`, `:11`) -- so it needs **2,560 B**, and
   an unsatisfied second allocation is `kpanic("kmain: no arena for the root stack")`
-  (`kernel/init/kmain.cc:218`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
+  (`kernel/init/kmain.cc`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
   halved `KICKOS_USER_HEAP_SIZE` to 2K (then a `stm32f302.ld` default, now the chip's
   declared one in `Kconfig`), which returns
   1:1 to the arena because the heap is carved below `__kickos_ram_start`. **Boot at the tip is now

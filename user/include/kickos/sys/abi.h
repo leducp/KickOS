@@ -307,12 +307,15 @@ enum kos_syscall_nr
                                //   EMFILE (caller's cap table), EOVERFLOW (the object's
                                //   reference count). MINTS a second name for the same object,
                                //   badged with `bit` and carrying the source's rights.
-    KOS_SYS_IRQ_BIND_NOTIFY = 70 // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (the
+    KOS_SYS_IRQ_BIND_NOTIFY = 70, // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (the
                                //   line's cap lacks WAIT, the notification's lacks SIGNAL, or
-                               //   the chain would span two routed cores), EALREADY (this
-                               //   line already signals something), EOVERFLOW (the object's
-                               //   reference count is at its ceiling). ONE-WAY: nothing
-                               //   detaches a live binding.
+                               //   the notification carries a line claimed on another
+                               //   core), EALREADY (this line already signals something),
+                               //   EOVERFLOW (the object's reference count is at its
+                               //   ceiling). ONE-WAY: nothing detaches a live binding.
+    KOS_SYS_THREAD_SELF = 71   // () -> the caller's own kos_thread_t, zero-extended to 64 bits.
+                               //   Carried above one kernel core only; elsewhere the call is
+                               //   unknown and refused -KOS_EINVAL.
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized

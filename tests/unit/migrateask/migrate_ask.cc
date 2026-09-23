@@ -4,29 +4,32 @@
 // The cross-core ask a re-placement owes, at two kernel cores, over the real
 // sched::set_affinity and the real switch_book.
 //
-// A thread the new mask excludes from the core it EXECUTES on is never yanked: it stays
+// A thread the new mask excludes from the core it executes on is never yanked: it stays
 // RUNNING until a switch stores READY, and every peer's pick_next refuses a RUNNING thread.
 // So the ask that tells its new cores to look cannot be sent when the mask changes; it has
 // to ride on the far side of that store. The ask is a counter before it is a doorbell
 // (kernel/sync/klock.cc), and a counter is readable on the host, where the doorbell is not.
 //
-// FOUR LINES:
-//   the poke     switch_book's `if (displaced != nullptr) poke_peers_below(...)`, the ask that
-//                follows the store making the thread takeable. ONE LINE FOR EVERY SWITCH
-//                SHAPE, so most arms below reach it: an ordinary reschedule, a re-mask off
-//                this core and a wake this core takes all differ in what brought the switch
-//                and in nothing the store made available. The thread is asked for at ITS
-//                priority, never the woken thread's, and an outgoing thread that parked or
-//                exited never reaches the store at all.
-//   the guard    switch_book's `if ((prev->affinity & ~(1u << me)) != 0)`, which skips the
-//                walk for a thread no peer may run. It removes no ask the walk would have
-//                sent, so an arm proving it must read the walk's own placement test.
+// Four lines:
+//   the place    switch_book's `place(displaced, me)`, the ask that follows the store making
+//                the thread takeable. One line for every switch shape, so most arms below
+//                reach it: an ordinary reschedule, a re-mask off this core and a wake this
+//                core takes all differ in what brought the switch and in nothing the store
+//                made available. The thread is placed at its priority, never the woken
+//                thread's, and an outgoing thread that parked or exited never reaches the store.
+//   the guard    switch_book's `(prev->affinity & ~(1u << me)) != 0`, which skips placing a
+//                thread no peer may run. It removes no ask the placement would have sent, so an
+//                arm proving it must read the placement's own mask test.
 //   the pass     set_affinity's `klock_resched_ask(1u << core)`, a different ask entirely:
 //                the thread runs on a peer, and only that peer's own pass can move it.
 //   the wake     pick_and_seat's `if (woken != nullptr and next != woken)`, the same cell read
-//                from the other side: a wake this core takes owes no peer anything ABOUT THE
-//                WOKEN THREAD, whose seat is published before the lock that hides it is
+//                from the other side: a wake this core takes owes no peer anything about the
+//                woken thread, whose seat is published before the lock that hides it is
 //                released.
+//
+// A thread is asked for only where it waits behind equal or higher priority and a peer runs
+// strictly below it. An arm expecting an ask stages the first, and the peer running PRIO_BELOW
+// stages the second.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -46,12 +49,16 @@ namespace
     constexpr uint32_t CORE_PEER = 1; // the core an ask is read against
 
     constexpr uint8_t PRIO_RUNNER = 6;
+    constexpr uint8_t PRIO_UNDER_RUNNER = 5;
     constexpr uint8_t PRIO_BELOW = 3;
     constexpr uint8_t PRIO_BETWEEN = 7;
     constexpr uint8_t PRIO_ABOVE = 8;
     constexpr uint8_t PRIO_TOP = 9;
+    static_assert(PRIO_BELOW < PRIO_UNDER_RUNNER and PRIO_UNDER_RUNNER < PRIO_RUNNER,
+                  "a thread under the runner must still outrank the peer, or no core is below "
+                  "it and the arm that stages it asserts nothing");
 
-    // The ask cell is keyed by TARGET and read from the target's seat, so an arm asking
+    // The ask cell is keyed by target and read from the target's seat, so an arm asking
     // about a peer has to speak as that peer for the length of the read.
     int owed_at(uint32_t core)
     {
@@ -78,9 +85,8 @@ namespace
         Thread* below;  // RUNNING on CORE_PEER, under `runner`
     };
 
-    // A peer running BELOW is what makes an ask expressible at all: poke_peers_below skips a
-    // core already running at or above the thread's priority, and an arm arranged without one
-    // asserts nothing.
+    // A peer running below is what makes an ask expressible at all: placement never moves a
+    // thread to a core running at or above it, and an arm arranged without one asserts nothing.
     Placed place()
     {
         Placed p{};
@@ -94,7 +100,7 @@ namespace
 
         kernel().policy->on_remove(p.below);
         p.below->state = ThreadState::RUNNING;
-        kernel().current[CORE_PEER] = p.below;
+        kickos::testfix::seat_running_on(p.below, CORE_PEER);
 
         drain(CORE_ME);
         drain(CORE_PEER);
@@ -102,7 +108,7 @@ namespace
     }
 
     // The fixture refuses a park with no waker armed, and an arm about the outgoing thread's
-    // STATE needs it to still be parked when the assertion reads it.
+    // state needs it to still be parked when the assertion reads it.
     void leave_parked(Thread*)
     {
     }
@@ -130,15 +136,26 @@ TEST_F(MigrateAsk, a_thread_re_masked_off_the_core_it_runs_on_asks_the_core_it_m
            "switch, so the re-placement is worth whatever the peer's timer happens to owe it";
 }
 
-// THE SWITCH NOTHING ELSE ANNOUNCES. A thread that widens its affinity and yields is READY,
-// eligible on a peer and above what that peer runs, with no wake and no re-mask left to carry
-// the ask: the ordinary reschedule is the only thing that can send it. The two halves are one
-// variable apart, the outgoing thread's mask, so the second is what says the first reads that
-// mask rather than firing on any switch at all.
+// The switch nothing else announces. A thread that widens its affinity and is then displaced by
+// a priority raise is READY, eligible on a peer and above what that peer runs, with no wake and
+// no re-mask left to carry the ask: the ordinary reschedule is the only thing that can send it.
+// The two halves are one variable apart, the outgoing thread's mask, so the second is what says
+// the first reads that mask rather than firing on any switch at all.
+namespace
+{
+    // A raise with no wake behind it, then the ordinary pass that answers it.
+    void displace_runner_by_a_raise(Placed const& p)
+    {
+        IrqLock lock;
+        sched::set_prio(p.alt, PRIO_ABOVE);
+        sched::reschedule();
+    }
+}
+
 TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
 {
     Placed p = place();
-    // Narrowed by hand, so the call below is a WIDENING that leaves the running core in.
+    // Narrowed by hand, so the call below is a widening that leaves the running core in.
     p.runner->affinity = 1u << CORE_ME;
 
     sched::set_affinity(p.runner, KICKOS_CORE_SET_ALL);
@@ -147,8 +164,8 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
     ASSERT_EQ(owed_at(CORE_PEER), 0)
         << "fixture: the widening itself owes nothing, the thread being RUNNING throughout it";
 
-    sched::yield();
-    ASSERT_EQ(kernel().current[CORE_ME], p.alt) << "fixture: the yield took the switch";
+    displace_runner_by_a_raise(p);
+    ASSERT_EQ(kernel().current[CORE_ME], p.alt) << "fixture: the pass took the switch";
     ASSERT_EQ(p.runner->state, ThreadState::READY)
         << "fixture: that switch stored the state a peer's pick_next reads";
 
@@ -160,12 +177,13 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
            "no further event is forever";
 
     // The same switch with the outgoing mask the only thing changed.
-    drain(CORE_PEER);
-    p.alt->affinity = 1u << CORE_ME;
+    reset();
+    Placed q = place();
+    q.runner->affinity = 1u << CORE_ME;
 
-    sched::yield();
-    ASSERT_EQ(kernel().current[CORE_ME], p.runner) << "fixture: the yield took the switch back";
-    ASSERT_EQ(p.alt->state, ThreadState::READY)
+    displace_runner_by_a_raise(q);
+    ASSERT_EQ(kernel().current[CORE_ME], q.alt) << "fixture: the pass took the switch";
+    ASSERT_EQ(q.runner->state, ThreadState::READY)
         << "fixture: and stored the same state over the thread it displaced";
 
     EXPECT_EQ(owed_at(CORE_PEER), 0)
@@ -175,7 +193,7 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
            "for a switch that asked on every pass regardless of placement";
 }
 
-// A thread no core can PICK gets no ask, and the same thread READY does: the two halves are
+// A thread no core can pick gets no ask, and the same thread READY does: the two halves are
 // what separate "the ask is narrowed by run state" from "nothing was asked at all".
 TEST_F(MigrateAsk, re_placing_a_thread_no_core_can_pick_asks_nobody)
 {
@@ -192,13 +210,18 @@ TEST_F(MigrateAsk, re_placing_a_thread_no_core_can_pick_asks_nobody)
            "the ready set it already declined, and go back to what it was running; whatever "
            "makes the thread READY is what owes that core an ask";
 
+    // Under the runner, so READY it waits behind strictly higher priority on this core.
+    {
+        IrqLock lock;
+        sched::set_prio(p.alt, PRIO_UNDER_RUNNER);
+    }
     p.alt->state = ThreadState::READY;
     kernel().policy->on_ready(p.alt);
     sched::set_affinity(p.alt, KICKOS_CORE_SET_ALL);
     EXPECT_NE(owed_at(CORE_PEER), 0)
-        << "the SAME thread, now READY and eligible on the peer core, and that core was not "
-           "told to look: without this half the arm above would pass for a set_affinity that "
-           "asked nobody anything";
+        << "the SAME thread, now READY, waiting behind a higher priority here and eligible on "
+           "the peer core, which runs below it, and that core was not told to look: without "
+           "this half the arm above would pass for a set_affinity that asked nobody anything";
 }
 
 // The debug assertion that keeps ThreadState::RUNNING and the current[] seat one fact. Compiled
@@ -229,7 +252,7 @@ TEST_F(MigrateAsk, a_thread_re_masked_off_a_peers_core_asks_that_peer)
            "and the thread keeps running where it is no longer allowed to";
 }
 
-// A wake this core answers ITSELF still owes a peer an ask, for the thread the answer cost
+// A wake this core answers itself still owes a peer an ask, for the thread the answer cost
 // this core. The woken thread never entered a peer's reach; the displaced one did.
 TEST_F(MigrateAsk, a_wake_this_core_takes_itself_asks_for_the_thread_it_displaces)
 {
@@ -258,15 +281,18 @@ TEST_F(MigrateAsk, a_wake_this_core_takes_itself_asks_for_the_thread_it_displace
            "it";
 }
 
-// WHICH thread the ask names, and it is not the woken one. The peer is put between the two
+// Which thread the ask names, and it is not the woken one. The peer is put between the two
 // priorities, so an ask carrying the woken thread's reaches it and one carrying the displaced
 // thread's does not.
 TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads_priority)
 {
     Placed p = place();
-    // place() took this thread off every ready list, so its priority is no list key here and
-    // a plain store is what poke_peers_below reads off the peer's seat.
-    p.below->prio = PRIO_BETWEEN;
+    // Through set_prio: the peer's running thread sits in its own ready list at its priority,
+    // and that list is what placement reads.
+    {
+        IrqLock lock;
+        sched::set_prio(p.below, PRIO_BETWEEN);
+    }
     Thread* const woken = seat_pool(3, PRIO_ABOVE);
     park_join(woken, p.runner);
     drain(CORE_ME);
@@ -285,7 +311,10 @@ TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads
            "thread's priority is not what this ask may carry";
 
     // The same shape with the peer put back below what the next wake displaces.
-    p.below->prio = PRIO_BELOW;
+    {
+        IrqLock lock;
+        sched::set_prio(p.below, PRIO_BELOW);
+    }
     Thread* const higher = seat_pool(4, PRIO_TOP);
     park_join(higher, woken);
     drain(CORE_ME);

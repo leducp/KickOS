@@ -38,6 +38,7 @@ preset  armv8a   imx8mp-evk
 preset  armv8a   qemu-arm64
 preset  armv8a   qemu-arm64-smp
 preset  armv8a   qemu-arm64-benchsmp
+preset  armv8a   qemu-arm64-benchgicv3
 preset  armv8a   qemu-arm64-benchsmp2
 preset  armv8a   qemu-arm64-smpiso
 preset  armv8a   qemu-arm64-gicv3
@@ -70,6 +71,7 @@ floor   armv8a   qemu-arm64        files=90 nodes=700 reason: measured directly 
 floor   armv8a   imx8mp-evk        files=90 nodes=700 reason: measured directly on this preset, 133 .ci files and 1047 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-smp    files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-benchsmp files=90 nodes=700 reason: measured directly on this preset, 138 .ci files and 1127 nodes on 2026-09-12
+floor   armv8a   qemu-arm64-benchgicv3 files=90 nodes=700 reason: measured directly on this preset, 140 .ci files and 1242 nodes on 2026-09-23
 floor   armv8a   qemu-arm64-benchsmp2 files=90 nodes=700 reason: measured directly on this preset, 140 .ci files and 1235 nodes on 2026-09-22
 floor   armv8a   qemu-arm64-smpiso files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1108 nodes on 2026-09-12
 floor   armv8a   qemu-arm64-gicv3  files=90 nodes=700 reason: measured directly on this preset, 136 .ci files and 1111 nodes on 2026-09-12

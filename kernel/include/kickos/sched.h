@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The scheduler core. reschedule() is the single point where a context switch
-// is decided (invariant #2); every trigger funnels through it. The tick is not
-// special. A pluggable policy (RTEMS-style) decides pick_next; FIFO+RR ship.
+// is decided; every trigger, including the tick, funnels through it. A
+// pluggable policy decides pick_next; FIFO+RR ships as the built-in policy.
 
 #ifndef KICKOS_SCHED_H
 #define KICKOS_SCHED_H
@@ -16,20 +16,58 @@
 
 namespace kickos
 {
+    class IrqLock;
+
 #if KICKOS_KERNEL_CORES > 1
-    // THE PLACEMENT RULE, and the only one. `t->affinity` already carries every narrowing
-    // applied to the thread, so its task's core set is not re-read here.
-    //
-    // ANTI-WORK-CONSERVING BY CONSTRUCTION: a runnable thread waits while a core it may not run
-    // on idles. That is the feature.
+    // The placement rule: `t->affinity` already carries every narrowing applied to the thread,
+    // so its task's core set is not re-read here. This makes the scheduler anti-work-conserving
+    // by construction: a runnable thread waits while a core it may not run on idles.
     inline bool sched_placeable_on(Thread const* t, uint32_t core)
     {
         return (t->affinity & (1u << core)) != 0;
     }
 
-    // How a grant bounds a request. A THREAD's affinity is a set of acceptable cores, so the
+#if KICKOS_KERNEL_CORES > 1
+    // The core a thread is published to when nothing better is known: the asker if the mask
+    // admits it, else the lowest core the mask names. A pinned thread has one owner for life.
+    // An empty mask answers the asker; publish_ready's assert names the caller. The loop avoids
+    // a count-trailing-zeros builtin, which lowers to a libgcc helper on rv64imac.
+    inline uint32_t sched_home_for(Thread const* t, uint32_t asker)
+    {
+        if (sched_placeable_on(t, asker))
+        {
+            return asker;
+        }
+        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
+        {
+            if (sched_placeable_on(t, core))
+            {
+                return core;
+            }
+        }
+        return asker;
+    }
+
+    // Where the policy puts a READY thread: `core` is the structure it belongs on, and `below`
+    // says that core's next pass takes it.
+    struct SchedPlacement
+    {
+        uint32_t core;
+        bool below;
+    };
+
+    // Where a walk of one core's pick order resumes: at `next`, or at the head of the highest
+    // list below `below` when `next` is null.
+    struct SchedWalk
+    {
+        int below;
+        Thread* next;
+    };
+#endif
+
+    // How a grant bounds a request. A thread's affinity is a set of acceptable cores, so the
     // grant intersects it and all ones is the identity of that intersection rather than a
-    // magic value. A TASK's grant is an authority: it narrows only, and a request reaching
+    // magic value. A task's grant is an authority: it narrows only, and a request reaching
     // past it is refused and never clamped.
     enum class MaskBound : uint8_t
     {
@@ -37,11 +75,9 @@ namespace kickos
         SUBSET
     };
 
-    // Validate masks for spawn, affinity changes, and task grants.
-    // First intersect requested with the machine's core set, then check the grant.
-    // An empty machine intersection returns EINVAL. Out-of-machine bits are ignored.
-    // Callers must resolve ABI-specific zero-mask defaults before calling; zero
-    // here is invalid. Every accepted bit names a core the scheduler can use.
+    // Validates masks for spawn, affinity changes, and task grants. Out-of-machine bits are
+    // ignored rather than rejected. Callers must resolve ABI-specific zero-mask defaults
+    // before calling: zero here is invalid.
     inline int sched_admit_mask(uint32_t requested, uint32_t grant, MaskBound bound,
                                 uint32_t* effective)
     {
@@ -65,7 +101,7 @@ namespace kickos
 #endif
 
     // Pluggable scheduling policy. The core is pure mechanism (run state, current, the
-    // context switch); the policy owns WHICH thread runs next and holds the ready
+    // context switch); the policy owns which thread runs next and holds the ready
     // structure. The core must never touch ready state except through these hooks.
     struct SchedPolicy
     {
@@ -76,26 +112,38 @@ namespace kickos
         void (*on_yield)(Thread*);        // current voluntarily yielded
         void (*on_slice_expire)(Thread*); // the running thread's timed slice elapsed
 
-        // Timed-event seam (RR today): the core owns the clock, the policy the
-        // deadline. on_switch_in arms the incoming thread; next_timed_event is the
-        // earliest policy deadline for the tickless timer (UINT64_MAX = none), answered for
-        // the thread NAMED rather than for whatever currently[] holds: the switch path knows
-        // the incoming thread before it is seated.
+        // Timed-event seam: the core owns the clock, the policy the deadline. on_switch_in
+        // arms the incoming thread; next_timed_event is the earliest policy deadline for the
+        // tickless timer (UINT64_MAX = none), answered for the thread named in the argument
+        // rather than for whatever currently[] holds: the switch path knows the incoming
+        // thread before it is seated.
         void (*on_switch_in)(Thread*);
         uint64_t (*next_timed_event)(Thread const*);
+
+#if KICKOS_KERNEL_CORES > 1
+        // Cross-core placement, answered over the policy's own ready structure. `place` names
+        // where READY `t` belongs, `home` standing for the core it is on or is about to be
+        // published to. `push_candidate` names a READY thread on `holder` that `target`'s next
+        // pass would take and `holder`'s would not, or nullptr. `declined` names, in pick order
+        // from `walk`, a READY thread on `core` ranking strictly between `above` and
+        // `walk->below` that some other core may run, or nullptr, and leaves `walk` at the
+        // thread after it: between calls the caller may move the answer off `core` and must
+        // move nothing else there.
+        SchedPlacement (*place)(Thread const* t, uint32_t home);
+        Thread* (*push_candidate)(uint32_t holder, uint32_t target);
+        Thread* (*declined)(uint32_t core, int above, SchedWalk* walk);
+#endif
     };
 
     // Scheduler locking rules:
     // - "Caller holds the exclusion" requires interrupt masking and, on SMP, the
     //   kernel lock. An IrqLock provides both.
-    // - start, yield, add_idle, set_affinity, and exit_current take their own IrqLock.
+    // - start, yield, add_idle, set_affinity, and exit_current take their own IrqLock;
+    //   exit_current also ends the caller's when handed it.
     // - init, set_policy, default_policy, current, idle, is_idle, live_count, and
     //   next_timed_event do not acquire it.
     //
-    // IrqLock can nest. set_affinity and exit_current also accept locked callers.
-    // Known limitation: exit_current reached from a locked park prologue keeps the
-    // outer lock through cap_teardown, preventing its intended preemption gaps.
-    // See the M8.8 review residue in TODO.md.
+    // IrqLock can nest. set_affinity also accepts locked callers.
     //
     // Debug builds check held-lock preconditions on SMP. Single-core builds cannot
     // check them because the architecture has no interrupt-mask query interface.
@@ -112,9 +160,9 @@ namespace kickos
         void add(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
-        // Set an already-validated nonempty affinity mask. Ready or blocked threads
-        // become eligible on the new cores at their next scheduling decision.
-        // If a running thread is excluded from its current core, request a reschedule.
+        // Set an already-validated nonempty affinity mask. A READY thread is placed again at
+        // once, a blocked one at its next wake. A running thread excluded from its current
+        // core is asked off it through that core's own pass.
         void set_affinity(Thread* t, uint32_t mask);
 #endif
 
@@ -128,9 +176,9 @@ namespace kickos
         void start();
 
         // Reschedule in thread or ISR context. Caller holds the exclusion.
-        // Pass the thread made ready as woken so an SMP peer can run it if this core
-        // does not. Pass nullptr only when no thread was made ready.
-        void reschedule(Thread const* woken = nullptr);
+        // Pass the thread made ready as woken: above one core, a pass that does not take it
+        // places it. Pass nullptr only when no thread was made ready.
+        void reschedule(Thread* woken = nullptr);
 
         // Yield within this priority and reschedule. Takes IrqLock internally.
         void yield();
@@ -140,8 +188,8 @@ namespace kickos
         // exclusion.
         void block_current();
 
-        // Remove `current` from the ready list WITHOUT rescheduling. A blocking
-        // primitive must call this BEFORE parking the thread on a wait queue,
+        // Remove `current` from the ready list without rescheduling. A blocking
+        // primitive must call this before parking the thread on a wait queue,
         // since the ready list and wait queues share the TCB link node. Caller holds the
         // exclusion.
         void detach_current();
@@ -152,16 +200,15 @@ namespace kickos
 
         // wake_no_resched returns true if it made t ready, without changing current().
         // Defer resched_after_wake until current() is no longer needed, using the
-        // highest-priority thread woken. Announce other woken threads separately.
+        // highest-priority thread woken. Place other woken threads separately.
         // Both functions require the caller to hold the exclusion.
         [[nodiscard]] bool wake_no_resched(Thread* t);
-        void resched_after_wake(Thread const* t);
+        void resched_after_wake(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
-        // Notify eligible peers that t is ready, using t's priority. Does not switch
-        // or make a local scheduling decision. Required for each thread made ready
-        // that is not passed to the deferred reschedule.
-        void announce_ready(Thread const* t);
+        // Place READY t across cores and ask the core that takes it, without a local pass.
+        // Required for each thread made ready that is not passed to the deferred reschedule.
+        void place_ready(Thread* t);
 #endif
 
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
@@ -176,8 +223,9 @@ namespace kickos
         // Only this function may write effective priority. Reinsert READY/RUNNING
         // threads through policy hooks before changing prio, which indexes their lists.
         // BLOCKED threads need no reorder because wait queues scan priorities at pop.
-        // Does not reschedule or apply the task priority ceiling; inherited priority
-        // is kernel-controlled. Caller holds the exclusion.
+        // Does not reschedule the calling core or apply the task priority ceiling; inherited
+        // priority is kernel-controlled. Above one core a READY thread is placed again, and a
+        // peer whose running thread is lowered is asked for a pass. Caller holds the exclusion.
         void set_prio(Thread* t, uint8_t p);
 
         // What this death is, which is the one thing exit_current cannot derive: a fault
@@ -192,12 +240,18 @@ namespace kickos
         // Terminate the current thread with exit code `code`; never returns. The
         // code is used only if this is the last non-idle thread (it ends the
         // process); otherwise the thread just leaves the run set.
-        void exit_current(int code, ExitCause cause) __attribute__((noreturn));
+        //
+        // `held` is the caller's OUTERMOST bracket, or null for a caller holding none. It is
+        // ended here, once the thread is marked dying and before the capability sweep, which
+        // drops the exclusion between chunks and so is preemptible only with no bracket
+        // beneath it.
+        void exit_current(int code, ExitCause cause, IrqLock* held = nullptr)
+            __attribute__((noreturn));
 
         Thread* current();
         Thread* idle();
 
-        // Whether `t` is an idle thread on ANY core; idle() answers for the calling core alone.
+        // Whether `t` is an idle thread on any core; idle() answers for the calling core alone.
 #if KICKOS_KERNEL_CORES > 1
         bool is_idle(Thread const* t);
 #else
@@ -210,9 +264,9 @@ namespace kickos
         // Live non-idle thread count (0 => nothing left to run).
         unsigned live_count();
 
-        // The active policy's earliest timed event for `t` (ns), or UINT64_MAX for none.
-        // Consumed by the time subsystem when arming the tickless timer (RR slice
-        // expiry today; the core carries no notion of a "slice"). `t` may be null.
+        // The active policy's earliest timed event for `t` (ns), or UINT64_MAX for none (RR
+        // slice expiry currently; the core itself carries no notion of a "slice"). `t` may
+        // be null.
         uint64_t next_timed_event(Thread const* t);
         // Runs in the timer ISR on every expiry: if the active policy has a
         // timed event due at `now` (an RR slice), let it act, then reschedule. Caller holds

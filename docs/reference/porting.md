@@ -902,6 +902,57 @@ break-before-make clears the old leaf before it writes the new one, so replacing
 leaf is a removal that happens to be followed by a write. The peer set is sampled BEFORE the
 edits, being derived from the space's identity, exactly as `arch_aspace_destroy` samples it.
 
+### A line follows its claimer (`arch_irq_route`, `arch_irq_line_core`)
+
+**The kernel routes a line to the core that claimed it, and routes it nowhere at its last
+release.** Above one kernel core a claimer is pinned to the core it runs on, the claim being
+refused otherwise, and every thread that waits on, acks or discards the line is pinned to that
+same core: a thread handling a line does not migrate, so the core a backend is handed is the one
+every later touch and wake of the line happens on. `irq_claim` calls `arch_irq_route(line, core)`
+with the claimer's own kernel core index, after its last exit that can fail, and the release of the last capability naming the line
+calls it with `KICKOS_IRQ_ROUTE_NONE`. The line is masked across both calls: a claim leaves it
+masked until the first wait arms it, and the release masks it BEFORE it drops the route, so the
+mask reaches the core the old route names.
+
+**After a route, every raise of that line is taken on that core, an `arch_irq_inject` from any
+core included.** Where the raise is software, as on rv64imac and for the LX6's injected lines, an
+injection on another core is posted to the routed core and raised there through the doorbell.
+`KICKOS_IRQ_ROUTE_NONE` returns the line to its UNROUTED state, the one it had before any claim,
+so a later claim routes afresh and the kernel's own attach, which never routes, finds the line
+where the backend's default puts it: GICv2 core 0, GICv3 the core that unmasks it, the LX6 the
+core `kickos_lx6_bind_dev_int` named for a device line and the injecting core for an injected
+one, rv64imac hart 0.
+
+**A banked line is the claiming core's own instance.** A GIC INTID below 32, an SGI or a PPI, has
+one copy per core and no route: `arch_irq_route` leaves it alone, and a claim of one claims the
+claiming core's copy, which is the only copy its pinned waiter can be woken for. A raise of another
+core's copy reaches that core's dispatch and is dropped there as taken off the claim core.
+
+**The kernel holds a backend to that.** Above one kernel core `irq_event_isr` drops, before it
+masks anything, a raise it takes on any core but the claim core, as one that core held from
+before the claim; a backend that delivers a claimed line anywhere else loses the raise. And
+`arch_irq_clear_pending`, which the first arm runs on the routed core, must discard EVERY raise
+of the line that core holds: its latch, a raise it has taken and not dispatched, and a peer's
+post it has not taken yet. rv64imac takes its posts into its row and clears there; the LX6 also
+drops the line from its inject latch and hands the other posts it took back to its own doorbell. A
+GIC holds nothing in software, its pending state being the distributor's.
+
+**`arch_irq_line_core` names the core whose gating state holds the line**, and
+`kernel/irq/irq_route.cc` performs every mask, unmask and clear on that core. A backend whose
+gating state is global answers `KICKOS_IRQ_LINE_CORE_NONE` and takes the fallback; one whose
+state is per core, as rv64imac's per-hart rows are, answers the routed core, since the ISR masks
+a line on the core that takes it.
+
+**A per-core enable is set only on the core the line is routed to.** Above one kernel core the
+LX6 arms a device line's INTENABLE bit at its routed unmask alone, never at bind, so when a
+route moves the line no other core holds the bit set, and no core has to clear another's.
+
+**The LX6 and rv64imac take the lone-TU route fallback at one kernel core**, rv64imac the
+`arch_irq_line_core` one too, so their one-core images carry no route body. A backend whose route
+moves more than one
+line at once, as a shared LX6 CPU interrupt would, must make that sharing impossible above one
+core: the LX6 refuses the second bind at boot.
+
 ### Data-cache maintenance (`arch_dcache_flush`, `arch_dcache_invalidate`)
 
 Make this core's writes over a range visible to an observer that does not snoop, and such an
@@ -1399,7 +1450,7 @@ linker-script symbol, so the split is readable out of any linked ELF:
 `arm-none-eabi-size` reports `.userheap` inside its `bss` column (the section is
 `ALLOC`/`NOBITS`), so that column is **not** the static footprint.
 
-The arena must hold, allocated in this order (`kernel/init/kmain.cc:222`, `:224`):
+The arena must hold, allocated in this order (`boot_stack_alloc` in `kernel/init/kmain.cc`):
 
     arena >= align(KICKOS_IDLE_STACK_SIZE)
            + align(KICKOS_ROOT_STACK_SIZE)
@@ -1616,7 +1667,7 @@ what made this board look like a thread-provisioning problem for a whole milesto
 Four readings, and they are the point of the section:
 
 - **`f302nucleo` `hello` fits with nothing spare.** It needs exactly two threads
-  (`../../user/apps/common/hello/main.cc:74-75`) and gets exactly two, from both
+  (`ping` and `pong` in `../../user/apps/common/hello/main.cc`) and gets exactly two, from both
   constraints at once. Silicon-witnessed.
 - **`f302nucleo` `selftest` is provisioning-bound, not part-bound.** At the chip defaults
   it gets zero threads, and on silicon the suite failed every spawning case (17 ok /
@@ -1703,15 +1754,16 @@ from a negative spawn return instead would not say which limit was hit, because
 alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
-plus four live (`main.cc:1126-1129`) -- but on a 7-handle board the **cap table** binds
-first, since `KICKOS_CAP_FIRST_DYNAMIC 2`
+plus the four semaphores `t_mutex_deadlock` creates, but on a 7-handle board the **cap
+table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 2`
 (`../../system/include/kickos/sys/cap_index.h`) plus the suite's two permanent caps
-leaves 3 free against the 6 that case wants live (rationale `main.cc:1133-1136`).
+leaves 3 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
+branch).
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
 (18 ok / 41 not ok / 11 skipped), `sem_destroy` then failed on a semaphore **handle**
-against `KICKOS_MAX_SEMAPHORES 4` (`main.cc:685`); adding `KICKOS_USER_HEAP_SIZE=0` and
+against `KICKOS_MAX_SEMAPHORES 4` (`t_sem_destroy`); adding `KICKOS_USER_HEAP_SIZE=0` and
 `KICKOS_MAX_SEMAPHORES=6` is what took the run to 0 `not ok`. **A spawn failure is not
 evidence that the thread pool is the limit; check the arena first, and expect the next pool
 behind it.** The runtime cannot tell you which one you hit -- `-KOS_ENOMEM` covers both --
@@ -1745,10 +1797,10 @@ where `Thread` is 264 bytes with the FPU context and `ThreadPool` grows 272 rath
 because the extra `gen[]` entry pushes the trailing pointer past an 8-byte boundary. Text grew
 184 to 236 bytes depending on the ISA, the most on `microbit`'s Thumb-1.
 
-The suite also allocates from the arena and never returns it: one 4 KiB page
-(`main.cc:504`) and three 256-byte domain regions (`:1505`, `:2901-2902`), 4,864 bytes in
-all, plus the two self-grant probe ladders (`:3221`, `:3283`) and one spare stack for
-`caller_stack` (`:1443`). Each has a real `tap::skip` or a `tap::partial` when
+The suite also allocates from the arena and never returns it, among others: `t_irqdrv`'s
+4 KiB device page, the 256-byte domain regions of `t_domain_share` and
+`t_endpoint_crossdomain`, the self-grant probe ladders (`selfgrant_worker`, `sgnp_worker`) and
+one spare stack for `t_caller_stack`. Each has a real `tap::skip` or a `tap::partial` when
 the arena cannot spare it, so these cost coverage rather than a failure.
 
 ### Deriving the suite's SRAM figures

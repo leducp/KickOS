@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The WHOLE seam between kernel/sync/klock.cc and the rest of the image, re-derived with
+// The whole seam between kernel/sync/klock.cc and the rest of the image, re-derived with
 //
 //   nm --undefined-only <the object> | comm -23 - <its defined symbols>
 //
-// which is 5 symbols at two kernel cores. kpanic and the instance below answer the ARMS rather
+// which is 5 symbols at two kernel cores. kpanic and the instance below answer the arms rather
 // than that object, so they are not in that set. One thread of execution runs the arms, so
 // arch_kernel_lock and arch_kernel_unlock only count.
 
@@ -52,7 +52,7 @@ namespace kickos
 
         void reset()
         {
-            // THE CELLS LIVE IN THE REAL klock.cc AND NO SEAM VARIABLE MIRRORS THEM: an arm
+            // The cells live in the real klock.cc and no seam variable mirrors them: an arm
             // that leaves one standing would otherwise hand it to the next arm, whose verdict
             // then depends on the order GoogleTest ran them in.
             for (uint32_t core = 0; core < CORES; core++)
@@ -128,7 +128,7 @@ int arch_kernel_lock_held(void)
 }
 #endif
 
-// The cross-core raise the ask goes over. THE CELL IS SAMPLED FROM THE TARGET'S SEAT, which is
+// The cross-core raise the ask goes over. The cell is sampled from the target's seat, which is
 // what a real target's absorbing consumer would read: the raise is an edge and the poll in an
 // acquire loop acknowledges it without entering any scheduler, so the ask has to already stand
 // here or the edge can be absorbed before anything says one was owed.

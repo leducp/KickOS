@@ -19,8 +19,8 @@ namespace kickos
     Thread* wq_pop_highest(List& q)
     {
         Thread* best = wq_peek_highest(q);
-        // THE SEARCH IS RECORDED WHETHER OR NOT IT FOUND ANYTHING: an absent record says
-        // nobody looked, which is a different finding from looking and coming back empty.
+        // The search is recorded whether or not it found anything: an absent record says
+        // nobody looked, a different finding from looking and coming back empty.
         KOS_TRACE(::kickos::KOS_TR_SEARCH, KOS_TRACE_ID(&q), KOS_TRACE_ID(best));
         if (best == nullptr)
         {
@@ -56,10 +56,10 @@ namespace kickos
         return best;
     }
 
-    // `epoch` MUST be c->switch_count sampled under the block lock immediately before
+    // `epoch` must be c->switch_count sampled under the block lock immediately before
     // wq_block. Where the switch is pended it has not fired when that lock is released, so
     // the caller is still executing pre-switch and must not trust anything a waker wrote.
-    // switch_to bumps the INCOMING thread's switch_count, so an advance is proof of a real
+    // switch_to bumps the incoming thread's switch_count, so an advance is proof of a real
     // switch-in and the acquire load is what makes the waker's writes readable.
     void wq_confirm_resume(Thread* c, uint32_t epoch)
     {
@@ -75,7 +75,7 @@ namespace kickos
     }
 
     // Returns when woken.
-    void wq_block(List& q, WaitKind kind, void* obj, Thread const* woken)
+    void wq_block(List& q, WaitKind kind, void* obj, Thread* woken)
     {
         Thread* c = sched::current();
         // BLOCKED before the detach: on_remove reads `state` to tell a park from a
@@ -113,13 +113,12 @@ namespace kickos
         s->waiters = List{};
     }
 
-    void sem_wait(Semaphore* s)
+    void sem_wait(IrqLock& held, Semaphore* s)
     {
-        IrqLock lock;
         Thread* const c = sched::current();
         if (park_cancel_pending(c))
         {
-            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &held);
         }
         if (s->count > 0)
         {
@@ -158,9 +157,9 @@ namespace kickos
         return true;
     }
 
-    // sched::set_prio is the SOLE writer of an effective priority. Inheritance does NOT
-    // propagate through semaphores: a thread blocked on a sem answers nullptr from
-    // wait_mutex(), so the chain walk stops there.
+    // sched::set_prio is the sole writer of an effective priority. Inheritance stops at
+    // semaphores: a thread blocked on a sem answers nullptr from wait_mutex(), so the chain
+    // walk stops there.
     namespace
     {
         void held_push(Thread* owner, Mutex* m)
@@ -321,12 +320,11 @@ namespace kickos
                 p = caller->prio;
             }
         }
-        // Follow the served-endpoint chain instead of scanning capabilities or the
-        // endpoint pool under the lock. ep->server defines membership; each linked
-        // slot stays live until the server reference is removed.
-        // EP_SERVED_NONE resolves to null and terminates traversal. Avoid panic paths
-        // here: this code runs below the timer trap and console reporting exceeds
-        // its RV32 red zone. The debug assertion adds such a path in debug builds.
+        // Follows the served-endpoint chain: ep->server defines membership, and each
+        // linked slot stays live until the server reference is removed. EP_SERVED_NONE
+        // resolves to null and terminates traversal. Avoid panic paths here: this code
+        // runs below the timer trap and console reporting exceeds its RV32 red zone. The
+        // debug assertion adds such a path in debug builds.
         for (Endpoint* ep = kernel().endpoints.at(ep_served_index(t->served_head)); ep != nullptr;
              ep = kernel().endpoints.at(ep_served_index(ep->next_served)))
         {
@@ -360,7 +358,7 @@ namespace kickos
             // leave seated on this caller's behalf with the caller gone.
             if (park_cancel_pending(c))
             {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
             if (m->owner == nullptr)
             {

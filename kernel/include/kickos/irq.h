@@ -3,7 +3,7 @@
 //
 // IRQ delivery has two interfaces:
 // - Kernel handlers run directly in ISR context through irq_attach.
-// - Userspace drivers hold CAP_IRQ capabilities and attach the line to a NOTIFICATION
+// - Userspace drivers hold CAP_IRQ capabilities and attach the line to a notification
 //   (kickos/notify.h) through kos_irq_bind_notify. The ISR masks the line and raises the
 //   binding's badge bit in that object. The driver services the device, then rearms through
 //   the next notify_wait or through irq_ack.
@@ -25,7 +25,7 @@
 
 namespace kickos
 {
-    struct Thread; // kickos/thread.h: tier-1 claim/wait/ack act on a caller's cap table
+    struct Thread; // kickos/thread.h
 
     using IrqHandler = void (*)(void* arg);
 
@@ -37,10 +37,9 @@ namespace kickos
         void* arg = nullptr;
     };
 
-    // Line -> handler dispatch entry; the ISR reads it by index, never a search. The word
-    // names the publication record holding the whole pair. Index 0 names no record and stands
-    // for the line's own null-object default, whose argument is the line the dispatch was
-    // entered for.
+    // Line -> handler dispatch entry, read by the ISR by index. The word names the
+    // publication record holding the whole pair. Index 0 names no record and stands for the
+    // line's own null-object default, whose argument is the line the dispatch was entered for.
     struct IrqEntry
     {
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> pub{0u};
@@ -49,7 +48,7 @@ namespace kickos
     // The pair a dispatch entered for `line` would run.
     IrqDispatch irq_published(int line);
 #else
-    // Line -> handler dispatch entry; the ISR reads it by index, never a search.
+    // Line -> handler dispatch entry, read by the ISR by index.
     struct IrqEntry
     {
         IrqHandler handler = nullptr;
@@ -68,23 +67,21 @@ namespace kickos
         IRQ_LEVEL = 1
     };
 
-    // Tier 1 binding: a line plus the notification it signals. LATENCY INVARIANT: the ISR is
+    // Tier 1 binding: a line plus the notification it signals. Latency invariant: the ISR is
     // handed this binding directly as its arg, so it never searches a table in ISR context.
-    // It lives in a SlotPool, whose slot addresses are stable for the slot's life, which is
-    // what keeps that invariant true once the binding becomes freeable.
+    // That holds only because SlotPool slot addresses are stable for the slot's life.
     // A freed slot keeps its last contents (slotpool.h), so no field below means anything
-    // until irq_claim has seated them all; none of them is a live default. Whether a LINE
-    // is held is not stored here: the line's dispatch entry names the null-object default
-    // exactly while the line is free.
+    // until irq_claim has seated them all. Whether a line is held is tracked by the line's
+    // dispatch entry, which names the null-object default while the line is free.
     struct IrqBinding
     {
-        // The object this line raises into, and the badge bit it raises there. BOTH are
+        // The object this line raises into, and the badge bit it raises there. Both are
         // copied in at attach and read in ISR context, which may resolve no capability and
-        // walk no pool. A raw pointer is sound because the binding holds a REFERENCE on the
+        // walk no pool. A raw pointer is sound because the binding holds a reference on the
         // object, so the slot cannot be freed under it, and slot addresses are stable.
         Notification* notify = nullptr;
         int line = 0;
-        // The next binding on notify->signallers, a BIASED pool index, or
+        // The next binding on notify->signallers, a biased pool index, or
         // NOTIFY_SIGNALLER_NONE. Zero is the sentinel so a statically-allocated pool stays
         // in .bss (kickos/notify.h).
         uint8_t next_signaller = NOTIFY_SIGNALLER_NONE;
@@ -98,26 +95,32 @@ namespace kickos
         // line had an owner, whatever the trigger type; a LEVEL binding then keeps
         // discarding on every rearm.
         bool armed_once = false;
+#if KICKOS_KERNEL_CORES > 1
+        // The core this line was claimed on, which is the core it is routed to, fixed for
+        // the binding's life. Read by the bind and the wait's admission, which the arch seam
+        // cannot answer for: a controller whose gating state is global reports no owning
+        // core, and that says nothing about delivery.
+        uint8_t claim_core = 0;
+#endif
     };
 
     static_assert(KICKOS_MAX_IRQ_HANDLES < 255,
                   "a binding pool index biased by one must fit the uint8_t chain link, with "
                   "zero left over for the sentinel");
 
-    // Seed the dispatch table with the null-object default (call once at boot,
-    // before any attach/register).
+    // Call once at boot, before any attach or claim.
     void irq_init();
-    // Count of IRQs that fired on a line with no driver (masked by the default
-    // handler). Best-effort diagnostic, readable outside ISR context.
+    // IRQs that fired on a line with no driver (masked by the default handler).
+    // Best-effort diagnostic, readable outside ISR context.
     uint32_t irq_spurious_count();
 
     // Tier 2: privileged in-kernel direct handler. Returns false if the line is
     // out of range or already bound (one driver per line); true on success.
     //
-    // detach leaves the line MASKED and always succeeds. Above one kernel core it does NOT free
-    // the line: the line names its retiring record until no dispatch can still hold that record,
-    // and an attach or claim of the line is refused until then. Every attach and claim drains
-    // first, so that refusal lasts only while another core is inside a dispatch.
+    // detach leaves the line masked and always succeeds. Above one kernel core, it keeps the
+    // line's retiring record alive until no dispatch can still hold it, refusing a new attach
+    // or claim of the line until then. Every attach and claim drains first, so that refusal
+    // lasts only while another core is inside a dispatch.
     bool irq_attach(int irq, IrqHandler handler, void* arg);
     void irq_detach(int irq);
 
@@ -128,23 +131,23 @@ namespace kickos
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
 
     // Attach this line to the notification `notify_cap` names, as one signaller among
-    // others: the ISR raises that capability's BADGE bit there. Requires CAP_WAIT on the
+    // others: the ISR raises that capability's badge bit there. Requires CAP_WAIT on the
     // line and CAP_SIGNAL on the notification, and copies the badge into the binding, since
     // ISR context may resolve no capability. Takes a reference on the object.
-    // ONE-WAY and once only: 0, -KOS_EALREADY (this line already signals something),
-    // -KOS_EBADF, -KOS_EPERM or -KOS_EOVERFLOW (the object's reference count is at its
-    // ceiling).
+    // One-way and once only: 0, -KOS_EALREADY (this line already signals something),
+    // -KOS_EBADF, -KOS_EPERM (a missing right, or the notification already carries a line
+    // claimed on another core) or -KOS_EOVERFLOW (the object's reference count is at its
+    // ceiling). A released line leaves the chain, so a re-claim is a new binding and binds
+    // afresh.
     int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap);
 
     // Rearm every chained signaller of `n` whose badge is in `mask` and which owes one, and
-    // flag the signallers of `taken` to be rearmed next time round. The whole of the
-    // no-forgot-to-ack contract, moved off the capability a driver waited on and onto the
-    // bindings chained on the object it waited on. Caller holds IrqLock.
+    // flag the signallers of `taken` to be rearmed next time round. Caller holds IrqLock.
     void irq_signallers_rearm(Notification* n, uint32_t mask);
     void irq_signallers_owe_rearm(Notification* n, uint32_t taken);
 
     // Take binding `index` off its notification's signaller chain, so no later rearm reaches
-    // a line that is going away. The binding KEEPS its object pointer and its reference: a
+    // a line that is going away. The binding keeps its object pointer and its reference: a
     // dispatch on another core may already have loaded that pointer, and the reference is
     // what keeps the object alive until it can no longer be reached. Caller holds IrqLock.
     void irq_unchain_signaller(int index);
@@ -154,25 +157,25 @@ namespace kickos
     // attached. Caller holds IrqLock.
     void irq_detach_notify(int index);
 
-    // Pin the caller to the core every line chained on the notification `cap_handle` names is
-    // routed to, before any controller access. Controller mask and pending state are shared
-    // across the image and cross-core access is unsupported; irq_bind_notify refuses a chain
-    // that would span two routed cores, so there is at most one to pin to. 0, a -KOS_E* from
-    // the affinity admission, or 0 on a single-core kernel, which routes nothing. Call OUTSIDE
-    // IrqLock: set_affinity may reschedule.
-    int irq_pin_to_chain_core(Thread* c, uint32_t cap_handle);
+#if KICKOS_KERNEL_CORES > 1
+    // Refuse a wait on `n` by a caller whose own mask is not exactly the core its lines were
+    // claimed on: -KOS_EPERM, never a clamp; 0 where no line signals it. Caller holds the
+    // IrqLock the wait runs under.
+    int irq_admit_signallers(Thread const* c, Notification const* n);
+#endif
 
     // Unmask the previously-consumed line so it can fire again; 0, or -KOS_E*.
-    // OPTIONAL and idempotent: the next notify_wait rearms anyway, and a redundant
-    // ack after that wait is a no-op (needs_rearm already false). Needs CAP_WAIT.
+    // Optional and idempotent: the next notify_wait rearms anyway, and a redundant
+    // ack after that wait is a no-op (needs_rearm already false). Needs CAP_WAIT, and
+    // -KOS_EPERM for a caller whose own mask excludes the line's claim core, as for discard.
     // -KOS_EINVAL for a line that signals no notification: arming it would open a source
     // whose raise has nowhere to land, which is a lost interrupt and not a masked one.
     int irq_ack(Thread* c, uint32_t cap_handle);
     // Discard whatever the controller has latched for this line, right now; 0, or
-    // -KOS_E*. Needs CAP_WAIT. The ONLY way an EDGE driver can drop a pending it
+    // -KOS_E*. Needs CAP_WAIT. The only way an EDGE driver can drop a pending it
     // knows is stale: rearm deliberately preserves an EDGE latch (the coalesce contract),
     // and the controller sits in arch_reserved_blocks, so no grant reaches the register.
-    // Does NOT unmask; the intended shape is wait; read the device; discard; ack.
+    // Leaves the line masked; the intended shape is wait, read the device, discard, ack.
     int irq_discard(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the

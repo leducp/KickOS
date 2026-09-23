@@ -191,7 +191,7 @@ new instrument is a `BD_` name, a format label and the site that calls `bench_di
 | `BD_IRQ_ENTRY` | a raise on the bench's own line to the handler's first instruction |
 | `BD_IRQ_WCASE` | the same, with the raise at the START of a masked span of 0, 64, 256 or 1024 bytes. ONE slot for the four, cleared and re-reported per span |
 | `BD_IRQ_E2E_LOCAL` | the raise, through delivery, dispatch and the wake, to the woken USERSPACE thread's first read of its device window, where that thread ran on the core that took the interrupt |
-| `BD_IRQ_E2E_CROSS` | the same span where it did not, above one kernel core only |
+| `BD_IRQ_E2E_CROSS` | the same span where it did not, above one kernel core only, and empty by construction (see "Locality" below) |
 
 `BD_SWITCH`, `BD_LOCK_HOLD` and `BD_LOCK_WAIT` are fed by the running workload. `BD_DOORBELL`
 is fed by a probe that runs immediately BEFORE the report, so it prints with those three and
@@ -199,6 +199,19 @@ its figures belong to the same window. Every slot from `BD_IRQ_ENTRY` down is fi
 that runs AFTER the report and is printed by the op that ran it: printed with the others it
 would report the window before its own sweep. That boundary is `DIST_SWEPT_FIRST`, and a slot
 added on the wrong side of it reports the previous window with nothing saying so.
+
+THE PING-PONG PLAYERS ARE PINNED TOGETHER TO CORE 0, so the throughput row and the switch
+distribution are the SAME-CORE HANDOFF, by placement and not by default. Their priority is equal,
+and with a wider mask the placement invariant spreads such a pair across idle cores, which turns
+every handoff into a cross-core wake.
+
+THEY ARE ALSO PARKED FOR THE WHOLE REPORT. The player that posts the reporter's gate then waits on
+a resume semaphore the reporter posts as the next window opens, and the other player waits on the
+ping-pong behind it. The pin alone does not quiet them above one kernel core: the doorbell probe
+and the sweeps place the reporter on other cores, and the pair runs again on its own core
+meanwhile, switching and taking the kernel lock under the rounds being measured. So a throughput
+window is exactly the rounds between the release and the gate, and no player runs between two
+windows.
 
 ### The phase table's three calibration rows
 
@@ -584,7 +597,7 @@ that does not equal `raised`, and refuses a capture carrying no such line at all
 `irq-probe`'s own `raised=` is the same job one level in, and the kernel can count that one
 alone because that sweep's loop is its own.
 
-**THE CALLERS ARE ON DIFFERENT CORES AND ONE ATOMIC STATE CELL IS WHAT JOINS THEM.** The arm
+**THE CALLERS MAY BE ON DIFFERENT CORES AND ONE ATOMIC STATE CELL IS WHAT JOINS THEM.** The arm
 writes the line, the waiter, the epoch and the ISR cell and then RELEASES the armed state; the
 waiter RELEASES the parked state from inside its own park; the raise ACQUIRES that, which is
 what makes those four readable there, reads `arch_clock_now` and RELEASES the opened state; the
@@ -625,29 +638,25 @@ board still closed 200 of 200 and dropped none, and its locality split moved fro
 175/25, the classification following where the waiter happened to be rather than where the
 sweep placed it.
 
-### Locality, and how the two populations are produced
+### Locality, and why every wake is local
 
 The tier-1 ISR stamps the core it runs on; the close compares that against the core the waiter
 closed on.
 
-**THE TWO BACKENDS DELIVER AN INJECTED LINE DIFFERENTLY, and a sweep that assumes either one is
-wrong on the other.** On a GIC, `arch_irq_inject` sets an SPI pending in `GICD_ISPENDR` and the
-distributor routes it to the core its target register names, whoever injected it. On rv64,
-`raise_line` sets `sip.SSIP` on the CALLING hart, so the line is delivered on the hart that
-injected it and nowhere else. Placing the WAITER alone therefore constructs a local wake on the
-first and leaves it to coincidence on the second: it measured 1 to 3 local samples in 200 on the
-four-hart rv64 board against 50 in 200 on the four-core GIC one.
+**THE LINE IS DELIVERED ON ITS CLAIM CORE, AND THE THREAD SERVING IT IS PINNED THERE.** That is
+the claim rule (N3 in [design-multicore.md](../design-multicore.md)): a claim is refused unless
+the claimer's mask is exactly its own core, a wait unless the waiter's mask is exactly the claim
+core, and the line is routed to the claim core whoever injects it. So root pins itself to core 0
+for its claim, and the waiter is spawned pinned to core 0 and never moved. A waiter on any other
+mask cannot wait at all: the refusal ends its loop, and every raise after it answers
+`-KOS_EBUSY` until the sweep abandons it.
 
-So the sweep places BOTH ENDS. It spawns a raiser beside the waiter, and for each kernel core
-runs two passes: the waiter on the raiser's own core, then the waiter on the next core. Where the
-line follows its injector every same-core pass is local and every next-core pass is cross; where
-the controller picks a fixed core, one waiter placement of each kind matches it. Each population
-is therefore at least one pass in twice the core count, BY CONSTRUCTION, on both -- and that is
-what makes a short row a finding rather than a property of the board. The gate refuses a
-population below half that share, not merely an empty one: a row left to coincidence is not empty,
-it is small.
-
-Root cannot be the raiser: it holds no handle on itself, and placing a thread takes one.
+The raiser walks every kernel core, two passes on each, and that moves only where the raise is
+injected: the ISR runs on the claim core and wakes a waiter that can run nowhere else. EVERY
+WAKE IS THEREFORE LOCAL, BY CONSTRUCTION, AT EVERY CORE COUNT. The local row carries the whole
+sweep, and the cross row, still declared above one kernel core, is empty: a cross-core wake of
+a line's waiter is a shape the claim rule does not admit. A cross sample is a wake the pin did
+not hold, and the gate refuses it.
 
 ### What the figures may claim
 
@@ -743,8 +752,8 @@ run that faulted inside the sweep reaches.
 
 `tests/integration/check_bench_irqspan.sh` reads the IRQ block. It refuses a raise denominator
 of zero, a dropped sample, a
-locality split with an empty population above one kernel core, rows whose totals disagree with
-what the probe says was closed, an unordered distribution on ANY row it emits, and either
+cross-core sample at any kernel core count, rows whose totals disagree with
+what the probe says was closed, an unordered entry, local or masked row, and a local
 end-to-end p50 at or below the tare. A SWEEP THAT CLOSED NO SPAN AT ALL is refused under that
 same end-to-end clause, which carries the two diagnoses of an empty block: an empty entry row
 with nothing refused as foreign beside it is a board that delivers no injected interrupt, and

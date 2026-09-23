@@ -38,6 +38,13 @@ namespace kickos
         }
         __attribute__((always_inline)) ~IrqLock()
         {
+            end();
+        }
+
+        // Only on a path that never returns into this bracket's scope, whose destructor would
+        // otherwise end it a second time.
+        __attribute__((always_inline)) void end()
+        {
             klock_leave();
             KICKOS_BENCH_LOCK_CLOSE();
             arch_irq_restore(state_);

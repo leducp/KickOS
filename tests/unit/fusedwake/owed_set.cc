@@ -116,7 +116,7 @@ namespace
         // Give the peer a running thread so it is eligible for reschedule requests.
         kernel().policy->on_remove(f->peer_running);
         f->peer_running->state = ThreadState::RUNNING;
-        kernel().current[CORE_PEER] = f->peer_running;
+        kickos::testfix::seat_running_on(f->peer_running, CORE_PEER);
 
         Endpoint* const ep = endpoint();
         {
@@ -154,6 +154,9 @@ namespace
     void seat_server_with_a_line(Line* l)
     {
         l->server = seat_pool(0, PRIO_SERVER);
+        // Pinned where it runs: a line is claimed and waited on only by a thread that cannot
+        // migrate.
+        l->server->affinity = ON_ME;
         attach_caps(l->server, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
@@ -322,6 +325,30 @@ TEST_F(FusedWake, a_consumed_notification_is_still_reported)
 
     kos_reply_recv_opts opts{};
     kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    opts.notify = l.bit;
+    EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
+              -KOS_ENOTIFY);
+    EXPECT_EQ(opts.notify, l.bit);
+}
+
+// The fused wait over a line admits only a server pinned to that line's claim core, and a
+// refused one consumes nothing: the pending bit is still there for the admitted retry.
+TEST_F(FusedWake, a_fused_wait_over_a_line_refuses_a_server_not_pinned_to_its_claim_core)
+{
+    Line l{};
+    ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
+    ASSERT_EQ(notify_signal(l.server, l.note), 0);
+
+    l.server->affinity = ON_ME | ON_PEER;
+    kos_reply_recv_opts opts{};
+    kos_reply_recv_opts_init(&opts, KOS_CAP_NONE, 0, KOS_TIMEOUT_NONE);
+    opts.notify = l.bit;
+    EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
+              -KOS_EPERM);
+    EXPECT_EQ(opts.notify, 0u);
+    EXPECT_EQ(notify_pending_of(l.server) & l.bit, l.bit) << "the refused wait consumed the bit";
+
+    l.server->affinity = ON_ME;
     opts.notify = l.bit;
     EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
               -KOS_ENOTIFY);

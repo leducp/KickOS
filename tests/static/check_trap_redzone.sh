@@ -4,9 +4,9 @@
 #
 # Trap stack-geometry gate. A trap entry on rv32imac, rxv3, armv7m and armv6m builds a frame
 # and then runs the kernel's C dispatch below it, privileged; this re-measures that descent and
-# fails when it exceeds what the arch header enforces. WHICH STACK the pair lands on is per
+# fails when it exceeds what the arch header enforces. Which stack the pair lands on is per
 # class, and that is what the failure clauses key on:
-#   thread  the interrupted unprivileged stack. The entry reserves a RED ZONE at the bottom of
+#   thread  the interrupted unprivileged stack. The entry reserves a red zone at the bottom of
 #           it and refuses the trap when less room remains below sp, so the zone is also
 #           compared against the spawn floor.
 #   kernel  the interrupted thread's own per-thread kernel block, which the entry transfers to.
@@ -15,25 +15,25 @@
 #   panic   the reporter's own array, which kpanic switches to before it prints. Compared
 #           against KICKOS_PANIC_STACK_SIZE.
 #
-# HOW IT MEASURES. tests/lib/scratch_ci.sh configures a SCRATCH tree of its own with
+# How it measures: tests/lib/scratch_ci.sh configures a scratch tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying that
 # translation unit's frame sizes, alloca counts and call edges; trap_redzone.py merges them and
 # takes the longest weighted path from the declared roots. The scratch tree stays separate from
-# the caller's build dir: those flags change every object.
+# the caller's build dir because those flags change every object.
 #
-# That tree is named by PRESET alone, so concurrent runs of one preset must pass distinct
+# That tree is named by preset alone, so concurrent runs of one preset must pass distinct
 # KICKOS_TRAP_REDZONE_DIR values or each corrupts the other's tree.
 #
-# The enforced numbers come out of the arch header and WHICH macros to read comes from
+# The enforced numbers come out of the arch header, and which macros to read comes from
 # trap_redzone_roots.txt. A macro that cannot be read is a hard failure and never a default: a
 # gate that defaults its own reference compares a measurement against nothing.
 #
-# SCOPE. ONE BOARD PER RUN, and the console backend is per board. THE ROOT SET IS A
-# DECLARATION: a call switch.S makes is in the number only when the roots file names it, so the
-# roots are what a reader keeps honest against the assembly. The compiler's own frame numbers
-# are taken on trust, per translation unit, for this configuration and this optimization level
-# (MinSizeRel, as the presets build), and INLINING IS ALREADY IN THEM, so the winning chain
-# printed below can be shorter than the source reads.
+# One board per run; the console backend is per board. The root set is a declaration: a call
+# switch.S makes is in the number only when the roots file names it, so the roots are what a
+# reader keeps honest against the assembly. The compiler's own frame numbers are taken on
+# trust, per translation unit, for this configuration and this optimization level (MinSizeRel,
+# as the presets build), with inlining already folded in, so the winning chain printed below
+# can be shorter than the source reads.
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
@@ -125,21 +125,25 @@ CFGFILE="$BUILD/generated/kickos_config.cmake"
 FLOOR="$(sed -n 's/^[[:space:]]*set(KICKOS_MIN_STACK_SIZE[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p' \
          "$CFGFILE" | head -n1)"
 [ -n "$FLOOR" ] || fail "no KICKOS_MIN_STACK_SIZE in $CFGFILE"
+# Selects the indirect-call records scoped by core count.
+KCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_KERNEL_CORES[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p' \
+          "$CFGFILE" | head -n1)"
+[ -n "$KCORES" ] || fail "no KICKOS_KERNEL_CORES in $CFGFILE"
 
 # --- resolve the enforced figures out of the arch header ---------------------
 [ -r "$HEADER" ] || fail "cannot read $HEADER, so the enforced red zone cannot be read;
     this gate compares a measurement against that header and has no default to fall back on"
 
-# A FIGURE IN THAT HEADER CAN BE POSTURE-DEPENDENT (rv32imac's SYSPRIV depth resolves per
+# A figure in that header can be posture-dependent (rv32imac's SYSPRIV depth resolves per
 # KICKOS_BENCH), so a sed over the source would see both branches of that ladder and refuse the
 # macro as defined twice, or take the first and compare against the wrong posture's number. The
-# COMPILER resolves it, and the scrape below runs over its macro dump.
+# compiler resolves it instead, and the scrape below runs over its macro dump.
 #
-# THE FLAGS ARE THE IMAGE'S, from compile_commands.json of the tree just built, restricted to a
+# The flags are the image's, from compile_commands.json of the tree just built, restricted to a
 # translation unit of the arch directory the header belongs to (its `include/` parent). That TU
 # static_asserts against these very macros, so the posture is theirs by construction.
 #
-# ONLY -D, -I, -isystem, -include and -std are carried over: preprocessing needs no more, and
+# Only -D, -I, -isystem, -include and -std are carried over: preprocessing needs no more, and
 # -fcallgraph-info would have the resolution drop a .ci file of its own. -Wundef -Werror is
 # added rather than inherited, and it is load-bearing: cpp takes the 0 branch of `#if KNOB` for
 # an undefined KNOB without saying so.
@@ -304,11 +308,11 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     zone=$((frame + depth))
     echo "trap_redzone: class $cls  $frame_macro=$frame  $depth_macro=$depth  zone=$zone ($onstack stack)"
     ENFORCED_ARGS="$ENFORCED_ARGS --enforced $cls=$frame,$depth"
-# A kstacks= class belongs to ONE of the two entry designs an arch can compile (armv7m
+# A kstacks= class belongs to one of the two entry designs an arch can compile (armv7m
     # compiles two) while the call graph sees one merged tree. Where KICKOS_KERNEL_STACKS
-    # disagrees the image does not contain the path, so both halves go unenforced. PRINTED,
-    # never silent: a run that skipped every registered preset of an arch would leave the
-    # figure unenforced, which one preset per run cannot see.
+    # disagrees the image does not contain the path, so both halves go unenforced, and it is
+    # printed rather than silent: one preset per run cannot see a figure left unenforced across
+    # every registered preset of an arch.
     if [ "$kstacks" != any ] && [ "$kstacks" -ne "$KSTACKS" ]; then
         echo "trap_redzone: class $cls not enforced here (KICKOS_KERNEL_STACKS=$KSTACKS,
     this class is the kstacks=$kstacks design): MEASURED AND NOT ENFORCED, it describes an
@@ -342,7 +346,7 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     # says nothing about it either. What it has to fit is that block minus the canary word,
     # and that is a clause of its own: raising the spawn floor would do nothing here, and the
     # array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
-    # A CLASS THE BOARD DOES NOT COMPILE IS MEASURED AND NOT ENFORCED, both halves. armv6m,
+    # A class the board does not compile is measured and not enforced, both halves. armv6m,
     # rv32imac and rxv3 rule that out in C with static_assert(KICKOS_KERNEL_STACKS != 0);
     # armv7m carries no such assert and must not, one of its chips resolving 0 on purpose.
     if [ "$onstack" = kernel ] && [ "$KSTACKS" -eq 0 ]; then
@@ -381,7 +385,7 @@ done < "$TMP/classes"
 
 # --- the measurement ---------------------------------------------------------
 # shellcheck disable=SC2086
-python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" \
+python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
     --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS
 prc=$?
 if [ "$prc" -ne 0 ]; then

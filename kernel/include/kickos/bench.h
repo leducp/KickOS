@@ -43,6 +43,13 @@ namespace kickos
         // already ahead of that ticket when it was drawn.
         BD_LOCK_DRAW,
         BD_LOCK_QUEUE,
+        // A count too: peers one reschedule ask reaches. Its n is how many asks were made,
+        // which is an UPPER BOUND on the entries they cause and not a count of them: several
+        // asks to one core between two takes collapse into a single take.
+        BD_RESCHED_ASK,
+        // The consumed half, and the exact one: a sample per take that stood, so its n is the
+        // entries a core made because a peer asked.
+        BD_RESCHED_TAKE,
         // Request all peers, raise the doorbell and wait for every reply.
         BD_DOORBELL,
 #endif
@@ -150,6 +157,13 @@ namespace kickos
 // RV32 cycle source: null selects rdcycle; otherwise use the MMIO counter.
 // Global C linkage is required by switch.S.
 extern "C" volatile uint32_t* g_bench_cycle_src;
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+// Fed by the scheduler, not by the lock: one sample per reschedule ask, valued by the peers it
+// reaches, so the row's n counts asks and a zero-peer ask stays a sample.
+extern "C" void kickos_bench_resched_ask(uint32_t peers);
+extern "C" void kickos_bench_resched_take(void);
 #endif
 
 // Force inlining at -Os to keep call overhead out of measured phases.
@@ -408,6 +422,8 @@ namespace kickos
 #define KICKOS_BENCH_LOCK_DROP() ::kickos::bench_lock_drop()
 #define KICKOS_BENCH_E2E_ISR_MARK(line) ::kickos::bench_e2e_isr_mark(line)
 #define KICKOS_BENCH_E2E_PARK_MARK() ::kickos::bench_e2e_park_mark()
+#define KICKOS_BENCH_RESCHED_ASK(peers) ::kickos_bench_resched_ask(peers)
+#define KICKOS_BENCH_RESCHED_TAKE() ::kickos_bench_resched_take()
 #else
 #define KICKOS_BENCH_LOCK_OPEN() \
     do                           \
@@ -437,6 +453,15 @@ namespace kickos
 #define KICKOS_BENCH_E2E_PARK_MARK() \
     do                               \
     {                                \
+    } while (false)
+#define KICKOS_BENCH_RESCHED_ASK(peers) \
+    do                                  \
+    {                                   \
+        (void)(peers);                  \
+    } while (false)
+#define KICKOS_BENCH_RESCHED_TAKE() \
+    do                             \
+    {                              \
     } while (false)
 #endif
 

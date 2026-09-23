@@ -186,6 +186,9 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 // access, EINVAL for a nonzero mask with no machine core, EBADF for an invalid/
 // exited handle, ENOSYS on single-core kernels.
 int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+// The caller's own handle, which is what lets a thread place itself. KOS_THREAD_NONE on a
+// single-core kernel, which carries no placement.
+kos_thread_t kos_thread_self(void);
 
 // Set a created task's priority ceiling and core grant while it is empty.
 // May only narrow the caller's grant. Zero leaves that field unchanged.
@@ -313,6 +316,9 @@ int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVA
 // the line and posts the bound notification; the holder waits in thread context and unmasks
 // once serviced. Possession of the cap, not an authority bit, authorises wait/ack/notify.
 // `flags` is a kos_irq_claim_flags set; the trigger type is fixed for the line's life.
+// Above one kernel core the claimer must be pinned to the core it runs on (-KOS_EPERM
+// otherwise), and the line is routed there; every thread that waits on, acks or discards it
+// must be pinned to that same core.
 // -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_ENOMEM (binding pool), -KOS_EMFILE (the
 // caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
 // having slots); the cap lands in *out_cap.
@@ -321,18 +327,19 @@ int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
 // `notify_cap`'s BADGE bit there, so badge the capability first if the object carries more
 // than one source. Needs KOS_CAP_WAIT on the line and KOS_CAP_SIGNAL on the notification.
 // ONE-WAY and once only: 0, -KOS_EALREADY (this line already signals something), -KOS_EBADF,
-// -KOS_EPERM or -KOS_EOVERFLOW.
+// -KOS_EPERM (a missing right, or the notification already carries a line claimed on another
+// core) or -KOS_EOVERFLOW.
 int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap);
 // Rearm early after servicing the device, allowing IRQs during later work.
 // Optional: kos_notify_wait rearms on entry. Repeated acks have no effect.
 // -KOS_EINVAL for a line attached to no notification: arming it would open a source whose
-// raise lands nowhere.
+// raise lands nowhere. -KOS_EPERM also for a caller not pinned to the line's claim core.
 int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, -KOS_EBADF/-KOS_EPERM/-KOS_EINVAL
 // Drop the controller's latched pending for the line. An EDGE binding's rearm deliberately
 // KEEPS that latch, and the controller is a reserved block no grant can reach, so this is
 // the only way to retire a pending the driver knows is stale. Neither masks nor unmasks: use
 // it between a wait return and the ack, where the ISR has already left the line masked.
-// Needs KOS_CAP_WAIT.
+// Needs KOS_CAP_WAIT, and a caller pinned to the line's claim core.
 int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 
 // --- Notifications -----------------------------------------------------------------------
@@ -366,8 +373,9 @@ int kos_notify_unbind(kos_cap_t notify_cap);
 // Wait for any bit of `mask`, consuming and returning them in *out_bits. Every attached line
 // whose badge is in `mask` is rearmed on entry, so a driver that never acks still receives
 // every later interrupt. `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
-// 0, or -KOS_E*: EBADF, EPERM (no KOS_CAP_WAIT, or the caller is not the bound thread),
-// EINVAL (an empty mask), EFAULT, ETIMEDOUT, ECANCELED.
+// 0, or -KOS_E*: EBADF, EPERM (no KOS_CAP_WAIT, the caller is not the bound thread, or its
+// own core mask is not exactly the core the attached lines were claimed on), EINVAL (an empty
+// mask), EFAULT, ETIMEDOUT, ECANCELED.
 int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
                     uint32_t* out_bits);
 uint64_t kos_clock_now(void);   // monotonic nanoseconds

@@ -23,6 +23,8 @@ namespace kickos
 #if KICKOS_DEBUG
     // Includes the switch window: klock_detach clears depth without releasing the lock.
     bool klock_exclusion_held(void);
+    // The bracket depth alone, so zero while a booked swap is still owed the lock.
+    uint32_t klock_depth(void);
 #endif
 
     // detach takes the depth off the core and LEAVES THE LOCK HELD: kickos_switch_unlock

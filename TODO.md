@@ -3829,6 +3829,8 @@ M8.8. None is a regression this milestone introduced unless it says so.
       scheduler surface M9 reworks, so taking either here would settle a contract ahead of the
       milestone that owns it. The limitation stays recorded in `kickos/sched.h`.
       **LANDS AT M9.2**, which owns the wait edge that guard sits on.
+      **DONE AT M9.2: EVERY PARK PROLOGUE HANDS `sched::exit_current` ITS OWN BRACKET**, ended
+      once `dying` is set, so the sweep starts at depth zero; `sem_wait` takes the dispatch's.
 
 - [x] **THE AMP GATE'S TOLERANCE RESTS ON ITS PATTERNS AND NOT ON THE PEERS BEING QUIET.**
       `tests/integration/check_amp_partition.sh` reads lines node 0 prints after its app-alive
@@ -3897,6 +3899,9 @@ M8.8. None is a regression this milestone introduced unless it says so.
       **REASSIGNED TO M9 AT M8.13**, which is the milestone that reworks the lock and the
       scheduler together and so the only one that can hold the set the cheap answer would read.
       **LANDS AT M9.2**: that set is what per-core ready queues are.
+      **LANDED AT M9.2**: per-core ready queues, and a displaced thread is placed by asking its
+      own core first and reading the other cores' ready bitmaps only when that core does not take
+      it; the switch has not been re-priced against the +61 above.
 
 
 ## M8.9 -- IPC structure
@@ -4267,8 +4272,9 @@ below, not duplicated in this section.
       that cannot fill, the drain budget); building it here would settle that contract ahead of the
       milestone that owns it, and a staging queue is a copy again. So the number is banked and the
       mechanism waits.
-      **REASSIGNED TO M9.3 AT M8.13.** The measurement is taken and the mechanism is the ring
-      lifetime that milestone designs.
+      **REASSIGNED TO M9.3 AT M8.13, AND TO M9.4 WHEN M9.3 FUSED INTO M9.2.** Under one lock the
+      push needed no ring, so the ring lifetime this mechanism waits on is designed with the rings
+      M9.4 lands before the scheduler leaves the lock.
 
 - [x] **PERF-8: THE ARMV8A SWITCH SAVES AND RESTORES ALL 32 Q REGISTERS (512 BYTES)
       UNCONDITIONALLY, VOLUNTARY OR NOT, AND THE FILE RULES OUT A CALLEE-SAVED SUBSET.**
@@ -4575,6 +4581,9 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       **REASSIGNED TO M9 AT M8.13.** The window opens the day the per-core ready queues land,
       and it is unreachable until then, so the re-read belongs to that change.
       **LANDS AT M9.2**, the stage that lands those queues.
+      **RE-READ AT M9.2: STILL CLOSED.** The queues landed under the one kernel lock, which the map
+      edit holds from its syscall and every install holds in `switch_book` and `sched::start`.
+      **THE RE-READ MOVES TO M9.4**, the stage where the local scheduler leaves that lock.
 
 ## M8.12 -- the M8 exit measurement, frozen
 
@@ -5285,10 +5294,10 @@ owed.
       console and which may therefore not stand in for a worst critical section when M9.1 derives
       its bound.
 
-- [ ] **P5 (= M9.2): PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
+- [x] **P5 (= M9.2): PER-CORE READY QUEUES, MOVED HERE FROM M8.10 -- THEIR REAL SHAPE IS THE
       LOCK-PARTITION DESIGN, AND BUILDING THEM UNDER ONE LOCK FIRST BUILDS THEM TWICE.** Under
       today's single lock, `pick_next` would only shrink from a filtered scan to a pop and
-      `poke_peers_below` would only lose its walk (`sched.cc`) -- tens of cycles inside a
+      the peer ask would only lose its walk (`sched.cc`) -- tens of cycles inside a
       ~3000-cycle lock hold, per the M8.10 audit this item was originally filed under. Landing that
       narrow shrink now would still leave the queues' real shape to design later: a thread home per
       core, a remote-wake protocol, a migration rule, priority and donation behaviour that crosses
@@ -5302,6 +5311,12 @@ owed.
       may land a behaviour-preserving preparatory layout under the still-single lock and nothing
       more -- no remote wake, no migration, no per-core lock -- explicitly labelled as prep for this
       M9 item rather than as the partition itself.
+      **LANDED, FUSED WITH M9.3.** Every kernel core has its own ready structure and `queue_core`
+      records which one holds a thread. The placement rule is an invariant: a READY thread never
+      waits behind equal or higher priority while a started core in its mask sits strictly below it.
+      A declining pass places the thread by priority and asks its new core; a falling core asks the
+      holder, which pushes. No pull, and no ring under one lock. `STATE.md` M9.2 says what the green
+      runs do not.
 
 - [x] **THE FLEET SWEEP KEYS ITS RECORDED STATUS ON A COMMIT AND ITS OWN COMMENT SAYS IT BELONGS
       TO A TREE.** `tools/sweep_host_gates.sh` and `tools/sweep_image_gates.sh` both build
@@ -14148,3 +14163,6 @@ follows is what survived that.
       which is the surface M9 reworks; neither is answerable by the instrument that raised them.
       **LAND AT M9.2**, which already carries "a line follows its claimer and a waiter follows its
       line" as a recorded ruling; these two are that rule asked of two backends.
+      **LANDED AT M9.2**: a claim routes its line to the claimer's core on armv8a, whose waiter is
+      pinned there so its unmask runs there too; above one kernel core rv64imac keeps one row per
+      hart, a line's state in the row of the hart it is routed to.

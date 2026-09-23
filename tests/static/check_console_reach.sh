@@ -62,13 +62,12 @@ then
 fi
 
 # --- clause 1: the corpus check is armed --------------------------------------
-# THE ONE THING A CLAUSE THAT ASSERTS AN ABSENCE CANNOT SKIP. The tool is handed an empty
-# directory and has to refuse it. A corpus check that has stopped firing then fails HERE, on
-# every board, rather than the day a build breaks and the gate reports the route clean over
-# nothing. The refusal names compile_commands.json because that is what the corpus is keyed
-# to: an empty directory holds no record of what it was meant to compile.
+# The tool is handed an empty directory and has to refuse it, so a corpus check that has
+# stopped firing fails here, on every board, rather than the day a build breaks and the gate
+# reports the route clean over nothing. The refusal must name compile_commands.json: that is
+# what the corpus is keyed to, and an empty directory holds no record of what it should compile.
 mkdir -p "$TMP/empty"
-if python3 "$TOOL" --ci-dir "$TMP/empty" --arch "$ARCH" --preset "$PRESET" \
+if python3 "$TOOL" --ci-dir "$TMP/empty" --arch "$ARCH" --preset "$PRESET" --kernel-cores 1 \
        --decl "$DECL" --indirect "$INDIRECT" > "$TMP/floor.log" 2>&1
 then
     sed -n '1,20p' "$TMP/floor.log" >&2
@@ -88,8 +87,15 @@ echo "console_reach: corpus check armed, an empty .ci directory is refused"
 BUILD="${KICKOS_CONSOLE_REACH_DIR:-/var/tmp/kickos-console-reach-$PRESET}"
 scratch_ci_build "$SRC" "$CMAKE" "$PRESET" "$BUILD"
 
+# Selects the indirect-call records scoped by core count.
+CFGFILE="$BUILD/generated/kickos_config.cmake"
+[ -r "$CFGFILE" ] || fail "cannot read $CFGFILE, which is where the gate reads KICKOS_KERNEL_CORES"
+KCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_KERNEL_CORES[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p' \
+          "$CFGFILE" | head -n1)"
+[ -n "$KCORES" ] || fail "no KICKOS_KERNEL_CORES in $CFGFILE"
+
 # --- the walk -----------------------------------------------------------------
-python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" \
+python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
     --decl "$DECL" --indirect "$INDIRECT"
 rc=$?
 

@@ -1,35 +1,24 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# THE INSTRUCTION BOUNDARY A BODY LISTING NAMES AND DOES NOT CARRY. An `objdump -d` sweep
-# decodes forward from wherever it last stopped, so on a variable-width ISA one byte of padding
-# between two instructions shifts every decode behind it until the stream happens to realign.
-# What comes out is not a refusal and not a decode failure: it is a run of instructions that
-# were never in the image, printed in the shape of ones that were. A positional reader counting
-# a call across that run reports a body that does not make it.
+# Finds the lowest branch target inside `sym`'s own range that the objdump -d listing has no
+# decoded instruction for. On a variable-width ISA, one byte of padding shifts every decode
+# behind it out of sync until the stream happens to realign; a branch target is an instruction
+# boundary by construction, so a target address with no decode there means the sweep desynced
+# before it. gate.sh's synced_body() restarts the sweep from that address.
 #
-# A BRANCH TARGET IS AN INSTRUCTION BOUNDARY BY CONSTRUCTION. So a target this body names in
-# its own range, at an address the listing carries no decoded instruction for, is proof the
-# decode went wrong somewhere ahead of it, and a second sweep STARTED at that address is right
-# from there. This file names the lowest such address; gate.sh's synced_body() splices.
+# Set through -v:
+#   sym        only targets whose operand names this body count; a call or branch out of it
+#              lands in a range this listing does not carry and would report as missing forever.
+#   branch_re  ERE over the mnemonic. Empty disables detection (a fixed-width ISA cannot lose
+#              sync). Must exclude pc-relative loads such as arm64 adrp or rv64 auipc: they
+#              print the same <sym+0x..> operand shape but point at data, and splicing on one
+#              corrupts a listing that was correct.
+#   floor      optional, consider only addresses above this one. synced_body() passes the last
+#              splice point so the loop terminates.
 #
-# WHAT THE CALLER SETS, through -v:
-#   sym         the body's symbol. A target is considered only where the operand names THIS
-#               body, because a call or a branch out of it lands in a range this listing does
-#               not carry and would be reported missing forever.
-#   branch_re   ERE over the MNEMONIC, and the caller owns it because only the caller knows
-#               which of this arch's mnemonics carry a target. A pc-relative LOAD prints its
-#               operand in exactly the same shape and points at DATA, so a detector taking
-#               every <sym+0x..> demands a resync on every arm64 adrp and every rv64 auipc
-#               pair, and splicing on one of those corrupts a listing that was correct.
-#               Empty disables the detector, which is how a fixed-width ISA spells "a sweep
-#               here cannot lose sync".
-#   floor       optional: consider only addresses ABOVE this one. synced_body() passes the
-#               address it spliced at last, which is what makes the loop terminate.
-#
-# WHAT IT PRINTS: the lowest qualifying address, or nothing at all when the listing carries
-# every boundary it names. Nothing is the answer for a healthy listing and for a body with no
-# branches, and the two are not distinguished here.
+# Prints the lowest qualifying address, or nothing. Nothing also means a healthy listing, or a
+# body with no branches; the two are not distinguished.
 function below(x, y)
 {
     return (length(x) < length(y) || (length(x) == length(y) && x < y))

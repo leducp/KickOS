@@ -185,6 +185,11 @@ namespace
         "KickOS: lx6 device line touched from a core it is not routed to\n";
 #endif
 
+#if KICKOS_KERNEL_CORES > 1
+    char const SHARED_CPU_INT[] =
+        "KickOS: lx6 device lines share a CPU interrupt, so one claim would route both\n";
+#endif
+
     // Nonzero once THIS core has reached its own landing and seated itself; written by that
     // core alone, read by the primary's release. The acquire/release pair is load-bearing: the
     // primary must see every register and route the far core seated BEFORE it sees the arrival.
@@ -208,11 +213,19 @@ namespace
     constexpr unsigned LX6_DEV_ROUTES = 4;
     Atomic<int8_t, Order::RELAXED> g_dev_cpu_int[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
     Atomic<int8_t, Order::RELAXED> g_dev_line[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
-    // Which core takes the line: the pin freeze N3 rests on, and INTENABLE is per core, so
-    // this says whose bit gets armed. Stored above one core only, though
-    // kickos_lx6_bind_dev_int's core argument is unconditional.
+    // Which core takes the line, since INTENABLE is per core and this says whose bit gets
+    // armed. Seated by kickos_lx6_bind_dev_int and moved by arch_irq_route under the kernel
+    // lock. Stored above one core only, though kickos_lx6_bind_dev_int's core argument is
+    // unconditional.
 #if KICKOS_NUM_CORES > 1
     Atomic<int8_t, Order::RELAXED> g_dev_core[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
+#endif
+#if KICKOS_KERNEL_CORES > 1
+    // The core kickos_lx6_bind_dev_int named, which KICKOS_IRQ_ROUTE_NONE returns the line to.
+    Atomic<int8_t, Order::RELAXED> g_dev_bound[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
+    // The core a line with no device route was claimed on, biased by one so that unclaimed is
+    // zero. Written by arch_irq_route under the kernel lock.
+    Atomic<uint8_t, Order::RELAXED> g_line_claim[32] = {};
 #endif
 
     // The CPU interrupt a logical line's mask targets, or -1 for a line with no route
@@ -230,8 +243,9 @@ namespace
         return -1;
     }
 
-    // The core a logical line is routed to, or -1 for a line with no device route.
-    inline int dev_route_core(int line)
+    // The core a logical line is routed to, or -1: a device line's matrix route, else the claim
+    // an injected line carries.
+    inline int routed_core(int line)
     {
 #if KICKOS_NUM_CORES > 1
         int8_t const want = static_cast<int8_t>(static_cast<unsigned>(line) & 31u);
@@ -245,16 +259,20 @@ namespace
 #else
         (void)line;
 #endif
+#if KICKOS_KERNEL_CORES > 1
+        return static_cast<int>(g_line_claim[static_cast<unsigned>(line) & 31u].load()) - 1;
+#else
         return -1;
+#endif
     }
 
-    // Refuses a touch of a ROUTED line from a core it is not routed to (freeze N3). An
-    // UNROUTED line has no routed core and is not covered here; what carries those cells is
-    // stated at the declaration of g_irq_unmasked.
+    // Refuses a touch of a routed line from a core it is not routed to. An unrouted line has
+    // no routed core and is not covered here; what carries those cells is stated at the
+    // declaration of g_irq_unmasked.
     inline void assert_line_core(int line)
     {
 #if KICKOS_DEBUG && KICKOS_NUM_CORES > 1
-        int const core = dev_route_core(line);
+        int const core = routed_core(line);
         if (core >= 0 and core != static_cast<int>(arch_cpu_id()))
         {
             arch_console_write_sync(WRONG_CORE, sizeof(WRONG_CORE) - 1);
@@ -287,6 +305,12 @@ extern "C"
     // (0..N logical lines), and owns the per-source clear discipline. A chip that binds a
     // device route defines this or fails to LINK.
     void kickos_lx6_dispatch_dev(int cpu_int);
+
+#if KICKOS_NUM_CORES > 1
+    // Chip matrix: point every source the chip bound to cpu_int at core's bank and sink it in
+    // the other. A chip that binds a device route defines this or fails to LINK.
+    void kickos_lx6_route_dev_int(int cpu_int, int core);
+#endif
 
     // Shared with switch.S/arch_start/startup.S, written by C and by asm: the ctx of the
     // running thread, and the deferred-switch target when arch_switch runs in ISR context.
@@ -323,11 +347,11 @@ extern "C"
     // 0 = masked. All lines start MASKED at reset (the arch.h reset contract), which
     // zero-initialisation gives, so the array lands in .bss.
     //
-    // Image-wide and not per core (freeze N3): a ROUTED line is pinned to one core, so the
-    // RSIL bracket below is its whole exclusion. An UNROUTED line has no pin, and
-    // arch_irq_mask reached from irq_event_isr is then the one writer in the image holding no
-    // kernel lock. That is what the cell must be atomic against; arch_irq_save masks only THIS
-    // core's levels and orders nothing across cores.
+    // Image-wide and not per core: a routed line is pinned to one core, so the RSIL bracket
+    // below is its whole exclusion. An unrouted line has no pin, and arch_irq_mask reached
+    // from irq_event_isr is then the one writer in the image holding no kernel lock. That is
+    // what the cell must be atomic against; arch_irq_save masks only this core's levels and
+    // orders nothing across cores.
     //
     // Nothing orders that ISR mask against a waiter's unmask except the kernel lock's own
     // chain: irq_event_isr masks, then sem_post takes IrqLock, and S32C1I plays both acquire
@@ -340,12 +364,21 @@ extern "C"
     static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_unmasked[32] = {};
     // pending software-injected logical line
     // Per core: arch_irq_inject raises INTSET on the CALLING core, so that same core's
-    // dispatch must read it. The -1 sentinel is spelled per element because 0 is a valid line.
+    // dispatch must read it.
+#if KICKOS_KERNEL_CORES > 1
+    // EVERY line raised here and not yet dispatched, so two raises before one dispatch both
+    // survive. Written by its own core alone, under that core's bracket or from its dispatch.
+    static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_inject_set[KICKOS_NUM_CORES] = {};
+#else
+    // ONE line deep: at one kernel core arch.h's one-redelivery-per-IrqLock-region rule is
+    // what keeps a second raise from overwriting the first. The -1 sentinel is spelled per
+    // element because 0 is a valid line.
     static_assert(KICKOS_NUM_CORES <= 2, "the sentinel below lists one value per core");
 #if KICKOS_NUM_CORES > 1
     static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line[KICKOS_NUM_CORES] = {-1, -1};
 #else
     static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line[KICKOS_NUM_CORES] = {-1};
+#endif
 #endif
     // set = a raise landed on this logical line while masked (latched one-deep, coalesced).
     // Redelivered through the int-7 doorbell at unmask.
@@ -355,6 +388,77 @@ extern "C"
     static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_pending[32] = {};
 
 }
+
+#if KICKOS_KERNEL_CORES > 1
+namespace
+{
+    // Raises for a line routed to a peer. A line's bit is owed from a to b while
+    // g_posted[a][b] and g_acked[b][a] differ in it: a flips its posted bit only when it reads
+    // nothing owed, and b copies the posted word it read into its acked word when it takes
+    // them, so each word keeps one writer and a second raise before the take coalesces.
+    Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_posted[KICKOS_NUM_CORES][KICKOS_NUM_CORES];
+    Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_acked[KICKOS_NUM_CORES][KICKOS_NUM_CORES];
+
+    // Every earlier load and store performs before any later one (ISA summary 8.3.164, p.490).
+    inline void memory_wait(void)
+    {
+        __asm volatile("memw" ::: "memory");
+    }
+
+    // The barrier is half of a handshake with take_posts, which writes its acked word and then
+    // reads what the raise publishes; this reads that acked word after the caller's stores.
+    // With no barrier on both sides both reads may be stale at once: this finds the line still
+    // owed and coalesces, the owner's handler reads the caller's state from before the raise,
+    // and the driver sleeps for good.
+    void post_to(uint32_t core, uint32_t me, uint32_t bit)
+    {
+        uint32_t const posted = g_posted[me][core].load();
+        memory_wait();
+        if (((posted ^ g_acked[core][me].load()) & bit) != 0u)
+        {
+            return;
+        }
+        g_posted[me][core] = posted ^ bit;
+        kickos_lx6_doorbell_send(1u << core);
+    }
+
+    // Takes every raise posted for this core, and returns their lines. Caller's interrupts
+    // masked.
+    inline uint32_t take_owed(uint32_t me)
+    {
+        uint32_t taken = 0u;
+        for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+        {
+            uint32_t const posted = g_posted[from][me].load();
+            uint32_t const owed = posted ^ g_acked[me][from].load();
+            if (owed != 0u)
+            {
+                g_acked[me][from] = posted;
+                // The other half of post_to's: this store before any load the handler makes.
+                memory_wait();
+                taken = taken | owed;
+            }
+        }
+        return taken;
+    }
+
+    // Dispatches every raise posted for this core. ISR context, after the doorbell's clear, so
+    // a post landing after the loads in take_owed re-asserts the trigger.
+    inline void take_posts(void)
+    {
+        uint32_t taken = take_owed(arch_cpu_id());
+        for (int line = 0; line < 32 and taken != 0u; line++)
+        {
+            uint32_t const bit = 1u << static_cast<unsigned>(line);
+            if ((taken & bit) != 0u)
+            {
+                taken = taken & ~bit;
+                kickos_isr_irq(line);
+            }
+        }
+    }
+}
+#endif
 
 namespace
 {
@@ -525,6 +629,8 @@ void kickos_lx6_dispatch_l1(void)
         {
             kickos_kernel_core_resched();
         }
+        // The raises a peer posted for a line routed here ride the same trigger.
+        take_posts();
 #endif
     }
 #endif
@@ -537,12 +643,26 @@ void kickos_lx6_dispatch_l1(void)
         uint32_t bit = 1u << SW_INT_L1;
         __asm volatile("wsr.intclear %0; rsync" ::"a"(bit) : "memory");
         phys_int_disable(bit); // doorbell consumed: off until the next inject re-arms it
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t raised = g_inject_set[arch_cpu_id()];
+        g_inject_set[arch_cpu_id()] = 0u;
+        for (int line = 0; line < 32 and raised != 0u; line++)
+        {
+            uint32_t const one = 1u << static_cast<unsigned>(line);
+            if ((raised & one) != 0u)
+            {
+                raised = raised & ~one;
+                kickos_isr_irq(line);
+            }
+        }
+#else
         int line = g_inject_line[arch_cpu_id()];
         g_inject_line[arch_cpu_id()] = -1;
         if (line >= 0)
         {
             kickos_isr_irq(line);
         }
+#endif
     }
 
     // Real device lines (chip-bound). The mask is the CPU interrupt's INTENABLE bit, the
@@ -818,7 +938,11 @@ void arch_irq_unmask(int line)
     if (g_irq_pending[l] != 0u)
     {
         g_irq_pending[l] = 0u;
+#if KICKOS_KERNEL_CORES > 1
+        g_inject_set[arch_cpu_id()] = g_inject_set[arch_cpu_id()].load() | (1u << l);
+#else
         g_inject_line[arch_cpu_id()] = static_cast<int>(l);
+#endif
         uint32_t bit = 1u << SW_INT_L1;
         phys_int_enable(bit);
         __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
@@ -826,6 +950,9 @@ void arch_irq_unmask(int line)
     arch_irq_restore(s);
 }
 
+// Above one kernel core, on the core the line is routed to, it also discards every raise of the
+// line that core holds: its inject latch and a peer's post it has not taken. The other posts
+// that take finds are handed back to this core's own doorbell.
 void arch_irq_clear_pending(int line)
 {
     if (line < 0)
@@ -835,27 +962,89 @@ void arch_irq_clear_pending(int line)
     assert_line_core(line);
     arch_irq_state_t s = arch_irq_save();
     g_irq_pending[static_cast<unsigned>(line) & 31u] = 0u;
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t const me = arch_cpu_id();
+    uint32_t const bit = 1u << (static_cast<unsigned>(line) & 31u);
+    g_inject_set[me] = g_inject_set[me].load() & ~bit;
+    uint32_t const rest = take_owed(me) & ~bit;
+    if (rest != 0u)
+    {
+        // take_owed left nothing owed from this core to itself, so each bit here flips owed.
+        g_posted[me][me] = g_posted[me][me].load() ^ rest;
+        kickos_lx6_doorbell_send(1u << me);
+    }
+#endif
     arch_irq_restore(s);
 }
 
-// The matrix routes a source into exactly one CPU's bank and sinks it in the other
-// (kickos_lx6_bind_dev_int), so a bound line HAS a core and an unbound one does not.
+// A bound device line's core is the one its matrix route names, kickos_lx6_bind_dev_int's until
+// a claim moves it; an injected line's is the one it was claimed on. Either way it is the core
+// that takes the line, and an unbound, unclaimed line has none.
 int arch_irq_line_core(int line)
 {
     if (line < 0)
     {
         return KICKOS_IRQ_LINE_CORE_NONE;
     }
-    return dev_route_core(line);
+    return routed_core(line);
 }
 
+#if KICKOS_KERNEL_CORES > 1
+// A device line's route moves its CPU interrupt whole, which no other bound line shares above
+// one core (kickos_lx6_bind_dev_int). KICKOS_IRQ_ROUTE_NONE puts it back on the core that bind
+// named, where the kernel's own attach expects it, and drops an injected line's claim.
+void arch_irq_route(int line, uint32_t core)
+{
+    static_assert(KICKOS_MULTICORE_MODEL_SHARED,
+                  "the kernel's core index names the machine core only under one shared kernel");
+    if (line < 0)
+    {
+        return;
+    }
+    if (core != KICKOS_IRQ_ROUTE_NONE and core >= KICKOS_KERNEL_CORES)
+    {
+        return;
+    }
+    int const ci = dev_route_cpu_int(line);
+    if (ci < 0)
+    {
+        uint8_t claim = 0u;
+        if (core != KICKOS_IRQ_ROUTE_NONE)
+        {
+            claim = static_cast<uint8_t>(core + 1u);
+        }
+        g_line_claim[static_cast<unsigned>(line) & 31u] = claim;
+        return;
+    }
+    // The target's INTENABLE bit is clear whichever core calls: above one kernel core only an
+    // unmask on the routed core sets it, and the line is masked there before its route moves.
+    int target = static_cast<int>(core);
+    for (unsigned i = 0; i < LX6_DEV_ROUTES; i++)
+    {
+        if (g_dev_cpu_int[i] == ci and core == KICKOS_IRQ_ROUTE_NONE)
+        {
+            target = g_dev_bound[i];
+        }
+    }
+    for (unsigned i = 0; i < LX6_DEV_ROUTES; i++)
+    {
+        if (g_dev_cpu_int[i] == ci)
+        {
+            g_dev_core[i] = static_cast<int8_t>(target);
+        }
+    }
+    kickos_lx6_route_dev_int(ci, target);
+}
+#endif
+
+// The raise lands on the core the line is routed to, through the cross-core doorbell when that
+// is a peer, and on this core for a line routed nowhere.
 void arch_irq_inject(int irq)
 {
     if (irq < 0)
     {
         return;
     }
-    assert_line_core(irq);
     // Bracketed like arch_irq_mask/unmask: an ISR reaching those writes the same cells.
     arch_irq_state_t s = arch_irq_save();
     // A raise on a masked line latches one-deep (redelivered at unmask), it is NOT
@@ -866,8 +1055,23 @@ void arch_irq_inject(int irq)
     }
     else
     {
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t const me = arch_cpu_id();
+        int const core = routed_core(irq);
+        if (core >= 0 and static_cast<uint32_t>(core) != me)
+        {
+            post_to(static_cast<uint32_t>(core), me, 1u << (static_cast<unsigned>(irq) & 31u));
+            arch_irq_restore(s);
+            return;
+        }
+#endif
         // recorded BEFORE ringing the doorbell (the dispatcher reads it)
+#if KICKOS_KERNEL_CORES > 1
+        g_inject_set[arch_cpu_id()] =
+            g_inject_set[arch_cpu_id()].load() | (1u << (static_cast<unsigned>(irq) & 31u));
+#else
         g_inject_line[arch_cpu_id()] = irq;
+#endif
         uint32_t bit = 1u << SW_INT_L1;
         // Enabled JUST-IN-TIME, disabled again by the dispatcher: the ROM boots with int 7
         // pending, so a doorbell left enabled at rest storms the level-1 handler.
@@ -877,15 +1081,37 @@ void arch_irq_inject(int irq)
     arch_irq_restore(s);
 }
 
+#if KICKOS_KERNEL_CORES > 1
+int kickos_lx6_inject_owed(void)
+{
+    uint32_t const me = arch_cpu_id();
+    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    {
+        if (g_posted[from][me].load() != g_acked[me][from].load())
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif
+
 // --- Device-route bind (chip layer) -----------------------------------------
-// Adds one (CPU interrupt, logical line, core) route and arms that CPU interrupt in INTENABLE
-// on the core that takes it. Several lines may name the same cpu_int (the grouped-line shape).
+// Adds one (CPU interrupt, logical line, core) route and, at one kernel core, arms that CPU
+// interrupt in INTENABLE on the core that takes it. Several lines may name the same cpu_int (the
+// grouped-line shape) at one kernel core only: above it a claim routes the whole CPU interrupt,
+// which would carry a sibling away from its own claim, so a second line on a bound cpu_int stops
+// the boot.
 //
-// The CHIP owes the other half of the pin: pointing the source at that core's bank and sinking
-// it in the other.
+// Above one kernel core nothing is armed here: the bit is set only by an unmask on the core the
+// line is routed to, so no other core can hold it set when arch_irq_route moves the line, and
+// no core can clear another's.
 //
-// INTENABLE IS PER CORE, so a route naming a core that is not this one is RECORDED and not
-// armed here: that core arms it from its own kickos_lx6_init. Call ONLY from arch_init, before
+// The chip owes the other half of the pin: pointing the source at that core's bank and sinking
+// it in the other, here and again at every kickos_lx6_route_dev_int.
+//
+// INTENABLE is per core, so a route naming a core that is not this one is recorded and not
+// armed here: that core arms it from its own kickos_lx6_init. Call only from arch_init, before
 // any interrupt is enabled: the route arrays are read in ISR context and written here with no
 // critical section. A route past LX6_DEV_ROUTES is dropped silently.
 void kickos_lx6_bind_dev_int(int cpu_int, int line, int core)
@@ -902,17 +1128,30 @@ void kickos_lx6_bind_dev_int(int cpu_int, int line, int core)
     {
         if (g_dev_cpu_int[i] >= 0)
         {
+#if KICKOS_KERNEL_CORES > 1
+            if (g_dev_cpu_int[i] == cpu_int
+                and g_dev_line[i] != static_cast<int8_t>(static_cast<unsigned>(line) & 31u))
+            {
+                arch_console_write_sync(SHARED_CPU_INT, sizeof(SHARED_CPU_INT) - 1);
+                kfault_terminate();
+            }
+#endif
             continue;
         }
         g_dev_line[i] = static_cast<int8_t>(static_cast<unsigned>(line) & 31u);
 #if KICKOS_NUM_CORES > 1
         g_dev_core[i] = static_cast<int8_t>(core);
 #endif
+#if KICKOS_KERNEL_CORES > 1
+        g_dev_bound[i] = static_cast<int8_t>(core);
+#endif
         g_dev_cpu_int[i] = static_cast<int8_t>(cpu_int);
+#if KICKOS_KERNEL_CORES == 1
         if (core == static_cast<int>(arch_cpu_id()))
         {
             phys_int_enable(1u << static_cast<unsigned>(cpu_int));
         }
+#endif
         return;
     }
 }
@@ -988,6 +1227,7 @@ void kickos_lx6_init(void)
 #if KICKOS_NUM_CORES > 1
     // LAST, once every register and route above is in place.
     g_core_seated[arch_cpu_id()] = 1u;
+#if KICKOS_KERNEL_CORES == 1
     // Arm the routes bound to THIS core: a secondary runs after the primary has bound them all.
     for (unsigned i = 0; i < LX6_DEV_ROUTES; i++)
     {
@@ -997,6 +1237,7 @@ void kickos_lx6_init(void)
             phys_int_enable(1u << static_cast<unsigned>(ci));
         }
     }
+#endif
 #endif
 }
 

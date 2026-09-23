@@ -5,6 +5,17 @@
 > **Status: ACTIVE.** M9.0's third deliverable, recorded 2026-09-22. It reads frozen numbers
 > and writes no code. It is the gate M9.1 through M9.7 were held behind; it approves none of
 > them itself, and what it states is what the evidence supports.
+>
+> **SUPERSEDED IN ONE RESPECT BY M9.1, 2026-09-23, AND THIS DOCUMENT STILL GATES THE STAGES
+> BELOW IT.** Every sentence here saying there is no multi-core silicon on this bench is true of
+> M8.12 and of the fleet as it stood, and false of the tree today: `esp32-wroom-benchsmp` runs a
+> shared kernel on two LX6 cores and is the only multi-core configuration this project has with a
+> live cycle counter. What that closes is named in
+> [`design-m9-lock-bound.md`](design-m9-lock-bound.md): the locked fraction, absent here on every
+> multi-core configuration, forms there. What it does NOT close is the rest -- no silicon
+> `lock-wait` above two cores, no cross-core `e2e` on silicon, and no round-trip distribution
+> anywhere. A reader planning from this document alone would plan as though that run did not
+> happen.
 
 **Why it is recomputed rather than carried.** The scenario arithmetic that sizes M9 rested on
 a DERIVED locked fraction, and `roadmap.md` records why that is dangerous: `MPU_APPLY` was

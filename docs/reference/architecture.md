@@ -452,10 +452,15 @@ RX MPU) must fit the same seam with no signature changes.
 `invariants.md` `rr-quantum-is-wall-clock`), intrusive
 links (ready/wait/timer lists), stack bounds, **MPU region descriptors**, privilege flag.
 
-**Ready queue:** array of per-priority FIFO lists + a priority bitmap. Highest = find-first-set,
-written **once and arch-neutrally** as `31 - __builtin_clz(bm)` in `highest_prio()`
-(`kernel/sched/policy_fifo_rr.cc`). There is no per-arch variant: on ARMv7-M the builtin is a `CLZ`
-instruction, and on ARMv6-M -- which has none -- the compiler lowers it to a libgcc helper.
+**Ready queue:** one structure per kernel core, each an array of per-priority FIFO lists + a
+priority bitmap, and a thread on exactly one, named by `Thread::queue_core`; a core picks only from
+its own. Highest = find-first-set, written **once and arch-neutrally** as `31 - __builtin_clz(bm)`
+in `top_prio()` (`kernel/sched/policy_fifo_rr.cc`). There is no per-arch variant: on ARMv7-M the
+builtin is a `CLZ` instruction, and on ARMv6-M, which has none, the compiler lowers it to a
+libgcc helper. Above one core, a READY thread never waits behind equal or higher priority while a
+started core in its mask runs strictly below it (a same-core handoff is had by pinning): the pass
+that declines it moves it there, and a core whose level falls asks the holder to push it
+(`docs/design-multicore.md` section 8).
 
 **Pluggable policy interface (RTEMS-style).** The core owns *mechanism* (run state, context
 switch, ready structure); the *policy* (which thread runs next) sits behind a small interface
@@ -465,13 +470,12 @@ arms the incoming thread and `next_timed_event()` reports the earliest policy de
 (`UINT64_MAX` = none), so the core owns the clock and the policy owns the deadline.
 **FIFO + RR ship first**
 (priority bitmap + per-priority FIFO, optional per-thread quantum); **EDF / rate-monotonic** drop
-in later without touching `reschedule()`, IPC, or the arch layer. Runqueues are kept **SMP-ready**
-(per-core) for RP2040 core1 later.
+in later without touching `reschedule()`, IPC, or the arch layer.
 
 **`pick_and_seat()`** -- the single decision point: ask the active policy for `pick_next()`;
 if != current, call `arch_switch(from, to)` (which may defer). `sched::reschedule()` is the bare
-entry to it and `sched::resched_after_wake()` the one that also carries the woken thread, so the
-cross-core ask can be dropped where this core takes that thread itself. No caller is privileged
+entry to it and `sched::resched_after_wake()` the one that also carries the woken thread, so a
+pass that does not take that thread places it. No caller is privileged
 over another -- **the tick is not special.**
 
 **Triggers (all equal):**

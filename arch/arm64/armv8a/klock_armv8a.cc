@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What the cross-core doorbell and the kernel lock coupled to it cost on armv8a: the GIC's
-// clear and raise, the service body's context synchronization event, the ticket draw's
-// exclusive pair, and the secondary park. The protocol over them is in
-// arch/common/doorbell_protocol.cc.
+// The cross-core doorbell and the kernel lock coupled to it, on armv8a: the GIC's clear and
+// raise, the service body's context synchronization event, the ticket draw's exclusive pair,
+// and the secondary park. The protocol over them is in arch/common/doorbell_protocol.cc.
 //
-// THE RENDEZVOUS IS SHARED MEMORY. Neither GIC version reports that a target has SERVICED a
-// software-generated interrupt, and GICv2's per-source pending registers are banked to the
-// accessing core: the controller carries the wake, the answer travels in the shared cells.
+// Neither GIC version reports that a target has serviced a software-generated interrupt, and
+// GICv2's per-source pending registers are banked to the accessing core: the controller
+// carries the wake, and the answer travels in the shared cells.
 //
 // The lock is a ticket pair: a draw takes g_next_ticket with LDXR/STXR, and the holder alone
 // advances g_now_serving with a plain load and an STLR. Both counters are written only inside
@@ -19,6 +18,7 @@
 #include "../common/gic.h"
 
 #include <kickos/arch/doorbell_protocol.h>
+#include <kickos/arch/klock_owner.h>
 
 #include <kickos/sys/atomic.h>
 
@@ -55,10 +55,10 @@ namespace
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-    // SEPARATE LINES. Every draw takes g_next_ticket's line exclusive in the inner-shareable
+    // Separate lines: every draw takes g_next_ticket's line exclusive in the inner-shareable
     // domain, which on a shared line would invalidate it under every waiter loading
-    // g_now_serving, and DDI 0487 M.b B2.12.5 (page B2-340) asks for a reservation granule
-    // between objects reached by exclusive accesses.
+    // g_now_serving. DDI 0487 M.b B2.12.5 (page B2-340) asks for a reservation granule between
+    // objects reached by exclusive accesses.
     alignas(KICKOS_DOORBELL_LINE) uint32_t g_next_ticket = 0;
     alignas(KICKOS_DOORBELL_LINE) uint32_t g_now_serving = 0;
 
@@ -70,16 +70,15 @@ namespace
         return v;
     }
 
-    // LDXR AND NOT LDAXR: a drawn ticket grants nothing and so owes no acquire.
+    // LDXR, not LDAXR: a drawn ticket grants nothing and so owes no acquire.
     //
-    // NOTHING MAY ENTER THE RETRY INTERVAL. DDI 0487 M.b B2.12.5 (page B2-340), condition 2:
-    // between a Store-Exclusive returning a failing result and the retry of the corresponding
-    // Load-Exclusive there may be no direct or indirect System register write, address
-    // translation instruction, cache or TLB maintenance instruction, exception generating
-    // instruction, exception return, indirect branch or Branch with Link, or a PE without
-    // FEAT_LSE loses its forward-progress guarantee. Never put a call in this loop.
-    //
-    // The bench arm's counter is a plain ADD, which that list does not name.
+    // No call may enter the retry interval: DDI 0487 M.b B2.12.5 (page B2-340), condition 2,
+    // forbids any direct or indirect System register write, address translation instruction,
+    // cache or TLB maintenance instruction, exception generating instruction, exception return,
+    // indirect branch or Branch with Link between a Store-Exclusive returning a failing result
+    // and the retry of the corresponding Load-Exclusive, or a PE without FEAT_LSE loses its
+    // forward-progress guarantee. The bench arm's counter is a plain ADD, which that list does
+    // not name.
 #if KICKOS_BENCH
     uint32_t kernel_lock_draw(uint32_t& retries)
     {
@@ -142,15 +141,13 @@ void kickos_arm64_doorbell_service(void)
         return;
     }
 
-    // A Context synchronization event on THIS PE: until a PE takes one, instructions it has
+    // A context synchronization event on this PE: until a PE takes one, instructions it has
     // already fetched may be re-executed with no bound (DDI 0487 M.b section B2.7.4.2), and no
     // operation makes one PE synchronize another (Glossary, "Context Synchronization event").
-    // ISB flushes the pipeline in the PE and IS such an event (section C6.2.177).
-    //
-    // EXPLICIT: the poll runs this body from inside a spin, which enters no exception, and
-    // whether exception entry is itself such an event rests on FEAT_ExS and SCTLR_EL1.EIS.
-    //
-    // After the snapshot and before the answer stores, so an initiator that has seen an
+    // ISB flushes the pipeline in the PE and is such an event (section C6.2.177); it is spelled
+    // explicitly because the poll runs this body from inside a spin, which enters no exception,
+    // and whether exception entry is itself such an event rests on FEAT_ExS and SCTLR_EL1.EIS.
+    // Placed after the snapshot and before the answer stores, so an initiator that has seen an
     // answer has seen this.
     __asm volatile("isb" ::: "memory");
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -170,9 +167,9 @@ void kickos_arm64_doorbell_service(void)
         }
     }
 #if KICKOS_AMP_NODE
-    // AFTER THE ANSWERS, and that order is the contract: an AMP payload drain may not delay
-    // the rendezvous a shared kernel's callers wait on through this same body. The early
-    // return above cannot lose a payload wake, a send raising the request cell like any other.
+    // After the answers, which is the contract: an AMP payload drain may not delay the
+    // rendezvous a shared kernel's callers wait on through this same body. The early return
+    // above cannot lose a payload wake, a send raising the request cell like any other.
     kickos_amp_node_service();
 #endif
 }
@@ -187,12 +184,12 @@ void kickos_doorbell_poll(void)
         return;
     }
     arch_irq_state_t const state = arch_irq_save();
-    // BEFORE THE SERVICE: a raise landing after the clear stays pending and is delivered.
+    // Before the service: a raise landing after the clear stays pending and is delivered.
     kickos_armv8a_gic_doorbell_clear();
     kickos_arm64_doorbell_service();
 #if KICKOS_KERNEL_CORES > 1
-    // AFTER THE CLEAR THAT ABSORBED IT: the clear above drops every source's pending bit,
-    // a reschedule among them, and the cell is what says one was owed.
+    // After the clear that absorbed it: the clear above drops every source's pending bit, a
+    // reschedule among them, and the cell is what says one was owed.
     if (kickos_kernel_core_resched_owed() != 0)
     {
         arch_ipi_resched_self();
@@ -215,7 +212,7 @@ void arch_ipi_resched_self(void)
 }
 #endif
 
-// A FULL barrier, and neither half of an acquire/release pair: the pairing it serves is a store
+// A full barrier, and neither half of an acquire/release pair: the pairing it serves is a store
 // then a load on both sides, which is the one direction release and acquire leave free.
 // Reached through a plain call that no callgraph gate follows, so its body is asserted out of
 // the linked image (tests/static/check_ipi_fence.sh).
@@ -267,14 +264,14 @@ uint64_t arch_ipi_counts(uint32_t core)
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-// THE POLL IN THIS LOOP IS WHAT KEEPS THE COUPLING SOUND: a caller acquires with interrupts
+// The poll in this loop is what keeps the coupling sound: a caller acquires with interrupts
 // masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
 // the lock waits on it.
 //
-// THE TURN TEST PRECEDES THE POLL. When the turn has come the previous holder has released, so
+// The turn test precedes the poll: when the turn has come the previous holder has released, so
 // no lock-holding initiator can be waiting on this core's answer and the skipped poll strands
-// nobody. The draw itself carries no poll either, so a core observed spinning answers only
-// once it has finished drawing.
+// nobody. The draw itself carries no poll either, so a core observed spinning answers only once
+// it has finished drawing.
 void arch_kernel_lock(void)
 {
 #if KICKOS_BENCH
@@ -288,10 +285,11 @@ void arch_kernel_lock(void)
     {
         if (now_serving() == ticket)
         {
+            kickos::klock::owner_take();
             return;
         }
         kickos_doorbell_poll();
-        __asm volatile("yield" ::: "memory");
+        kickos::doorbell::part_spin();
     }
 }
 
@@ -299,6 +297,7 @@ void arch_kernel_lock(void)
 // publishes before the next ticket is served.
 void arch_kernel_unlock(void)
 {
+    kickos::klock::owner_drop();
     uint32_t v = 0;
     __asm volatile("ldr  %w0, [%1]\n"
                    "add  %w0, %w0, #1\n"
@@ -307,30 +306,17 @@ void arch_kernel_unlock(void)
                    : "r"(&g_now_serving)
                    : "memory");
 }
-
-#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
-int arch_kernel_lock_held(void)
-{
-    uint32_t next = 0;
-    __asm volatile("ldr %w0, [%1]" : "=r"(next) : "r"(&g_next_ticket) : "memory");
-    if (next == now_serving())
-    {
-        return 0;
-    }
-    return 1;
-}
-#endif
 #endif
 
 // Where a core with no thread to run waits for a doorbell. Its interface and its vectors are
 // already live, so a raise arrives as an ordinary interrupt.
 //
-// g_contend PICKS WHICH STATE THE CHECK WANTS THIS CORE IN, and the two contending states are
+// g_contend picks which state the check wants this core in, and the two contending states are
 // what make each half of the coupling checkable: interrupts open, so the vector is what answers,
 // or the kernel lock taken under this core's own mask, where only the poll in the acquire loop
 // can. The spinning cell is what tells the initiator this core is in the second.
 //
-// A SHARED KERNEL LEAVES THIS LOOP FOR GOOD once it has published a thread for this core.
+// A shared kernel leaves this loop for good once it has published a thread for this core.
 #if KICKOS_NUM_CORES > 1
 void kickos_armv8a_doorbell_park(void)
 {
@@ -342,12 +328,10 @@ void kickos_armv8a_doorbell_park(void)
 #if KICKOS_AMP_NODE
     // What was sent to this core before it could be poked: a sender that found it unseatable
     // published anyway and skipped the raise. Read once here, behind the barrier pairing with
-    // the sender's, before this core waits for a doorbell it may already have missed.
-    //
-    // AHEAD OF THE UNMASK: the service body's only exclusion is this core's mask and the
-    // vector reaches the same body, so a doorbell landing inside this call would re-enter
-    // take_call or release_call. An SGI raised while it runs stays pending, so waiting
-    // misses nothing.
+    // the sender's, before this core waits for a doorbell it may already have missed. Placed
+    // ahead of the unmask: the service body's only exclusion is this core's mask and the vector
+    // reaches the same body, so a doorbell landing inside this call would re-enter take_call or
+    // release_call. An SGI raised while it runs stays pending, so waiting misses nothing.
     arch_ipi_fence();
     kickos_amp_node_service();
 #endif
@@ -382,7 +366,7 @@ void kickos_armv8a_doorbell_park(void)
             continue;
         }
         arch_irq_state_t const state = arch_irq_save();
-        // AFTER THE MASK AND CLEARED BEFORE ITS RESTORE, so the flag is never set with this
+        // Set after the mask and cleared before its restore, so the flag is never set with this
         // core's interrupts open: that is the whole content of what a reader concludes from it.
         g_spinning[me].v = 1u;
         arch_kernel_lock();

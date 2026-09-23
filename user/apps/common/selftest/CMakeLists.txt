@@ -31,7 +31,7 @@ endif()
 # can see it.
 set(_selftest_regions 4)
 
-# HOW MANY IMAGES THIS BOARD SHIPS. A per-board property, not a fleet one, and the binding
+# How many images this board ships. A per-board property, not a fleet one, and the binding
 # budget is a different one on each of them: 64 KiB of FLASH on the two STM32 parts, the
 # 128 KiB pow2 PMP code window (`_code_size` in arch/riscv/chip/esp32c6/esp32c6.ld) on an
 # enforcing ESP32-C6, whose next step up would take 128 KiB straight off the thread arena,
@@ -93,7 +93,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
 endif()
 # spi_mock.cc is a stand-in SPI backend under t_bus_device_slots, gated exactly like that arm. It
 # DEFINES the public kos_spi_* names while the image may also carry a chip driver, which is
-# legal only because the SPI SERVICE drivers rename their class symbols;
+# legal only because the SPI service drivers rename their class symbols;
 # tests/static/check_class_backend.sh asserts it per link.
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs spi_mock.cc)
@@ -114,7 +114,7 @@ foreach(_img IN LISTS _selftest_images)
   target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
   target_compile_definitions(${_img} PRIVATE ${_selftest_defs}
     KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi})
-  # Recorded ON THE TARGET, so a gate picks an image's skip and partial sets by the regions
+  # Recorded on the target, so a gate picks an image's skip and partial sets by the regions
   # it actually carries instead of by a part number written out a second time.
   set_target_properties(${_img} PROPERTIES
     KICKOS_SELFTEST_FIRST_REGION "${_img_lo}" KICKOS_SELFTEST_LAST_REGION "${_img_hi}")
@@ -131,7 +131,7 @@ set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
 # (cmake/x86_64_boot.cmake). Only the map names the archive MEMBER each symbol was resolved
 # from, which is what proves a backend's definition beat its fallback.
 #
-# Recorded ON THE TARGET: the gates that read the map live on the test side, and a path
+# Recorded on the target: the gates that read the map live on the test side, and a path
 # restated there would be a second truth that drifts from the -Map this link actually passed.
 if(KICKOS_ARCH STREQUAL "x86_64")
   get_target_property(_selftest_elf selftest KICKOS_IMAGE_FILE)
@@ -229,7 +229,7 @@ endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # fault_kills_task
 endif()
-# Mirrors the C guard, which is the AMP POSTURE and not the core count: an own-image node drives
+# Mirrors the C guard, which is the AMP posture and not the core count: an own-image node drives
 # one core and registers these all the same.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
@@ -237,7 +237,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms "${_tap_arms} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms "${_tap_arms} + 22") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
+  math(EXPR _tap_arms "${_tap_arms} + 24") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise
 endif()
 
 # The same count per REGION. The regions are separated by the `#undef TAP_ADD` lines in
@@ -295,7 +295,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 22") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 24") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise
 endif()
 
 # Every region main.cc cuts owes a count, and the counts must add up to the whole suite. That

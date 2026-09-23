@@ -6,11 +6,11 @@
 // the end-to-end arm takes the line from a cap the caller may wait on rather than from a
 // number, and every caller-supplied count is refused above the ceiling abi.h names.
 //
-// THREE OPS TAKE NO AUTHORITY AT ALL. RAISE carries no line of its own, the arm having chosen
+// Three ops take no authority at all. RAISE carries no line of its own, the arm having chosen
 // one from a cap, and it answers -KOS_EBUSY to anybody until that waiter has parked. RESET
 // answers 0 to anybody and clears the distributions. CLOSE answers -KOS_EPERM to a thread
-// that is not the armed waiter and counts the span into `dropped`, but it ENDS the span
-// either way, which is what the root close after the child reads.
+// that is not the armed waiter and counts the span into `dropped`, but ends the span either
+// way, which is what the root close after the child reads.
 //
 // Root declares KOS_AUTH_IRQ and the child declares nothing, so each root arm is the positive
 // control for the child arm beside it.
@@ -34,8 +34,8 @@ namespace
     // Root holds no cap at this index: its table has slot 0 (the console) and whatever the
     // claim below installs, so the arm reaches the resolve and is refused there.
     constexpr uint32_t NO_SUCH_CAP = 30;
-    // The child's only cap, a SIGNAL-rights copy of the line root claimed. SIGNAL and not
-    // WAIT: the arm must refuse a holder that cannot wait on the line it would name.
+    // The child's only cap: a signal-only copy of the line root claimed. It cannot wait, so
+    // the arm must refuse a holder that cannot wait on the line it would name.
     constexpr int CH_IRQ_SIGNAL = 1;
 
     int failures = 0;
@@ -82,7 +82,7 @@ namespace
         report_rc("child irq_setup", rc);
         check(rc == -KOS_EPERM, "child cannot attach a tier-2 handler");
 
-        // Asked AT the ceiling, so the refusal is the authority gate and not the bound.
+        // Asked at the ceiling, so the refusal is the authority gate and not the bound.
         rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX, 0);
         report_rc("child irq_sweep", rc);
         check(rc == -KOS_EPERM, "child cannot sweep the line");
@@ -147,7 +147,15 @@ int main(int, char**)
     check(rc == -KOS_EBADF, "KOS_AUTH_IRQ alone does not name a line to arm");
 
     kos_cap_t irq = KOS_CAP_NONE;
+#if KICKOS_KERNEL_CORES > 1
+    // A line is claimed by a thread pinned where it runs; only the claim needs root there.
+    kos_thread_t const self = kos_thread_self();
+    (void)kos_thread_set_affinity(self, 1u << 0);
+#endif
     int const crc = kos_irq_claim(ARM_LINE, KOS_IRQ_EDGE, &irq);
+#if KICKOS_KERNEL_CORES > 1
+    (void)kos_thread_set_affinity(self, 0);
+#endif
     report_rc("root irq_claim", crc);
     check(crc == 0, "root claims the line the arm will name");
 

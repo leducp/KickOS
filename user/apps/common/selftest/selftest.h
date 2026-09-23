@@ -50,11 +50,11 @@
 #define KICKOS_KERNEL_CORES 1
 #endif
 
-// A CROSS-THREAD PROGRESS ORDER IS A SINGLE-CORE CLAIM: priority orders which runnable thread
+// A cross-thread progress order is a single-core claim: priority orders which runnable thread
 // gets a core, and above one core a thread with a core of its own proceeds whatever its
 // priority. An arm reading the interleaving of two threads, or resting on one of them being
 // denied the CPU, therefore asserts what a shared kernel on several cores does not promise.
-// Place this FIRST in such an arm, ahead of any pooled object it would have to give back.
+// Place this first in such an arm, ahead of any pooled object it would have to give back.
 #if KICKOS_KERNEL_CORES > 1
 #define TAP_SKIP_ONE_CORE_ORDER()                                                          \
     do                                                                                     \
@@ -110,6 +110,43 @@ namespace selftest
     // root's own KICKOS_PRIO_MIN + 1, so it also waits on root reaching its wait.
     constexpr uint8_t TAP_PRIO_PARKS = 10;
     constexpr uint8_t TAP_PRIO_AFTER = 1;
+
+    // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
+    // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
+    // core. irq_spawn makes such a thread pinned to TAP_PIN_CORE, and TAP_ADD_IRQ runs an arm
+    // whose root claims or waits with root pinned there. One kernel core carries no placement.
+#if KICKOS_KERNEL_CORES > 1
+    inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
+                                         uint8_t prio, kos_cap_grant const* caps, uint8_t count,
+                                         uint8_t policy = KOS_POLICY_FIFO,
+                                         uint32_t quantum_ns = 0, bool privileged = false,
+                                         void* mem = nullptr, uint32_t mem_size = 0,
+                                         uint8_t authority = 0,
+                                         uint16_t const* cap_dest = nullptr)
+    {
+        return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum_ns,
+                                        privileged, mem, mem_size, authority, cap_dest,
+                                        KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+    }
+
+    template <void (*Arm)()>
+    void irq_pinned()
+    {
+        kos_thread_t const self = kos_thread_self();
+        int const rc = kos_thread_set_affinity(self, TAP_PIN_CORE);
+        if (rc != 0)
+        {
+            tap::fail("root could not pin itself to the core its line is claimed on: %d", rc);
+            return;
+        }
+        Arm();
+        (void)kos_thread_set_affinity(self, 0);
+    }
+#define TAP_ADD_IRQ(name, fn) TAP_ADD(name, irq_pinned<fn>)
+#else
+#define irq_spawn kos::thread::create_caps
+#define TAP_ADD_IRQ(name, fn) TAP_ADD(name, fn)
+#endif
 
     KICKOS_SELFTEST_LOCAL void wait_n(int n);
     KICKOS_SELFTEST_LOCAL size_t discover_granule();
@@ -224,6 +261,8 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_isolated_mixed_mask_ok();
     KICKOS_SELFTEST_LOCAL void t_slice_preempts_every_core();
     KICKOS_SELFTEST_LOCAL void t_threads_reach_every_core();
+    KICKOS_SELFTEST_LOCAL void t_irq_cross_core_wake();
+    KICKOS_SELFTEST_LOCAL void t_irq_reclaim_stale_raise();
 #endif
 
 }

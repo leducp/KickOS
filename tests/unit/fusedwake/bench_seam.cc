@@ -51,3 +51,13 @@ namespace kickos
     {
     }
 }
+
+// The scheduler and the kernel lock call these directly; this fixture links both without
+// linking bench.cc, so they need a body here or nothing that calls them links.
+extern "C" void kickos_bench_resched_ask(uint32_t)
+{
+}
+
+extern "C" void kickos_bench_resched_take(void)
+{
+}
