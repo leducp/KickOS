@@ -57,19 +57,29 @@ extern "C"
     }
 
     // IRQ tests inspect Kernel::irq_table; the default handler marks a free line.
-    void arch_irq_mask(int)
+    void arch_irq_mask(int line)
     {
+        if (line >= 0 and line < KICKOS_MAX_IRQ)
+        {
+            kickos::testfix::g_line_armed[line] = false;
+        }
     }
 
-    void arch_irq_unmask(int)
+    void arch_irq_unmask(int line)
     {
+        if (line >= 0 and line < KICKOS_MAX_IRQ)
+        {
+            kickos::testfix::g_line_armed[line] = true;
+        }
     }
 
-    // Routed core for irq_claim; -1 imposes no placement constraint.
-    int g_karch_irq_line_core = -1;
-    int arch_irq_line_core(int)
+    void arch_irq_route(int line, uint32_t)
     {
-        return g_karch_irq_line_core;
+        kickos::testfix::g_routed_armed = 0;
+        if (line >= 0 and line < KICKOS_MAX_IRQ and kickos::testfix::g_line_armed[line])
+        {
+            kickos::testfix::g_routed_armed = 1;
+        }
     }
 
     bool arch_irq_line_kernel_owned(int)
@@ -77,8 +87,12 @@ extern "C"
         return false;
     }
 
-    void arch_irq_clear_pending(int)
+    void arch_irq_clear_pending(int line)
     {
+        if (line >= 0 and line < KICKOS_MAX_IRQ)
+        {
+            kickos::testfix::g_line_clears[line]++;
+        }
     }
 
     void arch_idle_wait(void)
@@ -279,6 +293,7 @@ namespace kickos
 #endif
     }
 
+#ifndef KFIXTURE_REAL_TIME
     uint64_t ktime_now()
     {
         return testfix::g_now_ns;
@@ -298,7 +313,27 @@ namespace kickos
     {
         t->on_timer = true;
     }
+#endif
 }
+
+#ifdef KFIXTURE_REAL_TIME
+// The real kernel/time/time.cc answers the ktime half; this is the clock beneath it.
+extern "C"
+{
+    uint64_t arch_clock_now(void)
+    {
+        return kickos::testfix::g_now_ns;
+    }
+
+    void arch_timer_arm(uint64_t)
+    {
+    }
+
+    void arch_timer_disarm(void)
+    {
+    }
+}
+#endif
 
 namespace kickos
 {

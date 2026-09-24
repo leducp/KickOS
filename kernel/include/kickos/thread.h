@@ -57,7 +57,7 @@ namespace kickos
         CALL_REPLY_WAIT
     };
 
-    // What a parked thread waits FOR, and the object owning the list it is on. Set at every park
+    // What a parked thread waits for, and the object owning the list it is on. Set at every park
     // and cleared at every unpark: thread_kill dispatches on it, and a mis-tagged park unwinds the
     // wrong list. WAIT_JOIN, WAIT_LIVE_LAST and WAIT_TASK_EMPTY are on no list at all, so the tag
     // is the only thing that finds them.
@@ -104,23 +104,23 @@ namespace kickos
 
     struct Thread
     {
-        // EVERY member below needs an initialiser holding exactly the value .bss zeroing gives
+        // Every member below needs an initialiser holding exactly the value .bss zeroing gives
         // it, or the implicit default constructor stops being constexpr and the constinit idle
         // TCB and Kernel (kmain.cc, instance.cc) stop compiling.
         arch_context ctx{}; // saved machine context (opaque)
 
         // ready-list XOR wait-queue XOR reply-donor membership (shared node; see list.h)
         ListNode link;
-        // The wait queue we are parked on, or nullptr. Null does NOT mean "not parked": a
+        // The wait queue we are parked on, or nullptr. Null does not mean "not parked": a
         // WAIT_EP_REPLY caller is parked queue-less, and wait_kind below is its only edge.
         List* wait_queue = nullptr;
 
-        // timer delta-list membership (singly linked, sorted by deadline); SEPARATE
-        // from `link` so a timed wait can be on the timer list AND a wait queue at once.
+        // timer delta-list membership (singly linked, sorted by deadline); separate
+        // from `link` so a timed wait can be on the timer list and a wait queue at once.
         Thread* tnext = nullptr;
 
         // Where uint64_t aligns to 8 this is the padding word before deadline_ns; moving it
-        // grows every TCB. Advanced by switch_to for the INCOMING thread, read by
+        // grows every TCB. Advanced by switch_to for the incoming thread, read by
         // wq_confirm_resume on the thread itself; the RELEASE/ACQUIRE pair publishes what the
         // waker wrote under the block lock.
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
@@ -136,8 +136,8 @@ namespace kickos
         bool on_timer = false;
 
 #if KICKOS_LIBC_REENT
-        // TRUE WHILE `reent` STILL HOLDS WHATEVER THE PREVIOUS OCCUPANT LEFT. Cleared by the
-        // first switch-in, which is what primes it. FREE HERE: on_timer's padding before `id`
+        // True while `reent` still holds whatever the previous occupant left. Cleared by the
+        // first switch-in, which is what primes it. Free here: on_timer's padding before `id`
         // absorbs it on every target, so thread_scalar_bytes is unmoved.
         bool reent_fresh = false;
 #endif
@@ -147,7 +147,7 @@ namespace kickos
 
         char name_buf[KICKOS_THREAD_NAME_MAX] = {};
         char const* name = nullptr; // -> name_buf (set in thread_create); never a user pointer
-        uint8_t prio = 0;      // EFFECTIVE priority: the only field sched/policy/wq read.
+        uint8_t prio = 0;      // Effective priority: the only field sched/policy/wq read.
                                // Sole writer is sched::set_prio (re-seats READY threads).
         uint8_t base_prio = 0; // assignment anchor; PI raises `prio` above it, never below
         Policy policy = Policy::FIFO;
@@ -156,15 +156,15 @@ namespace kickos
         // Set once at the top of exit_current, never cleared: this thread is running its own
         // capability teardown. `state` cannot serve as the marker, the sweep releasing IrqLock
         // between chunks. Gates the cross-thread reply mint and the wake-during-teardown switch
-        // deferral, which is PRIORITY-CONDITIONAL: sched::wake admits a strictly higher peer.
+        // deferral, which is priority-conditional: sched::wake admits a strictly higher peer.
         bool dying = false;
-        // CapAuthority (AUTH_*) bits. Read by cap_check_authority WITHOUT IrqLock, so it must
+        // CapAuthority (AUTH_*) bits. Read by cap_check_authority without IrqLock, so it must
         // stay a single byte no path writes concurrently: the parent seats it at spawn before
         // the child runs, and only the thread itself narrows it. Ignored when `privileged`.
         // Fits the padding before quantum_ns; moving it grows every TCB.
         uint8_t authority = 0;
         // Count of CAP_IRQ entries in this thread's table; cap_teardown's pre-pass is the only
-        // reader and releases nothing at zero. Takes the LAST padding byte before quantum_ns;
+        // reader and releases nothing at zero. Takes the last padding byte before quantum_ns;
         // moving it grows every TCB.
         uint8_t cap_irq_live = 0;
 
@@ -174,6 +174,12 @@ namespace kickos
         // Spawn validates through sched_admit_mask; zero at the ABI selects task defaults.
         // A task grant cannot narrow once it has members. A zero field means an unused slot.
         uint32_t affinity = 0;
+        // The core whose ready structure holds this thread, its home. `affinity` says where a
+        // thread may run, this says where its scheduler state lives, and placement keeps it
+        // there unless the placement invariant moves it; the two coincide only when the mask
+        // is one bit. Written by publish_ready (sched.cc) alone, always inside `affinity`, and
+        // meaningless while blocked: a parked thread's waker chooses it afresh.
+        uint8_t queue_core = 0;
         static_assert(KICKOS_KERNEL_CORES <= 32,
                       "a core set is a 32-bit mask, as the doorbell's core mask is "
                       "(arch_ipi_send) and as an AMP node mask is (kickos/ampwindow.h). "
@@ -182,8 +188,8 @@ namespace kickos
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
-        // The notification this thread is bound to, by generational handle BIASED BY ONE, so
-        // the ZERO a fresh TCB carries means none (kickos/notify.h says why zero and not -1).
+        // The notification this thread is bound to, by generational handle biased by one, so
+        // the zero a fresh TCB carries means none (kickos/notify.h says why zero and not -1).
         // The pending bits live in that object and not here, so one word names it whatever
         // its badge space. Same width and same slot as the word it replaced, so
         // thread_scalar_bytes() and the TCB layout do not move. Written under IrqLock.
@@ -194,7 +200,7 @@ namespace kickos
         size_t stack_size = 0;
         // The dev window this thread holds, and the whole of the periph seam's possession gate.
         // Seated once at create from the spawn's grant; dev_size 0 means none, and a window at
-        // base 0 is not expressible. This is AUTHORITY and not the mapping: a translating backend
+        // base 0 is not expressible. This is authority and not the mapping: a translating backend
         // maps task-wide.
         uintptr_t dev_base = 0;
         size_t dev_size = 0;
@@ -203,10 +209,10 @@ namespace kickos
         bool kstack_owned = false;
         // Cancellation request (KOS_SYS_THREAD_KILL), a CancelKind. One-way: set by the
         // killer, never cleared, honoured at the target's own death point, its next syscall
-        // ENTRY. CANCEL_SLAY is the exception: its claim is a switch INTO the target, so it
+        // entry. CANCEL_SLAY is the exception: its claim is a switch into the target, so it
         // reaches a thread that never re-enters the kernel (thread_slay_claim_pending).
         uint8_t cancel_kind = CANCEL_NONE;
-        // Who may cancel this thread: the KILL TAG of the thread that spawned it, or
+        // Who may cancel this thread: the kill tag of the thread that spawned it, or
         // KILL_TAG_NONE, which is 0 (ThreadPool is declared below this struct). It is the whole
         // of the kill gate and must never alias; see kill_tag_of and the clear in
         // ThreadPool::alloc.
@@ -242,11 +248,11 @@ namespace kickos
         // under IrqLock, single-writer at every stage.
         size_t call_rx_cap = 0;
         uint16_t call_seq = 0;
-        // A BITFIELD PAIR, and it has to stay one: the four bytes here are saturated against
+        // A bitfield pair, and it has to stay one: the four bytes here are saturated against
         // `wait_obj`'s alignment, so a separate byte for the flag would cost every TCB four.
         // CallState spends two bits of the seven.
         uint8_t call_state : 7 = CALL_NONE;
-        // Set ONLY by the trap-handler IPC fastpath, which parks a caller with no kernel
+        // Set only by the trap-handler IPC fastpath, which parks a caller with no kernel
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
         uint8_t call_frame_parked : 1 = 0;
@@ -365,7 +371,7 @@ namespace kickos
 
     // The TCB budget; a deliberate TCB change lands by editing the scalar literal below.
     //
-    // MEASURE ON A 32-BIT TARGET. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
+    // Measure on a 32-bit target. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
     // the host: the padding before `task` is saturated on 32-bit and there is no tail padding.
 
     // ctx through switch_count, the word that saturates the padding before deadline_ns and the
@@ -492,9 +498,9 @@ namespace kickos
 
     // Whether `t`'s slay claim is still OUTSTANDING: it has been slain, and the claim, which is
     // a switch INTO it (kernel/sched/sched.cc, switch_book), has not fired. `dying` is what
-    // declines, being set once the victim is inside its own teardown. THE ONE COPY, and it must
-    // stay the one: the placement answer, the switch that owes the pass and the redirect that
-    // takes it have to agree, and a second spelling beside them is the copy that goes stale.
+    // declines, being set once the victim is inside its own teardown. This must stay the one
+    // copy: the placement answer, the switch that owes the pass and the redirect that takes it
+    // have to agree, and a second spelling beside them is the copy that goes stale.
     inline bool thread_slay_claim_pending(Thread const* t)
     {
         return t->cancel_kind == CANCEL_SLAY and not t->dying;
@@ -519,7 +525,7 @@ namespace kickos
         // Default false: an attr struct that forgets the field must not mint privilege.
         bool privileged = false;
 #if KICKOS_KERNEL_CORES > 1
-        // Cores the new thread may run on, ALREADY ADMITTED against `task`'s core set by the
+        // Cores the new thread may run on, already admitted against `task`'s core set by the
         // caller: it is stored as the affinity verbatim, so a mask reaching outside that set
         // breaks the Thread::affinity invariant. 0 asks for the task's default set, which is
         // what an attr struct that forgets the field gets.
@@ -530,7 +536,7 @@ namespace kickos
         void* mem_base = nullptr;
         size_t mem_size = 0;
         // Optional device/MMIO region granted to an unprivileged thread (R|W|DEV, never
-        // executable). AUTH_MEMORY-only at the spawn boundary, and PER-THREAD: it lands in this
+        // executable). AUTH_MEMORY-only at the spawn boundary, and per-thread: it lands in this
         // thread's own region set and never in its task's domain. base==0 => none.
         void* mmio_base = nullptr;
         size_t mmio_size = 0;
@@ -691,14 +697,14 @@ namespace kickos
         // bump-allocate a fresh one. Returns the index, or -1 if full. Lowest-exited first, which
         // holds `next` down: the scan below and the spawner_tag sweep are both bounded by it.
         //
-        // EXITED IS THE ONLY ADMISSIBLE KEY: the one state published with the kernel lock held
+        // EXITED is the only admissible key: the one state published with the kernel lock held
         // through the swap that parks the dying thread's frame, so a holder of that lock reads
         // it only with the occupant off-CPU.
         [[nodiscard]] int alloc()
         {
             for (int s = 0; s < next; s++)
             {
-                // ROOT'S SLOT IS RETIRED, NOT FREE. Reclaiming it would hand root's
+                // Root's slot is retired, not free. Reclaiming it would hand root's
                 // index-derived kill tag and its is_root identity to a stranger, and would push
                 // root's KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class is
                 // KICKOS_USER_STACK_SIZE. Every action below is a reclaim-point action root
@@ -710,7 +716,7 @@ namespace kickos
                 }
                 if (slots[s].state == ThreadState::EXITED)
                 {
-                    // Harvest at the RECLAIM point: only by now is the thread provably off-CPU,
+                    // Harvest at the reclaim point: only by now is the thread provably off-CPU,
                     // so writing the free-list link into its stack cannot race the final context
                     // save. Ownership moves to the list, so a later reclaim never double-pushes.
                     if (slots[s].kstack_owned)
@@ -722,7 +728,7 @@ namespace kickos
                     // cap_teardown has emptied every entry. cap_slab_detach clears the directory
                     // and the free-list head as it returns each chunk.
                     thread_cap_release(&slots[s]);
-                    // A slot's kill tag is INDEX-DERIVED and outlives its occupant: a child
+                    // A slot's kill tag is index-derived and outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands, or
                     // the new occupant inherits cancel authority over threads it never spawned.
                     for (int j = 0; j < next; j++)

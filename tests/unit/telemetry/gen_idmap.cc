@@ -54,6 +54,7 @@ int main()
     KOS_SYS_SCHED_PROBE,
     KOS_SYS_AMP_PROBE,
     KOS_SYS_DOORBELL_PROBE,
+    KOS_SYS_THREAD_SELF,
     };
     for (kos_syscall_nr s : calls)
     {

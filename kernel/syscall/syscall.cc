@@ -116,11 +116,9 @@ namespace kickos
                 {
                     break;
                 }
-                // STOPS AT THE FIRST CHUNK THE CONSOLE DID NOT TAKE. A line longer than this
-                // buffer is several inserts, and under pressure the ring can refuse one and
-                // accept the next: carrying on would put a HOLE in the middle of a line whose
-                // tail arrived. The caller is told how much landed and decides what to do,
-                // which is what a short write is for.
+                // A line longer than this buffer is several inserts, and under pressure the
+                // ring can refuse one and accept the next: carrying on would put a hole in the
+                // middle of a line whose tail arrived.
                 if (kconsole_write(chunk, n) == 0)
                 {
                     break;
@@ -142,10 +140,10 @@ namespace kickos
             // rejected here and not by the per-byte check.
             if (msg != 0)
             {
-                // EACH source byte is checked before the privileged copy dereferences it:
-                // the kernel must neither fault on a bad message pointer nor leak another
-                // domain's page through it. That BOUNDS the walk at the first unreachable
-                // byte, so a string with no NUL stops there.
+                // Each source byte is checked before the privileged copy dereferences it, so
+                // the kernel neither faults on a bad message pointer nor leaks another
+                // domain's page through it. The walk stops at the first unreachable byte, so
+                // a string with no NUL is truncated there.
                 size_t i = 0;
                 for (; i + 1 < sizeof(buf); i++)
                 {
@@ -164,7 +162,7 @@ namespace kickos
                     // This message prints after the kernel's trusted "KERNEL PANIC: "
                     // prefix, so no control byte may reach the console: a newline lets the
                     // caller continue on fresh lines that read as kernel output. Every such
-                    // byte is REPLACED, so the message is not cut short at the first one.
+                    // byte is replaced, so the message is not cut short at the first one.
                     unsigned char const c = static_cast<unsigned char>(buf[i]);
                     if (c < 0x20u or c == 0x7Fu)
                     {
@@ -172,7 +170,7 @@ namespace kickos
                     }
                 }
                 buf[i] = '\0';
-                // <kickos/sys.h> promises a visible truncation. The marker OVERWRITES kept
+                // <kickos/sys.h> promises a visible truncation. The marker overwrites kept
                 // bytes, so buf's size is unchanged. The probe byte is the first one
                 // dropped: unreadable there means nothing was dropped.
                 if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
@@ -240,7 +238,7 @@ namespace
                           uintptr_t a2, uintptr_t a3);
 }
 
-// THE death point of a cancelled thread. A cancel breaks whatever park the target is in, so it
+// The death point of a cancelled thread. A cancel breaks whatever park the target is in, so it
 // returns to userspace with -KOS_ECANCELED and gets ONE window to clean up over memory it already
 // holds; the next time it asks the kernel for anything, it ends here instead. Checked on ENTRY
 // and never on exit, which would pre-empt that window.
@@ -317,8 +315,8 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_SEM_WAIT:
         {
-            // Resolve and use under one lock (sem_wait/sem_post nest their own): a
-            // concurrent close could otherwise free the slot between resolve and use.
+            // Resolve and use under one lock: a concurrent close could otherwise free the slot
+            // between resolve and use.
             IrqLock lock;
             int err = 0;
             Semaphore* s = static_cast<Semaphore*>(
@@ -327,7 +325,7 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
             }
-            sem_wait(s);
+            sem_wait(lock, s);
             return 0;
         }
         case KOS_SYS_SEM_POST:
@@ -375,7 +373,7 @@ uint64_t syscall_body(uintptr_t nr,
                 return static_cast<uint64_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
             }
             // 0 / -KOS_EOWNERDEAD (HELD, owner died) / -KOS_EDEADLK (NOT held). EOWNERDEAD is
-            // negative but still an ACQUIRE: the wrapper decl documents the held-vs-not caveat.
+            // negative but still an ACQUIRE.
             return static_cast<uint64_t>(mutex_lock(m));
         }
         case KOS_SYS_MUTEX_UNLOCK:
@@ -415,7 +413,7 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_SEND:
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the
-            // park, and a spanning caller lock would livelock ARM (design section 3).
+            // park, and a spanning caller lock would livelock ARM.
             return static_cast<uint64_t>(
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               KOS_TIMEOUT_NONE));
@@ -466,7 +464,7 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_CONSOLE_PUBLISH:
         {
             // Hand the console UART to a userspace driver named by an endpoint cap.
-            // AUTH_CONSOLE, its own bit and not shutdown's. See the handover design (D3).
+            // AUTH_CONSOLE, its own bit and not shutdown's.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_CONSOLE))
             {
@@ -588,6 +586,12 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
+#if KICKOS_KERNEL_CORES > 1
+        case KOS_SYS_THREAD_SELF:
+        {
+            return thread_self();
+        }
+#endif
         case KOS_SYS_THREAD_SET_AFFINITY:
         {
             return static_cast<uint64_t>(
@@ -674,7 +678,7 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL); // bad irq line
             }
-            // THE SAME REFUSAL irq_claim MAKES: a line the kernel drives (the tick, console
+            // The same refusal irq_claim makes: a line the kernel drives (the tick, console
             // TX, the doorbell) is not a device a caller could stand in for, and raising one
             // reaches kernel state no capability named. Unconditional, as at the claim: every
             // in-tree injector uses a soft-only or a selftest-base line.
@@ -712,9 +716,9 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
         }
 #endif
-// KICKOS_KERNEL_CORES AND NOT ONLY THE SELFTEST FLAG: every op here is placement
-// scaffolding, and an arm at one core would put the dispatch arm, its switch and its
-// IrqLock into an image whose placement half is otherwise provably absent. The ceiling
+// The guard needs both KICKOS_KERNEL_CORES and the selftest flag: every op here is
+// placement scaffolding, and an arm at one core would put the dispatch arm, its switch and
+// its IrqLock into an image whose placement half is otherwise provably absent. The ceiling
 // arms need no probe, reading refusals rather than state.
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
         case KOS_SYS_SCHED_PROBE:
@@ -761,7 +765,7 @@ uint64_t syscall_body(uintptr_t nr,
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_ASPACE_PROBE:
         {
-            // Test scaffolding for the address-space seam. Gated PER OP and not here: three
+            // Test scaffolding for the address-space seam. Gated per op and not here: three
             // ops take a caller-supplied address (FRAME_AT, MEMTYPE_AT, UNMAP_HERE) and two
             // name pool frames with a capability in the caller's table, which
             // syscall_aspace.cc refuses without AUTH_MEMORY.
@@ -770,7 +774,7 @@ uint64_t syscall_body(uintptr_t nr,
 #elif defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_ASPACE_PROBE:
         {
-            // A REGION BOARD DECLINES BY NAME rather than falling to the unknown-number arm:
+            // A region a board declines by name rather than falling to the unknown-number arm:
             // an arm that reads this refusal to decide whether the board translates cannot
             // use -KOS_EINVAL, which also means "bad op".
             return static_cast<uint64_t>(-KOS_ENOSYS);
@@ -1136,8 +1140,8 @@ uint64_t syscall_body(uintptr_t nr,
                 return static_cast<uint64_t>(-KOS_EINVAL);
             }
             // Nameable by one descriptor, as for the stack grant (syscall_thread.cc):
-            // PMSAv7 MPU_RBAR MASKS the base down to the region size, so an unaligned base
-            // would be programmed as a window starting BELOW what the caller named. On a
+            // PMSAv7's MPU_RBAR masks the base down to the region size, so an unaligned base
+            // would be programmed as a window starting below what the caller named. On a
             // no-MPU arch it still demands a 16-aligned base.
             if (not arch_ram_region_admissible(base, rsz))
             {
@@ -1267,13 +1271,6 @@ uint64_t syscall_body(uintptr_t nr,
             // The out-word is validated BEFORE the park: a caller that cannot be written to
             // must not be blocked first and refused after.
             int rc = cap_out_check(a3);
-            if (rc != 0)
-            {
-                return static_cast<uint64_t>(rc);
-            }
-            // The rearms this wait issues reach the controller, whose mask and pending state
-            // are shared across the image, so the waiter goes to the routed core first.
-            rc = irq_pin_to_chain_core(sched::current(), static_cast<uint32_t>(a0));
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);

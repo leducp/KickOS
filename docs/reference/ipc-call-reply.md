@@ -317,6 +317,16 @@ no line attached is a complete notification.
   no capability, walk no pool and allocate nothing. It is ONE-WAY: nothing detaches a live
   binding, which is what makes the binding's raw pointer to the object sound. A holder of a
   `CAP_SIGNAL` copy calling `kos_notify` is another signaller, and it touches no controller.
+- **Above one kernel core, a notification's lines share ONE claim core.** A line is routed to
+  the core that claimed it, so the bind refuses `-KOS_EPERM` a line claimed on a core other than
+  the one the object's attached lines were. A released line leaves the object's chain, so a
+  re-claim elsewhere is a new binding that binds afresh. A thread handling a line does not
+  migrate: the claim refuses `-KOS_EPERM` a claimer not pinned to the core it runs on, and the
+  wait, the fused receive's wait over the object, `kos_irq_ack` and `kos_irq_discard` refuse
+  `-KOS_EPERM` a caller whose OWN core mask is not exactly that claim core, a mask merely
+  containing it included, even where its task's grant reaches it. The mask is never clamped or
+  rewritten: the thread pins itself with `kos_thread_self` and `kos_thread_set_affinity`, or is
+  spawned pinned.
 - **The bind is explicit and it is the WAITER's.** `kos_notify_bind(notify_cap)` says "this
   thread is this object's one waiter". It cannot be done at the claim: a driver's lines are
   claimed by the SPAWNER, which needs `KOS_AUTH_IRQ`, delegated into the threads it spawns, and

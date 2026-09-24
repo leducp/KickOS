@@ -4,10 +4,10 @@
 // RV64 supervisor mode: the state the trap entry and the interrupt controller must reach
 // without a TCB, one row per hart.
 //
-// THE ROW'S BLOCK STARTS WHERE ITS TRAP STACK ENDS, so sscratch's existing value, the
-// trap-stack top, IS this hart's block address, and switch.S keeps every csrrw against
-// sscratch it already had. The stack grows DOWN from the block, so no frame the entry builds
-// can reach a field, and an sp ABOVE the top is already refused by the entry's range test.
+// The row's block starts where its trap stack ends, so sscratch's existing value, the
+// trap-stack top, is this hart's block address, and switch.S keeps every csrrw against
+// sscratch it already had. The stack grows down from the block, so no frame the entry builds
+// can reach a field, and an sp above the top is already refused by the entry's range test.
 //
 // S-mode has no hart-identity CSR: mhartid is machine-mode only, tp is parked at 0 and is
 // U-mode writable. sscratch is neither readable nor writable from U-mode, so the identity a
@@ -49,10 +49,9 @@ struct alignas(KICKOS_RV64_PERCPU_BLOCK_SIZE) rv64_percpu_block
     uint32_t bench_sw_start;
 #endif
 
-    // THE SOFTWARE CONTROLLER'S CELLS MAY NOT BE KEYED HERE. A logical line is one system-wide
-    // resource, so per hart a driver that unmasks on one and an injector that raises on another
-    // never meet. They are file-scope in arch_rv64imac.cc, mutated one instruction at a time
-    // because the ISR path brackets with an epoch and not the kernel lock.
+    // The software controller's cells may not be keyed here. A line's state belongs to the hart
+    // the line is routed to, never to the hart touching it, or a driver that unmasks on one and
+    // an injector that raises on another never meet (arch_rv64imac.cc).
 };
 
 // The trap stack FIRST: its top is the block's address, which is what sscratch holds.

@@ -6,6 +6,7 @@
 // and the INTID the EL1 physical timer asserts.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
 
 #include "gic.h"
 #include "gicv2.h"
@@ -23,7 +24,7 @@ extern "C"
 
 namespace
 {
-    // EVERY DEVICE REGISTER IS REACHED THROUGH THE KERNEL'S OWN HALF. The device gigabyte is
+    // Every device register is reached through the kernel's own half. The device gigabyte is
     // mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares; TTBR0
     // carries a per-process root that maps no device at all, so a low literal here would
     // translate against whatever process happened to be running.
@@ -62,10 +63,10 @@ namespace
     constexpr uintptr_t GICC_IAR = 0x00C;
     constexpr uintptr_t GICC_EOIR = 0x010;
 
-    // THE KIND, as a value range rather than a separate field (roadmap.md's `(line, kind)`).
-    // Below 32 the GIC banks its registers per core, so INTID 30 names THIS core's timer; at
-    // or above 32 an interrupt is global and reaches no core until ITARGETSR names one. Every
-    // arch_irq_* body branches on this boundary and nothing else does.
+    // The kind, as a value range rather than a separate field. Below 32 the GIC banks its
+    // registers per core, so INTID 30 names this core's timer; at or above 32 an interrupt is
+    // global and reaches no core until ITARGETSR names one. Every arch_irq_* body branches on
+    // this boundary and nothing else does.
     constexpr int GIC_BANKED_INTIDS = 32;
 
     // INTID 1023 means "no pending interrupt" in an IAR read.
@@ -82,12 +83,50 @@ namespace
     static_assert(GIC_SGI_DOORBELL >= 0 and GIC_SGI_DOORBELL <= 15,
                   "GICD_SGIR carries a 4-bit INTID");
 
-    // EACH CORE'S GICD_SGIR TARGET BIT, WHICH IS A GIC CPU INTERFACE NUMBER AND NOT A CORE
-    // INDEX. IHI 0048B.b's one discovery mechanism: a read of a CPU-targets field of
-    // GICD_ITARGETSR0-7 returns the number of the processor performing the read.
+    // Each core's GICD_SGIR target bit, a GIC CPU interface number and not a core index.
+    // IHI 0048B.b's one discovery mechanism: a read of a CPU-targets field of GICD_ITARGETSR0-7
+    // returns the number of the processor performing the read.
     kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
         g_target_bit[KICKOS_NUM_CORES] = {};
 #endif
+
+    // The target byte arch_irq_route named for a global line. A target list is one-hot, so
+    // zero says no claim named a core and the array stays in .bss. Written on the claiming
+    // core and read by an arch_irq_unmask that may run on another, so the release store that
+    // seats a byte is what publishes the GICD_ITARGETSR write ahead of it.
+    static_assert(KICKOS_MAX_IRQ > GIC_BANKED_INTIDS,
+                  "a GIC with no global INTID leaves nothing to route");
+    using RouteCell = kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
+    RouteCell g_line_target[KICKOS_MAX_IRQ - GIC_BANKED_INTIDS] = {};
+
+    // Null for a banked INTID and for one past the record, which a distributor implementing
+    // more INTIDs than the chip declares would otherwise index into.
+    inline RouteCell* route_cell(int line)
+    {
+        if (line < GIC_BANKED_INTIDS or line >= KICKOS_MAX_IRQ)
+        {
+            return nullptr;
+        }
+        return &g_line_target[line - GIC_BANKED_INTIDS];
+    }
+
+    // The interface bit a core publishes for itself; zero while it has published none.
+    inline uint8_t target_bit_of(uint32_t core)
+    {
+#if KICKOS_NUM_CORES > 1
+        if (core >= KICKOS_NUM_CORES)
+        {
+            return 0;
+        }
+        return g_target_bit[core].load();
+#else
+        if (core != 0)
+        {
+            return 0;
+        }
+        return 0x01; // the literal names interface zero, the only one a single core has
+#endif
+    }
 }
 
 extern "C"
@@ -129,9 +168,9 @@ void kickos_armv8a_gic_percore_init(void)
     *gicd32(GICD_ISENABLER + (timer / 32) * 4) = 1u << (timer % 32);
 
 #if KICKOS_NUM_CORES > 1
-    // GROUP 0, WHICH IS WHAT THE ACKNOWLEDGE PATH READS. A group mismatch drops a
+    // Group 0, which is what the acknowledge path reads. A group mismatch drops a
     // software-generated interrupt silently, so this INTID keeps the group GICD_IGROUPR0
-    // resets it to and GICD_SGIR.NSATT stays clear to match. Without security extensions
+    // resets it to, and GICD_SGIR.NSATT stays clear to match. Without security extensions
     // IGROUPR is RAZ/WI and there is one group; with them, GICC_IAR and GICC_EOIR here are
     // group 0's.
     //
@@ -150,7 +189,7 @@ void kickos_armv8a_gic_percore_init(void)
 }
 
 #if KICKOS_NUM_CORES > 1
-// ONE WRITE REACHES ANY SUBSET: TargetListFilter 0b00 in [25:24] uses CPUTargetList in
+// One write reaches any subset: TargetListFilter 0b00 in [25:24] uses CPUTargetList in
 // [23:16], NSATT in [15] stays clear for group 0, and the INTID sits in [3:0]. GICD_SGIR is
 // write-only.
 //
@@ -170,7 +209,7 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
     {
         return;
     }
-    // IHI 0048B.b SPECIFIES NO ORDERING FOR SGI GENERATION, so the far side's view of earlier
+    // IHI 0048B.b specifies no ordering for SGI generation, so the far side's view of earlier
     // writes is the memory model's to order.
     __asm volatile("dsb ish" ::: "memory");
     *gicd32(GICD_SGIR) = ((list & 0xFFu) << 16) | static_cast<uint32_t>(GIC_SGI_DOORBELL);
@@ -203,9 +242,10 @@ void kickos_armv8a_gic_clear_pending(int intid)
 // so no body here read-modify-writes and every store is single and aligned. Unmask writes the
 // ENABLE last, so a half-applied sequence leaves the line masked.
 //
-// WHICH CORE THIS FAMILY ACTS ON IS THE INTID'S. A line below GIC_BANKED_INTIDS reaches the
+// Which core this family acts on is the INTID's. A line below GIC_BANKED_INTIDS reaches the
 // calling core's own bank, so the same argument means a different interrupt on each core; a
-// line at or above it is global and arch_irq_unmask pins it to core 0.
+// line at or above it is global, and the core that takes it is the one arch_irq_route
+// recorded. A global line with no record is pinned to core 0.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= kickos_gicv2.intid_count)
@@ -221,20 +261,52 @@ void arch_irq_unmask(int line)
     {
         return;
     }
-    // BYTE per INTID: a word index programs a different interrupt, and a 32-bit access is
+    // Byte per INTID: a word index programs a different interrupt, and a 32-bit access is
     // also unaligned, which on Device memory faults.
     *gicd8(GICD_IPRIORITYR + static_cast<uintptr_t>(line)) = 0;
+    RouteCell const* const cell = route_cell(line);
+    if (cell != nullptr and cell->load() != 0)
+    {
+        // GICD_ITARGETSR already holds what arch_irq_route wrote, and this core may not be
+        // the core it named.
+        *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
+        return;
+    }
     if (line >= GIC_BANKED_INTIDS)
     {
         // A global interrupt reaches no core until one is named; a banked one needs none.
-        // Core zero's own PUBLISHED interface number; the literal 0x01 names interface zero.
-#if KICKOS_NUM_CORES > 1
-        *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = g_target_bit[0];
-#else
-        *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = 0x01;
-#endif
+        // No claim named one, so core zero's own PUBLISHED interface number.
+        *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = target_bit_of(0);
     }
     *gicd32(GICD_ISENABLER + (line / 32) * 4) = 1u << (line % 32);
+}
+
+// The line is masked from irq_claim until the first irq_wait arms it, so the target lands
+// while nothing can be delivered against a half-written one.
+//
+// A banked line is the claiming core's own instance: an INTID below GIC_BANKED_INTIDS has one
+// copy per core and no target byte, so it is left alone here, and a claim of it claims the copy
+// of the core the claimer is pinned to.
+void arch_irq_route(int line, uint32_t core)
+{
+    RouteCell* const cell = route_cell(line);
+    if (cell == nullptr or line >= kickos_gicv2.intid_count)
+    {
+        return;
+    }
+    if (core == KICKOS_IRQ_ROUTE_NONE)
+    {
+        *cell = 0;
+        return;
+    }
+    uint8_t const bit = target_bit_of(core);
+    if (bit == 0)
+    {
+        return; // no interface to write; the line stays unrouted and unmask decides as before
+    }
+    *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = bit;
+    // LAST: the release store is what lets an unmask on another core read the write above.
+    *cell = bit;
 }
 
 void arch_irq_clear_pending(int line)
@@ -297,14 +369,13 @@ void kickos_armv8a_gic_dispatch(void)
     {
         kickos_isr_irq(static_cast<int>(intid));
     }
-    // THE WHOLE VALUE READ: GICC_EOIR must carry back the CPUID that GICC_IAR[12:10] reported
+    // The whole value read: GICC_EOIR must carry back the CPUID that GICC_IAR[12:10] reported
     // for an SGI, and a PPI or SPI reports zero there.
     *gicc32(GICC_EOIR) = iar;
 #if KICKOS_KERNEL_CORES > 1
-    // AFTER THE END OF INTERRUPT AND OUTSIDE THE SERVICE BODY: this takes the kernel lock,
+    // After the end of interrupt and outside the service body: this takes the kernel lock,
     // which the service body may not, the service answering an initiator that may hold it.
-    //
-    // THE CELL IS THE AUTHORITY, NOT THE RAISE: the doorbell also carries rendezvous whose
+    // The cell is the authority, not the raise: the doorbell also carries rendezvous whose
     // targets owe no scheduler entry, and the take is what tells the two apart.
     if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL)
         and kickos_kernel_core_resched_take() != 0)

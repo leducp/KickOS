@@ -6,18 +6,19 @@
 // draw's AMO, and the secondary park. The protocol over them is in
 // arch/common/doorbell_protocol.cc.
 //
-// THE RENDEZVOUS IS SHARED MEMORY: a CLINT msip word carries the wake and reports nothing back,
+// The rendezvous is shared memory: a CLINT msip word carries the wake and reports nothing back,
 // so the answer travels in the shared cells. The lock is a ticket pair: a draw takes
 // g_next_ticket with AMOADD.W, and the holder alone advances g_now_serving with a plain load
 // and a plain store under a fence. Both counters are written only inside this file.
 //
-// SSIP IS DOUBLE-BOOKED ON THIS ARCH and the dispatch is where that is resolved: the same cause
-// carries a peer's raise and this hart's own device-line injection, so THE CELL and not the
+// SSIP is double-booked on this arch and the dispatch is where that is resolved: the same cause
+// carries a peer's raise and this hart's own device-line injection, so the cell and not the
 // raise is what says a service is owed (kickos_rv64_doorbell_pending).
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/percpu.h>
 #include <kickos/arch/doorbell_protocol.h>
+#include <kickos/arch/klock_owner.h>
 #include <kickos/arch/rv64_doorbell.h>
 
 #if KICKOS_NUM_CORES > 1
@@ -72,7 +73,7 @@ namespace
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // SEPARATE LINES so a draw's write does not invalidate the line every waiter is loading
+    // Separate lines so a draw's write does not invalidate the line every waiter is loading
     // g_now_serving from. The width above is a choice and not a measurement
     // (kickos/arch/doorbell_part.h), and no reservation granule is at stake here: the ticket
     // takes LR/SC out of the lock entirely.
@@ -118,10 +119,10 @@ void kickos_rv64_doorbell_service(void)
 {
     uint32_t const me = arch_doorbell_core();
 
-    // THE ORDER IS THE WHOLE CONTRACT AND IT HAS THREE PARTS: observe the request, THEN fence,
-    // THEN answer. An initiator writes the tables, raises the request, and waits on the answer,
+    // The order is the whole contract and it has three parts: observe the request, then fence,
+    // then answer. An initiator writes the tables, raises the request, and waits on the answer,
     // so only having observed the request does this hart's fence sit after those table writes.
-    // A fence executed BEFORE the request is loaded attests to nothing the initiator cares
+    // A fence executed before the request is loaded attests to nothing the initiator cares
     // about: the peer could fence, the initiator could then write tables and raise, and the
     // peer could answer a request it never fenced for, leaving the initiator free to release
     // memory this hart still holds translations for.
@@ -144,14 +145,14 @@ void kickos_rv64_doorbell_service(void)
         return;
     }
 
-    // ONE FENCE PER SERVICE, NOT ONE PER REQUESTER: SFENCE.VMA with rs1 = rs2 = x0 is global,
-    // so a single execution after observing ANY outstanding request covers every one of them.
+    // One fence per service, not one per requester: SFENCE.VMA with rs1 = rs2 = x0 is global,
+    // so a single execution after observing any outstanding request covers every one of them.
     //
-    // The translation half a peer owes for itself: SFENCE.VMA orders THIS hart's address
+    // The translation half a peer owes for itself: SFENCE.VMA orders this hart's address
     // translation against another hart's table writes, and the ISA gives no operation by which
     // one hart performs it for another (Privileged ISA, "Supervisor Memory-Management Fence").
     //
-    // THE INSTRUCTION HALF IS NOT COVERED HERE: its operation is FENCE.I, and Zifencei is not
+    // The instruction half is not covered here: its operation is FENCE.I, and Zifencei is not
     // in this board's ISA baseline (arch/riscv/chip/virt_rv64/cpu.cmake).
     __asm volatile("sfence.vma zero, zero" ::: "memory");
 
@@ -159,7 +160,7 @@ void kickos_rv64_doorbell_service(void)
     g_served[me].v = g_served[me].v.load() + 1u;
 #endif
 
-    // The sequence OBSERVED above, never a re-read: a request raised after the fence is not one
+    // The sequence observed above, never a re-read: a request raised after the fence is not one
     // this fence covers, and answering it here would attest to a fence that never saw it.
 #if KICKOS_KERNEL_CORES > 1
     // After the snapshot above and before the answer stores below; both halves are the
@@ -175,9 +176,9 @@ void kickos_rv64_doorbell_service(void)
         }
     }
 #if KICKOS_AMP_NODE
-    // AFTER THE ANSWERS, and that order is the contract: an AMP payload drain may not delay
-    // the rendezvous a shared kernel's callers wait on through this same body. The early
-    // return above cannot lose a payload wake, a send raising the request cell like any other.
+    // After the answers, which is the contract: an AMP payload drain may not delay the
+    // rendezvous a shared kernel's callers wait on through this same body. The early return
+    // above cannot lose a payload wake, a send raising the request cell like any other.
     kickos_amp_node_service();
 #endif
 }
@@ -192,11 +193,11 @@ void kickos_doorbell_poll(void)
         return;
     }
     arch_irq_state_t const state = arch_irq_save();
-    // BEFORE THE SERVICE: a raise landing after the clear stays pending and is delivered.
+    // Before the service: a raise landing after the clear stays pending and is delivered.
     doorbell_clear();
     kickos_rv64_doorbell_service();
 
-    // THE CLEAR ABOVE DROPPED THE ONE CAUSE EVERY RAISE ARRIVES ON, and this body services
+    // The clear above dropped the one cause every raise arrives on, and this body services
     // exactly one of the three that ride it. Whatever the cells still say is owed is raised
     // again here, or it is lost: a device line whose raise this poll absorbed would leave
     // its driver asleep for good, which is a hang and not a failed assertion.
@@ -239,7 +240,7 @@ void arch_ipi_fence(void)
 
 // One poke and one wait over `peers`, whose whole effect is the fence every serviced hart runs.
 //
-// THE TRANSLATION HALF ONLY. RISC-V gives no broadcast form of SFENCE.VMA, so a peer holding a
+// The translation half only. RISC-V gives no broadcast form of SFENCE.VMA, so a peer holding a
 // space whose tables changed must be made to run its own. The instruction half would be FENCE.I,
 // absent from this board's ISA baseline, and this call does not stand in for it.
 //
@@ -271,11 +272,11 @@ uint64_t arch_ipi_counts(uint32_t core)
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-// THE POLL IN THIS LOOP IS WHAT KEEPS THE COUPLING SOUND: a caller acquires with interrupts
+// The poll in this loop is what keeps the coupling sound: a caller acquires with interrupts
 // masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
 // the lock waits on it.
 //
-// THE TURN TEST PRECEDES THE POLL. When the turn has come the previous holder has released, so
+// The turn test precedes the poll: when the turn has come the previous holder has released, so
 // no lock-holding initiator can be waiting on this hart's answer and the skipped poll strands
 // nobody. The draw carries no poll either, which here is one instruction wide.
 void arch_kernel_lock(void)
@@ -292,10 +293,11 @@ void arch_kernel_lock(void)
             break;
         }
         kickos_doorbell_poll();
-        __asm volatile("nop" ::: "memory");
+        kickos::doorbell::part_spin();
     }
     // The acquire half. This baseline has no Zalasr load-acquire, so it is written as a fence.
     __asm volatile("fence r, rw" ::: "memory");
+    kickos::klock::owner_take();
 }
 
 // A release store, which the fence plus the plain store is on RISC-V: it pairs with the fence
@@ -303,6 +305,7 @@ void arch_kernel_lock(void)
 // served.
 void arch_kernel_unlock(void)
 {
+    kickos::klock::owner_drop();
     uint32_t v = 0;
     __asm volatile("lw     %0, 0(%1)\n"
                    "addi   %0, %0, 1\n"
@@ -312,19 +315,6 @@ void arch_kernel_unlock(void)
                    : "r"(&g_now_serving)
                    : "memory");
 }
-
-#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
-int arch_kernel_lock_held(void)
-{
-    uint32_t next = 0;
-    __asm volatile("lw %0, 0(%1)" : "=r"(next) : "r"(&g_next_ticket) : "memory");
-    if (next == now_serving())
-    {
-        return 0;
-    }
-    return 1;
-}
-#endif
 #endif
 
 // Where a hart with no thread to run waits for a doorbell. Its vector and its sie are already
@@ -377,7 +367,7 @@ void kickos_rv64_doorbell_park(void)
         }
 #if KICKOS_KERNEL_CORES > 1
         arch_irq_state_t const state = arch_irq_save();
-        // AFTER THE MASK AND CLEARED BEFORE ITS RESTORE, so the flag is never set with this
+        // Set after the mask and cleared before its restore, so the flag is never set with this
         // hart's interrupts open: that is the whole content of what a reader concludes from it.
         g_spinning[me].v = 1u;
         arch_kernel_lock();

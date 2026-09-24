@@ -1307,9 +1307,9 @@ file owns only the number.
 | --- | --- |
 | M9.0 | the reference-kernel survey, the shared-kernel-stack investigation, and the entry envelope recomputed against M8.12 |
 | M9.1 | the lock's own bound: fair arbitration per backend, the doorbell poll kept |
-| M9.2 | ownership under the lock: a home derived from the mask, per-core ready queues, the wait-edge rule |
-| M9.3 | the per-pair rings: the kinds, the depth that cannot fill, the drain budget |
-| M9.4 | the local scheduler leaves the lock, under the stop condition |
+| M9.2 | ownership and placement under the lock: per-core ready queues, a home placed by priority and pushed by its holder, the wait-edge rule, a line pinned to its claimer |
+| M9.3 | fused into M9.2: under one lock the push needs no ring |
+| M9.4 | the per-pair rings, then the local scheduler leaves the lock, under the stop condition |
 | M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
 | M9.6 | the console contract across cores: who may speak, in the SMP and the AMP shape |
 | M9.7 | the write-up, the contract changes, and the M9 exit measurement |
@@ -1328,8 +1328,8 @@ stage. A list with no stage is what made M8 need a tail at all, so each now name
   And the two arch questions the IRQ instrument asks and cannot answer -- armv8a's
   `arch_irq_unmask` routing, and whether rv64imac's raised set should be per hart -- which are
   the same "a line follows its claimer" rule this stage already carries.
-- **M9.3** -- the doorbell's masked payload copy, measured and banked, waiting on the ring
-  lifetime this stage designs.
+- **M9.4** -- the doorbell's masked payload copy, measured and banked, waiting on the ring
+  lifetime that stage designs.
 - **M9.6** -- the console tear across cores, in both its SMP and its AMP shapes. It is the one
   item here that needs neither the lock nor the scheduler, which is why it is a stage and not an
   attachment: what it owes is a partition-wide contract for who may speak. It depends on nothing
@@ -1359,9 +1359,10 @@ EVIDENCE-GATED.** The opposite staging was proposed and is refused: bound the lo
 ownership only if the bound fails. It is refused because this milestone OWES per-core scheduler
 ownership, ready queues and remote-work inboxes whatever the measurement says -- they are what makes
 "local" a measurable thing at all -- and because a protocol built after the verdict is a protocol
-tested under the conditions that produced the verdict. So M9.2 and M9.3 land with one lock still
-held, which is also the cheapest way to test a publication protocol: without concurrency there is no
-race to chase while the shape is still moving. M9.4 and M9.5 are the ones the stop condition can
+tested under the conditions that produced the verdict. So M9.2 lands with one lock still held,
+and M9.4 lands its rings under that lock before the scheduler leaves it, which is also the cheapest
+way to test a publication protocol: without concurrency there is no race to chase while the shape is
+still moving. M9.4 and M9.5 are the ones the stop condition can
 refuse.
 
 **TWO OUTCOMES ARE VALID AND BOTH ARE STATED BEFORE THE WORK, so that neither reads as a
@@ -1403,14 +1404,20 @@ waker, so a depth at least the threads homed at the target is enough -- and only
 kinds, which carry no deadline, may refuse. A core never waits on a peer's scheduler lock while
 holding local state; it publishes.
 
-**A HOME IS THE OWNER OF A THREAD'S SCHEDULER STATE AND IS DERIVED FROM THE MASK, NEVER A FIELD
-BESIDE IT.** `docs/design-multicore.md` section 8 already froze one mask with no flag, one pick rule
-and migration as an ask rather than a yank, and M9.2 adds ownership without adding a placement field
-a caller writes: a single-bit mask fixes the home, a wider one lets it move, and a move is ownership
-transfer over the ask that already exists. The wait-edge rule is the write discipline that makes it
-sound: a READY or RUNNING control block is written by its home core, a PARKED one by its waker, and
-the wait edge is what confers the write. That is today's waker-cleared discipline promoted to a
-rule.
+**A HOME IS THE OWNER OF A THREAD'S SCHEDULER STATE, CHOSEN FROM THE MASK AND RECORDED IN
+`queue_core`.** The mask says which cores MAY run a thread and `queue_core` says which core's ready
+structure holds it: a set and an element, coinciding only at one bit, so recording the element is
+not a second truth about the mask. No caller writes it. `docs/design-multicore.md` section 8 keeps
+one mask with no flag, one pick rule and migration as an ask rather than a yank. **The placement
+rule is an invariant**: a READY thread never waits behind equal or higher priority while a started
+core in its mask sits strictly below it. A pass that declines a thread places it on the lowest such
+core and asks that core; a core whose level falls asks the holder of a thread it may now run, and
+the HOLDER pushes it. Never a pull. Under one lock the push is the holder's own publication and no
+ring is needed, which is why M9.3 fused into M9.2; the ring replaces that publication when the
+scheduler leaves the lock. Equal priority spreads because a wide mask is the user asking for spread,
+and same-core handoff is a placement userspace makes by pinning. The wait-edge rule is the write
+discipline that makes it sound: a READY or RUNNING control block is written by its home core, a
+PARKED one by its waker, and the wait edge is what confers the write.
 
 **AN ENDPOINT'S OWNER IS THE HOME OF ITS FIRST RECEIVER, STICKY, AND CLEARED WHEN NO HOLDER IS
 LEFT.** The alternative was an owner named at the mint, and it is refused because it would put a
@@ -1429,23 +1436,25 @@ refused: it moves a thread to break an inversion, which is a yank. **The server'
 on its own core is the largest term in every cross-owner bound and is written down as such** rather
 than left out, which is how the first version of this arithmetic came to look better than it was.
 
-**A LINE FOLLOWS ITS CLAIMER AND A WAITER FOLLOWS ITS LINE, and this lands whole with M9.2 rather
-than as an interim pin in M8.9.** Two rules. A CLAIM says "I serve this line from here" and routes
-the line to the claimer's core; a WAIT re-homes the waiter to the line's core. Admission does not
-change: a task whose grant cannot reach that core is REFUSED and never clamped. The claimer is the
-server by contract, so a provider that wants a driver on a line delegates the authority and lets the
-driver claim rather than claiming on its behalf. **The kernel never rewrites a thread's own mask**,
-which is what today's pin-to-the-line's-core does and what goes away: placement becomes an internal
-home, and that is precisely why the rule cannot land as a pin first. The long work may be PUSHED
-from the home core to an idle core inside the mask, at a wake the home is too busy to take or at a
-preemption, consumed by the target through a ring -- never a pull, so no core steals and the
-single-writer rule holds. A single-bit mask never pays for it and a wide mask pays at most one
-transfer per wake. Every controller touch executes on the line's core, by re-home or by the routed
-touch that already exists. The consequence is that interrupt-to-userspace is core-local in both
-profiles with no declaration from anybody: the kernel provides locality and balance stays userspace
-policy, exactly as section 8's anti-work-conserving placement already puts it. M8.9's sticky
-notification and its bind-to-the-receive-wait are designed against this now, so that the wait surface
-moves once.
+**A LINE FOLLOWS ITS CLAIMER AND A WAITER IS PINNED TO ITS LINE'S CORE, and this lands whole with
+M9.2 rather than as an interim pin in M8.9.** Two rules, one principle: a thread handling an IRQ
+does not migrate. A CLAIM says "I serve this line from here": it is refused unless the claimer's
+own mask is exactly the one core it runs on, and it routes the line to that core. A WAIT, an ack or
+a discard, the fused receive's wait over a notification included, is refused unless the waiter's
+own mask is exactly that claim core, a mask merely containing it too. Admission does not change: a
+task whose grant cannot reach that core is REFUSED and never clamped. The claimer is the server by
+contract, so a provider that wants a driver on a line delegates the authority and lets the driver
+claim rather than claiming on its behalf. **The kernel never rewrites a thread's own mask**: the
+thread pins itself, or is spawned pinned, and a refusal says so. The long work of a thread with a
+WIDE mask, which by this rule is never an IRQ waiter, may be PUSHED from the home core to an idle
+core inside the mask, at a wake the home is too busy to take or at a preemption, by the holder's
+own publication and never pulled, so no core steals and the single-writer rule holds. A
+single-bit mask never pays for it and a wide mask pays at most one transfer per wake. Every
+controller touch executes on the line's core, by the pin or by the routed touch that already
+exists. The consequence is that interrupt-to-userspace is core-local in both profiles, and balance
+stays userspace policy, exactly as section 8's anti-work-conserving placement already puts it: a
+driver wanting more cores hands work to wide-mask threads of its own. M8.9's sticky notification and
+its bind-to-the-receive-wait are designed against this now, so that the wait surface moves once.
 
 **THE ROUTED MASK TOUCH IS NOT PART OF THIS AND WAS WITHDRAWN AS A DECISION.** `irq_route.cc`
 publishes a mask, unmask or clear of a line owned by another core to that core and waits for
@@ -1468,12 +1477,15 @@ second answer**, per section 4 of the multicore contract. The plan assumes the l
 resolve, quiescence runs as a spike, and the question is reopened before M9.5 with M8.12's split of
 the locked span into resolve, handoff and scheduling in hand.
 
-**EIGHT CORES IS A SCENARIO AND NOT A TARGET.** No preset configures more than four, no shared
-kernel has ever run on silicon, and an emulator's timing model cannot witness cost at any width, so
-an eight-core run answers questions about ring storage, drain work and arrays that assumed four --
-never about latency, and never the choice between the two outcomes. **So M9's verdict is provisional
-on emulation by construction**, and the silicon re-check is the RK3588-class part, which belongs to
-the driver era rather than to this milestone. Its feasibility spike may run at any time; the
+**EIGHT CORES IS A SCENARIO AND NOT A TARGET.** No preset configures more than four, and an
+emulator's timing model cannot witness cost at any width, so an eight-core run answers questions
+about ring storage, drain work and arrays that assumed four -- never about latency, and never the
+choice between the two outcomes. **M9's verdict is provisional AT WIDTH rather than provisional
+entirely**, which is a correction M9.1 made: a shared kernel now runs on silicon, on the two LX6
+cores of `esp32-wroom-benchsmp`, and that is the project's only multi-core configuration with a
+live cycle counter. Two cores is not four and one part is not a fleet, so the silicon re-check at
+width is still the RK3588-class part, which belongs to the driver era rather than to this
+milestone. Its feasibility spike may run at any time; the
 requirement-5 ruling for a part whose clusters share an ISA but not a performance class, and the
 per-cluster constants, belong to that port.
 

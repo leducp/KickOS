@@ -2,53 +2,61 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The store->load FENCE the rv64imac interrupt-controller handshake owes, read out of the LINKED
-# IMAGE, and its POSITION relative to the word each side publishes.
+# The store->load fence the rv64imac interrupt-controller handshake owes, read out of the
+# linked image, and its position relative to the word each side publishes.
 #
-# arch_irq_unmask and arch_irq_inject are DEKKER-SHAPED against each other: each writes its OWN
-# word and then reads the PEER's. Unmask writes g_irq_unmasked then takes from g_irq_pending,
+# arch_irq_unmask and arch_irq_inject are Dekker-shaped against each other: each writes its own
+# word and then reads the peer's. Unmask writes g_irq_unmasked then takes from g_irq_pending;
 # inject writes g_irq_pending then re-reads g_irq_unmasked. RVWMO preserves no order between a
 # store and a later load to a different address (RISC-V Unprivileged ISA, Version 20260120,
-# section 18.1.3) and an AMO with .aq and .rl both clear imposes no additional ordering
-# (section 13.1), so with no fence on both sides both writes may sit behind both reads: unmask's
-# take finds nothing pending and inject's re-read finds the line still masked, the bit stays set,
-# the line stays unmasked, and NOTHING raises sip.SSIP. The driver then sleeps for good. The take
+# section 18.1.3), and an AMO with .aq and .rl both clear imposes no additional ordering
+# (section 13.1); with no fence on both sides, both writes may sit behind both reads: unmask's
+# take finds nothing pending, inject's re-read finds the line still masked, the bit stays set,
+# the line stays unmasked, and nothing raises sip.SSIP. The driver sleeps for good. The take
 # settles which side delivers, never whether the peer's write is visible.
 #
-# REFUSED: a body with no fence between its publish and its next memory access, a fence that does
-# not order stores before loads (FENCE.TSO is the trap; it omits exactly this edge), a fence
-# with nothing after it, a body whose publish this reader cannot resolve to a named word, and a
-# listing this reader cannot decode.
+# Refused: a body with no fence between its publish and its next memory access; a fence that
+# does not order stores before loads (FENCE.TSO omits exactly this edge); a fence with nothing
+# after it; a body whose publish this reader cannot resolve to a named word; a listing this
+# reader cannot decode.
 #
-# ASSERTED STRUCTURALLY BECAUSE NO RUN CAN WITNESS IT. QEMU's TCG gives stronger ordering than
-# RVWMO, so an image carrying no fence at all passes every arm in this tree; the defect and the
-# fix are indistinguishable under emulation, and there is no RVWMO silicon on this bench. A soak
-# would be a probabilistic arm that reads exactly like a broken one. So the ordering rests on the
-# specification and on this gate, and is recorded as unwitnessed in STATE.md.
+# Asserted structurally because no run can witness it: QEMU's TCG gives stronger ordering than
+# RVWMO, so an image carrying no fence at all passes every arm in this tree, and there is no
+# RVWMO silicon on this bench. The ordering rests on the specification and on this gate, and is
+# recorded as unwitnessed in STATE.md.
 #
-# The reader resolves WHICH WORD an access names, rather than guessing from position: objdump
-# annotates the `addi` that forms a global's address with that global's symbol, so a base
+# The reader resolves which word an access names rather than guessing from position: objdump
+# annotates the `addi` that forms a global's address with that global's symbol, and a base
 # register is tracked from the annotation to the access that uses it. Bindings are dropped at
-# every branch TARGET and at every instruction this reader does not model, because the
+# every branch target and at every instruction this reader does not model, because the
 # disassembly is in address order and a basic-block boundary is where a linear walk would
-# otherwise carry a binding in from a branch it never took. An unresolved publish is UNKNOWN and
-# fails; an unresolved PEER read is reported as unresolved, the ordering assertion then standing
-# on the publish side alone.
+# otherwise carry in a binding from a branch it never took. An unresolved publish fails; an
+# unresolved peer read is reported as unresolved, and the ordering assertion then stands on the
+# publish side alone.
 #
-# The reader goes through eight planted judgements before the image is read, one per refusal.
+# An empty corpus is a failure, not a pass: a body with no publish, or no memory access at all,
+# means the symbol moved or the disassembly shape changed.
 #
-# AN EMPTY CORPUS IS A FAILURE, not a pass. A body with no publish, or no memory access at all,
-# says the symbol moved or the disassembly shape changed, and that is UNKNOWN.
+# Above one kernel core the handshake has another shape. The three words become one row per
+# hart, written by that hart alone, so unmask and inject no longer race; the race moves to the
+# post that carries a raise to the hart a line is routed to: the injector reads the owner's
+# g_acked word after its caller's stores, and the owner's dispatch writes g_acked and then reads
+# what the raise published. Both sides owe the same store->load fence for the same reason. The
+# owner's write is the first release store of each body that takes, the dispatch and the clear:
+# a `fence rw,w` directly ahead of the store, because its base register is formed ahead of a
+# loop whose head drops every binding.
 #
-# usage: check_rv64_irq_fence.sh <elf> <nm> <objdump>
+# usage: check_rv64_irq_fence.sh <elf> <nm> <objdump> <kernel-cores>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_rv64_irq_fence.sh <elf> <nm> <objdump>"
+_usage="usage: check_rv64_irq_fence.sh <elf> <nm> <objdump> <kernel-cores>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
 objdump="${3:?$_usage}"
+cores="${4:?$_usage}"
+require_number "$cores" "the kernel-core count"
 
 # A defined-symbol count below this says nm was read wrong, whatever it printed.
 SYM_FLOOR=100
@@ -61,9 +69,9 @@ SYM_FLOOR=100
 scratch_dir
 
 # --- the reader ---------------------------------------------------------------
-# Ordinals, not addresses: the verdict is an ORDER. Emits tab-separated records, one per memory
+# Ordinals, not addresses: the verdict is an order. Emits tab-separated records, one per memory
 # access and one per fence, in program order, under a COUNT line.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
+# Half a program: `seen` and the body scope come from gate.sh's scoped_body, which reads
 # tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
 function shortname(s)
@@ -73,6 +81,9 @@ function shortname(s)
     if (s ~ /g_irq_unmasked/) { return "g_irq_unmasked" }
     if (s ~ /g_irq_pending/)  { return "g_irq_pending" }
     if (s ~ /g_irq_raised/)   { return "g_irq_raised" }
+    if (s ~ /g_acked/)        { return "g_acked" }
+    if (s ~ /g_posted/)       { return "g_posted" }
+    if (s ~ /g_irq_row/)      { return "g_irq_row" }
     return s
 }
 
@@ -85,7 +96,7 @@ function is_mem(m)
             || m == "lh" || m == "lhu" || m == "sw" || m == "sd" || m == "sb" || m == "sh")
 }
 
-# Instructions whose FIRST operand is the register they write. Anything outside this list and
+# Instructions whose first operand is the register they write. Anything outside this list and
 # outside is_nodef() drops every binding, so an instruction this reader does not model can
 # never leave a stale one behind.
 function is_def(m)
@@ -106,7 +117,7 @@ function is_def(m)
             || m == "lh" || m == "lhu" || m == "jal" || m == "jalr")
 }
 
-# Instructions that write no register. Stores and branches READ their first operand, so a
+# Instructions that write no register. Stores and branches read their first operand, so a
 # "first operand is the destination" rule would wrongly unbind on them.
 function is_nodef(m)
 {
@@ -209,15 +220,29 @@ END {
             printf "%d\t%s\t%s\t%s\t%s\n", i, "MEM", mnem, word, addr
         }
 
-        # The binding update comes AFTER the access above: `lw a5,0(a5)` reads through the old
+        # The binding update comes after the access above: `lw a5,0(a5)` reads through the old
         # binding and then destroys it.
         if (is_def(mnem)) {
             rd = ops
             sub(/[ \t].*$/, "", rd)
             sub(/,.*$/, "", rd)
             if (rd != "") {
+                # An index or an offset added to a bound base still names the same word, which is
+                # how an array row is addressed. Computed before rd is dropped, as rd may be a
+                # source.
+                n_src = split(ops, src, ",")
+                for (k = 1; k <= n_src; k++) { gsub(/[ \t]/, "", src[k]) }
+                carried = ""
+                if (mnem == "mv" || (mnem == "addi" && symref == "")) {
+                    if (src[2] in bind) { carried = bind[src[2]] }
+                } else if (mnem == "add" && n_src == 3) {
+                    if ((src[2] in bind) && !(src[3] in bind)) { carried = bind[src[2]] }
+                    if ((src[3] in bind) && !(src[2] in bind)) { carried = bind[src[3]] }
+                }
                 if (mnem == "addi" && symref != "") {
                     bind[rd] = shortname(symref)
+                } else if (carried != "") {
+                    bind[rd] = carried
                 } else {
                     delete bind[rd]
                 }
@@ -327,12 +352,99 @@ judge() {
       $_am on $_shown at #$_ao"
 }
 
+# One body's records into $TMP/rec, refusing a body this reader cannot start from. Leaves the
+# instruction count in _total.
+body_records() { # <listing> <symbol>
+    read_body "$1" "$2" > "$TMP/rec"
+    case "$(head -n1 "$TMP/rec")" in
+        NOSYM)
+            fail "the listing carries no body for '$2', so this reader started nowhere. The
+  symbol was renamed, made static or inlined away, or the disassembler's output shape moved" ;;
+        NOINSN)
+            fail "the body of '$2' disassembles to no instruction at all, so the corpus is
+  UNKNOWN rather than empty" ;;
+    esac
+    _total="$(awk '$1 == "COUNT" { print $2; exit }' "$TMP/rec")"
+    require_number "$_total" "the instruction count of $2"
+}
+
+# The owner's side above one kernel core: the body's first release store, a store directly
+# behind a `fence rw,w`, must name $3 or a word this reader lost at a loop head, and must be
+# followed by a store->load fence before its next memory access.
+judge_release() { # <listing> <symbol> <word>
+    body_records "$1" "$2"
+    _pubrec="$(awk -F"$TAB" '
+        $2 ~ /^FENCE/ { at = $1; ops = $4; next }
+        $2 == "MEM" && $3 ~ /^s[bhwd]$/ && ops == "rw,w" && $1 == at + 1 {
+            print $1 "\t" $4; exit
+        }' "$TMP/rec")"
+    if [ -z "$_pubrec" ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "no release store in the body of '$2'. The owner's write of '$3' is gone or no
+  longer a release, and either way this gate would assert nothing about the ordering after it"
+    fi
+    _pub="$(printf '%s\n' "$_pubrec" | cut -f1)"
+    _pw="$(printf '%s\n' "$_pubrec" | cut -f2)"
+    if [ "$_pw" != "$3" ] && [ "$_pw" != "?" ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "the first release store in '$2' writes '$_pw' and not '$3', so the store this
+  gate orders is not the one the handshake turns on"
+    fi
+    _next="$(awk -F"$TAB" -v p="$_pub" \
+        '$1 > p && ($2 == "MEM" || $2 ~ /^FENCE/) { print $1 "\t" $2 "\t" $3 "\t" $4; exit }' \
+        "$TMP/rec")"
+    _nk="$(printf '%s\n' "$_next" | cut -f2)"
+    _no="$(printf '%s\n' "$_next" | cut -f1)"
+    if [ "$_nk" != FENCE_WR ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "in '$2' the release store at instruction #$_pub is followed by [$_next] and not
+  by a fence ordering stores before loads. The owner may then read what the raise published
+  before its acked write is visible, while the injector reads that acked write stale, and the
+  raise is coalesced into a delivery that already missed it"
+    fi
+    _after="$(awk -F"$TAB" -v f="$_no" '$1 > f && $2 == "MEM" { print $1; exit }' "$TMP/rec")"
+    if [ -z "$_after" ]; then
+        fail "in '$2' the fence at instruction #$_no is followed by no memory access at all,
+  so it orders the store against nothing in this body"
+    fi
+    echo "   $2: $_total instruction(s), release store at #$_pub, fence at #$_no, then an
+      access at #$_after"
+}
+
+# The injector's side above one kernel core: the last fence ahead of the body's first read of
+# $3 must order stores before loads.
+judge_read() { # <listing> <symbol> <word>
+    body_records "$1" "$2"
+    _rd="$(awk -F"$TAB" -v w="$3" '$2 == "MEM" && $4 == w && $3 ~ /^l/ { print $1; exit }' \
+        "$TMP/rec")"
+    if [ -z "$_rd" ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "no read of '$3' in the body of '$2'. Either the read is gone or this reader could
+  not resolve the base register that names it; both are UNKNOWN"
+    fi
+    _fence="$(awk -F"$TAB" -v r="$_rd" \
+        '$1 < r && $2 ~ /^FENCE/ { last = $1 "\t" $2 "\t" $3 " " $4 } END { print last }' \
+        "$TMP/rec")"
+    if [ -z "$_fence" ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "in '$2' the read of '$3' at instruction #$_rd has no fence ahead of it, so the
+  caller's stores may become visible after it"
+    fi
+    if [ "$(printf '%s\n' "$_fence" | cut -f2)" != FENCE_WR ]; then
+        sed -n '2,$p' "$TMP/rec" >&2
+        fail "in '$2' the last fence ahead of the read of '$3' at instruction #$_rd is
+  [$(printf '%s\n' "$_fence" | cut -f3)], which does not order stores before loads"
+    fi
+    echo "   $2: $_total instruction(s), fence at #$(printf '%s\n' "$_fence" | cut -f1), then
+      the read of $3 at #$_rd"
+}
+
 # --- the planted listings -----------------------------------------------------
-# In the shape the invocation below produces, which is --no-show-raw-insn: a control carrying the
-# raw-bytes column would read its first byte group as the mnemonic and prove the reader against
-# input the gate never hands it.
+# In the shape the invocation below produces, which is --no-show-raw-insn: a control carrying
+# the raw-bytes column would read its first byte group as the mnemonic and prove the reader
+# against input the gate never hands it.
 #
-# planted_inject also carries the BRANCH-TARGET trap the real body has: a block that binds the
+# planted_inject also carries the branch-target trap the real body has: a block that binds the
 # same register to g_irq_raised sits between the annotation and the publish and is reached only
 # by the branch, so a reader that did not drop bindings at the join would name the wrong word.
 cat > "$TMP/plant_ok" <<'EOF'
@@ -368,7 +480,7 @@ EOF
 
 # The defect: the fence deleted outright.
 sed '/fence[[:space:]]*rw,rw/d' "$TMP/plant_ok" > "$TMP/plant_nofence"
-# The fence present but AFTER the peer read, where it orders nothing between the two.
+# The fence present but after the peer read, where it orders nothing between the two.
 awk '{
         if ($0 ~ /fence[ \t]*rw,rw/) { held = $0; next }
         print
@@ -387,7 +499,7 @@ for _p in plant_nofence plant_late plant_tso plant_rr plant_unbound; do
   carries would refuse for the wrong reason"
 done
 
-# What each planted listing must be REFUSED for. judge() runs in a subshell so its fail()
+# What each planted listing must be refused for. judge() runs in a subshell so its fail()
 # leaves the control and not this script; reaching the far side is the failure here.
 ctl_refuses() { # <listing> <symbol> <own> <peer> <what the refusal proves>
     if ( judge "$1" "$2" "$3" "$4" ) >/dev/null 2>&1; then
@@ -396,7 +508,7 @@ ctl_refuses() { # <listing> <symbol> <own> <peer> <what the refusal proves>
     fi
 }
 
-# What it must ACCEPT, and where: a control that only ever refuses proves nothing.
+# What it must accept, and where: a control that only ever refuses proves nothing.
 ctl_accepts() { # <listing> <symbol> <own> <peer> <expected substring> <what it proves>
     if ! ( judge "$1" "$2" "$3" "$4" ) > "$TMP/ctl_out" 2>&1; then
         cat "$TMP/ctl_out" >&2
@@ -436,6 +548,95 @@ ctl_refuses "$TMP/plant_unbound" planted_unmask g_irq_unmasked g_irq_pending \
 ctl_refuses "$TMP/plant_ok" a_symbol_no_listing_carries g_irq_unmasked - \
     "a symbol the listing does not carry, so a renamed body would read as a clean one"
 
+# --- the planted listings above one kernel core --------------------------------
+# planted_take reaches its acked word through an index added to the annotated base, which is
+# how the real body addresses a row.
+cat > "$TMP/hart_ok" <<'EOF'
+0000000000002000 <planted_take>:
+    2000:	auipc	a3,0x418
+    2004:	addi	a3,a3,-584 # 0000000000425c80 <_ZN12_GLOBAL__N_1L7g_ackedE>
+    2008:	add	a3,a3,a1
+    200c:	lw	a6,0(a4)
+    2010:	lw	t1,0(a3)
+    2014:	beq	a6,t1,2024 <planted_take+0x24>
+    2018:	fence	rw,w
+    201c:	sw	a6,0(a3)
+    2020:	fence	rw,rw
+    2024:	lw	a5,0(a0)
+    2028:	ret
+
+0000000000002040 <planted_post>:
+    2040:	auipc	a2,0x418
+    2044:	addi	a2,a2,38 # 0000000000425d80 <_ZN12_GLOBAL__N_1L8g_postedE>
+    2048:	add	a3,a3,a2
+    204c:	lw	a0,0(a3)
+    2050:	fence	r,rw
+    2054:	fence	rw,rw
+    2058:	auipc	a2,0x418
+    205c:	addi	a2,a2,-248 # 0000000000425c80 <_ZN12_GLOBAL__N_1L7g_ackedE>
+    2060:	add	a5,a5,a2
+    2064:	lw	a5,0(a5)
+    2068:	fence	r,rw
+    206c:	fence	rw,w
+    2070:	sw	a1,0(a3)
+    2074:	ret
+EOF
+sed '/fence[[:space:]]*rw,rw/d' "$TMP/hart_ok" > "$TMP/hart_nofence"
+sed 's/fence[[:space:]]*rw,rw/fence.tso/' "$TMP/hart_ok" > "$TMP/hart_tso"
+awk '{
+        if ($0 ~ /fence[ \t]*rw,rw/) { held = $0; next }
+        print
+        if (held != "" && $0 ~ /[ \t]lw[ \t]/) { print held; held = "" }
+     }' "$TMP/hart_ok" > "$TMP/hart_late"
+sed '2,/^$/s/_ZN12_GLOBAL__N_1L7g_ackedE/_ZN12_GLOBAL__N_1L8g_postedE/' \
+    "$TMP/hart_ok" > "$TMP/hart_wrongword"
+sed '/^$/,$s/# 0000000000425c80 <_ZN12_GLOBAL__N_1L7g_ackedE>//' \
+    "$TMP/hart_ok" > "$TMP/hart_unbound"
+for _p in hart_nofence hart_tso hart_late hart_wrongword hart_unbound; do
+    require_nonempty "$TMP/$_p" "the planted listing '$_p' came out empty, so the control it
+  carries would refuse for the wrong reason"
+    if cmp -s "$TMP/hart_ok" "$TMP/$_p"; then
+        fail "the planted listing '$_p' is identical to the accepted one, so its mutation did
+  not land and the control would refuse nothing"
+    fi
+done
+
+hart_refuses() { # <judge> <listing> <symbol> <word> <what the refusal proves>
+    if ( "$1" "$2" "$3" "$4" ) >/dev/null 2>&1; then
+        fail "the reader ACCEPTED a planted listing it must refuse: $5"
+    fi
+}
+
+hart_accepts() { # <judge> <listing> <symbol> <word> <expected substring> <what it proves>
+    if ! ( "$1" "$2" "$3" "$4" ) > "$TMP/ctl_out" 2>&1; then
+        cat "$TMP/ctl_out" >&2
+        fail "the reader REFUSED a planted body carrying the shape this gate requires: $6"
+    fi
+    if ! grep -q "$5" "$TMP/ctl_out"; then
+        cat "$TMP/ctl_out" >&2
+        fail "the reader accepted the planted body but did not report [$5]: $6"
+    fi
+}
+
+hart_accepts judge_release "$TMP/hart_ok" planted_take g_acked 'release store at #8' \
+    "the owner's release store followed by the fence"
+hart_accepts judge_read "$TMP/hart_ok" planted_post g_acked 'read of g_acked at #10' \
+    "an acked read reached through an index added to the annotated base"
+hart_refuses judge_release "$TMP/hart_nofence" planted_take g_acked \
+    "the owner's fence deleted outright"
+hart_refuses judge_read "$TMP/hart_nofence" planted_post g_acked \
+    "the injector's fence deleted, leaving only the acquire fence ahead of the read"
+hart_refuses judge_release "$TMP/hart_tso" planted_take g_acked \
+    "FENCE.TSO in the owner's fence's place"
+hart_refuses judge_read "$TMP/hart_tso" planted_post g_acked \
+    "FENCE.TSO in the injector's fence's place"
+hart_refuses judge_release "$TMP/hart_late" planted_take g_acked \
+    "the owner's fence moved past the next read"
+hart_refuses judge_release "$TMP/hart_wrongword" planted_take g_acked \
+    "a first release store that writes another word"
+hart_refuses judge_read "$TMP/hart_unbound" planted_post g_acked \
+    "an acked read this reader cannot resolve, which is UNKNOWN and not a pass"
+
 # --- the symbol table, and the bodies in it -----------------------------------
 tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" -S --defined-only "$elf"
 require_nonempty "$TMP/nm" "$nm printed no symbol at all for $elf, so the corpus is UNKNOWN
@@ -447,7 +648,11 @@ if [ "$syms" -lt "$SYM_FLOOR" ]; then
   that short is a misread, not a small image, and the corpus is UNKNOWN"
 fi
 
-for sym in arch_irq_unmask arch_irq_inject; do
+bodies="arch_irq_unmask arch_irq_inject"
+if [ "$cores" -gt 1 ]; then
+    bodies="kickos_rv64_isr_dispatch arch_irq_clear_pending arch_irq_inject"
+fi
+for sym in $bodies; do
     size="$(awk -v s="$sym" 'NF == 4 && $4 == s { print $2; exit }' "$TMP/nm")"
     if [ -z "$size" ]; then
         fail "no sized defined symbol '$sym' in $elf. One side of the handshake was renamed,
@@ -468,8 +673,14 @@ require_nonempty "$TMP/dis" "$objdump printed no disassembly for $elf"
 # The peer word is asserted where the body's branch layout lets a binding reach it. In
 # arch_irq_inject the re-read goes through a register the unmasked branch rebinds, so the walk
 # drops it at the join and the assertion there stands on the publish side alone.
-judge "$TMP/dis" arch_irq_unmask g_irq_unmasked g_irq_pending
-judge "$TMP/dis" arch_irq_inject g_irq_pending -
+if [ "$cores" -gt 1 ]; then
+    judge_release "$TMP/dis" kickos_rv64_isr_dispatch g_acked
+    judge_release "$TMP/dis" arch_irq_clear_pending g_acked
+    judge_read "$TMP/dis" arch_irq_inject g_acked
+else
+    judge "$TMP/dis" arch_irq_unmask g_irq_unmasked g_irq_pending
+    judge "$TMP/dis" arch_irq_inject g_irq_pending -
+fi
 
 echo "PASS: both sides of the rv64imac IRQ handshake fence their publish before they read the
   peer's word"

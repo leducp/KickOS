@@ -279,12 +279,14 @@ view soundly and two cores' views not at all. Two kinds of caller reach them and
 same for both, which is what keeps this consistent with section 8's placement being an ASK AND NEVER
 A YANK.
 
-A thread holding `CAP_WAIT` on a line is ASKING to serve it, so `irq_wait`, `irq_ack` and
-`irq_discard` require it to be on the routed core: the request is admitted through
-`sched_admit_mask` as a SUBSET, so a task whose grant cannot reach that core is REFUSED and never
-clamped. That is an ask with a refusal, made by the thread that asked, and it needs no exception to
-section 8. `CAP_SIGNAL` is deliberately outside it: `irq_notify` posts on the binding and reaches no
-controller register, so its holder is not a server.
+A thread holding `CAP_WAIT` on a line is ASKING to serve it, and A THREAD HANDLING A LINE DOES
+NOT MIGRATE. The claim requires the claimer's OWN mask to be exactly the core it runs on, which is
+where the line is then routed; a wait over its lines, the fused receive's included, `irq_ack` and
+`irq_discard` require the caller's OWN mask to be exactly that claim core, not merely to contain
+it. A thread failing either is REFUSED with `-KOS_EPERM`, never clamped, and its mask is never
+written: it pins itself, or its spawner pins it. One notification's lines share one claim core, the
+bind refusing a line claimed elsewhere.
+`CAP_SIGNAL` is outside it: `irq_notify` reaches no controller, so its holder serves nothing.
 
 A caller that merely PASSES a line on its way to something else, such as the console handover
 masking the kernel's own TX line inside `kos_console_publish`, asked for none of that. Its affinity
@@ -294,12 +296,13 @@ than the thread being routed to the line. Measured on esp32-wroom, where the deb
 0x1e as routed to core 0 and touched from core 1, from `console_tx_deinit`.
 
 **AND THE PIN COVERS A ROUTED LINE ONLY, WHICH IS MOST OF WHAT N3 BUYS AND NOT ALL OF IT.** A
-logical line with no device route has no owning core: `arch_irq_line_core` answers -1,
-`irq_line_op` performs the op on whatever core called, `pin_to_line_core` places nothing, and the
-debug guard's refusal is silent because its subject is the routed core. On `esp32-wroom` exactly
-one line is routed, the console's TX; every software-injected line, which is every selftest line,
-is unrouted. So the backend's image-wide gating cells are reached from more than one core there,
-and what carries them is NOT the pin.
+logical line with no device route and no claim has no owning core: `arch_irq_line_core` answers
+-1, `irq_line_op` performs the op on whatever core called, and the debug guard's refusal is
+silent because its subject is the routed core. On `esp32-wroom` exactly one line has a device
+route, the console's TX; a software-injected line, which is every selftest line, is pinned only
+once it is claimed, to the claimer's core, and an injection from another core is then posted to
+that core through the doorbell. So the backend's image-wide gating cells are reached from more
+than one core for an unclaimed line, and what carries them there is NOT the pin.
 
 **WHETHER SUCH A CELL IS IMAGE-WIDE AT ALL is ruling 1 of `docs/design-m7-state-inventory.md`**,
 which owns that question for every backend standing a software controller in for one the board does
@@ -323,8 +326,11 @@ unmasks.
 **WHY THE LX6 DOES NOT NEED THE RV64 BACKEND'S ATOMIC READ-MODIFY-WRITE, stated because the two
 are now visibly different and the difference reads like drift.** rv64imac keeps its gating state as
 a BITMASK WORD, so setting one line's bit is a read-modify-write of a word carrying every other
-line's, and a peer mutating it concurrently clobbers the update; that is what `amoor.w` and
-`amoand.w` are there for, and its own declaration says so. **One cell per line removes that
+line's, and at one kernel core, where any hart may touch that word, a peer mutating it
+concurrently clobbers the update; that is what `amoor.w` and `amoand.w` are there for, and its
+own declaration says so. Above one kernel core the words are one row per hart written by that
+hart alone, a line's state living in the row of the hart it is routed to, and the Dekker pair
+below moves to the post that carries a raise to that hart. **One cell per line removes that
 read-modify-write outright**: a mask is a store of 0 and an unmask a store of 1, whole values, so
 there is no shared word to clobber and nothing for an atomic RMW to protect. Read out of the linked
 image, every write to either cell is a `movi` followed by an `s8i`, and not one of them derives its
@@ -1818,9 +1824,9 @@ else**, which is what the next two subsections are about: what stops an unpinned
 isolated core is the mask it was given, not a clause here.
 
 The rule has exactly two consumers, and both call it rather than re-deriving it: `available_to` in
-`kernel/sched/policy_fifo_rr.cc`, which is what `pick_next` scans the ready lists with, and
-`poke_peers_below` in `kernel/sched/sched.cc`, which narrows a cross-core ask by it, so a core the
-thread may not run on is never woken to pick the thread it is already running.
+`kernel/sched/policy_fifo_rr.cc`, which is what `pick_next` scans a core's own ready lists with, and
+the placement in the same file (`policy_place`, `policy_push_candidate`, `policy_declined`), which
+never puts a thread on the structure of a core its mask does not name.
 
 **THIS IS ANTI-WORK-CONSERVING BY CONSTRUCTION: a runnable thread waits while a core it may not run
 on idles.** That is the feature and not a price paid for it. A latency-critical thread pinned alone
@@ -1836,10 +1842,10 @@ A thread EXECUTING on a core its new mask excludes is not yanked off it. It is m
 there, and that core is asked to reschedule; that core's own scheduler pass is the only thing that
 moves it. `sched::set_affinity` writes the mask and then splits three ways:
 
-- a READY thread is already eligible elsewhere at the next pick, so the ask exists only so a core
-  that could take it now LOOKS, instead of waiting for its next natural switch. A BLOCKED,
-  INACTIVE or EXITED thread is on no ready list any core reads, so it gets no ask: the cores that
-  could one day take it are woken by whatever makes it READY;
+- a READY thread is placed again at once, by the invariant below: it moves to the structure of a
+  core its new mask admits where that says, and the core whose next pass takes it is asked. A
+  BLOCKED, INACTIVE or EXITED thread is on no ready list any core reads, so it gets no ask: it is
+  placed by whatever makes it READY;
 - a RUNNING thread the new mask still admits KEEPS the core it is on, placement saying where a
   thread MAY run and never where it runs best;
 - a RUNNING thread the new mask excludes gets `kickos::klock_resched_ask` against the core running
@@ -1854,41 +1860,67 @@ so a core can never owe itself a reschedule. Self-migration therefore cannot tra
 at all, and `set_affinity` takes its own scheduler pass directly, calling `reschedule()` when the
 running thread it is re-masking is on the calling core.
 
-**`switch_book` is where the outgoing thread becomes available to a peer, and it is the only place
-any thread does.** Until the store that moves it out of RUNNING it IS running, and every peer's
-`pick_next` refuses a thread another core is running, so a poke sent any earlier is consumed
-against a thread nobody could have taken. Every switch that reaches that store owes the ask, at
-the outgoing thread's own priority, whatever brought the switch there: an ordinary reschedule, a
-re-mask off this core and a wake this core seats differ in what caused the pick and in nothing the
-store made available. The one mask test left on the path skips a thread whose affinity holds no
-peer bit at all, which decides nothing `poke_peers_below`'s own placement walk would not decide;
-it is cost and one trace record, never correctness.
+**`switch_book` is where the outgoing thread becomes movable, and it is the only place a running
+thread does.** Until the store that moves it out of RUNNING it IS running, so a placement made any
+earlier would move a thread nobody could have taken. Every switch that reaches that store places
+the outgoing thread, at its own priority, whatever brought the switch there: an ordinary
+reschedule, a re-mask off this core and a wake this core seats differ in what caused the pick and
+in nothing the store made available. The one mask test left on the path skips a thread whose
+affinity holds no peer bit at all, which decides nothing the placement would not decide; it is
+cost, never correctness. A slain thread stays where it was displaced, for the pass its core owes
+itself to claim it, unless its mask no longer admits that core.
 
-**What is NOT the rule: that the displaced thread rides the announcement of the thread it swaps
-with.** `pick_next` cannot pick below the outgoing thread's priority, so the incoming thread's own
-announcement does reach every peer below the outgoing one IN PRIORITY. It does not reach them in
-PLACEMENT: an incoming thread carrying a narrower mask never named the cores the outgoing mask
-admits, and an idle thread carries exactly its own core's bit and so names none of them. Worse, a
-peer that answered that announcement would have TAKEN the incoming thread, it being the higher
-priority of the two, so where such a peer is still running beneath it the announcement has already
-been spent. The inheritance is empty in the case it was relied on. A thread that widens its
-affinity and then yields is READY, placeable on a peer running beneath it, with no wake and no
-re-mask left to carry an ask, and under FIFO with no later event nothing corrects it. So the ask
-is raised on the state transition and never inferred from a comparison between the two threads.
+**What is NOT the rule: that the displaced thread rides the placement of the thread it swaps
+with.** An incoming thread carrying a narrower mask never named the cores the outgoing mask admits,
+and an idle thread carries exactly its own core's bit and so names none of them. A thread that
+widens its affinity and is then displaced by a higher one is READY, placeable on a peer running
+beneath it, with no wake and no re-mask left to carry an ask, and under FIFO with no later event
+nothing corrects it. So the thread is placed on its own state transition and never inferred from a
+comparison between the two threads.
 
-**The general rule, which quantifies over the pass and not over what caused it:** the ask names
-whatever the pass made takeable by a peer, at that thread's own priority, and only two threads on
-any pass can have become takeable. The WOKEN one, readied by the waker before the pick: asked for
-in `pick_and_seat` where the pick declines it, and owed nothing where the pick takes it, since
-`switch_book` publishes it RUNNING before this core releases the lock. The DISPLACED one, readied
-by `switch_book`'s own store: asked for there. A pass that seats nothing never reaches that store,
-and an outgoing thread that parked or exited never passes through it, so both make nothing takeable
-and ask nobody. That is the whole of what not asking unconditionally saves, and it survives.
+**The general rule, which quantifies over the pass and not over what caused it:** a pass places
+whatever it made READY and did not take, each at its own priority. The WOKEN thread, readied by the
+waker before the pick: placed in `pick_and_seat` where the pick declines it, and owed nothing where
+the pick takes it, since `switch_book` publishes it RUNNING before this core releases the lock. The
+DISPLACED thread, readied by `switch_book`'s own store: placed there. And every READY thread on the
+core's own structure ranked between what it ran and what it now seats, each of which expected this
+pass and was declined by it without being named to it (`place_declined`). A pass that seats nothing
+never reaches the store, and an outgoing thread that parked or exited never passes through it. The
+asks a pass owes are raised together, once, from the pass's own frame.
 
 `available_to` is the other half of the same seam: for the thread a core is CURRENTLY running it
 returns the placement test rather than a bare true. That is what stops a core re-picking the thread
 it must give up, and it is what makes `reschedule()` the thing that moves a thread rather than any
 yank.
+
+### The placement invariant, held at the decline and at the drop
+
+**A READY thread never waits behind EQUAL OR HIGHER priority while a started core in its mask has a
+level strictly below it.** A core's level is
+the priority its next pass seats if nothing arrives: the top of its own ready bitmap, where its
+running thread sits at its priority beside every READY one. The first placement on an idle core
+therefore raises that core for the second.
+
+**Equal priority spreads, and there is no knob.** A wide mask is the caller asking for spread, and
+the caller owns the load it puts there. A same-core handoff is a placement userspace makes by
+pinning: two threads pinned to one core hand off there, the wake staying with its waker and asking
+nobody, whatever idles beside them.
+
+Two halves hold the invariant, and neither is a pull. **At the decline**, a pass that leaves a READY
+thread behind an equal or higher one moves it, from its holder's own structure, to the started core
+in its mask whose level is lowest and strictly below it, ties to the lowest index, and asks that
+core; with no such core it stays. A wake still publishes to its waker: the placement is decided
+where the pass knows what it seats. **At the drop**, a core whose seated priority falls asks the
+holder of each READY thread it would now take, one waiting there behind equal or higher priority
+and ranked strictly above the new level, to push it; the holder moves one thread per request on its
+next pass, after re-reading the asker's level. The request is a bit per asker in
+`Kernel::push_asked`, written under the one lock and carried by the ordinary doorbell. A core's
+start counts as a fall from nothing, and lowering a peer's running thread asks that peer for the
+pass that sees its fall.
+
+A core takes nothing off another's structure: the only cross-core publish is made by the thread's
+holder or its waker, under the lock. A core that has not started is never a placement target, having
+no scheduler yet to act on the doorbell; its own start picks what it already holds.
 
 ### Placement rests on every kernel core taking its own scheduler passes
 
@@ -1927,13 +1959,11 @@ that keeps it out of the isolated set, which exists so the default core set is n
 placement claim on such a part is a claim about the boot core carrying an ordinary thread, and a
 part that could not do that would be a part on which the default core set means nothing.
 
-**Observing that costs an observer that cannot be root, and the reason is the ABI rather than the
-scheduler.** A thread above the observer's priority spinning on the observer's own core never gives
-it back, so the observer must be somewhere else, and no call answers "which thread am I": a
-thread's handles are the ones it was handed, and nothing hands a thread its own. Root therefore
-cannot place root. What closes it needs no new authority, because a task is one scheduling domain:
-a spawner places its child, so an observer pinned off the core under test is an ordinary child of
-the thread that wants the observation, and the placement is one the grant already permits.
+**Observing that costs an observer off the core under test.** A thread above the observer's
+priority spinning on the observer's own core never gives it back, so the observer must be somewhere
+else. A thread places itself through `kos_thread_self`, which answers the caller's own handle above
+one kernel core, and a spawner places its child; both are placements the grant already permits,
+because a task is one scheduling domain. A thread handling an IRQ uses the first before it claims.
 
 ### Isolation shapes the default, not the admission
 
@@ -1947,16 +1977,16 @@ three are ONE authority called from three places, not three computations of the 
 **THE GUARANTEE, EXACTLY: nothing arrives on an isolated core by default, and only an explicit mask
 reaches one.** A thread that never names a core never runs on an isolated core, whatever sequence
 of unpins it goes through. It is NOT the stronger claim that nothing else will ever be placed
-there. A mask naming an isolated core beside ordinary ones is admitted, and that core's picker then
-takes the thread exactly as an ordinary core's would; a caller that asks for that has asked to
-share the core.
+there. A mask naming an isolated core beside ordinary ones is admitted, and placement then puts the
+thread there exactly as it would on an ordinary core; a caller that asks for that has asked to share
+the core.
 
 That distinction is where the Linux analogy stops, and it is worth naming because it was got wrong
 once. Under `isolcpus` a task may name an isolated CPU in its affinity mask freely and still not be
 migrated onto it, because `isolcpus` removes the CPU from the load balancer's domains and the mask
-is not what moves a task there. **KickOS has no balancer.** Each core's picker takes any runnable
-thread whose mask includes that core, so naming IS being picked and the two Linux behaviours
-collapse into one. The default set is therefore the ONLY thing between an ordinary thread and an
+is not what moves a task there. **KickOS has no balancer.** Placement moves any READY thread whose
+mask includes a core onto it whenever the placement invariant says so, so naming IS being placeable
+and the two Linux behaviours collapse into one. The default set is therefore the ONLY thing between an ordinary thread and an
 isolated core, which is why `unpin` restores the default and not the grant.
 
 **An explicit mask names isolated cores freely** -- one, several, or only isolated ones. A grant of
@@ -1992,8 +2022,8 @@ it, in one of two disciplines the caller states:
 
 **There is no third clause, and none is reachable.** What a mask surviving both is worth asking is
 whether the pick rule can seat a thread on it, and it always can: the survivor is non-empty and is a
-subset of `KICKOS_CORE_SET_ALL`, whose bits are exactly the cores `pick_next` scans, so some core in
-the scan takes it. A clause here would guard a case the two above cannot produce.
+subset of `KICKOS_CORE_SET_ALL`, whose bits are exactly the cores this kernel schedules, so
+`sched_home_for` always names a core whose structure can hold the thread. A clause here would guard a case the two above cannot produce.
 
 ### The configuration refusal beside it
 
@@ -2045,8 +2075,9 @@ and it is made at every entry that takes a mask: the spawn boundary, `kos_thread
 
 The placement half is entirely behind `#if KICKOS_KERNEL_CORES > 1` and contributes NOTHING to a
 single-core image. `Task::core_set`, `Thread::affinity`, `sched_placeable_on`, `sched::set_affinity`,
-`sched::add_idle`, `available_to`, `poke_peers_below` and `switch_book`'s mask test are all absent
-from such a build, and `kos_thread_set_affinity` is `-KOS_ENOSYS`.
+`sched::add_idle`, `available_to`, the placement hooks, `Kernel::seated_prio`, `Kernel::push_asked`
+and `switch_book`'s mask test are all absent from such a build, `kos_thread_set_affinity` is
+`-KOS_ENOSYS`, and `kos_thread_self` answers `KOS_THREAD_NONE`.
 
 **The PRIORITY CEILING does not fold, and it is not meant to.** It is unconditional where the core
 set is conditional, because the hole it closes is not an SMP hole: unbounded priority let any
@@ -2082,10 +2113,12 @@ other than its mask, nothing in it argues against the next.
 
 ## 9. Deliberately NOT frozen
 
-- **Per-core run queues and any finer locking.** The spike's stage 2. `roadmap.md`'s M9 section
-  now owns this question, named for the question itself rather than for a lock/no-lock split --
-  a measured verdict that the coarse lock survives is a successful outcome of that milestone, not
-  a failure of it. The entry metrics and the stop condition live there, not here.
+- **Finer locking.** The spike's stage 2. Per-core ready queues are settled: M9.2 landed them
+  under the one kernel lock, and section 8 is their contract. What stays open is a lock
+  partition, which `roadmap.md`'s M9 section owns, named for the question itself rather than for
+  a lock/no-lock split: a measured verdict that the coarse lock survives is a successful outcome
+  of that milestone, not a failure of it. The entry metrics and the stop condition live there,
+  not here.
 - **The MCU dual-core parts' MODEL is settled and their port was never in question.** This entry
   used to ask whether they were "worth an AMP port at all", which was badly worded and invited
   the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.

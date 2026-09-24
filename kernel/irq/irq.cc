@@ -9,8 +9,7 @@
 #include <kickos/time.h> // ktime_deadline_arm, for the timed wait
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
-#include <kickos/sched.h> // sched_admit_mask + sched::set_affinity, for the routed-core pin
-#include <kickos/task.h> // task_core_set, the grant the pin is admitted against
+#include <kickos/thread.h> // Thread::affinity, what the claim and the wait admit
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/arch/arch.h>
@@ -69,8 +68,8 @@ namespace kickos
         // The line naming this record, or -1. Reclaiming the record is what frees that line.
         int g_pub_line[IRQ_PUB_SLOTS];
         // The next record on whichever chain this one is on, or -1 for the last. A record is
-        // on AT MOST ONE chain, and a LIVE record is on NONE: that is what makes a free pop
-        // safe. Slot 0 is on none of them.
+        // on at most one chain, and a live record is on none of them: that is what makes a
+        // free pop safe. Slot 0 is on none of them.
         int16_t g_pub_link[IRQ_PUB_SLOTS];
         int16_t g_free_head = -1;
         int16_t g_pending_head = -1;
@@ -106,9 +105,8 @@ namespace kickos
         }
 
         // g_pub_state and the three chains are two records of one membership, kept apart so
-        // either can check the other. Compiled out of a shipped image, and called only from
-        // the batch paths: it walks the whole record space, which the reserve and the release
-        // must not.
+        // either can check the other. Compiled out of a shipped image: it walks the whole
+        // record space, which the reserve and the release must not.
         void pub_lists_check()
         {
 #if KICKOS_DEBUG
@@ -148,45 +146,27 @@ namespace kickos
                 cap_resolve_e(c, cap_handle, CapType::CAP_IRQ, need, err));
         }
 
-        // Pin the CAP_WAIT server to the line's routed core before controller access.
-        // Controller mask and pending state are shared across the image; cross-core
-        // access is unsupported. The claiming thread may delegate to a different server.
-        // SIGNAL-only holders do not access controller registers and need no pin.
-        // Call before the outer lock: set_affinity may reschedule. Reject a task whose
-        // core grant excludes the routed core.
-        int pin_to_line_core(Thread* c, uint32_t cap_handle)
-        {
 #if KICKOS_KERNEL_CORES > 1
-            IrqLock lock;
-            int err = 0;
-            IrqBinding* const b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
-            if (b == nullptr)
+        // A thread handling a line does not migrate: its own mask must be exactly the claim
+        // core, not merely contain it. Refused, never clamped, and the mask is not written.
+        // Caller holds the IrqLock the admitted operation runs under: a task-mate may re-mask
+        // the caller the moment it drops.
+        //
+        // This reads the claim, not the arch seam: arch_irq_line_core answers which core may
+        // touch a line's gating state, which is global on armv8a and says nothing there about
+        // where the line is delivered.
+        int admit_claim_core(Thread const* c, IrqBinding const* b)
+        {
+            if (c->affinity != (1u << b->claim_core))
             {
-                return -err;
+                return -KOS_EPERM;
             }
-            int const dev_core = arch_irq_line_core(b->line);
-            if (dev_core < 0)
-            {
-                return 0;
-            }
-            uint32_t effective = 0;
-            int const arc = sched_admit_mask(1u << static_cast<unsigned>(dev_core),
-                                             task_core_set(c->task), MaskBound::SUBSET,
-                                             &effective);
-            if (arc != 0)
-            {
-                return arc;
-            }
-            sched::set_affinity(c, effective);
-#else
-            (void)c;
-            (void)cap_handle;
-#endif
             return 0;
         }
+#endif
 
         // Caller holds IrqLock.
-        // The FIRST arm discards the latch whatever the trigger: a raise latched before the
+        // The first arm discards the latch whatever the trigger: a raise latched before the
         // line had an owner would phantom-wake the first wait. After that only LEVEL keeps
         // discarding; clearing for EDGE would drop the coalesced raises this path exists to
         // redeliver, so an EDGE driver with a known-stale latch calls irq_discard.
@@ -199,7 +179,7 @@ namespace kickos
             if (b->notify == nullptr)
             {
                 // A line that signals nothing must stay masked: unmasking it would open a
-                // source whose raise has nowhere to land, which is a LOST interrupt rather
+                // source whose raise has nowhere to land, which is a lost interrupt rather
                 // than a deferred one. irq_ack refuses ahead of this; the ISR's own null test
                 // is what makes that refusal total.
                 return;
@@ -213,13 +193,22 @@ namespace kickos
             irq_line_op(b->line, LineOp::UNMASK);
         }
 
-        // ISR context. `arg` is the pre-bound binding, not a line number.
-        // Masks the line; the matching unmask is rearm_locked, on the next wait or ack.
-        // It reads the binding's OWN copy of the object pointer and the badge, seated at
-        // attach: this path may resolve no capability and walk no pool.
+        // ISR context. `arg` is the pre-bound binding, not a line number. The matching unmask
+        // is rearm_locked, on the next wait or ack. It reads the binding's own copy of the
+        // object pointer and the badge, seated at attach: this path resolves no capability and
+        // walks no pool.
         void irq_event_isr(void* arg)
         {
             IrqBinding* b = static_cast<IrqBinding*>(arg);
+#if KICKOS_KERNEL_CORES > 1
+            // Every raise of a claimed line lands on its claim core (arch_irq_route), so one
+            // taken elsewhere was held by that core from before this claim: an earlier owner's
+            // raise, which must neither wake this owner nor mask its line.
+            if (kickos_kernel_core() != static_cast<uint32_t>(b->claim_core))
+            {
+                return;
+            }
+#endif
             KICKOS_BENCH_E2E_ISR_MARK(b->line);
             irq_line_op_local(b->line, LineOp::MASK);
             if (b->notify == nullptr)
@@ -352,11 +341,10 @@ namespace kickos
             }
         }
 
-        // Takes `line` off its record, masks it, and hands the record to the next batch. The line
-        // keeps NAMING that record, marked retiring, until pub_reclaim frees it: a claim of the
-        // line is refused until then, so no rebind can arm it under a dispatch that has already
-        // read the record. That grace period also gates binding slot `binding_handle`, or nothing
-        // when it is -1.
+        // The line keeps naming its record, marked retiring, until pub_reclaim frees it: a
+        // claim of the line is refused until then, so no rebind can arm it under a dispatch
+        // that has already read the record. That grace period also gates binding slot
+        // `binding_handle`, or nothing when it is -1.
         void line_release(int line, int binding_handle)
         {
             uint32_t const word = kernel().irq_table[line].pub.load();
@@ -558,12 +546,20 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // REFUSED HERE AND NOT AT DETACH: a capability that cannot be closed safely is worse
-        // than one that was never handed out. EPERM and not EBUSY, no holder ever freeing it.
+        // A kernel-owned line has no holder that could ever free it, so this is a permanent
+        // EPERM, not an EBUSY.
         if (arch_irq_line_kernel_owned(line))
         {
             return -KOS_EPERM;
         }
+#if KICKOS_KERNEL_CORES > 1
+        // Pinned to the core it runs on, which is the core the line is routed to. EPERM and
+        // not EINVAL: pinning the caller satisfies it.
+        if (c->affinity != (1u << kickos_kernel_core()))
+        {
+            return -KOS_EPERM;
+        }
+#endif
         Kernel& k = kernel();
         // Before the binding pool and before the publication record, as at the three object
         // creators: a task at its ceiling is refused without spending either.
@@ -572,7 +568,7 @@ namespace kickos
             return -KOS_EOVERFLOW; // this task holds its ceiling of bindings already
         }
 #if KICKOS_KERNEL_CORES > 1
-        // BEFORE THE ALLOCATION BELOW: a retirement may still owe the pool the slot this claim
+        // Before the allocation below: a retirement may still owe the pool the slot this claim
         // is about to ask for.
         pub_drain();
         // One driver per line: free iff it still names the null-object default. This is also
@@ -637,6 +633,13 @@ namespace kickos
 #endif
             return rc;
         }
+        // After the last exit that can fail: a refused claim must not leave the line routed to
+        // a core that owns nothing. The line is masked until the first irq_wait arms it, so
+        // the route is programmed while nothing can be delivered against it.
+        arch_irq_route(line, kickos_kernel_core());
+#if KICKOS_KERNEL_CORES > 1
+        b->claim_core = static_cast<uint8_t>(kickos_kernel_core());
+#endif
         // The ISR is handed the binding's ADDRESS, stable for the slot's life.
 #if KICKOS_KERNEL_CORES > 1
         pub_commit(pub, line, irq_event_isr, b);
@@ -650,10 +653,9 @@ namespace kickos
 
     namespace
     {
-        // Decode a signaller link; return null for the sentinel or an invalid slot.
-        // Valid links are in [1, KICKOS_MAX_IRQ_HANDLES].
-        // Stop on an invalid link rather than panic in the interrupt-masked wait path.
-        // The null check also prevents GCC from adding an abort call on RX.
+        // Valid links are in [1, KICKOS_MAX_IRQ_HANDLES]; an invalid one returns null rather
+        // than panic, keeping the interrupt-masked wait path safe. The null check also stops
+        // GCC from adding an abort call on RX.
         IrqBinding* signaller_at(uint8_t ref)
         {
             if (ref == NOTIFY_SIGNALLER_NONE)
@@ -708,16 +710,12 @@ namespace kickos
             return -KOS_EBADF;
         }
 #if KICKOS_KERNEL_CORES > 1
-        // All signallers for a notification must route to the same core.
-        int const dev_core = arch_irq_line_core(b->line);
-        for (IrqBinding const* on = signaller_first(n); on != nullptr;
-             on = signaller_next(on))
+        // One notification, one delivery core: this is the only insertion into a chain, and a
+        // binding's claim core is fixed for its life, so the head speaks for every signaller.
+        IrqBinding const* const head = signaller_first(n);
+        if (head != nullptr and head->claim_core != b->claim_core)
         {
-            int const other = arch_irq_line_core(on->line);
-            if (other >= 0 and dev_core >= 0 and other != dev_core)
-            {
-                return -KOS_EPERM;
-            }
+            return -KOS_EPERM;
         }
 #endif
         // Signallers may share a badge bit; rearming visits every matching line.
@@ -769,7 +767,7 @@ namespace kickos
         }
         uint8_t const self = notify_signaller_ref(index);
         Notification* const n = b->notify;
-        // The head is its own case because it lives in the OBJECT and not in a binding, which
+        // The head is its own case because it lives in the object and not in a binding, which
         // is why this cannot be one pointer-to-link walk over the whole chain.
         if (n->signallers == self)
         {
@@ -805,57 +803,20 @@ namespace kickos
         }
     }
 
-    int irq_pin_to_chain_core(Thread* c, uint32_t cap_handle)
-    {
 #if KICKOS_KERNEL_CORES > 1
-        uint32_t effective = 0;
+    int irq_admit_signallers(Thread const* c, Notification const* n)
+    {
+        IrqBinding const* const head = signaller_first(n);
+        if (head == nullptr)
         {
-            IrqLock lock;
-            int err = 0;
-            Notification const* const n = static_cast<Notification*>(
-                cap_resolve_e(c, cap_handle, CapType::CAP_NOTIFY, CAP_WAIT, &err));
-            if (n == nullptr)
-            {
-                return 0; // the wait itself reports the refusal, with its own taxonomy
-            }
-            int dev_core = -1;
-            for (IrqBinding const* on = signaller_first(n); on != nullptr;
-                 on = signaller_next(on))
-            {
-                int const one = arch_irq_line_core(on->line);
-                if (one >= 0)
-                {
-                    dev_core = one; // irq_bind_notify refuses a chain that spans two
-                }
-            }
-            if (dev_core < 0)
-            {
-                return 0;
-            }
-            int const arc = sched_admit_mask(1u << static_cast<unsigned>(dev_core),
-                                             task_core_set(c->task), MaskBound::SUBSET,
-                                             &effective);
-            if (arc != 0)
-            {
-                return arc;
-            }
+            return 0;
         }
-        // OUTSIDE the lock: set_affinity may reschedule.
-        sched::set_affinity(c, effective);
-#else
-        (void)c;
-        (void)cap_handle;
-#endif
-        return 0;
+        return admit_claim_core(c, head);
     }
+#endif
 
     int irq_ack(Thread* c, uint32_t cap_handle)
     {
-        int const prc = pin_to_line_core(c, cap_handle);
-        if (prc != 0)
-        {
-            return prc;
-        }
         IrqLock lock;
         int err = 0;
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
@@ -863,6 +824,13 @@ namespace kickos
         {
             return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
         }
+#if KICKOS_KERNEL_CORES > 1
+        int const prc = admit_claim_core(c, b);
+        if (prc != 0)
+        {
+            return prc;
+        }
+#endif
         // A line that signals nothing must never be opened: the raise would land nowhere.
         if (b->notify == nullptr)
         {
@@ -875,11 +843,6 @@ namespace kickos
 
     int irq_discard(Thread* c, uint32_t cap_handle)
     {
-        int const prc = pin_to_line_core(c, cap_handle);
-        if (prc != 0)
-        {
-            return prc;
-        }
         IrqLock lock;
         int err = 0;
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
@@ -887,6 +850,13 @@ namespace kickos
         {
             return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
         }
+#if KICKOS_KERNEL_CORES > 1
+        int const prc = admit_claim_core(c, b);
+        if (prc != 0)
+        {
+            return prc;
+        }
+#endif
         // The controller only: needs_rearm and the mask state are both untouched, so a
         // discard can neither arm nor open a line. Discarding an armed line races the
         // device; the latch is only known stale between a wait return and its ack.
@@ -911,32 +881,36 @@ namespace kickos
         }
         if (r == 0)
         {
-            // NO leak-don't-strand arm and none owed: a waiter is parked on the OBJECT, not
-            // on this line, and the object's own reference count keeps it alive. Dropping the
-            // last capability naming this line while a driver waits strands nobody; it takes
-            // the line away, which is what closing that capability says.
+            // A waiter is parked on the object, not on this line, and the object's own
+            // reference count keeps it alive, so dropping the last capability naming this line
+            // strands nobody even while a driver waits.
             //
-            // Unchained HERE and released at the slot free below: a rearm must not reach a
+            // Unchained here and released at the slot free below: a rearm must not reach a
             // line that is going away, but a dispatch on another core may already hold this
             // binding's object pointer and must find the object still there.
             irq_unchain_signaller(idx);
-            // The budget comes back HERE and not at the pool free below, which above one
+            // Read before the release, which may return the slot to the pool.
+            int const line = b->line;
+            // The budget comes back here and not at the pool free below, which above one
             // kernel core happens later, from a reclamation: the binding is unreachable from
             // this instant and holding its owner until the slot returns would keep charging a
             // task for a line it no longer has.
 #if KICKOS_KERNEL_CORES > 1
             // The slot returns with the record's grace period: a dispatch still reading that
             // record is one still holding this slot's address as its pre-bound argument.
-            line_release(b->line, obj_handle);
+            line_release(line, obj_handle);
 #else
-            // DETACH BEFORE FREE: irq_event_isr holds this binding's address as its
+            // Detach before free: irq_event_isr holds this binding's address as its
             // pre-bound arg, so the slot must leave the dispatch table before it returns
             // to the pool. The detach also masks the line and restores the null-object,
             // which is what lets a later irq_claim of the same line pass its EBUSY test.
-            irq_detach(b->line);
+            irq_detach(line);
             irq_detach_notify(idx);
             k.irq_bindings.free(obj_handle);
 #endif
+            // After the mask: the mask must reach the core the route still names, and the seam
+            // requires the line masked across the call.
+            arch_irq_route(line, KICKOS_IRQ_ROUTE_NONE);
         }
     }
 }

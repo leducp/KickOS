@@ -1397,6 +1397,9 @@ namespace kickos
         // Preconditions differ from every other entry point here: the caller must NOT
         // hold IrqLock, and must have set c->dying first.
         KICKOS_ASSERT(c->dying);
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
+        KICKOS_DEBUG_ASSERT(klock_depth() == 0);
+#endif
         uint32_t const cap_end = thread_cap_capacity(c);
         {
             IrqLock lock;

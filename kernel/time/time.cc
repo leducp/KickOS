@@ -156,7 +156,7 @@ namespace kickos
         // the sleep queue.
         if (park_cancel_pending(c))
         {
-            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN); // noreturn
+            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
         }
         // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
         uint64_t const floor = ktime_now() + KICKOS_TIMER_MIN_DELTA_NS;

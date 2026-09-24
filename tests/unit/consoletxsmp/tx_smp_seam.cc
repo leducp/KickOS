@@ -20,12 +20,11 @@ namespace
                   "every exclusion assertion below describe another machine, and at one core "
                   "arch_cpu_id below is a macro this file may not define");
 
-    // How long a rendezvous waits for its peer before calling the hand-off broken. Generous
-    // against a loaded host and far under the 30s ctest timeout: a blown budget must FAIL
-    // with a verdict, where a hang reports nothing at all.
+    // How long a rendezvous waits for its peer before declaring the hand-off broken; kept
+    // well under the ctest timeout so a blown budget fails with a verdict instead of hanging.
     constexpr auto HANDOFF_BUDGET = std::chrono::seconds(10);
 
-    // Guards the fixture's own records alone. Nothing in the code under test reaches it.
+    // Guards the fixture's own records alone.
     std::mutex g_records;
     std::string g_wire;
     uint32_t g_pushes[KICKOS_KERNEL_CORES] = {};
@@ -62,7 +61,7 @@ namespace
                 g_outside = true;
             }
         }
-        // OUTSIDE the record lock: a seated function parks until its peer moves, and the
+        // Outside the record lock: a seated function parks until its peer moves, and the
         // peer's own push has to reach these records while it does.
         if (g_hold_core.load() == me and g_hold_fn != nullptr)
         {
@@ -164,9 +163,8 @@ namespace consoletxsmp
 extern "C"
 {
 
-// GUARDED BY THE SEAM'S OWN CONDITION: at one core arch_cpu_id is a macro folding to a
-// literal and no source in the tree may define it. The assert above pins which arm this
-// translation unit is on.
+// At one core, arch_cpu_id is a macro folding to a literal and no other source may define
+// it; the assert above pins which arm this translation unit is on.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void)
 {
@@ -174,8 +172,8 @@ uint32_t arch_cpu_id(void)
 }
 #endif
 
-// PER THREAD, so a producer's mask reaches only the core it speaks as. A shared depth here
-// would make one core's critical section exclude the other's and hide the very overlap these
+// Per-thread, so a producer's mask reaches only the core it speaks as. A shared depth here
+// would make one core's critical section exclude the other's and hide the overlap these
 // arms exist to read.
 arch_irq_state_t arch_irq_save(void)
 {
@@ -267,7 +265,7 @@ console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
     return nullptr; // the fixture arms the ring through console_tx_init
 }
 
-// Both ownership reads are pinned kernel-owned: these arms measure the RING.
+// Both ownership reads are pinned kernel-owned: these arms measure the ring.
 int console_owner_is_kernel(void)
 {
     return 1;
@@ -286,8 +284,8 @@ void console_chip_writer_leave(void)
 {
 }
 
-// console.cc's. The insert reaches it for the UNARMED ring alone, where there is no ring to
-// interleave with, so these suites need only the symbol.
+// Stubs console.cc's version; the insert reaches it only for the unarmed ring, where there
+// is nothing to interleave with, so these suites need only the symbol.
 void console_write_line_sync(char const*, size_t)
 {
 }

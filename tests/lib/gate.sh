@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Primitives shared by the gate scripts. SOURCED, never executed:
+# Primitives shared by the gate scripts. Sourced, never executed:
 #   . "$(dirname "$0")/../lib/gate.sh"
 # POSIX sh (dash-clean), because /bin/sh is dash on the CI images.
 
-# THE LOCALE, FOR EVERY GATE, SET BEFORE ANY OF THEM READS ANYTHING. Two things a gate reads
+# The locale, for every gate, set before any of them reads anything. Two things a gate reads
 # stop meaning what it expects under a UTF-8 locale. Binutils, cmake and the compilers
-# TRANSLATE their headings and diagnostics, so a host readelf answers `Fichier:` where a member
+# translate their headings and diagnostics, so a host readelf answers `Fichier:` where a member
 # slicer keys on `File:` and the slice comes back empty. And awk's length(), substr() and
-# index() count CHARACTERS under gawk, so a capture carrying one invalid sequence shifts every
+# index() count characters under gawk, so a capture carrying one invalid sequence shifts every
 # offset the byte-exact matchers below compute. Collation follows: `sort` order and a `grep`
 # range are locale-dependent too.
 LC_ALL=C
@@ -19,8 +19,8 @@ export LC_ALL
 # banner shape, because a substring match on "fault" also hits "EFAULT" and "default" in
 # benign output.
 #
-# It lives in tests/lib/panic.ere, ONE line, and has two consumers: this file and the root
-# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Read once, and REFUSE an
+# It lives in tests/lib/panic.ere, one line, and has two consumers: this file and the root
+# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Read once, and refuse an
 # empty result: an empty ERE matches nothing, so every panic gate in the suite would silently
 # stop failing.
 KOS_PANIC_RE="$(cat "$(dirname "$0")/../lib/panic.ere")"
@@ -31,21 +31,21 @@ fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# A finding COLLECTED rather than fatal, so one run names them all. It sets the caller's `rc`,
+# A finding collected rather than fatal, so one run names them all. It sets the caller's `rc`,
 # which the caller declares and exits on. A broken tool takes fail()'s hard exit instead.
 bad() { echo "FAIL: $*" >&2; rc=1; }
 
-# A literal tab, for `while IFS="$TAB" read -r ...` over tab-separated records. NOT $'\t':
+# A literal tab, for `while IFS="$TAB" read -r ...` over tab-separated records. Not $'\t':
 # that is a bashism, and dash sets IFS to the three characters $ \ t instead, so every field
-# splits on those. `dash -n` passes it and a gate whose records mis-split goes VACUOUS rather
+# splits on those. `dash -n` passes it and a gate whose records mis-split goes vacuous rather
 # than loud, so only a run under dash shows it.
 TAB="$(printf '\t')"
 
-# ONE HANDLER FOR THE WHOLE LIBRARY, because a second `trap ... EXIT` REPLACES the first and
+# One handler for the whole library, because a second `trap ... EXIT` replaces the first and
 # would drop whatever the earlier owner registered. Two owners register here: the scratch
 # directory and a polled image's child.
 #
-# THE SIGNALS ARE TRAPPED BESIDE EXIT. A ctest TIMEOUT signals the script, and under an
+# The signals are trapped beside EXIT. A ctest TIMEOUT signals the script, and under an
 # EXIT-only trap the emulator outlives it and holds the console the next test opens, which
 # surfaces as that test failing rather than as this one being killed. Each signal arm exits, and
 # the EXIT arm then runs the handler a second time, so the handler clears every record it acts
@@ -75,11 +75,11 @@ kos_trap() {
     trap 'kos_cleanup; exit 129' HUP
 }
 
-# STOP THE RECORDED CHILD WITHIN A BOUND. `wait` on a child that ignores SIGTERM never returns,
+# Stop the recorded child within a bound. `wait` on a child that ignores SIGTERM never returns,
 # so a plain kill-then-wait leaves the advertised timeout unenforced, which is worse than no
 # timeout at all because every caller trusts it. SIGTERM first, so the emulator flushes what it
 # has written; SIGKILL once the grace runs out, and that one cannot be ignored, so the `wait`
-# below it terminates. By RECORDED PID: `pgrep -f` matches this script's own command line, so a
+# below it terminates. By recorded pid: `pgrep -f` matches this script's own command line, so a
 # pattern kill takes the gate down with the emulator.
 KOS_STOP_TICKS=15
 
@@ -122,15 +122,15 @@ require_nonempty() {
 require_repo_root() { # [<prose>]
     _rr="${1:-run from the repo root (see WORKING_DIRECTORY)}"
     [ -f CMakeLists.txt ] || fail "$_rr"
-    # `.git` is a FILE in a git worktree, not a directory, so -d alone fails every worktree.
+    # `.git` is a file in a git worktree, not a directory, so -d alone fails every worktree.
     [ -d .git ] || [ -f .git ] || fail "$_rr (no .git here)"
 }
 
-# THE CORPUS, AND WHY IT IS ONE FUNCTION. `git ls-files` and not `find`: an untracked scratch
-# file is neither gated nor counted, which also means a NEW file is invisible here until it is
+# The corpus, and why it is one function. `git ls-files` and not `find`: an untracked scratch
+# file is neither gated nor counted, which also means a new file is invisible here until it is
 # staged. An empty result is refused rather than walked, an empty corpus satisfying every
 # absence-assertion below it; a failed `git ls-files` is refused for the stronger reason that
-# the tree is then UNKNOWN and not empty.
+# the tree is then unknown and not empty.
 #
 # <what> completes "git ls-files matched no <what>", so it names what the pathspec selects.
 corpus() { # <outfile> <what> [pathspec]...
@@ -150,8 +150,8 @@ corpus_all() { # <outfile>
     corpus "$1" "tracked file"
 }
 
-# WHAT COUNTS AS A SOURCE, in one list, because a spelling missing from it takes its file
-# out of every gate built on this corpus at once and takes the corpus figure DOWN by one,
+# What counts as a source, in one list, because a spelling missing from it takes its file
+# out of every gate built on this corpus at once and takes the corpus figure down by one,
 # which reads like an ordinary deletion. The compiled spellings are the ones CMake hands to
 # a compiler; the rest are the include-only spellings, which no compiler names and every
 # gate still wants. `m`, `M` and `mm` are here because CMake gives them to the C and C++
@@ -162,7 +162,7 @@ KOS_SOURCE_EXT='c m cc cpp cxx c++ C M CPP mm ixx cppm ccm cxxm c++m mpp
                 h hh hpp hxx h++ inc inl ipp tpp tcc h.in
                 S s asm'
 
-# CMAKE'S OWN ANSWER, NOT A COPY OF IT, because a control planting the list it is checking
+# CMake's own answer, not a copy of it, because a control planting the list it is checking
 # proves only that git still globs. These three files are where CMake keeps the extension
 # sets it dispatches on, and reading them is what lets this refuse a spelling the list has
 # never heard of.
@@ -254,7 +254,7 @@ corpus_headers() { # <outfile>
     corpus "$1" "header" '*.h' '*.hh' '*.hpp'
 }
 
-# The same trap one level up: a binutils invocation that FAILED also produces nothing, so
+# The same trap one level up: a binutils invocation that failed also produces nothing, so
 # every absence-assertion reading its output concludes "clean". Route every invocation
 # through here. The landmark is a positive control (a section, a symbol shape) that a healthy
 # run cannot lack, so a tool that merely emitted a banner is caught too. Exits on the spot,
@@ -280,12 +280,12 @@ tool_out() { # <outfile> <landmark-ere, empty for success-only> <tool> <arg>...
     fi
 }
 
-# THE OBJDUMP READER'S SCOPE AND ITS WINDOW, shared so a listing-shape fix is made once. The
+# The objdump reader's scope and its window, shared so a listing-shape fix is made once. The
 # reader awk a caller passes carries the per-arch mnemonic match and the END verdict, which are
-# bespoke; what it does NOT carry is finding the body, or finding the landmarks that delimit a
+# bespoke; what it does not carry is finding the body, or finding the landmarks that delimit a
 # region inside it, and getting either wrong reads as a clean body.
 #
-# THREE PROGRAMS IN THIS ORDER, and they are not interchangeable: the scope drops everything
+# Three programs in this order, and they are not interchangeable: the scope drops everything
 # that is not an instruction of the wanted body, the window numbers what is left and refuses a
 # landmark it was told to find and did not, and the reader counts. tests/lib/objdump_scope.awk
 # documents `seen`; tests/lib/objdump_window.awk documents win_open, win_close and what a
@@ -313,21 +313,21 @@ scoped_body() { # <reader.awk> <listing> <symbol> [-v name=value]...
 
 KOS_OBJDUMP_BOUNDARY="$(dirname "$0")/../lib/objdump_boundary.awk"
 
-# ONE BODY'S LISTING, RE-DECODED WHEREVER THE SWEEP STARTED ON THE WRONG BYTE. On a
+# One body's listing, re-decoded wherever the sweep started on the wrong byte. On a
 # variable-width ISA a single byte of padding shifts every decode behind it until the stream
 # realigns, and the run it prints in between is instructions that were never in the image. The
 # esp32 link leaves two zero bytes behind a relaxed jump, and one of the calls the sweep eats
 # there is the one a positional gate counts, which reads as a body that does not make it.
 #
 # tests/lib/objdump_boundary.awk names the lowest boundary the body claims and the listing does
-# not carry; a sweep started AT that address is right from there. Each pass splices one, and
+# not carry; a sweep started at that address is right from there. Each pass splices one, and
 # passing it back as the floor is what bounds the loop: a splice cannot reintroduce a missing
 # boundary below its own cut, so the next one is strictly higher.
 #
 # SYNCED_N is left at the number of splices, which is a fact about the toolchain worth
 # printing: a body that needed none was read as objdump decoded it.
 #
-# An absent symbol produces an EMPTY listing here and no refusal, because scoped_body's NOSYM
+# An absent symbol produces an empty listing here and no refusal, because scoped_body's NOSYM
 # is the one place that refusal is worded.
 synced_body() { # <outfile> <listing> <symbol> <elf> <objdump> <branch-ere>
     _yo="$1"
@@ -340,7 +340,7 @@ synced_body() { # <outfile> <listing> <symbol> <elf> <objdump> <branch-ere>
       could be told from one the disassembler decoded off a wrong byte and every desynced
       listing would be read as the image"
     : > "$_yo"
-    # The body, plus the address the NEXT symbol starts at, which bounds every re-decode. A
+    # The body, plus the address the next symbol starts at, which bounds every re-decode. A
     # body with no successor is refused below rather than re-decoded to the end of the image.
     _yend="$(awk -v sym="$_ys" -v out="$_yo" '
         /^[0-9a-f]+ <.*>:$/ {
@@ -393,8 +393,8 @@ synced_body() { # <outfile> <listing> <symbol> <elf> <objdump> <branch-ere>
     done
 }
 
-# THE RESYNC'S OWN CONTROL, because a splice that never fires and a splice that fires on a
-# pc-relative LOAD are both invisible in a green gate: the first leaves the caller reading the
+# The resync's own control, because a splice that never fires and a splice that fires on a
+# pc-relative load are both invisible in a green gate: the first leaves the caller reading the
 # instructions objdump invented, the second rewrites a listing that was already right. Three
 # planted listings and a stub disassembler, so nothing here needs an image. Call it before the
 # first synced_body of a run.
@@ -462,7 +462,7 @@ EOF
       refuses a body nothing was ever wrong with"
 }
 
-# THE DEAD-READER CONTROL, which no planted body can stand in for: a reader handed a symbol
+# The dead-reader control, which no planted body can stand in for: a reader handed a symbol
 # the listing does not carry must say NOSYM, or a renamed, inlined or static body reads as a
 # clean one and the gate goes green on an image it never decoded. <prose> completes "so ...".
 ctl_dead_reader() { # <verdict> <prose>
@@ -473,15 +473,15 @@ ctl_dead_reader() { # <verdict> <prose>
 }
 
 # The -D arguments an installed KickOS package puts on a consumer's compile line, read back
-# off a BUILT out-of-tree app rather than restated. The exported target carries them as
+# off a built out-of-tree app rather than restated. The exported target carries them as
 # generator expressions, so the app's own compile_commands.json is the only place they exist
 # resolved, and a set written by hand is right for the arch it was written on and wrong
 # elsewhere.
 #
-# PER TRANSLATION UNIT, never a union of the whole corpus: a union can hand
+# Per translation unit, never a union of the whole corpus: a union can hand
 # check_public_headers.sh a combination no single consumer TU ever compiles with, and the
 # probe cannot tell that apart from real agreement. Every TU in the corpus must carry the
-# SAME set; a disagreement is refused by name (tests/lib/package_defs.py) rather than merged
+# same set; a disagreement is refused by name (tests/lib/package_defs.py) rather than merged
 # or resolved by picking one TU's file, which would hardcode a consumer's layout into a gate
 # helper shared by every arch.
 package_defs() { # <compile_commands.json> <outfile>
@@ -500,16 +500,16 @@ package_defs() { # <compile_commands.json> <outfile>
       either the exported target lost its usage requirements or $1 is not a compile database"
 }
 
-# HOW AN IMAGE IS HANDED TO THE EMULATOR, per board, into KOS_BOOT_ARGS as a word list the
+# How an image is handed to the emulator, per board, into KOS_BOOT_ARGS as a word list the
 # two runners below leave unquoted. The default is `-semihosting -kernel <elf>`.
 #
 # KICKOS_BOOT=uefi-pe is x86_64, and -kernel cannot start that image at all: firmware loads a
 # PE32+ UEFI application, so the image goes into an EFI system partition and boots off the
 # removable-media fallback path. Three things are per run. The ESP is rebuilt from the image
-# UNDER TEST, because a stale BOOTX64.EFI left in a reused volume boots instead and prints the
+# under test, because a stale BOOTX64.EFI left in a reused volume boots instead and prints the
 # same banner. The variable store is copied, because the shipped one is root-owned and
 # read-only and firmware writes to it. And -no-reboot is not cosmetic: an absent or malformed
-# interrupt table triple-faults, which RESETS the machine, so without it the run loops instead
+# interrupt table triple-faults, which resets the machine, so without it the run loops instead
 # of ending.
 #
 # The scratch lives beside the image and not under /tmp: it is tens of megabytes, and the
@@ -553,28 +553,28 @@ boot_args() { # <image>
 # literal as a fault reporter's marker and would demand panic.ere match an ordinary exit.
 KOS_EXIT_LINE_RE='KICKOS-EXIT status \([0-9][0-9]*\)'
 
-# KOS_STATUS: the image's OWN exit status, out of whatever the machine reports.
+# KOS_STATUS: the image's own exit status, out of whatever the machine reports.
 #
-# THE WHOLE MECHANISM IS GATED ON KICKOS_BOOT=uefi-pe. Only the x86_64 posture has a status
+# The whole mechanism is gated on KICKOS_BOOT=uefi-pe. Only the x86_64 posture has a status
 # channel too narrow to carry a byte: isa-debug-exit reports (status << 1) | 1 into an 8-bit
 # process exit code, so only 0 through 127 round-trip and 139 arrives as 11. Every other board's
 # emulator reports the image's status directly, and below this gate they take the raw status
 # untouched.
 #
-# THE TWO CHANNELS CROSS-CHECK, and neither is trusted alone. On the gated posture the console is
+# The two channels cross-check, and neither is trusted alone. On the gated posture the console is
 # polled and the image runs an unprivileged thread that can write kernel memory, so a printed
 # line is a claim an application could make about itself; the device write is privileged and its
 # code comes from the emulator. So the printed value is used only where the device corroborated
-# it: the recovery must equal the printed status modulo 128. A printed line with NO device report
+# it: the recovery must equal the printed status modulo 128. A printed line with no device report
 # is refused rather than believed, which also catches a run configured without the device.
 #
 # The timeout code is never overridden: an image killed for making no progress must read as
 # killed, and a status line it printed before the kill is exactly what would hide that.
 #
-# NEITHER CHANNEL MOVES THE RAW STATUS ALONE, and the console must speak first: arch_shutdown
+# Neither channel moves the raw status alone, and the console must speak first: arch_shutdown
 # prints the line before it writes the device, so a device report with no line on the wire is
 # not this image exiting. An emptiness test does not catch that: run_image folds QEMU's own
-# stderr into this argument, so only a SILENT failure ever had an empty one.
+# stderr into this argument, so only a silent failure ever had an empty one.
 #
 # Sets a variable rather than printing: a caller's `$(boot_status ...)` would confine fail()
 # to a subshell, so a disagreement would be reported and then discarded.
@@ -606,7 +606,7 @@ boot_status() { # <raw status> <output>
 
 # QEMU_BIN: the emulator this board needs. Exit 77 -> CTest SKIP (not PASS), so a
 # QEMU-less box cannot green-light a boot gate. Not a command substitution: the exit
-# has to leave the SCRIPT, not a subshell.
+# has to leave the script, not a subshell.
 need_qemu() {
     QEMU_BIN="${QEMU:-qemu-system-arm}"
     if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
@@ -643,7 +643,7 @@ run_image() {
     # Every capture-parsing pattern in tests/ rests on this line: the console lowers '\n' to
     # CR+LF on every board but the sim (KICKOS_CONSOLE_CRLF), so the wire carries
     # `ok 149 - amp_window\r\n`, and stripping the CR is what makes a '$' anchor and a
-    # whole-line `grep -c` mean what the gate author expects. The break is ASYMMETRIC: GNU
+    # whole-line `grep -c` mean what the gate author expects. The break is asymmetric: GNU
     # grep's '$' does not match before a CR while the ugrep that shadows `grep` on an
     # interactive shell does, so it fails in CI and passes by hand. The bench chain keeps the
     # CR on purpose, a line ending being evidence there (tools/bench/bench-capture.sh).
@@ -654,20 +654,20 @@ run_image() {
 }
 
 # For an app that never terminates on its own: boot it in the background and poll its
-# output until EVERY pattern has appeared, then stop it. POLL_OK is 1 when they all
+# output until every pattern has appeared, then stop it. POLL_OK is 1 when they all
 # landed, 0 when the poll ran out or the image died first; OUT carries the whole run
 # either way. QEMU_TIMEOUT bounds only the no-progress path, and kos_stop_child bounds the
 # stop that follows it. POLL_MS is how long the poll ran for, at the resolution of its own
 # tick, and POLL_ALIVE is 0 when the image ended before the poll did: a bound that ran out and
 # an image that stopped early are different findings.
 #
-# KOS_POLL_UNTIL names a shell FUNCTION the poll re-evaluates on every tick beside the
-# patterns, satisfied when it returns 0; the poll stops when the patterns AND the function
-# are both satisfied. POLL_UNTIL_OK carries its final verdict SEPARATELY from POLL_OK: a
+# KOS_POLL_UNTIL names a shell function the poll re-evaluates on every tick beside the
+# patterns, satisfied when it returns 0; the poll stops when the patterns and the function
+# are both satisfied. POLL_UNTIL_OK carries its final verdict separately from POLL_OK: a
 # caller whose bound expires has to say which of the two it was still waiting for, and the
 # function is what knows what is outstanding.
 #
-# A caller's function is called in THIS shell, so what it records stays readable after the
+# A caller's function is called in this shell, so what it records stays readable after the
 # poll; it must not exit, a poll tick being no place to reach a verdict.
 KOS_POLL_UNTIL=""
 
@@ -687,13 +687,13 @@ poll_image() { # <elf> <ere>...
         "$_elf" >"$_log" 2>&1 &
     fi
     _qpid=$!
-    # Recorded and trapped BEFORE the poll runs: a caller's until-function, a signal or a
+    # Recorded and trapped before the poll runs: a caller's until-function, a signal or a
     # fail() inside the loop all leave this shell without reaching the stop below.
     KOS_CHILD_PID="$_qpid"
     kos_trap
     _n=0
     POLL_ALIVE=1
-    # EIGHT, WHERE run_image TAKES TWENTY, AND THE TWO ARE NOT INTERCHANGEABLE. A gate that
+    # Eight, where run_image takes twenty, and the two are not interchangeable. A gate that
     # polls spends this whole bound before it reports no progress, and two of them register
     # their sim arm at a ctest TIMEOUT of 15 (tests/integration/gates/rootfault.cmake and
     # mpu_fault.cmake). At twenty ctest kills those at 15 instead, and a reported "the poll
@@ -711,7 +711,7 @@ poll_image() { # <elf> <ere>...
     done
     kos_stop_child
     POLL_MS=$((_n * 200))
-    # Judged on the FINAL log: an image that exited between the last poll and the
+    # Judged on the final log: an image that exited between the last poll and the
     # liveness check has everything on the wire and must not read as no-progress. Both
     # conditions are evaluated, and not short-circuited: each one's verdict is reported on
     # its own, and the second is what records what it is still short of.
@@ -738,7 +738,7 @@ _poll_matched() { # <log> <ere>...
     return 0
 }
 
-# An unset KOS_POLL_UNTIL is SATISFIED, so a caller that names no function polls on the
+# An unset KOS_POLL_UNTIL is satisfied, so a caller that names no function polls on the
 # patterns alone.
 _poll_until() {
     if [ -z "${KOS_POLL_UNTIL:-}" ]; then
@@ -751,34 +751,34 @@ _poll_until() {
 has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 has_e() { printf '%s\n' "$OUT" | grep -qE "$1"; }
 
-# ABOVE ONE CORE THE WIRE HAS NO PER-LINE ATOMICITY: arch_console_write is a byte-at-a-time
-# device loop under no lock, so one core's line arrives shuffled INTO another's, character by
+# Above one core the wire has no per-line atomicity: arch_console_write is a byte-at-a-time
+# device loop under no lock, so one core's line arrives shuffled into another's, character by
 # character, and a byte-exact grep stops meaning what its author expects. Measured over 1440
 # four-core captures of one image: a third of them carried such a collision.
 #
 # wire_has answers whether <literal> reached the wire with its own bytes in order, allowing
-# foreign bytes among them across a bounded span. The bound is what ONE status line can
+# foreign bytes among them across a bounded span. The bound is what one status line can
 # contribute, so a match stitched out of bytes scattered over the capture is still refused.
 # WIRE_SPAN carries the span the match occupied, and equals the literal's length when nothing
 # was interleaved.
 #
-# POSITIVE ASSERTIONS ONLY. A literal that must be ABSENT is not made safe by this: a shuffle
+# Positive assertions only. A literal that must be absent is not made safe by this: a shuffle
 # hides it from grep, and answering the reverse question here would take the tolerance for a
 # sighting instead. Corroborate an absence against a positive assertion that the same defect
 # would also break.
 #
-# THE SLACK IS ONE FOREIGN LINE'S WORTH OF BYTES, AND WHICH WRITER CONTRIBUTES IT IS NOT FIXED:
+# The slack is one foreign line's worth of bytes, and which writer contributes it is not fixed:
 # a status line lands inside a thread's line as readily as the reverse, and an app's line is
 # routinely the wider of the two. So the slack is read off the capture rather than fixed, and
 # KOS_WIRE_SLACK is only the floor under it: the longest status line,
 # `# doorbell: <n> core(s) answered, rounds 0x<8 hex>` with its newline.
 #
-# THE SLACK COMES FROM THE WINDOW THE MATCH SITS IN AND NEVER FROM THE WIDEST LINE OF THE WHOLE
-# CAPTURE. One interleave leaves the literal across at most TWO ADJACENT physical lines, because
+# The slack comes from the window the match sits in and never from the widest line of the whole
+# capture. One interleave leaves the literal across at most two adjacent physical lines, because
 # the foreign line brings its own newline in with it and that newline is what ends the first of
 # the two; a fragment that arrives without one keeps the literal on a single line. So a candidate
 # is searched inside a window of one line, or of two adjacent lines, and its bound is that
-# window's own widest line. The line that broke the literal is IN the window by construction,
+# window's own widest line. The line that broke the literal is in the window by construction,
 # which is why the tolerance survives; an unrelated wide line elsewhere in the capture no longer
 # widens the bound, which is the direction that let a presence check pass on bytes it stitched
 # together from somewhere else.
@@ -799,7 +799,7 @@ wire_has() { # <literal>; reads OUT, sets WIRE_SPAN
                 }
                 return 1
             }
-            # The SHORTEST span in <w> holding <pat> in order, 0 for none. Each match found
+            # The shortest span in <w> holding <pat> in order, 0 for none. Each match found
             # left to right is shrunk from its end back to its own latest possible start, so a
             # span that fits the bound is not missed because an earlier start stretched it.
             function minspan(w, pat,    L, m, i, j, k, e, s, best) {
@@ -857,7 +857,7 @@ wire_has() { # <literal>; reads OUT, sets WIRE_SPAN
     [ "$WIRE_SPAN" -gt 0 ]
 }
 
-# How many cores the image reported online, 1 when it reported none. Read from the FIRST
+# How many cores the image reported online, 1 when it reported none. Read from the first
 # status line and not the last: the first lands before any peer runs a thread and was intact in
 # every one of those captures, where the last, emitted while peers already run, is the one that
 # collides.
@@ -870,9 +870,9 @@ wire_cores() {
     printf '%s' "$_wc"
 }
 
-# A LITERAL A GATE REQUIRES ON THE WIRE. Strict first, so a one-writer capture stays byte-exact
+# A literal a gate requires on the wire. Strict first, so a one-writer capture stays byte-exact
 # and no split goes unreported; above one core a split is tolerated through wire_has alone, so a
-# literal absent for any other reason still fails. Every tolerated split is REPORTED.
+# literal absent for any other reason still fails. Every tolerated split is reported.
 require_on_wire() { # <literal> <prose>
     require_literal "$1" "the literal required on the wire"
     if printf '%s\n' "$OUT" | grep -qF -- "$1"; then
@@ -888,7 +888,7 @@ require_on_wire() { # <literal> <prose>
    kernel status line, which two harts on one unlocked device wire may do at any byte"
 }
 
-# A WEAK CHECK BY NATURE ABOVE ONE CORE, and it cannot be made otherwise: a shuffle hides text
+# A weak check by nature above one core, and it cannot be made otherwise: a shuffle hides text
 # from grep, so every way this can be wrong ends in a pass. A caller on a multi-writer posture
 # owes it a positive assertion the same panic would also break (an exit status, a line the run
 # only reaches by not panicking); one that has none says so in its own header.
@@ -916,7 +916,7 @@ thread_fault_re() { # <thread-name>
     printf "=== THREAD FAULT === thread '%s' killed" "$1"
 }
 
-# WHAT THE RV64 FAULT GATES SHARE. Each caller keeps its own markers, its own scause constant,
+# What the rv64 fault gates share. Each caller keeps its own markers, its own scause constant,
 # its own address and the prose every refusal here prints.
 #
 # The image is expected to fault, so an `ERROR:` line is the image failing to arrange the fault
@@ -930,7 +930,7 @@ run_faulting_image() { # <image>
     fi
 }
 
-# WHAT THE THREE HELPERS BELOW REFUSE BEFORE THEY ASSERT ANYTHING. `[ "" -ne 139 ]` is an ERROR
+# What the three helpers below refuse before they assert anything. `[ "" -ne 139 ]` is an error
 # in test(1) and not a false condition, and `grep -F -e ""` matches every line, so an empty
 # marker and an empty count each turn a refusal into a pass.
 require_number() { # <value> <what>
@@ -945,8 +945,8 @@ require_literal() { # <value> <what>
     fi
 }
 
-# KOS_LITERAL_N: OCCURRENCES of a LITERAL in <text>, counted left to right and
-# non-overlapping. NOT `grep -c`, which counts the LINES that carry a match: above one core the
+# KOS_LITERAL_N: occurrences of a literal in <text>, counted left to right and
+# non-overlapping. Not `grep -c`, which counts the lines that carry a match: above one core the
 # console has no per-line atomicity, so two markers reach the wire on one physical line and a
 # line count answers 1 where a reader tallies 2. Every exactly-once assertion built on this
 # then passes on a doubled fault, and an interleaved line is precisely how two markers come to
@@ -978,17 +978,17 @@ count_literal() { # <literal>
     KOS_COUNT="$KOS_LITERAL_N"
 }
 
-# KOS_FIELD_N: OCCURRENCES of a record `<name>=<value>` in <text>, the value WHOLE. A substring
+# KOS_FIELD_N: occurrences of a record `<name>=<value>` in <text>, the value whole. A substring
 # count reads `scause=0xdead` as a hit for `scause=0xd` and `ADDR=0x80201000` as a hit for
 # `ADDR=0x8020100`. The value ends at the first character that could not continue it, or at end
 # of line.
 #
-# NOT `grep -c`, for the reason literal_count is not: it counts the LINES carrying a match, so
+# Not `grep -c`, for the reason literal_count is not: it counts the lines carrying a match, so
 # two records that reached the wire on one physical line are one hit, and an exactly-once
-# reading of a field passes on a doubled record. The boundary characters are TESTED and not
+# reading of a field passes on a doubled record. The boundary characters are tested and not
 # consumed, so two records sharing one separator are both counted.
 #
-# A name or value carrying anything but an identifier character REFUSES rather than being
+# A name or value carrying anything but an identifier character refuses rather than being
 # escaped, which is also what makes the record's single `=` the only one: two occurrences of the
 # record cannot overlap, so advancing past a hit cannot skip another.
 field_count() { # <text> <name> <value>
@@ -1035,10 +1035,10 @@ count_field() { # <name> <value>
 }
 
 # The matcher, before it is asked to report an absence. Both directions, because only one of
-# them is the defect: a planted record must count ONCE for its own value and NOT AT ALL for a
+# them is the defect: a planted record must count once for its own value and not at all for a
 # value it merely begins with. A prefix matcher passes the first control and fails the second.
-# THE OCCURRENCE COUNTER, before an exactly-once refusal rests on it. THE CONTROL IS A
-# SAME-LINE DUPLICATE, because that is the reading a line counter gets wrong and an interleaved
+# The occurrence counter, before an exactly-once refusal rests on it. The control is a
+# same-line duplicate, because that is the reading a line counter gets wrong and an interleaved
 # wire is what produces it: three markers over two lines, two of them sharing one line, so a
 # counter that answers 2 is counting lines and every doubled fault below it reads as a single.
 # The absent marker is the other direction: a counter that reports one is unattributable.
@@ -1078,9 +1078,9 @@ field_matcher_control() {
     field_count "$_fmc" ADDR 0x80201001
     [ "$KOS_FIELD_N" -eq 0 ] \
         || fail "the field matcher reports an address the planted record does not carry"
-    # THE SAME-LINE DUPLICATE, and the arm above is the near miss it needs: the planted record
-    # there carries the address ONCE, so a matcher that answers 1 to both cannot be told from
-    # one that counts occurrences. Three records over two lines, two of them on ONE line, is
+    # The same-line duplicate, and the arm above is the near miss it needs: the planted record
+    # there carries the address once, so a matcher that answers 1 to both cannot be told from
+    # one that counts occurrences. Three records over two lines, two of them on one line, is
     # what a wire with no per-line atomicity delivers and what a line count reads as two.
     _fmc_dup="  ADDR=0x80201000 PC=0x1 ADDR=0x80201000
   ADDR=0x80201000"
@@ -1095,11 +1095,11 @@ field_matcher_control() {
       ADDR=0x8020100, so a fault at a longer address passes as the address asserted"
 }
 
-# Exactly ONE occurrence of a gate's fault-dump marker. The absence prose is the caller's,
+# Exactly one occurrence of a gate's fault-dump marker. The absence prose is the caller's,
 # because what a missing dump means is the whole of what that gate asserts; a repeat prose is
 # given where a second dump means something more than a repeated fault.
 #
-# A REPEAT IS STILL A REPEAT, AND ONLY THE ABSENCE IS A READING A SPLIT EXPLAINS: an interleave
+# A repeat is still a repeat, and only the absence is a reading a split explains: an interleave
 # hides a marker from grep and can never manufacture a second one, so the count above one is
 # judged byte-exact and the zero goes through require_on_wire.
 #
@@ -1115,16 +1115,16 @@ require_single_marker() { # <marker> <absence-prose> [repeat-prose]
     require_on_wire "$1" "fault-dump marker '$1' missing: $2"
 }
 
-# A FAULT RECORD'S FIELD, WHOLE, AND THE ONE READ ABOVE ONE CORE THAT MAY NOT BE TOLERATED.
-# require_on_wire answers whether a LITERAL reached the wire and never which VALUE it carried:
+# A fault record's field, whole, and the one read above one core that may not be tolerated.
+# require_on_wire answers whether a literal reached the wire and never which value it carried:
 # foreign bytes are permitted among the pattern's own, so one digit landing inside a record
 # satisfies a shorter value with a longer one, and `ADDR=0x8020100` is already a subsequence of
 # `ADDR=0x80201000` with nothing interleaved at all. Tolerating that would credit a fault at
 # another address, so the match stays byte-exact, through field_count, which pins the value's
-# END. Same reason the realized soak size in check_smp_threads.sh is read strictly.
+# end. Same reason the realized soak size in check_smp_threads.sh is read strictly.
 #
-# A LITERAL NOT ON THE WIRE AT ALL AND ONE ONLY A BOUNDED MATCH FINDS ARE REPORTED APART, since
-# they send a reader to different places, but the second is NOT resolved further: a record whose
+# A literal not on the wire at all and one only a bounded match finds are reported apart, since
+# they send a reader to different places, but the second is not resolved further: a record whose
 # value is longer and one a peer's line broke into satisfy the bounded match alike, and telling
 # those two apart is the very thing a subsequence cannot do. Both are refused, and the record
 # <context-ere> selects is printed above the refusal so the reader can see which it was.
@@ -1149,15 +1149,15 @@ require_field_on_wire() { # <name> <value> <context-ere> <prose>
 
 # The three assertions an RV64 fault record carries: the address the caller computed, the cause
 # the caller spells out as a scause constant, and the image's exit status. Every refusal prints
-# the record's own lines first. Each field is matched WHOLE, through field_count above, whose
+# the record's own lines first. Each field is matched whole, through field_count above, whose
 # control runs here before any of the three is judged.
 #
 # scause is the whole of what this architecture publishes about the access: no fault-status
 # field and no level field sits beside it (RISC-V Privileged ISA, Supervisor Cause Register).
 #
 # Both fields go through require_field_on_wire, so above one hart a record a peer's line broke
-# into is reported as UNREADABLE rather than as a fault at another address. Neither is tolerated:
-# they carry VALUES, and a bounded in-order match cannot say which value a record named.
+# into is reported as unreadable rather than as a fault at another address. Neither is tolerated:
+# they carry values, and a bounded in-order match cannot say which value a record named.
 require_rv64_fault_at() { # <addr-hex> <addr-prose> <scause-hex> <cause-prose> <expect-status>
     require_literal "$1" "the faulting address"
     require_literal "$3" "the scause constant"

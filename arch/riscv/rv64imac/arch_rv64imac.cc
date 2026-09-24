@@ -4,13 +4,13 @@
 // RISC-V RV64IMAC arch backend: the ISA-generic half of the arch.h seam. switch.S holds the
 // trap vector, the save frame and the entries; trap.S the supervisor-mode confirmation.
 //
-// THIS PORT RUNS IN SUPERVISOR MODE, so every CSR here is an s-prefixed one and nothing is
+// This port runs in supervisor mode, so every CSR here is an s-prefixed one and nothing is
 // shared with the machine-mode rv32imac backend beside it.
 //
 // satp belongs to the map editor in aspace_rv64imac.cc: one root serves both privilege levels,
 // so it moves only when the space does.
 //
-// THE INTERRUPT CONTROLLER IS PURE SOFTWARE, there being no PLIC and no external interrupt in
+// The interrupt controller is pure software, there being no PLIC and no external interrupt in
 // this image. mask/unmask/clear_pending are a bitmask, and one raise reaches the ISR path
 // through sip.SSIP, which S-mode may write itself.
 
@@ -20,6 +20,10 @@
 #include <kickos/arch/rv64_frame.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
+
+#if KICKOS_KERNEL_CORES > 1
+#include <kickos/arch/doorbell_part.h>
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -99,42 +103,176 @@ namespace
         }
     }
 
-    // THE SOFTWARE CONTROLLER'S STATE, IMAGE-WIDE AND NOT PER HART. Nothing on this board
+#if KICKOS_KERNEL_CORES > 1
+    static_assert(KICKOS_MULTICORE_MODEL_SHARED,
+                  "the kernel's core index names the hart only under one shared kernel");
+
+    using kickos::Atomic;
+    using kickos::Order;
+    using RowWord = Atomic<uint32_t, Order::RELAXED>;
+
+    // The software controller's state, one row per hart, every word written by its own hart
+    // alone. A line's state lives in the row of the hart it is routed to: arch_irq_line_core
+    // names that hart, so kernel/irq/irq_route.cc performs every mask, unmask and clear there,
+    // and every raise lands there. A row's thread-context and ISR-context writers are then one
+    // hart, which arch_irq_save excludes from each other, so no word needs an atomic
+    // read-modify-write and no local handshake needs a fence.
+    //
+    // A row keeps a line unmasked only while it is that line's route: the release masks a line
+    // before it drops the route. A pending bit left in a row the line has left is discarded by
+    // the next claim's first arm.
+    //
+    // Unmasked rather than masked, so that zero is the arch.h reset contract.
+    struct alignas(KICKOS_DOORBELL_LINE) IrqRow
+    {
+        RowWord unmasked;
+        RowWord pending;
+        // A raise this hart's dispatch has not taken yet. A SET, so two raises landing between
+        // dispatches both survive.
+        RowWord raised;
+    };
+    IrqRow g_irq_row[KICKOS_NUM_CORES] = {};
+
+    // The hart arch_irq_route named for a line, biased by one so that the unrouted state is
+    // zero. Written under the kernel lock. An unrouted line is hart zero's.
+    Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE> g_line_hart[IRQ_LINES] = {};
+
+    // Raises for a line routed to a peer. A line's bit is owed from a to b while
+    // g_posted[a].to[b] and g_acked[b].to[a] differ in it: a flips its posted bit only when
+    // it reads nothing owed, and b copies the posted word it read into its acked word when it
+    // takes them, so each word keeps one writer and a second raise before the take coalesces.
+    struct alignas(KICKOS_DOORBELL_LINE) PostRow
+    {
+        Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> to[KICKOS_NUM_CORES];
+    };
+    PostRow g_posted[KICKOS_NUM_CORES] = {};
+    PostRow g_acked[KICKOS_NUM_CORES] = {};
+
+    // Store->load, the one order RVWMO does not preserve (RISC-V Unprivileged ISA 18.1.3);
+    // `rw,rw` is the form the specification's mapping guidelines use for full ordering
+    // (Appendix A.5). FENCE.TSO IS NOT A SUBSTITUTE; it omits exactly the store->load edge.
+    void fence_store_load(void)
+    {
+        __asm volatile("fence rw, rw" ::: "memory");
+    }
+
+    uint32_t line_hart(int line)
+    {
+        uint32_t const cell = g_line_hart[line].load();
+        if (cell == 0u)
+        {
+            return 0u;
+        }
+        return cell - 1u;
+    }
+
+    // sip.SSIP is the one cause every raise on this hart arrives on.
+    void raise_here(IrqRow& row, uint32_t bit)
+    {
+        row.raised = row.raised.load() | bit;
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+
+    // A raise on a masked line latches one-deep and is redelivered at the unmask.
+    void inject_here(IrqRow& row, uint32_t bit)
+    {
+        if ((row.unmasked.load() & bit) != 0u)
+        {
+            raise_here(row, bit);
+        }
+        else
+        {
+            row.pending = row.pending.load() | bit;
+        }
+    }
+
+    // The fence is half of a handshake with take_posts, which writes its acked word and then
+    // reads what the raise publishes; this reads that acked word after the caller's stores.
+    // With no fence on both sides both reads may be stale at once: this finds the line still
+    // owed and coalesces, the owner's handler reads the caller's state from before the raise,
+    // and the driver sleeps for good.
+    void post_to(uint32_t hart, uint32_t me, uint32_t bit)
+    {
+        uint32_t const posted = g_posted[me].to[hart].load();
+        fence_store_load();
+        if (((posted ^ g_acked[hart].to[me].load()) & bit) != 0u)
+        {
+            return;
+        }
+        g_posted[me].to[hart] = posted ^ bit;
+        kickos_rv64_doorbell_send(1u << hart);
+    }
+
+    // Moves every raise a peer has posted for this hart into its own row, as raised or, for a
+    // line masked here, as pending. Caller's interrupts masked.
+    //
+    // Inlined into each caller: check_rv64_irq_fence.sh reads the acked release out of every
+    // body that takes.
+    __attribute__((always_inline)) inline void take_posts(uint32_t me, IrqRow& row)
+    {
+        uint32_t taken = 0u;
+        for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+        {
+            uint32_t const posted = g_posted[from].to[me].load();
+            uint32_t const owed = posted ^ g_acked[me].to[from].load();
+            if (owed != 0u)
+            {
+                g_acked[me].to[from] = posted;
+                // The other half of post_to's: this store before any load the handler makes.
+                fence_store_load();
+                taken = taken | owed;
+            }
+        }
+        uint32_t const now = taken & row.unmasked.load();
+        row.pending = row.pending.load() | (taken & ~now);
+        row.raised = row.raised.load() | now;
+    }
+
+    // Takes this hart's whole set, posts included, and leaves it empty.
+    uint32_t take_raised(void)
+    {
+        uint32_t const me = arch_cpu_id();
+        IrqRow& row = g_irq_row[me];
+        take_posts(me, row);
+        uint32_t const taken = row.raised.load();
+        row.raised = 0u;
+        return taken;
+    }
+#else
+    // The software controller's state, image-wide and not per hart. Nothing on this board
     // implements an interrupt controller, so these mirror no per-hart registers: a line is one
     // logical resource, and the kernel's IRQ layer masks it on whichever core services it and
     // unmasks it on whichever core its driver runs on. Every caller holds the kernel lock
     // (kernel/irq/irq.cc and the syscall entries), which is the exclusion that covers them.
     //
-    // UNMASKED rather than masked, so that zero is the arch.h reset contract and no
+    // Unmasked rather than masked, so that zero is the arch.h reset contract and no
     // initialiser is owed.
     uint32_t g_irq_unmasked = 0;
     uint32_t g_irq_pending = 0;
 
-    // Bit set = this line has a raise no dispatch has taken yet. A SET, NOT ONE LINE IDENTITY:
+    // Bit set = this line has a raise no dispatch has taken yet. A set, not one line identity:
     // above one core there are as many producers as cores, and a single identity is overwritten
     // by the next producer before the first core's dispatch has consumed it, which loses the
     // raise outright and leaves its driver asleep for good.
     //
-    // THIS WORD OWES NO FENCE, AND THE REASON IS NOT THAT ITS ACCESSES ARE SINGLE INSTRUCTIONS.
-    // One instruction buys atomicity, never visibility. What buys visibility is that raise_line
-    // sets sip.SSIP on the CALLING hart, so the consumer that must not miss a bit is the hart
+    // This word owes no fence, and not because its accesses are single instructions: one
+    // instruction buys atomicity, never visibility. What buys visibility is that raise_line
+    // sets sip.SSIP on the calling hart, so the consumer that must not miss a bit is the hart
     // that set it: that hart's own dispatch, and its own doorbell poll. Same-hart accesses to
     // one address are ordered by the load value axiom (RISC-V Unprivileged ISA, Appendix
-    // A.3.2). A PEER's poll may read this word stale; that costs nothing in either direction,
+    // A.3.2). A peer's poll may read this word stale; that costs nothing in either direction,
     // the producing hart's sip.SSIP still standing.
     uint32_t g_irq_raised = 0;
 
-    // THE THREE WORDS ABOVE ARE TOUCHED FROM ISR CONTEXT AND FROM THREAD CONTEXT ON ANY CORE,
-    // and the ISR path holds no kernel lock: kickos_isr_irq brackets with an EPOCH above one
+    // The three words above are touched from ISR context and from thread context on any core,
+    // and the ISR path holds no kernel lock: kickos_isr_irq brackets with an epoch above one
     // core, and irq_event_isr masks the line from inside it. So a plain read-modify-write here
     // would let a mask on one core clobber a rearm's unmask on another, which leaves the line
-    // masked with nothing left to unmask it. Every mutation below is ONE instruction.
-    //
-    // AND NOT ONE OF THEM ORDERS ANYTHING. The "memory" clobber constrains GCC and not the
-    // hardware; RVWMO preserves no order between a store and a later load to a DIFFERENT
-    // address (RISC-V Unprivileged ISA 18.1.3), and an AMO with .aq and .rl both clear adds
-    // none (13.1). A caller that publishes to one of these words and then reads another owes
-    // the fence below.
+    // masked with nothing left to unmask it. Every mutation below is one instruction, and none
+    // of them orders anything: the "memory" clobber constrains GCC and not the hardware, RVWMO
+    // preserves no order between a store and a later load to a different address (RISC-V
+    // Unprivileged ISA 18.1.3), and an AMO with .aq and .rl both clear adds none (13.1). A
+    // caller that publishes to one of these words and then reads another owes the fence below.
     uint32_t load_word(uint32_t const* w)
     {
         uint32_t v = 0;
@@ -181,6 +319,7 @@ namespace
         __asm volatile("amoswap.w %0, zero, (%1)" : "=r"(taken) : "r"(&g_irq_raised) : "memory");
         return taken;
     }
+#endif
 
     // An interrupt cause the dispatch does not handle. sie enables the timer and the software
     // channel alone, so this is delivery of a source nothing enabled.
@@ -267,8 +406,8 @@ static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "a kernel block's top must land on the alignment the prologue requires");
 static_assert(KICKOS_RV64_TRAP_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "the trap-stack top must land on the alignment the prologue requires");
-// STRUCTURAL ONLY: a blocking syscall holds the ecall frame and the switch frame on the block
-// at once, and the lowest word of a block is its overflow canary. The DISPATCH depth below them
+// Structural only: a blocking syscall holds the ecall frame and the switch frame on the block
+// at once, and the lowest word of a block is its overflow canary. The dispatch depth below them
 // is unmeasured on this arch, so no figure here stands in for it (rv64_frame.h).
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint64_t) >= 2 * KICKOS_RV64_FRAME,
               "the kernel block cannot hold a blocking syscall's two frames plus its canary");
@@ -291,13 +430,13 @@ void arch_context_init(struct arch_context* ctx,
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = 0;
 #endif
-    // ctx->kernel_sp IS READ, NOT WRITTEN, HERE: thread_create seats the block before this
+    // ctx->kernel_sp is read, not written, here: thread_create seats the block before this
     // call and owns the zero that means none is seated.
 
-    // WHERE THIS FRAME SITS IS THE PRIVILEGE BOUNDARY: it carries sstatus and sepc, so whoever
+    // Where this frame sits is the privilege boundary: it carries sstatus and sepc, so whoever
     // can write it chooses the level and the PC of the sret that starts the thread, and a
     // thread's own stack is writable by its task. An unprivileged thread's first frame goes on
-    // its KERNEL block. A privileged thread resumes at S-mode on this sp and would then run its
+    // its kernel block. A privileged thread resumes at S-mode on this sp and would then run its
     // whole life on a block sized for one dispatch, so its frame stays on the stack handed in.
     uintptr_t frame_top = top;
     if (privileged == 0)
@@ -314,7 +453,7 @@ void arch_context_init(struct arch_context* ctx,
         f[i] = 0;
     }
 
-    // SPIE: the sret sets SIE from it, and this is the system's FIRST enable. SIE stays 0 in
+    // SPIE: the sret sets SIE from it, and this is the system's first enable. SIE stays 0 in
     // the word because .Lrestore writes sstatus while still inside the epilogue.
     //
     // UXL carries the RV64 encoding: this word reaches the CSR whole, and a clear field is a
@@ -374,14 +513,14 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 #endif
 }
 
-// SYNCHRONOUS in thread context and DEFERRED from an ISR, which arch.h permits.
+// Synchronous in thread context and deferred from an ISR, which arch.h permits.
 //
 // The deferred arm rests on an invariant the entry maintains: every interrupt frame is a
 // resumable thread context standing on a stack that outlives the trap. A U-mode interrupt puts
 // it on the thread's own kernel block, an S-mode one on the interrupted thread's own stack, and
 // syscall dispatch runs with SIE masked so no interrupt lands on the trap stack.
 //
-// THE THREAD-CONTEXT ARM REQUIRES THE CALLER TO HAVE INTERRUPTS MASKED. The publish below and
+// The thread-context arm requires the caller to have interrupts masked. The publish below and
 // the register save inside kickos_rv64_switch_now are two steps, so an interrupt between them
 // reaches .Lintr with ctx_current already naming `to`, and the booked swap would store a pointer
 // into `from`'s stack as `to`'s saved context.
@@ -480,11 +619,140 @@ int arch_bitband_present(void)
 }
 
 // --- Interrupt controller ---------------------------------------------------
+#if KICKOS_KERNEL_CORES > 1
+// No hardware line exists on this board, so mask/unmask/clear_pending are the calling hart's
+// row, which irq_route.cc makes the line's route, and a raise reaches the ISR path through ONE
+// doorbell, sip.SSIP. Each body is self-bracketed as arch.h requires, and reads its hart index
+// inside the bracket.
+void arch_irq_mask(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    IrqRow& row = g_irq_row[arch_cpu_id()];
+    row.unmasked = row.unmasked.load() & ~(1u << line);
+    arch_irq_restore(s);
+}
+
+void arch_irq_unmask(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    uint32_t const bit = 1u << line;
+    arch_irq_state_t s = arch_irq_save();
+    IrqRow& row = g_irq_row[arch_cpu_id()];
+    row.unmasked = row.unmasked.load() | bit;
+    if ((row.pending.load() & bit) != 0u)
+    {
+        row.pending = row.pending.load() & ~bit;
+        raise_here(row, bit);
+    }
+    arch_irq_restore(s);
+}
+
+// Discards every raise of the line this hart holds: the latch, a raise it has not dispatched,
+// and a peer's post it has not taken, which the take here turns into one of the other two.
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    uint32_t const bit = 1u << line;
+    arch_irq_state_t s = arch_irq_save();
+    uint32_t const me = arch_cpu_id();
+    IrqRow& row = g_irq_row[me];
+    take_posts(me, row);
+    row.pending = row.pending.load() & ~bit;
+    row.raised = row.raised.load() & ~bit;
+    if (row.raised.load() != 0u)
+    {
+        // The take may have raised other lines, and only the dispatch delivers them.
+        __asm volatile("csrs sip, %0" ::"r"(SIP_SSIP) : "memory");
+    }
+    arch_irq_restore(s);
+}
+
+// The raise lands on the hart the line is routed to, through the doorbell when that is a peer.
+void arch_irq_inject(int irq)
+{
+    if (irq < 0 or irq >= IRQ_LINES)
+    {
+        return;
+    }
+    uint32_t const bit = 1u << irq;
+    arch_irq_state_t s = arch_irq_save();
+    uint32_t const me = arch_cpu_id();
+    uint32_t const hart = line_hart(irq);
+    if (hart == me)
+    {
+        inject_here(g_irq_row[me], bit);
+    }
+    else
+    {
+        post_to(hart, me, bit);
+    }
+    arch_irq_restore(s);
+}
+
+// Called with the line masked in its old route's row, so no row but the new route's can arm it.
+void arch_irq_route(int line, uint32_t core)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    if (core == KICKOS_IRQ_ROUTE_NONE)
+    {
+        g_line_hart[line] = 0u;
+        return;
+    }
+    if (core >= KICKOS_KERNEL_CORES)
+    {
+        return;
+    }
+    g_line_hart[line] = static_cast<uint8_t>(core + 1u);
+}
+
+// The hart whose row holds the line, which is the hart the line is routed to.
+int arch_irq_line_core(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return KICKOS_IRQ_LINE_CORE_NONE;
+    }
+    return static_cast<int>(line_hart(line));
+}
+
+// Whether this hart owes a dispatch a line: its own row's set, or a peer's post not yet taken.
+// The doorbell poll reads it to know whether the raise it absorbed carried something it did not
+// service.
+int kickos_rv64_inject_owed(void)
+{
+    uint32_t const me = arch_cpu_id();
+    if (g_irq_row[me].raised.load() != 0u)
+    {
+        return 1;
+    }
+    for (uint32_t from = 0; from < KICKOS_NUM_CORES; from++)
+    {
+        if (g_posted[from].to[me].load() != g_acked[me].to[from].load())
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+#else
 // No hardware line exists on this board, so mask/unmask/clear_pending are the three words above
 // and a raise reaches the ISR path through ONE doorbell, sip.SSIP. Each body is self-bracketed
 // as arch.h requires.
 //
-// EVERY RAISE IS A BIT IN A SET rather than one line identity, so a second raise arriving before
+// Every raise is a bit in a set rather than one line identity, so a second raise arriving before
 // the first is dispatched costs nothing: both are taken by whichever dispatch runs next.
 void arch_irq_mask(int line)
 {
@@ -509,12 +777,12 @@ void arch_irq_unmask(int line)
     // A raise taken while the line was masked redelivers now through the doorbell: sip.SSIP is
     // set with SIE clear, so it fires at arch_irq_restore on the normal ISR path.
     //
-    // THE FENCE AND NOT THE TAKE IS WHAT MAKES THE HANDSHAKE HOLD. Both sides publish to their
-    // OWN word and then read the PEER's. This one writes g_irq_unmasked then reads
+    // The fence and not the take is what makes the handshake hold. Both sides publish to their
+    // own word and then read the peer's: this one writes g_irq_unmasked then reads
     // g_irq_pending and arch_irq_inject does the reverse, so with no fence on both sides both
-    // writes may sit behind both reads and NEITHER side raises: the bit pending, unmasked,
-    // and the driver asleep for good. The take settles only WHICH side delivers once each
-    // write is visible. arch_irq_save brackets this body and masks THIS hart alone, which is
+    // writes may sit behind both reads and neither side raises: the bit pending, unmasked,
+    // and the driver asleep for good. The take settles only which side delivers once each
+    // write is visible. arch_irq_save brackets this body and masks this hart alone, which is
     // not exclusion against a peer.
     fence_store_load();
     if (take_bit(&g_irq_pending, bit))
@@ -551,7 +819,7 @@ void arch_irq_inject(int irq)
     else
     {
         set_bit(&g_irq_pending, bit);
-        // THE LINE MAY HAVE BEEN UNMASKED between the read above and the latch, by a rearm that
+        // The line may have been unmasked between the read above and the latch, by a rearm that
         // looked at a pending word this store had not reached. Re-read, and take the bit back
         // rather than assume: exactly one of the two sides takes it, and that side delivers.
         //
@@ -575,11 +843,12 @@ int kickos_rv64_inject_owed(void)
     __asm volatile("lw %0, 0(%1)" : "=r"(raised) : "r"(&g_irq_raised) : "memory");
     return raised != 0u;
 }
+#endif
 
 // The interrupt leg of the entry (switch.S .Lintr), ISR context with SIE clear. scause is
 // architectural, so the demux is the arch's. `frame` is kept for a cause that has no handler.
 //
-// THE TIMER'S STIP MUST NOT BE CLEARED HERE: Sstc drives it from `time >= stimecmp`, so
+// The timer's STIP must not be cleared here: Sstc drives it from `time >= stimecmp`, so
 // kickos_isr_timer's own re-arm or disarm is what lowers it, and a write to sip would be a
 // second writer of a bit that is read-only there.
 void kickos_rv64_isr_dispatch(void* frame)
@@ -595,34 +864,34 @@ void kickos_rv64_isr_dispatch(void* frame)
     }
     if (code == INT_SUPERVISOR_SOFTWARE)
     {
-        // ONE CAUSE, THREE SOURCES, AND THE ORDER IS THE CONTRACT. sip.SSIP carries a peer's
-        // cross-hart doorbell, the reschedule that doorbell may stand for, and this hart's own
-        // device-line injection. Each arm is gated on its OWN state, so a raise carrying two of
-        // them loses neither, and getting the order wrong drops a device raise or a rendezvous
-        // and shows up as a hang under load rather than as a red gate.
+        // One cause, three sources, and the order is the contract. sip.SSIP carries a peer's
+        // cross-hart doorbell, the reschedule that doorbell may stand for, and a device-line
+        // raise, this hart's own or one a peer posted. Each arm is gated on its own state, so a
+        // raise carrying two of them loses neither, and getting the order wrong drops a device
+        // raise or a rendezvous and shows up as a hang under load rather than as a red gate.
 
-        // FIRST, AND BEFORE ANY SERVICE: a raise landing during the work below stays pending
+        // First, and before any service: a raise landing during the work below stays pending
         // and is delivered again, rather than being cleared away underneath.
         __asm volatile("csrc sip, %0" ::"r"(SIP_SSIP) : "memory");
 
 #if KICKOS_NUM_CORES > 1
-        // SECOND, the doorbell's far side, which takes no kernel lock: an initiator may be
-        // holding it while it waits here. THE CELL IS THE AUTHORITY, NOT THE RAISE.
+        // Second, the doorbell's far side, which takes no kernel lock: an initiator may be
+        // holding it while it waits here. The cell is the authority, not the raise.
         if (kickos_rv64_doorbell_pending() != 0)
         {
             kickos_rv64_doorbell_service();
         }
 #endif
 #if KICKOS_KERNEL_CORES > 1
-        // THIRD, and OUTSIDE the service body because it takes the kernel lock. The take is
+        // Third, and outside the service body because it takes the kernel lock. The take is
         // what tells a reschedule from a rendezvous whose target owes no scheduler entry.
         if (kickos_kernel_core_resched_take() != 0)
         {
             kickos_kernel_core_resched();
         }
 #endif
-        // FOURTH, the device lines the set carries, which share the cause with everything above.
-        // EVERY line the set carries, not one: two raises can land between dispatches, and a
+        // Fourth, the device lines the set carries, which share the cause with everything above.
+        // Every line the set carries, not one: two raises can land between dispatches, and a
         // line left in the set with the cause already cleared is a driver that never wakes.
         // kickos_isr_irq masks the line and wakes its driver (kernel/irq/irq.cc); the driver
         // re-unmasks via irq_ack or on its next wait.
@@ -793,11 +1062,11 @@ uint32_t arch_cpu_id(void)
 // --- One-time core bring-up ------------------------------------------------
 void kickos_rv64_init(void)
 {
-    // DIRECT mode (low 2 bits = 00): one entry point for every cause.
+    // Direct mode (low 2 bits = 00): one entry point for every cause.
     uintptr_t const tv = reinterpret_cast<uintptr_t>(&kickos_rv64_stvec);
     __asm volatile("csrw stvec, %0" ::"r"(tv) : "memory");
 
-    // THE IDENTITY IS SEATED FIRST: everything below indexes per-hart state with it.
+    // The identity is seated first: everything below indexes per-hart state with it.
     struct rv64_percpu_block* const blk = rv64_percpu_seat();
 
     // The entry swaps sp with sscratch, so sscratch must hold the trusted top before the first
@@ -821,10 +1090,10 @@ void kickos_rv64_init(void)
         kfault_terminate();
     }
 
-    // SUM STAYS CLEAR: S-mode cannot load or store a page carrying U at all. The kernel reaches
-    // memory a process owns ONLY through the kaccess seam (kickos/aspace.h), whose acquire hands
+    // SUM stays clear: S-mode cannot load or store a page carrying U at all. The kernel reaches
+    // memory a process owns only through the kaccess seam (kickos/aspace.h), whose acquire hands
     // back a kernel-half pointer to the frame the space's tables name. A kernel dereference of a
-    // low-half pointer FAULTS.
+    // low-half pointer faults.
 
     // The drop startup.S performs is confirmed here and cannot be confirmed earlier: current
     // privilege is not readable on RISC-V, so the probe's refused read needs a vector to land
@@ -836,7 +1105,7 @@ void kickos_rv64_init(void)
         kfault_terminate();
     }
 
-    // THE WIDTH U-MODE RUNS AT, seated and read back before the first sret to it, and AFTER the
+    // The width U-mode runs at, seated and read back before the first sret to it, and after the
     // probe above whose trap leg rewrites sstatus. UXL is WARL and may be read-only; a hart
     // keeping the RV32 encoding takes every U-mode fetch and effective address modulo 2^32.
     // Written whole: an intermediate 0 or 3 in the field is a reserved value.
@@ -852,7 +1121,7 @@ void kickos_rv64_init(void)
         kfault_terminate();
     }
 
-    // STIE (the tickless deadline) and SSIE (the injected-IRQ doorbell), AFTER the probe: its
+    // STIE (the tickless deadline) and SSIE (the injected-IRQ doorbell), after the probe: its
     // trap leg clears sstatus.SIE and never srets it back, so it has to run before any source
     // can fire. sstatus.SIE is still 0 here; the first sret to a thread enables delivery.
     uint64_t const sie = SIE_STIE | SIE_SSIE;

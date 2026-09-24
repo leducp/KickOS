@@ -48,6 +48,11 @@ namespace tap
         };
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
+        // Orthogonal to the verdict, and that is the whole of the category: the arm runs and
+        // reaches its own conclusion, and this only decides how that conclusion is read. Its
+        // reason needs storage of its own because a failing arm has already written g_msg.
+        bool g_todo = false;
+        char g_todo_msg[192];
 
         // Repair for the failing path, or null.
         TestFn g_after_failure = nullptr;
@@ -93,7 +98,7 @@ namespace tap
         // the newline so a cut line still ends where a reader counts.
         constexpr char CUT[] = "<TRUNCATED>\n";
 
-        // Assemble ONE line and write it. THE NEWLINE IS THE EMITTER'S, never a caller's: a
+        // Assemble one line and write it. The newline is the emitter's, never a caller's: a
         // line that fills the buffer would otherwise lose its own and run into the result
         // line after it, which leaves that one uncountable at line start and drops it from
         // every by-line parse. A format string that carries a '\n' of its own gets a blank
@@ -191,6 +196,15 @@ namespace tap
         va_end(ap);
     }
 
+    void todo(char const* fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        kvsnprintf(g_todo_msg, sizeof(g_todo_msg), fmt, ap);
+        va_end(ap);
+        g_todo = true;
+    }
+
     void partial(char const* fmt, ...)
     {
         if (g_verdict != Verdict::PASS) // outranked by a fail or a skip; first partial wins
@@ -234,11 +248,32 @@ namespace tap
         int skipped = 0;
         int vacuous = 0;
         int partials = 0;
+        int todo_owed = 0;
+        int todo_fixed = 0;
         for (int i = 0; i < g_count; i++)
         {
             g_verdict = Verdict::PASS;
             g_msg[0] = 0;
+            g_todo = false;
+            g_todo_msg[0] = 0;
             g_tests[i].fn();
+            // Read before the verdict is, because a TODO arm's failure is not the run's.
+            if (g_todo)
+            {
+                if (g_verdict == Verdict::FAIL)
+                {
+                    todo_owed++;
+                    emitf("not ok %d - %s # TODO %s", i + 1, g_tests[i].name, g_todo_msg);
+                }
+                else
+                {
+                    // The fix arriving. Not counted as a failure here: the gate is what
+                    // decides, and it reads this line by name.
+                    todo_fixed++;
+                    emitf("ok %d - %s # TODO %s", i + 1, g_tests[i].name, g_todo_msg);
+                }
+                continue;
+            }
             if (g_verdict == Verdict::FAIL)
             {
                 failed++;
@@ -248,7 +283,7 @@ namespace tap
                     g_after_failure();
                 }
             }
-            // ONE directive with a sub-category, and the sub-category is the HARNESS'S: an
+            // One directive with a sub-category, and the sub-category is the harness's: an
             // arm can neither forge nor misspell it into its own reason string.
             else if (g_verdict == Verdict::SKIP or g_verdict == Verdict::SKIP_VACUOUS)
             {
@@ -285,8 +320,12 @@ namespace tap
         // "none of those". `# vacuous: N` carries no permission set to reconcile and is
         // stated for the same reason in reverse: it is what proves the gate's marker parse
         // still matches, so a wording change here cannot retire the category in silence.
-        // The three counts are DISJOINT. The completion marker must keep the
+        // The three counts are disjoint. The completion marker must keep the
         // `# all tests passed` substring the gates grep for.
+        // Stated zero included, for the reason the three above are: an absent line must mean
+        // a truncated run and never "none of those". `todo-fixed` is the one a gate acts on.
+        emitf("# todo: %d", todo_owed);
+        emitf("# todo-fixed: %d", todo_fixed);
         emitf("# skipped: %d", skipped);
         emitf("# vacuous: %d", vacuous);
         emitf("# partial: %d", partials);

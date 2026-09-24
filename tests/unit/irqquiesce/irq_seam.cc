@@ -44,7 +44,7 @@ namespace kickos
             constexpr unsigned SEAM_TRACE_MAX = 4096;
             SeamEvent g_trace[SEAM_TRACE_MAX];
             unsigned g_trace_n = 0;
-            // A LEAF LOCK, never held while anything else is taken: the threaded arms append
+            // A leaf lock, never held while anything else is taken: the threaded arms append
             // from two threads at once, and a lost append would silently drop an event a
             // verdict is read off.
             std::mutex g_trace_mu;
@@ -93,9 +93,10 @@ namespace kickos
         }
 
         thread_local uint32_t g_core = 0;
-        int g_line_core = -1;
         int g_kernel_owned_line = -1;
-        uint32_t g_pinned_mask = 0;
+        int g_routed_line = -1;
+        uint32_t g_routed_core = 0;
+        bool g_routed_armed = false;
         unsigned g_probe_calls = 0;
         void* g_probe_arg = nullptr;
         void (*g_probe_action)() = nullptr;
@@ -106,9 +107,10 @@ namespace kickos
         {
             g_trace_n = 0;
             g_core = 0;
-            g_line_core = -1;
             g_kernel_owned_line = -1;
-            g_pinned_mask = 0;
+            g_routed_line = -1;
+            g_routed_core = 0;
+            g_routed_armed = false;
             g_probe_calls = 0;
             g_probe_arg = nullptr;
             g_probe_action = nullptr;
@@ -217,7 +219,7 @@ namespace kickos
         abort();
     }
 
-    void wq_block(List&, WaitKind, void*, Thread const*)
+    void wq_block(List&, WaitKind, void*, Thread*)
     {
     }
 
@@ -235,21 +237,9 @@ namespace kickos
     {
     }
 
-    // Enough of the placement layer for irq_claim's routed-core pin: the grant is the whole
-    // machine, and the pin is recorded, there being no run queue here to move a thread between.
-    uint32_t task_core_set(Task const*)
-    {
-        return ~0u;
-    }
-
     namespace sched
     {
-        void set_affinity(Thread*, uint32_t mask)
-        {
-            irqfix::g_pinned_mask = mask;
-        }
-
-        void reschedule(Thread const*)
+        void reschedule(Thread*)
         {
         }
 
@@ -342,7 +332,7 @@ namespace kickos
         return g_installed_obj;
     }
 
-    // EMPTIES THE SLOT BEFORE IT DROPS THE REFERENCE, as kernel/syscall/cap.cc does. That order
+    // Empties the slot before it drops the reference, as kernel/syscall/cap.cc does. That order
     // is what makes a refused release unrecoverable: once this returns, nothing names the object
     // any more, so a reference the drop puts back has no owner left to drop it again.
     int handle_close(Thread*, uint32_t)
@@ -446,9 +436,8 @@ namespace
 extern "C"
 {
 
-// GUARDED BY THE SEAM'S OWN CONDITION: at one core arch_cpu_id is a macro folding to a
-// literal and no source in the tree may define it. The assert above pins which arm this
-// translation unit is on.
+// At one core, arch_cpu_id is a macro folding to a literal and no other source may define
+// it; the assert above pins which arm this translation unit is on.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void)
 {
@@ -467,7 +456,7 @@ void arch_irq_restore(arch_irq_state_t)
 
 void arch_irq_mask(int line)
 {
-    // BEFORE the record: a gated dispatch's mask must land after whatever the other core did
+    // Before the record: a gated dispatch's mask must land after whatever the other core did
     // while it was held, or the trace cannot say which came last.
     kickos::irqfix::hold_here_if_armed(line);
     kickos::irqfix::note(kickos::irqfix::OP_MASK, static_cast<uint32_t>(line));
@@ -483,11 +472,12 @@ void arch_irq_clear_pending(int line)
     kickos::irqfix::note(kickos::irqfix::OP_CLEAR, static_cast<uint32_t>(line));
 }
 
-// -1 is no constraint, so an arm that leaves kickos::irqfix::g_line_core alone sees irq_claim
-// place nothing.
-int arch_irq_line_core(int)
+void arch_irq_route(int line, uint32_t core)
 {
-    return kickos::irqfix::g_line_core;
+    kickos::irqfix::g_routed_line = line;
+    kickos::irqfix::g_routed_core = core;
+    kickos::irqfix::g_routed_armed =
+        kickos::irqfix::last_line_op(line) == static_cast<int>(kickos::irqfix::OP_UNMASK);
 }
 
 bool arch_irq_line_kernel_owned(int line)
@@ -525,9 +515,9 @@ void arch_ipi_wait(uint32_t cores)
             continue;
         }
         uint32_t const asked = g_request[me][to].load();
-        // BOUNDED, and it returns rather than faulting when the budget blows: a core an arm
+        // Bounded, and it returns rather than faulting when the budget blows: a core an arm
         // names but runs no thread for answers nothing, and an unbounded spin would turn every
-        // such arm into a hang, which reports no verdict. A core that IS running answers from
+        // such arm into a hang, which reports no verdict. A core that is running answers from
         // its acquire loop long inside this budget.
         unsigned spins = 0;
         while (g_answer[to][me].load() != asked and spins < DOORBELL_WAIT_SPINS)
@@ -539,9 +529,9 @@ void arch_ipi_wait(uint32_t cores)
     }
 }
 
-// Excludes and nothing else, as arch/arm64/armv8a/klock_armv8a.cc does, and SERVICES A PENDING
-// DOORBELL WHILE IT SPINS: without that an initiator holding the lock would wait on this core,
-// which is waiting on the initiator.
+// Excludes and nothing else, as arch/arm64/armv8a/klock_armv8a.cc does, and services a
+// pending doorbell while it spins: without that an initiator holding the lock would wait on
+// this core, which is waiting on the initiator.
 void arch_kernel_lock(void)
 {
     uint32_t const me = arch_cpu_id();
@@ -581,7 +571,7 @@ void arch_ipi_resched_self(void)
 }
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-// ktrace.h is header-inline and reaches BOTH of these from kernel/irq/irq.cc.
+// ktrace.h is header-inline and reaches both of these from kernel/irq/irq.cc.
 uint32_t arch_trace_now(void)
 {
     return 0;

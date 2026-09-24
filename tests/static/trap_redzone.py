@@ -4,24 +4,24 @@
 # Re-measures the kernel C descent a trap entry's reservation has to cover, on whichever
 # stack that entry builds on, and fails when the measurement exceeds what it enforces.
 #
-# INPUT is the .ci files gcc -fcallgraph-info=su,da leaves next to every object: one VCG
+# Input is the .ci files gcc -fcallgraph-info=su,da leaves next to every object: one VCG
 # graph per translation unit, carrying each function's own frame size ("N bytes (static)"),
 # its alloca/VLA count, its call edges with file:line:col, and an edge to the literal node
 # `__indirect_call` for every call through a pointer. The units of the build's own compile
 # database are merged, and the longest weighted path from the declared roots is the answer.
 #
-# NOTHING IS DEFAULTED: every figure comes from the declaration files or from the caller, a
+# Nothing is defaulted: every figure comes from the declaration files or from the caller, a
 # red zone derived from a silent under-approximation being worse than none at all.
 #
-# NODE TITLE SCOPING. An internal-linkage function is titled "<path>:<mangled>", so titles
+# Node title scoping. An internal-linkage function is titled "<path>:<mangled>", so titles
 # are keyed by basename plus mangled tail: two TUs each with a static `helper` do not merge
 # into one node, and the same static seen from two .ci files does. A node with no
 # "bytes (static)" is defined outside the C/C++ the compiler saw (assembly, libgcc) and must
 # be declared in the unsized-allowance list or the run fails.
 #
-# SITE KEYS. An indirect call is named by its CALLER and an ordinal, `<caller>@<n>/<count>`,
+# Site keys. An indirect call is named by its caller and an ordinal, `<caller>@<n>/<count>`,
 # ranking that caller's located sites by (basename, line, column) out of <count> it makes.
-# THREE FAILURES HAVE TO STAY APART: a reachable site no record names is UNBOUND, a record
+# Three failures have to stay apart: a reachable site no record names is UNBOUND, a record
 # naming a callee this graph does not hold is an ABSENT CALLEE, and a record whose caller is
 # gone, names two nodes, or no longer makes <count> indirect calls is a KEY THAT DOES NOT
 # RESOLVE. Never answer the last by re-pointing the ordinal at whatever now sits there: a
@@ -41,13 +41,13 @@ EDGE_RE = re.compile(
     r'^edge:\s*\{\s*sourcename:\s*"([^"]*)"\s*targetname:\s*"([^"]*)"'
     r'(?:\s*label:\s*"([^"]*)")?')
 INDIRECT = '__indirect_call'
-# gcc writes the .ci beside the OBJECT, so a unit's .ci is its compile-database output with
+# gcc writes the .ci beside the object, so a unit's .ci is its compile-database output with
 # the extension swapped. Assembly sits in that database and writes none.
 CI_SOURCE_EXT = ('.c', '.cc', '.cpp', '.cxx')
 # The configure compiles this one itself to identify the compiler, so it answers to no compile
 # command: the one unexpected .ci in a tree that is not a stale unit.
 COMPILER_ID_DIR = re.compile(r'(?:^|/)CompilerId[^/]*/')
-# Appended to a CALLER key to stand for every unlocated indirect site inside it.
+# Appended to a caller key to stand for every unlocated indirect site inside it.
 UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
 ORDINAL_SEP = '@'
@@ -120,7 +120,7 @@ class Decl(object):
                 seen_arch.add(f[1])
             if len(f) < 2:
                 die('%s: record "%s" has no arch' % (where, kind))
-            # Every arch's floor, not just this run's: a later record REPLACES an earlier one,
+            # Every arch's floor, not just this run's: a later record replaces an earlier one,
             # so a duplicate has to be refused by whichever arch happens to be measured or the
             # arch it disarms is the one arch that cannot report it.
             if kind == 'floor':
@@ -203,7 +203,7 @@ class Decl(object):
                 if reason is None:
                     die('%s: exclude %s carries no "reason:"; an undocumented exclusion is'
                         ' how a margin goes quiet' % (where, f[2]))
-                # '?' as on a root: the symbol is absent from SOME boards' graphs, so its
+                # '?' as on a root: the symbol is absent from some boards' graphs, so its
                 # absence contributes nothing instead of failing as a stale declaration.
                 self.excludes.append((f[2].lstrip('?'), reason, f[2].startswith('?')))
             elif kind == 'unsized':
@@ -293,6 +293,12 @@ def split_site_key(key):
     return (spec, ordinal, count)
 
 
+def parse_kernel_cores(text):
+    if not text.isdigit() or int(text) < 1:
+        die('--kernel-cores "%s" is not a core count of at least 1' % text)
+    return int(text)
+
+
 def check_site_shape(where, f):
     """Everything about one `site` record that holds whatever arch or preset is being read."""
     if f[0] != 'site':
@@ -304,9 +310,29 @@ def check_site_shape(where, f):
             % (where, f[3], ORDINAL_SEP, UNLOCATED_SUFFIX))
     if 'NONE' in f[4:] and f[4:] != ['NONE']:
         die('%s: NONE cannot be mixed with a named callee' % where)
+    if f[2].startswith('cores') and f[2] not in (SCOPE_ONE_CORE, SCOPE_MULTI_CORE):
+        die('%s: scope "%s" is neither %s nor %s, so no preset would ever read the record'
+            % (where, f[2], SCOPE_ONE_CORE, SCOPE_MULTI_CORE))
 
 
-def read_bindings(path, arch, preset):
+# Scopes naming a kernel core count rather than a preset: a call made only above one core
+# changes its caller's site count with the count, so its record belongs to every preset on
+# that side and to none on the other.
+SCOPE_ONE_CORE = 'cores=1'
+SCOPE_MULTI_CORE = 'cores>1'
+
+
+def in_scope(scope, preset, kernel_cores):
+    if scope == '*' or scope == preset:
+        return True
+    if scope == SCOPE_ONE_CORE:
+        return kernel_cores == 1
+    if scope == SCOPE_MULTI_CORE:
+        return kernel_cores > 1
+    return False
+
+
+def read_bindings(path, arch, preset, kernel_cores):
     """site key as written -> ([(callee spec, optional)], where), [] for an explicit NONE."""
     out = collections.OrderedDict()
     for n, f, _reason in records(path):
@@ -316,7 +342,7 @@ def read_bindings(path, arch, preset):
         check_site_shape(where, f)
         if f[1] != arch:
             continue
-        if f[2] != '*' and f[2] != preset:
+        if not in_scope(f[2], preset, kernel_cores):
             continue
         site = f[3]
         # Scope-dependent, so it stays here: one site may be bound once per (arch, preset).
@@ -436,10 +462,10 @@ def pretty_leaf(name):
 def entry_output(where, e):
     """The object path one compile-database entry writes.
 
-    EVERY SHAPE THAT IS NOT THAT IS REFUSED HERE, by name. This file is machine written, so a
+    Every shape that is not that is refused here, by name. This file is machine written, so a
     surprise in it means the generator changed or the tree is not what it claims; a traceback
     out of this function would read as a broken gate rather than as the refusal it is. The
-    `arguments` list is the trap worth naming: a STRING there answers `in` and `index` as a
+    `arguments` list is the trap worth naming: a string there answers `in` and `index` as a
     substring search, which yields a plausible path and a corpus diagnostic about the wrong
     thing.
     """
@@ -470,7 +496,7 @@ def entry_output(where, e):
 
 
 def build_units(build_dir):
-    """Absolute .ci path -> source file, one entry per C/C++ unit THIS build compiles.
+    """Absolute .ci path -> source file, one entry per C/C++ unit this build compiles.
 
     compile_commands.json is the build's own record of what it asked the compiler for, and a
     directory that is not this build cannot produce one that agrees.
@@ -509,10 +535,10 @@ def build_units(build_dir):
 def corpus(build_dir):
     """The .ci files of this build, refusing a tree that is not exactly this build's.
 
-    THE COUNT IS NOT THE CHECK. A .ci outlives the unit that wrote it: a source dropped from a
+    The count is not the check. A .ci outlives the unit that wrote it: a source dropped from a
     target leaves its own behind, and a scratch tree shared with another checkout collects
     that checkout's, so a corpus can be complete-looking and hold code the image cannot
-    contain while missing a unit the image does. Both directions are refused by IDENTITY here;
+    contain while missing a unit the image does. Both directions are refused by identity here;
     the declared floor below stays as the gross guard on a build that barely started.
     """
     want = build_units(build_dir)
@@ -540,9 +566,9 @@ def corpus(build_dir):
 
 
 class Graph(object):
-    """This build's .ci files merged, MINUS the ones the link threw away.
+    """This build's .ci files merged, minus the ones the link threw away.
 
-    COMPILED IS NOT LINKED: a .ci file is written by the compiler, so the corpus on disk
+    Compiled is not linked: a .ci file is written by the compiler, so the corpus on disk
     includes translation units that never entered the image. KickOS resolves an optional
     arch/chip seam by archive-member extraction, so beside every backend sits an
     unextracted <symbol>_default.cc fallback, and reading it both inflates depths and
@@ -606,11 +632,11 @@ class Graph(object):
         """The seam fallbacks the link cannot have extracted.
 
         arch/CMakeLists.txt states the rule and tests/static/check_seam_defaults.sh enforces
-        it: a fallback lives ALONE in a <name>_default.cc translation unit, so the member is
+        it: a fallback lives alone in a <name>_default.cc translation unit, so the member is
         pulled in only when nothing else defines its symbol. A _default.cc whose every
         global is also defined elsewhere is therefore, by that rule, not in the image.
         Restricted to the _default.cc naming on purpose: two rival non-fallback definitions
-        (spi_mock.cc against spi_proxy.cc, one main.cc per app) are ALSO mutually exclusive
+        (spi_mock.cc against spi_proxy.cc, one main.cc per app) are also mutually exclusive
         at link time, and there the rule says nothing about which one won, so they are left
         in and refused later if the measurement actually reaches them.
         """
@@ -646,7 +672,7 @@ class Graph(object):
                 tgt = node_key(m.group(2))
                 loc = m.group(3)
                 if tgt == INDIRECT:
-                    # NO LABEL MEANS PER-CALLER AND NOT PER-SITE. The xtensa backend emits its
+                    # No label means per-caller and not per-site. The xtensa backend emits its
                     # indirect edges without a location (esp-elf gcc 16.1, where arm/riscv/rx
                     # all label theirs), so every site in one caller collapses to a single key
                     # a binding charges the maximum over. Coarser and still sound: the key is
@@ -679,7 +705,7 @@ class Graph(object):
     def caller_spec(self, src):
         """The shortest spec that names this node and nothing else.
 
-        A MANGLED TAIL IS NOT PORTABLE ENOUGH TO PREFER: the toolchains spell internal linkage
+        A mangled tail is not portable enough to prefer: the toolchains spell internal linkage
         differently, so a demangled name is tried before it.
         """
         if src in self._spec:
@@ -709,7 +735,7 @@ class Graph(object):
     def _index_sites(self):
         """Canonical site key -> (caller node, location), the location None when unlocated.
 
-        ONE LOCATION CAN SIT UNDER SEVERAL CALLERS, an inlined body carrying the call into each
+        One location can sit under several callers, an inlined body carrying the call into each
         of them, and those are different calls: keying by caller keeps them apart where one
         file:line:column would merge them into a single charge.
         """
@@ -740,7 +766,7 @@ class Graph(object):
         exactly <name>; a bare spec is a symbol, a file-scoped node whose tail is exactly
         that, or a demangled name.
 
-        EVERY MATCH IS EXACT, NEVER A SUBSTRING. A substring would let a rename that merely
+        Every match is exact, never a substring. A substring would let a rename that merely
         extends a name keep resolving, and the record would then bind a call in a body nobody
         checked instead of being refused.
         """
@@ -773,7 +799,7 @@ class Graph(object):
     def bind_indirect(self, bindings):
         """Replaces every __indirect_call edge with a per-site pseudo-node.
 
-        The pseudo-node weighs 0 and its out-edges are exactly the callees bound to THAT
+        The pseudo-node weighs 0 and its out-edges are exactly the callees bound to that
         site. An unbound site becomes a pseudo-node with no out-edge, recorded in
         self.unbound, so the reachability walk can still see it and refuse it.
         """
@@ -894,7 +920,7 @@ def root_keys(graph, decl, cls, report):
 def usage():
     sys.stderr.write(
         'usage: trap_redzone.py --ci-dir <dir> --arch <arch> --preset <preset>\n'
-        '                       --roots <file> --indirect <file>\n'
+        '                       --kernel-cores <n> --roots <file> --indirect <file>\n'
         '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n'
         '                       [--not-compiled <CLASS>]...\n'
         '       trap_redzone.py --check-file <indirect-file>\n')
@@ -916,7 +942,7 @@ def check_file(path):
 
 
 def parse_argv(argv):
-    want = {'--ci-dir', '--arch', '--preset', '--roots', '--indirect'}
+    want = {'--ci-dir', '--arch', '--preset', '--kernel-cores', '--roots', '--indirect'}
     opt = {}
     enforced = collections.OrderedDict()
     # Classes this image does not compile, per the caller's read of the live posture knob.
@@ -955,6 +981,7 @@ def parse_argv(argv):
     for a in sorted(want):
         if a.lstrip('-') not in opt:
             die('missing %s' % a)
+    opt['kernel-cores'] = parse_kernel_cores(opt['kernel-cores'])
     if not enforced:
         die('no --enforced figure; there would be nothing to compare against')
     if not_compiled and set(enforced) <= not_compiled:
@@ -984,11 +1011,11 @@ def run(argv):
             die('--not-compiled names class %s, which %s declares nowhere for %s'
                 % (cls, opt['roots'], arch))
 
-    # Building the graph settles WHICH units this run measures, against the build's own
+    # Building the graph settles which units this run measures, against the build's own
     # compile database, and refuses a stale, partial or shared tree by name.
     graph = Graph(opt['ci-dir'])
 
-    # --- the corpus floor, BEFORE any key is resolved and any absence asserted --
+    # --- the corpus floor, before any key is resolved and any absence asserted --
     # The gross guard the identity check above cannot give: a tree whose compile database is
     # itself near empty agrees with it at every step. Ahead of the binding and root resolution
     # below because those die on whichever symbol happens to be missing, which names a stale
@@ -1005,7 +1032,8 @@ def run(argv):
             % (_floor_nodes, opt['roots'], decl.floor_nodes, arch))
 
     present = graph.all_sites()
-    bindings = resolve_bindings(graph, read_bindings(opt['indirect'], arch, preset))
+    bindings = resolve_bindings(graph, read_bindings(opt['indirect'], arch, preset,
+                                                     opt['kernel-cores']))
     graph.bind_indirect(bindings)
 
     report = []
@@ -1045,8 +1073,8 @@ def run(argv):
     walk = Walk(graph, excluded)
     bare = Walk(graph, set())
 
-    # A stack=trap or stack=kernel class is measured with NOTHING excluded: the exclusion set
-    # exists only to keep a THREAD's red zone under the spawn floor, and neither class spends
+    # A stack=trap or stack=kernel class is measured with nothing excluded: the exclusion set
+    # exists only to keep a thread's red zone under the spawn floor, and neither class spends
     # a thread stack.
     def walk_for(cls):
         if cls in decl.off_thread():
@@ -1114,7 +1142,7 @@ def run(argv):
             print('  %-6s %d bytes measured, %d over the enforced %d, red zone would be %d%s'
                   % (cls, b, b - enf_depth, enf_depth, frame + b, note))
 
-    # Every hard check runs over the reachable set the ENFORCED figure claims to cover, which
+    # Every hard check runs over the reachable set the enforced figure claims to cover, which
     # is the set after exclusions: a node only the excluded tail reaches is outside the claim
     # and reporting it would make the gate unfixable.
     reach = set()

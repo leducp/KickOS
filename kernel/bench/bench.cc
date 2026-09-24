@@ -280,6 +280,8 @@ namespace
         BENCH_DIST_ENTRY("lock-wait:"),
         BENCH_DIST_ENTRY_CNT("draw-retry:"),
         BENCH_DIST_ENTRY_CNT("draw-queue:"),
+        BENCH_DIST_ENTRY_CNT("resched-ask:"),
+        BENCH_DIST_ENTRY_CNT("resched-take:"),
         BENCH_DIST_ENTRY("doorbell: "),
 #endif
         BENCH_DIST_ENTRY("irq:      "),
@@ -456,6 +458,20 @@ extern "C"
         BenchRow& r = row();
         dist_add_row(r, kickos::BD_LOCK_DRAW, retries);
         dist_add_row(r, kickos::BD_LOCK_QUEUE, queued);
+    }
+
+    // One sample per reschedule ask, valued by the peers it reaches. A zero-peer ask is a
+    // sample like any other: the omitted request and the empty one are different events.
+    void kickos_bench_resched_ask(uint32_t peers)
+    {
+        dist_add_row(row(), kickos::BD_RESCHED_ASK, peers);
+    }
+
+    // One sample per take that STOOD. Its n is what the ask row cannot give: the entries this
+    // core actually made because a peer asked, after coalescing.
+    void kickos_bench_resched_take(void)
+    {
+        dist_add_row(row(), kickos::BD_RESCHED_TAKE, 1u);
     }
 #endif
 

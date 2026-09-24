@@ -16,7 +16,7 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN, AND M9.0 AND M9.1 HAVE LANDED.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 AND M9.1 HAVE LANDED AND M9.2, FUSED WITH M9.3, IS ON ITS BRANCH.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
 assigned; M9.0 is read-only and every stage below it is assigned and not approved. The M9.0 section
@@ -2711,7 +2711,7 @@ inheritance premise, reads two masks instead of one, and still misses the SLAY c
 `available_to` refuses the outgoing thread so the pick can land BELOW it and it goes READY above
 the incoming thread with no peer told. That case is now covered by the same store rather than
 resting on `klock_resched_self` owing this core a pass. The mask test that survives skips a thread
-whose affinity holds no peer bit at all; it removes no ask `poke_peers_below`'s own walk would have
+whose affinity holds no peer bit at all; it removes no ask the placement would have
 sent, so it is cost and one trace record rather than meaning, and an arm proving it has to disable
 BOTH tests to see a difference.
 
@@ -3439,6 +3439,55 @@ before-and-after difference charges the lock for the instrument. Nothing here is
 two cores on silicon. And the doorbell gate's two-core floor was recalibrated during this stage
 because it was failing one run in five at that width on the tree BEFORE the lock changed, so it
 is a pre-existing arm surfaced by a new width and not a regression.
+
+## M9.2 (fused with M9.3): ownership and placement under the lock, and what these green runs do NOT say
+
+**EVERY CORE HAS ITS OWN READY STRUCTURE AND A THREAD SITS ON EXACTLY ONE.** `queue_core` records
+what `roadmap.md` calls the home. The mask says which cores MAY run a thread and `queue_core` which
+core holds it; they coincide only at one bit, so the field is not a second truth.
+
+**THE PLACEMENT RULE IS AN INVARIANT, AND THE FIRST CUT OF THIS STAGE BROKE IT.** A READY thread
+never waits behind equal or higher priority while a started core in its mask sits strictly below
+it. The first cut asked only the core HOLDING a thread, never the cores that COULD run it, and the
+four-core selftest hung on it. A declining pass now places the thread by priority and asks its new
+core; a core whose level falls asks the holder, and the holder pushes. No pull, and under one lock
+no ring: the push is the holder's own publication, which is why M9.3 fused into this stage.
+
+**THE 2.03 ACQUISITIONS A SWITCH THE FIRST CUT REPORTED WAS BOUGHT BY THAT BUG.** It left every
+declined wake unannounced. With equal priority spreading, as ruled, an unpinned ping-pong bounces
+between two cores and reads 3.02. The bench now PINS its pair to one core, which is how same-core
+handoff is obtained under this contract, and reads 2.017 at four cores against M9.1's 5.02. So the
+figure is a stated placement now, not a property of an unannounced wake.
+
+**A THREAD HANDLING AN IRQ DOES NOT MIGRATE.** A line routes to its claimer on all three
+shared-kernel backends (GIC, per-hart rows on rv64, the matrix and cross-core injection on LX6), a
+raise taken off the claim core is dropped, and a claim, wait, ack or discard is refused unless the
+thread's mask is exactly the claim core. The kernel never rewrites a mask, so a claimer pins itself,
+and `kos_thread_self` exists so a thread can: that reverses section 8's "no call answers which
+thread am I", which the design record now states.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.**
+- Four cores is emulation only. Silicon is two LX6 cores, where the whole selftest now completes;
+  no run on this branch before these fixes ever completed there.
+- The push's latency is unmeasured: a falling core waits two doorbell hops for a thread its holder
+  pushes, and no bench row isolates that.
+- Placement reads peers' levels and ready lists, which is sound only under the one lock. Leaving it
+  needs a published per-core level and the rings.
+- The stale-raise windows that user space cannot force (a raise acknowledged but not yet dispatched,
+  a raise inside a dispatch loop's local set) are witnessed on the host only.
+- On LX6 the only matrix line is the kernel console, so no run has moved a claimable device line's
+  route.
+- The bench doorbell gate failed once in one whole-suite pass after the pinning, with nothing else
+  known about the box at that instant, and passed 45 idle captures and every rerun since. It is
+  load-sensitive, and a lone red there is an instrument suspect before a finding.
+- Throughput figures are emulator wall clock.
+
+**LATENT DEFECTS THE GLOBAL QUEUE ABSORBED, none caused by this stage.** The host fixture spawned
+threads with an empty mask, seated a peer's thread by writing `current` alone, and published
+peer-core test threads from core 0 so a peer's own pass could never pick them. And
+`arch_irq_line_core` answers which core may touch a line's GATING state, which is global on two
+backends, so it could not stand in for delivery. `RUNNING` and `current` disagree across a deferred
+switch by construction, so a pick refuses a thread that reads RUNNING on its own queue.
 
 ## Where to go next
 

@@ -64,6 +64,9 @@ namespace kickos
         uint32_t g_console_noted = 0;
         uint32_t g_console_reclaimed = 0;
         uint32_t g_parked = 0;
+        bool g_line_armed[KICKOS_MAX_IRQ] = {};
+        int g_routed_armed = -1;
+        uint32_t g_line_clears[KICKOS_MAX_IRQ] = {};
 
 #if KICKOS_KERNEL_CORES > 1
         uint32_t g_core = 0;
@@ -280,6 +283,11 @@ namespace kickos
             g_irq_depth++;
         }
 
+        uint32_t irq_depth()
+        {
+            return g_irq_depth;
+        }
+
         void note_irq_restore()
         {
             if (g_irq_depth > 0)
@@ -309,6 +317,11 @@ namespace kickos
             g_gap_seen = 0;
             g_gap_at = ordinal;
             g_gap_action = fn;
+        }
+
+        uint32_t gaps_seen()
+        {
+            return g_gap_seen;
         }
 
         void reset()
@@ -368,6 +381,12 @@ namespace kickos
             g_console_noted = 0;
             g_console_reclaimed = 0;
             g_parked = 0;
+            for (int line = 0; line < KICKOS_MAX_IRQ; line++)
+            {
+                g_line_armed[line] = false;
+                g_line_clears[line] = 0;
+            }
+            g_routed_armed = -1;
             trace_reset();
 
             // Reset capability state stored outside Kernel.
@@ -397,6 +416,11 @@ namespace kickos
             th->base_prio = prio;
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
+#if KICKOS_KERNEL_CORES > 1
+            // As seat_pool does, and for the same reason: thread_create supplies this and a
+            // zero mask names no core, so a thread spawned without it is one no core may run.
+            th->affinity = KICKOS_CORE_SET_ALL;
+#endif
             {
                 IrqLock lock;
                 sched::add(th);
@@ -602,6 +626,18 @@ namespace kickos
                 sched::exit_current(code, cause);
             }
             // Clear on both paths to prevent longjmp into an expired frame.
+            g_park_armed = false;
+        }
+
+        void run_noreturn(void (*fn)())
+        {
+            if (setjmp(g_park_jmp) == 0)
+            {
+                g_park_armed = true;
+                fn();
+                printf("FIXTURE FAIL: run_noreturn's body returned\n");
+                exit(1);
+            }
             g_park_armed = false;
         }
 

@@ -13,17 +13,18 @@
 
 namespace kickos
 {
+    class IrqLock;
+
     // A wait queue is a List of BLOCKED threads, using the shared TCB link node: a thread
-    // is on the ready list XOR on one of these, never both.
+    // is on the ready list XOR on one of these.
     struct Semaphore
     {
         int count = 0;
         List waiters;
     };
 
-    // Priority-inheritance mutex (CAP_MUTEX). `owner != nullptr` IS the lock state, and there
-    // is no second one. An owner-died wake reaches the waiter through its Thread::wait_result
-    // and through no field here.
+    // Priority-inheritance mutex (CAP_MUTEX). `owner != nullptr` is the whole lock state. An
+    // owner-died wake reaches the waiter only through its Thread::wait_result.
     struct Mutex
     {
         Thread* owner = nullptr;
@@ -32,16 +33,16 @@ namespace kickos
     };
 
     // Delivered as wait_result to a lock() caller woken by an owner that exited holding the
-    // mutex: the lock IS held, but the protected invariant may be inconsistent. Negative and
-    // still an ACQUIRE, unlike every other negative return.
+    // mutex: the lock is held, but the protected invariant may be inconsistent. Negative and
+    // still an acquire, unlike every other negative return.
     static constexpr intptr_t MUTEX_OWNER_DIED = -KOS_EOWNERDEAD;
 
     // Remove and return the highest-priority waiter (FIFO among equals), or nullptr. Under the
-    // caller's IrqLock, which an ISR already holds. Pure select+unlink: no state or schedule
-    // change. The priority scan is lazy at-pop, so a waiter boosted while parked needs no
+    // caller's IrqLock, which an ISR already holds. Pure select+unlink, with no state or
+    // schedule change. The priority scan is lazy at-pop, so a waiter boosted while parked needs no
     // re-queue.
     Thread* wq_pop_highest(List& q);
-    // The same choice WITHOUT unlinking. Under the same IrqLock a following wq_pop_highest
+    // The same choice without unlinking. Under the same IrqLock a following wq_pop_highest
     // returns this exact thread.
     Thread* wq_peek_highest(List& q);
     // Park current on q and switch away. Thread context only. Hold one continuous
@@ -49,12 +50,12 @@ namespace kickos
     // kind and obj identify the queue for cancellation and timeout cleanup.
     // wq_pop_highest clears them; re-parking must set them again.
     // Pass any thread readied by wake_no_resched as woken so the park's reschedule
-    // can notify a peer if this core does not select it.
-    void wq_block(List& q, WaitKind kind, void* obj, Thread const* woken = nullptr);
+    // places it if this core does not select it.
+    void wq_block(List& q, WaitKind kind, void* obj, Thread* woken = nullptr);
 
-    // Park `current` on NO list at all: the wait edge is then the ONLY thing that can find it
+    // Park `current` on no list at all: the wait edge is then the only thing that can find it
     // again, so `kind` must be a kind some waker sweeps for (thread.h). Detaches from the
-    // ready set WITHOUT rescheduling, so the caller decides when to switch away and may link
+    // ready set without rescheduling, so the caller decides when to switch away and may link
     // the thread somewhere else first. The waker writes wait_result and clears the edge before
     // waking; a parked thread never writes its own result. Caller holds IrqLock.
     void park_queueless(Thread* c, WaitKind kind, void* obj);
@@ -81,39 +82,41 @@ namespace kickos
     void wq_confirm_resume(Thread* c, uint32_t epoch);
 
     void sem_init(Semaphore* s, int initial);
-    void sem_wait(Semaphore* s);
+    // `held` is the caller's outermost bracket, spanning the resolve that produced `s`; a
+    // cancel honoured here ends it (sched::exit_current).
+    void sem_wait(IrqLock& held, Semaphore* s);
     bool sem_trywait(Semaphore* s); // non-blocking; true if token taken
     // Hands the token to the highest-priority waiter, else banks it. Thread or ISR context.
     // Returns false only with no waiter and the count already at KOS_SEM_COUNT_MAX, where the
     // post is refused and the count left alone. The syscall reports -KOS_EOVERFLOW.
     bool sem_post(Semaphore* s);
 
-    // Priority-inheritance mutex, thread context only. THE LOCKING CONTRACT DIFFERS BY
-    // CALL. mutex_unlock does its whole job under an IrqLock and nests fine under a
-    // caller-held one. mutex_force_unlock takes none of its own: caller holds the
-    // exclusion. mutex_lock MUST NOT be called with a caller-held IrqLock spanning it: it
-    // takes its own lock for the acquire/park only, then RELEASES it and runs the resume
-    // barrier and wait_result read outside any lock. A spanning caller lock keeps BASEPRI
-    // raised past that read (see wq_confirm_resume).
+    // Priority-inheritance mutex, thread context only. The locking contract differs by call:
+    // mutex_unlock does its whole job under an IrqLock and nests fine under a caller-held
+    // one. mutex_force_unlock takes none of its own: caller holds the exclusion. mutex_lock
+    // must not be called with a caller-held IrqLock spanning it: it takes its own lock for
+    // the acquire/park only, then releases it and runs the resume barrier and wait_result
+    // read outside any lock. A spanning caller lock keeps BASEPRI raised past that read
+    // (see wq_confirm_resume).
     void mutex_init(Mutex* m);
     // Returns 0 when locked; -KOS_EOWNERDEAD when handed the mutex by a dying owner, where
-    // the lock IS held and this is NOT a failed acquire; or -KOS_EDEADLK when the acquire
-    // would deadlock (self-lock or a wait cycle), refused WITHOUT parking and WITHOUT
+    // the lock is held and this is not a failed acquire; or -KOS_EDEADLK when the acquire
+    // would deadlock (self-lock or a wait cycle), refused without parking and without
     // leaking a boost. The -KOS_EBADF bad-cap reject happens at the syscall resolve.
     int mutex_lock(Mutex* m);
     // Hands off to the highest waiter, then recomputes the ex-owner's effective priority over
     // what it still holds. Returns 0, or -KOS_EPERM if the caller is not the owner.
     int mutex_unlock(Mutex* m);
     // For a dying owner (Thread::dying, mid-cap_teardown): force-unlock, delivering
-    // MUTEX_OWNER_DIED to the woken waiter. Does NOT recompute the dying thread's priority.
+    // MUTEX_OWNER_DIED to the woken waiter, leaving the dying thread's priority unrecomputed.
     void mutex_force_unlock(Mutex* m, Thread* dying);
 
-    // Link/unlink a CALL_REPLY_WAIT caller on the server's reply-donor list. MUST be
+    // Link/unlink a CALL_REPLY_WAIT caller on the server's reply-donor list. Must be
     // called at every reply-cap mint site and at every site that consumes a CAP_REPLY
     // entry, or the list and the table entries drift apart. Caller holds IrqLock.
     void reply_donor_park(Thread* server, Thread* caller);
-    // False means `caller` was NOT on this server's list and NOTHING was touched: a stale reply
-    // cap can resolve to a caller parked on a DIFFERENT server. A false return forbids every
+    // False means `caller` was not on this server's list and nothing was touched: a stale reply
+    // cap can resolve to a caller parked on a different server. A false return forbids every
     // step that follows an unpark (delivering into the caller's buffer, writing its wait_result
     // or call_state, waking it): the caller is still parked there and `link` is that list's.
     bool reply_donor_unpark(Thread* server, Thread* caller);
@@ -128,7 +131,7 @@ namespace kickos
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller
     // parked on t->reply_waiters, and the highest parked SEND_WAIT caller on each endpoint
-    // where ep->server == t. NEVER a restore-to-base: a mutex unlock mid-transaction must not
+    // where ep->server == t. Never a restore-to-base: a mutex unlock mid-transaction must not
     // deflate a live call donation. Every term is O(donors) and none is bounded by a configured
     // pool capacity, and this runs interrupt-masked on every mutex unlock, reply and close.
     // Caller holds IrqLock.

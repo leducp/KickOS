@@ -3,11 +3,11 @@
 //
 // The instance-scoped kernel runtime core. Several kernel instances may co-reside in one
 // host process, one per simulated MCU, so nothing here may become a file-static. App-owned
-// OBJECTS (TCBs, semaphores) stay caller-owned; this is only the runtime's own bookkeeping.
+// objects (TCBs, semaphores) stay caller-owned; this holds only the runtime's own bookkeeping.
 // The sim arch backend keeps its own parallel SimInstance and never crosses the arch seam.
 //
-// State a module owns PRIVATELY stays where it is and wraps in InstanceLocal
-// (instance_local.h) rather than moving in here.
+// State a module owns privately stays in that module and wraps in InstanceLocal
+// (instance_local.h) rather than moving here.
 
 #ifndef KICKOS_INSTANCE_H
 #define KICKOS_INSTANCE_H
@@ -33,12 +33,9 @@ namespace kickos
 {
     struct SchedPolicy;
 
-    // Which core within THIS kernel is running, in [0, KICKOS_KERNEL_CORES). One kernel
-    // spanning every core the image drives makes a core's machine identity its slot; a kernel
-    // scheduling one core has one slot, whatever that core's identity in the machine is.
-    //
-    // THE TWO SEAMS DIVERGE UNDER AMP: arch_cpu_id() answers 1..3 on a peer while this
-    // answers 0, so current[], idle[] and boot[] take THIS index and never the core's.
+    // Which core within this kernel is running: a slot index in [0, KICKOS_KERNEL_CORES).
+    // Under AMP arch_cpu_id() answers 1..3 on a peer while this answers 0, so current[],
+    // idle[] and boot[] take this index and never the core's machine id.
     // tests/static/check_kernel_core_index.sh refuses the other subscript.
 #if KICKOS_MULTICORE_MODEL_SHARED
 #define kickos_kernel_core() arch_cpu_id()
@@ -49,11 +46,21 @@ namespace kickos
     struct Kernel
     {
         // --- scheduler mechanism (sched.cc) ---
-        List ready[KICKOS_NUM_PRIO]; // one FIFO per priority; running thread at front
-        uint32_t ready_bitmap = 0;   // bit p set iff ready[p] non-empty
+        // One set per core. A thread sits on exactly one core's structure, named by its
+        // queue_core, so a core picks without consulting any peer's state. At one kernel
+        // core the outer extent is 1 and every index folds to a constant.
+        List ready[KICKOS_KERNEL_CORES][KICKOS_NUM_PRIO]; // per priority; running at front
+        uint32_t ready_bitmap[KICKOS_KERNEL_CORES] = {};  // bit p set iff ready[c][p] non-empty
         Thread* current[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
         Thread* idle[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
         unsigned live = 0; // non-idle threads not yet EXITED
+#if KICKOS_KERNEL_CORES > 1
+        // Bit c of push_asked[h]: core c asks holder h to push it a thread. seated_prio[c]: the
+        // priority core c's last pass seated, left high across a lowering so that pass sees
+        // the drop.
+        uint32_t push_asked[KICKOS_KERNEL_CORES] = {};
+        uint8_t seated_prio[KICKOS_KERNEL_CORES] = {};
+#endif
         arch_context boot[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
         SchedPolicy const* policy = nullptr;
 
@@ -71,19 +78,19 @@ namespace kickos
         uint16_t trace_probe_overhead = 0; // measured once at ktrace_init (SESSION)
 #endif
 
-        // Tasks currently holding a creator hold (task.cc). Declared HERE, away from the
+        // Tasks currently holding a creator hold (task.cc). Declared here, away from the
         // task pool below, because the two bytes before `sleepq` are padding on every
-        // 32-bit target in BOTH telemetry postures: microbit's `_ebss` is its arena base,
-        // so a byte that grows the struct costs a whole allocation granule.
+        // 32-bit target regardless of telemetry posture: microbit's `_ebss` is its arena
+        // base, so a byte that grows the struct costs a whole allocation granule.
         uint16_t task_holds = 0;
 
         // --- tickless time (time.cc) ---
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
-        // What each core's one-shot comparator is programmed for, and the ONLY authority for
-        // it: no backend keeps a second copy. UINT64_MAX means disarmed. Zero-initialised
-        // deliberately, and 0 is a value no computation here can produce (arm_slice answers
-        // UINT64_MAX for a FIFO thread, ktime_sleep_until floors at now + MIN_DELTA), so the
-        // first rearm always programs whatever a bring-up probe left in the hardware.
+        // What each core's one-shot comparator is programmed for, and the sole authority for
+        // it. UINT64_MAX means disarmed. Zero-initialised deliberately: 0 is a value no
+        // computation here can produce (arm_slice answers UINT64_MAX for a FIFO thread,
+        // ktime_sleep_until floors at now + MIN_DELTA), so the first rearm always programs
+        // whatever a bring-up probe left in the hardware.
         uint64_t timer_armed_ns[KICKOS_KERNEL_CORES] = {};
 
         // --- syscall object pools (syscall.cc) ---
@@ -92,21 +99,20 @@ namespace kickos
         SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
         // Object-side refcount owned by the cap layer: how many caps name slot i. alloc
         // sets 1, delegate bumps, close decrements, and 0 frees the slot. The uint8_t
-        // ceiling is enforced at the ONE increment site, obj_ref_inc, which refuses with
-        // -KOS_EOVERFLOW rather than wrapping; there is deliberately no static_assert
-        // welding it to MAX_THREADS x MAX_HANDLES.
+        // ceiling is enforced at the one increment site, obj_ref_inc, which refuses with
+        // -KOS_EOVERFLOW rather than wrapping.
         uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
         // PI-mutex pool and its object-side refcount, same shape as the sems.
         SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
         uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
-        // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders is NOT
-        // here: its single home is the Endpoint struct, and it shares this ceiling because
-        // one obj_ref_inc moves both counters or neither.
+        // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders lives
+        // solely in the Endpoint struct, and shares this ceiling because one obj_ref_inc
+        // moves both counters or neither.
         SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
         uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
-        // Idle's TCB, the one thread the pool below does not seat. Placed against an
-        // 8-aligned member so it introduces no fill of its own; its STACK is not here,
-        // it comes from the arena (boot_stack_alloc).
+        // Idle's TCB; the thread pool below never seats it. Placed against an 8-aligned
+        // member so it introduces no fill of its own; its stack comes from the arena
+        // (boot_stack_alloc).
         Thread idle_tcb;
 #if KICKOS_KERNEL_CORES > 1
         // The other cores' idle TCBs. Outside the thread pool, exactly as idle_tcb is.
@@ -120,14 +126,13 @@ namespace kickos
         // domains[0] = kernel domain, domains[1] = default-user (both immortal);
         // the rest are refcounted mem_base domains. All access via domain_*().
         Domain domains[KICKOS_MAX_DOMAINS];
-        // Task pool (see task.h): the groups that hold those domains. No immortal slot
-        // and no pinned index; a slot is free iff its refcount is 0 AND it has no creator.
-        // All access via task_*().
+        // Task pool (see task.h): the groups that hold those domains. A slot is free iff its
+        // refcount is 0 and it has no creator. All access via task_*().
         Task tasks[KICKOS_MAX_TASKS];
 #if KICKOS_HAVE_ASPACE
-        // Frame-RUN pool and its object-side refcount, same shape as the pools above. Only a
+        // Frame-run pool and its object-side refcount, same shape as the pools above. Only a
         // translating board has a frame pool to name, so this is the one kind whose storage
-        // is posture-gated; CAP_ASPACE needs no pool of its own, a domain already being one.
+        // is posture-gated.
         SlotPool<FrameRun, KICKOS_MAX_FRAME_RUNS> frame_runs;
         uint8_t frame_run_refs[KICKOS_MAX_FRAME_RUNS] = {};
 #endif
@@ -136,14 +141,14 @@ namespace kickos
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index
         // Tier-1 bindings and their object-side refcount, same shape as the pools above.
         // Pooled, not bump-allocated, so a dead driver's line and slot come back:
-        // irq_ref_drop detaches BEFORE it frees.
+        // irq_ref_drop detaches before it frees.
         SlotPool<IrqBinding, KICKOS_MAX_IRQ_HANDLES> irq_bindings;
         uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
 
         // --- notification objects (notify.cc) ---
         // The object a driver waits on, and the object an IRQ binding signals. Same shape as
-        // the pools above; the refcount counts every capability naming a slot, the BIND, and
+        // the pools above; the refcount counts every capability naming a slot, the bind, and
         // each attached IRQ binding.
         SlotPool<Notification, KICKOS_MAX_NOTIFY> notifies;
         uint8_t notify_refs[KICKOS_MAX_NOTIFY] = {};
@@ -151,16 +156,8 @@ namespace kickos
     };
 
     // `task_holds` costs nothing only while it occupies the two bytes of padding that a
-    // 32-bit target leaves before `sleepq`. Thread and Task pin their footprint with a
-    // sizeof assert that fails the BUILD on every board; Kernel has no such assert, so a
-    // field inserted on either side of `task_holds` would move the arena base and be caught
-    // only by re-running a microbit capture and diffing .bss by hand, which is not routine.
-    // This pins the adjacency the whole free-padding argument rests on. It does not prove
-    // zero padding; it fails the moment the claim stops being checkable by inspection.
-    // 32-BIT ONLY, and the guard is load-bearing rather than defensive: a 64-bit host aligns
-    // `sleepq` to 8, so six bytes follow `task_holds` there and the adjacency is false by
-    // construction. The claim is about the boards. Same trap
-    // task_scalar_bytes() documents for sizeof(Task). A host build prices the tail differently.
+    // 32-bit target leaves before `sleepq`; this pins that adjacency. 32-bit only: a 64-bit
+    // host aligns `sleepq` to 8, so six bytes follow `task_holds` there.
     static_assert(sizeof(void*) != 4
                       or offsetof(Kernel, sleepq)
                              == offsetof(Kernel, task_holds) + sizeof(Kernel::task_holds),
@@ -178,7 +175,7 @@ namespace kickos
         return detail::g_instance.get();
     }
 
-    // A HOLD SET IS 32 BITS OF POOL SLOTS (TaskObjectHolds, cap.h), so a wider pool would
+    // A hold set is 32 bits of pool slots (TaskObjectHolds, cap.h), so a wider pool would
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
     // backstop for a board_config.h that defines a width directly.
     static_assert(KICKOS_MAX_SEMAPHORES <= 32 and KICKOS_MAX_MUTEXES <= 32
@@ -187,7 +184,7 @@ namespace kickos
                   "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "
                   "or widen TaskObjectHolds in cap.h and this assert together");
 
-    // How many pool slots a hold set names. Costs one iteration per SET bit, so a task
+    // How many pool slots a hold set names. Costs one iteration per set bit, so a task
     // holding nothing pays nothing.
     inline int task_object_count(uint32_t held)
     {

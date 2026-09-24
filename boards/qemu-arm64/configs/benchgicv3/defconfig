@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU_ARM64=y
+
+# `benchsmp` over GICv3. It exists because the end-to-end locality split is the only thing that
+# witnesses a line following its CLAIMER rather than its unmasker, and that split is flat on
+# GICv2, whose fixed core 0 happens to be the core the bench root claims on. No other preset
+# carries the bench and this controller together, so without this one the claim routing is
+# checked by a configuration nobody ships.
+CONFIG_KICKOS_CORES_FOUR=y
+CONFIG_ARM64_GIC_V3=y
+
+CONFIG_KICKOS_USER_STACK_SIZE=12288
+CONFIG_KICKOS_IDLE_STACK_SIZE=4096
+CONFIG_KICKOS_ROOT_STACK_SIZE=20480
+
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y

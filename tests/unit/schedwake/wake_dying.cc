@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What sched::wake() does with a woken peer while the CURRENT thread is dying, and what
+// What sched::wake() does with a woken peer while the current thread is dying, and what
 // sched::exit_current() does with the waiters it wakes after its own teardown.
 //
-// The observable is the switch DECISION (kfixture.h note 3), and an arm can seat a state no
+// The observable is the switch decision (kfixture.h note 3), and an arm can seat a state no
 // run reaches.
 //
-// The two phases of a dying thread are NOT the same and the arms keep them apart:
+// The two phases of a dying thread are not the same and the arms keep them apart:
 //   sweep phase   current->dying, state RUNNING, still on the ready structure. A preempting
 //                 peer resumes the sweep at the chunk it interrupted.
 //   past-exit     state EXITED and off the ready structure, inside exit_current's own waiter
-//                 loop. The dying thread will NEVER run again, so a switch here abandons the
+//                 loop. The dying thread will never run again, so a switch here abandons the
 //                 rest of that loop.
 
 #include <kickos/cap.h>
@@ -126,7 +126,7 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer)
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "the dying thread keeps the CPU";
 }
 
-// The arm that separates the guard from its absence: while the dying thread is the HEAD of
+// The arm that separates the guard from its absence: while the dying thread is the head of
 // its ready list pick_next declines an equal-priority peer on its own, so the arm above passes
 // with no guard. The list is FIFO and an RR slice expiry rotates it behind its equals, and
 // there the guard is what decides.
@@ -149,7 +149,7 @@ TEST_F(SchedWake, a_dying_thread_defers_an_equal_priority_peer_that_pick_next_wo
     EXPECT_EQ(ahead->state, ThreadState::READY) << "the thread ahead of it did not run";
 }
 
-// A CONTROL, not a discriminator: it passes with no guard at all, since pick_next declines a
+// A control, not a discriminator: it passes with no guard at all, since pick_next declines a
 // lower-priority peer on its own.
 TEST_F(SchedWake, a_dying_thread_defers_a_lower_priority_peer)
 {
@@ -179,17 +179,17 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
 
     EXPECT_EQ(g_switches, 1u) << "a higher-priority peer preempts the sweep";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], p) << "the woken peer is current";
-    // The sweep must be RESUMABLE: cap_teardown drops IrqLock between chunks and c is still
+    // The sweep must be resumable: cap_teardown drops IrqLock between chunks and c is still
     // on the ready structure, so pick_next can return it again.
     EXPECT_EQ(c->state, ThreadState::READY) << "the dying thread stays runnable";
     EXPECT_TRUE(c->dying) << "the dying marker survives the preemption";
 }
 
-// --- what a PENDED switch does to the two reads above -------------------------------------
+// --- what a pended switch does to the two reads above -------------------------------------
 
-// On ARM, RISC-V and RX arch_switch only PENDS, so the sweep keeps the CPU with `current`
+// On ARM, RISC-V and RX arch_switch only pends, so the sweep keeps the CPU with `current`
 // already naming the peer, to the end of the chunk holding the lock. The stub here returns, so
-// these arms sit in that state exactly: a second wake in it reads the PEER, both guard clauses
+// these arms sit in that state exactly: a second wake in it reads the peer, both guard clauses
 // are dead, and what holds the decision is pick_next.
 
 TEST_F(SchedWake, a_second_wake_under_the_pended_peer_does_not_switch_again)
@@ -279,7 +279,7 @@ TEST_F(SchedWake, an_already_ready_peer_is_left_alone_but_loses_its_deadline)
     Thread* p = spawn(1, PRIO_DYING + 1);
     p->on_timer = true;
 
-    // READY, not BLOCKED: the funnel drops the deadline BEFORE it tests the state, so a
+    // READY, not BLOCKED: the funnel drops the deadline before it tests the state, so a
     // wake that races the timer cannot leave a stale deadline behind.
     {
         IrqLock lock;
@@ -308,13 +308,13 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
     EXPECT_EQ(g_switches, 0u) << "a pre-start wake does not switch";
 }
 
-// EXITED is the ThreadPool's free marker (thread.h): the slot is reclaimable BECAUSE the state
+// EXITED is the ThreadPool's free marker (thread.h): the slot is reclaimable because the state
 // says so, and nothing else records it, so readying an exited thread does not merely resurrect
 // it, it takes the slot out of the pool with no way back.
 TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
 {
     Thread* c = running_thread();
-    // NOT ROOT_INDEX: alloc retires root's slot, so a claim can never name slot 0 and the
+    // Not ROOT_INDEX: alloc retires root's slot, so a claim can never name slot 0 and the
     // free-marker claim below would be about the retirement instead.
     Thread* dead = seat_pool(1, PRIO_DYING + 1);
     kernel().policy->on_remove(dead);
@@ -326,13 +326,13 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     }
 
     EXPECT_EQ(dead->state, ThreadState::EXITED) << "an exited thread is not made READY";
-    EXPECT_EQ(kernel().ready_bitmap & (1u << dead->prio), 0u) << "and no ready list holds it";
+    EXPECT_EQ(kernel().ready_bitmap[0] & (1u << dead->prio), 0u) << "and no ready list holds it";
     EXPECT_EQ(g_switches, 0u) << "nothing switched to it";
     EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "current is unchanged";
     EXPECT_EQ(kernel().threads.alloc(), 1) << "the pool still reads the slot as free";
 }
 
-// The guard compares the EFFECTIVE priority: a dying thread routinely carries a
+// The guard compares the effective priority: a dying thread routinely carries a
 // priority-inheritance boost above its own anchor, and comparing the anchor would admit every
 // peer sitting between the two.
 TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
@@ -358,8 +358,8 @@ TEST_F(SchedWake, the_guard_compares_the_effective_priority_not_the_anchor)
 
 // --- the exit path, run for real ----------------------------------------------------------
 
-// exit_current wakes its join waiters AFTER its own on_remove, when it can never be scheduled
-// again, and its final reschedule is meant to be the ONE switch. A guard narrowed on priority
+// exit_current wakes its join waiters after its own on_remove, when it can never be scheduled
+// again, and its final reschedule is meant to be the one switch. A guard narrowed on priority
 // alone lets the first higher-priority joiner switch away mid-loop: on the sim swapcontext
 // takes the CPU there and then, the remaining waiters are never woken and kickos_terminate
 // never runs. Both orders leave every waiter READY, so only the trace separates them.
@@ -368,7 +368,7 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
     Thread* c = running_thread();
     Thread* w_lower = seat_pool(0, PRIO_DYING + 1);
     Thread* w_higher = seat_pool(1, PRIO_DYING + 4);
-    // A joiner of a DIFFERENT thread, in the same pool scan: the sweep keys on the wait edge,
+    // A joiner of a different thread, in the same pool scan: the sweep keys on the wait edge,
     // not on being parked.
     Thread* other = seat_pool(2, PRIO_DYING + 2);
     park_join(w_lower, c);
@@ -379,7 +379,7 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
 
     EXPECT_EQ(g_switches, 1u) << "exit_current requests exactly one switch";
     // The reclaim token dates the switch: it runs immediately after the sweep and before
-    // the waiter loop, so a switch AFTER it is a switch that waited for the whole loop.
+    // the waiter loop, so a switch after it is a switch that waited for the whole loop.
     EXPECT_STREQ(trace(), "reclaim switch1>11")
         << "the single switch is the last thing exit_current does";
     // The wake evidence is the cleared edge, not the run state: the final reschedule picks
@@ -398,11 +398,11 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
 
 // This arm drives the real cap_teardown: it puts a live CAP_WAIT entry through
 // obj_close_protocol's endpoint branch, so the wake comes from inside the sweep, from the one
-// site whose woken peer is NOT priority-bounded. A PLAIN sender boosts nothing, where the
+// site whose woken peer is not priority-bounded. A plain sender boosts nothing, where the
 // mutex force-unlock and the reply EPIPE both leave the dying thread boosted at or above the
 // peer they wake.
 //
-// The ORDER is the whole assertion and it needs the reclaim token to state it: the switch count
+// The order is the whole assertion and it needs the reclaim token to state it: the switch count
 // is 1 either way, and the from/to pair is the same either way, because after a mid-sweep
 // switch the final reschedule finds the sender already current and declines. Only "switch
 // before reclaim" says the sweep was interrupted rather than completed.
@@ -436,7 +436,7 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     EXPECT_FALSE(cap_teardown_active()) << "the sweep still balanced its depth";
 }
 
-// The owner's boost is a SNAPSHOT taken when the waiter parked: mutex_lock raised the owner
+// The owner's boost is a snapshot taken when the waiter parked: mutex_lock raised the owner
 // then, and sched::set_prio on a BLOCKED thread propagates nothing, so a later boost of the
 // waiter never reaches the owner. mutex_force_unlock then wakes a peer that outranks the dying
 // thread, and the real sweep is what gets preempted.
@@ -463,8 +463,8 @@ TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_preempts_the_sweep
     EXPECT_EQ(c->held_list, nullptr) << "the dying thread released the mutex it held";
 }
 
-// A live cap on each side of a chunk boundary, woken from the FIRST, so there is real work
-// left after the preemption: the sweep drops IrqLock between chunks and RESUMES. cap_teardown's
+// A live cap on each side of a chunk boundary, woken from the first, so there is real work
+// left after the preemption: the sweep drops IrqLock between chunks and resumes. cap_teardown's
 // own totality asserts fire if it does not finish, so reaching the end at all is half the
 // oracle.
 TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
@@ -476,7 +476,7 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     Thread* waiter = spawn(2, PRIO_DYING + 1);
     spawn(3, PRIO_DYING - 1); // keeps k.live above zero
 
-    // The endpoint cap in the FIRST chunk: its EPIPE drain is what preempts.
+    // The endpoint cap in the first chunk: its EPIPE drain is what preempts.
     Endpoint* ep = endpoint();
     int const ep_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
     endpoint_server_set(ep, c);
@@ -484,7 +484,7 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
 
-    // The mutex cap in the LAST slot, past the boundary: only a resumed sweep reaches it.
+    // The mutex cap in the last slot, past the boundary: only a resumed sweep reaches it.
     int mtx_handle = 0;
     Mutex* m = own_mutex(c, &mtx_handle);
     cap_install_at(c, static_cast<int>(width) - 1, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);

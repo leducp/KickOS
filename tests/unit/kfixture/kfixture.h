@@ -82,6 +82,15 @@ namespace kickos
 #endif
         void note_irq_save();
         void note_irq_restore();
+        // Brackets currently open, counted by the seam's save and restore.
+        uint32_t irq_depth();
+
+        // Whether each line's last mask or unmask was an unmask, and that answer for the line
+        // arch_irq_route was last handed, taken when it was handed it: -1 for never called.
+        extern bool g_line_armed[KICKOS_MAX_IRQ];
+        extern int g_routed_armed;
+        // arch_irq_clear_pending calls per line.
+        extern uint32_t g_line_clears[KICKOS_MAX_IRQ];
 
 #if KICKOS_KERNEL_CORES > 1
         // Simulate switch completion and release the kernel lock after parking.
@@ -126,6 +135,8 @@ namespace kickos
         // inside fn. One-shot; reset disables it.
         using GapAction = void (*)();
         void run_in_chunk_gap(GapAction fn, uint32_t ordinal);
+        // Gaps traced since the last run_in_chunk_gap.
+        uint32_t gaps_seen();
 
         // Reset the kernel and start the scheduler with one idle thread.
         void reset();
@@ -168,6 +179,9 @@ namespace kickos
         // Exit as a contained fault, without a cancellation kind.
         void run_exit_faulted(int code);
         void run_exit_as(int code, sched::ExitCause cause);
+        // Run fn, which must reach sched::exit_current, until the final park. The frames the
+        // longjmp skips hold brackets the death path has already ended.
+        void run_noreturn(void (*fn)());
 
         // Use only in a GTest death-test child. Redirect panic output to the existing
         // stderr capture pipe without replacing that pipe.

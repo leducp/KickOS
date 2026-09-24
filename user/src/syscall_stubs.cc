@@ -218,6 +218,17 @@ int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
                                          static_cast<uintptr_t>(core_mask), 0, 0));
 }
 
+// arch_syscall64: a handle may carry bit 31, which a 32-bit return cannot tell from an errno.
+kos_thread_t kos_thread_self(void)
+{
+    uint64_t const r = arch_syscall64(KOS_SYS_THREAD_SELF, 0, 0, 0, 0);
+    if (r > 0xFFFFFFFFull)
+    {
+        return KOS_THREAD_NONE;
+    }
+    return static_cast<kos_thread_t>(r);
+}
+
 int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_SCHED_GRANT,

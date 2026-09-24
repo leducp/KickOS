@@ -27,35 +27,164 @@ namespace kickos
 {
     namespace
     {
+
+// The home at one core is the only core, and the derivation is not compiled there at all.
 #if KICKOS_KERNEL_CORES > 1
-        // Raise a reschedule on every peer running below `prio` that could take `t`, so it
-        // looks at the ready lists. Narrowed by the placement rule: a core `t` may not run on
-        // would wake, pick the same thread it already runs, and go back to sleep.
-        void poke_peers_below(Thread const* t, uint8_t prio, uint32_t me)
+#define SCHED_HOME_FOR(t, asker) ::kickos::sched_home_for((t), (asker))
+#else
+#define SCHED_HOME_FOR(t, asker) ((void)(t), (asker))
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+        // The one place a thread enters a ready structure. A publish to another core's structure
+        // is sound only under the kernel lock, made only by the thread's current holder or its
+        // waker: no core takes a thread out of a peer's structure.
+        void publish_ready(Thread* t, uint32_t home)
         {
-            uint32_t peers = 0;
-            for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
-            {
-                Thread const* const running = kernel().current[core];
-                if (core == me or running == nullptr)
-                {
-                    continue;
-                }
-                if (not sched_placeable_on(t, core))
-                {
-                    continue;
-                }
-                if (running->prio < prio)
-                {
-                    peers |= 1u << core;
-                }
-            }
-            // Record empty masks too, to distinguish an omitted request from a missed response.
+            KICKOS_DEBUG_ASSERT(sched_placeable_on(t, home));
+            t->queue_core = static_cast<uint8_t>(home);
+            kernel().policy->on_ready(t);
+        }
+
+        // Every helper below returns the cores it owes an ask, and the caller raises them in
+        // one klock_resched_ask: an ask raised from deeper down a pass sits deeper on the trap
+        // chain that pass runs on.
+        void count_ask(uint32_t peers, [[maybe_unused]] uint8_t prio)
+        {
             KOS_TRACE(::kickos::KOS_TR_ASK, peers, prio);
-            if (peers != 0)
+            KICKOS_BENCH_RESCHED_ASK(peers != 0);
+        }
+
+        // klock_resched_ask cannot reach the caller's own core.
+        inline __attribute__((always_inline)) void ask(uint32_t cores, uint32_t me)
+        {
+            cores &= ~(1u << me);
+            if (cores != 0)
             {
-                klock_resched_ask(peers);
+                klock_resched_ask(cores);
             }
+        }
+
+        // Moves READY `t` to where the policy's placement invariant puts it. Returns the bit of
+        // the core whose next pass takes it, `me`'s included, or 0.
+        uint32_t place(Thread* t, uint32_t me)
+        {
+            KICKOS_DEBUG_ASSERT(t->state == ThreadState::READY);
+            uint32_t home = t->queue_core;
+            if (not sched_placeable_on(t, home))
+            {
+                home = sched_home_for(t, me);
+            }
+            SchedPlacement const p = kernel().policy->place(t, home);
+            if (p.core != t->queue_core)
+            {
+                kernel().policy->on_remove(t);
+                publish_ready(t, p.core);
+            }
+            uint32_t taker = 0;
+            if (p.below)
+            {
+                taker = 1u << p.core;
+            }
+            count_ask(taker & ~(1u << me), t->prio);
+            return taker;
+        }
+
+        // For a thread made READY with no pass of this core to follow. Out of line: inlined, it
+        // deepens resched_after_wake's frame on the trap chain.
+        __attribute__((noinline)) void place_and_ask(Thread* t, uint32_t me)
+        {
+            ask(place(t, me), me);
+        }
+
+        // `me` now runs below what it ran, so a peer may hold a thread `me` would take. The
+        // holder pushes it: a request per holder, carried by the holder's doorbell.
+        uint32_t drop_scan(uint32_t me)
+        {
+            Kernel& k = kernel();
+            uint32_t holders = 0;
+            for (uint32_t h = 0; h < KICKOS_KERNEL_CORES; h++)
+            {
+                if (h == me or k.current[h] == nullptr)
+                {
+                    continue;
+                }
+                Thread const* const t = k.policy->push_candidate(h, me);
+                if (t == nullptr)
+                {
+                    continue;
+                }
+                k.push_asked[h] |= 1u << me;
+                holders |= 1u << h;
+                count_ask(1u << h, t->prio);
+            }
+            return holders;
+        }
+
+        // One thread per asking core, re-validated now: the asker's level may have risen since
+        // it asked.
+        uint32_t push_take(uint32_t me)
+        {
+            Kernel& k = kernel();
+            uint32_t const asked = k.push_asked[me];
+            k.push_asked[me] = 0;
+            uint32_t targets = 0;
+            for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+            {
+                if ((asked & (1u << c)) == 0)
+                {
+                    continue;
+                }
+                Thread* const t = k.policy->push_candidate(me, c);
+                if (t == nullptr)
+                {
+                    continue;
+                }
+                k.policy->on_remove(t);
+                publish_ready(t, c);
+                targets |= 1u << c;
+                count_ask(1u << c, t->prio);
+            }
+            return targets;
+        }
+
+        // A pass seating above what this core ran declines every READY thread here ranked above
+        // it and at or below `next`: each expected this pass, and none was placed against `next`.
+        uint32_t place_declined(Thread const* next, Thread const* woken, uint32_t me)
+        {
+            Kernel& k = kernel();
+            uint32_t takers = 0;
+            SchedWalk walk{next->prio + 1, nullptr};
+            while (true)
+            {
+                Thread* const t = k.policy->declined(me, k.seated_prio[me], &walk);
+                if (t == nullptr)
+                {
+                    return takers;
+                }
+                if (t != woken and t != next)
+                {
+                    takers |= place(t, me);
+                }
+            }
+        }
+
+        // The drop test every pass makes on its way out, whichever thread it seated.
+        inline uint32_t seat_level(Thread const* next, uint32_t me)
+        {
+            Kernel& k = kernel();
+            uint32_t holders = 0;
+            if (next->prio < k.seated_prio[me])
+            {
+                holders = drop_scan(me);
+            }
+            k.seated_prio[me] = next->prio;
+            return holders;
+        }
+#else
+        inline void publish_ready(Thread* t, uint32_t)
+        {
+            kernel().policy->on_ready(t);
         }
 #endif
 
@@ -73,15 +202,16 @@ namespace kickos
             {
                 prev->state = ThreadState::READY;
 #if KICKOS_KERNEL_CORES > 1
-                // Publish READY before notifying peers; until then they cannot select this
-                // thread. Notify for the outgoing thread independently of the incoming one
-                // because their affinities and priorities can differ. Skip when no peer is eligible.
-                if ((prev->affinity & ~(1u << me)) != 0)
+                // The first moment a running thread can move: until this store it IS running,
+                // and a mask that narrowed under it is honoured here. A slain thread stays for
+                // the self-owed pass that claims it, unless its mask no longer admits this core.
+                bool const slain = thread_slay_claim_pending(prev);
+                if ((prev->affinity & ~(1u << me)) != 0
+                    and (not slain or not sched_placeable_on(prev, me)))
                 {
                     displaced = prev;
                 }
-                // Mark a self-reschedule for an unclaimed slain thread; lock release sends it.
-                if (thread_slay_claim_pending(prev))
+                if (slain)
                 {
                     klock_resched_self();
                 }
@@ -114,13 +244,15 @@ namespace kickos
             KICKOS_BENCH_SPAN(PH_REENT_SEAT, bm_seat);
 #endif
 #if KICKOS_KERNEL_CORES > 1
+            uint32_t asks = 0;
             if (displaced != nullptr)
             {
-                poke_peers_below(displaced, displaced->prio, me);
+                asks = place(displaced, me);
             }
+            ask(asks | seat_level(next, me), me);
 #endif
-            // Must arm for the INCOMING thread before the jump: nothing else will program
-            // its policy deadline (RR slice).
+            // Must arm for the incoming thread before the jump: nothing else programs its
+            // policy deadline (RR slice).
             ktime_rearm(next);
             // Redirect only the incoming context before arch_switch; deferred switches
             // overwrite the outgoing context with live registers. dying prevents
@@ -214,7 +346,7 @@ namespace kickos
             // The thread carries its nesting depth across the switch.
             uint32_t const klock_depth = klock_detach();
             // The bench bracket's depth rides this frame for the same reason the lock's does.
-            // Its START does not: that one describes the CORE's masked window, which the
+            // Its start does not: that one describes the core's masked window, which the
             // thread resuming here continues.
             KICKOS_BENCH_LOCK_DETACH(bench_depth);
             KICKOS_BENCH_MARK(bm_arch);
@@ -224,28 +356,44 @@ namespace kickos
             klock_attach(klock_depth);
         }
 
-        // Notify peers for a woken thread this core did not select. If selected,
-        // switch_book marks it RUNNING before unlock, so peers cannot take it.
-        // switch_book separately announces the outgoing thread when it becomes READY.
-        // A parked or exiting thread does not become available and needs no announcement.
-        void pick_and_seat(Thread const* woken)
+        // Above one core a pass places what it made READY and did not take: the woken thread
+        // and the ones it declined here, the displaced one in switch_book. A parked or exiting
+        // thread is placed by whatever readies it next.
+        void pick_and_seat(Thread* woken)
         {
             uint32_t const me = kickos_kernel_core();
+#if KICKOS_KERNEL_CORES > 1
+            uint32_t asks = 0;
+            if (kernel().push_asked[me] != 0)
+            {
+                asks = push_take(me);
+            }
+#endif
             KICKOS_BENCH_MARK(bm_pick);
             Thread* next = kernel().policy->pick_next();
             KICKOS_BENCH_SPAN(PH_PICK_NEXT, bm_pick);
 #if KICKOS_KERNEL_CORES > 1
             if (woken != nullptr and next != woken)
             {
-                poke_peers_below(woken, woken->prio, me);
+                asks |= place(woken, me);
             }
+            if (next->prio > kernel().seated_prio[me])
+            {
+                asks |= place_declined(next, woken, me);
+            }
+            if (next == kernel().current[me])
+            {
+                ask(asks | seat_level(next, me), me);
+                return;
+            }
+            ask(asks, me);
 #else
             (void)woken;
-#endif
             if (next == kernel().current[me])
             {
                 return;
             }
+#endif
             KICKOS_BENCH_MARK(bm_switch);
             switch_to(next, me);
             KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
@@ -276,22 +424,24 @@ namespace kickos
             KICKOS_ASSERT_EXCLUSION_HELD();
             uint32_t const me = kickos_kernel_core();
             t->state = ThreadState::READY;
-            kernel().policy->on_ready(t);
             if (t->prio == KICKOS_PRIO_IDLE)
             {
-                kernel().idle[me] = t;
 #if KICKOS_KERNEL_CORES > 1
-                // The boot core's idle, seated by the same rule add_idle uses for a peer's.
+                // Set before publishing: the boot core's idle is seated by the same rule
+                // add_idle uses for a peer's, and publish_ready asserts the home is inside it.
                 t->affinity = 1u << me;
 #endif
+                publish_ready(t, me);
+                kernel().idle[me] = t;
             }
             else
             {
+                publish_ready(t, SCHED_HOME_FOR(t, me));
                 kernel().live++;
-            }
 #if KICKOS_KERNEL_CORES > 1
-            poke_peers_below(t, t->prio, me);
+                place_and_ask(t, me);
 #endif
+            }
         }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -299,11 +449,13 @@ namespace kickos
         {
             IrqLock lock;
             t->state = ThreadState::READY;
-            // EXACTLY ITS OWN CORE'S BIT. What guarantees an isolated core still has an idle
-            // thread is pick_next's unconditional fallback, not this; this keeps idle inside
-            // the affinity invariant, which every reader of the field relies on.
+            // Exactly this core's bit. pick_next's unconditional idle fallback, not this, is
+            // what guarantees an isolated core still has an idle thread; this only keeps idle
+            // inside the affinity invariant every reader of the field relies on.
             t->affinity = 1u << core;
-            kernel().policy->on_ready(t);
+            // The one sanctioned cross-home publication, sound because the target core has not
+            // started: nothing there can be picking while this writes.
+            publish_ready(t, core);
             kernel().idle[core] = t;
         }
 #endif
@@ -318,19 +470,22 @@ namespace kickos
                 return;
             }
             t->affinity = mask;
+            // klock_resched_ask cannot reach the caller's own core, so a thread this core must
+            // take or give up is moved by this core's pass, taken here.
             if (t->state != ThreadState::RUNNING)
             {
-                // Only a READY thread is on a ready list for a peer to find; the ask is so a
-                // core that could take it now looks, instead of waiting for its next natural
-                // switch.
                 if (t->state == ThreadState::READY)
                 {
-                    poke_peers_below(t, t->prio, me);
+                    uint32_t const taker = place(t, me);
+                    ask(taker, me);
+                    if (taker == (1u << me))
+                    {
+                        reschedule();
+                    }
                 }
                 return;
             }
-            // A RUNNING thread the new mask still admits keeps the core it is on: placement
-            // says where a thread MAY run, never where it runs best.
+            // A RUNNING thread the new mask still admits keeps the core it is on.
             for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
             {
                 if (kernel().current[core] != t)
@@ -343,19 +498,14 @@ namespace kickos
                 }
                 if (core == me)
                 {
-                    // klock_resched_ask strips the caller's own bit from what it publishes, so
-                    // a core cannot ask itself; the pass is taken here instead. switch_book
-                    // does the poke, on the far side of the store that makes `t` takeable.
                     reschedule();
                     return;
                 }
-                // Publish target state before requesting its core to reschedule.
                 klock_resched_ask(1u << core);
                 return;
             }
-            // RUNNING is published with the current[] seat of the core running it, so the
-            // loop above leaves through one of its returns and this is only ever reached with
-            // the two disagreeing.
+            // RUNNING is published with the current[] seat of the core running it, so this is
+            // reached only with the two disagreeing.
             KICKOS_DEBUG_ASSERT(t->state != ThreadState::RUNNING);
         }
 #endif
@@ -371,7 +521,7 @@ namespace kickos
             [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(first);
             first->mpu.apply();
 #if KICKOS_LIBC_REENT
-            // switch_book is not on this path: without this the FIRST thread would run on
+            // switch_book is not on this path: without this the first thread would run on
             // libc's process-wide state until its first switch away and back.
             if (aspace_seated_with(rspace))
             {
@@ -384,13 +534,20 @@ namespace kickos
             }
 #endif
             ktime_rearm(first);
+#if KICKOS_KERNEL_CORES > 1
+            // A core that starts declines what it holds below `first`, and its level falls from
+            // nothing to `first`.
+            uint32_t const asks = place_declined(first, nullptr, me);
+            kernel().seated_prio[me] = first->prio;
+            ask(asks | drop_scan(me), me);
+#endif
             // arch_start does not return, so the bracket above is dropped by hand.
             klock_drop();
             KICKOS_BENCH_LOCK_DROP();
             arch_start(&kernel().boot[me], &first->ctx);
         }
 
-        void reschedule(Thread const* woken)
+        void reschedule(Thread* woken)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
             pick_and_seat(woken);
@@ -457,13 +614,16 @@ namespace kickos
                 return false;
             }
             t->state = ThreadState::READY;
-            kernel().policy->on_ready(t);
+            // The wait edge is what confers this write: the waker owns a parked thread's
+            // control block, so the waker is who chooses its owner, and choosing its own core
+            // is what makes a wake land where the waker runs.
+            publish_ready(t, SCHED_HOME_FOR(t, kickos_kernel_core()));
             KOS_TRACE(::kickos::KOS_TR_READY, KOS_TRACE_ID(t), t->prio);
             KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
             return true;
         }
 
-        void resched_after_wake(Thread const* t)
+        void resched_after_wake(Thread* t)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
             // Do not switch before start or during exit_current cleanup.
@@ -473,8 +633,9 @@ namespace kickos
                 or (c->dying and t->prio <= c->prio))
             {
 #if KICKOS_KERNEL_CORES > 1
-                // t still needs a core if this assignment is declined.
-                poke_peers_below(t, t->prio, kickos_kernel_core());
+                // Declined without a pass, so placed here; an exiting caller's own pass takes
+                // it where it lands on this core.
+                place_and_ask(t, kickos_kernel_core());
 #endif
                 return;
             }
@@ -482,10 +643,10 @@ namespace kickos
         }
 
 #if KICKOS_KERNEL_CORES > 1
-        void announce_ready(Thread const* t)
+        void place_ready(Thread* t)
         {
             KICKOS_ASSERT_EXCLUSION_HELD();
-            poke_peers_below(t, t->prio, kickos_kernel_core());
+            place_and_ask(t, kickos_kernel_core());
         }
 #endif
 
@@ -505,13 +666,45 @@ namespace kickos
             {
                 return;
             }
-            // Move READY/RUNNING nodes between priority lists around the priority change.
-            // The caller handles rescheduling.
+            // The caller handles rescheduling this core.
             if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
             {
+#if KICKOS_KERNEL_CORES > 1
+                uint8_t const old = t->prio;
+#endif
                 kernel().policy->on_remove(t);
                 t->prio = p;
                 kernel().policy->on_ready(t);
+#if KICKOS_KERNEL_CORES > 1
+                Kernel& k = kernel();
+                uint32_t const me = kickos_kernel_core();
+                if (t->state == ThreadState::READY)
+                {
+                    uint32_t const taker = place(t, me);
+                    ask(taker, me);
+                    // A caller mid-walk cannot take a pass, so this core owes itself one.
+                    if (taker == (1u << me))
+                    {
+                        klock_resched_self();
+                    }
+                    return;
+                }
+                uint32_t const core = t->queue_core;
+                if (k.current[core] != t)
+                {
+                    return;
+                }
+                // A raise is never a drop. A lowering leaves seated_prio high for the pass
+                // that sees it, which on this core the caller takes.
+                if (p > old)
+                {
+                    k.seated_prio[core] = p;
+                }
+                else if (core != me)
+                {
+                    klock_resched_ask(1u << core);
+                }
+#endif
                 return;
             }
             // A BLOCKED thread is on no ready list, and neither queue it can be on is
@@ -519,15 +712,13 @@ namespace kickos
             t->prio = p;
         }
 
-        void exit_current(int code, ExitCause cause)
+        void exit_current(int code, ExitCause cause, IrqLock* held)
         {
             Thread* const c = kernel().current[kickos_kernel_core()];
 #if KICKOS_KERNEL_STACKS
-            // Check the stack canary only after the thread has finished.
-            // Do not print here: this exit path determines the minimum stack size.
+            // Check the stack canary only after the thread has finished; do not print here,
+            // since this exit path sets the minimum stack size.
             int const kslot = kernel().threads.index_of(c);
-#endif
-#if KICKOS_KERNEL_STACKS
             if (kslot >= 0 and not kstack_canary_intact(kslot))
             {
                 kpanic(diag::kKstackOverflow);
@@ -543,11 +734,10 @@ namespace kickos
                 // with interrupts unmasked between chunks. `state` cannot be the dying marker,
                 // a switch back in rewrites it to RUNNING.
                 c->dying = true;
-                // BEFORE the sweep and NOT inside it: cap_teardown drops and retakes IrqLock
+                // Before the sweep, not inside it: cap_teardown drops and retakes IrqLock
                 // every KCAP_TEARDOWN_CHUNK slots, and a notification still naming this thread
-                // across one of those gaps is a wake into a thread already in teardown. The
-                // CAP_IRQ pre-pass at the top of cap_teardown is the precedent. Unconsumed
-                // bits are LEFT pending for the next server.
+                // across one of those gaps is a wake into a thread already in teardown.
+                // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
                 // Cancel faulted-task peers before releasing the task slot. Use cooperative
                 // cancellation so device holders can shut down their hardware.
@@ -583,14 +773,19 @@ namespace kickos
                 {
                     c->task = nullptr;
                 }
-                // The creator's hold ends with the creator, keyed on the TAG: a recycled pool
+                // The creator's hold ends with the creator, keyed on the tag: a recycled pool
                 // slot answers kill_tag_of with its predecessor's, so a hold left behind is
                 // creator authority its successor never earned.
                 task_orphan_created_by(kernel().threads.kill_tag_of(c));
             }
-            // Must close every cap the exiting thread holds BEFORE its slot is reclaimable,
-            // else object references leak (destroy-on-last-close). Preemptible: it drops
-            // IrqLock between chunks.
+            // Ended only past `dying`, so a cancel read under the caller's bracket reaches the
+            // mark with the exclusion never lapsing.
+            if (held != nullptr)
+            {
+                held->end();
+            }
+            // Must close every cap the exiting thread holds before its slot is reclaimable,
+            // else object references leak (destroy-on-last-close).
             cap_teardown(c);
             {
                 IrqLock lock;
@@ -602,7 +797,6 @@ namespace kickos
                 // Keep the kernel lock from publishing EXITED until the switch saves this frame.
                 c->state = ThreadState::EXITED;
                 // Root's slot is never recycled, so release its empty capability directory here.
-                // No later code on this path reads it.
                 if (k.threads.is_root(c))
                 {
                     thread_cap_release(c);
@@ -618,8 +812,8 @@ namespace kickos
                 {
                     k.live--;
                 }
-                // Find join/task-empty waiters by scanning ThreadPool. Set their result and
-                // clear their wait edge before waking. EXITED suppresses switching during this loop.
+                // EXITED suppresses switching while this loop scans ThreadPool for join and
+                // task-empty waiters.
                 bool const last_out = (k.live == 1);
                 for (int s = 0; s < k.threads.next; s++)
                 {
@@ -631,7 +825,7 @@ namespace kickos
                         wake(w);
                         continue;
                     }
-                    // Only when THIS death emptied the group, compared by pointer as
+                    // Only when this death emptied the group, compared by pointer as
                     // membership is.
                     if (emptied_task and w->wait_task_target() == left_task)
                     {
@@ -744,7 +938,7 @@ extern "C" void kickos_kernel_core_resched(void)
 }
 #endif
 
-// Reached only through a context arch_ctx_redirect rebuilt, so `current` IS the slain thread
+// Reached only through a context arch_ctx_redirect rebuilt, so `current` is the slain thread
 // and this runs privileged at the top of its own stack.
 extern "C" void kickos_thread_slay_exit(void* arg)
 {

@@ -12,6 +12,15 @@
 
 namespace kickos::driver
 {
+#if KICKOS_KERNEL_CORES > 1
+namespace
+{
+// A thread handling a line does not migrate: above one kernel core the claim is refused to a
+// caller not pinned where it runs, and a wait, ack or discard to a thread not pinned to the
+// claim core. Core 0 is in every grant and no image isolates it.
+constexpr uint32_t LINE_CORES = 1u << 0;
+}
+#endif
 
 int fail(char const* tag, char const* msg)
 {
@@ -148,6 +157,22 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
         name = cfg->name;
     }
 
+    // A thread holding a line, or the notification claimed lines signal, is pinned to their
+    // claim core.
+    uint32_t core_mask = 0;
+#if KICKOS_KERNEL_CORES > 1
+    if (line != nullptr and line[0] != KOS_CAP_NONE)
+    {
+        for (uint8_t i = 0; i < t.cap_count; i++)
+        {
+            if (t.caps[i].resource != KOS_DRV_RES_EP)
+            {
+                core_mask = LINE_CORES;
+            }
+        }
+    }
+#endif
+
     // No mem grant of its own: the ring block is the TASK's shared region, and a member
     // bringing one is refused -KOS_EINVAL.
     auto h = kos::thread::create(t.entry, arg, name,
@@ -156,7 +181,7 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
                                  win, win_size, grants, t.cap_count,
-                                 /*authority=*/0, /*cap_dest=*/nullptr, task);
+                                 /*authority=*/0, /*cap_dest=*/nullptr, task, core_mask);
     // The child holds its own copies now, so this spawn's sources go back.
     drop_minted(minted);
     return h;
@@ -247,6 +272,17 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
 
     kos_cap_t line[KOS_DRV_LINES_MAX] = {KOS_CAP_NONE, KOS_CAP_NONE};
     uint8_t claimed = 0;
+#if KICKOS_KERNEL_CORES > 1
+    kos_thread_t const self = kos_thread_self();
+    if (d.line_count != 0u)
+    {
+        if (kos_thread_set_affinity(self, LINE_CORES) != 0)
+        {
+            unwind(line, claimed, ep, note, task);
+            return fail(d.tag, "ERROR: could not pin to the core the lines are claimed on\n");
+        }
+    }
+#endif
     for (uint8_t i = 0; i < d.line_count; i++)
     {
         // Claimed HERE: minting needs KOS_AUTH_IRQ and every driver thread runs at authority
@@ -254,10 +290,21 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         // it.
         if (kos_irq_claim(d.lines[i].number, d.lines[i].trigger, &line[i]) != 0)
         {
-            unwind(line, claimed, ep, note, task);
-            return fail(d.tag, "ERROR: irq_claim failed\n");
+            break;
         }
         claimed++;
+    }
+#if KICKOS_KERNEL_CORES > 1
+    // Only the claim needs this thread pinned; the waits are the driver threads'.
+    if (d.line_count != 0u)
+    {
+        (void)kos_thread_set_affinity(self, 0);
+    }
+#endif
+    if (claimed != d.line_count)
+    {
+        unwind(line, claimed, ep, note, task);
+        return fail(d.tag, "ERROR: irq_claim failed\n");
     }
 
     // ONE object for the whole driver: every line raises a bit of it, and so does every

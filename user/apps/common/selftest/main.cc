@@ -81,7 +81,7 @@ namespace
     // plus what it asked for, a thread being kept off the CPU having no way to read the
     // clock at its own wake.
     //
-    // A DUE INSTANT IS COMPUTED, NOT OBSERVED. The read-to-syscall gap is a residue this
+    // A due instant is computed, not observed. The read-to-syscall gap is a residue this
     // cannot remove, so a window these calls report held by less than that gap is not proof
     // that it held. What they remove is the arm passing or failing on a window it never had.
     //
@@ -336,16 +336,15 @@ namespace
         TAP_CHECK(kos_clock_now() >= t0);
     }
 
-    // EVERY bit of a notification. A selftest object is the arm's own, so a mask naming
+    // Every bit of a notification. A selftest object is the arm's own, so a mask naming
     // particular bits would be a second statement of what the arm attached to it.
     constexpr uint32_t NOTE_ALL = 0xFFFFFFFFu;
 
-    // --- A notification with NO line and no KOS_AUTH_IRQ -----------------------
-    // THIS ARM CANNOT BE WRITTEN AGAINST A TREE WHERE THE OBJECT IS AN IRQ BINDING, which is
-    // why it is the one that says the generalisation happened: there was no way to be
-    // notified without holding a CAP_IRQ, and a board with no spare device line had to claim
-    // one purely to have something parkable. Nothing here claims a line, and the bits come
-    // from two ordinary SIGNAL holders.
+    // --- A notification with no line and no KOS_AUTH_IRQ -----------------------
+    // This arm cannot be written against a tree where the object is an IRQ binding: there was
+    // no way to be notified without holding a CAP_IRQ, and a board with no spare device line
+    // had to claim one purely to have something parkable. Nothing here claims a line, and the
+    // bits come from two ordinary signal holders.
     void t_notify_no_line()
     {
         constexpr uint32_t BIT_A = 3;
@@ -367,7 +366,7 @@ namespace
         TAP_CHECK(kos_notify(b) == 0);
         TAP_CHECK(kos_notify_bind(note) == 0);
         uint32_t bits = 0;
-        // ONE wait, BOTH bits: the object carries a word, not a single signal.
+        // One wait, both bits: the object carries a word, not a single signal.
         TAP_CHECK(kos_notify_wait(note, NOTE_ALL, 0u, &bits) == 0);
         TAP_CHECK(bits == ((1u << BIT_A) | (1u << BIT_B)));
         // Drained: a second wait with no raise behind it can only time out.
@@ -479,7 +478,7 @@ namespace
         kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {irq, KOS_CAP_WAIT},
                                  {note, CH_FULL}};
         kos_cap_grant icaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
-        auto w = kos::thread::create_caps(irq_waiter, nullptr, "irqW", 15, wcaps, 4);
+        auto w = irq_spawn(irq_waiter, nullptr, "irqW", 15, wcaps, 4);
         auto inj = kos::thread::create_caps(irq_injector, nullptr, "irqI", 8, icaps, 2);
         TAP_CHECK(w.valid() and inj.valid()); // spawn failure would hang the join below
         wait_n(2);
@@ -501,19 +500,18 @@ namespace
     // What the burner saw the spinner do WHILE it burned, which is the arm's whole claim.
     uint64_t g_rr_advanced = 0;
 
-    // A STACK sentinel per worker. The progress assertion cannot see a switch that resumes a
-    // thread on the WRONG STACK, both threads still running; the ordering assertion this arm
-    // used to carry could, which is how the PendSV pair race was caught.
-    // Volatile and LOCAL so it lives on the stack, not in a callee-saved register.
+    // A stack sentinel per worker: the progress assertion cannot see a switch that resumes a
+    // thread on the wrong stack, both threads still running.
+    // Volatile and local so it lives on the stack, not in a callee-saved register.
     constexpr uint32_t RR_BURNER_SENTINEL = 0xB0570001u;
     constexpr uint32_t RR_SPINNER_SENTINEL = 0x5910572u;
     volatile int g_rr_stack_swap = 0;
 
-    // THIS ARM MAY NOT ASSERT THE ORDER OF TWO LOGGED CHARACTERS. The 2026-08-17 rule makes
-    // one sound only where the consumer OUTRANKS the thread it rendezvous with; two
+    // This arm may not assert the order of two logged characters: an ordering assertion is
+    // sound only where the consumer outranks the thread it rendezvous with, and two
     // round-robin peers are equal by definition, so no post here preempts anything. An order
     // would rest instead on no slice exceeding two quanta, which nothing establishes: a slice
-    // is the quantum PLUS the interrupt's delivery latency.
+    // is the quantum plus the interrupt's delivery latency.
     void rr_burner(void*) // caps: done@1, lock@2, gate@3
     {
         // Arrival, posted BEFORE the turnstile: the gate proves both workers were spawned,
@@ -568,9 +566,9 @@ namespace
         {
             quantum = granule * 4; // coarse clock: keep the slice well above a granule
         }
-        // The burn must exceed the worst SLICE, the quantum plus the interrupt's delivery
-        // latency, by enough that the peer gets one inside it. ONE FIGURE WOULD BE CHARGED
-        // TWICE: on a coarse clock the quantum is already tens of milliseconds, the same
+        // The burn must exceed the worst slice, the quantum plus the interrupt's delivery
+        // latency, by enough that the peer gets one inside it. One figure would be charged
+        // twice: on a coarse clock the quantum is already tens of milliseconds, the same
         // latency is a fraction of one, and 32 would cost seconds for a narrower margin.
         if (quantum >= 16000000ull)
         {
@@ -704,13 +702,13 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST) // inject-driven (see the tier-2 block above)
     // --- Tier-1 IRQ-as-event: unprivileged userspace driver --------------------
     kos_cap_t g_irqdrv_done = KOS_CAP_NONE;
-    // ONE ready-handshake handle shared by every tier-1 IRQ arm below; safe only because
+    // One ready-handshake handle shared by every tier-1 IRQ arm below; safe only because
     // they are strictly sequential and each creates and destroys it. Keep it shared: on
     // microbit the arena starts where .bss ends, so a handful of extra file-scope words
     // flips a later arena probe from RUN to SKIP.
     kos_cap_t g_irq_ready = KOS_CAP_NONE;
     void* g_mmio = nullptr; // fake device MMIO word, granted to the driver
-    // WORD 0 IS THE DEVICE, WORDS 1..3 ARE WHAT THE DRIVER SAW. The driver carries the page
+    // Word 0 is the device, words 1..3 are what the driver saw. The driver carries the page
     // as its domain grant, so it is a task and an address space of its own and an app global
     // it wrote would be its own copy of one; the block root handed it is what carries the
     // reading back, at the address root named.
@@ -733,7 +731,7 @@ namespace
     }
     void t_irqdrv()
     {
-        // Root PLAYS THE DEVICE, so it needs write access to a page it allocated. App
+        // Root plays the device, so it needs write access to a page it allocated. App
         // static data will not do: it sits outside the arena and cannot be granted to the
         // driver.
         //
@@ -767,8 +765,8 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        auto drv = kos::thread::create_caps(irq_driver, nullptr, "irqdrv", 15, caps, 4,
-                                            KOS_POLICY_FIFO, 0, /*privileged=*/false, g_mmio, 4096);
+        auto drv = irq_spawn(irq_driver, nullptr, "irqdrv", 15, caps, 4,
+                             KOS_POLICY_FIFO, 0, /*privileged=*/false, g_mmio, 4096);
         if (not drv.valid())
         {
             kos_sem_destroy(g_irqdrv_done); // reclaim before the failure return
@@ -838,7 +836,7 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        auto drv = kos::thread::create_caps(mask_driver, nullptr, "maskdrv", 1, caps, 4);
+        auto drv = irq_spawn(mask_driver, nullptr, "maskdrv", 1, caps, 4);
         if (not drv.valid())
         {
             kos_handle_close(irq);
@@ -856,7 +854,7 @@ namespace
         kos_irq_inject(MASK_LINE);
         kos_irq_inject(MASK_LINE);
         kos_sem_post(g_irq_ready); // release the window; the driver acks
-        // THE LATCH HALF: a raise taken while the line was masked was kept and redelivered
+        // The latch half: a raise taken while the line was masked was kept and redelivered
         // at the ack. Root injected nothing after the gate opened, so the second service can
         // only be a redelivery. Two posts: the ack's phase B, then that service's phase A.
         wait_n(2);
@@ -866,8 +864,8 @@ namespace
         wait_n(1); // phase B: acked and ARMED, so a raise below cannot beat the ack
         bool one_deep = true;
 #if KICKOS_KERNEL_CORES > 1
-        // THE ONE-DEEP HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. Queueing rather than
-        // coalescing shows up ONLY as a service that must not happen, and a service that does
+        // The one-deep half is not witnessed above one kernel core. Queueing rather than
+        // coalescing shows up only as a service that must not happen, and a service that does
         // not happen raises no event to order a later read after. Gating the driver does not
         // help: a queued latch is consumed at the next gate release and is indistinguishable
         // there from the redelivery of a fresh raise. Checked on every one-core preset.
@@ -960,7 +958,7 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        auto drv = kos::thread::create_caps(discard_driver, nullptr, "discirq", 1, caps, 4);
+        auto drv = irq_spawn(discard_driver, nullptr, "discirq", 1, caps, 4);
         if (not drv.valid())
         {
             kos_handle_close(irq);
@@ -978,14 +976,14 @@ namespace
         kos_irq_inject(DISCARD_LINE);
         kos_irq_inject(DISCARD_LINE);
         kos_sem_post(g_irq_ready); // release the window; the driver discards, then acks
-        // PHASE B IS LOAD-BEARING HERE, not bookkeeping: a raise from root that beat the
+        // Phase B is load-bearing here, not bookkeeping: a raise from root that beat the
         // discard would be retired by it, and the driver would then wait on a line nothing
         // will raise again.
         wait_n(1);
         bool retired = true;
 #if KICKOS_KERNEL_CORES > 1
-        // THE RETIREMENT HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. That the discard
-        // dropped the coalesced latch shows up ONLY as a second service that must not happen,
+        // The retirement half is not witnessed above one kernel core. That the discard
+        // dropped the coalesced latch shows up only as a second service that must not happen,
         // and a service that does not happen raises no event to order a later read after.
         // Checked on every one-core preset.
         tap::partial("a retired latch is a service that must NOT happen");
@@ -1006,7 +1004,7 @@ namespace
         TAP_CHECK(live);
     }
 
-    // --- Auto-rearm: wait; service with NO explicit ack ------------------------
+    // --- Auto-rearm: wait; service with no explicit ack ------------------------
     // A notify_wait re-arms every signaller CHAINED on the object whose bit it accepts, so a
     // driver that never acks still receives every subsequent IRQ. That is the MISSED-rearm
     // direction; irq_phantom_wake below is the too-early one. Driver MUST run above root, so
@@ -1016,7 +1014,7 @@ namespace
 
     void autorearm_driver(void*)
     {
-        // NO Irq cap at all: this driver cannot ack even if it wanted to, so the rearm under
+        // No Irq cap at all: this driver cannot ack even if it wanted to, so the rearm under
         // test can only be the one the wait issues over the bindings CHAINED on the object.
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
@@ -1041,12 +1039,12 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {note, CH_FULL}};
         uint16_t const dest[] = {CH_DONE, CH_READY, CH_NOTE};
-        auto drv = kos::thread::create_caps(autorearm_driver, nullptr, "autoirq", 15, caps, 3,
-                                            KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr,
-                                            0, /*authority=*/0, dest);
+        auto drv = irq_spawn(autorearm_driver, nullptr, "autoirq", 15, caps, 3,
+                             KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr,
+                             0, /*authority=*/0, dest);
         TAP_CHECK(drv.valid()); // spawn failure would hang the ready handshake below
         kos_handle_close(note);
-        // ROOT KEEPS THE LINE until the arm is over: the driver holds no capability naming
+        // Root keeps the line until the arm is over: the driver holds no capability naming
         // it, so closing here would drop the last reference, unchain the signaller and take
         // the line away mid-arm.
         kos_sem_wait(g_irq_ready);
@@ -1097,7 +1095,7 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        auto drv = kos::thread::create_caps(phantom_driver, nullptr, "phantirq", 1, caps, 4); // below root
+        auto drv = irq_spawn(phantom_driver, nullptr, "phantirq", 1, caps, 4); // below root
         TAP_CHECK(drv.valid()); // spawn failure would hang the ready handshake below
         kos_handle_close(irq);
         kos_handle_close(note);
@@ -1159,8 +1157,8 @@ namespace
     }
     void destroy_poster(void*) // caps: done@1, g_dsem@2 (CH_READY)
     {
-        // Sleep past MAIN's close below, THEN post: the wake of the parked waiter
-        // happens strictly AFTER MAIN has dropped its own (shared) cap on g_dsem.
+        // Sleep past MAIN's close below, then post: the wake of the parked waiter
+        // happens strictly after MAIN has dropped its own (shared) cap on g_dsem.
         kos_sleep_ns(10000000ull);
         kos_sem_post(CH_READY);
         kos_sem_post(CH_DONE);
@@ -1173,8 +1171,8 @@ namespace
         auto p = kos::thread::create_caps(destroy_poster, nullptr, "dposter", 15, caps, 2);
         TAP_CHECK(w.valid() and p.valid()); // spawn failure would hang wait_n(2) below
         kos_sleep_ns(2000000ull);     // let the waiter park on g_dsem; refs = main+waiter+poster = 3
-        // Close MAIN's cap WHILE the waiter is parked and the poster has not yet posted:
-        // refs 3->2, so the object MUST survive. A freed object or wait queue would leave
+        // Close MAIN's cap while the waiter is parked and the poster has not yet posted:
+        // refs 3->2, so the object must survive. A freed object or wait queue would leave
         // the poster's later post unable to wake the waiter, and wait_n(2) would hang.
         TAP_CHECK(kos_handle_close(g_dsem) == 0);
         wait_n(2);
@@ -1499,7 +1497,7 @@ namespace
         TAP_CHECK(count('c') == 1 and count('e') == 1 and count('d') == 1
                   and count('b') == 1 and count('C') == 1);
         TAP_CHECK(nth('b', 1) < nth('e', 1)); // chain formed (B took M1 before C released M2)
-        TAP_CHECK(nth('e', 1) < nth('d', 1)); // CHAIN BOOST: C ran above med across two hops
+        TAP_CHECK(nth('e', 1) < nth('d', 1)); // chain boost: C ran above med across two hops
     }
 
     // --- Owner dies holding the mutex: waiter gets OWNER_DIED (H7) --------------
@@ -1646,7 +1644,7 @@ namespace
             if (have2 != KOS_CAP_NONE) { kos_sem_destroy(have2); }
             if (goA != KOS_CAP_NONE) { kos_sem_destroy(goA); }
             if (goB != KOS_CAP_NONE) { kos_sem_destroy(goB); }
-            // WHICH supply ran out is the diagnosis, and the three have opposite fixes:
+            // Which supply ran out is the diagnosis, and the three have opposite fixes:
             // -KOS_EMFILE is this thread's capability table (widen the declared demand),
             // -KOS_EOVERFLOW is this TASK's ceiling for one of the pools with the pool itself
             // still holding slots (raise KICKOS_TASK_SEMAPHORE_BUDGET, and the pool with
@@ -1685,7 +1683,7 @@ namespace
         kos_sem_destroy(goB);
     }
 
-    // --- Closing a mutex you OWN is refused -------------------------------------
+    // --- Closing a mutex you own is refused -------------------------------------
     void t_mutex_close_owned()
     {
         kos_cap_t m = KOS_CAP_NONE;
@@ -2141,8 +2139,8 @@ namespace
     {
         g_claimgate_rc = 0;
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
-        // ABOVE root, so it runs to completion including its exit before root is scheduled
-        // again: its slot is then EXITED and reusable by the next arm's worker.
+        // Above root, so it runs to completion including its exit before root is scheduled
+        // again: its slot is then exited and reusable by the next arm's worker.
         auto w = kos::thread::create_caps(claimgate_worker, nullptr, "claimgate", 15, caps, 1);
         if (not w.valid())
         {
@@ -2185,9 +2183,9 @@ namespace
         // done@1, line@3, index 2 deliberately EMPTY.
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {first, KOS_CAP_WAIT}};
         uint16_t const dest[] = {CH_DONE, CH_IRQ};
-        auto w = kos::thread::create_caps(reclaim_worker, nullptr, "reclaim", 15, caps, 2,
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
-                                          /*authority=*/0, dest);
+        auto w = irq_spawn(reclaim_worker, nullptr, "reclaim", 15, caps, 2,
+                           KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                           /*authority=*/0, dest);
         if (not w.valid())
         {
             tap::skip("thread pool too small");
@@ -2220,8 +2218,8 @@ namespace
         TAP_CHECK(close_rc == 0);
     }
 
-    // NOTIFICATION HANDOVER, and it is the DEATH arm: the first server binds, takes a raise
-    // it never consumes, and dies. THE TRANSFER IS GONE, not moved: the pending bits never
+    // Notification handover, and it is the death arm: the first server binds, takes a raise
+    // it never consumes, and dies. The transfer is gone, not moved: the pending bits never
     // lived in the TCB, so the dying thread's unbind leaves them exactly where they already
     // were and the successor's bind finds them there. Root's capability keeps the object and
     // the line alive across the gap.
@@ -2267,7 +2265,7 @@ namespace
         kos_sem_create(0, &g_ho_release);
         kos_cap_grant caps[] = {{g_irqdrv_done, CH_FULL}, {g_irq_ready, CH_FULL},
                                 {note, CH_FULL}, {g_ho_release, CH_FULL}};
-        auto first = kos::thread::create_caps(ho_leaver, nullptr, "hoL", 15, caps, 4);
+        auto first = irq_spawn(ho_leaver, nullptr, "hoL", 15, caps, 4);
         if (not first.valid())
         {
             kos_sem_destroy(g_irqdrv_done);
@@ -2282,7 +2280,7 @@ namespace
         kos_irq_inject(HANDOVER_LINE);
         kos_sem_post(g_ho_release); // exit with the event pending
         int const jrc = first.join(HANDOVER_WAIT_US);
-        auto second = kos::thread::create_caps(ho_successor, nullptr, "hoS", 15, caps, 4);
+        auto second = irq_spawn(ho_successor, nullptr, "hoS", 15, caps, 4);
         if (not second.valid())
         {
             kos_sem_destroy(g_irqdrv_done);
@@ -2311,7 +2309,7 @@ namespace
         TAP_CHECK(g_ho_second.load() == 0);
     }
 
-    // Two software raises of ONE BADGE coalesce into one bit; the second returns EALREADY,
+    // Two software raises of one badge coalesce into one bit; the second returns EALREADY,
     // and a DRAINED repost answers 0 again. Root binds and waits on its own object, avoiding
     // cross-thread ordering. The raise goes through a BADGED copy, which is the only kind a
     // confined signaller ever holds.
@@ -2350,8 +2348,8 @@ namespace
         kos_irq_inject(FREE_LINE);   // default handler runs: mask + bump counter
         TAP_CHECK(irq_spurious_await(before + 1));
 #if KICKOS_KERNEL_CORES > 1
-        // THE SECOND HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE, and no deadline fixes it.
-        // The claim is that a raise on the now-masked line does NOT reach the handler, and a
+        // The second half is not witnessed above one kernel core, and no deadline fixes it.
+        // The claim is that a raise on the now-masked line does not reach the handler, and a
         // non-delivery raises no event: the only thing that could order a later read after
         // the delivery this claim forbids is that delivery itself, so there is no closed
         // interval to read the counter in. It is checked on every one-core preset, where the
@@ -2366,9 +2364,9 @@ namespace
     }
 
     // --- First-arm discards pre-claim garbage ----------------------------------
-    // A raise that lands before a driver owns the line is latched, and the FIRST ARM must
-    // DISCARD that stale latch (arch_irq_clear_pending) or the first irq.wait() phantom-
-    // wakes on garbage. This is the ONE tier-1 arm where root must NOT pre-arm the line:
+    // A raise that lands before a driver owns the line is latched, and the first arm must
+    // discard that stale latch (arch_irq_clear_pending) or the first irq.wait() phantom-
+    // wakes on garbage. This is the one tier-1 arm where root must not pre-arm the line:
     // pre-arming moves the discard into root and stops testing the driver's own first arm.
     int g_stale_seen = 0;
     constexpr int STALE_LINE = KICKOS_IRQ_FREE_BASE + 6;
@@ -2421,7 +2419,7 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        auto drv = kos::thread::create_caps(stale_driver, nullptr, "staleirq", 1, caps, 4);
+        auto drv = irq_spawn(stale_driver, nullptr, "staleirq", 1, caps, 4);
         if (not drv.valid())
         {
             kos_handle_close(irq);
@@ -2436,7 +2434,7 @@ namespace
         kos_sem_destroy(g_irq_ready);
         bool no_phantom = true;
 #if KICKOS_KERNEL_CORES > 1
-        // THE NO-PHANTOM HALF IS NOT WITNESSED ABOVE ONE KERNEL CORE. A wake that must not
+        // The no-phantom half is not witnessed above one kernel core. A wake that must not
         // happen raises no event, and the liveness half below cannot separate the two: under
         // the phantom the driver wakes on the stale latch, and root's later inject then lands
         // on a line with no waiter, leaving the same count. Checked on every one-core preset.
@@ -2448,7 +2446,7 @@ namespace
         // Liveness, on every core count. Root cannot observe the driver REACH its first
         // wait, and that wait is what arms the line: a raise landing before it is cleared by
         // the arm itself, which is the behaviour under test. So raise until one is delivered,
-        // bounded. THIS LEAVES STRAY RAISES ON STALE_LINE: every raise after the driver has
+        // bounded. This leaves stray raises on STALE_LINE: every raise after the driver has
         // serviced reaches the null-object default, which masks the line and bumps the
         // spurious count, so an arm that reads that count after this one must take its own
         // `before` reading rather than one taken earlier.
@@ -2504,8 +2502,8 @@ namespace
             tap::partial("accept half not run (arena cannot spare a stack)");
             return;
         }
-        // REACHED BEFORE IT IS HANDED IN. Allocation grants nothing, and where a backend
-        // translates that means the block is not even MAPPED: a child started on it would
+        // Reached before it is handed in. Allocation grants nothing, and where a backend
+        // translates that means the block is not even mapped: a child started on it would
         // fault on its first push.
         TAP_CHECK(kos_mem_self_grant(raw, STK + 16, 0) == 0);
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
@@ -2561,7 +2559,7 @@ namespace
     }
 #endif
 
-    // --- A self-granted range shared by three threads of ONE task --------------------
+    // --- A self-granted range shared by three threads of one task --------------------
     // The two workers are plain spawns, so they are threads of ROOT'S task and share the
     // four globals below with it. Each ASKS for the range itself, which is the portable
     // floor: a grant guarantees access to its HOLDER and says nothing about a peer.
@@ -2838,7 +2836,7 @@ namespace
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0x20000000u, 0u) == 0);       // size 0 refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_DEV_UNPRIVILEGED, 0x40000000u, 0x1000u) == 0);  // DEV grant, unprivileged caller: refused
 
-        // --- Non-cacheable admission is THREE-valued: PROGRAMMED and INHERENT both admit,
+        // --- Non-cacheable admission is three-valued: PROGRAMMED and INHERENT both admit,
         // REFUSED must refuse HERE, since every commit backend drops a region it cannot
         // encode in silence.
         uintptr_t const nc = kos_grant_probe(KOS_GRANT_OP_NOCACHE_SUPPORT, 0, 0);
@@ -2858,8 +2856,8 @@ namespace
             tap::partial("non-cacheable RAM admission not run (granule alloc failed)");
         }
 
-        // --- End-to-end errno coherence: an unprivileged child whose mem_base lies OUTSIDE
-        // the arena is refused with -KOS_EPERM (policy refusal), NOT -KOS_ENOMEM. The code
+        // --- End-to-end errno coherence: an unprivileged child whose mem_base lies outside
+        // the arena is refused with -KOS_EPERM (policy refusal), not -KOS_ENOMEM. The code
         // must come from domain_for, not a pre-check at the spawn boundary. 0xE0000000 is
         // 2048-aligned, so ONLY arena containment can reject it.
         auto const mrc = kos::thread::create(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
@@ -2977,7 +2975,7 @@ namespace
         {
             // Positively the sim, so a new arch with no DEV encoder fails loudly here.
 #if KICKOS_ARCH_SIM
-            // The sim admits exactly ONE DEV window shape (64 KiB), never a WIN-sized one.
+            // The sim admits exactly one DEV window shape (64 KiB), never a WIN-sized one.
             // Assert that premise instead of skipping: the sim gate reads a skip as an arm
             // that stopped running (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
             TAP_CHECK(not kos::thread::create(devexcl_hold, nullptr, "devnone", 10,
@@ -3012,19 +3010,19 @@ namespace
                       holder.error());
             return;
         }
-        // 1. EXACT DUPLICATE of the live holder's window: refused, and specifically
+        // 1. Exact duplicate of the live holder's window: refused, and specifically
         //    EBUSY, not EPERM (the window is admissible) and not ENOMEM (the pool has
         //    room; the refusal lands before a slot is claimed).
         TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devdup", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
                                       reinterpret_cast<void*>(win), WIN, hcaps, 2).error() == -KOS_EBUSY);
-        // 2. PARTIAL overlap: the upper half of the held window. Its own base/size are
+        // 2. Partial overlap: the upper half of the held window. Its own base/size are
         //    independently admissible, so only the overlap scan can refuse it.
         TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devpart", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
                                       reinterpret_cast<void*>(win + WIN / 2u), WIN / 2u, hcaps, 2).error()
                   == -KOS_EBUSY);
-        // 3. ADJACENT but disjoint (base == held last + 1): ADMITTED. This is the mk64f PIT
+        // 3. Adjacent but disjoint (base == held last + 1): admitted. This is the mk64f PIT
         //    CH2 shape: a grant flush against a block, which must not be read as overlapping.
         auto const adj = kos::thread::create(devexcl_hold, nullptr, "devadj", 10, KOS_POLICY_FIFO,
                                              0, false, nullptr, 0, nullptr, 0,
@@ -3163,7 +3161,7 @@ namespace
             TAP_CHECK(kos_irq_claim(static_cast<int>(owned), KOS_IRQ_EDGE, &reserved)
                       == -KOS_EPERM);
             TAP_CHECK(reserved == KOS_CAP_NONE);
-            // AND THE INJECT REFUSES THE SAME LINE. Standing in for a device is what the
+            // The inject refuses the same line too. Standing in for a device is what the
             // inject is for, and a line the kernel dispatches itself is not a device a caller
             // could be standing in for: raising the tick or the doorbell from userspace
             // reaches kernel state no capability named. The same refusal, at the same unit.
@@ -3175,8 +3173,8 @@ namespace
         }
         else
         {
-            // A PARTIAL and never a plain pass: the control below still runs, so this is not a
-            // skip, but a controller reserving no line leaves SEC-6's refusal no subject and
+            // A partial and never a plain pass: the control below still runs, so this is not a
+            // skip, but a controller reserving no line leaves the refusal above no subject and
             // an unqualified `ok` would put that absence outside both bookkeeping sets.
             tap::partial("this arch routes every line through the first-level ISR");
         }
@@ -3286,7 +3284,7 @@ namespace
         TAP_CHECK(served_after >= served);
         TAP_CHECK(initiated_after >= initiated);
 #if KICKOS_KERNEL_CORES > 1
-        // EVERY core the kernel schedules on has answered a doorbell, which the bring-up check
+        // Every core the kernel schedules on has answered a doorbell, which the bring-up check
         // makes deterministic: it pokes each secondary for its full round count and reads the
         // answer back under the lock before the kernel starts. A silent core is one whose
         // service body never ran, and that body is what carries the barrier.
@@ -3305,7 +3303,7 @@ namespace
         TAP_CHECK(initiated_after == 0u);
         TAP_CHECK(served_after >= initiated_after);
 #if !KICKOS_AMP_OWN_IMAGE
-        // UNDER ONE IMAGE the peers are this image's own cores, parked with the doorbell open
+        // Under one image the peers are this image's own cores, parked with the doorbell open
         // and poked by the bring-up check before the kernel starts, so a zero here says the
         // doorbell never reached one. The services land on the peer rows and none on the
         // kernel's own, which is why the claim is the peers'.
@@ -3448,7 +3446,7 @@ namespace
     // they share a space, so one static array is one address for both, and neither end had to
     // be granted anything. The refusal must reach BOTH of them as -KOS_EFAULT.
     //
-    // ORDER-FREE, and deliberately: whichever of the two parks first, the other's copy is the
+    // Order-free, and deliberately: whichever of the two parks first, the other's copy is the
     // one refused, and the two arms answer alike. Nothing here rests on an interleaving.
     constexpr size_t SB_LEN = 32;
     char g_sb_buf[SB_LEN];
@@ -3471,7 +3469,7 @@ namespace
             g_sb_buf[i] = static_cast<char>('a' + (i & 15u));
         }
         g_sb_sent = 1;
-        // No task named, so the child is a thread OF ROOT'S TASK and the array below is one
+        // No task named, so the child is a thread of root's task and the array below is one
         // address in one space.
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
         if (not kos::thread::create_caps(sb_sender, nullptr, "sbuf", 10, caps, 2).valid())
@@ -3506,8 +3504,8 @@ namespace
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): the floor accepted an unprivileged caller's rodata
-        // pointer. ACCEPTANCE IS THE SIGN, NOT THE COUNT. kos_kconsole_write answers a SHORT
-        // COUNT when the console ring refuses a chunk and a negative code when it rejects the
+        // pointer. Acceptance is the sign, not the count. kos_kconsole_write answers a short
+        // count when the console ring refuses a chunk and a negative code when it rejects the
         // buffer, so a full-length assertion here reports on ring pressure and not on the
         // readable floor this arm is named for.
         if (g_cd_lit_rc < 0)
@@ -3538,7 +3536,7 @@ namespace
     // --- Endpoint IPC: synchronous rendezvous send/recv ----------
     // The endpoint cap is delegated to workers at child index 2 (done@1, E@2). Workers
     // are UNPRIVILEGED so the kernel's copy into/from a parked peer runs against real
-    // enforcement (the cross-domain privileged write, design section 3.1).
+    // enforcement (the cross-domain privileged write).
     char const EP_MSG[] = "hello-endpoint"; // no NUL sent
     constexpr uint8_t EP_SIGNAL_ONLY = KOS_CAP_SIGNAL;
     constexpr uint8_t EP_WAIT_ONLY = KOS_CAP_WAIT;
@@ -3746,7 +3744,7 @@ namespace
         kos_sem_destroy(g_ep_go);
     }
 
-    // --- Timed send: the deadline expires with a LIVE endpoint and nobody in recv ------
+    // --- Timed send: the deadline expires with a live endpoint and nobody in recv ------
     // Main keeps its WAIT cap for the whole arm, so recv_holders stays 1 and no EPIPE can
     // fire: the only thing missing is a parked receiver. The worker's report rides an
     // UNTIMED send on the SAME endpoint, so the report arriving proves that form still parks.
@@ -3862,7 +3860,7 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // --- Timed call: the deadline expires in CALL_REPLY_WAIT, reached by the SLOW path ---
+    // --- Timed call: the deadline expires in CALL_REPLY_WAIT, reached by the slow path ---
     // The caller parks on send_waiters first (main sleeps instead of recv'ing), and main's
     // info-bearing recv then MIGRATES it onto main's reply_waiters. That migration is a
     // park-to-park move and not an unpark, so the deadline armed once at the call must
@@ -3911,7 +3909,7 @@ namespace
         int32_t const n =
             kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &ro);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
-        // THE staging witness: the caller's pre-call reading precedes main's pre-recv
+        // The staging witness: the caller's pre-call reading precedes main's pre-recv
         // reading, so the caller was already parked and the recv POPPED it. A fast-path
         // staging inverts this and fails here rather than passing on the untested path.
         TAP_CHECK(r.entered < before_recv);
@@ -4016,7 +4014,7 @@ namespace
         char c = 'X';
         if (ok)
         {
-            c = 'K'; // every call, the aliasing one included, got ITS OWN server's bytes
+            c = 'K'; // every call, the aliasing one included, got its own server's bytes
         }
         log_put(c);
         kos_sem_post(CH_DONE);
@@ -4171,7 +4169,7 @@ namespace
 
     uint64_t g_call_unit = 1000000ull;
 
-    // --- Timed call: the expiry unwind REVERTS the D2 boost ------------------------------
+    // --- Timed call: the expiry unwind reverts the D2 boost ------------------------------
     // The only arm that can tell whether endpoint_wait_timeout still calls set_prio on the
     // WAIT_EP_SEND branch: a lost boost changes no return code anywhere else. Staging, in
     // units of mtx_time_unit(): the server takes main's plain send first, seating it as the
@@ -4382,9 +4380,9 @@ namespace
         auto sv = kos::thread::create_caps(ci_server, nullptr, "ciS", 8, scaps, 4);
         auto cl = kos::thread::create_caps(ci_caller, nullptr, "ciC", 20, ccaps, 5);
         auto sp = kos::thread::create_caps(ci_spoiler, nullptr, "ciM", 12, mcaps, 3);
-        // ABOVE the spoiler: its second send is what wakes the parked server, and that wake
+        // Above the spoiler: its second send is what wakes the parked server, and that wake
         // must land while the spoiler is still only ready. Below the spoiler, 'm' is logged
-        // before the server is woken at all and the REVERT check below passes either way.
+        // before the server is woken at all and the revert check below passes either way.
         auto fl = kos::thread::create_caps(ci_filler, nullptr, "ciF", 14, fcaps, 4);
         // The probe above just held four slots and four stacks, so a failure now is a pool
         // bug, not a small board.
@@ -4400,7 +4398,7 @@ namespace
         TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: server back at base, spoiler ran before it resumed
     }
 
-    // --- Call/reply: close-instead-of-reply EPIPEs the caller AND yields to it -----
+    // --- Call/reply: close-instead-of-reply EPIPEs the caller and yields to it -----
     // A low server takes a high caller's call (D1-boosted to the caller's prio), then closes
     // the reply cap instead of replying. The close arm must (a) wake the caller -KOS_EPIPE
     // and (b) deflate the server BEFORE waking, so the higher caller runs before the server
@@ -4893,7 +4891,7 @@ namespace
                                           kos_call_lens_pack(0, sizeof(buf)), &opts);
                 g_frn_bits4 = opts.notify;
             }
-            // NO ack: the next receive's own accept mask is what rearms the lines chained on
+            // No ack: the next receive's own accept mask is what rearms the lines chained on
             // this object, and round 2 leaving one unaccepted is what says it rearms only
             // those.
         }
@@ -4923,7 +4921,7 @@ namespace
         TAP_CHECK(note != KOS_CAP_NONE);
         kos_irq_ack(line); // armed, and still nothing raises it
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {note, CH_FULL}};
-        auto w = kos::thread::create_caps(irqto_worker, nullptr, "irqT", 10, caps, 2);
+        auto w = irq_spawn(irqto_worker, nullptr, "irqT", 10, caps, 2);
         if (not w.valid())
         {
             kos_handle_close(line);
@@ -4982,7 +4980,7 @@ namespace
         g_frp_mask = 0;
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_ep, EP_WAIT_ONLY}, {note, CH_FULL}};
         kos_cap_grant rcaps[] = {{g_done, CH_FULL}};
-        auto sv = kos::thread::create_caps(frp_server, nullptr, "frpS", 12, scaps, 3);
+        auto sv = irq_spawn(frp_server, nullptr, "frpS", 12, scaps, 3);
         kos::thread::Handle rz;
         if (sv.valid())
         {
@@ -5013,7 +5011,7 @@ namespace
         kos_cap_t l2 = KOS_CAP_NONE;
         TAP_CHECK(irq_claim_await(IRQ_CTX_LINE, &l1) == 0);
         TAP_CHECK(irq_claim_await(FRN_LINE2, &l2) == 0);
-        // ONE object, two lines, one bit each: the badge is what tells them apart, and it is
+        // One object, two lines, one bit each: the badge is what tells them apart, and it is
         // seated at the MINT, so root holds two badged copies just long enough to attach.
         kos_cap_t note = KOS_CAP_NONE;
         TAP_CHECK(kos_notify_create(&note) == 0);
@@ -5043,7 +5041,7 @@ namespace
                                 {g_ep, EP_WAIT_ONLY},
                                 {note, CH_FULL},
                                 {g_frn_go, CH_FULL}};
-        auto sv = kos::thread::create_caps(frr_notify_server, nullptr, "frrN", 10, caps, 4);
+        auto sv = irq_spawn(frr_notify_server, nullptr, "frrN", 10, caps, 4);
         if (not sv.valid())
         {
             kos_handle_close(g_ep);
@@ -5057,8 +5055,8 @@ namespace
         for (int round = 0; round < 3; round++)
         {
             kos_sleep_ns(3000000ull); // let the server bind and park on the gate
-            // ROOT REARMS, because root is the one holding the line capabilities: the server
-            // holds only the object. Both raises must be pending BEFORE the wait looks, or
+            // Root rearms, because root is the one holding the line capabilities: the server
+            // holds only the object. Both raises must be pending before the wait looks, or
             // the wait parks on the first and the arm measures which ISR won rather than
             // which bits the mask accepted. The auto-rearm the wait itself issues is
             // irq_autorearm's subject, not this arm's.
@@ -5185,7 +5183,7 @@ namespace
     // the only witness that the arm under test ran at all, and every assertion below pairs a
     // content check with a counter delta. The peers MUST run at equal priority: the fastpath
     // refuses when the caller outranks the server. The reply travels back through the
-    // CALLER'S SAVED TRAP FRAME, so the server transforms the request: a reply byte-identical
+    // caller's saved trap frame, so the server transforms the request: a reply byte-identical
     // to the request cannot distinguish a correct copy from a buffer the kernel left alone.
     constexpr unsigned char FP_XOR = 0xA5;
     constexpr size_t FP_MAX = 20; // KOS_CALL_REG_BYTES
@@ -6417,8 +6415,8 @@ namespace
     // regions. The worker's payload buffer lives in its own granted domain region, and the
     // clean endpoint free at the end is what validates the delegation accounting.
     kos_cap_t g_xd_done = KOS_CAP_NONE; // PRIVATE completion sem: the worker posts it at CH_DONE, not the shared g_done
-    // A ROUND TRIP AND NOT A PAIR OF REPORTS. The worker carries a memory grant, so it is a
-    // task and an address space of its OWN, and an app global it writes is its own copy of
+    // A round trip and not a pair of reports. The worker carries a memory grant, so it is a
+    // task and an address space of its own, and an app global it writes is its own copy of
     // one. Its verdict therefore comes back the same way the payload went out, over the
     // endpoint, and root reads both ends in its own space.
     void xd_worker(void* arg) // caps: done@1, E(FULL)@2; arg = domain buffer
@@ -6469,7 +6467,7 @@ namespace
         kos_reply_recv_opts_init(&opts, g_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, &verdict, kos_call_lens_pack(0, sizeof(verdict)), &opts);
         kos_sem_wait(g_xd_done); // this test's own completion sem, not the shared g_done
-        // RECLAIMED BEFORE THE VERDICT: a TAP_CHECK returns on the spot, and an endpoint left
+        // Reclaimed before the verdict: a TAP_CHECK returns on the spot, and an endpoint left
         // behind here starves every later arm that needs one.
         int const closed = kos_handle_close(g_ep); // both delegated caps torn down -> freed
         kos_sem_destroy(g_xd_done);
@@ -6618,7 +6616,7 @@ namespace
         TAP_CHECK(kos_handle_close(again) == 0);
     }
 
-    // --- the SEGMENTED index decode: a live slot at or above the chunk granule ------------
+    // --- the segmented index decode: a live slot at or above the chunk granule ------------
     // A CONSISTENT bijective mis-decode in cap_slot relabels slots and every install/lookup
     // pair still agrees; a non-injective one breaks boot through cap_run_free_build instead.
     void t_cap_chunk_span()
@@ -6683,7 +6681,7 @@ namespace
             return;
         }
 
-        // USABLE, not merely numbered: reaching the object is the only proof the directory
+        // Usable, not merely numbered: reaching the object is the only proof the directory
         // index and the in-chunk offset recombined onto the entry the install wrote.
         kos_cap_t const high = fill.held[top];
         if (fill.is_sem[top])
@@ -6757,7 +6755,7 @@ namespace
 
     // --- Per-task table width, and the inbound reply bound ------------------------
     //
-    // NO new file-scope state below: every worker reports through the shared event log, and
+    // No new file-scope state below: every worker reports through the shared event log, and
     // a static here would come straight out of the 16 KiB boards' user arena.
 
     void* units(unsigned n)
@@ -7171,7 +7169,7 @@ namespace
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // --- reboot-to-bootloader is privileged-only: the REFUSAL arm only -------------
+    // --- reboot-to-bootloader is privileged-only: the refusal arm only -------------
     // The REFUSAL arm only: on picopi/pizero2350/teensy41 a root kos_reboot really reboots
     // the board mid-run and truncates the TAP stream, so the privileged arm lives in
     // apps/rebootdemo.
@@ -7192,7 +7190,7 @@ namespace
     }
 #endif // KICKOS_ENABLE_SELFTEST (reboot refusal)
 
-    // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
+    // --- a syscall buffer that lives in an app global, from an unprivileged thread ----
     // On a backend that does not model app static data as an MPU region (every no-MPU chip,
     // and the host sim, whose globals sit outside the mprotect'd arena) the raw writable set
     // collapses to the stack alone; user_writable_ok's static-data fallback is what admits a
@@ -7218,12 +7216,12 @@ namespace
         TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
     }
 
-    // --- the READ twin, aimed at app RODATA ------------------------------------------
+    // --- the read twin, aimed at app RODATA ------------------------------------------
     // Between them the two arms cover BOTH extents of the app's own window: the writable one
     // above and the read-execute one here. On a translating backend neither is a region any
     // grant path recorded, so what admits either is the granted-range list the address space
-    // was seeded with. send validates its buffer before resolving the cap, as recv does. RUN
-    // FROM ROOT: a worker is a sibling in root's task holding root's space, so a refusal
+    // was seeded with. send validates its buffer before resolving the cap, as recv does. Run
+    // from root: a worker is a sibling in root's task holding root's space, so a refusal
     // would present as a failed spawn.
     char const g_rdbuf[16] = "readable-global";
     void t_readable_global()
@@ -7407,7 +7405,7 @@ namespace
     // Pow2 >= the 32 B PMSA minimum; the discovery step is a multiple of it, so every
     // candidate base stays WIN-aligned (PMSA masks an unaligned base down).
     constexpr uint32_t PRW_WIN = 0x100u;
-    // ONE byte of .bss carries every arm's verdict, not a result word per arm: this file's
+    // One byte of .bss carries every arm's verdict, not a result word per arm: this file's
     // static RAM is shared by every board, and the tightest margins against the pool-arena
     // link ASSERT are f302nucleo's 608 B and microbit's 768 B. The two workers write it in
     // sequence (each is joined on CH_DONE before the next spawns), so the load/store pair
@@ -7507,7 +7505,7 @@ namespace
         }
         if (not holder.valid())
         {
-            // The sim admits exactly ONE DEV window shape (64 KiB, at the base its fake
+            // The sim admits exactly one DEV window shape (64 KiB, at the base its fake
             // register block landed on), and PRW_WIN is not it, so this discovery loop
             // finds nothing there. The held arms it drops are covered on the host by
             // periph_reg_write_mask below, which holds that window.
@@ -7526,7 +7524,7 @@ namespace
         TAP_CHECK((prw_held & PRW_FAR_OK) != 0);
     }
 
-    // --- The allowlist and its VALUE MASK, reached on the host ---------------------
+    // --- The allowlist and its value mask, reached on the host ---------------------
 #if KICKOS_ARCH_SIM
     // Sim models a privileged-write register block to test allowlist and mask
     // checks. It cannot model the bus privilege rule, so use read-back to check
@@ -7707,8 +7705,8 @@ namespace
         // One slot at a time: the target is joined before the stranger is spawned.
         auto w = kos::thread::create(join_target, nullptr, "join", 10);
         TAP_CHECK(w.valid());
-        // PARKED path, and the elapsed time is what says so: a join that answers 0 in less
-        // than JOIN_PARK_NS answered from the EXITED early return instead.
+        // Parked path, and the elapsed time is what says so: a join that answers 0 in less
+        // than JOIN_PARK_NS answered from the exited early return instead.
         int const parked_rc = w.join();
         uint32_t waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         TAP_CHECK(parked_rc == 0);
@@ -7908,7 +7906,7 @@ namespace
         TAP_CHECK(kos_task_kill(task) == -KOS_EBADF);
     }
 
-    // The CREATOR GATE, both halves, and it takes a second thread to witness at all: only the
+    // The creator gate, both halves, and it takes a second thread to witness at all: only the
     // thread that made a group may seat a member into it or end it. Possession of the handle
     // is deliberately not enough, the codec being guessable. The stranger reports over an
     // ENDPOINT and root receives with a DEADLINE: a stranger that never answers must fail
@@ -7997,7 +7995,7 @@ namespace
         TAP_CHECK(kos_task_kill(task) == 0);
     }
 
-    // THE group kill, end to end. The member parks on a semaphore nothing ever posts, which
+    // The group kill, end to end. The member parks on a semaphore nothing ever posts, which
     // is the shape a cooperative cancel could never reach: sem_wait has no error return to
     // carry a reason. The kill breaks that park anyway and the kernel ends the thread at its
     // next syscall, so the JOIN is what proves it died rather than merely being marked.
@@ -8040,8 +8038,8 @@ namespace
     // --- Slay: the cleanup window a kill leaves and a slay denies ---------------
     // A slain thread's resume is CLAIMED: it runs no further unprivileged instruction and
     // never reaches the window a kill leaves. The only arm in the tree witnessing the death
-    // point on real silicon. The window is a PLAIN MEMORY WRITE and it has to be: the
-    // death point is the next syscall ENTRY, so a syscall here would make a kill look slain.
+    // point on real silicon. The window is a plain memory write and it has to be: the
+    // death point is the next syscall entry, so a syscall here would make a kill look slain.
     Atomic<int, Order::RELAXED> g_slay_window{0};
 
     // caps: done@1, park@2. Announces itself, then parks on a semaphore NOTHING ever posts,
@@ -8127,7 +8125,7 @@ namespace
         }
         // 0, not -KOS_ETIMEDOUT: the call WAITS, and gone is what it returns.
         //
-        // THE CLAIM HOLDS ON EITHER INTERLEAVING, which is why this leg needs no restaging.
+        // The claim holds on either interleaving, which is why this leg needs no restaging.
         // A slay reaching a victim already parked aborts the park and switch_to redirects its
         // resume; one reaching a victim still short of that park is found at the victim's own
         // syscall entry. Neither lets it run a further user instruction, and above one kernel
@@ -8289,7 +8287,7 @@ namespace
 
     void t_thread_slay_timeout()
     {
-        // A THIRD REASON TO STAND DOWN ABOVE ONE KERNEL CORE, and not this file's usual two.
+        // A third reason to stand down above one kernel core, and not this file's usual two.
         // The instrument is starvation: one hog outranking the victim denies it THE core, so
         // the slay's wait expires while the death stays owed. Denying it EVERY core is not a
         // precondition a test can establish, the placement of N spinners being the
@@ -8321,7 +8319,7 @@ namespace
             tap::skip("pool too small");
             return;
         }
-        // CONDEMNED, not gone: the redirect is armed and irrevocable, and the sweep has not
+        // Condemned, not gone: the redirect is armed and irrevocable, and the sweep has not
         // run because the victim has not been given the CPU to run it on. The window runs
         // from the hog's first run and the caller can lose all of it between the two: under
         // an interrupt-driven console the caller blocks there, the hog spends its window and
@@ -8351,7 +8349,7 @@ namespace
         TAP_CHECK(victim.slay(SLAY_TIMEOUT_US) == -KOS_ETIMEDOUT);
         int const slay_window = g_slay_window;
         TAP_CHECK(slay_window == 0); // and it never got its window either
-        // IRREVOCABLE is the claim, so the same handle must reach GONE with no second
+        // Irrevocable is the claim, so the same handle must reach GONE with no second
         // request: the timeout gave up on the wait, never on the death.
         TAP_CHECK(kos_thread_join(victim.id(), JOIN_GENEROUS_US) == 0);
         int const slay_window_after_join = g_slay_window;
@@ -8368,7 +8366,7 @@ namespace
     // kos_ram_alloc(1), the smallest region this backend can describe; the blocks are not
     // reclaimed, so the bound below is also what keeps the leak small.
     constexpr int SG_MAX = 12; // > KICKOS_MPU_MAX_REGIONS, so the loop must end refused
-    // THE CEILING IS A DIFFERENT ONE WHERE A BACKEND TRANSLATES. No descriptor is seated
+    // The ceiling is a different one where a backend translates. No descriptor is seated
     // there, so the self-grant spends no region budget; what runs out is the RESERVATION
     // list, which allocation spends one slot of and never frees, and that is where the
     // -KOS_ENOMEM comes from. The loop therefore asks the space how many slots are
@@ -8498,7 +8496,7 @@ namespace
     }
     // --- Which region-encoding mode is live on this board ----------------------
     // The bump allocator's step for a 3-granule request IS the mode: a base+limit backend
-    // reserves 3 granules, a pow2 backend rounds to 4. A BUMP ARENA ONLY: under translation
+    // reserves 3 granules, a pow2 backend rounds to 4. A bump arena only: under translation
     // kos_ram_alloc reserves frames out of a first-fit bitmap, so an earlier free makes two
     // consecutive results non-monotonic and `step` reports pool state. Allocation order is
     // not public API there, so the arm is not registered; aspace_model and aspace_seam
@@ -8664,9 +8662,9 @@ int main(int, char**)
     TAP_ADD("reply_recv_bad_ep_wakes_caller", t_reply_recv_bad_ep_wakes_caller);
     TAP_ADD("service_survives_client_fault", t_service_survives_client_fault);
 #if defined(KICKOS_ENABLE_SELFTEST)
-    TAP_ADD("reply_recv_notify_park", t_reply_recv_notify_park);
-    TAP_ADD("reply_recv_notify", t_reply_recv_notify);
-    TAP_ADD("irq_wait_timeout", t_irq_wait_timeout);
+    TAP_ADD_IRQ("reply_recv_notify_park", t_reply_recv_notify_park);
+    TAP_ADD_IRQ("reply_recv_notify", t_reply_recv_notify);
+    TAP_ADD_IRQ("irq_wait_timeout", t_irq_wait_timeout);
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST)
     TAP_ADD("call_reg_fastpath", t_call_reg_fastpath);
@@ -8743,19 +8741,23 @@ int main(int, char**)
     TAP_ADD("notify_bind_busy", t_notify_bind_busy);
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
-    TAP_ADD("irq_thread_ctx", t_irq);
-    TAP_ADD("irq_as_event", t_irqdrv);
-    TAP_ADD("irq_mask_coalesce", t_irq_mask);
-    TAP_ADD("irq_discard", t_irq_discard);
-    TAP_ADD("irq_autorearm", t_irq_autorearm);
-    TAP_ADD("irq_phantom_wake", t_irq_phantom);
-    TAP_ADD("irq_ownership", t_irq_ownership);
+    TAP_ADD_IRQ("irq_thread_ctx", t_irq);
+    TAP_ADD_IRQ("irq_as_event", t_irqdrv);
+    TAP_ADD_IRQ("irq_mask_coalesce", t_irq_mask);
+    TAP_ADD_IRQ("irq_discard", t_irq_discard);
+    TAP_ADD_IRQ("irq_autorearm", t_irq_autorearm);
+    TAP_ADD_IRQ("irq_phantom_wake", t_irq_phantom);
+    TAP_ADD_IRQ("irq_ownership", t_irq_ownership);
     TAP_ADD("irq_spurious", t_irq_spurious);
-    TAP_ADD("irq_stale_register", t_irq_stale_register);
-    TAP_ADD("irq_claim_gate", t_irq_claim_gate);
-    TAP_ADD("irq_reclaim", t_irq_reclaim);
-    TAP_ADD("irq_server_handover", t_irq_server_handover);
+    TAP_ADD_IRQ("irq_stale_register", t_irq_stale_register);
+    TAP_ADD_IRQ("irq_claim_gate", t_irq_claim_gate);
+    TAP_ADD_IRQ("irq_reclaim", t_irq_reclaim);
+    TAP_ADD_IRQ("irq_server_handover", t_irq_server_handover);
     TAP_ADD("irq_notify_already", t_irq_notify_already);
+#if KICKOS_KERNEL_CORES > 1
+    TAP_ADD("irq_cross_core_wake", t_irq_cross_core_wake);
+    TAP_ADD("irq_reclaim_stale_raise", t_irq_reclaim_stale_raise);
+#endif
 #endif
     TAP_ADD("caller_stack", t_caller_stack);
 #if KICKOS_HAVE_ASPACE
@@ -8826,14 +8828,14 @@ int main(int, char**)
     TAP_ADD("recv_buf_unmapped", t_recv_buf_unmapped);
     TAP_ADD("frame_run_slot_recycle", t_frame_run_slot_recycle);
     TAP_ADD("call_reply_undisclosed", t_call_reply_undisclosed);
-    // LAST of the block: it drops the space holding the image's own data pages for good, and
+    // Last of the block: it drops the space holding the image's own data pages for good, and
     // every process created after it copies the snapshot instead.
     TAP_ADD("process_data_template", t_process_data_template);
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Not under the address-space gate: the doorbell is a property of the machine's cores.
     TAP_ADD("doorbell_xpoke", t_doorbell_xpoke);
-    TAP_ADD("irq_kernel_line_reserved", t_irq_kernel_line_reserved);
+    TAP_ADD_IRQ("irq_kernel_line_reserved", t_irq_kernel_line_reserved);
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused);
     TAP_ADD("prio_ceiling_narrow_only", t_prio_ceiling_narrow_only);
 #endif
@@ -8866,28 +8868,28 @@ int main(int, char**)
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
     TAP_ADD("amp_window", t_amp_window);
-    // BESIDE amp_window, which stomps the same ring: this one asserts the RECORD lifetime that
+    // Beside amp_window, which stomps the same ring: this one asserts the record lifetime that
     // ring's resynchronisation decides.
     TAP_ADD("amp_reset_record", t_amp_reset_record);
-    // WITH IT, and before every arm that spends a reply slot of its own: these three answer the
+    // With it, and before every arm that spends a reply slot of its own: these three answer the
     // other half of that resynchronisation and the producer's own bound. Each owns its
     // reply-ring precondition, so their place here rests on nothing that ran before.
     TAP_ADD("amp_far_reset_answers", t_amp_far_reset_answers);
     TAP_ADD("amp_far_answer_deferred", t_amp_far_answer_deferred);
     TAP_ADD("amp_far_tail_recovery", t_amp_far_tail_recovery);
-    // BEFORE every arm that spends one: they all rest on the derivation this drives.
+    // Before every arm that spends one: they all rest on the derivation this drives.
     TAP_ADD("amp_port_seating", t_amp_port_seating);
     TAP_ADD("amp_port_unnamed", t_amp_port_unnamed);
-    // BOTH NEED A PEER THAT IS RUNNING: one waits for its answer, the other parks a caller on a
-    // far endpoint for the whole forge. Registered unconditionally, each skipping by NAME where
+    // Both need a peer that is running: one waits for its answer, the other parks a caller on a
+    // far endpoint for the whole forge. Registered unconditionally, each skipping by name where
     // no peer answers.
     TAP_ADD("amp_far_call", t_amp_far_call);
-    // AFTER amp_far_call, whose round must not race a forged reply.
+    // After amp_far_call, whose round must not race a forged reply.
     TAP_ADD("amp_far_reply_guard", t_amp_far_reply_guard);
-    // AFTER the guard, whose caller must park with no zero-length answer racing it.
+    // After the guard, whose caller must park with no zero-length answer racing it.
     TAP_ADD("amp_far_reply_empty", t_amp_far_reply_empty);
     TAP_ADD("amp_far_service", t_amp_far_service);
-    // BEFORE the two arms that count reply publications of their own: this node's reply ring
+    // Before the two arms that count reply publications of their own: this node's reply ring
     // at the peer holds KOS_AMP_RING_SLOTS and nothing drains it on a node booted alone.
     TAP_ADD("amp_far_refusal_answered", t_amp_far_refusal_answered);
     TAP_ADD("amp_deferred_doorbell", t_amp_deferred_doorbell);
@@ -8902,8 +8904,8 @@ int main(int, char**)
     TAP_ADD("amp_reply_reserve", t_amp_reply_reserve);
     TAP_ADD("amp_probe_root_only", t_amp_probe_root_only);
     TAP_ADD("amp_far_deliver_fault", t_amp_far_deliver_fault);
-    // LAST TWO of the block: both fill the endpoint pool, so an arm run while either holds
-    // the slots would be refused one, and each SPENDS one of the partition's capabilities.
+    // Last two of the block: both fill the endpoint pool, so an arm run while either holds
+    // the slots would be refused one, and each spends one of the partition's capabilities.
     // The local one first: it closes the port every receiving arm above needs.
     TAP_ADD("amp_local_port_slot_held", t_amp_local_port_slot_held);
     TAP_ADD("amp_far_slot_reuse", t_amp_far_slot_reuse);

@@ -32,7 +32,6 @@ namespace
     constexpr int IRQ_SAMPLES = KOS_BENCH_SAMPLES_MAX;
     // Per PASS, and the sweep runs two passes per kernel core.
     constexpr int E2E_SAMPLES = 25;
-    // Two waiter placements per raiser placement: the raiser's own core, and the next one.
     constexpr uint32_t E2E_PAIRS_PER_CORE = 2;
     // What e2e_sweep runs, and the denominator the kernel echoes beside the raises it let
     // through.
@@ -61,14 +60,19 @@ namespace
     kos::Semaphore* g_a = nullptr;    // MAIN's caps
     kos::Semaphore* g_b = nullptr;
     kos::Semaphore* g_gate = nullptr;
+    kos::Semaphore* g_resume = nullptr;
     Atomic<uint32_t, Order::RELAXED> g_rounds{0};
 
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
-    constexpr int CH_A = 1;    // ping-pong sem A
-    constexpr int CH_B = 2;    // ping-pong sem B
-    constexpr int CH_GATE = 3; // reporter-wake gate, delegated to player_b only
+    constexpr int CH_A = 1;      // ping-pong sem A
+    constexpr int CH_B = 2;      // ping-pong sem B
+    constexpr int CH_GATE = 3;   // reporter-wake gate, delegated to player_b only
+    constexpr int CH_RESUME = 4; // posted by the reporter as the next window opens, player_b only
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+    // Both players on one core: the throughput row is the same-core handoff. Under a wider
+    // mask the placement invariant would spread the equal-priority pair across cores.
+    constexpr uint32_t PLAYER_CORES = 1u << 0;
 
     // A refused op returns -KOS_E*; the cycle ops answer 0 for "did not fire", so a
     // refusal must collapse to 0 for a caller's `!= 0` fired-check to hold.
@@ -90,24 +94,26 @@ namespace
             kos_sem_post(CH_B);
         }
     }
-    void player_b(void*) // caps: A@1, B@2, gate@3
+    // Parks for the whole report, with player_a parked on A behind it: above one kernel core the
+    // reporter's probes and sweeps take it off the players' core, and the pair runs there again.
+    void player_b(void*) // caps: A@1, B@2, gate@3, resume@4
     {
         while (true)
         {
             kos_sem_wait(CH_B);
-            kos_sem_post(CH_A);
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
             if ((round % ROUNDS_PER_REPORT) == 0)
             {
                 kos_sem_post(CH_GATE);
+                kos_sem_wait(CH_RESUME);
             }
+            kos_sem_post(CH_A);
         }
     }
 
     // --- the end-to-end span ---------------------------------------------------
-    // BOTH ENDS ARE SPAWNED THREADS OF ROOT'S OWN TASK, so root can place either.
-    // Root itself holds no handle on itself and so cannot be the raiser.
+    // Both ends are spawned threads of root's own task, so root can place either.
     // The waiter holds the line, so nothing else in the image may.
     constexpr int CH_E2E_IRQ = 1;   // waiter: the claimed line, WAIT only
     constexpr int CH_E2E_READY = 2; // waiter: posted once, after the tare, before the first park
@@ -115,8 +121,15 @@ namespace
     constexpr int CH_E2E_GO = 1;    // raiser: one post per pass
     constexpr int CH_E2E_PASS = 2;  // raiser: posted when a pass has run its samples
 
-    // Root attaches the line with an UNBADGED copy, so it raises bit 0.
+    // Root attaches the line with an unbadged copy, so it raises bit 0.
     constexpr uint32_t E2E_LINE_BIT = 1u << 0;
+    // The core the line is claimed on and its waiter pinned to above one kernel core; 0 asks
+    // for the default set, which is the only one at one kernel core.
+#if KICKOS_KERNEL_CORES > 1
+    constexpr uint32_t E2E_LINE_CORES = 1u << 0;
+#else
+    constexpr uint32_t E2E_LINE_CORES = 0;
+#endif
 
     void* g_e2e_dev = nullptr;
     kos_thread_t g_e2e_tid = KOS_THREAD_NONE;
@@ -133,13 +146,13 @@ namespace
     void e2e_waiter(void*)
     {
         // The line is attached to this object by root; the waiter only has to become its
-        // bound thread. The line raises BIT 0, root having attached it with an unbadged copy.
+        // bound thread.
         if (kos_notify_bind(CH_E2E_NOTE) != 0)
         {
             kos_sem_post(CH_E2E_READY);
             return;
         }
-        // Under an MPU reachability is per THREAD, so root's own grant of this block does not
+        // Under an MPU, reachability is per thread, so root's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
         if (g_e2e_grant_rc != 0)
@@ -163,7 +176,7 @@ namespace
             {
                 break; // cancelled, or the object went away: nothing left to wake for
             }
-            // THE CLOSING STAMP IS THE NEXT INSTRUCTION AFTER THIS READ, so the span carries
+            // The closing stamp is the next instruction after this read, so the span carries
             // the read and one trap and nothing else of this thread's.
             dev[1] = dev[0];
             (void)kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
@@ -171,7 +184,7 @@ namespace
         }
     }
 
-    // Ranks BELOW the waiter, so every raise runs to the waiter's close before this thread is
+    // Ranks below the waiter, so every raise runs to the waiter's close before this thread is
     // scheduled again at one kernel core; above one the done counter is what orders it. Ends
     // only by cancellation, which is what unblocks its wait.
     void e2e_raiser(void*)
@@ -204,7 +217,7 @@ namespace
         }
     }
 
-    // Root claims the line and hands a WAIT-only copy to the waiter, which outranks both root
+    // Root claims the line and hands a wait-only copy to the waiter, which outranks both root
     // and the raiser.
     bool e2e_start()
     {
@@ -219,7 +232,15 @@ namespace
             static_cast<volatile uint32_t*>(g_e2e_dev)[i] = 0;
         }
         kos_cap_t irq = KOS_CAP_NONE;
+#if KICKOS_KERNEL_CORES > 1
+        // A line is claimed by a thread pinned where it runs; only the claim needs root there.
+        kos_thread_t const self = kos_thread_self();
+        (void)kos_thread_set_affinity(self, E2E_LINE_CORES);
+#endif
         int const crc = kos_irq_claim(BENCH_E2E_LINE, KOS_IRQ_EDGE, &irq);
+#if KICKOS_KERNEL_CORES > 1
+        (void)kos_thread_set_affinity(self, 0);
+#endif
         if (crc != 0)
         {
             char cs[96];
@@ -251,7 +272,8 @@ namespace
                                 {note, KOS_CAP_WAIT}};
         auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 3,
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
-                                          KOS_AUTH_MEMORY);
+                                          KOS_AUTH_MEMORY, nullptr, KOS_TASK_NONE, nullptr, 0,
+                                          E2E_LINE_CORES);
         kos_handle_close(note); // the waiter's bind and the line's attach both hold their own
         kos_handle_close(irq); // the waiter is the sole holder: its exit frees the line
         if (not w.valid())
@@ -288,11 +310,9 @@ namespace
         return true;
     }
 
-    // The raiser on each core in turn, and for each of those the waiter on that same core and
-    // then on the next one. THE SAME-CORE PASS IS WHAT CONSTRUCTS A LOCAL WAKE, and it has to
-    // be constructed on both delivery models: where the line follows its injector every
-    // same-core pass is local and every next-core pass is cross, and where the controller picks
-    // a fixed core one waiter placement of each kind matches it.
+    // The raiser on each core in turn, the waiter pinned to the line's claim core throughout.
+    // The line is delivered on the claim core whoever injects it, so every wake is local and
+    // the raiser's placement moves only where the raise is injected.
     void e2e_sweep()
     {
         if (g_e2e_tid == KOS_THREAD_NONE or g_e2e_rid == KOS_THREAD_NONE)
@@ -303,9 +323,7 @@ namespace
         {
             for (uint32_t d = 0; d < E2E_PAIRS_PER_CORE; d++)
             {
-                uint32_t const w = (c + d) % KICKOS_KERNEL_CORES;
                 (void)kos_thread_set_affinity(g_e2e_rid, 1u << c); // -KOS_ENOSYS at one core
-                (void)kos_thread_set_affinity(g_e2e_tid, 1u << w);
                 kos_sem_post(g_e2e_go);
                 kos_sem_wait(g_e2e_pass);
             }
@@ -354,17 +372,24 @@ namespace
             kickos::emit(ss);
         }
         (void)e2e_start();
-        uint32_t prev_rounds = g_rounds;
-        uint64_t prev_ns = kos::clock_now();
-        g_a->post();
 
         for (unsigned rep = 0; rep < THROUGHPUT_REPORTS; rep++)
         {
             (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+            // The window is the players' burst alone: they are parked from the gate until
+            // this release.
+            uint32_t const prev_rounds = g_rounds;
+            uint64_t const prev_ns = kos::clock_now();
+            if (rep == 0)
+            {
+                g_a->post();
+            }
+            else
+            {
+                g_resume->post();
+            }
             g_gate->wait();
 
-            // The window is the players' burst alone: prev_* is sampled at the END of the
-            // previous iteration, excluding the reporter's own report time.
             uint64_t now_ns = kos::clock_now();
             uint32_t rounds = g_rounds;
             uint64_t switches = static_cast<uint64_t>(rounds - prev_rounds) * 2ull; // 2 switches/round
@@ -406,8 +431,6 @@ namespace
             if (scnt == 0)
             {
                 // no cycle counter on this arch; throughput is the metric
-                prev_rounds = g_rounds;
-                prev_ns = kos::clock_now();
                 continue;
             }
 
@@ -422,11 +445,6 @@ namespace
             }
             e2e_sweep();
             (void)kos_bench(KOS_BENCH_OP_E2E_PRINT, E2E_SWEEP_PASSES, 0);
-
-            // AFTER the report: the next window excludes this report's own sampling
-            // and print time.
-            prev_rounds = g_rounds;
-            prev_ns = kos::clock_now();
         }
         e2e_stop();
     }
@@ -607,8 +625,8 @@ namespace
     // One size only: the D1 cost does not scale with the message.
     constexpr uint32_t CR_DONATE_SPAN = 32;
 
-    // THE BOUNDED-RUN INVARIANT.
-    // A distribution bucket counts in uint32_t (kernel/include/kickos/bench_hist.h), so a run
+    // The bounded-run invariant: a distribution bucket counts in uint32_t
+    // (kernel/include/kickos/bench_hist.h), so a run
     // posting 2^32 samples to one slot wraps and every percentile read off it is wrong with
     // nothing on the wire saying so. Each call/reply rep and each ping-pong round drives two
     // switches and a switch posts one sample to each slot on the switch path, so this product
@@ -671,17 +689,25 @@ int main(int, char**)
     (void)kos_bench(KOS_BENCH_OP_PHASE_PRINT, 0, 0); // the kernel writes the table
     kickos::emit("\n");
 
-    kos::Semaphore a(0), b(0), gate(0);
+    kos::Semaphore a(0), b(0), gate(0), resume(0);
     g_a = &a;
     g_b = &b;
     g_gate = &gate;
+    g_resume = &resume;
 
     // Players at prio 1 (KICKOS_PRIO_MIN), below root's prio 2, so the reporter preempts
     // them when player_b posts the gate.
-    kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}};                    // A@1, B@2
-    kos_cap_grant bcaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}, {gate.id(), CH_FULL}}; // +gate@3
-    auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
-    auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
+    kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}}; // A@1, B@2
+    kos_cap_grant bcaps[] = {{a.id(), CH_FULL},
+                             {b.id(), CH_FULL},
+                             {gate.id(), CH_FULL},
+                             {resume.id(), CH_FULL}}; // +gate@3, resume@4
+    auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2, KOS_POLICY_FIFO,
+                                       0, /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                       KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
+    auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, bcaps, 4, KOS_POLICY_FIFO,
+                                       0, /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                       KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
     if (not ra.valid() or not rb.valid())
     {
         // Do not park here: on a bootloader-handover board a parked app costs a physical

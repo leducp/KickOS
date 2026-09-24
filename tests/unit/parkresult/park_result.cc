@@ -135,7 +135,10 @@ namespace kickos
             g_sem = semaphore(nullptr);
             wake_next_park(post_the_semaphore);
 
-            sem_wait(g_sem);
+            {
+                IrqLock lock;
+                sem_wait(lock, g_sem);
+            }
 
             EXPECT_EQ(g_sem->count, 0) << "the token went straight to the waiter";
             EXPECT_TRUE(g_sem->waiters.head == nullptr) << "and it is off the queue";

@@ -47,9 +47,10 @@ namespace kickos
         ReschedRow g_asked[KICKOS_KERNEL_CORES] = {};
         ReschedRow g_took[KICKOS_KERNEL_CORES] = {};
 
-        // EVERY RELEASE GOES THROUGH HERE. klock_drop releases unconditionally, and a release
-        // taken while the lock is free hands it to a ticket nobody drew, after which no draw
-        // ever matches and every core spins for good.
+        // klock_drop releases unconditionally; a release taken where this core does not hold
+        // the lock hands it to a ticket nobody drew, so no draw ever matches and every core
+        // spins forever. The check must test this core specifically: the ticket counters read
+        // as held while a different core holds.
         inline void release(void)
         {
             KICKOS_DEBUG_ASSERT(::arch_kernel_lock_held() != 0);
@@ -62,8 +63,8 @@ namespace kickos
         KlockRow& r = g_row[kickos_kernel_core()];
         if (r.depth == 0 and r.owed == 0)
         {
-            // The WAIT sample, and it is charged to the HOLD span enclosing it: the
-            // accumulator call sits inside the masked window the IrqLock bracket is timing.
+            // The wait sample, charged to the hold span enclosing it: the accumulator call
+            // sits inside the masked window the IrqLock bracket is timing.
             KICKOS_BENCH_MARK(bw);
             arch_kernel_lock();
             KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
@@ -78,9 +79,9 @@ namespace kickos
         if (r.depth == 0 and r.owed == 0)
         {
             release();
-            // A RAISE, NOT A SCHEDULER PASS, AND THE CELL IS LEFT STANDING: only the dispatch
-            // that enters the scheduler consumes the cell, so a raise a poll absorbed must be
-            // carried again.
+            // Sends a raise, not a scheduler pass; the cell is left standing since only the
+            // dispatch that enters the scheduler consumes it, so a raise a poll absorbed must
+            // be carried again.
             if (::kickos_kernel_core_resched_owed() != 0)
             {
                 arch_ipi_resched_self();
@@ -93,6 +94,11 @@ namespace kickos
     {
         KlockRow const& r = g_row[kickos_kernel_core()];
         return r.depth != 0 or r.owed != 0;
+    }
+
+    uint32_t klock_depth(void)
+    {
+        return g_row[kickos_kernel_core()].depth;
     }
 #endif
 
@@ -108,7 +114,7 @@ namespace kickos
     void klock_attach(uint32_t depth)
     {
         KlockRow& r = g_row[kickos_kernel_core()];
-        // owed still set means the swap was merely BOOKED and this core never let go, so an
+        // owed still set means the swap was merely booked and this core never let go, so an
         // acquire here would spin on a word it holds itself.
         if (r.owed == 0)
         {
@@ -127,41 +133,42 @@ namespace kickos
         release();
     }
 
-    // Called by the arch from inside the swap, once the outgoing frame is parked and this
-    // core stands on the incoming one; the unlock's release publishes that parked frame.
+    // Runs once the outgoing frame is parked and this core stands on the incoming one; the
+    // unlock's release publishes that parked frame.
     extern "C" void kickos_switch_unlock(void)
     {
         klock_drop();
-        // THE OTHER HALF OF klock_leave'S ARM, AND NOT A DUPLICATE OF IT: a swap BOOKED from
-        // an interrupt runs at the exception exit, so klock_detach left `owed` set and the
+        // The other half of klock_leave's arm, not a duplicate of it: a swap booked from an
+        // interrupt runs at the exception exit, so klock_detach left `owed` set and the
         // klock_leave that follows the booking releases nothing and raises nothing. This is
-        // the release that ends that span, so it is the only one a deferred backend reaches.
+        // the release that ends that span, the only one a deferred backend reaches.
         if (::kickos_kernel_core_resched_owed() != 0)
         {
             arch_ipi_resched_self();
         }
     }
 
-    // THE ONE BODY THAT GIVES A CROSS-CORE RAISE SCHEDULING MEANING: a second publisher of
+    // The one body that gives a cross-core raise scheduling meaning: a second publisher of
     // this cell would put the ask ahead of a raise nobody ordered it against.
     void klock_resched_ask(uint32_t cores)
     {
-        // BEFORE THE RAISE, AND THE PEERS ALONE: the raise is an edge that the acquire loop's
-        // poll may absorb instead of the vector, and the cell is what outlives it.
+        // Sets the cell before sending the raise, for peers alone: the raise is an edge the
+        // acquire loop's poll may absorb instead of the vector, and the cell is what outlives it.
         ::kickos_kernel_core_resched_owe(cores & ~(1u << kickos_kernel_core()));
         arch_ipi_send(cores);
     }
 
-    // NO RAISE HERE. The release that ends this core's lock span carries it: klock_leave's
-    // depth-zero arm, or kickos_switch_unlock where a booked swap left the lock owed to it.
-    // A raise from inside the bracket would be taken against a core that still holds it.
+    // No raise here: the release that ends this core's lock span carries it, via
+    // klock_leave's depth-zero arm or kickos_switch_unlock when a booked swap left the lock
+    // owed to it. A raise from inside the bracket would be taken against a core that still
+    // holds it.
     void klock_resched_self(void)
     {
         ::kickos_kernel_core_resched_owe(1u << kickos_kernel_core());
     }
 
     // The reschedule a raise carries, held as state rather than as the raise itself
-    // (arch/include/kickos/arch/arch.h). EVERY CELL HAS EXACTLY ONE WRITER: an asked word
+    // (arch/include/kickos/arch/arch.h). Every cell has exactly one writer: an asked word
     // only by the core owing, a took word only by the core consuming.
     extern "C" void kickos_kernel_core_resched_owe(uint32_t cores)
     {
@@ -189,7 +196,7 @@ namespace kickos
         return 0;
     }
 
-    // Stores the sequence it READ rather than a blanket clear, so a peer that owes another
+    // Stores the sequence it read rather than a blanket clear, so a peer that owes another
     // reschedule between this load and this store is owed again instead of answered.
     extern "C" int kickos_kernel_core_resched_take(void)
     {
@@ -203,6 +210,10 @@ namespace kickos
                 g_took[me].seq[from] = asked;
                 stood = 1;
             }
+        }
+        if (stood != 0)
+        {
+            KICKOS_BENCH_RESCHED_TAKE();
         }
         return stood;
     }

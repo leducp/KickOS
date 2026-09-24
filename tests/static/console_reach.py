@@ -28,7 +28,7 @@ class Decl(object):
     def __init__(self, path, arch, preset):
         self.arch = arch
         self.preset = preset
-        self.presets = []                 # (arch, preset) pairs declared for THIS arch
+        self.presets = []                 # (arch, preset) pairs declared for this arch
         self.floor_files = None
         self.floor_nodes = None
         self.roots = []                   # [(symbol, optional, reason)]
@@ -50,7 +50,7 @@ class Decl(object):
                     self.presets.append(f[2])
                 continue
             if kind == 'floor':
-                # Checked for every preset, not just this run's: a later record REPLACES an
+                # Checked for every preset, not just this run's: a later record replaces an
                 # earlier one, so a duplicate has to be refused by whichever preset happens to
                 # be measured or the board it disarms is the one board that cannot report it.
                 self._check_floor(where, f, reason, floor_at)
@@ -216,12 +216,12 @@ def resolve_all(graph, decl_list, kind):
 def usage():
     sys.stderr.write(
         'usage: console_reach.py --ci-dir <dir> --arch <arch> --preset <preset>\n'
-        '                        --decl <file> --indirect <file>\n')
+        '                        --kernel-cores <n> --decl <file> --indirect <file>\n')
     return 2
 
 
 def parse_argv(argv):
-    want = {'--ci-dir', '--arch', '--preset', '--decl', '--indirect'}
+    want = {'--ci-dir', '--arch', '--preset', '--kernel-cores', '--decl', '--indirect'}
     opt = {}
     i = 0
     while i < len(argv):
@@ -235,6 +235,7 @@ def parse_argv(argv):
     for a in sorted(want):
         if a.lstrip('-') not in opt:
             die('missing %s' % a)
+    opt['kernel-cores'] = tz.parse_kernel_cores(opt['kernel-cores'])
     return opt
 
 
@@ -251,7 +252,7 @@ def run(argv):
           % (arch, preset, graph.files, len(graph.dropped), nodes, len(graph.all_sites())))
 
     # --- the corpus floor, before anything is asserted about an absence ---------
-    # SECONDARY: building the graph above already refused a tree that is missing a unit this
+    # Secondary: building the graph above already refused a tree that is missing a unit this
     # build compiled or holds one it did not. What is left for a count is a tree whose compile
     # database is itself near empty, which agrees with its own corpus at every step.
     if graph.files < decl.floor_files:
@@ -265,7 +266,7 @@ def run(argv):
             % (nodes, opt['decl'], decl.floor_nodes, arch, preset))
 
     # --- the roots, and the proof that they are the route -----------------------
-    # The walk starts at the REQUIRED roots only. An optional root that IS in this graph is
+    # The walk starts at the required roots only. An optional root that is in this graph is
     # then checked for reachability from them below, which is what turns "gcc inlined it into
     # its callers" from an assumption into a measurement on the boards where it did not.
     roots, roots_absent = resolve_all(graph, decl.roots, 'root')
@@ -301,7 +302,8 @@ def run(argv):
               % (sym, key, len(callers)))
 
     # --- indirect edges ---------------------------------------------------------
-    bindings = tz.resolve_bindings(graph, tz.read_bindings(opt['indirect'], arch, preset))
+    bindings = tz.resolve_bindings(graph, tz.read_bindings(opt['indirect'], arch, preset,
+                                                           opt['kernel-cores']))
     graph.bind_indirect(bindings)
 
     walk = Reach(graph, root_keys)
@@ -335,9 +337,9 @@ def run(argv):
     # the route already calls. The clause has to name that path, and the edge is dropped again
     # before the verdict below.
     probe_key, probe_sym, _optional = forbid[0]
-    # EVERY REAL EDGE INTO THE TARGET IS LIFTED FIRST, or the search would answer with whatever
+    # Every real edge into the target is lifted first, or the search would answer with whatever
     # path already exists on a tree that is failing anyway. The function to plant on is chosen
-    # on the LIFTED graph, a node whose only way in was through the panic tail not being
+    # on the lifted graph, a node whose only way in was through the panic tail not being
     # reachable once the tail is lifted.
     lifted = [n for n in graph.edges if probe_key in graph.edges[n]]
     for n in lifted:

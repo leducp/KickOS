@@ -105,8 +105,12 @@ namespace kickos
         jmp_buf g_exit_pad;
         bool g_exit_pad_armed = false;
 
-        void exit_current(int, ExitCause)
+        void exit_current(int, ExitCause, IrqLock* held)
         {
+            if (held != nullptr)
+            {
+                held->end();
+            }
             g_exited = true;
             if (not g_exit_pad_armed)
             {

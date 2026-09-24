@@ -49,12 +49,12 @@ rc=0
 
 # Read the first report window only.
 read_report() { # <report text>
-    # A ROUND IS ONE RAISE PLUS THE WAIT FOR EVERY PEER, so this floor is a property of the
-    # PEER COUNT and not a constant. At one peer the round is a raise plus a single answer and
-    # the two cost about the same, so the three-peer factor lands inside the distribution
-    # rather than under it. Measured over the M9.1 captures, 30 report windows a width: the
-    # round-to-raise minimum is 3.49 at three peers and 1.87 at one, on arm64, which is the
-    # tight arch. rv64 reads 5.52 at one peer and never approaches either figure.
+    # A round is one raise plus the wait for every peer, so this floor depends on the peer
+    # count and not a constant: at one peer the round is a raise plus a single answer and the
+    # two cost about the same, while the three-peer factor lands inside the distribution rather
+    # than under it. Across 30 report windows the round-to-raise minimum ran 3.49 at three peers
+    # and 1.87 at one on arm64, the tight arch; rv64 read 5.52 at one peer and never approached
+    # either figure.
     _span_factor=2
     if [ "$want" -le 2 ]; then
         _span_factor=1.5
@@ -312,8 +312,8 @@ if [ "$controls_only" -eq 1 ]; then
     # 1500/1092 is 1.37, under the one-peer factor, so the arm still fires at this width.
     ctl 'a two-core round closed inside its own raise' 2 refuse 1 \
         "$(ctl_two | sed 's|^\(    core 0: \)2715/|\11500/|')"
-    # 10000/5980 is 1.67, the same band the two-core control above is ACCEPTED in. Refused
-    # here, which is what makes the calibration per-width rather than a blanket loosening.
+    # 10000/5980 is 1.67, the same band the two-core control above is accepted in, but refused
+    # here: the calibration is per-width rather than a blanket loosening.
     ctl 'a four-core round in the band two cores accept' 4 refuse 1 \
         "$(ctl_four | sed 's|^\(    core 1: \)15340/|\110000/|')"
 

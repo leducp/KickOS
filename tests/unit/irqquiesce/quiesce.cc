@@ -15,9 +15,11 @@
 
 #include "irq_seam.h"
 
+#include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
+#include <kickos/irq_route.h>
 #include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/sys/errno.h>
@@ -38,9 +40,8 @@ namespace
     constexpr int LINE_CARRIER = 7; // the line whose handler the peer is inside
     constexpr int LINE_FREE = 9;    // a line with no driver, for the rebind arm
 
-    // How long a threaded arm waits for its peer before calling the hand-off broken. Generous
-    // against a loaded host and far under the 30s ctest timeout: a blown budget must FAIL with
-    // a verdict, where a hang reports nothing at all.
+    // How long a threaded arm waits for its peer before declaring the hand-off broken; kept
+    // well under the ctest timeout so a blown budget fails with a verdict instead of hanging.
     constexpr auto HANDOFF_BUDGET = std::chrono::seconds(10);
 
     void probe_handler(void* arg)
@@ -49,7 +50,7 @@ namespace
         kickos::irqfix::g_probe_arg = arg;
     }
 
-    // The peer's handler: whatever the arm armed runs HERE, inside the dispatch entry, with
+    // The peer's handler: whatever the arm armed runs here, inside the dispatch entry, with
     // this core's epoch raised.
     void carrier_handler(void*)
     {
@@ -83,6 +84,16 @@ namespace
         return k.irq_bindings.index_of(k.irq_bindings.resolve(obj_handle));
     }
 
+    // Static storage, never reassigned: Thread holds an Atomic and so is not assignable, and
+    // irq_claim reads nothing of it but its address and its mask.
+    kickos::Thread g_claim_thread;
+
+    // A line is claimed only by a thread pinned to the core it claims from.
+    void pin_claimer(uint32_t core)
+    {
+        g_claim_thread.affinity = 1u << core;
+    }
+
     struct IrqQuiesce : public ::testing::Test
     {
         int handle = -1;
@@ -95,11 +106,12 @@ namespace
             kickos::irqfix::reset_kernel();
             kickos::irqfix::reset_caps();
             kickos::irqfix::g_core = 0;
+            pin_claimer(0);
             ASSERT_TRUE(kickos::irq_attach(LINE_CARRIER, carrier_handler, nullptr));
         }
 
         // A tier-1 binding on LINE_TARGET with one reference, installed the way irq_claim
-        // installs one: the ISR's argument is the slot's ADDRESS.
+        // installs one: the ISR's argument is the slot's address.
         void seat_binding()
         {
             kickos::Kernel& k = kickos::kernel();
@@ -128,7 +140,7 @@ namespace
     };
 
     // ---------------------------------------------------------------------------------------
-    // The POSITIVE CONTROL, first: the entry still dispatches the pair it was given. Without
+    // The positive control, first: the entry still dispatches the pair it was given. Without
     // this every arm below could be a dispatch that stopped working.
     TEST_F(IrqQuiesce, DispatchDeliversThePublishedPair)
     {
@@ -141,7 +153,7 @@ namespace
         EXPECT_EQ(kickos::irqfix::g_probe_arg, static_cast<void*>(b));
     }
 
-    // The pair a dispatch would run is the WHOLE pair that was published, never a mix of two
+    // The pair a dispatch would run is the whole pair that was published, never a mix of two
     // bindings, and the default's argument is the line rather than a record's.
     TEST_F(IrqQuiesce, PublishedPairIsWholeOrAbsent)
     {
@@ -174,7 +186,7 @@ namespace
             << "the line was not put back on the null-object default";
     }
 
-    // NOTHING IS POKED, on any path: the retirement decides by reading epochs, so a teardown
+    // Nothing is poked, on any path: the retirement decides by reading epochs, so a teardown
     // that sends a doorbell is a teardown waiting for an answer.
     TEST_F(IrqQuiesce, TeardownPokesNobody)
     {
@@ -231,9 +243,6 @@ namespace
         EXPECT_EQ(kickos::irq_published(LINE_FREE).arg, reinterpret_cast<void*>(0xABCDu));
     }
 
-    // Static storage, never reassigned: Thread holds an Atomic and so is not assignable, and
-    // irq_claim reads nothing of it but its address.
-    kickos::Thread g_claim_thread;
     int g_claim_rc = 0;
     uint32_t g_claim_cap = 0;
 
@@ -259,9 +268,9 @@ namespace
     }
 
     // =======================================================================================
-    // THE THREADED ARMS. Core one runs on its own thread and stays inside the dispatch entry
+    // The threaded arms. Core one runs on its own thread and stays inside the dispatch entry
     // of the very line being torn down, its sem_post blocked on the kernel lock core zero
-    // holds. Every observation core zero makes below is made WHILE that is true.
+    // holds. Every observation core zero makes below is made while that is true.
 
     struct Cycle
     {
@@ -316,10 +325,18 @@ namespace
             g_cyc.sends_in_teardown.store(0);
             g_cyc.teardown_returned.store(false);
 
-            // THE PRODUCTION ROUTE: irq_claim is what binds irq_event_isr, and only that
+            // The production route: irq_claim is what binds irq_event_isr, and only that
             // handler reaches sem_post and so the lock. A hand-installed probe handler would
             // never block, and the arm would prove nothing.
-            ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &cap), 0);
+            //
+            // Claimed on core one, the core the peer dispatches on: irq_event_isr drops a raise
+            // taken off its claim core before it reaches the lock.
+            kickos::irqfix::g_core = 1;
+            pin_claimer(1);
+            int const claimed = kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &cap);
+            pin_claimer(0);
+            kickos::irqfix::g_core = 0;
+            ASSERT_EQ(claimed, 0);
             obj = kickos::irqfix::installed_handle();
             ASSERT_GE(obj, 0);
             idx = index_of(obj);
@@ -341,7 +358,7 @@ namespace
             {
                 kickos::IrqLock lock; // core zero takes the kernel lock
                 g_cyc.lock_held.store(true);
-                // NOT merely "the peer started": wait until it has actually failed to take the
+                // Not merely "the peer started": wait until it has actually failed to take the
                 // lock, which is the peer inside the entry with its post blocked.
                 if (not wait_for([] { return kickos::irqfix::g_lock_blocked.load(); }))
                 {
@@ -362,7 +379,7 @@ namespace
         }
     };
 
-    // CLAIM ONE: the teardown does not wait. It runs to completion under the lock while the
+    // Claim one: the teardown does not wait. It runs to completion under the lock while the
     // peer needs that same lock to finish, so it may poke nobody and spin on nothing.
     TEST_F(IrqCycle, TeardownReturnsUnderAWedgedPeerWithoutWaiting)
     {
@@ -382,8 +399,8 @@ namespace
         EXPECT_TRUE(target_posted()) << "the peer's post never completed";
     }
 
-    // CLAIM TWO: the binding is not freed while a dispatch that could observe it is in flight.
-    // The peer holds this slot's ADDRESS as its pre-bound argument for the whole of the window
+    // Claim two: the binding is not freed while a dispatch that could observe it is in flight.
+    // The peer holds this slot's address as its pre-bound argument for the whole of the window
     // core zero makes this observation in.
     TEST_F(IrqCycle, RetiredBindingIsNotFreedUnderAnInFlightDispatch)
     {
@@ -396,7 +413,7 @@ namespace
                "driver's semaphore";
     }
 
-    // CLAIM THREE, availability: the line and the slot both come back once the peer leaves. A
+    // Claim three, availability: the line and the slot both come back once the peer leaves. A
     // refusal that never lifts is a permanent loss, and the reference must never be put back
     // with no capability left to drop it.
     TEST_F(IrqCycle, LineAndSlotAreRecoveredAfterThePeerLeaves)
@@ -422,10 +439,10 @@ namespace
             << "the retired slot never returned to the pool";
     }
 
-    // A NESTED dispatch entry on the same core does not report that core out of the outer entry
+    // A nested dispatch entry on the same core does not report that core out of the outer entry
     // it has not left. The epoch turns over on the nesting depth's zero crossings only.
     //
-    // THE TEARDOWN RUNS FROM INSIDE THE NESTED HANDLER, not after it: a nested entry AND exit
+    // The teardown runs from inside the nested handler, not after it: a nested entry and exit
     // turn the parity over twice and put it back, so an observation taken after the inner
     // dispatch returned cannot see the hazard at all.
     uint32_t g_nest_cap = 0;
@@ -443,7 +460,7 @@ namespace
         }
     }
 
-    // Runs as core zero from inside core one's INNER dispatch entry.
+    // Runs as core zero from inside core one's inner dispatch entry.
     void drop_from_inside_the_nested_entry()
     {
         kickos::irqfix::g_core = 0;
@@ -480,7 +497,7 @@ namespace
         EXPECT_EQ(kickos::kernel().irq_bindings.resolve(obj), nullptr);
     }
 
-    // The grace period is a PREDICATE, not a spin: with the peer already out, the very next
+    // The grace period is a predicate, not a spin: with the peer already out, the very next
     // teardown reclaims inside its own call.
     TEST_F(IrqCycle, ReclamationNeedsNoSecondEventOnceThePeerIsOut)
     {
@@ -501,14 +518,14 @@ namespace
                "and had to reclaim within its own call";
     }
     // =======================================================================================
-    // WHAT A REFUSED CLAIM COSTS. A claim takes three resources in order: a publication
-    // record, a binding slot, then a capability. Only the record can run out AFTER the line
-    // has been found free. The release path a refusal unwinds through reads the LINE to find the
+    // What a refused claim costs. A claim takes three resources in order: a publication
+    // record, a binding slot, then a capability. Only the record can run out after the line
+    // has been found free. The release path a refusal unwinds through reads the line to find the
     // record that owes the binding, so a refusal on a line naming no record has nowhere to put
     // the slot back.
 
     // Binding slots the pool will still hand out. Taken by draining it and putting every slot
-    // straight back, which is a COUNT and so is valid with bindings live: a live slot is absent
+    // straight back, which is a count and so is valid with bindings live: a live slot is absent
     // from both readings.
     unsigned free_bindings()
     {
@@ -544,7 +561,7 @@ namespace
     Starve g_starve;
 
     // Runs as core zero from inside core one's dispatch entry, so no reclamation can elapse and
-    // every record a retirement takes stays taken. One round per line INCLUDING the line under
+    // every record a retirement takes stays taken. One round per line including the line under
     // test, and the carrier's own record is the last: a record is per line, so this leaves the
     // pool exactly empty and one round fewer leaves a record free.
     void starve_the_records_then_claim()
@@ -564,7 +581,7 @@ namespace
             g_starve.rounds++;
         }
         // The precondition, asserted rather than assumed: the line under test cannot be bound.
-        // WHICH refusal this is differs by tree, no record left or the line's own record not
+        // Which refusal this is differs by tree, no record left or the line's own record not
         // yet reclaimed, and the invariant below is the same either way.
         g_starve.line_bindable = kickos::irq_attach(LINE_TARGET, probe_handler, nullptr);
         g_starve.free_before = free_bindings();
@@ -596,7 +613,7 @@ namespace
     }
 
     // =======================================================================================
-    // A LINE THE ARCH DISPATCHES ITSELF. Its vector reaches a kernel service directly and
+    // A line the arch dispatches itself. Its vector reaches a kernel service directly and
     // never kickos_isr_irq, so the line holds no irq_table slot: a capability over it would
     // drive nothing, and the detach that closing the capability performs would mask the line
     // the kernel rings on. The refusal belongs at claim time, a claim that succeeds and cannot
@@ -621,7 +638,7 @@ namespace
             << "the other minting entry bound a handler the arch vector never reaches";
     }
 
-    // THE CONTROL, on the SAME line and differing only in what the arch declares: the claim
+    // The control, on the same line and differing only in what the arch declares: the claim
     // takes, the line dispatches to the binding it installed, and closing the capability gives
     // the slot back. Without it the arm above passes on a tree that refuses every claim.
     TEST_F(IrqQuiesce, TheSameLineClaimsAndClosesWhereTheArchReservesNothing)
@@ -639,7 +656,7 @@ namespace
                   reinterpret_cast<void*>(static_cast<intptr_t>(LINE_FREE)))
             << "the line still names the null object, so nothing was bound to fire";
 
-        // The detach above already masked the line once, so this is a DELTA and not a state.
+        // The detach above already masked the line once, so this is a delta and not a state.
         unsigned const masks_before = kickos::irqfix::count_of(OP_MASK);
         kickos_isr_irq(LINE_FREE);
         EXPECT_EQ(kickos::irqfix::count_of(OP_MASK), masks_before + 1u)
@@ -647,6 +664,55 @@ namespace
 
         kickos::handle_close(&g_claim_thread, cap);
         EXPECT_EQ(free_bindings(), free_before) << "the closed capability kept its slot";
+    }
+
+    // Which core takes a global line is the claimer's, and it is decided once. Decided at
+    // unmask instead, it follows whichever core touched the line last, so a driver thread that
+    // moved re-targets its own line. The release drops the record, or a re-claim of the line
+    // inherits an owner that no longer exists.
+    TEST_F(IrqQuiesce, TheClaimRoutesTheLineToItsOwnCoreAndTheReleaseDropsIt)
+    {
+        uint32_t cap = kickos::KCAP_INVALID;
+        kickos::irqfix::g_core = 1;
+        pin_claimer(1);
+
+        ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
+        EXPECT_EQ(kickos::irqfix::g_routed_line, LINE_FREE)
+            << "the claim routed nothing, so the line is still whatever unmask decides";
+        EXPECT_EQ(kickos::irqfix::g_routed_core, 1u)
+            << "the line went to a core other than the one that claimed it";
+
+        kickos::irqfix::g_routed_line = -1;
+        kickos::handle_close(&g_claim_thread, cap);
+        EXPECT_EQ(kickos::irqfix::g_routed_line, LINE_FREE)
+            << "the release left the record standing for a re-claim to inherit";
+        EXPECT_EQ(kickos::irqfix::g_routed_core, KICKOS_IRQ_ROUTE_NONE)
+            << "the release named a core instead of dropping the record";
+    }
+
+    // The release masks before it drops the route. The mask goes to the core the route names,
+    // so a route dropped first sends it to whichever core an unrouted line falls back to and
+    // leaves the claimer's copy of the line armed.
+    TEST_F(IrqQuiesce, TheReleaseMasksTheLineBeforeItDropsTheRoute)
+    {
+        uint32_t cap = kickos::KCAP_INVALID;
+        kickos::irqfix::g_core = 1;
+        pin_claimer(1);
+
+        ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
+        // What the driver's first wait leaves behind.
+        kickos::irq_line_op(LINE_FREE, kickos::LineOp::UNMASK);
+        ASSERT_EQ(kickos::irqfix::last_line_op(LINE_FREE),
+                  static_cast<int>(kickos::irqfix::OP_UNMASK));
+
+        kickos::irqfix::g_routed_line = -1;
+        kickos::handle_close(&g_claim_thread, cap);
+        ASSERT_EQ(kickos::irqfix::g_routed_core, KICKOS_IRQ_ROUTE_NONE);
+        EXPECT_FALSE(kickos::irqfix::g_routed_armed)
+            << "the route was dropped while the line was still armed";
+        EXPECT_EQ(kickos::irqfix::last_line_op(LINE_FREE),
+                  static_cast<int>(kickos::irqfix::OP_MASK))
+            << "the release left the line armed";
     }
 
     // Test record capacity through line allocation: one record exists per line,
@@ -706,7 +772,7 @@ namespace
     }
 
     // =======================================================================================
-    // A DISPATCH THAT ALREADY HOLDS THE RETIRED PAIR, against a rebind of its line. The entry
+    // A dispatch that already holds the retired pair, against a rebind of its line. The entry
     // snapshots the pair once and the handler masks the line as its first act, so a rebind that
     // arms the line in between leaves the new owner parked on a line the old handler masks.
     //
@@ -771,8 +837,8 @@ namespace
         }
     };
 
-    // CLAIM: a line cannot be armed for a new owner while a dispatch holding its retired pair is
-    // still in flight. Either the rebind is refused, or it takes and the line is left ARMED.
+    // Claim: a line cannot be armed for a new owner while a dispatch holding its retired pair is
+    // still in flight. Either the rebind is refused, or it takes and the line is left armed.
     TEST_F(IrqStale, ARebindCannotArmALineUnderAStaleDispatch)
     {
         g_stale.rebind_rc.store(-1);
@@ -789,7 +855,7 @@ namespace
             << "the gate was never released, so the peer's mask landed on a budget rather than "
                "on this arm's ordering";
         ASSERT_TRUE(g_stale.peer_done.load());
-        // The stale dispatch RAN its retired pair. The claim below is about ordering the rebind
+        // The stale dispatch ran its retired pair. The claim below is about ordering the rebind
         // against it, not about stopping it.
         ASSERT_TRUE(target_posted())
             << "the retired handler never posted, so it never reached the controller either";
@@ -801,7 +867,8 @@ namespace
                "can reopen, while the old semaphore took the post";
     }
 
-    // And the refusal is transient, not a lost line: with the peer out, the same line claims.
+    // And the line is not lost either way: with the peer out, a refused rebind lifts, and an
+    // admitted one holds the line with the retired binding gone.
     TEST_F(IrqStale, TheRefusedRebindLiftsOnceThePeerLeaves)
     {
         g_stale.rebind_rc.store(-1);
@@ -813,15 +880,25 @@ namespace
 
         ASSERT_TRUE(g_stale.handoff_ok.load()) << "the window was not reproduced";
         ASSERT_TRUE(g_stale.peer_done.load());
-        if (g_stale.rebind_rc.load() == 0)
-        {
-            // Nothing to lift: this tree admitted the rebind, which the arm above judges.
-            return;
-        }
 
         uint32_t again = 0;
-        EXPECT_EQ(kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again), 0)
-            << "the line was refused after the dispatch holding its retired pair had left, so "
-               "the refusal is a permanent loss of the line rather than a grace period";
+        int const rc = kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again);
+        if (g_stale.rebind_rc.load() != 0)
+        {
+            EXPECT_EQ(rc, 0)
+                << "the line was refused after the dispatch holding its retired pair had left, "
+                   "so the refusal is a permanent loss of the line rather than a grace period";
+        }
+        else
+        {
+            int const held = kickos::irqfix::installed_handle();
+            kickos::IrqBinding const* const b = kickos::kernel().irq_bindings.resolve(held);
+            ASSERT_NE(b, nullptr) << "the admitted rebind's binding is gone, so the line is lost";
+            EXPECT_NE(held, obj) << "the line is still held by the retired binding";
+            EXPECT_EQ(b->line, LINE_TARGET);
+            EXPECT_EQ(rc, -KOS_EBUSY) << "the line the admitted rebind holds was handed out again";
+        }
+        EXPECT_EQ(kickos::kernel().irq_bindings.resolve(obj), nullptr)
+            << "the retired slot never returned to the pool once the peer had left";
     }
 }

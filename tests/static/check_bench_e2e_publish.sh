@@ -2,29 +2,29 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The end-to-end benchmark's publication ordering, read out of the LINKED IMAGE. ARM releases
+# The end-to-end benchmark's publication ordering, read out of the linked image. ARM releases
 # the record, the waiter releases PARKED under the kernel lock, RAISE acquires that then
-# releases t0 before injection, and CLOSE acquires t0. Every arm counts a POSITION between two
-# named calls, so ordering another field in the same body carries cannot stand in for it. The
-# park marker must follow the lock and precede the block, or delivery can reach a waiter still
+# releases t0 before injection, and CLOSE acquires t0. Each arm counts a position between two
+# named calls, so ordering sited elsewhere in the same body cannot stand in for it. The park
+# marker must follow the lock and precede the block, or delivery can reach a waiter still
 # running. QEMU does not expose missing memory ordering, which is why this is read statically.
 #
-# AN ORDERED LOAD AND AN ORDERED STORE, HOWEVER THE ARCH SPELLS THEM, and the spelling is not
-# the claim. Three realisations are modelled below:
+# An ordered load and an ordered store, however the arch spells them; the spelling itself is
+# not the claim. Three realisations are modelled below:
 #
 #   mnemonic   the direction is in the instruction itself: armv8a ldar and stlr.
 #   operand    the direction is in a separate fence's operands: rv64imac `fence r,rw` and
 #              `fence rw,w`. `rw,rw` is a full barrier and neither half of this pairing.
-#   pair       the arch has ONE barrier and it carries no direction at all, so the direction is
-#              the ACCESS BESIDE IT: an acquire is a load then the barrier, a release is the
+#   pair       the arch has one barrier and it carries no direction at all, so the direction is
+#              the access beside it: an acquire is a load then the barrier, a release is the
 #              barrier then a store. lx6, whose only ordering instruction is memw.
 #
 # Under `pair` an acquire and a release cannot be told apart by mnemonic, so an arm asking for
-# one of them is answered by the shape and not by a count of barriers. What every realisation
-# still refuses identically is the RELAXED DOWNGRADE, which removes the ordering instruction
-# outright, and ordering sited outside the bracket that owes it.
+# one of them is answered by the shape and not by a count of barriers. Every realisation still
+# refuses the relaxed downgrade (the ordering instruction removed outright) and ordering sited
+# outside the bracket that owes it.
 #
-# AN ARCH THIS FILE DOES NOT CARRY IS A REFUSAL.
+# An arch not in the table below is refused rather than skipped.
 #
 # usage: check_bench_e2e_publish.sh <elf> <objdump> <arch>
 
@@ -132,21 +132,24 @@ scratch_dir
 
 # --- the reader ---------------------------------------------------------------
 # One record per body: the instruction count, the acquires and releases in it, and then the
-# four positional counts: acquires ahead of the OPENING call, acquires and releases between the
-# opening call and the CLOSING one, and calls to a NAMED callee in that same stretch. A body
+# four positional counts: acquires ahead of the opening call, acquires and releases between the
+# opening call and the closing one, and calls to a named callee in that same stretch. A body
 # given no closing call brackets from the opening call to the end of the body.
-# EVERY POSITIONAL COUNT IS ZERO IN A BODY THE BRACKET CALLS ARE NOT IN, which is the same
-# record as a body that carries the calls and publishes nothing between them. So a bracket call
-# the body was given and does not contain is its own record and never a verdict: NOBRACKET for
-# neither of them, NOOPEN and NOCLOSE for one. Without those the reader answers a renamed,
-# inlined or forwarded body with the finding it exists to report.
-# UNDER `pair` THE ORDERING IS SITED AT THE FIRST INSTRUCTION OF THE TWO, which is the one the
-# rule is stated about: the load an acquire orders, and the barrier a release publishes behind.
-# So the window flags of the PREVIOUS line decide, and the pairing is settled one line late.
-# HALF A PROGRAM: `seen`, the body scope, the window and all three of those refusals come from
-# gate.sh's scoped_body, which reads tests/lib/objdump_scope.awk and
-# tests/lib/objdump_window.awk ahead of this file. The bracket calls are EREs there rather than
-# literals, and no mangled name in the table above carries an ERE metacharacter.
+#
+# A body the bracket calls are not in reports every positional count as zero, the same record a
+# body that carries the calls and publishes nothing between them would produce. So a bracket
+# call the body was given and does not contain is its own record and never a verdict: NOBRACKET
+# for neither of them, NOOPEN and NOCLOSE for one. Without those the reader would answer a
+# renamed, inlined or forwarded body with the finding it exists to report.
+#
+# Under `pair` the ordering is sited at the first instruction of the two, the one the rule is
+# stated about: the load an acquire orders, and the barrier a release publishes behind. So the
+# window flags of the previous line decide, and the pairing is settled one line late.
+#
+# `seen`, the body scope, the window and all three of those refusals come from gate.sh's
+# scoped_body, which reads tests/lib/objdump_scope.awk and tests/lib/objdump_window.awk ahead of
+# this file. The bracket calls are EREs there rather than literals, and no mangled name in the
+# table above carries an ERE metacharacter.
 cat > "$TMP/reader.awk" <<'AWK'
 {
     text = $0

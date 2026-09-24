@@ -45,7 +45,7 @@ armv6m-class geometry is derived from. Re-derived against the new image, that fi
 
 ## The bound
 
-    W = D + (N - 1) * (C + H) + S
+    W = D + (N - 1) * (C + H + S)
 
 | term | what it is |
 | --- | --- |
@@ -59,14 +59,22 @@ armv6m-class geometry is derived from. Re-derived against the new image, that fi
 what guarantees. It is measured: the `draw-queue` row never exceeds `N - 1` on any core in any
 window, at two cores and at four.
 
-**`S` is the ticket's own price and is charged once, not per predecessor.** Under test-and-set a
-core busy inside a doorbell service simply lost the race and cost nobody. Under a ticket the lock
-is RESERVED for one named core, and if that core is inside `kickos_doorbell_poll` when its turn
-arrives the lock sits idle and everyone waits. Only the immediate predecessor's release can hand
-the lock to a core that is mid-poll, and that core is the asker itself, so the exposure is one
-service body already in progress. The loose form charging every hand-off is `(N-1)*(C+H+S)`; the
-tight form above is stated with its argument written down, so a later pass can reject the
-argument rather than guess at a number.
+**`S` IS THE TICKET'S OWN PRICE AND IS CHARGED ONCE PER HAND-OFF, NOT ONCE PER WAIT.** Under
+test-and-set a core busy inside a doorbell service simply lost the race and cost nobody. Under a
+ticket the lock is RESERVED for one named core, and if that core is inside `kickos_doorbell_poll`
+when its turn arrives the lock sits idle and every later asker waits with it.
+
+**An earlier form of this record charged `S` once for the whole wait and that was wrong.** The
+argument was that only the immediate predecessor's release can hand the lock to a core that is
+mid-poll, and that core is the asker itself. That is true of the asker's OWN hand-off and it is
+not the wait: a wait contains every predecessor's hand-off too, and each of those can hand the
+lock to a core that is not looking. So the gap is once per hand-off ahead of the asker, which is
+where the `S` above sits.
+
+**No measurement here could have caught it.** At two cores there is one hand-off and the two forms
+are equal, and two cores is the only width any silicon in this project has. The error is visible
+only at four and only by argument, which is why the bound is stated as a derivation and checked as
+one.
 
 **`S` is not removable by dropping the poll.** An initiator holding the lock and waiting on this
 core's doorbell answer would never be answered.
