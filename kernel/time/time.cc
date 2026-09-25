@@ -300,7 +300,13 @@ extern "C" void kickos_isr_timer(void)
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_enter(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
 #endif
+#if KICKOS_BENCH_SCHED_ON
+    uint32_t const bench_was = ::kickos_bench_reason_enter(::kickos::BR_TIMER);
+#endif
     ::kickos::ktime_on_timer();
+#if KICKOS_BENCH_SCHED_ON
+    ::kickos_bench_reason_leave(bench_was);
+#endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
 #endif

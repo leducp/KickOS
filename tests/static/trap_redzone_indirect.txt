@@ -70,8 +70,11 @@ site rxv3 * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick_n
 
 site armv8a * kickos_thread_contain_wild_stack@1/2         policy_fifo_rr.cc:policy_on_switch_in
 site armv8a * kickos_thread_contain_wild_stack@2/2         policy_fifo_rr.cc:policy_pick_next
-site armv8a * kickos::sched::start@1/2                     policy_fifo_rr.cc:policy_pick_next
-site armv8a * kickos::sched::start@2/2                     policy_fifo_rr.cc:policy_on_switch_in
+site armv8a cores=1 kickos::sched::start@1/2               policy_fifo_rr.cc:policy_pick_next
+site armv8a cores=1 kickos::sched::start@2/2               policy_fifo_rr.cc:policy_on_switch_in
+site armv8a cores>1 kickos::sched::start@1/3               policy_fifo_rr.cc:policy_pick_next
+site armv8a cores>1 kickos::sched::start@2/3               policy_fifo_rr.cc:policy_on_switch_in
+site armv8a cores>1 kickos::sched::start@3/3               policy_fifo_rr.cc:policy_on_start
 site armv8a * kickos::sched::yield@1/1                     policy_fifo_rr.cc:policy_on_yield
 site armv8a * kickos::sched::detach_current@1/1            policy_fifo_rr.cc:policy_on_remove
 site armv8a * kickos::sched::set_prio@1/2                  policy_fifo_rr.cc:policy_on_remove
@@ -93,20 +96,39 @@ site armv8a qemu-arm64-amp3-n1 kickos::sched::wake_no_resched@1/1 policy_fifo_rr
 site armv8a qemu-arm64-amp3-n2 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
 site armv8a qemu-arm64-bench kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
 site armv8a qemu-arm64-amp sched.cc:publish_ready@1/1      policy_fifo_rr.cc:policy_on_ready
-site armv8a cores>1 sched.cc:pick_and_seat@1/4             policy_fifo_rr.cc:policy_push_candidate
-site armv8a cores>1 sched.cc:pick_and_seat@2/4             policy_fifo_rr.cc:policy_on_remove
-site armv8a cores>1 sched.cc:pick_and_seat@3/4             policy_fifo_rr.cc:policy_on_switch_in
-site armv8a cores>1 sched.cc:pick_and_seat@4/4             policy_fifo_rr.cc:policy_pick_next
-site armv8a cores>1 sched.cc:publish_ready@1/1             policy_fifo_rr.cc:policy_on_ready
+site armv8a cores>1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
+site armv8a cores>1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
+site armv8a cores>1 kickos_kernel_core_resched@1/2         policy_fifo_rr.cc:policy_push_candidate
+site armv8a cores>1 kickos_kernel_core_resched@2/2         policy_fifo_rr.cc:policy_on_remove
+site armv8a cores>1 sched.cc:link_ready@1/1                policy_fifo_rr.cc:policy_on_ready
 site armv8a cores>1 sched.cc:place@1/2                     policy_fifo_rr.cc:policy_place
 site armv8a cores>1 sched.cc:place@2/2                     policy_fifo_rr.cc:policy_on_remove
 site armv8a cores>1 sched.cc:place_declined@1/1            policy_fifo_rr.cc:policy_declined
-site armv8a cores>1 sched.cc:drop_scan@1/1                 policy_fifo_rr.cc:policy_push_candidate
+site armv8a cores>1 sched.cc:ring_drain@1/2                policy_fifo_rr.cc:policy_on_remove
+site armv8a cores>1 sched.cc:ring_drain@2/2                policy_fifo_rr.cc:policy_on_ready
+# One core, and not on qemu-arm64-amp, whose add makes no indirect call of its own.
+site armv8a imx8mp-evk kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-bench kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-amp2-n0 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-amp2-n1 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-amp3-n0 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-amp3-n1 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+site armv8a qemu-arm64-amp3-n2 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
+# The IRQ table, as on the other arches. arch_switch defers while kickos_armv8a_irq holds
+# isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site armv8a * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                                 irq.cc:irq_event_isr \
+                                 console_tx.cc:console_tx_isr_trampoline \
+                                 ?bench.cc:bench_irq_handler
 
 site rv64imac * kickos_thread_contain_wild_stack@1/2       policy_fifo_rr.cc:policy_on_switch_in
 site rv64imac * kickos_thread_contain_wild_stack@2/2       policy_fifo_rr.cc:policy_pick_next
-site rv64imac * kickos::sched::start@1/2                   policy_fifo_rr.cc:policy_pick_next
-site rv64imac * kickos::sched::start@2/2                   policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac cores=1 kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
+site rv64imac cores=1 kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac cores>1 kickos::sched::start@1/3             policy_fifo_rr.cc:policy_pick_next
+site rv64imac cores>1 kickos::sched::start@2/3             policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac cores>1 kickos::sched::start@3/3             policy_fifo_rr.cc:policy_on_start
 site rv64imac * kickos::sched::yield@1/1                   policy_fifo_rr.cc:policy_on_yield
 site rv64imac * kickos::sched::detach_current@1/1          policy_fifo_rr.cc:policy_on_remove
 site rv64imac * kickos::sched::set_prio@1/2                policy_fifo_rr.cc:policy_on_remove
@@ -118,15 +140,24 @@ site rv64imac * kickos::sched::tick_rr@2/2                 policy_fifo_rr.cc:pol
 site rv64imac cores=1 sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
 site rv64imac cores=1 sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
 site rv64imac cores=1 kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site rv64imac cores>1 sched.cc:pick_and_seat@1/4           policy_fifo_rr.cc:policy_push_candidate
-site rv64imac cores>1 sched.cc:pick_and_seat@2/4           policy_fifo_rr.cc:policy_on_remove
-site rv64imac cores>1 sched.cc:pick_and_seat@3/4           policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac cores>1 sched.cc:pick_and_seat@4/4           policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores>1 sched.cc:publish_ready@1/1           policy_fifo_rr.cc:policy_on_ready
+site rv64imac cores>1 sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
+site rv64imac cores>1 sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
+site rv64imac cores>1 kickos_kernel_core_resched@1/2       policy_fifo_rr.cc:policy_push_candidate
+site rv64imac cores>1 kickos_kernel_core_resched@2/2       policy_fifo_rr.cc:policy_on_remove
+site rv64imac cores>1 sched.cc:link_ready@1/1              policy_fifo_rr.cc:policy_on_ready
 site rv64imac cores>1 sched.cc:place@1/2                   policy_fifo_rr.cc:policy_place
 site rv64imac cores>1 sched.cc:place@2/2                   policy_fifo_rr.cc:policy_on_remove
 site rv64imac cores>1 sched.cc:place_declined@1/1          policy_fifo_rr.cc:policy_declined
-site rv64imac cores>1 sched.cc:drop_scan@1/1               policy_fifo_rr.cc:policy_push_candidate
+site rv64imac cores>1 sched.cc:ring_drain@1/2              policy_fifo_rr.cc:policy_on_remove
+site rv64imac cores>1 sched.cc:ring_drain@2/2              policy_fifo_rr.cc:policy_on_ready
+# One core: above it add makes no indirect call of its own.
+site rv64imac cores=1 kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
+# The IRQ table, as on the other arches. arch_switch books its target while .Lintr holds
+# isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site rv64imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                                   irq.cc:irq_event_isr \
+                                   console_tx.cc:console_tx_isr_trampoline \
+                                   ?bench.cc:bench_irq_handler
 
 site x86_64 * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
 site x86_64 * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
@@ -144,6 +175,12 @@ site x86_64 * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_r
 site x86_64 * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
 site x86_64 * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
 site x86_64 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
+# The IRQ table, as on the other arches. arch_switch books its target while kickos_x86_64_isr
+# holds g_isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                               irq.cc:irq_event_isr \
+                               console_tx.cc:console_tx_isr_trampoline \
+                               ?bench.cc:bench_irq_handler
 # --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
 # Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the arch
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
@@ -1572,15 +1609,16 @@ site lx6 * kickos::sched::tick_rr@2/2                   policy_fifo_rr.cc:policy
 site lx6 cores=1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
 site lx6 cores=1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
 site lx6 cores=1 kickos::sched::wake_no_resched@1/1     policy_fifo_rr.cc:policy_on_ready
-site lx6 cores>1 sched.cc:pick_and_seat@1/4             policy_fifo_rr.cc:policy_push_candidate
-site lx6 cores>1 sched.cc:pick_and_seat@2/4             policy_fifo_rr.cc:policy_on_remove
-site lx6 cores>1 sched.cc:pick_and_seat@3/4             policy_fifo_rr.cc:policy_on_switch_in
-site lx6 cores>1 sched.cc:pick_and_seat@4/4             policy_fifo_rr.cc:policy_pick_next
-site lx6 cores>1 sched.cc:publish_ready@1/1             policy_fifo_rr.cc:policy_on_ready
+site lx6 cores>1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
+site lx6 cores>1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
+site lx6 cores>1 kickos_kernel_core_resched@1/2         policy_fifo_rr.cc:policy_push_candidate
+site lx6 cores>1 kickos_kernel_core_resched@2/2         policy_fifo_rr.cc:policy_on_remove
+site lx6 cores>1 sched.cc:link_ready@1/1                policy_fifo_rr.cc:policy_on_ready
 site lx6 cores>1 sched.cc:place@1/2                     policy_fifo_rr.cc:policy_place
 site lx6 cores>1 sched.cc:place@2/2                     policy_fifo_rr.cc:policy_on_remove
 site lx6 cores>1 sched.cc:place_declined@1/1            policy_fifo_rr.cc:policy_declined
-site lx6 cores>1 sched.cc:drop_scan@1/1                 policy_fifo_rr.cc:policy_push_candidate
+site lx6 cores>1 sched.cc:ring_drain@1/2                policy_fifo_rr.cc:policy_on_remove
+site lx6 cores>1 sched.cc:ring_drain@2/2                policy_fifo_rr.cc:policy_on_ready
 site lx6 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                               irq.cc:irq_event_isr \
                               console_tx.cc:console_tx_isr_trampoline \

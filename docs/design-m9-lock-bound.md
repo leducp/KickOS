@@ -281,19 +281,16 @@ side of this stage are two different quantities.
 the back of the queue rather than possibly claiming it immediately. That is the intended fairness
 and it moves cost onto the switch path, so the switch-enclosing rows are expected to move.
 
-## The doorbell gate's floor was calibrated for three peers and is now per width
+## The doorbell gate's floor was calibrated per width, and then retired
 
-`check_bench_doorbell.sh` asserts a doorbell round's per-core minimum is at least twice the raise
-floor that core measured in the same burst, to catch a bracket closing inside the raise. **A round
-is one raise plus the wait for every peer, so the factor is a property of the peer count.** At one
-peer the round is a raise plus a single answer and the two cost about the same, so the three-peer
-factor lands inside the distribution rather than under it. Measured over 30 report windows a
-width: the round-to-raise minimum is 3.49 at three peers and 1.87 at one on armv8a, which is the
-tight arch, while rv64 reads 5.52 at one peer. The factor is read from the core count now, and
-both directions carry planted controls.
-
-**The gate was failing about one run in five at two cores on the tree BEFORE this stage touched
-the lock**, so it was pre-existing and surfaced by the new width rather than caused by the ticket.
+`check_bench_doorbell.sh` held a round's per-core minimum to twice the raise floor measured in the
+same burst (one and a half at one peer), to catch a bracket closing inside the raise. **No factor
+survives a loaded host.** Under MTTCG the raising vCPU can be held up after the raise leaves for as
+long as the peers take to service it: a probe counting rounds whose every answer was already in
+when the raise returned read 62 to 64 of 64 on the failing bursts, and the gate failed 7 runs in
+10 under 28 busy loops. The gate now counts rounds held, each peer's answer in the cells right
+after the bracket closes, which catches the bracket moved above the wait on every idle run and
+asserts nothing a contended emulator can take away.
 
 ## What this record does not establish
 

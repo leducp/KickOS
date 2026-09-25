@@ -67,15 +67,14 @@ config ARCH_TLS_FROM_SP
 	  power-of-two size, natural alignment, and one stride exactly.
 
 	  armv6m and armv7m have no choice, the M profile offering no per-thread register
-	  to unprivileged code. rv32imac has `tp` and rxv3 an emutls anchor, and both mask
-	  anyway, deriving the pointer from the stack rather than from the thread's own
-	  block: a chosen uniformity, so the select states it rather than the ISA implying
-	  it. lx6 masks in its frame macros.
+	  to unprivileged code. rxv3 has none either: its emutls anchor runs unprivileged
+	  and SP is the only register that differs per thread there.
 
-	  ARMV8A DOES NOT SELECT IT. It seats TPIDR_EL0 from the context, and the context
-	  derives that value from the block by SUBTRACTION, so the stack's low bound owes no
-	  alignment past the ABI's sixteen bytes. That is what lets a stack there be frames
-	  of any page count at any page boundary.
+	  ARMV8A, LX6 AND RV32IMAC DO NOT SELECT IT. Each seats its register (TPIDR_EL0,
+	  THREADPTR, tp) from the context at every switch-in, and the context derives that
+	  value from the block by SUBTRACTION, so the stack's low bound owes no alignment
+	  past the ABI's sixteen bytes and a caller may hand in a stack of any size at any
+	  such boundary.
 
 	  ARCH_SIM does not select it and cannot: it does not select ARCH_HAS_TLS either.
 
@@ -110,7 +109,6 @@ config ARCH_RXV3
 config ARCH_RV32IMAC
 	bool
 	select ARCH_HAS_TLS
-	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
 
@@ -125,7 +123,6 @@ config ARCH_RV64IMAC
 config ARCH_LX6
 	bool
 	select ARCH_HAS_TLS
-	select ARCH_TLS_FROM_SP
 
 # The kernel-stack pair is mandatory: SYSCALL loads NO stack pointer (AMD APM Vol 2 6.1.1),
 # so no hardware stack exists for a red-zone path to fall back on.

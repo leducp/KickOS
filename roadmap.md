@@ -1309,10 +1309,11 @@ file owns only the number.
 | M9.1 | the lock's own bound: fair arbitration per backend, the doorbell poll kept |
 | M9.2 | ownership and placement under the lock: per-core ready queues, a home placed by priority and pushed by its holder, the wait-edge rule, a line pinned to its claimer |
 | M9.3 | fused into M9.2: under one lock the push needs no ring |
-| M9.4 | the per-pair rings, then the local scheduler leaves the lock, under the stop condition |
+| M9.4 | the per-pair rings landed under the lock, inside stage 1's own regression budget; the local scheduler leaving the lock was REFUSED by the stop condition (R0), at two cores on silicon |
 | M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
 | M9.6 | the console contract across cores: who may speak, in the SMP and the AMP shape |
 | M9.7 | the write-up, the contract changes, and the M9 exit measurement |
+| M9.8 | the ESP32-C6 as an AMP pair: the LP core as a second node beside the HP core, the first AMP pair the bench runs unattended |
 
 **WHAT M8 HANDS M9, EACH ON THE STAGE THAT UNBLOCKS IT.** Every one was raised inside M8 and
 recorded in `TODO.md` with its evidence, and M8.13 reassigned them here as a list with no
@@ -1348,7 +1349,7 @@ were written against.
 assigning them.** A number here fixes what a stage IS, so that the evidence gate can refuse the
 stage without the argument moving to a different number afterwards. M9.0 can start whenever, being
 read-only, the envelope recompute included. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN
-SHAPE.** These eight rows are the plan as it reads today, and this file has renumbered and re-cut worse than
+SHAPE.** These rows are the plan as it reads today, and this file has renumbered and re-cut worse than
 this when the work found
 something: a discovery moves the roadmap rather than the roadmap constraining the discovery, so a
 stage that turns out to be two, or to be already answered by the one before it, is re-cut on the
@@ -1532,6 +1533,19 @@ established rather than assumed: seL4's mixed-criticality sources and Fiasco.OC'
 contexts are both checked out here, in two different shapes, and what is missing is the paper that
 argues the first and the L4Re userland that programs the second. So the temporal half below has a
 mechanism to read today and no case for either shape.
+
+**M9.8 PUTS AN AMP PAIR ON THE BENCH THAT NEEDS NO HAND, AND IT IS A TAIL RATHER THAN A DRIVER-ERA
+PORT.** Every AMP pair witnessed on silicon so far is an RP part, and an RP board needs its button
+to take a new image, so no AMP run is unattended. The ESP32-C6 already classes as AMP, its LP core
+failing requirement 5, and its technical reference manual gives the rest: one flat address space
+both cores see, atomics between the cores in HP SRAM only (so the window lives there), a latched
+doorbell in each direction, and an LP core started by a PMU wake at a fixed entry in its own SRAM,
+which the HP image loads, so one flash and one reset bring up both nodes. **The weakest point is
+the LP core itself**: machine mode only, no PMP, so its node has no privilege split at all, and
+whether the tree has a posture for such a node is the stage's first question. What it owes: an
+LP-core backend, an LP-SRAM-resident image carried by the HP image (a deployment shape N6h does
+not describe yet, the LP image not being separately flashable), the partition preset, and a bench
+row that captures the LP UART or relays the LP node through the ring.
 
 **SHARED KERNEL STACKS ARE A SEPARATE M9 INVESTIGATION, AFTER M8.12.** The research in
 [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) extends the

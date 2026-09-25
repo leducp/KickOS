@@ -7,109 +7,90 @@
 # first read of its device window, split by whether that thread ran on the core that took the
 # interrupt.
 #
-# A board that cannot inject prints a complete, plausible report of zeros, so nothing here is
-# read off a cycle figure before its sample count has been checked.
+# A board that cannot inject prints a complete, plausible report of zeros, so no cycle figure is
+# read before its sample count has been checked.
 #
-# The two instruments discriminate each other, which is why one gate reads both. The
-# inject-to-handler row spins for the handler inside a syscall, so it is empty on a backend
-# that enters the kernel with interrupts masked; the end-to-end span leaves the kernel between
-# the raise and the wake, so it is not. An empty entry row beside closed end-to-end spans is
-# therefore that backend and not a dead line, and an empty entry row beside no closed span at
-# all is a board that cannot deliver an injected interrupt at all. Only the second is a failure.
+# The entry row spins for the handler inside a syscall, so it is empty on a backend that enters
+# the kernel with interrupts masked; the end-to-end span leaves the kernel between the raise and
+# the wake, so it is not. An empty entry row beside closed end-to-end spans is that backend. An
+# empty entry row beside no closed span is a board that cannot deliver an injected interrupt at
+# all, and only that is a failure.
 #
-# The arms, and what each one checks:
+# The arms:
 #   probe    both probe lines exist, and the raise denominator is non-zero. n=0 beside
 #            raised=0 is a line the kernel never attached, which the row alone cannot show.
-#   fields   every field an arm reads parsed, on the line that carries it. A token that did not
-#            match reads as an in-range zero, and the arms scoped to a window above zero, the
-#            floor compared against a tare, and the identity read against a foreign count are
-#            all satisfied by that zero: absent, the field disables the arm written for it and
-#            the report passes stating nothing.
-#   domain   the entry and masked rows are subtractions, so both their stamps must come out of
-#            one counter. Per-core cycle counters have no common zero, and a difference taken
-#            across two of them is an offset that reads as a plausible latency and is not one.
-#            Three statements per row, each failing where the others pass: the probe names one
-#            core its handler stamped on (`hcore=mixed` is a row fed from several clocks
-#            however each sample was classified); a row carrying samples was filled on the core
-#            the sweep ran on; and the row's maximum is held under the raise-to-observation
-#            window the raising core measured, which is arithmetic no classifier can talk its
-#            way out of, a stamp the raiser did not bracket not being in the raiser's clock
-#            whatever core the probe names. That last one catches a classifier stuck on
-#            "local". It says nothing where the counter is frozen or glitches, which the
-#            report declares by heading its rows min/avg/max, and where no offset can hide
-#            either.
-#
-#            Refusing is not failing above one core. A controller that delivers the line to a
-#            core other than the one that raised it leaves no raise-to-entry span in one clock
-#            to report, and an empty row beside a non-zero foreign count is the honest answer.
-#            At one kernel core there is one clock, so a refusal there is the instrument
-#            disagreeing with itself and not a line the board delivers elsewhere.
-#   population   a populated row (n>0) owes its own probe's raised exactly: n plus that
-#            probe's own foreign must sum to it. A handler that times out inside the sweep's
-#            fixed spin lands in neither count, so a row can carry fewer samples than it was
-#            raised at and still read raised>0. n=0 is not judged here: a line never attached
-#            and a raise that reached no handler both print it, and the arms above tell those
-#            two apart by a better signal than the row's own emptiness.
+#   fields   every field an arm reads parsed, on the line that carries it. An unmatched token
+#            reads as an in-range zero, and that zero satisfies the window bounds, the tare
+#            floor and the foreign identity, so an absent field silently disables its arm.
+#   domain   the entry and masked rows subtract two stamps that must come from one counter:
+#            per-core cycle counters have no common zero, and a cross-core difference reads as
+#            a plausible latency. Three statements per row, each failing where the others pass:
+#            the probe names one handler core (`hcore=mixed` is a row fed from several clocks);
+#            a populated row was filled on the core the sweep ran on; and the row's maximum is
+#            under the raise-to-observation window the raising core measured, which catches a
+#            classifier stuck on "local". A frozen or glitching counter heads its rows
+#            min/avg/max, and the window bound is not applied there.
+#            Above one core, an empty row beside a non-zero foreign count is the honest answer
+#            for a line delivered to another core. At one kernel core there is one clock, so any
+#            refusal is the instrument disagreeing with itself.
+#   population   a populated row's n plus its own probe's foreign equals that probe's raised. A
+#            handler that times out inside the sweep's fixed spin lands in neither count. n=0
+#            is left to the arms above.
 #   entry    the entry row carried samples, or the sweep refused every one as foreign, or the
-#            end-to-end span shows this backend masks its syscalls. A description and not a
-#            verdict: where none of the three holds, no span closed either, and the e2e clause
-#            below is what refuses that.
+#            end-to-end span shows this backend masks its syscalls. A description, not a
+#            verdict: where none holds, no span closed either, and the e2e clause refuses that.
 #   wcase    four masked spans reported, each carrying samples exactly when the entry row
 #            does, and none of them more than one span's worth. The first refuses a row that
-#            fired where its siblings did not; the second refuses a shared accumulator that
-#            was not cleared between spans, which leaves every row populated and climbing.
+#            fired where its siblings did not; the second refuses a sample landing in another
+#            span's slot, or a slot not cleared between sweeps, which leaves a row climbing.
 #            Exact counts are not compared across the five: the entry spin can time out on a
-#            contended emulator while the masked one, which raises under its own mask and
-#            releases it, does not.
-#   span     the four rows' labels ascend where four of them arrived, and at one kernel core
-#            their p50s grow with the span and the widest clears the narrowest by more than a
-#            bucket. Counting samples says nothing here: four identical rows carry the same
-#            counts as four that separate, which is what an ignored span_bytes leaves behind.
-#   label    each label is the span its own row measured, which order does not say: a row
-#            relabelled to a wider span still ascends and still grows, and the figure published
-#            beside it then names a width nothing measured. Every pair of rows bounds one
-#            per-byte rate, and the four labels are consistent exactly when one rate fits all
-#            six pairs.
+#            contended emulator while the masked one, which raises under its own mask, does not.
+#   span     the four rows' labels ascend where four arrived, and at one kernel core their p50s
+#            grow with the span and the widest clears the narrowest by more than a bucket.
+#            Sample counts cannot show this: an ignored span_bytes leaves four identical rows
+#            with the same counts as four that separate.
+#   label    each label is the span its own row measured. A row relabelled to a wider span
+#            still ascends and still grows, so order does not prove it. Every pair of rows
+#            bounds one per-byte rate, and the labels are consistent exactly when one rate fits
+#            all six pairs.
 #   e2e      the two locality rows total exactly what the probe says was closed, the close path
-#            refused nothing, and some span closed at all. That last one carries two diagnoses
-#            under one clause: an empty entry row and nothing refused as foreign beside it is a
-#            board that delivers no injected interrupt, and anything else is a waiter that never
-#            woke. They are branches and not arms, the first implying the second.
+#            refused nothing, and some span closed. The last clause has two diagnoses: an empty
+#            entry row with nothing refused as foreign is a board that delivers no injected
+#            interrupt, and anything else is a waiter that never woke. They are branches, not
+#            arms, the first implying the second.
 #   passes   the sweep's own denominator, which closed and dropped are not. A pass whose waiter
-#            never parks is abandoned by the app after its retry bound and closes nothing, so
-#            neither counter moves and the rows report the passes that ran as though they were
-#            all of them. `asked` is the sweep size the app ran, `raised` what the kernel let
-#            through, and every raise owes a counted close. Same job as irq-probe's `raised=`,
-#            which the kernel counts alone only because that sweep's loop is the kernel's.
-#   floor    the anti-vacuity arm, on the local end-to-end row. Its p50 exceeds the tare, which
-#            is the same userspace read and the same trap with no interrupt in it. A span that
-#            closed early reads as a suspiciously fast figure and nothing else says so.
+#            never parks is abandoned after the app's retry bound and moves neither counter, so
+#            the rows would report the passes that ran as though they were all of them. `asked`
+#            is the sweep size the app ran, `raised` what the kernel let through, and every
+#            raise owes a counted close.
+#   settle   the app's own mark of how many passes waited out their set-up before their first
+#            raise, out of how many it ran. A pass whose poll ran out raises anyway, so its first
+#            sample may price the set-up: the count is refused only where it cannot be a count,
+#            and a short one is stated in the verdict rather than refused.
+#   floor    the anti-vacuity arm: the local end-to-end p50 exceeds the tare, which is the same
+#            userspace read and the same trap with no interrupt in it. A span that closed early
+#            reads as a fast figure and nothing else says so.
 #   local    local equals closed at every core count. The line is delivered on its claim core
-#            and the sweep pins the waiter and the raiser there, so every wake is local by
-#            construction and a cross-core sample is a wake the pin did not hold.
+#            and the waiter is pinned there, so every wake is local by construction and a
+#            cross-core sample is a wake the pin did not hold.
 #   order    p50 <= p99 <= max on the entry row, the local end-to-end row and the four masked
-#            rows. The cross-core row is refused whenever it carries a sample, which leaves it
-#            nothing to order.
+#            rows. The cross-core row is refused whenever it carries a sample, so it has nothing
+#            to order.
 #
 # What this gate cannot see: above one kernel core no board here delivers an injected line to
-# the core that raised it, so the domain arms refuse every sample and the masked rows arrive
-# empty. The span arm therefore judges nothing there: a board that did deliver locally would
-# fill those rows honestly, and no capture has ever shown one. A board whose cycle counter is
-# frozen fails the span arm at one core rather than passing it, which is the right way round
-# but says nothing about the counter on its own; the capture chain and check_bench_cyccnt.sh
-# are what settle that.
+# the core that raised it, so the domain arms refuse every sample, the masked rows arrive empty
+# and the span arm judges nothing there. A frozen cycle counter fails the span arm at one core,
+# but only the capture chain and check_bench_cyccnt.sh settle the counter itself.
 #
-# Two ways in. With an image it does all of the above. With --controls it runs the planted
-# reports alone and exits, which is every arm that reads a report's shape and none that reads a
-# timing figure: the plants are text and finish before the capture is touched. The capture half
-# is a latency measurement off a machine whose load nobody controls and stays out of CI.
+# With an image it does all of the above. With --controls it runs only the planted reports,
+# which cover every arm that reads a report's shape and none that reads a timing figure. The
+# capture half is a latency measurement on a machine whose load nobody controls and stays out
+# of CI.
 #
-# Every clause above owes a plant no other clause refuses: a plant that trips two arms proves
-# neither, since removing the arm it was written for would still leave the report refused. The
-# exceptions are named where they sit, and they are all one shape: a report missing a probe
-# line carries raised=0 or closed=0, and a report missing a denominator field carries the same
-# zero, so the guard that stops on either can never refuse a report the arms below it would let
-# through. Those are proven as a shape rather than as arms of their own.
+# Every clause owes a plant no other clause refuses: a plant that trips two arms proves
+# neither. The exceptions are named where they sit and are all one shape: a missing probe line
+# or denominator field reads as raised=0 or closed=0, so its guard can never refuse a report the
+# arms below would let through. Those are proven as a shape rather than as arms of their own.
 #
 # usage: check_bench_irqspan.sh <elf> <kernel cores>
 #        check_bench_irqspan.sh --controls
@@ -118,23 +99,20 @@
 #
 # The recorded path judges every report window; the polled one judges only the first. A
 # silicon capture holds one report per throughput row, and read globally the first window's
-# accounting answers for every later one that dropped its own, which is the hole
-# tools/bench/bench-capture.sh's bench_windows closes on its side. A poll has no such capture
-# to read: it stops the image on the first complete block by construction, so what follows
-# that block is a window the run was cut off in the middle of.
+# accounting answers for every later one that dropped its own. A poll stops the image on the
+# first complete block, so what follows it is a window the run was cut off in.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-# gate.sh's two verdict helpers, tagged with the report window a finding came from. A capture
-# carries one report per throughput row and every arm below names a row and not a window, so an
-# untagged finding from a three-window capture cannot be placed.
+# gate.sh's verdict helpers, tagged with the report window a finding came from: the arms name
+# a row and not a window, so an untagged finding from a multi-window capture cannot be placed.
 WIN_TAG=""
 fail() { echo "FAIL: $WIN_TAG$*" >&2; exit 1; }
 bad() { echo "FAIL: $WIN_TAG$*" >&2; rc=1; }
-# The call/reply sweep ahead of the IRQ block is a quarter of a million round trips, and the
-# end-to-end sweep parks and wakes a thread once per sample on every core in turn. gate.sh's
-# own default would kill the image before it printed anything this gate reads.
+# gate.sh's default kills the image before the IRQ block prints: the call/reply sweep ahead of
+# it is a quarter of a million round trips, and the end-to-end sweep parks and wakes a thread
+# once per sample on every core in turn.
 : "${QEMU_TIMEOUT:=400}"
 
 _usage="usage: check_bench_irqspan.sh <elf> <kernel cores> | check_bench_irqspan.sh --controls |
@@ -145,13 +123,11 @@ if [ -n "${BENCH_CAPTURE:-}" ]; then
     elf=""
     want="${1:?$_usage}"
     require_number "$want" "the kernel core count"
-    # A silicon capture arrives CRLF and tools/bench/ keeps the CR on purpose. No arm below
-    # reads a line ending, so stripping it here loses nothing this gate is entitled to.
+    # A silicon capture arrives CRLF, and no arm reads a line ending.
     OUT="$(tr -d '\r' < "$BENCH_CAPTURE")"
 elif [ "${1:-}" = "--controls" ]; then
     controls_only=1
-    # Every ctl call sets `want` from its own argument and restores it; this is what the
-    # unset-variable guard needs before the first of them.
+    # For set -u only: every ctl call sets `want` from its own argument and restores it.
     want=1
     elf=""
 else
@@ -162,19 +138,14 @@ else
     [ -f "$elf" ] || fail "no image at $elf"
     need_qemu_machine
 
-    # No `$` anchor on a poll pattern: the poll greps the raw log and a console under
-    # KICKOS_CONSOLE_CRLF leaves a carriage return before every newline. The awk pass below
-    # reads $OUT, which poll_image has already stripped.
+    # No `$` anchor: the poll greps the raw log, where KICKOS_CONSOLE_CRLF leaves a carriage
+    # return before every newline.
     #
-    # The pattern matches the row's last field and not its label, because the poll reads a log
-    # the image is still writing and grep answers on a partial final line. A label-only pattern
-    # is satisfied by the bytes `  e2e-local:` alone, and the stop that follows cuts the row off
-    # before its figures: the arms below then read a row that arrived with no numbers in it and
-    # refuse a board that was working. `n=<count>)` is the row's own last token, so nothing but a
-    # whole row satisfies this.
+    # Each pattern matches the row's last token `n=<count>)` and not its label: grep answers on
+    # a partial final line of a log still being written, so a label-only pattern stops the image
+    # before the row's figures and the arms refuse a board that was working.
     #
-    # The cross row needs a second pattern where the kernel has several cores, since it prints
-    # after the local one: stopping on the local row alone leaves it never printed at all.
+    # Above one core the cross row prints after the local one and needs its own pattern.
     if [ "$want" -gt 1 ]; then
         poll_image "$elf" "^  irq-probe:" "^  e2e-local:.*n=[0-9]+\)" \
                    "^  e2e-cross:.*n=[0-9]+\)" > /dev/null
@@ -190,21 +161,20 @@ else
 fi
 
 read_report() { # <capture text>
-    # One pass over the capture, so every figure compared below comes out of the same report.
-    # Only the first report is read: the bench prints one per throughput window and a poll that
-    # raced the second would mix two windows' counts.
+    # One pass, so every figure compared below comes out of the same report. Only the first
+    # report is read: a poll that raced the second window would mix two windows' counts.
     read -r iseen iline iraised en e50 e99 emax wrows wok wbig pseen pline pclosed pdropped ptare \
             l50 l99 lmax ln cn c50 c99 cmax egl ion ihcore iforeign iwin wprobes wforeign \
             wdom wbound wgap qseen qasked qraised \
             ipl ipo ipr iph ipf ipw wmo wmr wmh wmf wmw wmlab ppl ppc ppd ppt qpa qpr \
+            tseen tset tpass tps \
             s1 a1 b1 m1 s2 a2 b2 m2 s3 a3 b3 m3 s4 a4 b4 m4 <<EOF
 $(printf '%s\n' "$1" | awk '
     function tail_n(s,   t) { t = s; sub(/.*n=/, "", t); sub(/[^0-9].*$/, "", t); return t + 0 }
     function part(s, i,   f) { split(s, f, "/"); return f[i] + 0 }
 
-    # Every field carries a flag saying it parsed. `+ 0` on a token that did not match is an
-    # in-range zero, and a zero is what several arms below are satisfied by, so the arm is read
-    # against the flag rather than against the value it would otherwise be handed.
+    # Every field carries a flag saying it parsed: `+ 0` on an unmatched token is an in-range
+    # zero that several arms are satisfied by.
     /^  irq-probe:/ && iseen == 0 {
         iseen = 1
         ihcore = -1
@@ -214,18 +184,16 @@ $(printf '%s\n' "$1" | awk '
             if ($i ~ /^raised=[0-9]+$/)  { iraised  = substr($i, 8) + 0; ipr = 1 }
             if ($i ~ /^hcore=[0-9]+$/)   { ihcore   = substr($i, 7) + 0; iph = 1 }
             if ($i == "hcore=mixed")     { ihcore   = -2; iph = 1 }
-            # A third form the kernel prints, and a core it cannot name is not a field it
-            # failed to print: the row arm below reads the -1 this leaves.
+            # A core the kernel cannot name is a parsed field: the domain arm reads the -1.
             if ($i == "hcore=none")      { iph = 1 }
             if ($i ~ /^foreign=[0-9]+$/) { iforeign = substr($i, 9) + 0; ipf = 1 }
             if ($i ~ /^win=[0-9]+$/)     { iwin     = substr($i, 5) + 0; ipw = 1 }
         }
         next
     }
-    # Paired with the row below it, not summed: each masked span is its own sweep with its own
-    # placement and its own window, so a row is read against the probe it belongs to. wpforeign
-    # and wpraised hold the values this probe just printed, kept beside the running total in
-    # wforeign.
+    # Paired with the row below it, not summed: the four spans are sampled in turn inside one
+    # sweep, but each span prints its own probe with its own counts and window. wpforeign and
+    # wpraised hold this probe only; wforeign is the running total.
     /^  wcase-probe:/ && wprobes < 4 {
         wprobes++
         wphc = -1; wpon = 0; wpwin = 0; wpforeign = 0; wpraised = 0
@@ -239,8 +207,7 @@ $(printf '%s\n' "$1" | awk '
             if ($i ~ /^foreign=[0-9]+$/) { wpforeign = substr($i, 9) + 0; wforeign += wpforeign; sf = 1 }
             if ($i ~ /^win=[0-9]+$/)     { wpwin = substr($i, 5) + 0; sw = 1 }
         }
-        # Counted over the probes that arrived: a sweep that printed fewer is named by the
-        # probe-count arm below and not here.
+        # Over the probes that arrived; a missing probe is the probe-count arm.
         if (so == 0) { wmo++ }
         if (sr == 0) { wmr++ }
         if (sh == 0) { wmh++ }
@@ -266,12 +233,20 @@ $(printf '%s\n' "$1" | awk '
         }
         next
     }
+    /^  e2e-settle:/ && tseen == 0 {
+        tseen = 1
+        for (i = 2; i <= NF; i++) {
+            if ($i ~ /^settled=[0-9]+\/[0-9]+$/) {
+                tset = part(substr($i, 9), 1); tpass = part(substr($i, 9), 2); tps = 1
+            }
+        }
+        next
+    }
     /^  irq:/ && eseen == 0 {
         eseen = 1
         e50 = part($2, 1); e99 = part($2, 2); emax = part($2, 3); en = tail_n($0)
-        # A glitching or frozen counter declares itself in the heading, the kernel printing
-        # min/avg/max there instead of percentiles. The window bound has nothing to say on such
-        # a part: a glitched read can only inflate, and an inflated stamp is not an offset.
+        # A glitching or frozen counter heads the row min/avg/max instead of percentiles. The
+        # window bound is skipped there: a glitched read can only inflate, which is no offset.
         if (index($0, "(min/avg/max")) { egl = 1 }
         next
     }
@@ -280,17 +255,15 @@ $(printf '%s\n' "$1" | awk '
         n = tail_n($0)
         if (n > 0) { wok++ }
         if (n > wbig) { wbig = n }
-        # The span the label names, read off the label rather than assumed from the order the
-        # rows arrive in: the four share one accumulator and are re-reported per sweep, so a
-        # sweep that walked them in another order would still print four plausible rows.
+        # Read off the label, not assumed from row order: rows printed in another order still
+        # look plausible.
         if (match($1, /\[[0-9]+B\]/)) { ws[wrows] = substr($1, RSTART + 1, RLENGTH - 3) + 0 }
         else { wmlab++ }
         w50[wrows] = part($2, 1); w99[wrows] = part($2, 2); wmax[wrows] = part($2, 3)
         if (n > 0 && wphc != wpon) { wdom++ }
         if (n > 0 && egl == 0 && wpwin > 0 && part($2, 3) > wpwin) { wbound++ }
-        # n plus this same probe foreign owes this same probe raised. Scoped to n>0: a handler
-        # that timed out inside the sweep fixed spin lands in neither count, and only a
-        # populated row can show the gap against its own denominator.
+        # Scoped to n>0: a handler that timed out inside the fixed spin lands in neither count,
+        # and only a populated row shows that gap.
         if (n > 0 && n + wpforeign != wpraised) { wgap++ }
         next
     }
@@ -320,6 +293,7 @@ $(printf '%s\n' "$1" | awk '
                ipl + 0, ipo + 0, ipr + 0, iph + 0, ipf + 0, ipw + 0,
                wmo + 0, wmr + 0, wmh + 0, wmf + 0, wmw + 0, wmlab + 0,
                ppl + 0, ppc + 0, ppd + 0, ppt + 0, qpa + 0, qpr + 0;
+        printf " %d %d %d %d", tseen + 0, tset + 0, tpass + 0, tps + 0;
         for (i = 1; i <= 4; i++) {
             printf " %d %d %d %d", ws[i] + 0, w50[i] + 0, w99[i] + 0, wmax[i] + 0;
         }
@@ -329,7 +303,7 @@ EOF
 }
 
 # A window opens at the row every report begins with and runs to the next one or to the end,
-# which is the model tools/bench/bench-capture.sh already reads these captures by.
+# the same model tools/bench/bench-capture.sh reads these captures by.
 window_count() { # <capture text>
     printf '%s\n' "$1" | grep -c '^  throughput: '
 }
@@ -364,19 +338,13 @@ irq_arms() {
     fi
 
     # --- the fields those lines carry, each of them parsed ----------------------
-    # A line that arrived is not a field that parsed, and the difference is what the arms below
-    # cannot tell on their own: a token that did not match reads as an in-range zero, and
-    # several of them are satisfied by that zero rather than refused by it. The two window
-    # bounds scope themselves away below a window of zero, the tare floor compares every p50
-    # against a tare no p50 can be under, the close path reads a refusal count of none, and the
-    # identity the entry row owes its own probe is taken against a foreign count the parser
-    # handed out. Each is refused here by name instead of quietly disabling itself.
+    # An unmatched token reads as an in-range zero that disables the arm reading it: the window
+    # bounds scope themselves away, the tare floor passes any p50, the close path reads no
+    # refusals, and the entry identity takes a foreign count of zero.
     #
-    # Five of these cannot have a plant of their own, for the reason the probe-line guard above
-    # gives: a report missing irq-probe's raised=, e2e-probe's closed=, either e2e-passes field
-    # or a masked probe's raised= reads as a zero that a denominator arm below already refuses,
-    # so the check here can never refuse a report that arm would let through. What it buys there
-    # is a finding that names the field instead of a count read off a handed zero.
+    # Five of these have no plant of their own: a report missing irq-probe's raised=,
+    # e2e-probe's closed=, either e2e-passes field or a masked probe's raised= reads as a zero a
+    # denominator arm already refuses. The check here names the field instead.
     field_parsed() { # <flag> <line> <field>
         if [ "$1" -ne 1 ]; then
             bad "the $2 line carries no readable $3 field; the arm that reads it would take the
@@ -441,10 +409,25 @@ irq_arms() {
         fi
     fi
 
+    # --- the settle mark -------------------------------------------------------
+    if [ "$tseen" -ne 1 ]; then
+        bad "the capture carried no e2e-settle line, so a pass that raised into its own set-up
+      reads exactly like one that waited it out"
+    elif [ "$tps" -ne 1 ]; then
+        bad "the e2e-settle line carries no readable settled=<n>/<passes> field"
+    else
+        if [ "$tpass" -le 0 ] || [ $((tpass % want)) -ne 0 ]; then
+            bad "the e2e-settle line counts $tpass pass(es) on a $want-core kernel; the sweep
+      runs the same number of passes on every kernel core"
+        fi
+        if [ "$tset" -gt "$tpass" ]; then
+            bad "the e2e-settle line counts $tset settled pass(es) out of $tpass"
+        fi
+    fi
+
     # --- end to end ------------------------------------------------------------
     # One clause and two diagnoses, not two arms: a board that delivers no injected interrupt
-    # at all closes no span either, so the inner test can never refuse a report the outer one
-    # lets through.
+    # closes no span either, so the inner test can never refuse a report the outer one passes.
     if [ "$pclosed" -le 0 ]; then
         if [ "$en" -le 0 ] && [ "$iforeign" -eq 0 ]; then
             bad "line $iline was raised $iraised times, no handler entry was seen, and no
@@ -465,9 +448,9 @@ irq_arms() {
 
     # --- the clock domain ------------------------------------------------------
     if [ "$wprobes" -ne 4 ]; then
-        bad "the masked sweep printed $wprobes probe line(s) beside $wrows row(s); each span is
-      its own sweep and its row is read against its own probe, so a missing one leaves a row
-      judged against another span's window"
+        bad "the masked sweep printed $wprobes probe line(s) beside $wrows row(s); each span
+      prints its own probe and its row is read against it, so a missing one leaves a row judged
+      against another span's window"
     fi
     if [ "$en" -gt 0 ]; then
         if [ "$ihcore" -eq -2 ]; then
@@ -502,10 +485,8 @@ irq_arms() {
     fi
 
     # --- population, on rows the sweep actually filled --------------------------
-    # n=0 is not this arm's to judge: a line never attached and a raise that reached no handler
-    # both print n=0 beside raised>0, and the arms above already tell those apart. Where n>0,
-    # the row's own count plus its own probe's foreign owes its own probe's raised exactly; the
-    # gap is a handler that timed out inside the sweep's fixed spin, counted by neither.
+    # Scoped to n>0; the arms above judge an empty row. The gap is a handler that timed out
+    # inside the sweep's fixed spin, counted by neither n nor foreign.
     if [ "$en" -gt 0 ] && [ $((en + iforeign)) -ne "$iraised" ]; then
         bad "the entry row carries n=$en beside foreign=$iforeign, which together are
       $((en + iforeign)) against raised=$iraised; the shortfall is a handler that neither
@@ -541,18 +522,17 @@ irq_arms() {
         bad "$wok of $wrows worst-case row(s) carried samples where $_wwant did, the entry row
       having n=$en; all five raise the same line, so one firing and another not is the instrument"
     fi
-    # ONE accumulator serves all four spans and is cleared between them, so no row may report more
-    # samples than one span's worth. Left uncleared they climb across the sweep and every row still
-    # looks populated.
+    # Each span has its own slot, cleared at the start of the sweep, so no row may report more
+    # samples than one span raised. A sample written to the wrong span's slot, or a slot left
+    # uncleared, climbs past it while every row still looks populated.
     if [ "$wbig" -gt "$iraised" ]; then
-        bad "a worst-case row reports $wbig samples where one span raises $iraised; the slot the
-      four spans share was not cleared between them, so the later rows carry the earlier ones"
+        bad "a worst-case row reports $wbig samples where one span raises $iraised; a sample
+      landed in another span's slot, or the slots were not cleared, so a row carries more than its
+      own span"
     fi
 
     # --- order, on every row the report emitted ---------------------------------
-    # A row nothing reads is a row whose distribution may be anything. The entry and masked rows
-    # are an empty 0/0/0 on a backend that populates none of them, which is ordered, so no arm is
-    # keyed on whether a row fired.
+    # Not keyed on whether a row fired: an empty row prints 0/0/0, which is ordered.
     row_order() { # <name> <p50> <p99> <max>
         if [ "$2" -gt "$3" ] || [ "$3" -gt "$4" ]; then
             bad "the $1 reports p50=$2 p99=$3 max=$4, which is not ordered"
@@ -560,9 +540,7 @@ irq_arms() {
         fi
         return 0
     }
-    # The four masked rows carry their verdict on, the span arms below reading their p50s: a row
-    # whose figures are not a distribution prices its own span out of step with its siblings for
-    # a reason this arm has already named.
+    # A masked row refused here is kept out of the label arm, which would refuse it again.
     _wcase_ok=1
     row_order "entry distribution" "$e50" "$e99" "$emax"
     row_order "local end-to-end row" "$l50" "$l99" "$lmax"
@@ -572,8 +550,7 @@ irq_arms() {
     row_order "worst-case row for ${s4}B" "$a4" "$b4" "$m4" || _wcase_ok=0
 
     # --- the floor -------------------------------------------------------------
-    # Both figures come from one clock and one unit, so this comparison is arithmetic and not an
-    # assumption about any board's rate.
+    # Both figures are nanoseconds from one clock, so no rate enters the comparison.
     if [ "$ln" -gt 0 ] && [ "$l50" -le "$ptare" ]; then
         bad "the local end-to-end p50 is $l50 ns against a tare of $ptare ns; the span is not
       longer than the same userspace read and the same trap with no interrupt in it, so it did not
@@ -581,37 +558,24 @@ irq_arms() {
     fi
 
     # --- the span, and whether this board can see it ----------------------------
-    # The four rows exist to say that a longer masked window costs more, and counting their
-    # samples does not say it: four rows with the same figure carry the same sample counts as
-    # four rows that separate, and an ignored span_bytes leaves exactly that.
-    #
-    # The labels are read off the rows and checked to ascend, so the comparison below is between
-    # the spans it names and not between whichever rows arrived first.
     # Scoped to four rows with four readable labels: a short report or an unread label leaves a
-    # span reading 0, which fails this comparison for a reason an arm above has already named.
+    # span reading 0, which an arm above has already refused.
     _labels_ok=0
     if [ "$wrows" -eq 4 ] && [ "$wmlab" -eq 0 ]; then
         _labels_ok=1
         if [ "$s1" -ge "$s2" ] || [ "$s2" -ge "$s3" ] || [ "$s3" -ge "$s4" ]; then
             _labels_ok=0
             bad "the worst-case rows name spans ${s1}B ${s2}B ${s3}B ${s4}B, which do not ascend;
-      the four share one accumulator and are re-reported per sweep, so a sweep that walked them
-      out of order still prints four plausible rows"
+      a sweep that printed them out of order still prints four plausible rows"
         fi
     fi
     _spans="${s1}B=$a1 ${s2}B=$a2 ${s3}B=$a3 ${s4}B=$a4"
     _judged="spread only"
     if [ "$en" -le 0 ]; then
-        # Nothing was sampled, so there is no spread to have. The arms above already refused the
-        # case where that happens beside a closed end-to-end span.
         _judged="not sampled"
     elif [ "$want" -gt 1 ]; then
-        # Above one kernel core nothing here has ever populated these rows: every four-core board
-        # in this fleet routes the injected line to a core other than the raiser, so the domain
-        # arms refuse the lot and the branch above takes the empty case instead. This one is kept
-        # for a board that delivers locally, where the rows would mean what they mean at one core
-        # and the ordering could be judged; until a capture shows that, judging it asserts a
-        # shape no run has produced.
+        # Reached only by a board that delivers locally above one kernel core, which no capture
+        # has shown; judging its ordering would assert a shape no run has produced.
         _judged="not judged above one kernel core (no capture has populated these rows there)"
     else
         _grew=1
@@ -621,9 +585,8 @@ irq_arms() {
       the same raise with a longer masked body in front of it, so a later row below an earlier one
       is a body the mask does not cover or a counter that is not moving"
         fi
-        # One bucket is the smallest difference this instrument can report: a percentile is a
-        # bucket low edge at an eighth of an octave, so two figures inside w/8 of each other are
-        # one reading.
+        # A percentile is a bucket low edge at an eighth of an octave, so two figures inside w/8
+        # of each other are one reading.
         _step=$((a1 / 8))
         if [ "$a4" -le $((a1 + _step)) ]; then
             _grew=0
@@ -633,9 +596,7 @@ irq_arms() {
       counter these rows are read from is not moving"
         fi
         _judged="grows with the span"
-        # Only where every row it reads is one this gate has not already refused: a row that
-        # fired where its siblings did not, or whose figures are not a distribution, prices its
-        # span out of step for a reason named above and would be refused twice.
+        # Only over rows no arm above has refused, so no row is refused twice.
         if [ "$_grew" -eq 1 ] && [ "$_labels_ok" -eq 1 ] && [ "$_wcase_ok" -eq 1 ] \
            && [ "$wok" -eq 4 ]; then
             span_labels
@@ -646,27 +607,18 @@ irq_arms() {
 }
 
 # --- the label against the span its own row measured --------------------------
+# Each row is the same raise with the bytes its label names in front of it, so between any two
+# rows the cost difference over the span difference is one per-byte rate, and the labels are
+# consistent exactly when one rate fits all six pairs. A relabelled row still ascends and still
+# grows, so only this arm catches it.
 #
-# Order is not identity. The arm above says the four labels ascend and the four figures ascend
-# with them, and a row relabelled to any wider span still satisfies both: the published row
-# then names a width it did not measure, which is the one way this report falsifies a figure
-# while every arm reads clean.
+# The readings are bucket low edges, so a pair bounds the rate rather than fixing it. The slack
+# is two buckets per reading: one for the instrument's resolution, one because the body's cost
+# is close to proportional to its length but not exactly so. Where the 64-byte body sits inside
+# one bucket of the empty one, that row's label is bounded by nothing and only the two wide
+# rows are held to their names.
 #
-# What binds the label is the arithmetic of the sweep. Each row is the same raise with the
-# bytes its label names in front of it, so between any two rows the difference in cost over the
-# difference in span is the same per-byte rate, and the four labels are consistent exactly when
-# one rate fits all six pairs at once. A row that names four times the width it measured prices
-# those bytes at a quarter of what its siblings price them at, and no pair can then agree with
-# the rest.
-#
-# The readings are bucket low edges, so a pair bounds the rate rather than fixing it. Two
-# buckets of slack per reading and not one: one bucket is the instrument's own resolution, and
-# the second is for the sweep's body, whose cost is close to proportional to its length but not
-# exactly so. What the slack costs is reach, and the arm says so: on a board where a whole
-# 64-byte body sits inside one bucket of the empty one, that row's label is bounded by nothing
-# and only the two wide rows are held to their names.
-#
-# Scaled by 1024 and reported as such, the rate being cycles per KiB of masked body.
+# The rate is cycles per KiB of masked body, scaled by 1024.
 span_labels() {
     _rate_lo=0
     _rate_hi=0
@@ -708,13 +660,11 @@ span_labels() {
 }
 
 # --- the arms, proven on planted reports before the real one ------------------
+# Each plant differs from a good report in one figure. An arm whose plant does not fire reports
+# every real capture clean.
 #
-# Every arm reads a number off a row, and a report of the right shape carrying the wrong
-# numbers is what this gate exists to refuse, so each plant below differs from a good one in
-# one figure. An arm whose plant does not fire reports every real capture clean.
-#
-# The two good plants are real reports, one per core count: one kernel core, where the masked
-# spans separate, and four, where they do not and must not be judged.
+# ctl_one and ctl_four are real reports: one kernel core, where the masked spans separate, and
+# four, where they do not and must not be judged.
 ctl_one() {
     printf '%s\n' \
 '  irq-probe: line=6 raise=inject on=0 raised=100 hcore=0 foreign=0 win=263960' \
@@ -727,6 +677,7 @@ ctl_one() {
 '  wcase-irq[256B]:  2304/3584/3860 cyc  (p50/p99/max, n=100)' \
 '  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=0 foreign=0 win=15860' \
 '  wcase-irq[1024B]: 4608/6144/6740 cyc  (p50/p99/max, n=100)' \
+'  e2e-settle: settled=2/2' \
 '  e2e-probe: line=7 closed=50 dropped=0 tare=1500/1828 ns  (min/avg, n=64)' \
 '  e2e-passes: asked=50 raised=50' \
 '  e2e-local: 8192/106496/114300 ns  (p50/p99/max, n=50)'
@@ -743,14 +694,15 @@ ctl_four() {
 '  wcase-irq[256B]:  0/0/0 cyc  (p50/p99/max, n=0)' \
 '  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=103725' \
 '  wcase-irq[1024B]: 0/0/0 cyc  (p50/p99/max, n=0)' \
+'  e2e-settle: settled=8/8' \
 '  e2e-probe: line=201 closed=200 dropped=0 tare=1104/1363 ns  (min/avg, n=64)' \
 '  e2e-passes: asked=200 raised=200' \
 '  e2e-local: 15360/276336/276336 ns  (p50/max/max, n=200)' \
 '  e2e-cross: 0/0/0 ns  (p50/p99/max, n=0)'
 }
 
-# What the four-core boards print, kept verbatim as the plant that must be refused: the rows
-# populated from a peer's cycle counter, and a probe that says so if anything reads it.
+# What the four-core boards printed before the domain arms, verbatim, and must be refused: rows
+# filled from a peer's cycle counter beside a probe that says so.
 ctl_four_offset() {
     printf '%s\n' \
 '  irq-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=0 win=132871' \
@@ -763,17 +715,16 @@ ctl_four_offset() {
 '  wcase-irq[256B]:  983040/983040/1008384 cyc  (p50/p99/max, n=100)' \
 '  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=0 win=103725' \
 '  wcase-irq[1024B]: 983040/983040/1007383 cyc  (p50/p99/max, n=100)' \
+'  e2e-settle: settled=8/8' \
 '  e2e-probe: line=201 closed=200 dropped=0 tare=1104/1363 ns  (min/avg, n=64)' \
 '  e2e-passes: asked=200 raised=200' \
 '  e2e-local: 98304/360448/378464 ns  (p50/p99/max, n=50)' \
 '  e2e-cross: 147456/360448/2752960 ns  (p50/p99/max, n=150)'
 }
 
-# A board that delivers its own raise locally above one kernel core. Nothing on this bench has
-# ever printed it, and the clock-domain arms are kept for it: they are the arms that say what a
-# populated four-core row owes, and a plant is the only place that shape exists. Every
-# clock-domain plant below is this report with one field moved, so the arm each one names is
-# the only thing that can refuse it.
+# A board that delivers its own raise locally above one kernel core. No capture has shown it,
+# so a plant is the only place that shape exists. Every clock-domain plant below is this report
+# with one field moved.
 ctl_four_local() {
     printf '%s\n' \
 '  irq-probe: line=200 raise=inject on=3 raised=100 hcore=3 foreign=0 win=263960' \
@@ -786,6 +737,7 @@ ctl_four_local() {
 '  wcase-irq[256B]:  2304/3584/3860 cyc  (p50/p99/max, n=100)' \
 '  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=3 foreign=0 win=15860' \
 '  wcase-irq[1024B]: 4608/6144/6740 cyc  (p50/p99/max, n=100)' \
+'  e2e-settle: settled=8/8' \
 '  e2e-probe: line=201 closed=200 dropped=0 tare=1104/1363 ns  (min/avg, n=64)' \
 '  e2e-passes: asked=200 raised=200' \
 '  e2e-local: 15360/276336/276336 ns  (p50/max/max, n=200)' \
@@ -796,8 +748,7 @@ ctl_four_local() {
 ctl() {
     _ctl_save=$want
     want=$2
-    # A subshell, because an arm that calls fail exits: the plant written for one of those would
-    # otherwise take the whole control suite with it and every plant below it would go unread.
+    # A subshell, because fail exits and would otherwise end the whole control suite.
     ( rc=0; read_report "$4"; irq_arms 2> /dev/null; exit "$rc" )
     _ctl_got=$?
     want=$_ctl_save
@@ -811,58 +762,46 @@ ctl() {
     fi
 }
 
-# One plant per arm, and one arm per plant. A plant that trips two arms proves neither: removing
-# the arm it was written for still leaves the report refused, and the control reads as green. So
-# every refuse plant below is a report that passes but for the single field its name points at,
+# Every refuse plant below is a report that passes but for the single field its name points at,
 # and the two whole-shape controls that cannot meet that standard say so themselves.
 ctl 'one core, spans separating' 1 pass "$(ctl_one)"
-# The one that says the span arm is keyed right: four flat rows at four kernel cores, which is
-# what the emulator really reports there, and which the same figures at one core must refuse.
+# Keys the span arm on the core count: flat rows pass at four kernel cores, as the emulator
+# reports there, and flat rows at one core are refused below.
 ctl 'four cores, spans flat' 4 pass "$(ctl_four)"
-# The third good report, and the base every clock-domain plant is one field away from.
 ctl 'four cores delivering locally' 4 pass "$(ctl_four_local)"
 
 # --- the probe lines, and the raise denominator under them --------------------
-# Not an isolating control, and it is the one arm that cannot have one. A report with no
-# irq-probe line carries raised=0 and one with no e2e-probe line carries closed=0, so the guard
-# can never refuse a report those two arms would let through; what it buys is a single finding
-# instead of a cascade read off handed zeros. It is proven here as a shape and merged into them
-# for coverage.
+# Not isolating, and it cannot be: a report with no irq-probe line carries raised=0 and one
+# with no e2e-probe line carries closed=0, which those arms refuse anyway. The guard buys a
+# single finding instead of a cascade read off handed zeros.
 ctl 'a report with no end-to-end probe line' 1 refuse \
     "$(ctl_one | sed '/^  e2e-probe: /d')"
-# A line the kernel never attached: every sweep raised it zero times and every row is empty,
-# which is the state the row alone cannot show. Isolates the raise denominator.
+# A line the kernel never attached: every sweep raised it zero times and every row is empty.
+# Isolates the raise denominator.
 ctl 'a line that was never raised' 1 refuse \
     "$(ctl_one | sed 's|raised=100|raised=0|
                       s|n=100)|n=0)|
                       s|^\(  irq: *\)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
                       s|^\(  wcase-irq\[[0-9]*B\]: *\)[0-9]*/[0-9]*/[0-9]*|\10/0/0|')"
-# Two closes that opened no span, on top of a sweep whose every raise closed. `raised` and
-# `closed` still agree, so the denominator arms cannot reach it. Isolates the dropped count.
+# Two refused closes beside a sweep whose every raise closed: `raised` and `closed` still
+# agree, so the denominator arms cannot reach it. Isolates the dropped count.
 ctl 'closes the sweep refused' 1 refuse \
     "$(ctl_one | sed 's|dropped=0|dropped=2|')"
 
 # --- a field that did not parse, one plant per field -------------------------
-# Every plant here deletes a field that the report around it still agrees with, which is what
-# makes each one isolating: the zero the parser hands out in its place is the value that field
-# already carried, so no arm that reads the value can move and only the one that asks whether it
-# parsed refuses the report. Setting the same field to a bad value fires the arm written for it
-# instead, which is how these were told apart from arms that do not exist.
-#
-# The five fields whose absence a denominator arm already refuses are named at the check itself
-# and have no plant here, for the reason the probe-line control above gives.
+# Every plant here deletes a field whose handed zero moves no arm that reads the value, so only
+# the parse check refuses it. The five fields a denominator arm already covers have no plant.
 ctl 'an entry probe with no line number' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq-probe: \)line=6 |\1|')"
 ctl 'an entry probe that names no sweep core' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq-probe: line=6 raise=inject \)on=0 |\1|')"
-# The four masked rows are empty here, so nothing reads the core the probe names and only the
-# parse refuses it.
+# The masked rows are empty here, so nothing reads the handler core and only the parse refuses
+# it.
 ctl 'an entry probe that names no handler core at all' 4 refuse \
     "$(ctl_four | sed 's|^\(  irq-probe: .*\)hcore=0 |\1|')"
 ctl 'an entry probe with no refusal count' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq-probe: .*\)foreign=0 |\1|')"
-# The window the entry bound is read against. Deleted, the bound scopes itself away and the row
-# may report any maximum at all.
+# Deleted, the entry window scopes its bound away and the row may report any maximum.
 ctl 'an entry probe with no window' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq-probe: .*\) win=263960|\1|')"
 ctl 'a masked probe that names no sweep core' 1 refuse \
@@ -877,32 +816,46 @@ ctl 'an end-to-end probe with no line number' 1 refuse \
     "$(ctl_one | sed 's|^\(  e2e-probe: \)line=7 |\1|')"
 ctl 'an end-to-end probe with no refusal count' 1 refuse \
     "$(ctl_one | sed 's| dropped=0||')"
-# Corrupted and not deleted, which is the shape a torn console line leaves: the token is there
-# and does not parse, and the floor arm below it then compares every p50 against a tare of zero.
+# Corrupted rather than deleted, as a torn console line leaves it: the floor would then compare
+# every p50 against a tare of zero.
 ctl 'an end-to-end probe whose tare does not parse' 1 refuse \
     "$(ctl_one | sed 's|tare=1500/1828|tare=?/?|')"
-# The widest row, so that the three that remain still ascend and the arm that reads their order
-# is scoped away rather than tripped.
+# The widest row, so the other three still ascend and the order arm is scoped away rather than
+# tripped.
 ctl 'a worst-case row that names no span' 1 refuse \
     "$(ctl_one | sed 's|wcase-irq\[1024B\]:|wcase-irq[]:      |')"
 
 # --- the sweep's denominator, one clause per plant ---------------------------
-# The shortfall the app itself cannot report: its raiser gives a pass up after its retry bound
-# and says so in a comment. Thirteen passes abandoned, and the rest closing cleanly, which is
-# exactly the shape that produced a full-looking report.
+# The raiser gives a pass up after its retry bound and reports nothing: thirteen abandoned and
+# the rest closing cleanly reads as a full report.
 ctl 'a sweep that abandoned passes' 1 refuse \
     "$(ctl_one \
         | sed 's|asked=50 raised=50|asked=50 raised=37|' \
         | sed 's|closed=50|closed=37|' \
         | sed 's|^\(  e2e-local: .*\)n=50)|\1n=37)|')"
 # Every pass raised and a quarter of them closing nowhere. The locality total still agrees with
-# `closed`, so this is the clause the e2e arm cannot reach.
+# `closed`, so the e2e arm cannot reach it.
 ctl 'raises that closed nothing' 1 refuse \
     "$(ctl_one \
         | sed 's|closed=50|closed=37|' \
         | sed 's|^\(  e2e-local: .*\)n=50)|\1n=37)|')"
 ctl 'a sweep with no denominator at all' 1 refuse \
     "$(ctl_one | sed '/^  e2e-passes: /d')"
+
+# --- the settle mark, one clause per plant ------------------------------------
+# A short count is the one shape the arm lets through, the pass having raised anyway.
+ctl 'a pass that raised before its set-up settled' 1 pass \
+    "$(ctl_one | sed 's|settled=2/2|settled=1/2|')"
+ctl 'a sweep with no settle mark' 1 refuse \
+    "$(ctl_one | sed '/^  e2e-settle: /d')"
+ctl 'a settle mark that does not parse' 1 refuse \
+    "$(ctl_one | sed 's|settled=2/2|settled=2|')"
+ctl 'a settle mark counting no pass' 1 refuse \
+    "$(ctl_one | sed 's|settled=2/2|settled=0/0|')"
+ctl 'a settle mark whose passes skip a core' 4 refuse \
+    "$(ctl_four | sed 's|settled=8/8|settled=6/6|')"
+ctl 'a settle mark past its own passes' 1 refuse \
+    "$(ctl_one | sed 's|settled=2/2|settled=3/2|')"
 
 # --- the end-to-end span, and the two diagnoses of an empty one ---------------
 # A sweep that ran its passes and closed nothing. asked and raised move with closed, so the
@@ -936,54 +889,50 @@ ctl 'a cross-core sample at one kernel core' 1 refuse \
        printf '%s\n' '  e2e-cross: 8192/8192/8192 ns  (p50/p99/max, n=1)')"
 
 # --- the clock domain, one plant per statement -------------------------------
-# The whole-shape control, and the only plant here that trips several arms: a real report
-# rather than one written for an arm, kept verbatim because what it proves is that this gate
-# refuses the six-figure report the four-core boards print. It is not the witness for any
-# single arm, and each of them has its own plant below.
+# The whole-shape control and the only plant here that trips several arms. It witnesses no
+# single arm; each has its own plant below.
 ctl 'rows filled from a peer core' 4 refuse "$(ctl_four_offset)"
-# The four rows are populated and locally delivered, and one field of the entry probe moves.
 ctl 'an entry row stamped on several cores' 4 refuse \
     "$(ctl_four_local | sed 's|^\(  irq-probe: .*\)hcore=3|\1hcore=mixed|')"
 ctl 'an entry row whose probe names no handler core' 4 refuse \
     "$(ctl_four_local | sed 's|^\(  irq-probe: .*\)hcore=3|\1hcore=none|')"
 ctl 'an entry row stamped on a peer core' 4 refuse \
     "$(ctl_four_local | sed 's|^\(  irq-probe: .*\)hcore=3|\1hcore=0|')"
-# The probe names the core the sweep ran on and only the arithmetic refuses it: this is what a
-# classifier stuck on "local" leaves when it also reports the core the reader wants to see.
+# The probe names the sweep's core and only the arithmetic refuses it: a classifier stuck on
+# "local" that also reports the expected core.
 ctl 'an entry row outside its own window' 4 refuse \
     "$(ctl_four_local | sed 's|^\(  irq-probe: .*\)win=263960|\1win=100000|')"
 ctl 'a masked row stamped on a peer core' 4 refuse \
     "$(ctl_four_local | sed 's|^\(  wcase-probe: .*\)hcore=3\( foreign=0 win=23040\)|\1hcore=0\2|')"
 ctl 'a masked row outside its own window' 1 refuse \
     "$(ctl_one | sed 's|^\(  wcase-probe: .*\)win=5600|\1win=3000|')"
-# One sample refused at ONE kernel core. The row is cut to 99 so that it still owes its own
-# probe exactly, which is what keeps the population arm out of this one.
+# One sample refused at ONE kernel core. The row is cut to 99 so it still owes its own probe
+# exactly, keeping the population arm out of this one.
 ctl 'a refusal at one kernel core' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq-probe: .*\)foreign=0|\1foreign=1|
                       s|^\(  irq: *1408/3328/172560 cyc  (p50/p99/max, \)n=100)|\1n=99)|')"
 
 # --- population, one plant per row shape -------------------------------------
-# Both leave raised=100 and foreign=0 untouched beside a row cut to n=10: the exact shape a
-# handler timing out inside the sweep's fixed spin leaves behind, landing in neither count.
+# Both leave raised=100 and foreign=0 beside a row cut to n=10: handlers timing out inside the
+# sweep's fixed spin, landing in neither count.
 ctl 'the entry row short of its own raise count' 1 refuse \
     "$(ctl_one | sed 's|^\(  irq:       1408/3328/172560 cyc  (p50/p99/max, \)n=100)|\1n=10)|')"
 ctl 'a masked row short of its own raise count' 1 refuse \
     "$(ctl_one | sed 's|^\(  wcase-irq\[64B\]:   1792/2048/19740 cyc  (p50/p99/max, \)n=100)|\1n=10)|')"
 
 # --- the four masked rows: how many arrived, which fired, and how many samples -
-# Three rows where four spans are reported. The entry row is empty here, so the count of
-# populated rows is still the zero it owes, and the label arm is scoped past a short report:
-# only the row count refuses this one.
+# The entry row is empty here, so the populated-row count still owes zero, and the label arm
+# is scoped past a short report: only the row count refuses this one.
 ctl 'a masked sweep that printed three rows' 4 refuse \
     "$(ctl_four | sed '/^  wcase-irq\[256B\]:/d')"
-# One span firing where its siblings did not. The empty row is the first, so the p50s still
-# ascend and clear each other, and only the count of populated rows refuses it.
+# The empty row is the first, so the p50s still ascend and clear each other, and only the
+# count of populated rows refuses it.
 ctl 'a masked row that fired where its siblings did not' 1 refuse \
     "$(ctl_one | sed 's|^\(  wcase-irq\[0B\]: *\)1536/2048/20220 cyc  (p50/p99/max, n=100)|\10/0/0 cyc  (p50/p99/max, n=0)|')"
-# The shape the header of this file is written around: the slot the four spans share carried
-# across them, each row holding every earlier row's samples. Its per-span probe carried too, so
-# each row still owes its own probe exactly and the population arm is silent; what refuses it is
-# the count against the raises one span makes.
+# Each row holding every earlier row's samples, as a slot not cleared at the start of the sweep
+# or a sample landing in another span's slot leaves it. Each probe's raised climbs with it, so
+# every row still owes its own probe exactly and the population arm is silent; only the count
+# against the raises one span makes refuses it.
 ctl 'a masked slot carried across the spans' 1 refuse \
     "$(ctl_one | sed 's|^\(  wcase-probe: .*\)raised=100\( hcore=0 foreign=0 win=23040\)|\1raised=200\2|
                       s|^\(  wcase-probe: .*\)raised=100\( hcore=0 foreign=0 win=5600\)|\1raised=300\2|
@@ -1004,14 +953,13 @@ ctl 'spans that stop growing' 1 refuse \
     "$(ctl_one | sed 's|^\(  wcase-irq\[1024B\]:  *\)[0-9]*/|\11792/|')"
 ctl 'spans reported out of order' 1 refuse \
     "$(ctl_one | sed 's|wcase-irq\[64B\]|wcase-irq[256B]|; s|wcase-irq\[256B\]:  2304|wcase-irq[64B]:  2304|')"
-# The one the order arms cannot see: one row renamed to four times the span it measured, every
-# figure left where the sweep put it. The four labels still ascend, the four p50s still grow and
-# the widest still clears the narrowest, so this is the report a reader takes at its word.
+# One row renamed to four times the span it measured, every figure left alone: the labels
+# still ascend, the p50s still grow and the widest still clears the narrowest, so only the label
+# arm refuses it.
 ctl 'a row naming a span it did not measure' 1 refuse \
     "$(ctl_one | sed 's|wcase-irq\[1024B\]:|wcase-irq[4096B]:|')"
-# The same row renamed down, still ascending behind the 256B one, which prices its bytes above
-# what its siblings charge rather than below. One arm and two directions, and an arm cut to the
-# over-claim alone reports this one clean.
+# The same row renamed down, still ascending behind the 256B one, pricing its bytes above its
+# siblings rather than below. An arm cut to the over-claim alone reports this one clean.
 ctl 'a row naming a span narrower than the one it measured' 1 refuse \
     "$(ctl_one | sed 's|wcase-irq\[1024B\]:|wcase-irq[512B]: |')"
 ctl 'a worst-case row out of order' 1 refuse \
@@ -1022,12 +970,10 @@ ctl 'the local row at the tare' 4 refuse \
     "$(ctl_four | sed 's|^\(  e2e-local: \)15360/|\11104/|')"
 
 # --- the recorded-capture path, which no control above reaches -----------------
-# Every silicon verdict in this tree comes through BENCH_CAPTURE=, and it differs from the
-# polled path in the two ways the plants below carry: the CR every console line ends in, and
-# the several report windows a capture holds against the one window a poll stops on. A capture
-# whose last window is the broken one is exactly what a first-window reader reports clean.
-# The broken window is the 'sweep that abandoned passes' report entire, so one arm refuses it
-# and what these two controls prove is which windows are read rather than which arm reads them.
+# Every silicon verdict comes through BENCH_CAPTURE=, which differs from the polled path in the
+# CR every console line ends in and in holding several report windows. The broken window is the
+# 'sweep that abandoned passes' report entire, so these controls prove which windows are read
+# rather than which arm reads them.
 ctl_windows() { # <how many> <broken index, 0 for none>
     _cw_i=1
     while [ "$_cw_i" -le "$1" ]; do
@@ -1045,8 +991,8 @@ ctl_windows() { # <how many> <broken index, 0 for none>
     done
 }
 
-# <name> <expect: pass|refuse> <capture text>. Written out with the CR the console leaves on
-# every line and read back the way the recorded path reads it, so the strip is under control too.
+# <name> <expect: pass|refuse> <capture text>. Written with the CR the console leaves on every
+# line and read back the way the recorded path reads it, so the strip is under control too.
 _CR=$(printf '\r')
 ctl_capture() {
     _cc_f="$TMP/planted_capture.log"
@@ -1070,13 +1016,11 @@ ctl_capture() {
 
 scratch_dir
 ctl_capture 'three clean windows, CRLF' pass "$(ctl_windows 3 0)"
-# The one the first-window reader reports clean: two accounted windows and a third that
-# abandoned thirteen passes. Nothing in windows one and two is wrong, so only reading the third
-# refuses it.
+# Nothing in windows one and two is wrong, so only reading the third refuses it.
 ctl_capture 'a third window short of its denominator' refuse "$(ctl_windows 3 3)"
 ctl_capture 'a first window short of its denominator' refuse "$(ctl_windows 3 1)"
-# A complete report and no throughput row above it. Every window arm reads a window this
-# capture never opens, so the loop runs zero times and the verdict is the window count alone.
+# A complete report and no throughput row above it: the loop runs zero times and the verdict
+# is the window count alone.
 ctl_capture 'a capture holding no report window' refuse "$(ctl_one)"
 
 echo "== control: each arm fires on a planted report that no other arm refuses, four flat
@@ -1098,8 +1042,6 @@ if [ -n "${BENCH_CAPTURE:-}" ]; then
     judge_capture "$OUT"
     _windows=$(window_count "$OUT")
 else
-    # The poll stopped the image on the first complete block, so anything after it is a window
-    # the run was cut off inside.
     read_report "$OUT"
     irq_arms
     _windows=1
@@ -1115,6 +1057,10 @@ if [ "$want" -gt 1 ]; then
     _split="local n=$ln cross n=$cn"
 fi
 echo "PASS: $_windows report window(s) judged; in the last, line $iline raised $iraised,
-      $mode; line $pline closed $pclosed end to end; $_split"
+      $mode; line $pline closed $pclosed end to end; $_split; $tset of $tpass pass(es) settled"
+if [ "$tset" -lt "$tpass" ]; then
+    echo "NOTE: $((tpass - tset)) pass(es) raised before their set-up settled, so their first
+      sample may carry it"
+fi
 echo "      masked spans $_spans ($_judged)"
 exit 0

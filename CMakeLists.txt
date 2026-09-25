@@ -165,7 +165,6 @@ endif()
 add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
                         KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF})
 
-# Define boolean compile-time knobs as 0 or 1.
 option(KICKOS_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
@@ -220,6 +219,12 @@ if(KICKOS_BENCH)
 else()
   add_compile_definitions(KICKOS_BENCH=0)
 endif()
+option(KICKOS_BENCH_SCHED "The scheduler's own bench counters, above one kernel core" OFF)
+if(KICKOS_BENCH_SCHED)
+  add_compile_definitions(KICKOS_BENCH_SCHED=1)
+else()
+  add_compile_definitions(KICKOS_BENCH_SCHED=0)
+endif()
 
 if(KICKOS_ENABLE_SELFTEST)
   # Directory-wide so kernel dispatch, the user stub, and the app agree.
@@ -255,7 +260,6 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
-# Optional per-core scheduler trace; enable with -DKICKOS_SMP_TRACE=ON.
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
 if(KICKOS_SMP_TRACE)
   add_compile_definitions(KICKOS_SMP_TRACE=1)
@@ -345,6 +349,31 @@ else()
   # Always defined, so every `#if KICKOS_TLS` site is -Wundef-clean.
   add_compile_definitions(KICKOS_TLS=0)
 endif()
+
+# Where libc asks __getreent the thread pointer answers it: lx6 above one kernel core, and every
+# armv8a and rv64imac image, whose newlib the toolchain files take from conan/newlib. Elsewhere
+# one word is seated at every switch, which is correct only while one core runs its readers.
+set(KICKOS_REENT_PER_THREAD 0)
+set(KICKOS_REENT_IN_TCB 0)
+if(KICKOS_LIBC_REENT)
+  if(KICKOS_ARCH STREQUAL "rv64imac")
+    set(KICKOS_REENT_PER_THREAD 1)
+  elseif(KICKOS_ARCH STREQUAL "armv8a"
+         OR (KICKOS_ARCH STREQUAL "lx6" AND KICKOS_KERNEL_CORES GREATER 1))
+    if(NOT KICKOS_TLS)
+      message(FATAL_ERROR
+        "KickOS: KICKOS_TLS is off on arch '${KICKOS_ARCH}' with "
+        "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. There each thread reaches its libc "
+        "reentrant state through the first word of its TLS control block at the thread "
+        "pointer, and only KICKOS_TLS carves that block and seats the register. Set "
+        "KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
+    endif()
+    set(KICKOS_REENT_PER_THREAD 1)
+    set(KICKOS_REENT_IN_TCB 1)
+  endif()
+endif()
+add_compile_definitions(KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
+                        KICKOS_REENT_IN_TCB=${KICKOS_REENT_IN_TCB})
 
 # Positive identification: a new arch lands in the 0 branch of every `#if KICKOS_ARCH_SIM`.
 if(KICKOS_ARCH STREQUAL "sim")
@@ -1049,6 +1078,17 @@ endif()
 foreach(_dir lib arch kernel user system)
   add_subdirectory(${_dir})
 endforeach()
+
+# After arch, which generates the script. Where the carve is never zero each default stack's link
+# assert can be driven to its floor.
+if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND NOT KICKOS_TLS_FROM_SP AND KICKOS_REENT_IN_TCB
+   AND KICKOS_LINKER_SCRIPT)
+  add_test(NAME tls_carve_link
+           COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_tls_carve_link.sh"
+                   "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}"
+                   "${KICKOS_LINKER_SCRIPT}")
+  set_tests_properties(tls_carve_link PROPERTIES TIMEOUT 1800 LABELS host)
+endif()
 
 # After the trees above: the gates under it compile kernel and lib sources, and read the
 # include path and definitions off the targets those trees create.

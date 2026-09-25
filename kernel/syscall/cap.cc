@@ -3,7 +3,7 @@
 //
 // Capability-table manager (see cap.h): the per-thread naming+rights layer over the
 // global object pools, plus the object-side refcount (kernel().sem_refs) that owns
-// destroy-on-last-close. slotpool.h stays generic: refs[] lives here.
+// destroy-on-last-close.
 
 #include <kickos/ampwindow.h>
 #include <kickos/cap.h>
@@ -103,7 +103,6 @@ namespace kickos
         }
 
 #if KICKOS_HAVE_ASPACE
-        // Slot index of the frame run a global handle names, via the live object as above.
         int frame_run_index_of(int obj_handle)
         {
             return kernel().frame_runs.index_of(kernel().frame_runs.resolve(obj_handle));
@@ -136,8 +135,6 @@ namespace kickos
         }
 #endif
 
-        // Slot index of the mutex a global handle names (via the live object, as with
-        // sems). -1 if it does not resolve.
         int mutex_index_of(int obj_handle)
         {
             return kernel().mutexes.index_of(kernel().mutexes.resolve(obj_handle));
@@ -174,8 +171,6 @@ namespace kickos
             }
         }
 
-        // Slot index of the endpoint a global handle names (via the live object, as
-        // with sems/mutexes). -1 if it does not resolve.
         int endpoint_index_of(int obj_handle)
         {
             return kernel().endpoints.index_of(kernel().endpoints.resolve(obj_handle));
@@ -298,13 +293,13 @@ namespace kickos
             }
             case CapType::CAP_ENDPOINT:
             {
-                // #4: dropping the LAST WAIT-bearing cap makes the endpoint dead (no
+                // Dropping the LAST WAIT-bearing cap makes the endpoint dead (no
                 // receiver can ever exist), so EPIPE every parked sender. Fired exactly
                 // once (recv_holders -> 0), on BOTH voluntary close and exit teardown.
                 Endpoint* ep = kernel().endpoints.resolve(e.obj);
                 if (ep != nullptr and (e.rights & CAP_WAIT) != 0)
                 {
-                    // B2: this closer was the conventional server: drop the dangling
+                    // This closer was the conventional server: drop the dangling
                     // pointer (else a later D2 boost writes a reused TCB) and kill any
                     // lingering D2 donation. A dying closer is never rescheduled, so it
                     // skips its own recompute (mirrors mutex_force_unlock).
@@ -312,7 +307,7 @@ namespace kickos
                     {
                         endpoint_server_clear(ep);
                         // A live closer self-lowers: give up the CPU if a higher thread is
-                        // now the top runnable (H8), mirroring mutex_unlock's no-waiter path.
+                        // now the top runnable, mirroring mutex_unlock's no-waiter path.
                         if (not teardown)
                         {
                             uint8_t const np = thread_effective_prio(closer);
@@ -341,7 +336,7 @@ namespace kickos
                             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
                             {
                                 // last receiver gone: EPIPE the parked sender. A SEND_WAIT
-                                // caller returns via kos_call's B1 call_state clear.
+                                // caller returns via kos_call's call_state clear.
                                 s->wait_result = -KOS_EPIPE;
                                 sched::wake(s);
                             }
@@ -374,7 +369,7 @@ namespace kickos
             }
             case CapType::CAP_REPLY:
             {
-                // m9: run the SAME full stale-resolve as kos_reply before waking. Fires on
+                // Run the SAME full stale-resolve as kos_reply before waking. Fires on
                 // both voluntary close of a reply cap AND server-death teardown. If the
                 // caller is still parked, EPIPE it; the one-shot consume (empty + gen bump)
                 // happens at the shared close/teardown site after this returns. A dying
@@ -410,7 +405,7 @@ namespace kickos
                     caller->call_state = CALL_NONE; // stop the funnel counting this donor
                     caller->wait_result = -KOS_EPIPE;
                 }
-                // Deflate BEFORE waking (H8): the wake's reschedule must run against our
+                // Deflate BEFORE waking: the wake's reschedule must run against our
                 // reverted priority, else the woken high-prio caller cannot preempt the
                 // still-boosted closer. Mirrors endpoint_reply's deflate-then-wake order.
                 if (not teardown)
@@ -730,7 +725,6 @@ namespace kickos
             }
         }
 
-        // Record the slot `obj_handle` names in its kind's hold set.
         void hold_mark(CapType type, int obj_handle, TaskObjectHolds* h)
         {
             uint32_t* set = nullptr;
@@ -891,7 +885,7 @@ namespace kickos
             task_object_holds(&k.tasks[i], &holds);
             if ((holds.irq & irq_bit) == 0)
             {
-                continue; // This task does not hold the IRQ.
+                continue;
             }
             if ((holds.notify & notify_bit) != 0)
             {
@@ -1030,7 +1024,7 @@ namespace kickos
             // not come from this word, so narrowing it would be a lie.
             return -KOS_EBADF;
         }
-        c->authority = static_cast<uint8_t>(c->authority & mask); // & can only clear bits
+        c->authority = static_cast<uint8_t>(c->authority & mask);
         return 0;
     }
 
@@ -1352,7 +1346,7 @@ namespace kickos
         int const refused = obj_close_protocol(c, *e, /*teardown=*/false);
         if (refused != 0)
         {
-            return refused; // protocol refused the close (#3: owner closing a held mutex -> -KOS_EBUSY)
+            return refused; // protocol refused the close (owner closing a held mutex -> -KOS_EBUSY)
         }
         CapEntry const detached = *e;
         // Stale the handle + empty the slot BEFORE dropping the ref, so the slot is
@@ -1404,6 +1398,14 @@ namespace kickos
         {
             IrqLock lock;
             cap_state().teardown_depth++;
+#if KICKOS_AMP_NODE
+            // Every exit, the slay exit included, reaches here and never the landing.
+            if (c->far_hold != 0u)
+            {
+                amp::hold_release(c->far_hold - 1u);
+                c->far_hold = 0u;
+            }
+#endif
             // Release IRQ lines before the first teardown gap so supervisors can
             // claim them after an EPIPE wake. Keep this pass under one lock; both
             // console reclaim paths rely on it. cap_irq_live skips scanning non-IRQ tables.

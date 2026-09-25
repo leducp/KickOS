@@ -334,6 +334,15 @@ question each symbol answers and who answers it.
   coroutines in one host thread sharing one `%fs`. So the arch with the largest test suite
   cannot witness `KICKOS_TLS` at all, and a new arch must state which of the two shapes it
   has before writing any of it.
+- **`ARCH_TLS_FROM_SP`** -- the thread pointer is SP masked down to `KICKOS_TLS_STRIDE`, which
+  binds every stack block to one power-of-two stride. Only an arch with NO register that
+  differs per thread for unprivileged code selects it: armv6m and armv7m, because the M profile
+  has none and `__aeabi_read_tp` must derive it from SP, and rxv3, because RX has none either
+  and its emutls anchor runs unprivileged with SP as the only per-thread value. An arch with a
+  thread-pointer register seats it from the context at every switch-in and selects nothing
+  here: armv8a (`TPIDR_EL0`), lx6 (`THREADPTR`) and rv32imac (`tp`). Such an arch carves idle
+  too, so it owes `<kickos/arch/idle_floor.h>`: `KICKOS_ARCH_IDLE_FLOOR`, what an interrupt
+  needs on idle's own stack, which the link checks above idle's thread-local block.
 - **`ARCH_HAS_KERNEL_STACKS`** -- the arch's trap entry can transfer to a per-thread kernel
   stack, and its `arch_context` carries the `kernel_sp` that entry loads. NECESSARY AND NOT
   SUFFICIENT: whether a given board actually carves the blocks is `KICKOS_KERNEL_STACKS`,
@@ -344,19 +353,30 @@ question each symbol answers and who answers it.
   selects it; one that writes both paths does not, and then the red zone is what its
   unconverted boards depend on. armv7m is the one arch carrying both.
 
-**The escape a too-small part takes is `KICKOS_TLS=n`.** With TLS on every arena block is
-strided by a power of two, so `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE` must
-BE powers of two and must be the SAME one -- the root `CMakeLists.txt` refuses each failure
+**The escape a too-small part takes is `KICKOS_TLS=n`.** Where the thread pointer is SP masked
+(`ARCH_TLS_FROM_SP`), TLS on strides every arena block by a power of two, so
+`KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE` must BE powers of two and must be the
+SAME one -- the root `CMakeLists.txt` refuses each failure
 by name at configure, and its message names the two ways out. On a part where that rounding
 costs a thread, turning the knob off costs a `thread_local` and keeps the thread;
 `f302nucleo` and `bluepill-c8` both make that trade. There is no equivalent escape from a
 mandatory kernel stack, which is why an arch selects that symbol only once its entry has no
 other path to compile.
 
-**`errno` is neither of these.** newlib reaches its reentrant state through `_impure_ptr`
-and calls `__errno` nowhere in the pinned toolchains, so a per-thread `errno` follows
-The per-thread reentrant state (one `struct _reent` per slot in the app-data window) and
-never `KICKOS_TLS`. A port wanting both turns on both.
+**`errno` is neither of these.** It is a member of newlib's reentrant state, one `struct _reent`
+per thread slot in the app-data window, and a per-thread `errno` follows that state and not a
+`thread_local`. Where libc finds the running thread's copy is per toolchain. A newlib that reads
+the global `_impure_ptr` directly (the stock arm-none-eabi, riscv32-none-elf and rx-elf builds)
+has one such word per address space, which the kernel rewrites at every switch, so it is correct
+only while one core runs the threads sharing it. A newlib that asks `__getreent()` is answered per
+thread by the thread pointer (`KICKOS_REENT_PER_THREAD`): xtensa-esp-elf's own above one kernel
+core, and on armv8a and rv64imac the `conan/newlib` package, which `cmake/cross_newlib.cmake`
+swaps in for the toolchain's and refuses by name when it is missing or not dynamic-reent. The
+answer is the first word of the TLS control block where the ABI reserves one
+(`KICKOS_REENT_IN_TCB`, which makes `KICKOS_TLS` mandatory and the carve non-zero in every image,
+so an arch taking it seats its thread pointer from the context, as armv8a and lx6 do, or the stride
+binds every caller-supplied stack), and the thread pointer itself where it does not (rv64imac, `arch_context_seat_reent`). **A new arch running one kernel on several
+cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is its witness.
 
 ### Adding a board/chip (the five edit points)
 
@@ -875,7 +895,7 @@ needs a per-core block it declares its OWN, on the same two-arm shape: armv8a's
 accessor that folds to the array's first element at one core and reads TPIDR_EL1 above one.
 That block is the arch's and not this seam's, the register it is reached through being A64's.
 
-### The cross-core doorbell (`arch_ipi_send`, `arch_ipi_wait`)
+### The cross-core doorbell (`arch_ipi_send`, `arch_ipi_wait`, `arch_ipi_answered`, `arch_ipi_raise`)
 
 **A port does nothing here today either, and for the same reason:** at
 `KICKOS_NUM_CORES == 1` both are EMPTY MACROS that consume their argument, so no symbol exists
@@ -885,6 +905,18 @@ and no image carries the seam. The argument is a bitmask of core indices; 0 name
 cannot express a rendezvous, and a rendezvous is what a TLB shootdown is on an architecture with
 no broadcast invalidate. So the send is separate from the wait, and an initiator pokes every
 target once and then waits once.
+
+**`arch_ipi_answered(cores)` reads the rendezvous back without waiting**: whether every core in the
+mask other than the caller has answered the caller's latest send. It is the shared protocol's, so
+a port running `arch/common/doorbell_protocol.cc` supplies nothing for it.
+
+**A reschedule is a third member, `arch_ipi_raise(cores)`, and owes no answer.** Above one kernel
+core it is the part's bare raise over the mask, the calling core's own bit included, with no
+request cell bumped, so no target owes the service body anything and nothing waits. The kernel
+publishes what the raise means as a cell before it raises (`klock_resched_ask`), which is how the
+vector tells a reschedule from a rendezvous. A raise a core makes on itself under its own mask must
+stand until the unmask, and a poll that finds no request owed must leave the part's pending state
+alone, so a raise it cannot see is taken at the unmask. At one kernel core it is an empty macro.
 
 **A broadcast architecture's `arch_aspace_map`/`arch_aspace_unmap` do NOT go through this pair.**
 A64 invalidates and waits with two instructions and no far-side code at all, so the maintenance
@@ -1468,15 +1500,16 @@ modes, keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
 | != 0 | 1 | power of two, >= `min` | the size | ARM PMSAv7 (32), RISC-V PMP NAPOT (8) |
 | != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
 
-**`KICKOS_TLS` is a FOURTH leg and it overrides all three.** With the knob on, the alignment
-is `pow2_ceil(want)` wherever that exceeds the geometry above, whatever the descriptor asks
-for: the ARM thread pointer is SP masked down to the thread's own block, so the blocks must
-be STRIDED by a power of two or a mask lands in a neighbour's. So the row-1 figures are the
+**`KICKOS_TLS` is a FOURTH leg on an arch that selects `ARCH_TLS_FROM_SP`, and there it overrides
+all three.** With the knob on, the alignment is `pow2_ceil(want)` wherever that exceeds the
+geometry above, whatever the descriptor asks for: the ARM thread pointer is SP masked down to the
+thread's own block, so the blocks must be STRIDED by a power of two or a mask lands in a
+neighbour's. armv8a, LX6 and rv32imac seat the register from the context and take no fourth leg. So the row-1 figures are the
 geometry and not the answer -- `microbit` is a no-MPU chip on that row and still strides by
 **2048**, its 2048-byte user and root stacks being their own `pow2_ceil`
 (`../../boards/microbit/configs/base/defconfig`). `f302nucleo` and `bluepill-c8` are the
 boards that set `KICKOS_TLS=n` rather than pay the rounding. `cmake/boot_arena.cmake`'s
-`kickos_region_align()` mirrors this leg, reading the knob out of the resolved
+`kickos_region_align()` mirrors this leg, reading both knobs out of the resolved
 configuration, so the link-time assert models the geometry the allocator actually produces.
 
 The pow2 mode and the TLS leg are what pay a natural-alignment run-up, and there it can cost
@@ -2433,9 +2466,8 @@ save-frame, deferred switch.
   interrupted, and every other M-mode trap uses the trusted per-hart trap stack.
   `gp` and `tp` stay OUT of the frame, both being U-mode writable, and are written
   from the kernel's own knowledge on every resume instead: `gp` from the link-time
-  `__global_pointer$`, but **`tp` is NOT a link-time constant** -- it is the running
-  context's `stack_lo` masked down to `KICKOS_TLS_STRIDE`, which is that thread's
-  own stack block and so its TLS base. ONE frame format for a voluntary block and a
+  `__global_pointer$`, and `tp` from the running context's `tls_base`, the base of the
+  carve below that thread's own stack. ONE frame format for a voluntary block and a
   preemptive wake -- the RX/PendSV property.
 - **Context switch** = deferred via the **CLINT machine software interrupt
   (`msip`)**. `arch_switch` records `g_arch_next` + pends msip; the physical swap

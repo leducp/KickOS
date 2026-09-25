@@ -366,8 +366,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   - **`sstatus.SUM` is never set, so a kernel dereference of an app-half pointer FAULTS.** Every
     kernel touch of process memory goes through the `kaccess` seam instead. That is stricter than
     `qemu-arm64`, and it means a kernel-side bug that would silently corrupt the running process on
-    another board is a loud fault here. It also costs: the reent seating path is a few hundred
-    instructions rather than two, accepted deliberately (`../design-m6-mmu.md`, R6).
+    another board is a loud fault here.
 
 - **`qemu-x86_64` is EMULATED ONLY, and nothing on this bench can change that either.** There is
   no x86 silicon here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
@@ -918,6 +917,31 @@ configure time**, naming the compiler, the multilib, what was missing, the overr
 the official tarball URL. Previously this surfaced dozens of build steps later as
 `fatal error: exception: No such file or directory`. RX and Xtensa skip the check: neither has a
 same-name C-only twin on `PATH` to fall through to.
+
+### The dynamic-reent newlib (ARMv8-A and RV64IMAC)
+
+An armv8a or rv64imac image links KickOS's own newlib in place of the toolchain's, its
+`__getreent()` answered per thread rather than through one shared `_impure_ptr`. `cross_newlib.cmake`
+reads the package location from an environment variable, one per multilib:
+
+| Multilib | Variable | Prerequisite toolchain variable |
+|---|---|---|
+| `aarch64` | `KICKOS_NEWLIB_AARCH64` | `KICKOS_AARCH64_TOOLCHAIN_BIN` |
+| `rv64imac_lp64` | `KICKOS_NEWLIB_RV64IMAC_LP64` | `KICKOS_RISCV_TOOLCHAIN_BIN` |
+
+Provision it with Conan, once per multilib, after the toolchain whose compiler builds the package
+is on `PATH` or hinted by its variable above:
+
+```sh
+conan export conan/newlib
+conan install conan/board -o "&:multilib=<m>" --build=missing --output-folder=<dir>
+source <dir>/kickos-newlib-<m>.sh
+```
+
+`<m>` is `aarch64` or `rv64imac_lp64`; `<dir>` is any output folder, one per multilib. The third
+command exports the matching variable above from the folder Conan built or restored. Configure
+after sourcing it, as with the cross toolchain variables. `.github/actions/newlib/action.yml` runs
+the same three steps in CI, cached by the multilib and the toolchain bin directory.
 
 ## Flashing
 

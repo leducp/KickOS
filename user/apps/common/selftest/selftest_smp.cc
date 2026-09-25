@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The placement arms: affinity, the task core set, and the isolated cores.
+// The multi-core arms: placement, slice preemption, cross-core wakes and IRQs, and libc state.
 
 #include "selftest.h"
+
+#include <errno.h>
+#include <stdlib.h>
 
 namespace selftest
 {
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
     // --- Placement: affinity, the task's core set, and the isolated cores -----------------
-    // Every scheduling probe reads the CALLER's own state, so what a worker reports is what
-    // the kernel seated on that worker and not what root asked for.
+    // Every scheduling probe reads the CALLER's state: a worker reports what the kernel seated
+    // on it, not what root asked for.
     constexpr uint64_t PLACE_STEP_NS = 500000ull;
     constexpr unsigned PL_SAMPLES = 64;
-    constexpr unsigned PL_DEADLINE_STEPS = 400; // PL_DEADLINE_STEPS * PLACE_STEP_NS = 200 ms
+    constexpr unsigned PL_DEADLINE_STEPS = 400; // 200 ms
     constexpr uint32_t PL_ALL = ~0u >> (32 - KICKOS_KERNEL_CORES);
 
-    kos_cap_t g_pl_gate = KOS_CAP_NONE; // root's release semaphore, delegated at child index 1
+    kos_cap_t g_pl_gate = KOS_CAP_NONE;
 
-    // Holds a task non-empty while root asks something of it, and is released from root.
+    // Keeps its task non-empty until root posts the gate.
     void pl_gate_worker(void*) // caps: gate@1
     {
         kos_sem_wait(1);
@@ -79,8 +82,8 @@ namespace selftest
     // take off a core rather than one it can simply place at its next wake.
     void pl_spin_worker(void*)
     {
-        // Its own mask, once: an UNPINNED spinner can be placed on the core a pin would have
-        // named, so g_pl_core alone cannot tell a pin that took from one never made.
+        // An UNPINNED spinner can land on the core a pin would have named, so g_pl_core alone
+        // cannot tell a pin that took from one never made.
         g_pl_aff = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_AFFINITY));
         while (g_pl_stop.load() == 0)
         {
@@ -111,7 +114,7 @@ namespace selftest
         }
         int const rc = kos::thread::pin(w.id(), 1);
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const core = g_pl_core;
         tap::diag("pinned to core 1: affinity 0x%x, running on core %u",
@@ -133,7 +136,7 @@ namespace selftest
         }
         int const rc = kos::thread::pin(w.id(), 1);
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const seen = g_pl_seen;
         tap::diag("%u samples across a yield each: cores 0x%x", PL_SAMPLES,
                   static_cast<unsigned>(seen));
@@ -156,7 +159,7 @@ namespace selftest
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
         int const rc = kos::thread::unpin(w.id());
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const cores = g_pl_cores;
         tap::diag("unpin returned %d: affinity 0x%x, task core set 0x%x, isolated 0x%x", rc,
@@ -164,9 +167,9 @@ namespace selftest
                   static_cast<unsigned>(iso));
         TAP_CHECK(joined == 0);
         TAP_CHECK(cores == PL_ALL);
-        // Total: unpin is a mask of zero, which the kernel resolves to the task's DEFAULT set,
-        // so there is nothing here for it to refuse. The DEFAULT and not the grant: the grant
-        // names the isolated cores and a thread that never named one must not gain them here.
+        // Unpin is a mask of zero, resolved to the task's DEFAULT set, so it cannot be refused.
+        // The default and not the grant: the grant names the isolated cores, which a thread that
+        // never named one must not gain.
         TAP_CHECK(rc == 0);
         TAP_CHECK(aff == (cores & ~iso));
     }
@@ -179,8 +182,7 @@ namespace selftest
         XS_ZERO = 3,  // ... and on core 0
         XS_WORDS = 4
     };
-    // Spawns a SIBLING of its own task and places it, one task being one scheduling domain
-    // whose single grant bounds the placement.
+    // Pins a SIBLING in its own task: the task's single grant bounds the placement.
     void sib_pin_worker(void*) // caps: E(SIGNAL)@1
     {
         int32_t rep[XS_WORDS] = {0, 0, -99, -99};
@@ -193,13 +195,12 @@ namespace selftest
             rep[XS_ONE] = kos::thread::pin(s.id(), 1);
             rep[XS_ZERO] = kos::thread::pin(s.id(), 0);
             g_pl_stop = 1;
-            (void)s.join(PLACE_JOIN_US);
+            (void)s.join();
         }
         (void)kos_send(1, rep, sizeof(rep));
     }
 
-    // Runs sib_pin_worker as a member of `t` (KOS_TASK_NONE for root's own task) and collects
-    // its report. False when the spawn or the rendezvous did not happen.
+    // `t` is KOS_TASK_NONE for root's own task. False when the spawn or the rendezvous failed.
     bool sib_pin_run(kos_task_t t, int32_t* rep)
     {
         kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
@@ -214,7 +215,7 @@ namespace selftest
         kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(int32_t) * XS_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(int32_t) * XS_WORDS);
-        bool const joined = m.join(PLACE_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         return heard and joined;
     }
 
@@ -227,17 +228,16 @@ namespace selftest
             tap::skip("thread pool too small");
             return;
         }
-        // A mask of zero is the ask for the task's DEFAULT set, the same word a spawn's zero
-        // core_mask carries, and not a malformed request. The malformed answer is a NONZERO
-        // mask naming no core this kernel schedules: t_affinity_undriven_refused.
+        // A mask of zero asks for the task's DEFAULT set, as a spawn's zero core_mask does; it is
+        // not malformed.
         int const zero = kos_thread_set_affinity(w.id(), 0);
         g_pl_stop = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         TAP_CHECK(joined == 0);
         TAP_CHECK(zero == 0);
 
-        // The AUTHORITY refusal beside it, where the mask names a core the image really
-        // drives: the target's task holds core 0 alone, so core 1 meets it nowhere.
+        // The authority refusal: the task holds core 0 alone, so a pin to core 1, a core the
+        // image drives, is refused.
         if (kos_endpoint_create(&g_pl_ep) != 0)
         {
             tap::skip("endpoint pool too small");
@@ -274,13 +274,12 @@ namespace selftest
         }
         uint32_t const undriven = 1u << static_cast<uint32_t>(KICKOS_KERNEL_CORES);
         int const bad = kos_thread_set_affinity(w.id(), undriven);
-        // A mask is a set of acceptable cores, so a bit the kernel does drive alongside one it
-        // does not names the driven one and is granted. Refusing it would make all ones a
-        // magic value rather than an ordinary request for the whole grant.
+        // A mask is a set of acceptable cores: an undriven bit beside a driven one names the
+        // driven one and is granted, so all ones is an ordinary request for the whole grant.
         int const mixed = kos_thread_set_affinity(w.id(), undriven | 0x1u);
         int const good = kos_thread_set_affinity(w.id(), 0x1u);
         g_pl_stop = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         TAP_CHECK(joined == 0);
         TAP_CHECK(bad == -KOS_EINVAL);
         TAP_CHECK(mixed == 0);
@@ -288,16 +287,10 @@ namespace selftest
     }
 
     // --- Placement: a running thread is re-placed under an affinity change ---------------
-    // The move is driven by a pinned child: root holds no handle to itself, so it cannot be
-    // kept off the core the spinner is measured on. The spinner sits above root's priority and
-    // the driver above the spinner, which keeps the driver scheduled once the two share the
-    // destination.
-    constexpr uint32_t PL_HOME = 0; // the boot core, this arm's destination
-    // The driver spends BOTH deadlines before it exits, so root's wait on it covers them plus
-    // an ordinary join budget.
-    constexpr uint32_t PL_DRIVER_JOIN_US =
-        PLACE_JOIN_US
-        + 2u * static_cast<uint32_t>((PL_DEADLINE_STEPS * PLACE_STEP_NS) / 1000ull);
+    // A pinned child drives the move: root holds no handle to itself, so it cannot be kept off
+    // the spinner's core. The spinner sits above root and the driver above the spinner, so the
+    // driver stays scheduled once both share the destination.
+    constexpr uint32_t PL_HOME = 0; // the boot core
     kos_thread_t g_pl_victim = KOS_THREAD_NONE;
     Atomic<uint32_t, Order::RELAXED> g_pl_mig_first{0xffu};
     Atomic<uint32_t, Order::RELAXED> g_pl_mig_last{0xffu};
@@ -307,9 +300,9 @@ namespace selftest
     void pl_migrate_driver(void*)
     {
         pl_wait_go();
-        // Wait for the spinner to publish at all before moving it: it was pinned to the source
-        // at creation, so any value it publishes is that core, and waiting turns a slow start
-        // into a red precondition instead of a lost race.
+        // Wait for the spinner's first publish before moving it: pinned to the source at
+        // creation, its first value is that core, so a slow start fails the precondition instead
+        // of losing a race.
         uint32_t first = 0xffu;
         for (unsigned i = 0; i < PL_DEADLINE_STEPS; i++)
         {
@@ -341,9 +334,8 @@ namespace selftest
     void t_migrate_running()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
-        // The boot core is the DESTINATION: it can never be isolated, so a two-core part has
-        // one. The source is the lowest core above it the isolated mask does not name; a
-        // re-placement onto an isolated core is a different claim and no arm makes it.
+        // The boot core is the destination because it can never be isolated. The source must not
+        // be isolated either: a move involving an isolated core is a different claim.
         uint32_t away = 0;
         unsigned found = 0;
         for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
@@ -374,20 +366,20 @@ namespace selftest
             tap::skip("thread pool too small");
             return;
         }
-        // Before the driver exists, so the relaxed cells owe no publication order.
+        // Set before the driver exists, so the relaxed cell needs no publication order.
         g_pl_victim = w.id();
         auto d = kos::thread::create(pl_migrate_driver, nullptr, "migrd", 13);
         if (not d.valid())
         {
             g_pl_stop = 1;
-            (void)w.join(PLACE_JOIN_US);
+            (void)w.join();
             tap::skip("thread pool too small");
             return;
         }
         int const dpin = kos::thread::pin(d.id(), PL_HOME);
         g_pl_go = 1;
-        int const djoined = d.join(PL_DRIVER_JOIN_US);
-        int const joined = w.join(PLACE_JOIN_US);
+        int const djoined = d.join();
+        int const joined = w.join();
         uint32_t const first = g_pl_mig_first;
         uint32_t const last = g_pl_mig_last;
         uint32_t const aff = g_pl_aff;
@@ -400,12 +392,11 @@ namespace selftest
         TAP_CHECK(dpin == 0);
         TAP_CHECK(djoined == 0);
         TAP_CHECK(joined == 0);
-        // The precondition: a core running this thread and nothing else was made to give it up.
+        // The precondition: the spinner ran pinned to the source before the move.
         TAP_CHECK(aff == (1u << away));
         TAP_CHECK(first == away);
         TAP_CHECK(rc == 0);
-        // A deadline and not a park: a worker that never arrives fails here instead of
-        // hanging the suite.
+        // A deadline and not a park, so a spinner that never arrives fails instead of hanging.
         TAP_CHECK(g_pl_mig_arrived.load() == 1u);
     }
 
@@ -452,13 +443,13 @@ namespace selftest
         {
             rc = kos_thread_set_affinity(m.id(), 0x1u);
             kos_sem_post(g_pl_gate);
-            mj = m.join(PLACE_JOIN_US);
+            mj = m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_gate);
         TAP_CHECK(seated);
         TAP_CHECK(mj == 0);
-        // Root is unprivileged here, and a core its OWN grant holds does not make the target
+        // Root is unprivileged: a core its OWN grant holds does not make another task's thread
         // its to place.
         TAP_CHECK(rc == -KOS_EPERM);
     }
@@ -508,7 +499,7 @@ namespace selftest
             kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
-            mj = m.join(PLACE_JOIN_US);
+            mj = m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_ep);
@@ -517,8 +508,8 @@ namespace selftest
         TAP_CHECK(heard);
         TAP_CHECK(mj == 0);
         TAP_CHECK(rep[GN_CORES] == 0x3);
-        // The member's affinity is seated FROM the set, so a grant nothing re-derived would
-        // show here as a thread wider than its own task.
+        // Affinity is seated FROM the set, so a grant nothing re-derived shows as a thread wider
+        // than its own task.
         TAP_CHECK(rep[GN_AFF] == 0x3);
         TAP_CHECK((0x3 & (1 << rep[GN_CORE])) != 0);
     }
@@ -575,7 +566,7 @@ namespace selftest
             kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
-            mj = m.join(PLACE_JOIN_US);
+            mj = m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_ep);
@@ -590,9 +581,8 @@ namespace selftest
     }
 
     // --- A second grant narrows again and never re-widens -------------------------------
-    // The caller-side check in task_sched_grant weighs a request against the CALLER's grant,
-    // which root holds whole, so only task_sched_narrow's own check against the TASK's current
-    // set can refuse this.
+    // task_sched_grant weighs a request against the CALLER's grant, which root holds whole, so
+    // only task_sched_narrow's check against the TASK's current set can refuse this.
     void t_grant_second_narrow_only()
     {
         if (PL_ALL == 0x1u)
@@ -617,8 +607,7 @@ namespace selftest
 
     // --- A task inherits its creator's grant --------------------------------------------
     // Only a member of the created task can show this: every refusal path weighs the caller's
-    // grant, so a task that wrongly defaulted to the whole machine is invisible until a thread
-    // of it reports the set it actually got.
+    // grant, so a task wrongly defaulted to the whole machine is invisible from outside.
     enum
     {
         GI_MADE = 0,   // the nested task was created
@@ -652,7 +641,7 @@ namespace selftest
             return;
         }
         // The CHILD answers on the same endpoint, so this thread sends nothing more.
-        (void)c.join(PLACE_JOIN_US);
+        (void)c.join();
         (void)kos_task_kill(u);
     }
     void t_grant_inherited_by_child_task()
@@ -689,7 +678,7 @@ namespace selftest
             kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
-            (void)m.join(PLACE_JOIN_US);
+            (void)m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_ep);
@@ -731,21 +720,20 @@ namespace selftest
         {
             busy = kos_task_sched_grant(t, 0, 0x1);
             kos_sem_post(g_pl_gate);
-            mj = m.join(PLACE_JOIN_US);
+            mj = m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_gate);
         TAP_CHECK(empty_ok == 0);
         TAP_CHECK(seated);
         TAP_CHECK(mj == 0);
-        // Thread::affinity is a subset of the set and nothing re-derives it, so a grant that
-        // narrowed under a live member would strand it.
+        // Thread::affinity is a subset of the set and nothing re-derives it, so narrowing under
+        // a live member would strand it.
         TAP_CHECK(busy == -KOS_EBUSY);
     }
 
-    // A task granted exactly one isolated core. Its grant names nothing else, so the default
-    // set is the grant and an unpinned member is pinned by construction. Only a member can show
-    // it, the set a task really got being invisible from outside.
+    // A grant of exactly one isolated core and nothing else: the default set is then the grant,
+    // so an unpinned member runs on the isolated core.
     void t_isolated_single_grant_ok()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
@@ -783,7 +771,7 @@ namespace selftest
             kos_reply_recv_opts_init(&opts, g_pl_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &opts)
                     == static_cast<int32_t>(sizeof(rep));
-            mj = m.join(PLACE_JOIN_US);
+            mj = m.join();
         }
         (void)kos_task_kill(t);
         (void)kos_handle_close(g_pl_ep);
@@ -803,8 +791,8 @@ namespace selftest
     {
     }
 
-    // An exited-but-unreclaimed slot still gen-matches, so the handle resolves and there is
-    // nothing left in it to place. Kill and slay answer the same way.
+    // An exited but unreclaimed slot still gen-matches, so the handle resolves to nothing left
+    // to place; kill and slay give the same answer.
     void t_affinity_dead_handle_refused()
     {
         auto w = kos::thread::create(pl_exit_worker, nullptr, "adead", 9);
@@ -813,17 +801,13 @@ namespace selftest
             tap::skip("thread pool too small");
             return;
         }
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         int const dead = kos_thread_set_affinity(w.id(), 0x1u);
         TAP_CHECK(joined == 0);
         TAP_CHECK(dead == -KOS_EBADF);
     }
 
-    // The drift mechanism, read at the mask and then at the cores. A thread that names no core
-    // is given the task's set less the isolated ones, so it arrives on none of them; the cores
-    // it was actually seen on are the second half, a mask that excluded them proving nothing on
-    // its own if the thread never ran. It says nothing about a thread that DOES name one:
-    // t_isolated_takes_pinned and t_isolated_mixed_mask_ok are that half.
+    // A thread that names no core is given the task's set less the isolated cores.
     void t_isolated_unpinned_never()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
@@ -840,7 +824,7 @@ namespace selftest
             return;
         }
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const seen = g_pl_seen;
         tap::diag("unpinned worker: affinity 0x%x, cores seen 0x%x, isolated 0x%x",
@@ -852,11 +836,8 @@ namespace selftest
         TAP_CHECK((seen & iso) == 0);
     }
 
-    // The same mechanism read at the other end: a thread that was pinned to the isolated core
-    // and is then unpinned. Unpin restores the DEFAULT set and not the grant, so the isolated
-    // core is gone from the mask; a thread widened to the whole grant instead would keep the
-    // core it already holds and go on running there. Both channels are read, the mask and the
-    // cores the thread was actually seen on, the mask alone proving nothing if it never ran.
+    // Unpin off an isolated core restores the DEFAULT set and not the grant: widened to the
+    // grant, the thread would keep running on the isolated core it holds.
     void t_isolated_unpin_excludes()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
@@ -877,7 +858,7 @@ namespace selftest
         }
         int const rc = kos::thread::unpin(w.id());
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const seen = g_pl_seen;
         tap::diag("unpinned off isolated core %u: affinity 0x%x, cores seen 0x%x, isolated 0x%x",
@@ -908,7 +889,7 @@ namespace selftest
         }
         int const rc = kos::thread::pin(w.id(), core);
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const seen = g_pl_seen;
         tap::diag("pinned to isolated core %u: affinity 0x%x, cores seen 0x%x",
@@ -920,11 +901,8 @@ namespace selftest
         TAP_CHECK(seen == (1u << core));
     }
 
-    // The other half of the opt-in, and the one the guarantee's wording turns on: an isolated
-    // core named beside an ordinary one. The mask is admitted whole and lands verbatim, so
-    // that core's picker holds the thread like any other core in the set. Which of the two it
-    // is seen on is the picker's and is not asserted; what is asserted is that it ran, and
-    // never outside the mask.
+    // An isolated core named beside an ordinary one: the mask is admitted whole and verbatim.
+    // Which of the two the thread is seen on is the picker's choice and is not asserted.
     void t_isolated_mixed_mask_ok()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
@@ -943,7 +921,7 @@ namespace selftest
         }
         int const rc = kos_thread_set_affinity(w.id(), mixed);
         g_pl_go = 1;
-        int const joined = w.join(PLACE_JOIN_US);
+        int const joined = w.join();
         uint32_t const aff = g_pl_aff;
         uint32_t const seen = g_pl_seen;
         tap::diag("isolated core named beside core 0: asked 0x%x, affinity 0x%x, cores seen 0x%x",
@@ -957,61 +935,42 @@ namespace selftest
     }
 
     // --- Preemption: every core's own slice timer takes a thread off it -------------------
-    // KOS_SCHED_OP_PREEMPTED is machine-wide, which is what a claim about a SECONDARY arming
-    // its own comparator needs.
+    // KOS_SCHED_OP_PREEMPTED is machine-wide, so it can witness a SECONDARY arming its own
+    // comparator.
     //
     // The probe records an expiry only where the tick changed the running thread
-    // (kernel/time/time.cc brackets sched::tick_rr and compares sched::current()). An expiry
-    // on a core carrying ONE runnable thread of its priority rotates the incumbent to itself
-    // and records nothing, however long that thread runs. So the claim needs an equal-priority
-    // PEER queued on the core under test, and leaving that to the scheduler made the arm
-    // undecidable: a loaded host settles an unpinned crowd one-per-core, and a core that never
-    // carried a pair then reads exactly like a comparator that never fired. Every quantity an
-    // unpinned crowd can observe (which cores it reached, how many of it reached them, how
-    // long it held them in wall clock or in work) reads the SAME in both cases.
+    // (kernel/time/time.cc compares sched::current() around sched::tick_rr). An expiry on a
+    // core carrying ONE runnable thread of its priority rotates the incumbent to itself and
+    // records nothing, however long it runs. So each ROUND pins an equal-priority pair to the
+    // core under test and one burner to each other core: an unpinned crowd can settle one per
+    // core, and a core that never carried a pair reads exactly like a comparator that never
+    // fired.
     //
-    // So the pair is placed rather than hoped for: one ROUND per core, with two burners pinned
-    // to the core under test and one pinned to each of the others. The peer is then there by
-    // construction and only the kernel's own comparator decides the outcome, which is what
-    // makes the decline below decidable.
-    //
-    // What this gives up. The unpinned crowd also exercised PLACEMENT for free: it asserted,
-    // incidentally, that the scheduler spreads a crowd over every core. It does not any more.
-    // That claim is threads_reach_every_core's subject and is asserted there; nothing about
-    // placement is claimed here, and this arm passing says nothing about it.
-    //
-    // One thread MORE than the machine has cores, unchanged: two on the core under test and
-    // one on each of the rest is exactly that many, so no board's thread budget moves.
+    // KICKOS_KERNEL_CORES + 1: tests/integration/gates/selftest.cmake derives the expected
+    // pool-too-small skip from this count.
     constexpr unsigned PL_CROWD = KICKOS_KERNEL_CORES + 1u;
-    constexpr uint64_t PL_BURN_QUANTA = 8ull; // per round, so a slice has room to expire several times
+    constexpr uint64_t PL_BURN_QUANTA = 8ull; // per round, so a slice can expire several times
 
     // Read-only to the burners, published before the first one is created.
     uint64_t g_pl_burn_ns = 32000000ull;
 
-    // What each burner saw of itself. `first`/`last` are the low 32 bits of the clock at its
-    // first and last sample: both are instants at which that thread was observed executing, so
-    // the span between them is not a wall clock the host can inflate behind its back. A span
-    // reaching one quantum is the decidable part of the claim, because the deadline armed at
-    // that thread's switch-in falls inside it, and the closing sample cannot have run unless
-    // the core took the interrupt that deadline had already made due.
+    // `first`/`last` are the low 32 bits of the clock at a burner's first and last sample, both
+    // instants it was seen executing, so their span is not wall clock the host can inflate. A
+    // span of one quantum contains the deadline armed at switch-in, so the closing sample
+    // cannot have run unless the core took that deadline's interrupt.
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_seen[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_first[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_last[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_samples[PL_CROWD];
 
     // Spins, never yields or sleeps: the slice has to EXPIRE under this thread for the timer
-    // to be what takes the core away. The core sample is one extra syscall every 16 passes
-    // beside the clock read the loop already makes, and it yields nothing.
+    // to be what takes the core away. The core probe does not yield either.
     void pl_burn_worker(void* arg)
     {
         unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
-        // Released together, and this is what makes the peer a construction rather than a
-        // hope. A burner starts running the instant it is created, so without the gate the
-        // first of a pair is already burning while root is still creating the second, and on
-        // a host slow enough that the gap outlasts the round the core never carries two of
-        // ours: every expiry rotates the incumbent to itself and records nothing, which is
-        // the defect's own signature. Both wake from their own sleep at the release, so both
-        // are on the core's run queue before either has armed a slice.
+        // Released together, so both of a pair are queued before either arms a slice. A burner
+        // runs the instant it is created, and on a slow host the first could burn its whole
+        // round before root creates the second, which reads as a comparator that never fired.
         pl_wait_go();
         uint64_t const start = kos_clock_now();
         uint32_t seen = 0;
@@ -1067,11 +1026,11 @@ namespace selftest
     void t_slice_preempts_every_core()
     {
         uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
-        // An isolated core is held out of the default core set and these burners name no core,
-        // so it is outside the claim. Core 0 can never be isolated, so the target is never empty.
+        // Isolated cores are outside the claim. Core 0 can never be isolated, so the target is
+        // never empty.
         uint32_t const want = PL_ALL & ~iso;
-        // Asked before the baseline read below, so the probe's own threads contribute no bit
-        // to `after`.
+        // Before the baseline read, so the pool probe's own threads contribute no bit to
+        // `after`.
         if (not pool_can_host(static_cast<int>(PL_CROWD)))
         {
             tap::skip("pool too small (%u concurrent burners)", PL_CROWD);
@@ -1080,9 +1039,7 @@ namespace selftest
         uint32_t const before = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
 
         // The quantum must be resolvable by the monotonic clock or no slice can expire under a
-        // burn at all, so it is measured: an emulated clock's granule is coarse. That also makes
-        // this the suite's most load-dependent arm, a contended host leaving the burners fewer
-        // rotations than the claim needs.
+        // burn, and an emulated clock's granule is coarse, so the granule is measured.
         uint64_t e0 = kos_clock_now();
         uint64_t e1 = e0;
         while (e1 == e0)
@@ -1095,7 +1052,7 @@ namespace selftest
             e2 = kos_clock_now();
         }
         uint64_t const granule = e2 - e1;
-        uint64_t quantum = 1000000ull; // 1 ms on a fine clock (the shipped case)
+        uint64_t quantum = 1000000ull; // 1 ms on a fine clock
         if (quantum < granule * 4)
         {
             quantum = granule * 4;
@@ -1117,9 +1074,8 @@ namespace selftest
             after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
             if ((after & (1u << k)) != 0u)
             {
-                // Already recorded, and the mask never clears, so this round could add nothing
-                // to it. A bit can only be there because that core's own comparator changed the
-                // thread it was running, which is the whole claim.
+                // Already recorded, and the mask never clears. Only that core's own comparator
+                // can have set the bit, which is the whole claim.
                 prewitnessed |= 1u << k;
                 continue;
             }
@@ -1135,9 +1091,8 @@ namespace selftest
             unsigned made = 0;
             for (unsigned i = 0; i < PL_CROWD; i++)
             {
-                // Burners 0 and 1 ARE the claim: an equal-priority pair on the core under test,
-                // so its next expiry has somewhere to switch. The rest hold the other cores so
-                // the machine is loaded as it was, and nothing is asserted of them.
+                // Burners 0 and 1 are the pair on the core under test. The rest load the other
+                // cores and nothing is asserted of them.
                 uint32_t pin = 1u << k;
                 if (i >= 2u)
                 {
@@ -1161,38 +1116,12 @@ namespace selftest
             int joined = 0;
             for (unsigned i = 0; i < made; i++)
             {
-                int rc = w[i].join(PLACE_JOIN_US);
-                if (rc != 0)
-                {
-                    // Once more before giving up: the burn is bounded in GUEST time and the
-                    // burner exits of its own accord, so a first budget spent under load is
-                    // usually only that.
-                    rc = w[i].join(PLACE_JOIN_US);
-                }
-                joined |= rc;
+                joined |= w[i].join();
             }
             // The probe at the top just held PL_CROWD slots and stacks, so a short crowd here
-            // is a pool bug and not a small board. Checked before the next round reuses them.
+            // is a pool bug and not a small board.
             TAP_CHECK(made == PL_CROWD);
-            if (joined != 0)
-            {
-                // The round never finished, so nothing about this core was established, and
-                // what ran out is wall clock: the burn is bounded in guest time and a burner
-                // the host does not give a core to cannot reach its own exit. The stragglers
-                // go before the next round asks for their slots back.
-                for (unsigned i = 0; i < made; i++)
-                {
-                    (void)w[i].slay(PLACE_JOIN_US);
-                }
-                // Short enough that the assembled TAP line clears tap.cc's 224-byte emitf
-                // buffer: a reason that overflows it loses its own newline and swallows the
-                // next line whole.
-                tap::skip_vacuous("core %u's round outlasted two %u ms join budgets, so its "
-                                  "pinned pair was never given the core",
-                                  static_cast<unsigned>(k),
-                                  static_cast<unsigned>(PLACE_JOIN_US / 1000u));
-                return;
-            }
+            TAP_CHECK(joined == 0);
 
             after = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_PREEMPTED));
             if ((after & (1u << k)) != 0u)
@@ -1241,36 +1170,33 @@ namespace selftest
                   static_cast<unsigned>(starved));
         // Monotonic, so a bit that went away is a torn read of a cell with one writer.
         TAP_CHECK((before & ~after) == 0u);
-        // The pair went somewhere it was not given, so the round staged something else.
+        // A pair seen off its core means the round staged something else.
         TAP_CHECK(strayed == 0u);
-        // The claim, and it is asserted only where the round gave that core's pair a whole
-        // quantum of the core: a pair that never got one had no expiry to be taken off by, and
-        // that is a window the host took rather than a comparator left unarmed.
+        // Asserted only where the pair held its core a whole quantum: without one there was no
+        // expiry to take it off, and the host took the window, not an unarmed comparator.
         uint32_t const denied = unproven & ~starved;
         TAP_CHECK(denied == 0u);
         if (unproven != 0u)
         {
-            tap::skip_vacuous("no preemption on core(s) 0x%x, and their pinned pair never held "
-                              "the core a whole %u us quantum: the window went, not the "
-                              "comparator",
-                              static_cast<unsigned>(starved),
-                              static_cast<unsigned>(quantum / 1000u));
+            TAP_SKIP_VACUOUS("no preemption on core(s) 0x%x, and their pinned pair never held "
+                             "the core a whole %u us quantum: the window went, not the "
+                             "comparator",
+                             static_cast<unsigned>(starved),
+                             static_cast<unsigned>(quantum / 1000u));
             return;
         }
     }
 
     // --- Placement: a thread of this app is seen running on every core --------------------
     // The union across an unpinned crowd has to NAME every core the crowd may run on, which no
-    // single-core placement satisfies. isolated_unpinned_never reads the same probe for an
-    // absence, which a scheduler that moves nobody also satisfies.
+    // single-core placement satisfies.
     //
     // One cell per worker: a shared mask is a cross-core read-modify-write, and a lost update
     // erases a core from the very union being read.
     Atomic<uint32_t, Order::RELAXED> g_pl_spread[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_spread_aff[PL_CROWD];
-    // Samples taken, so a short union can be told apart from a starved one: the budget below
-    // is wall clock, and a loaded host spends it without the crowd being offered the
-    // rotations the union needs.
+    // Samples taken, to tell a short union from a starved one: the budget is wall clock, which a
+    // loaded host can spend without offering the crowd its rotations.
     Atomic<uint32_t, Order::RELAXED> g_pl_spread_passes[PL_CROWD];
     uint32_t g_pl_spread_want = 0; // published before the crowd is released
 
@@ -1329,7 +1255,7 @@ namespace selftest
             g_pl_spread_aff[i] = 0;
             g_pl_spread_passes[i] = 0;
         }
-        // Asked before the first spawn, for the reason the shortfall check below states.
+        // Before the first spawn: see the shortfall check below.
         if (not pool_can_host(static_cast<int>(PL_CROWD)))
         {
             tap::skip("pool too small (%u concurrent workers)", PL_CROWD);
@@ -1355,7 +1281,7 @@ namespace selftest
             for (unsigned i = 0; i < made; i++)
             {
                 (void)w[i].kill();
-                (void)w[i].join(PLACE_JOIN_US);
+                (void)w[i].join();
             }
             // The probe above just held PL_CROWD slots and stacks, so a short crowd here is a
             // pool bug and not a small board.
@@ -1368,7 +1294,7 @@ namespace selftest
         int joined = 0;
         for (unsigned i = 0; i < PL_CROWD; i++)
         {
-            joined |= w[i].join(PLACE_JOIN_US);
+            joined |= w[i].join();
         }
 
         uint32_t reached = 0;
@@ -1387,10 +1313,9 @@ namespace selftest
                 fewest = passes;
             }
         }
-        // One pass is one sample and one yield, so a worker needs at least one pass per core
-        // in the target set to be SEEN on all of them. Four times that is the floor here: it
-        // leaves the placement three opportunities per core beyond the minimum and still
-        // refuses a crowd that was given none.
+        // A pass is one sample and one yield, so a worker needs a pass per target core to be
+        // SEEN on all of them. Four per core leaves the placement three chances beyond the
+        // minimum before a short union counts against it.
         uint32_t targets = 0;
         for (unsigned c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
@@ -1407,25 +1332,22 @@ namespace selftest
         TAP_CHECK(joined == 0);
         // A crowd the kernel had pinned would satisfy the union below with no choice made.
         TAP_CHECK(unpinned == PL_CROWD);
-        // The budget is wall clock and the claim is about placement, so a short union has two
-        // causes. Only the one where the crowd was given its rotations is a placement
-        // failure; the other is the host, and it is declined by name.
+        // A short union is a placement failure only if the crowd was given its rotations;
+        // otherwise the host spent the wall-clock budget, and the arm declines.
         if ((reached & want) != want and fewest < floor_passes)
         {
-            tap::skip_vacuous("the %u ms placement budget ran out with the slowest worker at "
-                              "%u sample(s) against the %u this asks, so the crowd reached "
-                              "0x%x of 0x%x for want of rotations, not for want of placement",
-                              static_cast<unsigned>(PL_SPREAD_BUDGET_NS / 1000000ull),
-                              static_cast<unsigned>(fewest), static_cast<unsigned>(floor_passes),
-                              static_cast<unsigned>(reached), static_cast<unsigned>(want));
+            TAP_SKIP_VACUOUS("the %u ms budget left the slowest worker at %u of %u sample(s): "
+                             "0x%x of 0x%x reached for want of rotations, not placement",
+                             static_cast<unsigned>(PL_SPREAD_BUDGET_NS / 1000000ull),
+                             static_cast<unsigned>(fewest), static_cast<unsigned>(floor_passes),
+                             static_cast<unsigned>(reached), static_cast<unsigned>(want));
             return;
         }
         TAP_CHECK((reached & want) == want);
     }
 
-    // A fused reply followed by a park must notify the caller's core.
-    // A FIFO spinner occupies that core, so only a reschedule request lets the
-    // higher-priority caller run. Single-core builds cannot exercise this path.
+    // A fused reply followed by a park must notify the caller's core. A FIFO spinner occupies
+    // that core, so only a reschedule request lets the higher-priority caller run.
     constexpr uint8_t XC_SPIN_PRIO = 14;   // above root, below the caller
     constexpr uint8_t XC_CALLER_PRIO = 20; // the thread the reply readies
     constexpr uint8_t XC_SERVER_PRIO = 12;
@@ -1433,7 +1355,7 @@ namespace selftest
     kos_cap_t g_xc_ep = KOS_CAP_NONE;
     kos_cap_t g_xc_gate = KOS_CAP_NONE;
     Atomic<uint32_t, Order::RELAXED> g_xc_stop{0};
-    Atomic<uint32_t, Order::RELAXED> g_xc_spins{0};
+    Atomic<uint32_t, Order::RELAXED> g_xc_spin_core{0xFFFFFFFFu};
     Atomic<int32_t, Order::RELAXED> g_xc_call_rc{-99};
     Atomic<int32_t, Order::RELAXED> g_xc_serve_rc{-99};
 
@@ -1449,8 +1371,7 @@ namespace selftest
             g_xc_serve_rc = -1;
             return;
         }
-        // Wait until the caller is parked for its reply and the spinner holds
-        // the caller's core before replying.
+        // Reply only once the caller is parked for it and the spinner holds the caller's core.
         kos_sem_wait(2);
         kos_cap_t const reply = opts.info.reply_cap;
         kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
@@ -1463,14 +1384,15 @@ namespace selftest
         memcpy(buf, "ping", 4);
         g_xc_call_rc = kos_call(1, buf, 4, sizeof(buf));
     }
+    // The spinner yields its core only to a preemption and the reply follows its post, so the
+    // core it posts from is held when the reply lands. A spin count cannot witness that: a
+    // reschedule arriving before the first iteration leaves it at zero.
     void xc_spinner(void*) // caps: gate@1
     {
+        g_xc_spin_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
         kos_sem_post(1); // the core is ours; the server may answer now
-        uint32_t n = 0;
         while (g_xc_stop.load() == 0)
         {
-            n = n + 1;
-            g_xc_spins = n;
         }
     }
     void t_resched_reaches_pinned_caller()
@@ -1494,7 +1416,7 @@ namespace selftest
             return;
         }
         g_xc_stop = 0;
-        g_xc_spins = 0;
+        g_xc_spin_core = 0xFFFFFFFFu;
         g_xc_call_rc = -99;
         g_xc_serve_rc = -99;
         if (kos_endpoint_create(&g_xc_ep) != 0)
@@ -1535,32 +1457,30 @@ namespace selftest
             g_xc_stop = 1;
             if (sp.valid())
             {
-                (void)sp.join(XC_JOIN_US);
+                (void)sp.join();
             }
             (void)kos_handle_close(g_xc_ep);
             kos_sem_destroy(g_xc_gate);
             tap::skip("pool too small for 3 threads");
             return;
         }
-        // Bound the wait so a missing peer request fails instead of hanging.
+        // Bounded so a missing reschedule request fails instead of hanging.
         int const cjoined = cl.join(XC_JOIN_US);
         g_xc_stop = 1;
-        int const sjoined = sp.join(XC_JOIN_US);
+        int const sjoined = sp.join();
         // Release the server from its final receive.
         (void)kos_send(g_xc_ep, "", 0);
-        int const vjoined = sv.join(XC_JOIN_US);
+        int const vjoined = sv.join();
         (void)kos_handle_close(g_xc_ep);
         kos_sem_destroy(g_xc_gate);
-        tap::diag("caller pinned to core %u under a spinner: join %d, call %d, spins %u",
-                  static_cast<unsigned>(away), cjoined,
-                  static_cast<int>(g_xc_call_rc.load()),
-                  static_cast<unsigned>(g_xc_spins.load()));
+        uint32_t const spin_core = g_xc_spin_core;
+        tap::diag("caller pinned to core %u under a spinner on core %u: join %d, call %d",
+                  static_cast<unsigned>(away), static_cast<unsigned>(spin_core), cjoined,
+                  static_cast<int>(g_xc_call_rc.load()));
         TAP_CHECK(sjoined == 0);
         TAP_CHECK(vjoined == 0);
-        // Verify that the spinner held the caller's core when the reply was sent.
-        TAP_CHECK(g_xc_spins.load() > 0u);
+        TAP_CHECK(spin_core == away);
         TAP_CHECK(cjoined == 0);
-        // Check the reply value as well as caller completion.
         TAP_CHECK(g_xc_call_rc.load() == 5);
     }
 
@@ -1574,7 +1494,6 @@ namespace selftest
     constexpr uint32_t XIRQ_ALL = 0xFFFFFFFFu;
     constexpr uint32_t XIRQ_WAKE_US = 200000u;
     constexpr uint32_t XIRQ_QUIET_US = 20000u;
-    constexpr uint32_t XIRQ_JOIN_US = 2000000u;
     constexpr uint64_t XIRQ_CLAIM_BUDGET_NS = 2000000000ull;
     constexpr uint64_t XIRQ_CLAIM_POLL_NS = 100000ull;
     constexpr uint8_t XIRQ_PRIO = 12;
@@ -1708,10 +1627,10 @@ namespace selftest
         {
             kos_sem_post(go);
             wait_n(1);
-            ijoined = inj.join(XIRQ_JOIN_US);
+            ijoined = inj.join();
         }
         wait_n(1);
-        int const wjoined = w.join(XIRQ_JOIN_US);
+        int const wjoined = w.join();
         kos_sem_destroy(ready);
         kos_sem_destroy(go);
         if (not inj.valid())
@@ -1804,7 +1723,7 @@ namespace selftest
         kos_sem_wait(ready);
         (void)kos_irq_inject(XIRQ_STALE_LINE);
         wait_n(1);
-        (void)t.join(XIRQ_JOIN_US);
+        (void)t.join();
         return true;
     }
 
@@ -1838,7 +1757,7 @@ namespace selftest
         int const irc = kos_irq_inject(XIRQ_STALE_LINE);
         kos_sem_post(rel);
         wait_n(1);
-        int const ojoined = old.join(XIRQ_JOIN_US);
+        int const ojoined = old.join();
         bool made = xirq_next_leg(XS_OTHER, XIRQ_OTHER_CORE, ready);
         if (made)
         {
@@ -1873,6 +1792,230 @@ namespace selftest
         TAP_CHECK(g_xs_first[XS_BACK].load() == -KOS_ETIMEDOUT);
         TAP_CHECK(g_xs_second[XS_BACK].load() == 0);
         TAP_CHECK(g_xs_core[XS_BACK].load() == XIRQ_CLAIM_CORE);
+    }
+
+    // --- libc reentrant state across cores: two threads of one task at the same instant ----
+    // The checker holds EINVAL on core 1 while two switchers ping-pong on core 0, each switch
+    // there being a seat for the incoming thread. Every errno is set by libc itself.
+    constexpr unsigned RE_SWITCHERS = 2;
+    constexpr uint32_t RE_ROUNDS = 2000;
+    constexpr uint64_t RE_BUDGET_NS = 2000000000ull; // 2 s
+    constexpr uint32_t RE_CHECK_CORE = 1;
+    constexpr uint32_t RE_SWITCH_CORE = 0;
+    Atomic<uint32_t, Order::RELAXED> g_re_go{0};
+    Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_re_armed{0};
+    Atomic<uint32_t, Order::RELAXED> g_re_rounds[RE_SWITCHERS];
+    Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_re_done[RE_SWITCHERS];
+    Atomic<uint32_t, Order::RELAXED> g_re_bad[RE_SWITCHERS + 1];
+    Atomic<uint32_t, Order::RELAXED> g_re_core[RE_SWITCHERS + 1];
+    Atomic<uint32_t, Order::RELAXED> g_re_reads{0};
+    Atomic<uint32_t, Order::RELAXED> g_re_seen{0};
+    Atomic<uint32_t, Order::RELAXED> g_re_finished{0};
+
+    // strtol, not an assignment: the value must be written through libc's own state lookup.
+    int re_provoke_einval()
+    {
+        char* end = nullptr;
+        (void)strtol("10", &end, 99);
+        return errno;
+    }
+
+    int re_provoke_erange()
+    {
+        char* end = nullptr;
+        (void)strtol("99999999999999999999999999", &end, 10);
+        return errno;
+    }
+
+    uint32_t re_rounds_total()
+    {
+        uint32_t total = 0;
+        for (unsigned i = 0; i < RE_SWITCHERS; i++)
+        {
+            total += g_re_rounds[i].load();
+        }
+        return total;
+    }
+
+    bool re_switchers_done()
+    {
+        for (unsigned i = 0; i < RE_SWITCHERS; i++)
+        {
+            if (g_re_done[i].load() == 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void re_wait_go()
+    {
+        while (g_re_go.load() == 0)
+        {
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+    }
+
+    // Never blocks or yields inside the loop: a switch on this core would reseat its own state
+    // and mask the peer core's.
+    void re_checker(void*)
+    {
+        re_wait_go();
+        g_re_core[0] = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        uint32_t bad = 0;
+        if (re_provoke_einval() != EINVAL)
+        {
+            bad++;
+        }
+        uint32_t const before = re_rounds_total();
+        g_re_armed = 1;
+        uint64_t const start = kos_clock_now();
+        uint32_t reads = 0;
+        while (not re_switchers_done() and kos_clock_now() - start < RE_BUDGET_NS)
+        {
+            if (errno != EINVAL)
+            {
+                bad++;
+            }
+            reads++;
+        }
+        if (re_switchers_done())
+        {
+            g_re_finished = 1;
+        }
+        g_re_seen = re_rounds_total() - before;
+        g_re_reads = reads;
+        g_re_bad[0] = bad;
+    }
+
+    void re_switcher(void* arg)
+    {
+        unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
+        re_wait_go();
+        g_re_core[me + 1] = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        while (g_re_armed.load() == 0)
+        {
+            kos_yield();
+        }
+        uint32_t bad = 0;
+        for (uint32_t i = 0; i < RE_ROUNDS; i++)
+        {
+            if (re_provoke_erange() != ERANGE)
+            {
+                bad++;
+            }
+            kos_yield();
+            if (errno != ERANGE)
+            {
+                bad++;
+            }
+            g_re_rounds[me] = i + 1;
+        }
+        g_re_bad[me + 1] = bad;
+        g_re_done[me] = 1;
+    }
+
+    void t_reent_per_thread_cores()
+    {
+        g_re_go = 0;
+        g_re_armed = 0;
+        g_re_reads = 0;
+        g_re_seen = 0;
+        g_re_finished = 0;
+        for (unsigned i = 0; i < RE_SWITCHERS; i++)
+        {
+            g_re_rounds[i] = 0;
+            g_re_done[i] = 0;
+        }
+        for (unsigned i = 0; i <= RE_SWITCHERS; i++)
+        {
+            g_re_bad[i] = 0;
+            g_re_core[i] = 0xffu;
+        }
+        if (not pool_can_host(static_cast<int>(RE_SWITCHERS + 1)))
+        {
+            tap::skip("pool too small (%u concurrent workers)", RE_SWITCHERS + 1);
+            return;
+        }
+        kos::thread::Handle w[RE_SWITCHERS + 1];
+        w[0] = kos::thread::create(re_checker, nullptr, "rechk", 12);
+        for (unsigned i = 0; i < RE_SWITCHERS; i++)
+        {
+            w[i + 1] = kos::thread::create(re_switcher,
+                                           reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
+                                           "reswt", 12);
+        }
+        int pinned = 0;
+        unsigned made = 0;
+        for (unsigned i = 0; i <= RE_SWITCHERS; i++)
+        {
+            if (not w[i].valid())
+            {
+                continue;
+            }
+            made++;
+            uint32_t core = RE_SWITCH_CORE;
+            if (i == 0)
+            {
+                core = RE_CHECK_CORE;
+            }
+            pinned |= kos::thread::pin(w[i].id(), core);
+        }
+        if (made < RE_SWITCHERS + 1)
+        {
+            for (unsigned i = 0; i <= RE_SWITCHERS; i++)
+            {
+                if (w[i].valid())
+                {
+                    (void)w[i].kill();
+                    (void)w[i].join();
+                }
+            }
+            TAP_CHECK(made == RE_SWITCHERS + 1);
+            return;
+        }
+        g_re_go = 1;
+        int joined = 0;
+        for (unsigned i = 0; i <= RE_SWITCHERS; i++)
+        {
+            joined |= w[i].join();
+        }
+        tap::diag("checker on core %u read errno %u times across %u switcher rounds on cores "
+                  "%u/%u: bad checker %u, switchers %u/%u",
+                  static_cast<unsigned>(g_re_core[0].load()),
+                  static_cast<unsigned>(g_re_reads.load()),
+                  static_cast<unsigned>(g_re_seen.load()),
+                  static_cast<unsigned>(g_re_core[1].load()),
+                  static_cast<unsigned>(g_re_core[2].load()),
+                  static_cast<unsigned>(g_re_bad[0].load()),
+                  static_cast<unsigned>(g_re_bad[1].load()),
+                  static_cast<unsigned>(g_re_bad[2].load()));
+        TAP_CHECK(pinned == 0);
+        TAP_CHECK(joined == 0);
+        // The precondition: both cores busy with threads of this task for the whole window.
+        TAP_CHECK(g_re_core[0].load() == RE_CHECK_CORE);
+        for (unsigned i = 1; i <= RE_SWITCHERS; i++)
+        {
+            TAP_CHECK(g_re_core[i].load() == RE_SWITCH_CORE);
+        }
+        for (unsigned i = 0; i <= RE_SWITCHERS; i++)
+        {
+            TAP_CHECK(g_re_bad[i].load() == 0u);
+        }
+        // A clean window the wall clock cut short proves the state stayed apart for fewer
+        // rounds than claimed, not that it mixed.
+        if (g_re_finished.load() == 0u)
+        {
+            TAP_SKIP_VACUOUS("the %u ms budget ended the check %u of %u switcher rounds in, "
+                             "none of them bad",
+                             static_cast<unsigned>(RE_BUDGET_NS / 1000000ull),
+                             static_cast<unsigned>(g_re_seen.load()),
+                             static_cast<unsigned>(RE_SWITCHERS * RE_ROUNDS));
+            return;
+        }
+        TAP_CHECK(g_re_seen.load() == RE_SWITCHERS * RE_ROUNDS);
+        TAP_CHECK(g_re_reads.load() > 0u);
     }
 #endif
 }

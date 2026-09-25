@@ -103,11 +103,12 @@ namespace kickos
         return static_cast<uint32_t>(e->far_node) - 1u;
     }
 
-    // Hand one far CALL to a thread parked on the endpoint its port is bound to, minting that
-    // thread the reply capability for it. True where a receiver took it, and then the call
-    // slot is held as this node's record of the caller until the reply is sent.
+    // Hand one far CALL to a thread parked on the endpoint its port is bound to. True where a
+    // receiver took it: the call slot is then a record the receiver holds, and it lands the
+    // payload out of that slot in its own receive (endpoint_reply_recv), never in the masked
+    // service that runs this.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
-                                   void const* payload, uint32_t len, uint32_t slot);
+                                   uint32_t len, uint32_t slot);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Make the next far delivery fail when writing back its new reply capability.
@@ -122,11 +123,13 @@ namespace kickos
     }
 #endif
 
-    // Hand one far reply to whatever local thread `tag` names, and answer whether it landed.
+    // Hand one far reply to whatever local thread `tag` names, and answer whether one took it.
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
     // `from` is the RING the reply arrived on, which the validation tests the caller's own
-    // far node against. Caller holds no lock; the doorbell's mask is the exclusion.
-    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
+    // far node against. True hands the caller `hold`, the reply's slot, which it lands and
+    // releases in its own call (endpoint_call); nothing is copied here. Caller holds no lock;
+    // the doorbell's mask is the exclusion.
+    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
                                     uint32_t len);
 
     // Create a LOCAL endpoint, bind `port` of this node to it, and install a capability for it

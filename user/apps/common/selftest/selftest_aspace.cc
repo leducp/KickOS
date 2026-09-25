@@ -9,10 +9,8 @@
 namespace selftest
 {
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // Test address-space operations through kernel scenarios returning status bits,
-    // not raw addresses. Frame runs and spaces are capability objects.
-    // The zero-authority worker joins root's task and shares its globals; only
-    // its authority differs from root's for the comparison.
+    // The zero-authority worker joins root's task, so it shares these globals; only its authority
+    // differs from root's.
     uintptr_t g_mint_seed = 0;
     uintptr_t g_mint_objects = 0;
     uintptr_t g_mint_self_space = 0;
@@ -36,8 +34,7 @@ namespace selftest
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_FRAME_RESOLVE) != 0);
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_MINT) != 0);
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_HOLD) != 0);
-        // The generation is the whole reason a domain carries one: a handle whose slot has
-        // been reclaimed must not be answered by the next occupant.
+        // A handle whose slot was reclaimed must not be answered by the next occupant.
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_ASPACE_STALE) != 0);
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_CLOSE_FRAMES) != 0);
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_CLOSE_HOLD) != 0);
@@ -45,7 +42,6 @@ namespace selftest
         // A frame handed back twice leaves the free count balanced and only this bit clear.
         TAP_CHECK((b & KOS_ASPACE_CAPOBJ_NO_REFUSED) != 0);
 
-        // Frame-allocation probes must reject callers without AUTH_MEMORY.
         g_mint_seed = 0;
         g_mint_objects = 0;
         g_mint_self_space = 0;
@@ -68,8 +64,7 @@ namespace selftest
         }
     }
 
-    // Map and unmap ARE capability operations. Driven from userspace through the real
-    // syscalls, on capabilities the probe seeds because no user-facing mint exists yet.
+    // The probe seeds the capabilities: no user-facing mint exists.
     void t_cap_map()
     {
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
@@ -84,19 +79,15 @@ namespace selftest
             kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
         TAP_CHECK(va != 0);
 
-        // Permission comes from the AUTHORITY word, not a rights bit: the entry's rights
-        // field is full and widening it would spend the reply sequence packed beside it.
+        // Permission comes from the AUTHORITY word, not a rights bit: the entry's rights field is
+        // full.
         TAP_CHECK(kos_frame_map(fcap, acap, va, 0) == 0);
-        // Mapped: the page is readable and writable through the address the caller chose.
         volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(va);
         *p = 0xC2C2C2C2u;
         TAP_CHECK(*p == 0xC2C2C2C2u);
 
-        // A second map of the same range must refuse rather than double-install.
         TAP_CHECK(kos_frame_map(fcap, acap, va, 0) != 0);
-        // A misaligned address is refused.
         TAP_CHECK(kos_frame_map(fcap, acap, va + 1u, 0) != 0);
-        // An unknown flag is refused rather than ignored.
         TAP_CHECK(kos_frame_map(fcap, acap, va, 0xFFu) != 0);
 
         // A revoke matches the RUN and not a shape: a second run of the same length must not
@@ -108,8 +99,7 @@ namespace selftest
         TAP_CHECK(kos_frame_unmap(other, acap, va) != 0); // same length, different run
         kos_handle_close(other);
         kos_handle_close(static_cast<kos_cap_t>(seed2 >> 32));
-        // An address inside a range and not its base is refused. The identity property is
-        // the other-run check above.
+        // An address inside a range and not its base is refused.
         uintptr_t const g2 = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         uintptr_t const inside_text = reinterpret_cast<uintptr_t>(&t_cap_map) & ~(g2 - 1u);
         TAP_CHECK(kos_frame_unmap(fcap, acap, inside_text) != 0);
@@ -133,7 +123,7 @@ namespace selftest
         uintptr_t const base = static_cast<uintptr_t>(
             kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
-        // A DIFFERENT address from root's, which is the whole point: the holder chooses.
+        // A DIFFERENT address from root's: the holder chooses.
         uintptr_t const va = base + g * 4u;
         kos_cap_t const space =
             static_cast<kos_cap_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SELF_SPACE, 0));
@@ -151,8 +141,6 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Maps the delegated run, then drops its own capability while the mapping stands: after
-    // this nothing but the leaf names the run.
     void pin_child(void*)
     {
         uintptr_t const base = static_cast<uintptr_t>(
@@ -164,7 +152,7 @@ namespace selftest
         {
             (void)kos_frame_map(CH_SHARE_FRAME, space, base + g * 8u, 0);
         }
-        kos_handle_close(CH_SHARE_FRAME); // the mapping is now the run's only holder
+        kos_handle_close(CH_SHARE_FRAME); // the mapping is now this task's only hold
         kos_sem_post(CH_DONE);
     }
 
@@ -176,8 +164,7 @@ namespace selftest
         g_ssr_live = static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0));
     }
 
-    // A thread stack takes a range slot, so a slot leaked at thread exit exhausts the list
-    // after thirty threads and no arm above would notice.
+    // A thread stack takes a range slot, so a slot leaked at thread exit exhausts the list.
     void t_stack_slot_returns()
     {
         uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0);
@@ -206,7 +193,7 @@ namespace selftest
                   static_cast<unsigned>(free0), static_cast<unsigned>(live_low), churned,
                   static_cast<unsigned>(after));
         TAP_CHECK(churned > 0);
-        // Require stack allocation to consume a range slot.
+        // Positive control: a live stack takes a slot.
         TAP_CHECK(live_low < free0);
         TAP_CHECK(after == free0);
     }
@@ -214,6 +201,7 @@ namespace selftest
     // Reject frame mappings over live stacks; replacement would overwrite thread locals.
     void t_cap_map_over_stack()
     {
+        settle_exits();
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
         TAP_CHECK(seed != 0);
         if (seed == 0)
@@ -234,7 +222,7 @@ namespace selftest
         // nobody mapped is held for good by a call that failed.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 1u);
 
-        // Control: verify that a valid mapping succeeds.
+        // Control: a free address maps.
         uintptr_t const free_va =
             static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
         TAP_CHECK(free_va != 0);
@@ -262,9 +250,8 @@ namespace selftest
         return g_snp_blk;
     }
 
-    // Find the first unmapped page below page, or zero if the bounded scan fails.
-    // Cache the guard address before any grant attempt: an incorrect grant could
-    // map it and make a later scan identify a different page.
+    // Cached before any grant attempt: a wrongly admitted grant could map the guard and make a
+    // later scan find a different page.
     uintptr_t g_snp_guard = 0;
 
     uintptr_t snp_guard(uintptr_t page, uintptr_t g)
@@ -308,8 +295,8 @@ namespace selftest
         // The guard address names the base of the entire stack range.
         TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0) == -KOS_EPERM);
         TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), 2u * g, 0) == -KOS_EPERM);
-        // Request a different memory type to reach admission. Plain R|W would take
-        // the already-accessible shortcut and would not test stack retyping.
+        // A different memory type reaches admission; plain R|W takes the already-accessible
+        // shortcut.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) != 0);
         TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(page), g, KOS_MEM_NOCACHE)
                   == -KOS_EPERM);
@@ -349,6 +336,7 @@ namespace selftest
     // Reject donation of the live stack: its frames are freed when the donor exits.
     void t_stack_handoff_refused()
     {
+        settle_exits();
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         TAP_CHECK(g != 0);
         void* const mine = snp_block();
@@ -363,8 +351,8 @@ namespace selftest
         TAP_CHECK(guard != 0);
         uint64_t const frames = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
 
-        // Try every supported stack extent: the app does not know the board's
-        // root-stack size, and handoff requires an exact base and page count.
+        // Every extent: the app does not know the board's root-stack size, and handoff requires an
+        // exact base and page count.
         unsigned admitted = 0;
         int32_t last = 0;
         for (unsigned pages = 1; pages <= 32u; pages++)
@@ -391,26 +379,26 @@ namespace selftest
         TAP_CHECK(kos_task_kill(ok) == 0);
     }
 
-    // Task death is asynchronous; kill/slay success does not mean space teardown
-    // finished. Wait for teardown using a separate signal before checking pool
-    // counts, so an early free still fails the count assertion.
-    constexpr int DEATH_SETTLE_SPINS = 200000;
-    bool probe_settles(uintptr_t op, uintptr_t want)
+    uintptr_t g_live_rest = 0;
+    constexpr uint64_t SETTLE_POLL_NS = 100000ull;
+
+    // A thread returns its stack frames, and as its task's last member its space, inside its
+    // own exit, which runs after the done post root waits on and after any kill returns. Read a
+    // frame or space count only after this, and call it only where the arm holds no thread
+    // alive, or it waits for that one too.
+    void settle_exits()
     {
-        for (int i = 0; i < DEATH_SETTLE_SPINS; i++)
+        while (kos_aspace_probe(KOS_ASPACE_OP_THREADS_LIVE, 0) > g_live_rest)
         {
-            if (kos_aspace_probe(op, 0) == want)
-            {
-                return true;
-            }
+            kos_sleep_ns(SETTLE_POLL_NS);
         }
-        return false;
     }
 
     // A MAPPING IS A HOLDER. Without that the last capability's drop frees frames a live leaf
     // still points at, and reading the page does not say so.
     void t_cap_map_pins_run()
     {
+        settle_exits();
         uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         uintptr_t const spaces0 = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
@@ -443,7 +431,7 @@ namespace selftest
             return;
         }
         wait_n(1);
-        // Refs now: root's capability, plus the child's MAPPING. The child dropped its own.
+        // Root's capability plus the child's MAPPING; the child dropped its own.
         uint64_t const refs_after_child = kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0);
         tap::diag("cap pin: refs after the child mapped and closed = %u",
                   static_cast<unsigned>(refs_after_child));
@@ -453,15 +441,16 @@ namespace selftest
         kos_handle_close(acap);
         // Only the mapping holds the run. The child's own space also consumes frames.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 1u);
-        // Space teardown releases the last mapping reference and returns the frames.
         (void)kos_task_kill(t);
-        TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
+        settle_exits();
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0) == spaces0);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 0u);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
     }
 
     void t_cap_share()
     {
+        settle_exits();
         uint64_t const free0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         uintptr_t const spaces0 = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
@@ -481,7 +470,7 @@ namespace selftest
         mine[2] = 0;
         mine[3] = 0;
 
-        // A task of its OWN, carrying no grant: mem_base null skips the handoff entirely.
+        // A task of its OWN, carrying no grant: a null mem_base skips the handoff.
         kos_task_t t = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &t) != 0)
         {
@@ -490,7 +479,7 @@ namespace selftest
         }
         // Only TRANSFER is valid; neither capability type carries access rights.
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {fcap, KOS_CAP_TRANSFER}};
-        // Grant authority explicitly; the negative control omits it.
+        // The negative control below omits this authority.
         if (not kos::thread::create_caps(share_child, nullptr, "shr", 10, caps, 2,
                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                          KOS_AUTH_MEMORY, nullptr, t)
@@ -501,7 +490,6 @@ namespace selftest
             return;
         }
         wait_n(1);
-        // One frame, two spaces, two DIFFERENT addresses, and the bytes cross both ways.
         uintptr_t const theirs = static_cast<uintptr_t>(mine[2])
                                  | (static_cast<uintptr_t>(mine[3]) << 32);
         tap::diag("cap share: root 0x%x, peer 0x%x",
@@ -513,8 +501,9 @@ namespace selftest
         // The borrower dies while root still maps the run: the run belongs to the CAPABILITY,
         // so the space that mapped it owned nothing to free.
         (void)kos_task_kill(t);
-        TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
-        // Check pool counts: reading through a stale mapping cannot detect early free.
+        settle_exits();
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0) == spaces0);
+        // Only the pool count sees an early free; a stale mapping still reads back.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0 - 1u);
         mine[0] = SHARE_A + 1u;
         TAP_CHECK(mine[0] == SHARE_A + 1u);
@@ -535,19 +524,21 @@ namespace selftest
                 TAP_CHECK(mine[2] == 0); // it reached the map and was refused
             }
             (void)kos_task_kill(t2);
-            TAP_CHECK(probe_settles(KOS_ASPACE_OP_SPACES_HELD, spaces0));
+            settle_exits();
+            TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0) == spaces0);
         }
 
         TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
         kos_handle_close(fcap);
         kos_handle_close(acap);
         // The frames come back only once the LAST capability naming the run is gone.
-        TAP_CHECK(probe_settles(KOS_ASPACE_OP_CAP_RUN_REFS, 0));
+        TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0) == 0u);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == free0);
     }
 
     void t_aspace_seam()
     {
+        settle_exits();
         uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
         TAP_CHECK(g != 0);
         TAP_CHECK((g & (g - 1u)) == 0);
@@ -562,8 +553,7 @@ namespace selftest
                   static_cast<unsigned>(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0)));
     }
 
-    // Compare hardware-reported granules, ASID width and physical width with
-    // the backend model. Do not change architectural limits to match an emulator.
+    // Do not change architectural limits to match an emulator.
     void t_aspace_model()
     {
         uint64_t const m = kos_aspace_probe(KOS_ASPACE_OP_MODEL, 0);
@@ -575,30 +565,29 @@ namespace selftest
             static_cast<unsigned>((m >> KOS_ASPACE_MODEL_GRAN_SHIFT) & KOS_ASPACE_MODEL_FIELD_MASK);
         tap::diag("aspace model: granules 0x%x, %u ASID bits, %u PA bits, verdict 0x%x",
                   grans, asid, pa, static_cast<unsigned>(m & KOS_ASPACE_MODEL_FIELD_MASK));
-        // Require a nonzero physical width to exclude an empty report. ASID width
-        // may legally be zero on an untagged backend.
+        // A nonzero physical width excludes an empty report. ASID width may legally be zero on an
+        // untagged backend.
         TAP_CHECK(pa != 0 and grans != 0);
         TAP_CHECK((m & KOS_ASPACE_MODEL_ALL) == KOS_ASPACE_MODEL_ALL);
-        // A backend claiming tagging must report a nonzero identifier width.
         TAP_CHECK((m & KOS_ASPACE_MODEL_TAGGED) == 0 or asid != 0);
     }
 
     void t_aspace_map_cycle()
     {
-        // Check map, read/write and unmap, including absence of the final translation.
+        // Map, read/write and unmap, including absence of the final translation.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_ROUNDTRIP, 0) == KOS_ASPACE_TRIP_GONE);
     }
 
     void t_aspace_translate()
     {
-        // Map two virtual pages to one frame and check writes through both aliases.
+        // Two virtual pages on one frame, written through both aliases.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_ALIAS, 0) == 1);
     }
 
     void t_aspace_refusals()
     {
-        // Check invalid addresses, alignment, size, rights, partial map/unmap ranges
-        // and a run crossing the reported physical-address limit.
+        // Invalid addresses, alignment, size, rights, partial map/unmap ranges and a run crossing
+        // the reported physical-address limit.
         uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_REFUSALS, 0);
         tap::diag("map editor refusal word 0x%x", static_cast<unsigned>(bits));
         TAP_CHECK(bits == KOS_ASPACE_REFUSE_ALL);
@@ -606,14 +595,14 @@ namespace selftest
 
     void t_aspace_span()
     {
-        // Cross two leaf-table boundaries; derive the length from the granule.
+        // Crosses two leaf-table boundaries; the length derives from the granule.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_SPAN, 0) == 1);
     }
 
     void t_aspace_acquire_dup()
     {
-        // Acquire one page twice, release once, and check that the surviving hold
-        // prevents its window slot from being reused for another page.
+        // Acquire one page twice, release once: the surviving hold keeps its window slot from
+        // reuse for another page.
         uintptr_t const bits = kos_aspace_probe(KOS_ASPACE_OP_ACQUIRE_DUP, 0);
         tap::diag("acquire duplicate-hold word 0x%x", static_cast<unsigned>(bits));
         TAP_CHECK(bits == KOS_ASPACE_DUP_ALL);
@@ -621,18 +610,20 @@ namespace selftest
 
     void t_aspace_balance()
     {
-        // Repeat create/map/unmap/destroy and check that data and table frames return.
+        settle_exits();
+        // Repeated create/map/unmap/destroy returns data and table frames.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
     void t_aspace_domain_balance()
     {
+        settle_exits();
         // Dropping a domain must release its space before the slot is reused.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_DOMAIN_BALANCE, 0) == 0);
     }
 
-    // Fail each create allocation in turn to exercise every unwind path.
-    // Check injection depth as well as result bits to reject an empty sweep.
+    // Fails each create allocation in turn. The injection depth is checked as well as the bits,
+    // or an empty sweep passes.
     void t_aspace_forced_unwind()
     {
         uintptr_t const r = kos_aspace_probe(KOS_ASPACE_OP_FORCED_UNWIND, 0);
@@ -644,9 +635,8 @@ namespace selftest
                   static_cast<unsigned>(depth));
         TAP_CHECK(depth >= KOS_ASPACE_UNWIND_MIN_DEPTH);
         TAP_CHECK(bits == KOS_ASPACE_UNWIND_ALL);
-        // Repeat with a grant and a successful create. Borrower cleanup must unmap
-        // without freeing donor frames. This layout reuses an image leaf table, so
-        // failures reach claim_slot but not domain_for; report depths to show coverage.
+        // With a grant: borrower cleanup must unmap without freeing donor frames. This layout
+        // reuses an image leaf table, so failures reach claim_slot but not domain_for.
         void* const block = kos_ram_alloc(64);
         if (block == nullptr)
         {
@@ -665,9 +655,7 @@ namespace selftest
         TAP_CHECK(hbits == KOS_ASPACE_UNWIND_ALL);
     }
 
-    // Alternate process lifetimes with allocation-failure sweeps and check one
-    // pool balance across normal task teardown and failed creation.
-    constexpr uint32_t CHURN_JOIN_US = 60000;
+    // One pool balance across normal task teardown and failed creation, interleaved.
     // Minimum expected cost: one root, two image tables and one private data page.
     constexpr uintptr_t CHURN_MIN_FRAMES = 4;
 
@@ -676,8 +664,8 @@ namespace selftest
         kos_exit(0);
     }
 
-    // One whole life. `held` is read with the space ALIVE and before the member starts, so
-    // it is the space's own cost and races with nothing.
+    // `held` is read with the space ALIVE and before the member starts, so it is the space's own
+    // cost and races with nothing.
     bool churn_cycle(uintptr_t* held)
     {
         kos_task_t t = KOS_TASK_NONE;
@@ -697,7 +685,7 @@ namespace selftest
             (void)kos_task_kill(t);
             return false;
         }
-        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         // Drop the creator hold before checking reclamation; thread exit leaves it live.
         bool const reaped = kos_task_kill(t) == 0;
         return joined and reaped;
@@ -705,6 +693,7 @@ namespace selftest
 
     void t_aspace_churn()
     {
+        settle_exits();
         // Warm up first: initial mappings allocate intermediate tables retained for reuse.
         if (not churn_cycle(nullptr))
         {
@@ -736,12 +725,11 @@ namespace selftest
         TAP_CHECK(low + CHURN_MIN_FRAMES <= frames0);
         TAP_CHECK(frames1 == frames0);
         TAP_CHECK(roots1 == roots0);
-        // The refusal counter, folded in: no path above handed the pool a frame twice.
+        // BALANCE folds in the refusal counter: no path above handed the pool a frame twice.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // Check that a live stack uses frames and teardown returns them. Warm up
-    // first because intermediate tables are retained after the first mapping.
+    // Warm up first: intermediate tables are retained after the first mapping.
     kos_cap_t g_sfgate = KOS_CAP_NONE;
     void sframe_worker(void*) // caps: done@1, gate@2
     {
@@ -766,6 +754,7 @@ namespace selftest
     }
     void t_stack_is_frames()
     {
+        settle_exits();
         TAP_CHECK(kos_sem_create(0, &g_sfgate) == 0);
         TAP_CHECK(sframe_cycle(nullptr));
         uintptr_t const before = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
@@ -776,15 +765,14 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0) == before);
         tap::diag("stack frames: %u held by one live thread",
                   static_cast<unsigned>(before - live));
-        // Check after borrower unmap and release. The balance probe includes the
-        // cumulative refused-free count and must cover stack reclamation.
+        // BALANCE includes the cumulative refused-free count, so it covers stack reclamation.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
         TAP_CHECK(kos_handle_close(g_sfgate) == 0);
         g_sfgate = KOS_CAP_NONE;
     }
 
-    // Create both workers before either runs so their domains coexist. Each
-    // reports through a shared grant; process-private globals cannot carry results.
+    // Both workers are created before either runs, so their domains coexist. Each reports
+    // through a shared grant; process-private globals cannot carry results.
     void space_id_worker(void* arg)
     {
         uint32_t const id = static_cast<uint32_t>(kos_aspace_probe(KOS_ASPACE_OP_SPACE_ID, 0));
@@ -792,8 +780,8 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Wait for any worker that started, even if the second fails, so its g_done
-    // post cannot be consumed by a later test.
+    // Waits for any worker that started, even if the second fails, so its g_done post cannot be
+    // consumed by a later test.
     bool two_space_ids(void* mem_base, uint32_t mem_size, volatile uint32_t* slot)
     {
         slot[0] = 0;
@@ -825,7 +813,7 @@ namespace selftest
             tap::skip("arena cannot spare the shared region");
             return;
         }
-        // Root's own view of the block the pair is handed, which is where they answer.
+        // Root maps the block too: the pair answers through it.
         TAP_CHECK(kos_mem_self_grant(shared, 256, 0) == 0);
         volatile uint32_t* const slot = static_cast<volatile uint32_t*>(shared);
         if (not two_space_ids(shared, 256, slot))
@@ -847,8 +835,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Create two tasks explicitly before running either member. Plain spawns
-    // would share root's task and could not test separate address spaces.
+    // Plain spawns would share root's task, so both tasks are created explicitly.
     bool two_space_ids_own_tasks(uint32_t* ida, uint32_t* idb)
     {
         *ida = 0;
@@ -915,8 +902,7 @@ namespace selftest
 
     void t_aspace_two_spaces_no_grant()
     {
-        // The case the arm above misses: two tasks with nothing granted, which must still be
-        // two address spaces of their own.
+        // Two tasks with nothing granted must still be two address spaces.
         uint32_t ida = 0;
         uint32_t idb = 0;
         if (not two_space_ids_own_tasks(&ida, &idb))
@@ -928,8 +914,8 @@ namespace selftest
         TAP_CHECK(ida != idb);
     }
 
-    // Check identical virtual addresses with private data frames and shared text
-    // frames. Give each worker a report block; private globals cannot report to root.
+    // One virtual address, private data frames, shared text frames. Each worker reports through
+    // its own block; private globals cannot report to root.
     enum
     {
         PW_ADDR = 0,     // the member's own &g_pw_word
@@ -1033,13 +1019,11 @@ namespace selftest
         tap::diag("process: data frames %u/%u/%u, text frame %u",
                   static_cast<unsigned>(rootdf), static_cast<unsigned>(oa[PW_DATA_FRAME]),
                   static_cast<unsigned>(ob[PW_DATA_FRAME]), static_cast<unsigned>(roottf));
-        // ONE address in all three spaces.
         TAP_CHECK(oa[PW_ADDR] == own and ob[PW_ADDR] == own);
-        // THREE frames under it, which is what a per-process copy means.
         TAP_CHECK(rootdf != 0 and oa[PW_DATA_FRAME] != 0 and ob[PW_DATA_FRAME] != 0);
         TAP_CHECK(oa[PW_DATA_FRAME] != ob[PW_DATA_FRAME]
                   and oa[PW_DATA_FRAME] != rootdf and ob[PW_DATA_FRAME] != rootdf);
-        // ONE frame under the text, which is the sharing the copy is measured against.
+        // ONE frame under the text: the control the copy is measured against.
         TAP_CHECK(roottf != 0 and oa[PW_TEXT_FRAME] == roottf and ob[PW_TEXT_FRAME] == roottf);
         // Each read back its OWN write, after the other had written the same address.
         TAP_CHECK(oa[PW_READBACK] == PW_A and ob[PW_READBACK] == PW_B);
@@ -1103,8 +1087,7 @@ namespace selftest
         TAP_CHECK(g_sib_word == 0u);      // root did not: a different group is a different copy
     }
 
-    // Write a reserved block and verify handoff at the same address through
-    // both task creation and a grant-carrying spawn.
+    // Handoff at the same address, through both task creation and a grant-carrying spawn.
     enum
     {
         HO_SEEN = 0,
@@ -1129,6 +1112,7 @@ namespace selftest
     }
     void t_task_handoff_readback()
     {
+        settle_exits();
         constexpr uint32_t HO_BLK = 256;
         void* const blk = kos_ram_alloc(HO_BLK);
         if (blk == nullptr)
@@ -1151,7 +1135,7 @@ namespace selftest
             return;
         }
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
-        // CONSUMER ONE: an explicit create, which is the driver framework's own path.
+        // Path one: an explicit task create.
         if (not kos::thread::create_caps(ho_reader, blk, "hoT", 10, caps, 1, KOS_POLICY_FIFO, 0,
                                          false, nullptr, 0, 0, nullptr, t).valid())
         {
@@ -1167,7 +1151,7 @@ namespace selftest
         out[HO_SEEN] = HO_SENTINEL;
         out[HO_ADDR] = 0;
         out[HO_FRAME] = 0;
-        // Check the grant-carrying spawn path with the same range.
+        // Path two: the grant-carrying spawn, same range.
         if (not kos::thread::create_caps(ho_reader, blk, "hoS", 10, caps, 1, KOS_POLICY_FIFO, 0,
                                          false, blk, HO_BLK).valid())
         {
@@ -1180,9 +1164,8 @@ namespace selftest
         TAP_CHECK(first_addr == reinterpret_cast<uintptr_t>(blk)); // at the address root named
         TAP_CHECK(out[HO_SEEN] == HO_SENTINEL + 1u);
         TAP_CHECK(out[HO_ADDR] == reinterpret_cast<uintptr_t>(blk));
-        // Check a nondefault memory type on a separate block: all aliases of one
-        // block must use the same type. Use task creation only; the spawn grant ABI
-        // has no memory-type field and passes zero.
+        // A nondefault type on a separate block: all aliases of one block carry one type. Task
+        // creation only; the spawn grant ABI has no memory-type field and passes zero.
         void* const typed = kos_ram_alloc(HO_BLK);
         if (typed == nullptr)
         {
@@ -1213,24 +1196,24 @@ namespace selftest
         }
         wait_n(1);
         (void)kos_task_kill(tt);
+        settle_exits();
         TAP_CHECK(donor_type == HO_NOCACHE_AT);
         TAP_CHECK(tout[HO_TYPE] == donor_type); // the two live mappings agree
         TAP_CHECK(tout[HO_SEEN] == HO_SENTINEL + 1u);
         TAP_CHECK(tout[HO_ADDR] == reinterpret_cast<uintptr_t>(typed));
-        // Borrowers have exited while root still maps the block. No donor frame may
-        // have been freed; the balance probe reports refused frees as all ones.
+        // Borrowers exited while root still maps the block: no donor frame may have been freed.
+        // BALANCE reports refused frees as all ones.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // Reject an interior base in a two-page reservation. Accepting the whole
-    // reservation would also expose a donor page the caller did not name.
+    // An interior base in a two-page reservation is refused: accepting the whole reservation
+    // would expose a donor page the caller did not name.
     enum
     {
         SL_GRAN = 0, // the granule, so the borrower can name the page below its own
         SL_ECHO = 1  // where the borrower reports what it read there
     };
     constexpr uint64_t SL_TOKEN = 0x5A17ED10u;
-    constexpr uint32_t SL_JOIN_US = 200000;
 
     // Reached only where the refusal did not hold: reads the page below the one handed over
     // and echoes it into the page that was.
@@ -1244,6 +1227,7 @@ namespace selftest
 
     void t_task_handoff_slice()
     {
+        settle_exits();
         uint64_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
         if (g == 0 or g > 0x10000u)
         {
@@ -1273,7 +1257,7 @@ namespace selftest
                                                 nullptr, 0, 0, nullptr, t);
             if (rd.valid())
             {
-                (void)rd.join(SL_JOIN_US);
+                (void)rd.join();
             }
             (void)kos_task_kill(t);
             tap::diag("interior handoff admitted; the borrower read 0x%x below its page",
@@ -1291,10 +1275,9 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // Exit the owning donor task before its borrower, then allocate and write
-    // frames in a churn task. The borrower's data must survive through the
-    // domain lifetime reference. Pool counters alone cannot detect early reuse.
-    // Root joins the donor before starting churn; root cannot serve as the donor.
+    // The donor task exits before its borrower, then a churn task allocates and writes frames:
+    // the borrower's data must survive on the domain lifetime reference. Pool counters alone
+    // cannot detect early reuse. Root cannot serve as the donor; it joins it before the churn.
     enum
     {
         DX_STATUS = 0, // 1 once the donor seated a borrower into its own block
@@ -1348,7 +1331,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Create the borrower and exit. Root joins the donor instead of waiting for a post.
+    // Root joins the donor instead of waiting for a post.
     void dx_donor(void* arg) // caps: done@1, ep(WAIT|TRANSFER)@2; arg is ROOT's report block
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
@@ -1374,14 +1357,11 @@ namespace selftest
         {
             return;
         }
-        // Read the donor's space count last. Compare after join with no intervening
-        // space allocations or frees to detect whether its domain survived.
+        // Read last: root compares it after the join with no space allocated or freed between.
         out[DX_HELD] = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         out[DX_STATUS] = 1;
     }
 
-    // Takes one-granule blocks until the pool or its own range table says no, stamping each,
-    // and records the frame every one of them landed on.
     void dx_churn(void* arg) // caps: done@1
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
@@ -1405,6 +1385,7 @@ namespace selftest
 
     void t_task_handoff_donor_exits()
     {
+        settle_exits();
         void* const dblk = kos_ram_alloc(DX_BLK);
         void* const cblk = kos_ram_alloc(DX_CBLK);
         if (dblk == nullptr or cblk == nullptr)
@@ -1455,10 +1436,9 @@ namespace selftest
             return;
         }
         // The donor has exited before any frame churn begins.
-        int const jrc = donor.join(DX_CALL_US);
+        int const jrc = donor.join();
         bool const seated = jrc == 0 and dout[DX_STATUS] == 1u;
-        // Drop root's creator hold before join so the donor can lose its last task
-        // reference. Otherwise that hold would hide a missing borrower reference.
+        // Drop root's creator hold before the churn, or it hides a missing borrower reference.
         (void)kos_task_kill(td);
         if (not seated)
         {
@@ -1526,15 +1506,14 @@ namespace selftest
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r))); // the borrower answered at all
         TAP_CHECK(r.addr == dout[DX_ADDR]);              // at the donor's address
         TAP_CHECK(r.token != 0 and r.token == dout[DX_TOKEN]); // on the donor's frame
-        // Check donor bytes survived allocations and writes by the churn task.
         TAP_CHECK(r.seen == DX_DONOR_WORD);
         TAP_CHECK(r.readback == DX_BORROW_WORD);
         TAP_CHECK(not handed_out);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // An ungranted reservation has no leaves, so only aspace_release returns
-    // its frames. Check process teardown after a warm-up allocation cycle.
+    // An ungranted reservation has no leaves, so only aspace_release returns its frames. The
+    // first cycle is a warm-up.
     enum
     {
         RT_ADDR = 0, // the reservation the member took and never mapped
@@ -1574,13 +1553,14 @@ namespace selftest
         kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * RT_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * RT_WORDS);
-        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         // Root's creator hold keeps the empty task's space alive.
         bool const reaped = kos_task_kill(t) == 0;
         return heard and joined and reaped;
     }
     void t_reservation_teardown()
     {
+        settle_exits();
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -1603,14 +1583,14 @@ namespace selftest
         tap::diag("reservation teardown: %u frames free, %u inside the live process, %u after",
                   static_cast<unsigned>(before), static_cast<unsigned>(rep[RT_FREE]),
                   static_cast<unsigned>(after));
-        // Require pool usage to change so an empty reservation cannot pass.
+        // Pool usage must change, or an empty reservation passes.
         TAP_CHECK(rep[RT_FREE] + RT_PAGES <= before);
         TAP_CHECK(after == before);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // Fill a reservation, exit, then read the same reallocated frames before
-    // writing. They must be zeroed. Warm up first to equalize retained table costs.
+    // Frames a dead process filled must read zeroed when reallocated. The warm-up cycle
+    // equalizes retained table costs.
     enum
     {
         FS_FRAME = 0, // the frame the reservation's first page sits in
@@ -1668,7 +1648,7 @@ namespace selftest
         kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * FS_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * FS_WORDS);
-        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         bool const reaped = kos_task_kill(t) == 0;
         return heard and joined and reaped;
     }
@@ -1696,14 +1676,13 @@ namespace selftest
                   static_cast<unsigned>(first[FS_HITS]),
                   static_cast<unsigned>(second[FS_HITS]));
         TAP_CHECK(first[FS_FRAME] != 0);
-        // Require reuse of the first process's frames so stale data would be visible.
+        // Reuse of the first process's frames, or stale data would not be visible.
         TAP_CHECK(second[FS_FRAME] == first[FS_FRAME]);
         TAP_CHECK(second[FS_HITS] == 0);
     }
 
-    // Exhaust thread slots after task/domain/space creation. Failed spawn must
-    // release those objects and the donor reference. Use a separate donor task
-    // so its lifetime ends within this test.
+    // A spawn refused for thread slots after task/domain/space creation must release those
+    // objects and the donor reference. A separate donor task, so its lifetime ends in this arm.
     constexpr int LR_PARK_CAP = 24;
     enum
     {
@@ -1783,7 +1762,7 @@ namespace selftest
         kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * LR_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * LR_WORDS);
-        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         bool const reaped = kos_task_kill(t) == 0;
         return heard and joined and reaped;
     }
@@ -1821,9 +1800,9 @@ namespace selftest
         TAP_CHECK(rep[LR_FRAMES1] == rep[LR_FRAMES0]);
     }
 
-    // A failed spawn must release both the borrower space and its donor reference.
-    // Use the member's own task as donor and let it exit. Compare counts across
-    // reaping without allocating another domain, which could hide a stale reference.
+    // A failed spawn must release both the borrower space and its donor reference. The member's
+    // own task is the donor; no domain is allocated across the reap, which could hide a stale
+    // reference.
     enum
     {
         LD_RC = 0,     // the refused spawn's own answer, negated
@@ -1857,6 +1836,7 @@ namespace selftest
     }
     void t_spawn_refusal_frees_donor()
     {
+        settle_exits();
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -1886,7 +1866,7 @@ namespace selftest
         kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * LD_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * LD_WORDS);
-        bool const joined = m.join(CHURN_JOIN_US) == 0;
+        bool const joined = m.join() == 0;
         // The member's group dies here, and its domain with it unless something still
         // holds a reference on it.
         bool const reaped = kos_task_kill(t) == 0;
@@ -1908,13 +1888,12 @@ namespace selftest
         TAP_CHECK(frames_end > rep[LD_FRAMES]);
     }
 
-    // A task sibling overwrites the victim's user stack with privileged state
-    // values before it runs. Fill the frame window so layout changes do not hide
-    // the attack. The victim must reach its own entry and fail kos_shutdown
-    // with EPERM. Keep the sibling alive until the victim finishes.
+    // A task sibling overwrites the victim's user stack with privileged state before it runs;
+    // the victim must still reach its own entry and fail kos_shutdown with EPERM. The whole
+    // frame window is filled so a layout change cannot hide the attack, and the sibling stays
+    // alive until the victim finishes.
     constexpr uint64_t HOSTILE_EL1H = 0x205u; // M[3:0] = EL1h, plus the debug mask
     constexpr uint32_t HOSTILE_WINDOW = 1024; // spans the whole armv8a exception frame
-    constexpr uint32_t HOSTILE_JOIN_US = 60000;
     constexpr int CH_HPARK = 2; // delegated SECOND to the sibling
     // The victim has private globals, so report through the block shared with root.
     void hostile_victim(void* arg)
@@ -1965,10 +1944,9 @@ namespace selftest
             reinterpret_cast<volatile int32_t*>(reinterpret_cast<uintptr_t>(raw) + 2u * VSTK);
         *verdict = -99;
         kos_task_t task = KOS_TASK_NONE;
-        // Grant the group access to the victim stack and verdict slot.
         TAP_CHECK(kos_task_create(raw, 3u * VSTK, 0, &task) == 0);
-        // Lower priority keeps the victim parked until root joins. A caller-owned
-        // stack lets its sibling locate and overwrite the saved frame.
+        // Lower priority keeps the victim parked until root joins. A caller-owned stack lets its
+        // sibling locate and overwrite the saved frame.
         auto const victim = kos::thread::create(hostile_victim,
                                                 const_cast<int32_t*>(verdict), "hvic", 1,
                                                 KOS_POLICY_FIFO, 0, false, nullptr, 0,
@@ -1990,16 +1968,16 @@ namespace selftest
         if (not sibling.valid())
         {
             (void)kos_task_kill(task);
-            (void)victim.join(HOSTILE_JOIN_US);
+            (void)victim.join();
             (void)kos_handle_close(park);
             tap::skip("pool too small for the sibling");
             return;
         }
         wait_n(1); // the scribble is COMPLETE before the victim is let go
-        int const jrc = victim.join(HOSTILE_JOIN_US);
+        int const jrc = victim.join();
         int const rc = *verdict;
         (void)kos_task_kill(task);
-        (void)sibling.join(HOSTILE_JOIN_US);
+        (void)sibling.join();
         (void)kos_handle_close(park);
         TAP_CHECK(jrc == 0);
         TAP_CHECK(rc == -KOS_EPERM);
@@ -2007,9 +1985,9 @@ namespace selftest
 
     // Copy across page boundaries in the specified owner's space.
 
-    // The probe maps adjacent virtual pages to nonadjacent frames. Check the
-    // physical neighbor too: a single memcpy from the translated base would
-    // write there instead of crossing to the next virtual page.
+    // The probe maps adjacent virtual pages to nonadjacent frames and checks the physical
+    // neighbor: a single memcpy from the translated base would write there instead of crossing
+    // to the next virtual page.
     void t_split_access()
     {
         uint64_t const bits = kos_aspace_probe(KOS_ASPACE_OP_SPLIT_ACCESS, 0);
@@ -2018,9 +1996,9 @@ namespace selftest
         TAP_CHECK(bits == KOS_ASPACE_SPLIT_ALL);
     }
 
-    // Exchange between processes whose static buffers have equal virtual
-    // addresses but different frames. The sender's receive-info guard detects
-    // copying to the current space instead of the parked receiver's space.
+    // Processes whose static buffers have equal virtual addresses but different frames. The
+    // sender's receive-info guard detects a copy to the current space instead of the parked
+    // receiver's.
     enum
     {
         PI_ADDR = 0,      // the member's own &g_pi_msg[0]
@@ -2122,8 +2100,8 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Give the server higher priority so it parks before the client sends.
-    // This exercises delivery to a parked peer, not the sender queue.
+    // The server's higher priority parks it before the client sends, so delivery goes to a
+    // parked peer and not through the sender queue.
     bool pi_two_processes(void (*server)(void*), void (*client)(void*),
                           volatile uint64_t** oa, volatile uint64_t** ob)
     {
@@ -2166,7 +2144,7 @@ namespace selftest
         }
         kos_cap_grant const scaps[2] = {{g_done, CH_FULL}, {ep, KOS_CAP_WAIT}};
         kos_cap_grant const ccaps[2] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
-        // Start the client only after the server starts; an unmatched client would park forever.
+        // The client starts only after the server; an unmatched client would park forever.
         bool const s_ok = kos::thread::create_caps(server, ba, "piS", 12, scaps, 2,
                                                    KOS_POLICY_FIFO, 0, false, nullptr, 0, 0,
                                                    nullptr, ta).valid();
@@ -2178,7 +2156,7 @@ namespace selftest
         }
         if (s_ok and not c_ok)
         {
-            // Root sends if client creation fails so the server can finish within this test.
+            // Root sends in the client's place so the server finishes within this arm.
             char pad[PI_MSG] = {};
             (void)kos_send(ep, pad, PI_MSG);
         }
@@ -2241,16 +2219,13 @@ namespace selftest
                   static_cast<unsigned>(oa[PI_FRAME]), static_cast<unsigned>(ob[PI_FRAME]),
                   static_cast<int>(static_cast<int32_t>(oa[PI_N])),
                   static_cast<int>(static_cast<int32_t>(ob[PI_N])));
-        // ONE payload address and ONE out-pointer address, in both spaces and in root's.
         TAP_CHECK(oa[PI_ADDR] == own and ob[PI_ADDR] == own);
         TAP_CHECK(oa[PI_INFO_ADDR] == own_info and ob[PI_INFO_ADDR] == own_info);
-        // Different frames under it, which is what makes the equal numbers different memory.
         TAP_CHECK(oa[PI_FRAME] != 0 and ob[PI_FRAME] != 0);
         TAP_CHECK(oa[PI_FRAME] != ob[PI_FRAME]);
-        // The payload crossed, byte for byte, into the RECEIVER's copy.
         TAP_CHECK(static_cast<int32_t>(oa[PI_N]) == PI_MSG);
         TAP_CHECK(oa[PI_SEEN] == PI_MSG);
-        // And so did the receive-info: a plain send, so badge 0 and no reply cap.
+        // A plain send: badge 0 and no reply cap.
         TAP_CHECK(oa[PI_BADGE] == 0);
         TAP_CHECK(static_cast<uint32_t>(oa[PI_RCAP]) == KOS_CAP_NONE);
         // The sender's same-address buffer and receive-info must remain untouched.
@@ -2261,8 +2236,8 @@ namespace selftest
         TAP_CHECK(pi_root_intact());
     }
 
-    // Repeat with CALL: deliver the request and reply cap to the server's space,
-    // then copy the reply into the parked caller's space.
+    // With CALL: the request and reply cap land in the server's space, then the reply in the
+    // parked caller's.
     void t_process_call_reply()
     {
         volatile uint64_t* oa = nullptr;
@@ -2281,7 +2256,7 @@ namespace selftest
         TAP_CHECK(oa[PI_ADDR] == own and ob[PI_ADDR] == own);
         TAP_CHECK(oa[PI_FRAME] != 0 and ob[PI_FRAME] != 0);
         TAP_CHECK(oa[PI_FRAME] != ob[PI_FRAME]);
-        // Check the complete request and reply cap in the server's own space.
+        // Server side: the whole request and a reply cap, in its own space.
         TAP_CHECK(static_cast<int32_t>(oa[PI_N]) == PI_MSG);
         TAP_CHECK(oa[PI_SEEN] == PI_MSG);
         TAP_CHECK(oa[PI_BADGE] == 0);
@@ -2302,8 +2277,7 @@ namespace selftest
 #if KICKOS_FAULT_ISOLATION
     constexpr uint32_t FAULT_JOIN_US = 60000;
 
-    // Fault through an ungranted reservation owned by root. It is guaranteed
-    // to be absent from the worker's address space.
+    // Faults through an ungranted reservation owned by root, which no worker space maps.
     void fault_toucher(void* arg)
     {
         *static_cast<volatile unsigned char*>(arg) = 1u;
@@ -2322,6 +2296,7 @@ namespace selftest
     // Root must survive in its separate space.
     void t_fault_kills_task()
     {
+        settle_exits();
         kos_cap_t park = KOS_CAP_NONE;
         if (kos_sem_create(0, &park) != 0)
         {
@@ -2335,8 +2310,7 @@ namespace selftest
             tap::skip("no reservation left to name an unmapped page with");
             return;
         }
-        // Read pool usage after root's reservation but before creating the victim
-        // so the delta covers only the victim task.
+        // After root's reservation and before the victim's task, so the delta is that task alone.
         uint64_t const frames_before = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         kos_task_t task = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &task) != 0)
@@ -2364,7 +2338,7 @@ namespace selftest
         if (not victim.valid())
         {
             (void)kos_task_kill(task);
-            (void)sibling.join(FAULT_JOIN_US);
+            (void)sibling.join();
             (void)kos_handle_close(park);
             tap::skip("pool too small for the victim");
             return;
@@ -2376,7 +2350,6 @@ namespace selftest
         TAP_CHECK(sibling.join(FAULT_JOIN_US) == 0);
         // Drop root's creator hold before checking pool counts; it keeps an empty task alive.
         TAP_CHECK(kos_task_kill(task) == 0);
-        // Check full reclamation through the fault-exit path after dropping the hold.
         uint64_t const frames_after = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         tap::diag("frame pool free %u before the task, %u after it died",
                   static_cast<unsigned>(frames_before), static_cast<unsigned>(frames_after));
@@ -2385,9 +2358,8 @@ namespace selftest
     }
 #endif
 
-    // Root has memory authority but must not grant an unreserved kernel address.
-    // Obtain the address through the probe: app code cannot name kernel symbols.
-    // Do not reject all high addresses; the user arena is high-half on this board.
+    // Root has memory authority but must not grant an unreserved kernel address. Do not reject
+    // all high addresses: the user arena is high-half on this board.
     void t_grant_kernel_word_refused()
     {
         void* const kword = kos_guard_addr();
@@ -2406,17 +2378,18 @@ namespace selftest
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(kword)),
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(mine)));
         TAP_CHECK(kos_mem_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
-        // Control: grant a caller-owned reservation with the same syscall.
+        // Control: a caller-owned reservation, same syscall.
         TAP_CHECK(kos_mem_self_grant(mine, 64, 0) == 0);
         // Still refused after a success on the same path, so the refusal is not a one-shot
         // state the first call left behind.
         TAP_CHECK(kos_mem_self_grant(kword, sizeof(uint32_t), 0) == -KOS_EPERM);
     }
 
-    // Re-grants must honor memory-type changes in both directions, even when
-    // access rights already match.
+    // Re-grants must honor memory-type changes in both directions, even when access rights
+    // already match.
     void t_self_grant_retype()
     {
+        settle_exits();
         constexpr uint32_t RT_BLK = 256;
         // 1 + the enum value, which is what KOS_ASPACE_OP_MEMTYPE_AT answers.
         constexpr uint64_t RT_NORMAL_AT = 1u;
@@ -2437,7 +2410,6 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, at) == RT_NORMAL_AT);
         TAP_CHECK(kos_mem_self_grant(blk, RT_BLK, KOS_MEM_NOCACHE) == 0);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, at) == RT_NOCACHE_AT);
-        // Check the reverse memory-type transition.
         TAP_CHECK(kos_mem_self_grant(blk, RT_BLK, 0) == 0);
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, at) == RT_NORMAL_AT);
         // Idempotent in the state it landed in, so the leg above is not a one-shot.
@@ -2450,8 +2422,7 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // New processes must copy the saved startup globals after root exits,
-    // never another live process's mutable data.
+    // New processes copy the saved startup globals, never a live process's mutable data.
     volatile uint64_t g_dt_word = 0xC0FFEEull;
     constexpr uint64_t DT_A = 0xC0FFEEull;
     constexpr uint64_t DT_B = 0xBADBADull;
@@ -2469,15 +2440,13 @@ namespace selftest
             kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, reinterpret_cast<uintptr_t>(&g_dt_word));
         kos_sem_post(CH_DONE);
     }
-    // Park a receiver, unmap its buffer from a sibling, then send. Both parties
-    // must get EFAULT. Keep the sender buffer separate to exclude overlap errors.
-    // Pin both workers and give the receiver higher priority so validation
-    // precedes unmap. Sender EFAULT proves delivery reached a parked receiver;
-    // boundary rejection would instead leave the sender to time out.
+    // A receiver parks, a sibling unmaps its buffer and sends: both must get EFAULT. The sender
+    // buffer is separate to exclude overlap errors. Both are pinned and the receiver outranks
+    // the sibling, so validation precedes the unmap. Sender EFAULT proves delivery reached a
+    // parked receiver; a boundary rejection would leave the sender to time out.
     constexpr size_t RU_LEN = 32;
     constexpr uint32_t RU_SEND_US = 200000;
-    // The sender wakes this receiver after it parks. A deadline converts broken
-    // ordering into a test failure instead of an indefinite wait.
+    // The deadline turns broken ordering into a failure instead of an indefinite wait.
     constexpr uint32_t RU_RECV_US = 500000;
     constexpr int CH_RU_EP = 2;
     constexpr int CH_RU_FRAME = 3;
@@ -2569,9 +2538,8 @@ namespace selftest
         TAP_CHECK(g_ru_sent.load() == -KOS_EFAULT);
     }
 
-    // Exercise frame-run creation after slot reuse, when a raw index no longer
-    // resolves as a generational handle. Discover capacity by allocating until
-    // refused, then perform more create/close cycles than that count to force reuse.
+    // Frame-run creation after slot reuse, when a raw index no longer resolves as a generational
+    // handle: more create/close cycles than the discovered capacity force the reuse.
     constexpr uint32_t FR_HOLD_MAX = 24;
     constexpr uint32_t FR_CYCLES = FR_HOLD_MAX;
     kos_cap_t g_fr_f[FR_HOLD_MAX];
@@ -2630,16 +2598,15 @@ namespace selftest
             tap::skip("no frame capability to seed"); // 0 and not KOS_CAP_NONE: see the op
             return;
         }
-        // Require exhaustion followed by enough cycles to prove slot reuse occurred.
+        // Exhaustion, then enough cycles to prove slot reuse.
         TAP_CHECK(held < FR_HOLD_MAX);
         TAP_CHECK(FR_CYCLES > held);
         TAP_CHECK(seeded == FR_CYCLES);
         TAP_CHECK(mapped == seeded);
     }
 
-    // Confirm the subject parked by running a lower-priority witness on its core.
-    // Create the witness after the subject is runnable. Return false if no slot
-    // is available; that is a failed observation, not a pass.
+    // A lower-priority witness on the subject's core runs only once the subject parked; call it
+    // after the subject is runnable. False is a failed observation, not a pass.
     bool await_pinned_park()
     {
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
@@ -2654,11 +2621,10 @@ namespace selftest
         return true;
     }
 
-    // If reply-cap write-back fails, revoke the cap and return EFAULT to both ends.
-    // Site A uses an already-unmapped opts page to test boundary validation.
-    // Site B unmaps after parking to test rollback after a successful validation.
-    // Repeat KICKOS_CAP_REPLY_MAX failures before a successful control to check
-    // recovery of both the slot and reply-cap budget.
+    // A failed reply-cap write-back revokes the cap and returns EFAULT to both ends. Site A uses
+    // an already-unmapped opts page (boundary validation); site B unmaps after parking (rollback
+    // after a successful validation). KICKOS_CAP_REPLY_MAX failures precede the control, so it
+    // sees both the slot and the reply-cap budget recovered.
     constexpr size_t LU_LEN = 8;
     constexpr uint32_t LU_US = 2u * 1000u * 1000u;
     constexpr int CH_LU_EP = 2;
@@ -2672,17 +2638,17 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_lu_rounds{0};
     int32_t g_lu_got[KICKOS_CAP_REPLY_MAX + 1];
 
-    // Park CALL on send_waiters before root receives, using await_pinned_park.
-    // This reaches the receiver scan instead of the fastpath.
+    // Parked on send_waiters before root receives, which reaches the receiver scan instead of
+    // the fastpath.
     void lu_caller(void*) // caps: done@1, E(SIGNAL)@2
     {
         g_lu_call = kos_call_timed(CH_LU_EP, g_lu_req, LU_LEN, LU_LEN, LU_US);
         kos_sem_post(CH_DONE);
     }
 
-    // Reuse one receiver across failures and the control to test one cap budget.
-    // Map opts before releasing its gate, confirm the receiver parked, then unmap
-    // the page. This ensures failure occurs at delivery rather than syscall entry.
+    // One receiver across the failures and the control, so they spend one cap budget. Root maps
+    // opts before each gate and unmaps it only once the receiver parked, so the failure is at
+    // delivery and not at syscall entry.
     void lu_receiver(void*) // caps: done@1, E(WAIT)@2, gate@3
     {
         for (uint32_t i = 0; i <= KICKOS_CAP_REPLY_MAX; i++)
@@ -2696,13 +2662,14 @@ namespace selftest
                 kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN), o);
             g_lu_got[i] = got;
             g_lu_rounds = i + 1u;
-            // Read the handle only in the round root left mapped. Do not use got to
-            // decide: an incorrect success result could otherwise cause a fault.
+            // Only in the round root left mapped, and never decided by got: a wrong success
+            // would fault.
             if (i == KICKOS_CAP_REPLY_MAX)
             {
                 g_lu_reply = kos_reply(o->info.reply_cap, g_lu_rx, LU_LEN);
             }
         }
+        kos_sem_post(CH_DONE);
     }
 
     void t_call_reply_undisclosed()
@@ -2724,7 +2691,7 @@ namespace selftest
             tap::skip("no seed window or no endpoint slot");
             return;
         }
-        // Require successful map and unmap before testing acquisition of the unmapped page.
+        // The page must map and unmap before its unmapped state means anything.
         (void)kos_frame_unmap(fcap, acap, va);
         TAP_CHECK(kos_frame_map(fcap, acap, va, 0) == 0);
         TAP_CHECK(kos_frame_unmap(fcap, acap, va) == 0);
@@ -2735,17 +2702,14 @@ namespace selftest
         }
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
 
-        // Site A validates and writes the output under one lock without parking.
-        // Only a concurrent unmap could make copying fail after validation, so this
-        // test does not depend on that race. An already-unmapped page tests boundary
-        // validation here; site B and tests/unit/capprobe test capability rollback.
+        // Site A validates and writes the output under one lock without parking, so only boundary
+        // validation is reachable; site B and tests/unit/capprobe cover capability rollback.
         bool spawned = true;
-        // Use opts on the unmapped page to test validation of the metadata output.
         int32_t const a_entry =
             kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN),
                            reinterpret_cast<struct kos_reply_recv_opts*>(va));
 
-        // Control: deliver through the same receiver scan with a valid output page.
+        // Control: the same receiver scan with a valid output page.
         struct kos_recv_info a_info = {};
         a_info.reply_cap = KOS_CAP_NONE;
         int32_t a_ctl = -1;
@@ -2778,7 +2742,7 @@ namespace selftest
             spawned = false;
         }
 
-        // --- SITE B: endpoint_call's fastpath, minting into a PARKED RECEIVER's table -------
+        // Site B: endpoint_call's fastpath, minting into a PARKED RECEIVER's table.
         g_lu_rounds = 0;
         g_lu_reply = -1;
         for (uint32_t i = 0; i <= KICKOS_CAP_REPLY_MAX; i++)
@@ -2828,7 +2792,7 @@ namespace selftest
                         break;
                     }
                 }
-                // Leave the page mapped to check that failed mints returned the cap budget.
+                // Mapped this time: the control needs the budget the failed mints returned.
                 if (b_mapped and b_ordered)
                 {
                     if (kos_frame_map(fcap, acap, va, 0) != 0)
@@ -2867,6 +2831,11 @@ namespace selftest
             }
         }
 
+        // The receiver stores its reply's result after that reply has released root.
+        if (g_lu_rounds.load() == KICKOS_CAP_REPLY_MAX + 1u)
+        {
+            wait_n(1);
+        }
         (void)kos_frame_unmap(fcap, acap, va);
         if (g_lu_gate != KOS_CAP_NONE)
         {
@@ -2908,6 +2877,7 @@ namespace selftest
 
     void t_process_data_template()
     {
+        settle_exits();
         constexpr uint32_t DT_BLK = 8u * DT_WORDS;
         void* const blk = kos_ram_alloc(DT_BLK);
         if (blk == nullptr)
@@ -2939,8 +2909,7 @@ namespace selftest
         (void)kos_task_kill(t1);
         uint64_t const first_value = out[DT_VALUE];
         uint64_t const first_frame = out[DT_FRAME];
-        // After root changes its globals, new processes must still read the saved
-        // snapshot rather than root's live data or frames.
+        // Once root changes its globals, a new process must still read the saved snapshot.
         (void)kos_aspace_probe(KOS_ASPACE_OP_DATA_HOME_FORGET, 0);
         g_dt_word = DT_B;
         out[DT_VALUE] = 0;
@@ -2973,12 +2942,12 @@ namespace selftest
         TAP_CHECK(first_value == DT_A and first_frame != rootf);
         TAP_CHECK(late_value == DT_A); // the snapshot, not root's live word
         TAP_CHECK(late_frame != rootf); // a frame of its own, not the image's own page
+        settle_exits();
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // Space-less threads must not write the app's reentrancy slots through a
-    // previously active process mapping. Require bit zero as a positive control
-    // that this switch case actually ran before checking the guarded-write count.
+    // Space-less threads must not write the app's reentrancy slots through a previously active
+    // process mapping. Bit zero is the positive control that the seating case ran.
     void t_reent_seating()
     {
         kos_sleep_ns(2000000ull); // an idle window inside this arm, not only in an earlier one
@@ -2988,10 +2957,11 @@ namespace selftest
         TAP_CHECK((v & 2u) == 0);
     }
 
-    // Check one release per successful acquire. The counter detects mismatches
-    // even on direct-map backends whose release operation needs no window update.
+    // One release per successful acquire. The counter sees a mismatch even on direct-map
+    // backends whose release needs no window update.
     void t_aspace_acquire_balance()
     {
+        settle_exits();
         // Page zero, which no space maps: the frame-token pair's second acquire answers null
         // and its first does not.
         uint64_t const unmapped = kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, 0);
@@ -3009,8 +2979,8 @@ namespace selftest
     {
         constexpr uint32_t TLBI_BLK = 256;
         uint64_t const before = kos_aspace_probe(KOS_ASPACE_OP_MAP_TLBI, 0);
-        // The low byte counts invalid releases since boot and must be zero. Check it
-        // before any skip so every configuration validates it.
+        // The low byte counts invalid releases since boot; checked before any skip so every
+        // configuration validates it.
         TAP_CHECK((before & 0xFFu) == 0);
         kos_task_t t = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &t) != 0)
@@ -3029,7 +2999,7 @@ namespace selftest
         TAP_CHECK(issued == 0);
         // A seed reporting a handful mapped almost none of the image.
         TAP_CHECK(elided >= 32u);
-        // Control: require invalidation for the running space.
+        // Control: the running space needs invalidation.
         void* const blk = kos_ram_alloc(TLBI_BLK);
         if (blk == nullptr)
         {
@@ -3044,9 +3014,8 @@ namespace selftest
         TAP_CHECK((post >> 32) > (pre >> 32));
     }
 
-    // Every installed root must be the boot root or belong to a live domain.
-    // A thread without a space must restore the boot root before the old
-    // process tables can be freed.
+    // Every installed root must be the boot root or belong to a live domain. A thread without a
+    // space must restore the boot root before the old process tables can be freed.
     void t_aspace_active_cores()
     {
         uint64_t const w = kos_aspace_probe(KOS_ASPACE_OP_ACTIVE_CORES, 0);
@@ -3057,11 +3026,10 @@ namespace selftest
                   accounted, mine);
         // The denominator, without which the equality below is satisfied by an empty set.
         TAP_CHECK(cores == static_cast<unsigned>(KICKOS_KERNEL_CORES));
-        // The caller's space must be active on at least its current core.
         TAP_CHECK(mine >= 1u);
         TAP_CHECK(accounted == cores);
 
-        // After task churn, check that no core retains the destroyed root.
+        // After task churn, no core may retain a destroyed root.
         for (unsigned i = 0; i < 4u; i++)
         {
             kos_task_t t = KOS_TASK_NONE;

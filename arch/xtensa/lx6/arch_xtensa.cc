@@ -2,17 +2,16 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 #include <kickos/arch/arch.h>
+#include <kickos/arch/idle_floor.h>
 #include <kickos/arch/lx6_doorbell.h>
-#include <kickos/arch/lx6_trap_stack.h> // the figures check_trap_redzone.sh enforces
-#include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
-#include <kickos/units.h> // _s == 1e9 ns
+#include <kickos/arch/lx6_trap_stack.h>
+#include <kickos/arch/xtensa_frame.h>
+#include <kickos/units.h>
 #include <kickos/trace/record.h>
 #include <kickos/sys/atomic.h>
 
-#include <stddef.h> // offsetof
+#include <stddef.h>
 
-// A KICKOS_TRACE_ARCH (CMake ladder / this chip's caps.cmake) that does not name this
-// backend's arch mislabels every SESSION record.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_XTENSA,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_XTENSA for lx6");
 
@@ -26,15 +25,13 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// 0 keeps only the one-line fault marker; set it in the board defconfig or with
-// cmake -DKICKOS_PANIC_DUMP=0.
+// 0 keeps only the one-line fault marker.
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// switch.S + startup.S hard-code these arch_context field offsets.
-// The reporter's own array (kernel/init/console.cc). The frame term is one trap frame: the
-// entry raises INTLEVEL before the move, but a window or ISA exception is not maskable.
+// The panic frame term is one trap frame: the entry raises INTLEVEL before the move, but a
+// window or ISA exception is not maskable.
 static_assert(KICKOS_LX6_PANIC_FRAME == KICKOS_LX6_TRAP_FRAME,
               "the panic frame term is one trap frame, which switch.S cannot compute");
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_LX6_PANIC_FRAME + KICKOS_LX6_PANIC_DEPTH,
@@ -43,12 +40,13 @@ static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_LX6_PANIC_FRAME + KICKOS_LX6_PAN
 static_assert(F_SIZE == KICKOS_LX6_TRAP_FRAME,
               "_kickos_int_level1 subtracts F_SIZE; the gate enforces KICKOS_LX6_TRAP_FRAME");
 
-// Idle never enters a syscall, so KICKOS_MIN_STACK_SIZE does not bind it; what does is the
-// involuntary frame plus the dispatch below it, which is this whole zone.
-static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_LX6_TRAP_FRAME + KICKOS_LX6_TRAP_DEPTH,
+// Idle never enters a syscall, so KICKOS_MIN_STACK_SIZE does not bind it. The link checks the
+// same floor above idle's thread-local carve.
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
               "the level-1 interrupt zone does not fit this board's idle stack, so idle dies on "
               "its first preemption");
 
+// switch.S and startup.S hard-code these arch_context field offsets.
 static_assert(offsetof(struct arch_context, sp) == 0, "asm expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, ps) == 4, "asm expects ctx.ps @4");
 static_assert(offsetof(struct arch_context, pc) == 8, "asm expects ctx.pc @8");
@@ -58,39 +56,43 @@ static_assert(offsetof(struct arch_context, resume_kind) == 12,
 static_assert(offsetof(struct arch_context, trace_tid) == 16,
               "asm (CTX_TID) telemetry hook expects ctx.trace_tid @16");
 #endif
+#if defined(KICKOS_TLS) && KICKOS_TLS
+static_assert(offsetof(struct arch_context, tls_base) == KICKOS_LX6_CTX_TLS_BASE,
+              "SEAT_THREADPTR expects ctx.tls_base @KICKOS_LX6_CTX_TLS_BASE");
+
+namespace kickos
+{
+    size_t tls_block_size();
+}
+#endif
 
 namespace
 {
     using kickos::Atomic;
     using kickos::Order;
 
-    // PS fields (Xtensa ISA / corebits.h): EXCM=bit4, UM=bit5, CALLINC=bits[17:16],
-    // WOE=bit18.
+    // PS bits per the Xtensa ISA (corebits.h).
     constexpr uint32_t PS_UM = 0x20;
     constexpr uint32_t PS_EXCM = 0x10;
     constexpr uint32_t PS_WOE = 0x40000;
-    constexpr uint32_t PS_CALLINC1 = 0x1u << 16; // CALLINC=1
+    constexpr uint32_t PS_CALLINC1 = 0x1u << 16;
 
     inline uint32_t f_areg(unsigned n) { return F_AREG(n); }
 
-    // ESP32 CCOMPARE0 (Xtensa timer 0) is wired to per-CPU internal interrupt 6, a
-    // level-1 (C-handleable) line (ESP32 TRM 4.3, "CPU interrupts" table).
+    // CCOMPARE0 is per-CPU internal interrupt 6, a level-1 line (ESP32 TRM 4.3).
     constexpr int CCOMPARE0_INT = 6;
 
-    // ESP32 internal interrupt 7 is the level-1 SOFTWARE interrupt: the only L1 line INTSET
-    // can latch. The flag is software-set only, so the dispatcher must wsr.intclear it or
-    // one inject redelivers forever.
+    // Internal interrupt 7 is the only level-1 line INTSET can latch. Nothing but software
+    // clears it, so the dispatcher must wsr.intclear it or one inject redelivers forever.
     constexpr int SW_INT_L1 = 7;
 
-    // XCHAL_INTLEVEL1_MASK for the LX6 config: only these lines reach the level-1 entry;
-    // higher-level lines have their own vectors.
+    // XCHAL_INTLEVEL1_MASK for this LX6 config.
     constexpr uint32_t KICKOS_L1_INT_MASK = 0x000637FFu;
 
-    // Wrap extension of the 32-bit CCOUNT cycle counter. LIMITATION: at 240 MHz CCOUNT
-    // wraps every ~17.9 s, and a wrap not observed within one 2^32-cycle period is missed.
-    // The two words are ONE value, kept coherent by the IrqLock in now_cycles.
-    // Per core: each CPU counts its own cycles and the two are not synchronised. No caller on
-    // this chip, where chip_esp32.cc overrides arch_clock_now with the TIMG count.
+    // LIMITATION: at 240 MHz CCOUNT wraps every ~17.9 s, and a wrap not observed within one
+    // 2^32-cycle period is missed. The two words are ONE value, touched only inside the
+    // interrupt bracket in now_cycles. Each CPU counts its own cycles, unsynchronised.
+    // Unused on ESP32, where chip_esp32.cc overrides arch_clock_now with the TIMG count.
     uint32_t g_cyc_high[KICKOS_NUM_CORES] = {};
     uint32_t g_cyc_last[KICKOS_NUM_CORES] = {};
 
@@ -117,8 +119,7 @@ namespace
         return v;
     }
 
-    // PHYSICAL enable/disable (INTENABLE). The public arch_irq_* seam is the software
-    // controller over LOGICAL device lines.
+    // PHYSICAL INTENABLE bits; arch_irq_* works on LOGICAL lines.
     inline void phys_int_enable(uint32_t bit)
     {
         arch_irq_state_t s = arch_irq_save();
@@ -132,14 +133,13 @@ namespace
         arch_irq_restore(s);
     }
 
-    // ATOMCTL (SR 99) selects PER MEMORY CLASS whether S32C1I issues an RCW bus transaction,
+    // ATOMCTL (SR 99) selects per memory class whether S32C1I issues an RCW bus transaction,
     // operates inside this core, or raises LoadStoreErrorCause (ISA summary 4.3.13.4, Table 52
-    // p.121). The core-local arm excludes nothing across CPUs and faults nowhere. The
-    // architectural reset value 0x28 (Table 190, p.313) selects it for both cacheable classes.
-    // 0x15 is WB=WT=BY=1, the all-RCW value.
+    // p.121). The core-local arm excludes nothing across CPUs and faults nowhere, and the reset
+    // value 0x28 (Table 190, p.313) selects it for both cacheable classes. 0x15 is all-RCW.
     constexpr uint32_t ATOMCTL_ALL_RCW = 0x15u;
-    // Bits above these are not S32C1I's: bit 8 is the Exclusive Access Option's flag and
-    // 7:6 are undefined to write.
+    // Bits above these are not S32C1I's: bit 8 is the Exclusive Access Option's flag and 7:6
+    // are undefined to write.
     constexpr uint32_t ATOMCTL_S32C1I_FIELDS = 0x3Fu;
 
     char const ATOMCTL_REFUSED[] =
@@ -160,8 +160,8 @@ namespace
         }
     }
 
-    // Every core runs this before it can reach a kernel lock. The read-back matters: a part
-    // whose ATOMCTL fields are not writable would leave S32C1I excluding nothing, silently.
+    // Must run on every core before it can reach a kernel lock. The read-back refuses a part
+    // whose ATOMCTL fields are not writable, where S32C1I would silently exclude nothing.
     void atomctl_seat_or_refuse(void)
     {
         __asm volatile("wsr.atomctl %0; rsync" ::"a"(ATOMCTL_ALL_RCW) : "memory");
@@ -190,33 +190,28 @@ namespace
         "KickOS: lx6 device lines share a CPU interrupt, so one claim would route both\n";
 #endif
 
-    // Nonzero once THIS core has reached its own landing and seated itself; written by that
-    // core alone, read by the primary's release. The acquire/release pair is load-bearing: the
+    // Written by its own core alone, once seated. The acquire/release pair is load-bearing: the
     // primary must see every register and route the far core seated BEFORE it sees the arrival.
     kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
         g_core_arrived[KICKOS_NUM_CORES] = {};
 
-    // Nonzero once kickos_lx6_init has run ON THIS CORE; read by the level-1 dispatch to
-    // refuse an interrupt taken before the state it needs exists.
+    // Nonzero once kickos_lx6_init has run on this core.
     uint32_t g_core_seated[KICKOS_NUM_CORES] = {};
 
-    // The chip's doorbell input, cached by kickos_lx6_init. Written before this core's
-    // interrupts open and read-only afterwards, so it carries no ordering.
+    // Written before this core's interrupts open and read-only afterwards, so it needs no
+    // ordering.
     uint32_t g_doorbell_cpu_int = 0;
 #endif
 
-    // Real device lines: the matrix routes a peripheral source to a CPU interrupt, and the
-    // chip demuxes that CPU interrupt into logical lines. INTENABLE is their kernel-owned
-    // mask (RULE L1); the peripheral's own enable register belongs to the driver.
-    // The mask is COARSE: several lines may name the same cpu_int, and masking one of them
-    // masks its siblings.
+    // INTENABLE is a device line's kernel-owned mask (RULE L1); the peripheral's own enable
+    // register belongs to the driver. The mask is COARSE: masking one line masks every sibling
+    // naming the same cpu_int.
     constexpr unsigned LX6_DEV_ROUTES = 4;
     Atomic<int8_t, Order::RELAXED> g_dev_cpu_int[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
     Atomic<int8_t, Order::RELAXED> g_dev_line[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
-    // Which core takes the line, since INTENABLE is per core and this says whose bit gets
-    // armed. Seated by kickos_lx6_bind_dev_int and moved by arch_irq_route under the kernel
-    // lock. Stored above one core only, though kickos_lx6_bind_dev_int's core argument is
-    // unconditional.
+    // The core that takes the line, INTENABLE being per core. Moved by arch_irq_route under the
+    // kernel lock. Stored above one core only, though kickos_lx6_bind_dev_int always takes a
+    // core.
 #if KICKOS_NUM_CORES > 1
     Atomic<int8_t, Order::RELAXED> g_dev_core[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
 #endif
@@ -228,8 +223,7 @@ namespace
     Atomic<uint8_t, Order::RELAXED> g_line_claim[32] = {};
 #endif
 
-    // The CPU interrupt a logical line's mask targets, or -1 for a line with no route
-    // (an injected software line, whose mask is its g_irq_unmasked cell alone).
+    // -1 for a line with no device route, whose mask is its g_irq_unmasked cell alone.
     inline int dev_route_cpu_int(int line)
     {
         int8_t const want = static_cast<int8_t>(static_cast<unsigned>(line) & 31u);
@@ -243,8 +237,7 @@ namespace
         return -1;
     }
 
-    // The core a logical line is routed to, or -1: a device line's matrix route, else the claim
-    // an injected line carries.
+    // A device line's matrix route, else the claim an injected line carries, else -1.
     inline int routed_core(int line)
     {
 #if KICKOS_NUM_CORES > 1
@@ -266,9 +259,7 @@ namespace
 #endif
     }
 
-    // Refuses a touch of a routed line from a core it is not routed to. An unrouted line has
-    // no routed core and is not covered here; what carries those cells is stated at the
-    // declaration of g_irq_unmasked.
+    // An unrouted line passes: what covers its cells is stated at g_irq_unmasked.
     inline void assert_line_core(int line)
     {
 #if KICKOS_DEBUG && KICKOS_NUM_CORES > 1
@@ -286,35 +277,27 @@ namespace
 
 extern "C"
 {
-    // The core clock in Hz, defined + maintained by the chip backend.
     extern uint32_t SystemCoreClock;
 
-    // The windowed cooperative swap + the fresh-thread trampoline (switch.S).
     void xtensa_switch(struct arch_context* from, struct arch_context* to);
     void _thread_trampoline(void);
 
 #if KICKOS_BENCH
-    // The switch bracket's END cell (kernel/bench/bench.cc). switch.S opens the window at the
-    // switch entry and cannot close it: the close has to stand past the retw, which is in
-    // arch_switch below. Per core; switch.S reads it through PERCPU_CELL.
+    // switch.S reads it through PERCPU_CELL.
     extern uint32_t g_bench_sw_end[KICKOS_NUM_CORES];
 #endif
 
-    // Chip device dispatch: ISR context, once per asserted device CPU interrupt. The chip
-    // reads its own peripheral status, calls kickos_isr_irq() once per asserted sub-source
-    // (0..N logical lines), and owns the per-source clear discipline. A chip that binds a
-    // device route defines this or fails to LINK.
+    // Chip-defined, ISR context, once per asserted device CPU interrupt: calls kickos_isr_irq
+    // once per asserted sub-source and owns each source's clear.
     void kickos_lx6_dispatch_dev(int cpu_int);
 
 #if KICKOS_NUM_CORES > 1
-    // Chip matrix: point every source the chip bound to cpu_int at core's bank and sink it in
-    // the other. A chip that binds a device route defines this or fails to LINK.
+    // Chip-defined: point every source the chip bound to cpu_int at core's bank and sink it in
+    // the other.
     void kickos_lx6_route_dev_int(int cpu_int, int core);
 #endif
 
-    // Shared with switch.S/arch_start/startup.S, written by C and by asm: the ctx of the
-    // running thread, and the deferred-switch target when arch_switch runs in ISR context.
-    // Per core; the asm indexes them through PERCPU_CELL (lx6_percpu.inc).
+    // Written by C and by switch.S/startup.S, which index them through PERCPU_CELL.
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED>
         g_arch_current[KICKOS_NUM_CORES] = {};
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED>
@@ -325,44 +308,35 @@ extern "C"
     static_assert(sizeof(g_arch_next[0]) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(alignof(decltype(g_arch_current[0])) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
-    // Set by arch_switch when it defers a switch from ISR context; consumed and cleared by
-    // the level-1 interrupt exit (startup.S _kickos_int_level1). A flag of its own, because
-    // the cooperative path advances g_arch_current without touching g_arch_next, so
-    // g_arch_current != g_arch_next does not mean a preemption is pending.
+    // Cleared by the level-1 interrupt exit (startup.S). A flag of its own: the cooperative path
+    // advances g_arch_current without touching g_arch_next, so g_arch_current != g_arch_next
+    // does not mean a preemption is pending.
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_arch_switch_pending[KICKOS_NUM_CORES] = {};
 
-    // In-ISR depth (the IPSR!=0 analog), maintained by the level-1 interrupt entry
-    // (startup.S).
+    // Maintained by the level-1 interrupt entry (startup.S).
     uint32_t g_isr_depth[KICKOS_NUM_CORES] = {};
 
     // startup.S carries both with l32i/s32i, and indexes them with addx4.
     static_assert(sizeof(g_arch_switch_pending[0]) == 4, "asm reads one word");
     static_assert(sizeof(g_isr_depth[0]) == 4, "asm reads one word");
 
-    // Software interrupt controller for the LOGICAL device lines (arch.h inject/mask
-    // contract). Xtensa INTSET only latches the software-type lines (int 7/29), so a
-    // logical line cannot be a physical bit: a raise records the line here and rings the
-    // ONE real software doorbell (int 7). The timer (CCOMPARE0) and that doorbell are the
-    // only PHYSICAL lines.
-    // 0 = masked. All lines start MASKED at reset (the arch.h reset contract), which
-    // zero-initialisation gives, so the array lands in .bss.
+    // 0 = masked. Every line starts masked (the arch.h reset contract), which zero-init gives.
     //
     // Image-wide and not per core: a routed line is pinned to one core, so the RSIL bracket
-    // below is its whole exclusion. An unrouted line has no pin, and arch_irq_mask reached
-    // from irq_event_isr is then the one writer in the image holding no kernel lock. That is
-    // what the cell must be atomic against; arch_irq_save masks only this core's levels and
-    // orders nothing across cores.
+    // is its whole exclusion. An unrouted line has no pin, and arch_irq_mask reached from
+    // irq_event_isr is then the one writer in the image holding no kernel lock. That is what
+    // the cell must be atomic against; arch_irq_save masks only this core's levels and orders
+    // nothing across cores.
     //
     // Nothing orders that ISR mask against a waiter's unmask except the kernel lock's own
     // chain: irq_event_isr masks, then sem_post takes IrqLock, and S32C1I plays both acquire
     // and release (ISA summary 4.3.13.5, p.122). Dropping that lock from sem_post, or moving
-    // the mask after it, breaks this cell and reddens no arm. Order::RELAXED because a release
-    // here would order the wrong side.
+    // the mask after it, breaks this cell and reddens no arm. A release here would order the
+    // wrong side.
     //
-    // 32 cells because every index below is `& 31u`; KICKOS_MAX_IRQ is kernel-layer and this
-    // layer carries no kernel include path (arch/CMakeLists.txt).
+    // 32 cells to match the `& 31u` index: KICKOS_MAX_IRQ is out of reach, since this layer
+    // has no kernel include path.
     static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_unmasked[32] = {};
-    // pending software-injected logical line
     // Per core: arch_irq_inject raises INTSET on the CALLING core, so that same core's
     // dispatch must read it.
 #if KICKOS_KERNEL_CORES > 1
@@ -380,11 +354,9 @@ extern "C"
     static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line[KICKOS_NUM_CORES] = {-1};
 #endif
 #endif
-    // set = a raise landed on this logical line while masked (latched one-deep, coalesced).
-    // Redelivered through the int-7 doorbell at unmask.
-    //
+    // A raise landed while masked: latched one-deep, coalesced, redelivered at unmask.
     // Serialised by the kernel lock at every access, unlike g_irq_unmasked: no ISR-context
-    // path reaches it, both callers of irq_line_op_local asking only for MASK.
+    // path reaches it.
     static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_pending[32] = {};
 
 }
@@ -422,8 +394,7 @@ namespace
         kickos_lx6_doorbell_send(1u << core);
     }
 
-    // Takes every raise posted for this core, and returns their lines. Caller's interrupts
-    // masked.
+    // Caller has interrupts masked.
     inline uint32_t take_owed(uint32_t me)
     {
         uint32_t taken = 0u;
@@ -442,8 +413,8 @@ namespace
         return taken;
     }
 
-    // Dispatches every raise posted for this core. ISR context, after the doorbell's clear, so
-    // a post landing after the loads in take_owed re-asserts the trigger.
+    // Runs after the doorbell's clear, so a post landing after the loads in take_owed
+    // re-asserts the trigger.
     inline void take_posts(void)
     {
         uint32_t taken = take_owed(arch_cpu_id());
@@ -462,7 +433,7 @@ namespace
 
 namespace
 {
-    using namespace kickos::units; // _s == 1e9 ns
+    using namespace kickos::units;
 
     inline uint64_t now_cycles()
     {
@@ -520,7 +491,7 @@ void arch_context_init(struct arch_context* ctx,
     (void)privileged; // LX6 runs every thread at one privilege level
 
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
-    top &= ~static_cast<uintptr_t>(15);        // 16-byte stack alignment (ABI)
+    top &= ~static_cast<uintptr_t>(15);        // ABI 16-byte stack alignment
 
     uint32_t frame_base = static_cast<uint32_t>(top) - F_SIZE;
     uint8_t* fb = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(frame_base));
@@ -541,20 +512,33 @@ void arch_context_init(struct arch_context* ctx,
     // a0/a4 already 0: a0 is discarded by the entry rotation, and a4 becomes the
     // trampoline's a0 (its return address), where 0 is the safe outermost value.
 
-    ctx->sp = frame_base;                               // base of the interrupt frame
-    ctx->ps = 0;                                        // unused for an IRQ-resumed thread
-    ctx->pc = 0;                                        // (PS/PC live in the frame)
-    ctx->resume_kind = KICKOS_RESUME_IRQ;              // enters via rfe (irq_restore)
+    ctx->sp = frame_base;
+    ctx->ps = 0;                                        // PS/PC live in the frame
+    ctx->pc = 0;
+    ctx->resume_kind = KICKOS_RESUME_IRQ;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    // The carve sits directly below the stack this is handed.
+    ctx->tls_base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stack_base)
+                                          - ::kickos::tls_block_size());
+#endif
 }
 
 // The redirected thread may have been saved as KICKOS_RESUME_COOP; arch_context_init must
 // overwrite resume_kind, or the switcher takes the retw path onto an INTERRUPT frame.
 //
 // `privileged` is discarded on this core: PS.UM is 1 for kernel and thread alike.
+//
+// tls_base survives: the rebuild is handed the whole block and would derive it from there.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    uint32_t const tls_base = ctx->tls_base;
+#endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    ctx->tls_base = tls_base;
+#endif
 }
 
 // --- Switch: synchronous in thread context; deferred in ISR context ----------
@@ -572,10 +556,9 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     g_arch_current[core] = to;
     xtensa_switch(from, to);
 #if KICKOS_BENCH
-    // Closes the switch window that RESUMED this thread, not the one opened above: only the
-    // cooperative retw returns here. The count is read before anything else so the windowed
-    // return and its underflow are the last thing inside the span, and the core is re-read
-    // because the resuming switch ran on whichever core is executing now.
+    // Closes the switch window that RESUMED this thread; switch.S cannot, since the close must
+    // stand past the retw. The count is read first so the windowed return and its underflow are
+    // the last thing inside the span; the core is re-read because this may be another core now.
     uint32_t const at = rd_ccount();
     g_bench_sw_end[arch_cpu_id()] = at;
 #endif
@@ -587,8 +570,8 @@ int arch_in_isr(void)
 }
 
 // --- Level-1 interrupt dispatch --------------------------------------------
-// Runs at INTLEVEL=1 in thread-style windowed context on the interruptee stack.
-// g_isr_depth is bumped by the asm entry, so arch_in_isr() reads true here.
+// Runs at INTLEVEL=1, windowed, on the interruptee's stack, with g_isr_depth already raised
+// by the asm entry.
 void kickos_lx6_dispatch_l1(void)
 {
 #if KICKOS_NUM_CORES > 1
@@ -629,20 +612,18 @@ void kickos_lx6_dispatch_l1(void)
         {
             kickos_kernel_core_resched();
         }
-        // The raises a peer posted for a line routed here ride the same trigger.
         take_posts();
 #endif
     }
 #endif
 
-    // Software doorbell (int 7): clear the latch first, or it redelivers forever. The
-    // bound handler masks/acks as needed (tier-1 via irq_event_isr + irq_ack); do NOT mask
-    // here, or a tier-2 irq_attach line stays masked forever after one delivery.
+    // Clear the latch first, or it redelivers forever. Do NOT mask the line here: the bound
+    // handler masks as needed, and a tier-2 irq_attach line would stay masked for good.
     if ((pending & (1u << SW_INT_L1)) != 0)
     {
         uint32_t bit = 1u << SW_INT_L1;
         __asm volatile("wsr.intclear %0; rsync" ::"a"(bit) : "memory");
-        phys_int_disable(bit); // doorbell consumed: off until the next inject re-arms it
+        phys_int_disable(bit);
 #if KICKOS_KERNEL_CORES > 1
         uint32_t raised = g_inject_set[arch_cpu_id()];
         g_inject_set[arch_cpu_id()] = 0u;
@@ -665,9 +646,7 @@ void kickos_lx6_dispatch_l1(void)
 #endif
     }
 
-    // Real device lines (chip-bound). The mask is the CPU interrupt's INTENABLE bit, the
-    // clear is the driver's own peripheral register, and a CPU interrupt several routes
-    // share is demuxed ONCE.
+    // A CPU interrupt several routes share is demuxed ONCE.
     uint32_t served = 0;
     for (unsigned i = 0; i < LX6_DEV_ROUTES; i++)
     {
@@ -687,8 +666,7 @@ void kickos_lx6_dispatch_l1(void)
 }
 
 // --- Unhandled synchronous exception (startup.S _kickos_lx6_fault shim) --------
-// LEVEL1INTERRUPT (cause 4) is demuxed to the ISR entry before this path, so it never
-// reaches the reporter.
+// LEVEL1INTERRUPT (cause 4) is demuxed to the ISR entry and never reaches the reporter.
 void kickos_lx6_fault_report(uint32_t exccause, uint32_t excvaddr,
                              uint32_t epc1, uint32_t ps)
 {
@@ -747,7 +725,6 @@ void kickos_lx6_fault_report(uint32_t exccause, uint32_t excvaddr,
 }
 
 // --- Tickless clock (CCOUNT) + one-shot timer (CCOMPARE0) --------------------
-// The CCOUNT read behind the arch_clock_now fallback TU (arch_clock_now_default.cc).
 uint64_t kickos_lx6_ccount_ns(void)
 {
     return cycles_to_ns(now_cycles());
@@ -759,8 +736,7 @@ uint64_t arch_cpu_clock_hz(void)
 }
 
 
-// Smallest CCOMPARE margin worth attempting; the arm loop below is what makes correctness
-// independent of it.
+// Tuning only: the arm loop below keeps correctness independent of it.
 static constexpr uint32_t CCOMPARE_MIN_CYCLES = 64;
 
 void arch_timer_arm(uint64_t deadline_ns)
@@ -771,9 +747,8 @@ void arch_timer_arm(uint64_t deadline_ns)
     {
         delta_ns = deadline_ns - now;
     }
-    // Clamp to the 32-bit CCOMPARE range BEFORE converting, or a far-future deadline
-    // overflows the ns*freq product. A clamped deadline fires early and the kernel re-arms
-    // the remainder.
+    // Clamp to the 32-bit CCOMPARE range BEFORE converting, or a far-future deadline overflows
+    // the ns*freq product. A clamped deadline fires early and the kernel re-arms the rest.
     uint64_t f = SystemCoreClock;
     uint64_t max_delta_ns = ~0ull;
     if (f != 0)
@@ -789,11 +764,10 @@ void arch_timer_arm(uint64_t deadline_ns)
     {
         cyc = ns_to_cycles(delta_ns);
     }
-    // CCOMPARE0 is an EQUALITY match against a free-running CCOUNT, not a countdown: a
-    // compare value already BEHIND CCOUNT when it lands is missed, not late, and the next
-    // match is a full 2^32-cycle wrap away (about 18 s at 240 MHz). The few instructions
-    // between reading CCOUNT and writing CCOMPARE can lose a one-cycle margin. The signed
-    // difference is what makes the re-check wrap-correct.
+    // CCOMPARE0 is an EQUALITY match against a free-running CCOUNT: a compare value already
+    // BEHIND CCOUNT when it lands is missed, not late, and the next match is a full 2^32-cycle
+    // wrap away (about 18 s at 240 MHz). The instructions between reading CCOUNT and writing
+    // CCOMPARE can lose a small margin. The signed difference keeps the re-check wrap-correct.
     uint32_t margin = static_cast<uint32_t>(cyc);
     if (margin < CCOMPARE_MIN_CYCLES)
     {
@@ -805,7 +779,7 @@ void arch_timer_arm(uint64_t deadline_ns)
         __asm volatile("wsr.ccompare0 %0; rsync" ::"a"(cmp) : "memory");
         if (static_cast<int32_t>(rd_ccount() - cmp) < 0)
         {
-            break; // the compare is still ahead of the counter: genuinely armed
+            break;
         }
         if (margin > (0xFFFFFFFFu / 2u))
         {
@@ -822,7 +796,7 @@ void arch_timer_disarm(void)
     phys_int_disable(1u << CCOMPARE0_INT);
 }
 
-// --- MPU: LX6 answers every seam so the shared kernel paths run unchanged -----
+// --- MPU: nothing to program on LX6 ------------------------------------------
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -831,10 +805,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)image;
 }
 
-// Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
 
-// Nothing is deferred on this backend, so the set is already live when apply returns.
 void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
                         struct arch_mpu_encoded const* image)
 {
@@ -847,8 +819,7 @@ size_t arch_mpu_min_region(void)
     return 0u;
 }
 
-// Any nonzero 16-byte-aligned window is encodable, and the answer is advisory: it feeds
-// the admission arithmetic, never a register.
+// Advisory: it feeds the admission arithmetic, never a register.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size == 0)
@@ -858,15 +829,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
-// arch_mpu_min_region() is 0 here, which short-circuits both inlines before the mode is
-// reached.
+// Unreached: arch_mpu_min_region() is 0, which short-circuits both inlines first.
 int arch_mpu_region_pow2(void)
 {
     return 1;
 }
 
-// The classic ESP32 cache covers external flash and PSRAM only, and the arena lives in
-// internal SRAM.
+// The classic ESP32 cache covers external flash and PSRAM only; the arena is internal SRAM.
 int arch_mpu_nocache_support(void)
 {
     return ARCH_MPU_NOCACHE_ALREADY;
@@ -875,10 +844,6 @@ int arch_mpu_nocache_support(void)
 
 
 // --- The kernel-owned mask for a REAL device line (RULE L1) -------------------
-// Clears / sets the INTENABLE bit of the CPU interrupt the matrix drives the device to.
-// INTENABLE is core state reached only by rsr/wsr, so the kernel owns it outright and the
-// driver's own UART_INT_ENA stays the driver's.
-// An injected software line has no device route, and returns leaving INTENABLE alone.
 // The INTENABLE read-modify-write is atomic only because phys_int_* raises PS.INTLEVEL
 // around it and closes with rsync; a bare wsr.intenable would be neither.
 void kickos_lx6_hw_mask(int line)
@@ -905,7 +870,7 @@ void kickos_lx6_hw_unmask(int line)
 // Xtensa INTSET latches only the software-type interrupts (int 7/29), so an INJECTED
 // logical line cannot be a physical INTENABLE bit: lines 5/9/11 would be silent no-ops and
 // line 6 collides with the timer. Mask is a software bitmask; inject records the line and
-// rings the ONE real software int 7 (dispatched in kickos_lx6_dispatch_l1).
+// rings the ONE real software int 7.
 // A line with a device route additionally reaches INTENABLE: a LEVEL peripheral source
 // keeps re-asserting until the controller masks it, so the software bit alone would
 // livelock the level-1 handler.
@@ -933,8 +898,6 @@ void arch_irq_unmask(int line)
     arch_irq_state_t s = arch_irq_save();
     g_irq_unmasked[l] = 1u;
     kickos_lx6_hw_unmask(line);
-    // A raise taken while this line was masked redelivers now through the int-7 doorbell,
-    // on the normal ISR path.
     if (g_irq_pending[l] != 0u)
     {
         g_irq_pending[l] = 0u;
@@ -950,9 +913,9 @@ void arch_irq_unmask(int line)
     arch_irq_restore(s);
 }
 
-// Above one kernel core, on the core the line is routed to, it also discards every raise of the
-// line that core holds: its inject latch and a peer's post it has not taken. The other posts
-// that take finds are handed back to this core's own doorbell.
+// Above one kernel core it also discards every raise of the line this core holds: its inject
+// latch and a peer's post not yet taken. Other posts the take finds go back to this core's
+// own doorbell.
 void arch_irq_clear_pending(int line)
 {
     if (line < 0)
@@ -977,9 +940,9 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-// A bound device line's core is the one its matrix route names, kickos_lx6_bind_dev_int's until
-// a claim moves it; an injected line's is the one it was claimed on. Either way it is the core
-// that takes the line, and an unbound, unclaimed line has none.
+// A bound device line's core is its matrix route's, kickos_lx6_bind_dev_int's until a claim
+// moves it; an injected line's is the one it was claimed on; an unbound, unclaimed line has
+// none.
 int arch_irq_line_core(int line)
 {
     if (line < 0)
@@ -1047,8 +1010,6 @@ void arch_irq_inject(int irq)
     }
     // Bracketed like arch_irq_mask/unmask: an ISR reaching those writes the same cells.
     arch_irq_state_t s = arch_irq_save();
-    // A raise on a masked line latches one-deep (redelivered at unmask), it is NOT
-    // dropped.
     if (g_irq_unmasked[static_cast<unsigned>(irq) & 31u] == 0u)
     {
         g_irq_pending[static_cast<unsigned>(irq) & 31u] = 1u;
@@ -1065,7 +1026,7 @@ void arch_irq_inject(int irq)
             return;
         }
 #endif
-        // recorded BEFORE ringing the doorbell (the dispatcher reads it)
+        // Recorded BEFORE the doorbell rings: the dispatcher reads it.
 #if KICKOS_KERNEL_CORES > 1
         g_inject_set[arch_cpu_id()] =
             g_inject_set[arch_cpu_id()].load() | (1u << (static_cast<unsigned>(irq) & 31u));
@@ -1097,11 +1058,9 @@ int kickos_lx6_inject_owed(void)
 #endif
 
 // --- Device-route bind (chip layer) -----------------------------------------
-// Adds one (CPU interrupt, logical line, core) route and, at one kernel core, arms that CPU
-// interrupt in INTENABLE on the core that takes it. Several lines may name the same cpu_int (the
-// grouped-line shape) at one kernel core only: above it a claim routes the whole CPU interrupt,
-// which would carry a sibling away from its own claim, so a second line on a bound cpu_int stops
-// the boot.
+// Several lines may name the same cpu_int at one kernel core only: above it a claim routes the
+// whole CPU interrupt, which would carry a sibling away from its own claim, so a second line on
+// a bound cpu_int stops the boot.
 //
 // Above one kernel core nothing is armed here: the bit is set only by an unmask on the core the
 // line is routed to, so no other core can hold it set when arch_irq_route moves the line, and
@@ -1159,18 +1118,13 @@ void kickos_lx6_bind_dev_int(int cpu_int, int line, int core)
 // --- Idle -------------------------------------------------------------------
 void arch_idle_wait(void)
 {
-    __asm volatile("waiti 0"); // wait for interrupt at level 0
+    __asm volatile("waiti 0");
 }
 
 // --- Syscall: a plain call on a core with one privilege level -----------------
-// A blocking syscall blocks by an ordinary synchronous arch_switch.
-//
-// The trap-handler IPC fastpath earns its keep by skipping an exception entry, a
-// privileged-thread trampoline and a deferred switch back. Below, the dispatch is a call
-// the caller makes itself, which already skips all three, so a fastpath here would be the
-// generic path wearing another name: the silicon settles it, and this backend ships no
-// ipc_fastpath.cmake. Thread::call_frame_parked needs a saved register frame to seat a
-// reply in, and this path answers in the caller's own registers.
+// No ipc_fastpath.cmake here: the dispatch is already a plain call, and
+// Thread::call_frame_parked needs a saved register frame to seat a reply in, while this path
+// answers in the caller's own registers.
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
@@ -1185,7 +1139,6 @@ uintptr_t arch_syscall(uintptr_t nr,
 
 // --- One-time core bring-up ------------------------------------------------
 #if KICKOS_NUM_CORES > 1
-// Published by the arriving core itself; read by the primary's bounded release.
 void kickos_lx6_core_arrived_set(void)
 {
     g_core_arrived[arch_cpu_id()].store(1u);
@@ -1207,9 +1160,6 @@ void kickos_lx6_init(void)
 {
     // Before this core can take the kernel lock: arch_kernel_lock claims with S32C1I.
     atomctl_seat_or_refuse();
-    // Every physical line masked: the timer enables CCOMPARE0 on arm and arch_irq_inject
-    // enables the int-7 software line just-in-time. Logical device lines are gated by
-    // g_irq_unmasked, not INTENABLE.
     wr_intenable(0);
 #if KICKOS_NUM_CORES > 1
     // Seated before the route, which is what makes the input live.
@@ -1217,11 +1167,10 @@ void kickos_lx6_init(void)
     kickos_lx6_doorbell_route();
     phys_int_enable(1u << g_doorbell_cpu_int);
 #endif
-    // Coprocessor 0 (the single-precision FPU), on for every thread. CPENABLE is per CORE and
-    // not per thread: the switch banks the FP data registers, not this enable. FP regs are
-    // caller-saved, so only the preemptive path (the level-1 interrupt frame, startup.S)
-    // saves f0-f15+FCR+FSR; the cooperative switch relies on the compiler's spill.
-    __asm volatile("wsr.cpenable %0; rsync" ::"a"(1u) : "memory"); // CP0 bit0
+    // CP0 (the FPU), on for every thread. CPENABLE is per CORE and not per thread: the switch
+    // banks the FP data registers, not this enable. Only the level-1 interrupt frame saves
+    // f0-f15, FCR and FSR; the cooperative switch relies on FP regs being caller-saved.
+    __asm volatile("wsr.cpenable %0; rsync" ::"a"(1u) : "memory");
     g_cyc_high[arch_cpu_id()] = 0;
     g_cyc_last[arch_cpu_id()] = 0;
 #if KICKOS_NUM_CORES > 1
@@ -1242,8 +1191,6 @@ void kickos_lx6_init(void)
 }
 
 #if KICKOS_NUM_CORES > 1
-// Where a released secondary lands, from _kickos_lx6_core1_entry. Seats everything about this
-// core that the primary could not seat from over there, then hands it to the park.
 void kickos_lx6_secondary_entry(void)
 {
     kickos_lx6_init();

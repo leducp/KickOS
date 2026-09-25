@@ -193,8 +193,9 @@ anyone tightening this must keep both or one arm goes vacuous silently.
 A peer that has already switched off a dying space took its Context synchronization event in that
 switch, so the rendezvous is owed only while a peer is still on the space; over six runs of the
 four-core selftest the run-total came out 0, 4, 4, 6, 6 and 8. **So NO arm may assert that a task
-kill produced a poke**, and `doorbell_xpoke` asserts a per-core service floor and a pairing
-invariant instead. **There is no route from an arm to force one**: `KOS_MEM_FLAGS_ALL` is NOCACHE
+kill produced a poke**, and `doorbell_xpoke` asserts a service floor on every core the bring-up
+check released, core 0 exempt since a reschedule raise owes no answer, and a pairing invariant
+instead. **There is no route from an arm to force one**: `KOS_MEM_FLAGS_ALL` is NOCACHE
 alone, so unprivileged code cannot create the executable page whose removal would owe the poke.
 Making one forceable is a decision, not a fix.
 
@@ -790,14 +791,11 @@ The whole point of this file. A green fleet pass says none of the following.
 - **Zero slack is the CONVENTION in `trap_redzone_roots.txt`, not a warning.** An enforced depth
   IS the fleet maximum for its class, so a class at its setter preset always reads `n <= n`. Do
   not read those as near-misses. Only a BLOCK or FLOOR margin is one.
-- **`trap_redzone` IS REGISTERED ON NO EMULATOR BOARD, and M6.4 is what that costs.** The six
-  presets a milestone actually measures on -- `qemu-arm64`, both RV64 postures, `qemu-x86_64`,
-  `sim` and `sim-telem` -- are exactly the six that declare no pair in `trap_redzone_roots.txt`,
-  so a green pass on them is silent about every trap-stack figure in the fleet. One
-  `KICKOS_ASSERT` added on the console route put `kpanic` on the fault-exit descent
-  and took 32 presets red, and nothing this milestone measured could see it: it surfaces as a red
-  gate on boards nobody named, never as a build error. **A change on the syscall or the console
-  path needs the full 50-preset sweep, not a three-board sample and not the emulators.**
+- **`trap_redzone` NOW RUNS ON EVERY EMULATOR BOARD BUT `sim`, AND THE SWEEP STILL OUTRANKS THE
+  SAMPLE.** armv8a, both RV64 postures and x86_64 gained classes at M9.4, so a green emulator pass
+  now speaks about those arches' trap stacks. It says nothing about the MCU classes: a change on the
+  syscall or console path has taken presets red that nobody named, as a gate failure and never as a
+  build error. **Such a change needs the full host sweep, not a three-board sample.**
 - **`console_reach` IS THE HALF OF THAT GAP THAT COULD BE CLOSED WITHOUT A TRAP-STACK FIGURE, and it
   is registered on the four TRANSLATING presets rather than on the six.** It asks one reachability
   question over the same `-fcallgraph-info` graph `trap_redzone` builds: no `kpanic` and no
@@ -1833,14 +1831,8 @@ instrument was in the tree.
   `static_assert` on the config pair was refused as a second truth and a weaker one** -- it refuses
   a posture, so a thread-mode caller arriving from AMP code at one kernel core walks past it, where
   the gate catches any caller from any root.
-- **`pizero2350-amp2-n0` AND `-n1` SIT AT SVCK EXACTLY 1224 OF 1224, so the enforced figure has
-  ZERO slack**, and the block has 8 bytes above the 1448 it needs. **This milestone already spent
-  that headroom once**: the far-call work grew the deliver chain by 8 bytes and took the figure from
-  1216 to 1224, which no per-preset check caught -- the red-zone pass ran before the far-call work
-  existed, and the far-call pass verified on qemu presets, which do not enforce this class. Only the
-  host fleet sweep crosses that boundary, and it is the reason to run it rather than trust the parts.
-  The block did not have to grow, the posture's Kconfig default already standing at 1456, but the
-  next 8 bytes on that chain do force it.
+- **`pizero2350-amp2-n0` AND `-n1` NO LONGER NEED AN SVCK OVERRIDE.** M9.4 took the far payload
+  copies out of the doorbell service, the node reads 668, and the ordinary 768 covers it.
 - **`pizero2350-amp` SELECTS NO AMP POSTURE, SO IT IS NOT A NODE**, whatever its name says. Its own
   defconfig claimed the posture derives from the core count, which the option's help text refuses
   as an N6c defect. Reading that preset as the shared-image node it is named for concludes the
@@ -3469,17 +3461,10 @@ thread am I", which the design record now states.
 **WHAT THESE GREEN RUNS DO NOT SAY.**
 - Four cores is emulation only. Silicon is two LX6 cores, where the whole selftest now completes;
   no run on this branch before these fixes ever completed there.
-- The push's latency is unmeasured: a falling core waits two doorbell hops for a thread its holder
-  pushes, and no bench row isolates that.
-- Placement reads peers' levels and ready lists, which is sound only under the one lock. Leaving it
-  needs a published per-core level and the rings.
 - The stale-raise windows that user space cannot force (a raise acknowledged but not yet dispatched,
   a raise inside a dispatch loop's local set) are witnessed on the host only.
 - On LX6 the only matrix line is the kernel console, so no run has moved a claimable device line's
   route.
-- The bench doorbell gate failed once in one whole-suite pass after the pinning, with nothing else
-  known about the box at that instant, and passed 45 idle captures and every rerun since. It is
-  load-sensitive, and a lone red there is an instrument suspect before a finding.
 - Throughput figures are emulator wall clock.
 
 **LATENT DEFECTS THE GLOBAL QUEUE ABSORBED, none caused by this stage.** The host fixture spawned
@@ -3488,6 +3473,63 @@ peer-core test threads from core 0 so a peer's own pass could never pick them. A
 `arch_irq_line_core` answers which core may touch a line's GATING state, which is global on two
 backends, so it could not stand in for delivery. `RUNNING` and `current` disagree across a deferred
 switch by construction, so a pick refuses a thread that reads RUNNING on its own queue.
+
+## M9.4: the rings land under the lock, the stop condition refuses the exit, and what these green runs do NOT say
+
+**THE STOP CONDITION FIRED AND THAT IS THE OUTCOME, NOT A SHORTFALL.** Stage 1 landed: every cross-core
+hand-over of a thread, and every priority, mask or kill change to a thread homed elsewhere, now
+travels on a per-pair ring the target drains itself, and no core writes another's ready structure,
+level or current. Stage 2, the switch half of a pass leaving the lock, was REFUSED by R0 before any
+of it was written: on the two LX6 cores, the only multi-core part with a live counter, a pass that
+does not park carries 0.03 percent of switches and its switch half would buy about 0.01 percent. The
+exact placement the maintainer ruled for is what took stage 2's benefit away: with every decision
+kept under the lock only the switch half could leave, and it almost never runs. The design record
+opens with the numbers.
+
+**STAGE 1 COST MORE THAN ITS BUDGET UNTIL THE SAME-CORE PATHS STOPPED PAYING FOR THE CROSS-CORE
+ONES.** As first built it was 4.3 percent slower than master on call/reply and three switch buckets
+worse, on pinned pairs that never cross a core. Measured hit rates drove the repair: 520039 of
+520078 wakes are same-core, a flush with anything staged is 0.007 percent, a level store that
+changes the cell is zero of half a million switch-ins. At the tip it is inside the 1 percent budget
+against master on silicon. **The margin is thin and one piece of it is unexplained**: call/reply
+moved about 1.5 percent between the perf tip and the final tip, landing somewhere in the review and
+load-robustness fixes, and no bisect has attributed it.
+
+**THE BENCH'S OWN SCHEDULER ACCOUNTING COST 10 PERCENT AND IS NOW OFF BY DEFAULT.** A bench image
+with it on measures the instrument; `KICKOS_BENCH_SCHED` is refused below two kernel cores. The
+e2e sweep settles its own cross-core setup before the first raise and prints how many passes
+settled; a short count is printed, not refused.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.**
+- The push M9.2 left unmeasured now has a row: on the two LX6 cores (measured 2026-09-24, bench
+  scheduler accounting on) a pushed thread waited 45 us at p50 and 78 us at worst over 201 pushes,
+  and a re-seat landed in 10 us. That is the accounting-on image, not the default one.
+- Four cores is emulation only; every timing figure is the two LX6 cores. The four-core rings,
+  placement and RESEAT forward are witnessed by counts, host arms and emulator selftests.
+- The RESEAT forward (a change made while an earlier one is still queued toward a core the thread
+  left) is witnessed on the host at two and three cores and not by any selftest arm on a live image.
+- The P6 held reply slot is witnessed on the QEMU AMP partitions and the host; the RP2350 AMP pair
+  was built and gated, not flashed.
+- The dynamic-reent newlib runs on every armv8a and rv64 image; CI builds it through a Conan action
+  that has not yet run in CI (nothing is pushed).
+- Every trap red-zone figure is a static call-graph walk. armv8a, rv64 and x86_64 gained one this
+  milestone; their frame figures for assembly entries are hand records re-derived from the linked
+  image, and a change under them moves nothing unless the record is re-derived too.
+- Zero-slack figures a reader should know before adding a frame: esp32-wroom-benchsmp PREEMPT,
+  qemu-arm64-benchgicv3 SYSK, EXITK, EXITKSW and RET, qemu-riscv SYSPRIV.
+- The load-robustness fixes were reproduced with planted delays and host hogs on this box; CI's
+  runners were not measured.
+
+**LATENT DEFECTS THIS MILESTONE FOUND IN SHIPPED CODE**, none of them caused by it: C-library
+state (errno, stdio) shared across cores on every SMP image; a round-robin slice refunded to a
+thread preempted across its deadline, starving its peer; core 1's idle refused its stack whenever
+an LX6 SMP image carried any thread-local block; LX6 SMP idle stacks 16 bytes short; minimum thread
+stacks too small on armv8a, rv64 and x86_64 once an interrupt nests under a thread's exit.
+
+**TWO WALLS REMOVED BECAUSE THE KERNEL IS THE FLOOR.** A caller-supplied stack no longer has to be
+one power-of-two stride on LX6 or RV32IMAC: both seat their thread pointer from the context at every
+switch-in, as armv8a does. armv6m, armv7m and rxv3 still derive it from the stack pointer, because
+unprivileged code there has no per-thread register; porting.md says so per arch.
 
 ## Where to go next
 

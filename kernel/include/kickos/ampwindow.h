@@ -113,11 +113,11 @@ namespace kickos
         // ring's contents, so it may only fire on a reading no well-formed side could have
         // produced; this touches no far index and abandons one obligation of this node's own.
         //
-        // FOUR BECAUSE A LIVE PEER NEEDS ONE: its own drain empties a reply ring whole
-        // (SERVICE_PER_SENDER is RING_SLOTS) and the raise for that drain is latched by the
-        // publications that filled the ring, so the rest is margin for a peer whose doorbell
-        // sits behind a masked region of its own. A pass is any doorbell THIS node takes, so
-        // above two nodes an unrelated peer's traffic spends the budget too.
+        // FOUR BECAUSE A LIVE PEER NEEDS ONE: its callers land a full reply ring once its
+        // drain wakes them, and each release that frees a slot rings this node, so the rest is
+        // margin for a peer whose callers or doorbell sit behind a masked region of its own. A
+        // pass is any doorbell THIS node takes, so above two nodes an unrelated peer's traffic
+        // spends the budget too.
         //
         // PER RECORD, so the held run is back within RING_SLOTS * DEFER_PASSES passes at worst.
         constexpr uint32_t DEFER_PASSES = 4u;
@@ -137,8 +137,9 @@ namespace kickos
 
         // Which ring of the ordered pair. The two are reclaimed differently and cannot be one:
         // a CALL slot is this node's record of the caller until the reply is sent, a REPLY slot
-        // is released as it is taken. Merged, a node's parked callers fill the ring toward them
-        // with the peer's un-replied calls and the reply that would free them finds no slot.
+        // is released once its caller has landed it, which waits on no service. Merged, a node's
+        // parked callers fill the ring toward them with the peer's un-replied calls and the reply
+        // that would free them finds no slot.
         enum class Class : uint8_t
         {
             CALL = 0,
@@ -152,7 +153,7 @@ namespace kickos
         enum class Verdict : uint8_t
         {
             EMPTY = 0, // the producer has published nothing this node has not taken
-            TOOK,      // one message copied out
+            TOOK,      // one message taken, its header copied out
             DEPTH,     // the far head names more outstanding slots than the ring holds
             LENGTH,    // the far length exceeds one slot
             PORT,      // the far port names nothing this node minted
@@ -283,17 +284,19 @@ namespace kickos
         Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
                   uint32_t len);
 
-        // Take one REPLY out of the ring `from` writes to THIS node; the local node reads
-        // EMPTY, its self-ring being the one no service drains. `out` takes at most
-        // SLOT_BYTES, `*out_len` the bytes taken, `*out_port` the port and `*out_tag` the
-        // reply route; none of the four is touched on any verdict but TOOK.
+        // Take one REPLY out of the ring `from` writes to THIS node and HOLD its slot; the local
+        // node reads EMPTY, its self-ring being the one no service drains. On TOOK `*out_len`,
+        // `*out_port`, `*out_tag` and `*out_slot` (masked to the ring) are the snapshot and none
+        // is touched on any other verdict. The slot is TAKEN AND NOT RELEASED: the caller the tag
+        // names lands the payload out of it and releases it, and the service releases it where
+        // the tag names no caller (release_reply). The tail advances over released slots from
+        // the oldest, so landings may complete OUT OF ORDER while reclamation stays in order.
         //
-        // THE WHOLE SLOT HEADER IS HANDED BACK RATHER THAN LEFT TO BE RE-READ, inside this
-        // call as much as after it. The slot is free the instant the tail advances, and a
-        // producer with a stale tail may rewrite it earlier still, so a length re-read after it
-        // was bounded is a length nothing bounded.
+        // THE WHOLE SLOT HEADER IS HANDED BACK RATHER THAN LEFT TO BE RE-READ: a producer with a
+        // stale tail may rewrite a held slot, so a length re-read after it was bounded is a
+        // length nothing bounded.
         //
-        // A MALFORMED SLOT IS DROPPED AND THE TAIL ADVANCES. Leaving it would let one bad
+        // A MALFORMED SLOT IS DROPPED AND RELEASED AT ONCE. Leaving it would let one bad
         // publication wedge the ring for good; the verdict is counted, so the drop is visible.
         //
         // AN ADVANCE OF THE TAIL RINGS `from`, AND THAT RAISE IS NOT A HINT. This tail is what
@@ -301,14 +304,18 @@ namespace kickos
         // admit a call `from` left unread at RESERVE, and `from` has no publication of its own
         // pending to ring it. Nothing rescans for it either: the reservation is read inside
         // take_call, which runs from the doorbell alone.
-        Verdict take_reply(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
-                           ReplyTag* out_tag);
+        Verdict take_reply(uint32_t from, uint32_t* out_len, uint32_t* out_port,
+                           ReplyTag* out_tag, uint32_t* out_slot);
+
+        // Release a held reply slot, with the raise its advance owes `from`.
+        void release_reply(uint32_t from, uint32_t slot);
 
         // Take one CALL and HOLD its slot: on TOOK the slot is this node's record of the caller
         // until release_call frees it, so outstanding inbound calls from one peer are RING_SLOTS
         // by construction. `*out_slot` names the held slot, masked to the ring, and is what
         // release_call takes back. The header is copied OUT rather than re-read from the held
-        // slot, which a malformed producer may have touched.
+        // slot, which a malformed producer may have touched. The PAYLOAD is not copied: it is
+        // read out of the held slot by whoever the call is handed to.
         //
         // A CALL IS ADMITTED ONLY WHERE ITS REPLY ALREADY HAS A SLOT: the reply ring toward
         // `from` must hold room for one more than the replies this node still owes it, or the
@@ -316,7 +323,7 @@ namespace kickos
         // than RING_SLOTS gets a reply refused at publish, which no path can retry. THE RESERVE
         // IS OWED BY A TOOK ALONE: a malformed slot owes no reply, so it is dropped and the tail
         // advances whatever the reply ring holds.
-        Verdict take_call(uint32_t from, void* out, uint32_t* out_len, uint32_t* out_port,
+        Verdict take_call(uint32_t from, uint32_t* out_len, uint32_t* out_port,
                           ReplyTag* out_tag, uint32_t* out_slot);
 
         // A held call's record: the origin node and the reply token, stored verbatim and never
@@ -389,6 +396,26 @@ namespace kickos
         // and the release makes that index name a later wrap's slot, which the record
         // generation above keeps out of here.
         void release_call(uint32_t from, uint32_t slot);
+
+        // A HOLD: a held slot a local thread still has to read, in its own context and out of
+        // the masked service. A call's hold is its record's token, owned by the receiver until
+        // it lands the call; a reply's is the slot under its ring's generation, owned by the
+        // caller the tag named until it lands the reply.
+        //
+        // The payload of the slot `hold` names, or nullptr for a hold naming no slot. This
+        // pointer alone says nothing about liveness. The landing snapshots the bytes with
+        // interrupts open, checks hold_live on both sides under IrqLock, and copies to the user
+        // only from that private snapshot. A reset that reused the slot is reported as EPIPE.
+        void const* hold_payload(uint32_t hold);
+
+        // True while a held call record or reply slot still belongs to this token. Caller
+        // holds IrqLock; the landing checks on both sides of its unlocked payload snapshot.
+        bool hold_live(uint32_t hold);
+
+        // Give back what `hold` names: a reply slot is released, and a call record its holder
+        // will never land is answered empty and its slot released (inbound_reply). Total over a
+        // dead hold. Caller holds IrqLock.
+        void hold_release(uint32_t hold);
 
         // Per-node bookkeeping, one row per node, each row written by that node alone.
         //
@@ -470,8 +497,8 @@ namespace kickos
 
         Counts const& counts(uint32_t node);
 
-        // Count one Counts::deliver_fault on THIS node. Callable only from this node's own
-        // doorbell body, one writer per row being why a row may sit where a peer reads it.
+        // Count one Counts::deliver_fault on THIS node, under its lock: one writer per row is
+        // why a row may sit where a peer reads it.
         void count_deliver_fault(void);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -555,6 +582,9 @@ namespace kickos
         // ring and take it no further, so the doorbell's own service body is what drains it.
         // BOTH INDICES ARE RESET FIRST, as the other forges do.
         bool forge_publish(uint32_t from, uint32_t port, ReplyTag const& tag);
+
+        // Call slots from `from` this node holds: taken and not yet released.
+        uint32_t forge_call_held(uint32_t from);
 
         // Drain what forge_publish left, and answer whether the delivery kept the call's slot.
         // The CALL ring tail moves in release_call alone, so an unmoved tail is the whole of

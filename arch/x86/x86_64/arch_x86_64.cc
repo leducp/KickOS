@@ -19,6 +19,7 @@ extern "C" __attribute__((visibility("hidden"))) void kickos_thread_fault_exit(v
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/arch/trap.h>
+#include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_limits.h>
 
 #include <stddef.h>
@@ -46,7 +47,7 @@ namespace
 
     // switch.S spells these as literal displacements, so a field moved on one side alone is a
     // silent wrong offset.
-    constexpr size_t X86_64_FRAME_SIZE = 176;
+    constexpr size_t X86_64_FRAME_SIZE = KICKOS_X86_64_TRAP_FRAME;
     static_assert(sizeof(trap_frame) == X86_64_FRAME_SIZE,
                   "switch.S reserves KOS_FRAME_SIZE bytes for one trap_frame");
     static_assert(offsetof(trap_frame, r15) == 0, "switch.S uses KOS_F_R15 0");
@@ -67,16 +68,39 @@ namespace
                   "x86_64's syscall entry loads the kernel stack out of ctx.kernel_sp");
     static_assert(KICKOS_KERNEL_STACK_SIZE % 16 == 0,
                   "a block's top must land on the psABI stack alignment the entry needs");
-    // Structural only: a blocking syscall holds the syscall frame and the switch frame on the
-    // block at once.
-    static_assert(KICKOS_KERNEL_STACK_SIZE >= 2 * X86_64_FRAME_SIZE + 16,
-                  "the kernel block cannot hold a blocking syscall's two frames");
 
-    // The preemption red zone: the frame an interrupt builds on the stack it interrupted, plus
-    // what the entry runs below it. KICKOS_IDLE_STACK_SIZE has to clear it, the idle thread
-    // being the shallowest stack in the system.
-    static_assert(KICKOS_IDLE_STACK_SIZE >= 4 * X86_64_FRAME_SIZE,
-                  "the idle stack cannot take an interrupt frame and its dispatch");
+    // The gate reads each of these as an immediate, so the sums are spelled out there.
+    static_assert(KICKOS_X86_64_TRAP_FRAME_IRQ == KICKOS_X86_64_TRAP_FRAME + 8,
+                  "a same-level delivery realigns rsp to 16 bytes before the frame");
+    static_assert(KICKOS_X86_64_TRAP_NEST
+                      == KICKOS_X86_64_TRAP_FRAME_IRQ + KICKOS_X86_64_TRAP_DEPTH_IRQ,
+                  "KICKOS_X86_64_TRAP_NEST is an interrupt's frame plus its dispatch");
+    // The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
+    static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                      >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_SYSK,
+                  "the kernel block cannot hold the ring 3 syscall plus its canary word");
+    static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                      >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_IRQ,
+                  "the kernel block cannot hold a ring 3 interrupt plus its canary word");
+    static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                      >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_EXITK,
+                  "the kernel block cannot hold the relocated death path plus its canary word");
+    static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                      >= KICKOS_X86_64_TRAP_DEPTH_EXITKSW,
+                  "the kernel block cannot hold the relocated death path's switch");
+    static_assert(KICKOS_MIN_STACK_SIZE
+                      >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_SYSPRIV,
+                  "the spawn floor cannot hold a privileged caller's syscall");
+    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW,
+                  "the spawn floor cannot hold a privileged caller's syscall through the switch");
+    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_RET,
+                  "the spawn floor cannot hold a privileged thread's entry return");
+    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_DEPTH_RETSW,
+                  "the spawn floor cannot hold a privileged entry return through the switch");
+    static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_IDLE,
+                  "a ring 0 interrupt does not fit this board's idle stack");
+    static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_X86_64_PANIC_FRAME + KICKOS_X86_64_PANIC_DEPTH,
+                  "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
 
     constexpr uint64_t RFLAGS_IF = KICKOS_X86_64_RFLAGS_IF;
     // Bit 1 reads as one on every x86 processor; a resumed frame with it clear is one nothing

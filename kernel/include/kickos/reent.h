@@ -10,14 +10,20 @@
 // C library, so nothing below is compiled; do NOT answer that posture with a descriptor of zero
 // slots, whose seat word is an address the kernel would still write through.
 //
+// Where libc finds the running thread's state is KICKOS_REENT_PER_THREAD's choice. At 0 it is ONE
+// word the kernel rewrites at every switch, correct only while one core runs the threads that
+// share it. At 1 libc calls __getreent and the thread pointer answers it: through the first word
+// of the thread's TLS control block under KICKOS_REENT_IN_TCB, and as the thread pointer itself
+// otherwise. Either is written once when the thread is created, and the descriptor's `seat` is
+// then null.
+//
 // The seam is DATA: where a translating backend splits the image every EL0-reachable leaf carries
 // privileged-execute-never, so the kernel may not call app text at all.
 //
 // EVERY WRITE IS A kmemcpy AND NEVER A TYPED STORE. struct _reent is in scope only on the user
 // side, so a kernel store through void** asserts an effective type the object does not have; and
 // on Xtensa the word libc resolves from is a file-scoped static, which LTO may fold against a
-// definition an aliased store never touched. Turning one of these into an assignment reintroduces
-// both.
+// definition an aliased store never touched.
 //
 // The descriptor is read ONCE at boot into storage of the kernel's own.
 
@@ -26,8 +32,8 @@
 
 #include <stddef.h>
 
-// Global scope deliberately, matching kickos/arch/arch.h: an elaborated `struct arch_aspace*`
-// first seen inside namespace kickos would declare a second, unrelated type.
+// Global scope, matching kickos/arch/arch.h: an elaborated `struct arch_aspace*` first seen inside
+// namespace kickos would declare a second, unrelated type.
 struct arch_aspace;
 
 #if KICKOS_LIBC_REENT
@@ -61,8 +67,7 @@ namespace kickos
     void reent_seam_read(void);
 
     // The state a thread-pool slot owns, UNPRIMED. A TCB the pool does not own (idle)
-    // passes a negative index and gets the process-wide state, which is what the seat held
-    // before the first switch.
+    // passes a negative index and gets the process-wide state.
     void* reent_state_for_slot(int slot);
 
     // Bring a slot to its post-boot contents. SWITCH-IN AND NOWHERE ELSE: it writes hundreds
@@ -77,13 +82,19 @@ namespace kickos
     // so a kill taken at the first switch lands at that thread's next syscall entry.
     void reent_prime(struct arch_aspace* space, void* state);
 
+#if KICKOS_REENT_IN_TCB
+    // Make `state` the one libc resolves from for the thread whose TLS block starts at `tls`.
+    // Only for a block thread_create carved: idle's thread pointer lands in a neighbour's.
+    void reent_seat_tcb(void* tls, void* state);
+#endif
+#if not KICKOS_REENT_PER_THREAD
     // Make `state` the one libc resolves from. Runs on EVERY switch.
     void reent_seat(struct arch_aspace* space, void* state);
+#endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Times either of the two above wrote the app half for a thread whose memory view was not
-    // installed. Must be 0: the switch path is what refuses to call them in that posture, and
-    // this counts from the other side of that guard (kickos/aspace.h, aspace_seated_for).
+    // Times reent_prime or reent_seat wrote the app half for a thread whose memory view was not
+    // installed. Must be 0 (kickos/aspace.h, aspace_seated_for).
     size_t reent_unseated_writes(void);
 #endif
 }

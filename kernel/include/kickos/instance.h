@@ -43,6 +43,58 @@ namespace kickos
 #define kickos_kernel_core() 0u
 #endif
 
+#if KICKOS_KERNEL_CORES > 1
+    constexpr uint32_t sched_ring_depth_for(uint32_t entries)
+    {
+        uint32_t depth = 1u;
+        while (depth < entries)
+        {
+            depth = depth << 1u;
+        }
+        return depth;
+    }
+
+    // A pool slot is named by at most one HANDOFF, while HANDED, and one RESEAT, while its
+    // reseat_owed is set, machine-wide, so a ring this deep cannot fill and a producer never reads
+    // the consumer's tail to publish.
+    constexpr uint32_t SCHED_RING_DEPTH = sched_ring_depth_for(2u * KICKOS_THREAD_SLOTS);
+
+    // One dispatch applies at most this many entries, so its masked work is a build constant.
+    constexpr uint32_t SCHED_DRAIN_BUDGET = 8u;
+
+    // An entry names a pool slot, as a HANDOFF, or with this bit as a RESEAT.
+    constexpr uint16_t SCHED_ENTRY_RESEAT = 0x8000u;
+    static_assert(KICKOS_THREAD_SLOTS <= SCHED_ENTRY_RESEAT,
+                  "a pool slot index would reach the RESEAT bit of a ring entry");
+
+    // A line per writer, as the kernel lock's rows are (kernel/sync/klock.cc).
+    constexpr size_t SCHED_LINE = 64u;
+
+    using SchedSeq = Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>;
+
+    // Core p's producer row, written by p alone.
+    struct alignas(SCHED_LINE) SchedOut
+    {
+        SchedSeq head[KICKOS_KERNEL_CORES] = {};       // entries published toward each core
+        uint32_t staged[KICKOS_KERNEL_CORES] = {};     // entries written toward each core
+        SchedSeq drop_asked[KICKOS_KERNEL_CORES] = {}; // drops p has asked of each holder
+        // Every core staged toward or drop-asked since the last flush: the flush reads nothing
+        // else while it is zero, so a stage or an ask that misses it is never published.
+        uint32_t raise = 0;
+        // p's level plus one, published at every change of p's bitmap once p has started: zero
+        // is "not started", and a non-zero initialiser would move Kernel out of .bss.
+        Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE> level = 0;
+    };
+
+    // Core c's consumer row, written by c alone.
+    struct alignas(SCHED_LINE) SchedIn
+    {
+        SchedSeq tail[KICKOS_KERNEL_CORES] = {};      // how far c has drained each producer's ring
+        SchedSeq drop_took[KICKOS_KERNEL_CORES] = {}; // how far c has answered each asker's drops
+        uint8_t cursor = 0;                           // the producer c's next drain starts at
+    };
+#endif
+
     struct Kernel
     {
         // --- scheduler mechanism (sched.cc) ---
@@ -55,10 +107,8 @@ namespace kickos
         Thread* idle[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
         unsigned live = 0; // non-idle threads not yet EXITED
 #if KICKOS_KERNEL_CORES > 1
-        // Bit c of push_asked[h]: core c asks holder h to push it a thread. seated_prio[c]: the
-        // priority core c's last pass seated, left high across a lowering so that pass sees
-        // the drop.
-        uint32_t push_asked[KICKOS_KERNEL_CORES] = {};
+        // seated_prio[c]: the priority core c's last pass seated, left high across a lowering so
+        // that pass sees the drop. Written and read by c alone.
         uint8_t seated_prio[KICKOS_KERNEL_CORES] = {};
 #endif
         arch_context boot[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
@@ -153,6 +203,15 @@ namespace kickos
         SlotPool<Notification, KICKOS_MAX_NOTIFY> notifies;
         uint8_t notify_refs[KICKOS_MAX_NOTIFY] = {};
 
+#if KICKOS_KERNEL_CORES > 1
+        // --- the per-pair rings (sched.cc) ---
+        // sched_slot[p][c]: the ring core p writes toward core c, one pool slot index per entry.
+        // Staged under the kernel lock, published by p at the end of its span and drained by c
+        // alone. The diagonal is never written.
+        SchedOut sched_out[KICKOS_KERNEL_CORES] = {};
+        SchedIn sched_in[KICKOS_KERNEL_CORES] = {};
+        uint16_t sched_slot[KICKOS_KERNEL_CORES][KICKOS_KERNEL_CORES][SCHED_RING_DEPTH] = {};
+#endif
     };
 
     // `task_holds` costs nothing only while it occupies the two bytes of padding that a
@@ -174,6 +233,25 @@ namespace kickos
     {
         return detail::g_instance.get();
     }
+
+#if KICKOS_KERNEL_CORES > 1
+    void sched_flush_owed(uint32_t me);
+
+    // Publishes what core `me` staged toward each peer, then asks each peer that gained an entry
+    // and each holder it drop-asked. Called where `me`'s lock span ends, and never while a switch
+    // it booked still has the outgoing frame live: a target could then link a thread whose
+    // registers are.
+    // Returns whether it published anything.
+    inline __attribute__((always_inline)) bool sched_flush(uint32_t me)
+    {
+        if (kernel().sched_out[me].raise == 0)
+        {
+            return false;
+        }
+        sched_flush_owed(me);
+        return true;
+    }
+#endif
 
     // A hold set is 32 bits of pool slots (TaskObjectHolds, cap.h), so a wider pool would
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the

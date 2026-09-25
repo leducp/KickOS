@@ -104,6 +104,16 @@ macro(kickos_toolchain_flags_init _kos_tc_flags)
   set(CMAKE_ASM_FLAGS_INIT "${_kos_tc_flags}")
 endmacro()
 
+# kickos_toolchain_newlib_flags()
+#
+# After kickos_toolchain_flags_init, with kickos_require_dynreent_newlib's results in scope.
+macro(kickos_toolchain_newlib_flags)
+  string(APPEND CMAKE_C_FLAGS_INIT " ${_kos_newlib_c}")
+  string(APPEND CMAKE_ASM_FLAGS_INIT " ${_kos_newlib_c}")
+  string(APPEND CMAKE_CXX_FLAGS_INIT " ${_kos_newlib_cxx}")
+  set(CMAKE_EXE_LINKER_FLAGS_INIT "${_kos_newlib_link}")
+endmacro()
+
 # kickos_toolchain_bare_metal_rules()
 #
 # STATIC_LIBRARY try-compile: the board's linker script and startup are supplied only at the

@@ -118,9 +118,9 @@ namespace kickos
         extern Thread* g_park_from;
         extern ThreadState g_park_from_state;
 
+        // Cross-core raises and the peers they named, and raises a core made on itself.
         extern uint32_t g_ipi_sends;
         extern uint32_t g_ipi_send_mask;
-        // Self-reschedule requests delivered on final lock release.
         extern uint32_t g_ipi_self_raises;
 #endif
 
@@ -140,6 +140,15 @@ namespace kickos
 
         // Reset the kernel and start the scheduler with one idle thread.
         void reset();
+        // Takes a READY thread off its ready list, or a HANDED one out of every ring entry naming
+        // it, by hand. A fixture shortcut no kernel path takes: the kernel parks only a running
+        // thread.
+        void detach_ready(Thread* t);
+#if KICKOS_KERNEL_CORES > 1
+        // Rewrites every ring without the HANDOFF entries naming `t`, published ones staying
+        // published. Returns whether any did.
+        bool unstage(Thread const* t);
+#endif
         // A thread the scheduler knows about, READY at `prio`, in fixture storage.
         Thread* spawn(int slot, uint8_t prio);
         // Use ThreadPool storage so exit_current can find the TCB.

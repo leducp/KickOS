@@ -6,6 +6,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
+#include <kickos/instance.h>
 #include <kickos/irq_route.h>
 
 #include <atomic>
@@ -227,7 +228,7 @@ int arch_kernel_lock_held(void)
 }
 #endif
 
-void arch_ipi_resched_self(void)
+void arch_ipi_raise(uint32_t)
 {
 }
 
@@ -293,6 +294,12 @@ void console_write_line_sync(char const*, size_t)
 
 namespace kickos
 {
+    // klock.cc's release reads the scheduler's flush row.
+    namespace detail
+    {
+        constinit InstanceLocal<Kernel> g_instance;
+    }
+
     void kpanic(char const*) __attribute__((noreturn));
     void kpanic(char const*)
     {
@@ -305,6 +312,11 @@ namespace kickos
     }
 
     void irq_detach(int)
+    {
+    }
+
+    // The lock's release publishes what the scheduler staged, and this gate stages nothing.
+    void sched_flush_owed(uint32_t)
     {
     }
 

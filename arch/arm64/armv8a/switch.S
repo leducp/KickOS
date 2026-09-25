@@ -16,8 +16,9 @@
  */
 
 #include <kickos/board_config.h>
+#include <kickos/arch/armv8a_trap_stack.h>
 
-#define FRAME_SIZE  800
+#define FRAME_SIZE  KICKOS_ARMV8A_TRAP_FRAME
 #define F_X30       240
 #define F_ELR       248
 #define F_SPSR      256

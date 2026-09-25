@@ -321,6 +321,8 @@ KickOS/
                                     #   descriptor chain, CPU baseline, program search, link rules
     cross_cxx_capability.cmake      # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
+    cross_newlib.cmake              # swaps the toolchain's newlib for the dynamic-reent
+                                    #   conan/newlib package, refusing one that is not
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
     cap_geometry.cmake              # the table's structural constants, emitted to C
     cap_table.cmake                 # the configure-time capability-width sum + supply check
@@ -446,7 +448,7 @@ RX MPU) must fit the same seam with no signature changes.
 
 ## Scheduler (the core constraint)
 
-**TCB:** saved SP/context ptr, `state` (INACTIVE/READY/RUNNING/BLOCKED/EXITED, where BLOCKED covers a wait queue, the timer delta list and a queue-less park alike -- `wait_kind` is what says which), `prio`
+**TCB:** saved SP/context ptr, `state` (INACTIVE/READY/RUNNING/BLOCKED/EXITED, plus HANDED above one core, where BLOCKED covers a wait queue, the timer delta list and a queue-less park alike -- `wait_kind` is what says which), `prio`
 (+ `base_prio`, the assignment anchor PI raises `prio` above), `policy` (FIFO|RR), `quantum_ns` +
 `slice_deadline_ns` (an ABSOLUTE deadline: the RR quantum is wall-clock, see
 `invariants.md` `rr-quantum-is-wall-clock`), intrusive
@@ -460,7 +462,9 @@ builtin is a `CLZ` instruction, and on ARMv6-M, which has none, the compiler low
 libgcc helper. Above one core, a READY thread never waits behind equal or higher priority while a
 started core in its mask runs strictly below it (a same-core handoff is had by pinning): the pass
 that declines it moves it there, and a core whose level falls asks the holder to push it
-(`docs/design-multicore.md` section 8).
+(`docs/design-multicore.md` section 8). No core writes a peer's structure: a thread bound for a
+peer is HANDED onto the ring from this core to that one, published where this core's lock span
+ends, and linked by the peer's own dispatch (`docs/design-m9.4-rings.md`).
 
 **Pluggable policy interface (RTEMS-style).** The core owns *mechanism* (run state, context
 switch, ready structure); the *policy* (which thread runs next) sits behind a small interface
@@ -946,13 +950,19 @@ feeds the slave app.
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   toolchain newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 - **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
-  thread slot its own `struct _reent` and points libc at the running thread's copy from
-  `switch_book` and `sched::start` (`kernel/sched/sched.cc`), through the one word libc resolves
-  its state by (`&_impure_ptr`, or `__getreent`'s on Xtensa). `errno` is that struct's first
-  member, so this -- and **not `KICKOS_TLS`** -- is what makes `errno` follow the thread; the two
-  are independent mechanisms and a program wanting both turns both on. `_REENT_INIT_PTR` aims
-  every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so **stdio buffering
-  stays process-wide** however many copies exist.
+  thread slot its own `struct _reent`, primed at the thread's first switch-in, and points libc at
+  the running thread's copy. Under `KICKOS_REENT_PER_THREAD` libc calls `__getreent()` and the
+  thread pointer answers it, written once by `thread_create` and never by a switch: through the
+  first word of the thread's TLS control block on armv8a and on lx6 above one kernel core
+  (`KICKOS_REENT_IN_TCB`, which rides on `KICKOS_TLS`), and as `tp` itself on rv64imac, which
+  resumes every thread with it. armv8a and rv64imac get that hook from the newlib
+  `conan/newlib` builds, which the toolchain files require. Elsewhere libc reads one word
+  (`&_impure_ptr`, or the word behind `__getreent` on lx6 at one core), and `switch_book` and
+  `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is correct only while
+  one core runs its readers. `errno` is that struct's first member, so this, and not a
+  `thread_local`, is what makes `errno` follow the thread.
+  `_REENT_INIT_PTR` aims every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so
+  **stdio buffering stays process-wide** however many copies exist.
 
 ---
 

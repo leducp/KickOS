@@ -31,9 +31,14 @@ kickos_require_usable_cross_cxx("arm64" "${CMAKE_CXX_COMPILER}"
   "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf.tar.xz"
   ${_kos_cpu})
 
+include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
+kickos_require_dynreent_newlib("arm64" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
+  KICKOS_NEWLIB_AARCH64 ${_kos_cpu})
+
 # The same ${_kos_cpu} on compile AND link picks the matching multilib (libgcc/newlib/
 # libstdc++).
 string(JOIN " " _kos_common ${_kos_cpu} -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
+kickos_toolchain_newlib_flags()
 
 kickos_toolchain_bare_metal_rules()

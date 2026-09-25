@@ -2,10 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The built-in FIFO + round-robin scheduling policy. This TU owns the ready structure
-// (per-priority intrusive FIFO lists plus a priority bitmap) and the RR slice; the core
-// reaches all of it only through the SchedPolicy hooks, and no other TU may touch the
-// ready state in the Kernel struct. A FIFO thread has quantum_ns == 0 and therefore never
-// arms a slice.
+// (per-priority intrusive FIFO lists plus a priority bitmap) and the RR slice, reached
+// only through the SchedPolicy hooks. A FIFO thread has quantum_ns == 0 and never arms
+// a slice.
 
 #include <kickos/sched.h>
 #include <kickos/instance.h>
@@ -26,8 +25,8 @@ namespace kickos
             return 31 - __builtin_clz(bm);
         }
 
-        // The ready structure this thread's scheduler state lives in. Reading the thread, never
-        // the calling core, is what lets a core remove a thread another core readied.
+        // Read from the thread, never the calling core: this is what lets a core remove a
+        // thread another core readied.
         inline uint32_t rq_core(Thread const* t)
         {
 #if KICKOS_KERNEL_CORES > 1
@@ -38,27 +37,77 @@ namespace kickos
 #endif
         }
 
+        // Above one core, `prio` is a field a peer may write under the lock while the thread
+        // is linked here, so the key used must be the one this core seated.
+        inline uint32_t rq_key(Thread const* t)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            return t->rq_prio;
+#else
+            return t->prio;
+#endif
+        }
+
+#if KICKOS_KERNEL_CORES > 1
+        // A started core's cell is its bitmap's top plus one, kept so by every bitmap edit, so a
+        // placer never reads a level a span with no pass has already moved. An edit that leaves
+        // the top where it was stores nothing. `top_of` is any bitmap whose top bit is the level:
+        // a started core's own bitmap is never empty, its running thread being on it.
+        inline __attribute__((always_inline)) void publish_top(uint32_t c, uint32_t top_of)
+        {
+            Kernel& k = kernel();
+            if (k.current[c] != nullptr)
+            {
+                KICKOS_DEBUG_ASSERT(top_of != 0);
+                k.sched_out[c].level.store(static_cast<uint8_t>(32 - __builtin_clz(top_of)));
+            }
+        }
+#endif
+
         void rq_push_back(Thread* t)
         {
             uint32_t const c = rq_core(t);
-            kernel().ready[c][t->prio].push_back(&t->link);
-            kernel().ready_bitmap[c] |= (1u << t->prio);
+#if KICKOS_KERNEL_CORES > 1
+            uint32_t const key = rq_key(t);
+            uint32_t const bm = kernel().ready_bitmap[c];
+            kernel().ready[c][key].push_back(&t->link);
+            kernel().ready_bitmap[c] = bm | (1u << key);
+            // The top rises to `key` exactly when no bit at or above it was set.
+            if ((bm >> key) == 0)
+            {
+                publish_top(c, 1u << key);
+            }
+#else
+            kernel().ready[c][rq_key(t)].push_back(&t->link);
+            kernel().ready_bitmap[c] |= (1u << rq_key(t));
+#endif
         }
 
         void rq_remove(Thread* t)
         {
             uint32_t const c = rq_core(t);
-            List& l = kernel().ready[c][t->prio];
+            List& l = kernel().ready[c][rq_key(t)];
             l.unlink(&t->link);
             if (l.empty())
             {
-                kernel().ready_bitmap[c] &= ~(1u << t->prio);
+#if KICKOS_KERNEL_CORES > 1
+                uint32_t const key = rq_key(t);
+                uint32_t const bm = kernel().ready_bitmap[c] & ~(1u << key);
+                kernel().ready_bitmap[c] = bm;
+                // The top falls exactly when `key` was it.
+                if ((bm >> key) == 0)
+                {
+                    publish_top(c, bm);
+                }
+#else
+                kernel().ready_bitmap[c] &= ~(1u << rq_key(t));
+#endif
             }
         }
 
         void rq_rotate(Thread* t)
         {
-            List& l = kernel().ready[rq_core(t)][t->prio];
+            List& l = kernel().ready[rq_core(t)][rq_key(t)];
             if (l.head == l.tail)
             {
                 return;
@@ -87,28 +136,26 @@ namespace kickos
         }
 
 #if KICKOS_KERNEL_CORES > 1
-        // Whether core `core` may take `t`. A thread a peer core is running, and a peer core's
-        // idle fallback, are reserved to that core.
+        // A thread a peer core is running, and a peer core's idle fallback, are reserved to
+        // that core.
         bool available_to(Thread const* t, uint32_t core)
         {
             if (t == kernel().current[core])
             {
-                // A slain thread must lose the core: the claim is a switch into it
-                // (switch_book, sched.cc), and a core re-picking its own running victim
-                // never takes one. `dying` declines it, or a victim preempted mid-teardown
-                // would be displaced for a claim that already fired.
+                // A slain thread must lose the core: a core re-picking its own running
+                // victim never takes one. Declining here keeps a victim preempted
+                // mid-teardown from being displaced by a claim that already fired.
                 if (thread_slay_claim_pending(t))
                 {
                     return false;
                 }
-                // Re-masking a running thread is what stops its own core picking it again:
-                // reschedule() switches it away rather than yanking it off.
+                // Re-masking a running thread is what stops its own core picking it again;
+                // reschedule() switches it away rather than unlinking it.
                 return sched_placeable_on(t, core);
             }
-            // RUNNING and `current` can disagree across a deferred switch (switch_book publishes
-            // before the arch switch), so a thread still on this core's own queue can read
-            // RUNNING while this core runs something else; idle is reachable here the same way,
-            // before its core has seated it.
+            // RUNNING and `current` can disagree across a deferred switch, so a thread still
+            // on this core's own queue can read RUNNING while this core runs something else;
+            // idle is reachable here the same way, before its core has seated it.
             if (t->state == ThreadState::RUNNING)
             {
                 return false;
@@ -195,13 +242,18 @@ namespace kickos
 
         void policy_on_switch_in(Thread* t)
         {
-            // A slice deadline still in the future must survive the switch: re-arming here
-            // would refund the whole quantum on every resume, starving an equal-priority peer
-            // across repeated preemptions.
+            // A slice deadline set before the switch must survive it: re-arming here would refund
+            // the whole quantum on every resume, starving an equal-priority peer across repeated
+            // preemptions. One that passed while t was preempted is spent, and expires as soon as
+            // the timer can take it. Zero is a fresh TCB's deadline and arms like none.
             if (t->policy == Policy::RR and t->quantum_ns > 0
-                and t->slice_deadline_ns != UINT64_MAX
-                and t->slice_deadline_ns > ktime_now())
+                and t->slice_deadline_ns != UINT64_MAX and t->slice_deadline_ns != 0)
             {
+                uint64_t const soonest = ktime_now() + KICKOS_TIMER_MIN_DELTA_NS;
+                if (t->slice_deadline_ns < soonest)
+                {
+                    t->slice_deadline_ns = soonest;
+                }
                 return;
             }
             arm_slice(t);
@@ -221,20 +273,26 @@ namespace kickos
         // what it already holds.
         inline bool started(uint32_t core)
         {
-            return kernel().current[core] != nullptr;
+            return kernel().sched_out[core].level.load() != 0;
         }
 
-        // The priority `core`'s next pass seats if nothing arrives, `t` excluded, or -1. The
-        // running thread sits in its own list, so this is never below what the core runs.
+        // The core has seated its first thread, and from here its cell follows its bitmap.
+        void policy_on_start(uint32_t core)
+        {
+            publish_top(core, kernel().ready_bitmap[core]);
+        }
+
+        // The priority this core's next pass seats if nothing arrives, `t` excluded, or -1. Read
+        // only by the core that holds `t`: a peer's level is its cell (sched_effective_level).
         int level(uint32_t core, Thread const* t)
         {
             uint32_t bm = kernel().ready_bitmap[core];
             if (t != nullptr and t->queue_core == core)
             {
-                List const& l = kernel().ready[core][t->prio];
+                List const& l = kernel().ready[core][rq_key(t)];
                 if (l.head == &t->link and l.tail == &t->link)
                 {
-                    bm &= ~(1u << t->prio);
+                    bm &= ~(1u << rq_key(t));
                 }
             }
             return top_prio(bm);
@@ -249,7 +307,15 @@ namespace kickos
             int const prio = t->prio;
             if (started(home) and sched_placeable_on(t, home))
             {
-                int const lvl = level(home, t);
+                int lvl = 0;
+                if (home == t->queue_core)
+                {
+                    lvl = level(home, t);
+                }
+                else
+                {
+                    lvl = sched_effective_level(home);
+                }
                 if (lvl < prio)
                 {
                     return {home, true};
@@ -259,11 +325,18 @@ namespace kickos
             int best_lvl = prio;
             for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
             {
-                if (c == home or not sched_placeable_on(t, c) or not started(c))
+                if (c == home or not sched_placeable_on(t, c))
                 {
                     continue;
                 }
-                int const lvl = level(c, t);
+                // What is on its way to a core only raises it, so a cell already at the best
+                // cannot beat it, and a zero cell is a core not started.
+                int const cell = static_cast<int>(kernel().sched_out[c].level.load()) - 1;
+                if (cell < 0 or cell >= best_lvl)
+                {
+                    continue;
+                }
+                int const lvl = sched_effective_level(c);
                 if (lvl < best_lvl)
                 {
                     best = c;
@@ -279,7 +352,7 @@ namespace kickos
         // deferred switch. A pending slay claim stays, since its core owes it the pass.
         Thread* policy_push_candidate(uint32_t holder, uint32_t target)
         {
-            int const floor = level(target, nullptr);
+            int const floor = sched_effective_level(target);
             uint32_t bm = kernel().ready_bitmap[holder];
             if (floor >= 0)
             {
@@ -318,7 +391,7 @@ namespace kickos
                 if (walk->next != nullptr)
                 {
                     n = &walk->next->link;
-                    p = walk->next->prio;
+                    p = static_cast<int>(rq_key(walk->next));
                 }
                 else
                 {
@@ -378,6 +451,7 @@ namespace kickos
             policy_place,
             policy_push_candidate,
             policy_declined,
+            policy_on_start,
 #endif
         };
     }

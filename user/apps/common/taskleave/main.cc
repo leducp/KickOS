@@ -77,14 +77,16 @@ int main(int, char**)
             { sig, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
         };
 
-        auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, caps, 1,
-                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                                nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
-                                                nullptr, 0, 1u << 0);
+        // The closer first: the leaver runs on its own core and may be gone before a later
+        // spawn, which would reclaim its slot and leave its handle stale for the join below.
         auto const b = kos::thread::create_caps(closer, nullptr, "closer", 10, caps, 1,
                                                 KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                                 nullptr, 0, 0, nullptr, group,
                                                 nullptr, 0, 1u << 1);
+        auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, caps, 1,
+                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
+                                                nullptr, 0, 1u << 0);
         if (not a.valid() or not b.valid())
         {
             emit("[taskleave] ERROR: member spawn refused\n");

@@ -1,61 +1,49 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RISC-V RV32IMAC: struct arch_context is the minimal state the switcher needs to resume a
-// thread. ALL register state lives in a flat save frame on the thread's own stack
-// (switch.S), so a thread is fully described by one pointer, the base of that frame. ONE
-// frame format serves both a voluntary block and a preemptive wake: the msip switcher always
-// saves the complete interrupted context (every GPR bar gp/tp, plus mepc + mstatus), so a
-// thread preempted at an arbitrary PC and one that blocked in a syscall are
-// indistinguishable to the resume path.
+// RISC-V RV32IMAC: the state the switcher needs to resume a thread. Every register lives in
+// one flat save frame on the thread's stack (switch.S), the same format for a voluntary block
+// and a preemptive wake, so a thread is described by the base of that frame. Its privilege is
+// the frame's mstatus.MPP.
 //
-// A thread's privilege lives in the saved frame's mstatus.MPP, restored by the mret at
-// frame-restore, so the struct carries no privilege field of its own.
+// switch.S reads every field at a literal displacement (rv_trap_stack.h, F_CTX_TLS_BASE);
+// arch_rv32imac.cc static_asserts them.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
-// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
-// carry on top of .tdata + .tbss.
-// RISC-V TLS is variant 2: TP_OFFSET is 0, so tp IS the block start and the
-// first thread_local sits AT it. Reserving a TCB here would put every offset wrong.
+// RISC-V TLS is variant 2: tp IS the block start and the first thread_local sits AT it, so
+// the ABI reserves nothing below the thread pointer.
 #define KICKOS_ARCH_TLS_TCB 0
 
 #include <stdint.h>
 
 struct arch_context
 {
-    // Saved stack pointer: the base (lowest address) of the thread's current save
-    // frame. switch.S restores every register + mepc + mstatus from here and mret's
-    // back in, and hard-codes this field at offset 0.
+    // The base of the thread's current save frame.
     uint32_t sp;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Telemetry only: the owning thread's trace id, stamped once by
-    // arch_trace_stamp_id (thread_create) and read by the switch path to emit the
-    // {from,to} SWITCH record from the physically-swapped contexts. switch.S
-    // hard-codes it at OFFSET 4.
+    // Stamped once by arch_trace_stamp_id; the switch path reads it to emit the SWITCH record.
     uint32_t trace_tid;
 #endif
 
-    // Stack bounds trap_entry (switch.S) checks the interrupted U-mode sp against before it
-    // stores a frame through it: a U-mode thread owns its sp and can aim it at kernel
-    // memory, which the software M-mode prologue would then write. Set once by
-    // arch_context_init; read as plain words at the offsets F_CTX_STACK_LO /
-    // F_CTX_STACK_HI hard-coded in switch.S. A sp outside [stack_lo, stack_hi] routes the
-    // trap to the fault reporter instead of storing.
+    // The bounds trap_entry checks an interrupted U-mode sp against before it stores a frame
+    // through it: a U-mode thread can aim its sp at kernel memory, which the software M-mode
+    // prologue would then write.
     uint32_t stack_lo;
     uint32_t stack_hi;
 
-    // TOP of the kernel stack this thread's privileged dispatch runs on, seated once per pool
-    // thread by thread_create and preserved across arch_ctx_redirect. NOT saved by a switch:
-    // it is write-once per slot and every switch-path reference is a load, `sp` above being
-    // the one field that tracks where the thread is. trap_entry loads this on the U-mode
-    // accept path and builds the frame there, F_SP carrying the interrupted user sp back for
-    // the mret; a privileged thread's ecall arrives mstatus.MPP=M and does not convert. Read
-    // at F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which reaches neither
-    // site.
+    // TOP of the kernel stack this thread's privileged dispatch runs on, seated by
+    // thread_create and preserved across arch_ctx_redirect; write-once per slot, so no switch
+    // saves it. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
+
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    // tp while this thread runs, written at every resume and never read back from the
+    // register, which U-mode can write. Write-once per thread.
+    uint32_t tls_base;
+#endif
 };
 
 #endif

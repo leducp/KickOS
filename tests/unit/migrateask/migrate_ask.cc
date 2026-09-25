@@ -98,7 +98,7 @@ namespace
             sched::reschedule();
         }
 
-        kernel().policy->on_remove(p.below);
+        detach_ready(p.below);
         p.below->state = ThreadState::RUNNING;
         kickos::testfix::seat_running_on(p.below, CORE_PEER);
 
@@ -128,8 +128,8 @@ TEST_F(MigrateAsk, a_thread_re_masked_off_the_core_it_runs_on_asks_the_core_it_m
 
     ASSERT_EQ(kernel().current[CORE_ME], p.alt)
         << "fixture: the re-mask cost this core the switch the ask rides behind";
-    ASSERT_EQ(p.runner->state, ThreadState::READY)
-        << "fixture: that switch stored the state a peer's pick_next reads";
+    ASSERT_EQ(p.runner->state, ThreadState::HANDED)
+        << "fixture: that switch handed the thread to the peer, whose drain links it";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the thread is READY, eligible only on the peer core, and that core was never told "
            "to look: it runs a thread below and will keep running it until its next natural "
@@ -166,8 +166,8 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
 
     displace_runner_by_a_raise(p);
     ASSERT_EQ(kernel().current[CORE_ME], p.alt) << "fixture: the pass took the switch";
-    ASSERT_EQ(p.runner->state, ThreadState::READY)
-        << "fixture: that switch stored the state a peer's pick_next reads";
+    ASSERT_EQ(p.runner->state, ThreadState::HANDED)
+        << "fixture: that switch handed the thread to the peer, whose drain links it";
 
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "an ordinary switch put a thread the peer core may run into the ready set above "
@@ -233,7 +233,7 @@ TEST_F(MigrateAsk, a_running_thread_no_core_seats_is_a_debug_assert)
     kernel().current[CORE_ME] = nullptr;
 
     KICKOS_EXPECT_PANIC(sched::set_affinity(p.runner, 1u << CORE_PEER),
-                        "debug assert: t->state != ThreadState::RUNNING");
+                        "debug assert: seated == t");
 }
 
 TEST_F(MigrateAsk, a_thread_re_masked_off_a_peers_core_asks_that_peer)
@@ -271,9 +271,9 @@ TEST_F(MigrateAsk, a_wake_this_core_takes_itself_asks_for_the_thread_it_displace
     ASSERT_EQ(kernel().current[CORE_ME], woken)
         << "fixture: the woken thread outranks this core's and is placeable here, so this "
            "core is the one that takes it";
-    ASSERT_EQ(p.runner->state, ThreadState::READY)
+    ASSERT_EQ(p.runner->state, ThreadState::HANDED)
         << "fixture: taking the woken thread cost this core the thread it was running, and "
-           "that store is what a peer's pick_next reads";
+           "that thread was handed to the peer";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the displaced thread is READY, placeable on the peer core, and outranks what that "
            "core runs, and nobody told it: the peer keeps a lower-priority thread on the CPU "

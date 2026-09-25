@@ -6,11 +6,10 @@
 // the end-to-end arm takes the line from a cap the caller may wait on rather than from a
 // number, and every caller-supplied count is refused above the ceiling abi.h names.
 //
-// Three ops take no authority at all. RAISE carries no line of its own, the arm having chosen
-// one from a cap, and it answers -KOS_EBUSY to anybody until that waiter has parked. RESET
-// answers 0 to anybody and clears the distributions. CLOSE answers -KOS_EPERM to a thread
-// that is not the armed waiter and counts the span into `dropped`, but ends the span either
-// way, which is what the root close after the child reads.
+// Three ops take no authority. RAISE injects the line the arm chose from a cap, and answers
+// -KOS_EBUSY to anybody until that waiter has parked. RESET answers 0 to anybody and clears the
+// distributions. CLOSE answers -KOS_EPERM to a thread that is not the armed waiter and counts
+// the span into `dropped`, but ends the span either way.
 //
 // Root declares KOS_AUTH_IRQ and the child declares nothing, so each root arm is the positive
 // control for the child arm beside it.
@@ -87,7 +86,7 @@ namespace
         report_rc("child irq_sweep", rc);
         check(rc == -KOS_EPERM, "child cannot sweep the line");
 
-        rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, 0, KOS_BENCH_SAMPLES_MAX);
+        rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, KOS_BENCH_SAMPLES_MAX, 0);
         report_rc("child irq_wcase", rc);
         check(rc == -KOS_EPERM, "child cannot sweep a masked span");
 
@@ -99,9 +98,7 @@ namespace
         report_rc("child e2e_arm (SIGNAL-only cap)", rc);
         check(rc == -KOS_EPERM, "a cap without WAIT cannot name the span's line");
 
-        // The three ops that take no authority, over the span root re-armed above. The raise
-        // and the reset leave it alone; the close ends it, and the root arm after the join
-        // reads that.
+        // Over the span root re-armed: the raise and the reset leave it open, the close ends it.
         rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
         report_rc("child e2e_raise", rc);
         check(rc == -KOS_EBUSY, "a raise the parked waiter has not invited injects nothing");
@@ -132,7 +129,7 @@ int main(int, char**)
     report_rc("root irq_sweep above the ceiling", rc);
     check(rc == -KOS_EINVAL, "a sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
-    rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, 0, KOS_BENCH_SAMPLES_MAX + 1u);
+    rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, KOS_BENCH_SAMPLES_MAX + 1u, 0);
     report_rc("root irq_wcase above the ceiling", rc);
     check(rc == -KOS_EINVAL, "a masked-span sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
@@ -176,8 +173,7 @@ int main(int, char**)
     report_rc("root reset", rc);
     check(rc == 0, "reset answers 0 and leaves the e2e state alone");
 
-    // The child's close below has to have a live span to be refused over, and the reset
-    // above leaves the state untouched on purpose.
+    // The child's close needs a live span to be refused over.
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, irq, 0);
     report_rc("root e2e_arm (re-armed for the child)", rc);
     check(rc == 0, "the span is open again");

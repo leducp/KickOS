@@ -14,6 +14,7 @@
 #include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/kruntime.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/thread.h>
@@ -26,6 +27,11 @@
 
 namespace kickos
 {
+#ifdef KICKOS_AMP_HOLD_COPY_HOOK
+    // The host hold fixture resets a ring after the snapshot and before its second check.
+    void amp_hold_after_snapshot();
+#endif
+
     namespace
     {
         // Distinct from ipc.badge_out == 0, which means the receiver asked for no info.
@@ -106,6 +112,51 @@ namespace kickos
         }
 
 #if KICKOS_AMP_NODE
+        // Copy from a held ring slot into private storage while interrupts are open. A reset
+        // invalidates the hold before returning its slot to the producer; the second check
+        // discards a snapshot that raced that reset. Only the private snapshot reaches user
+        // memory, so a later occupant's bytes cannot be delivered through the old hold.
+        __attribute__((noinline)) int32_t far_hold_copy(Thread* c, uint32_t hold, uintptr_t buf,
+                                                        size_t n)
+        {
+            if (n > KOS_EP_MSG_MAX)
+            {
+                return -KOS_EPIPE;
+            }
+            uint8_t snapshot[KOS_EP_MSG_MAX];
+            {
+                IrqLock lock;
+                if (not amp::hold_live(hold))
+                {
+                    return -KOS_EPIPE;
+                }
+            }
+            void const* const src = amp::hold_payload(hold);
+            if (src == nullptr)
+            {
+                return -KOS_EPIPE;
+            }
+            if (n != 0)
+            {
+                kmemcpy(snapshot, src, n);
+            }
+#ifdef KICKOS_AMP_HOLD_COPY_HOOK
+            amp_hold_after_snapshot();
+#endif
+            {
+                IrqLock lock;
+                if (not amp::hold_live(hold))
+                {
+                    return -KOS_EPIPE;
+                }
+            }
+            if (n != 0 and not kaccess_to_user(user_space_of(c), buf, snapshot, n))
+            {
+                return -KOS_EFAULT;
+            }
+            return 0;
+        }
+
         // tag identifies the reply route; REPLY_TAG_NONE means the sender does not park.
         // Caller holds IrqLock. Returns bytes sent or the mapped window error; the stage
         // uses KOS_EP_MSG_MAX bytes of syscall stack.
@@ -133,6 +184,90 @@ namespace kickos
             }
             return -KOS_EINVAL;
         }
+
+        // The receiver's half of a far call: `n` bytes out of the slot its record holds, with
+        // interrupts open, and then the record settled under the lock. Every refusal answers
+        // the record, whose reply releases the slot; a record a resynchronisation freed
+        // mid-landing was answered by that resynchronisation and names a slot no longer this
+        // call's.
+        __attribute__((noinline)) int32_t far_call_land(Thread* c, uintptr_t buf,
+                                                        uintptr_t badge_out, int32_t n)
+        {
+            uint32_t const record = c->far_hold - 1u;
+            int32_t copy = n;
+            if (n >= 0)
+            {
+                copy = far_hold_copy(c, record, buf, static_cast<size_t>(n));
+            }
+            IrqLock lock;
+            c->far_hold = 0u;
+            if (n < 0)
+            {
+                amp::inbound_reply(record, nullptr, 0u);
+                return n;
+            }
+            if (copy == -KOS_EPIPE or not amp::hold_live(record))
+            {
+                amp::inbound_reply(record, nullptr, 0u);
+                return -KOS_EPIPE;
+            }
+            bool const copied = copy == 0;
+            // A capability is disclosed only beside the bytes it answers for.
+            uint32_t rcap = KCAP_INVALID;
+            if (copied and badge_out != 0 and amp::inbound_at(record) != nullptr
+                and cap_install_far_reply(c, record, &rcap) != 0)
+            {
+                rcap = KCAP_INVALID;
+            }
+            bool const info_ok = not endpoint_far_blind_take()
+                                 and write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE,
+                                                     rcap);
+            if (not info_ok and rcap != KCAP_INVALID)
+            {
+                bool const undone = cap_uninstall_far_reply(c, rcap, record);
+                KICKOS_ASSERT(undone);
+                (void)undone;
+                rcap = KCAP_INVALID;
+            }
+            if (rcap == KCAP_INVALID)
+            {
+                amp::inbound_reply(record, nullptr, 0u);
+            }
+            if (not copied or not info_ok)
+            {
+                // One count per arrival, both copies refused included.
+                amp::count_deliver_fault();
+                return -KOS_EFAULT;
+            }
+            return n;
+        }
+
+        // The caller's half of a far reply: the bytes out of the slot it holds, with interrupts
+        // open, then the slot released under the lock. Every return of the call reaches here, so
+        // a result the reply did not write still gives the slot back.
+        __attribute__((noinline)) void far_reply_land(Thread* c, uintptr_t buf)
+        {
+            uint32_t const hold = c->far_hold - 1u;
+            intptr_t const n = c->wait_result;
+            int32_t copy = 0;
+            if (n >= 0)
+            {
+                copy = far_hold_copy(c, hold, buf, static_cast<size_t>(n));
+            }
+            IrqLock lock;
+            c->far_hold = 0u;
+            bool const live = amp::hold_live(hold);
+            amp::hold_release(hold);
+            if (n >= 0 and (copy == -KOS_EPIPE or not live))
+            {
+                c->wait_result = -KOS_EPIPE;
+            }
+            else if (n >= 0 and copy != 0)
+            {
+                amp::count_deliver_fault();
+                c->wait_result = -KOS_EFAULT;
+            }
+        }
 #endif
     }
 
@@ -146,7 +281,6 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        // Check the task limit before allocating a pool slot.
         if (not task_object_admit(CapType::CAP_ENDPOINT, c->task))
         {
             return -KOS_EOVERFLOW;
@@ -274,7 +408,7 @@ namespace kickos
 #endif
             if (e->recv_holders == 0)
             {
-                return -KOS_EPIPE; // No receiver remains.
+                return -KOS_EPIPE;
             }
             Thread* w = wq_pop_highest(e->recv_waiters);
             if (w != nullptr)
@@ -300,7 +434,7 @@ namespace kickos
             c->ipc.buf = buf;
             c->ipc.len = len;
             c->ipc.badge_out = 0;
-            c->call_state = CALL_NONE; // Plain send, not call.
+            c->call_state = CALL_NONE;
             epoch = c->switch_count;
             park_deadline_arm(c, timeout_us);
             wq_block(e->send_waiters, WAIT_EP_SEND, e);
@@ -373,7 +507,7 @@ namespace kickos
             KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
             return -err; // EBADF (bad cap) or EPERM (no WAIT right)
         }
-        endpoint_server_set(e, c); // Set the target for server priority donation.
+        endpoint_server_set(e, c);
         // Defer rescheduling: changing current() here would make wq_block park the
         // woken caller instead of this receiver.
         KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
@@ -409,7 +543,7 @@ namespace kickos
                 if (not cap_can_take_reply(c))
                 {
                     s->call_state = CALL_NONE;
-                    s->wait_result = -KOS_EMFILE; // server table is full
+                    s->wait_result = -KOS_EMFILE;
                     uint8_t const np = thread_effective_prio(c);
                     if (np != c->prio)
                     {
@@ -465,7 +599,6 @@ namespace kickos
                 s->ipc.badge_out = 0;
                 s->call_state = CALL_REPLY_WAIT;
                 reply_donor_park(c, s);
-                // Inherit the caller's priority for this transaction.
                 if (s->prio > c->prio)
                 {
                     sched::set_prio(c, s->prio);
@@ -528,7 +661,7 @@ namespace kickos
         }
         if (recv_cap > KOS_EP_MSG_MAX)
         {
-            recv_cap = KOS_EP_MSG_MAX; // Clamp reply capacity.
+            recv_cap = KOS_EP_MSG_MAX;
         }
         KICKOS_BENCH_MARK(bm_validate);
         // The one buffer is read (request) then written (reply): validate both here,
@@ -581,7 +714,7 @@ namespace kickos
             bool const far = endpoint_is_far(e);
             if (not far and e->recv_holders == 0)
             {
-                return -KOS_EPIPE; // No receiver remains.
+                return -KOS_EPIPE;
             }
             KICKOS_BENCH_MARK(bm_peek);
             Thread* w = wq_peek_highest(e->recv_waiters);
@@ -635,7 +768,6 @@ namespace kickos
                 KICKOS_BENCH_MARK(bm_probe);
                 if (not cap_can_take_reply(w))
                 {
-                    // Check the receiver table and reply limit before changing state.
                     return -KOS_EMFILE;
                 }
                 KICKOS_BENCH_SPAN(PH_CALL_PROBE, bm_probe);
@@ -720,7 +852,6 @@ namespace kickos
                 c->call_rx_cap = recv_cap;
                 c->call_seq++; // Packed when the receiver removes this call.
                 c->call_state = CALL_SEND_WAIT;
-                // Boost the bound server before parking.
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
                     KICKOS_BENCH_MARK(bm_sdonate);
@@ -741,6 +872,12 @@ namespace kickos
         KICKOS_BENCH_MARK(bm_resume);
         wq_confirm_resume(c, epoch);
         c->call_state = CALL_NONE; // Clear call state on every return path.
+#if KICKOS_AMP_NODE
+        if (c->far_hold != 0u)
+        {
+            far_reply_land(c, buf);
+        }
+#endif
         KICKOS_BENCH_SPAN(PH_CALL_RESUME, bm_resume);
         // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS/-KOS_ETIMEDOUT/-KOS_ECANCELED
         return static_cast<int32_t>(c->wait_result);
@@ -823,7 +960,6 @@ namespace kickos
         }
         caller->call_state = CALL_NONE;
         KICKOS_BENCH_MARK(bm_funnel);
-        // Restore priority through the donation chain.
         sched::set_prio(c, thread_effective_prio(c));
         KICKOS_BENCH_SPAN(PH_REPLY_FUNNEL, bm_funnel);
         *answered = true;
@@ -933,7 +1069,6 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
-            // Validate the shared buffer for both reply reads and receive writes.
             if (not user_readable_and_writable_ok(buf, reply_len, recv_cap))
             {
                 return -KOS_EFAULT;
@@ -1015,6 +1150,12 @@ namespace kickos
                 KICKOS_BENCH_MARK(bm_frtail);
                 wq_confirm_resume(c, epoch);
                 rc = static_cast<int32_t>(c->wait_result);
+#if KICKOS_AMP_NODE
+                if (c->far_hold != 0u)
+                {
+                    rc = far_call_land(c, buf, badge_out, rc);
+                }
+#endif
                 {
                     // Consume bits after the resume barrier. A deferred switch may not have
                     // run when wq_block returns. The barrier needs interrupts enabled so that
@@ -1061,7 +1202,7 @@ namespace kickos
 #endif
 
     // Called from the doorbell handler with local interrupts masked.
-    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
+    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
                                     uint32_t len)
     {
         Thread* caller =
@@ -1070,7 +1211,6 @@ namespace kickos
         {
             return false;
         }
-        // Match the source node as well as the parked call state.
         Endpoint const* const e = caller->wait_far_endpoint();
         if (e == nullptr or endpoint_far_node(e) != from)
         {
@@ -1081,28 +1221,18 @@ namespace kickos
         {
             n = caller->call_rx_cap; // reply truncation into the caller's capacity
         }
-        intptr_t result = static_cast<intptr_t>(n);
-        bool const copy_ok = kaccess_to_user(ipc_buf_space(caller), caller->ipc.buf, payload, n);
-        // Report copy failure through the local TCB, not an assertion or wire errno.
-        if (not copy_ok)
-        {
-            result = -KOS_EFAULT;
-            amp::count_deliver_fault();
-        }
-        caller->wait_result = result;
+        caller->far_hold = hold + 1u;
+        caller->wait_result = static_cast<intptr_t>(n);
         caller->call_state = CALL_NONE;
         caller->clear_wait_edge();
         sched::wake(caller);
         return true;
     }
 
-    // Deliver a call from another kernel. Runs in the doorbell handler with
-    // local interrupts masked; takes no lock.
-    // True retains the call slot until reply. False releases it immediately and
-    // requires dispatch_call to send a zero-length tagged reply, so the far
-    // caller cannot remain blocked. Do not send a second reply here.
+    // Runs in the doorbell handler with local interrupts masked; takes no lock and copies
+    // nothing. False refuses before any receiver is popped, and dispatch_call answers it.
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
-                                   void const* payload, uint32_t len, uint32_t slot)
+                                   uint32_t len, uint32_t slot)
     {
         uint16_t const bound = amp::port_endpoint(port);
         // The binding holds the endpoint slot alive, so lookup uses its index.
@@ -1111,71 +1241,27 @@ namespace kickos
         {
             return false;
         }
-        Thread* const w = wq_pop_highest(e->recv_waiters);
-        if (w == nullptr)
+        if (wq_peek_highest(e->recv_waiters) == nullptr)
         {
             return false;
         }
-
-        // Always complete a receiver removed from its queue. If it cannot receive a
-        // reply capability, discard the record and let the caller release the slot.
-        uint32_t rcap = KCAP_INVALID;
-        bool held = false;
-        // Require metadata space before creating a reply capability.
-        uint32_t record = amp::FAR_RECORD_NONE;
-        if (w->ipc.badge_out != 0)
+        // BEFORE THE POP: a receiver once popped is completed, and it can only land a call its
+        // record holds, the landing reading the payload out of that slot.
+        uint32_t const record = amp::inbound_seat(from, slot, tag);
+        if (record == amp::FAR_RECORD_NONE)
         {
-            record = amp::inbound_seat(from, slot, tag);
+            return false;
         }
-        if (record != amp::FAR_RECORD_NONE)
-        {
-            if (cap_install_far_reply(w, record, &rcap) == 0)
-            {
-                held = true;
-            }
-            else
-            {
-                amp::inbound_forget(record);
-                rcap = KCAP_INVALID;
-            }
-        }
-
+        Thread* const w = wq_pop_highest(e->recv_waiters);
         size_t n = len;
         if (w->ipc.len < n)
         {
             n = w->ipc.len; // datagram truncation, as for any sender
         }
-        intptr_t result = static_cast<intptr_t>(n);
-        bool const copy_ok = kaccess_to_user(ipc_buf_space(w), w->ipc.buf, payload, n);
-        // Mint a reply capability only after the request payload has been copied.
-        uint32_t disclose = rcap;
-        if (not copy_ok)
-        {
-            disclose = KCAP_INVALID;
-        }
-        bool const info_ok =
-            not endpoint_far_blind_take()
-            and write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, disclose);
-        // On either copy failure, revoke the mint and wake the removed receiver with
-        // EFAULT. Return false so dispatch_call sends the single failure reply.
-        // Do not assert on a buffer fault in this masked handler.
-        if (not copy_ok or not info_ok)
-        {
-            result = -KOS_EFAULT;
-            if (held)
-            {
-                bool const undone = cap_uninstall_far_reply(w, rcap, record);
-                KICKOS_ASSERT(undone);
-                (void)undone;
-                amp::inbound_forget(record);
-                held = false;
-            }
-            // Count one arrival even if both copies fail.
-            amp::count_deliver_fault();
-        }
-        w->wait_result = result;
+        w->far_hold = record + 1u;
+        w->wait_result = static_cast<intptr_t>(n);
         sched::wake(w);
-        return held;
+        return true;
     }
 
     // Kernel initialization only, with IrqLock held. The static configuration already
@@ -1194,7 +1280,6 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        // Create a local endpoint and bind it to the peer service port.
         // Keep separate references for the capability and binding: port_bind stores
         // a slot index, so the binding must keep that slot alive after the cap closes.
         kernel().endpoint_refs[i] = 2;
@@ -1219,7 +1304,6 @@ namespace kickos
     void amp_ports_seat(Thread* root)
     {
         IrqLock lock;
-        // Verify that this core matches the shared image configuration.
         KICKOS_ASSERT(amp::self() == amp::SELF_NODE);
         for (uint32_t i = 0; i < amp::PORT_COUNT; i++)
         {

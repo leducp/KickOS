@@ -131,9 +131,19 @@ extern "C"
     }
 #endif
 
-    void arch_ipi_resched_self(void)
+    // A raise naming the calling core is its own; the rest is a cross-core raise.
+    void arch_ipi_raise(uint32_t cores)
     {
-        kickos::testfix::g_ipi_self_raises++;
+        uint32_t const self = 1u << kickos::testfix::g_core;
+        if ((cores & self) != 0)
+        {
+            kickos::testfix::g_ipi_self_raises++;
+        }
+        if ((cores & ~self) != 0)
+        {
+            kickos::testfix::g_ipi_sends++;
+            kickos::testfix::g_ipi_send_mask |= cores & ~self;
+        }
     }
 
     void arch_ipi_send(uint32_t cores)

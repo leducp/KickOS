@@ -3902,6 +3902,16 @@ M8.8. None is a regression this milestone introduced unless it says so.
       **LANDED AT M9.2**: per-core ready queues, and a displaced thread is placed by asking its
       own core first and reading the other cores' ready bitmaps only when that core does not take
       it; the switch has not been re-priced against the +61 above.
+      **RE-PRICED AT M9.4 S1.4**, the same method on `qemu-arm64-smp` at four kernel cores,
+      MinSizeRel: placing a displaced wide-mask thread that is the sole member of its list, with
+      no core strictly below and nobody asked, plus the pass-end seat, retires 210 instructions
+      at the M9.2 merge and 352 once placement reads the level cell. Each of the three candidate
+      peers costs 31 against its bitmap and 75 against its cell and the four ring indices toward
+      it, with no entry in flight.
+      **AT THE M9.4 TIP: 169**, the same method on `qemu-arm64-smp`, MinSizeRel: a candidate whose
+      cell is not strictly below the best so far costs its cell read alone, before any ring index
+      (`2026-09-24-m94-perf.md`, "Pass over a placement candidate whose published level is already
+      too high").
 
 
 ## M8.9 -- IPC structure
@@ -4275,6 +4285,13 @@ below, not duplicated in this section.
       **REASSIGNED TO M9.3 AT M8.13, AND TO M9.4 WHEN M9.3 FUSED INTO M9.2.** Under one lock the
       push needed no ring, so the ring lifetime this mechanism waits on is designed with the rings
       M9.4 lands before the scheduler leaves the lock.
+      **LANDED IN M9.4.** The doorbell service copies neither payload: a far call's receiver and a
+      far reply's caller land it out of the slot they hold, in their own syscall, and every exit
+      of either gives the hold back. The reply ring gained the call ring's ordered reclamation,
+      its credit raise moving to the tail's advance. The echo port is the one copy left in the
+      service, no thread receiving it. The masked span was not re-taken on silicon: what the
+      linked images show is the service body's frame, 328 bytes to 64 on armv7m and 336 to 96 on
+      armv8a.
 
 - [x] **PERF-8: THE ARMV8A SWITCH SAVES AND RESTORES ALL 32 Q REGISTERS (512 BYTES)
       UNCONDITIONALLY, VOLUNTARY OR NOT, AND THE FILE RULES OUT A CALLEE-SAVED SUBSET.**
@@ -4584,6 +4601,13 @@ recorded against the milestone that owns the question, so neither rides M8.1 as 
       **RE-READ AT M9.2: STILL CLOSED.** The queues landed under the one kernel lock, which the map
       edit holds from its syscall and every install holds in `switch_book` and `sched::start`.
       **THE RE-READ MOVES TO M9.4**, the stage where the local scheduler leaves that lock.
+      **CLOSED THROUGH M9.4 STAGE 1, AND STAYS CLOSED.** Stage 2 (the local scheduler leaving the
+      lock) was REFUSED by the stop condition (R0, `2026-09-24-m94-silicon.md`): ceiling(W3)
+      0.010%, ceiling(W2) 0.006%, both far under the 5% gain the thresholds require. The rings and
+      per-core ready queues that stage 1 landed still hold the map edit and every install under the
+      one kernel lock, exactly as at M9.2, so this window stays shut. The three windows
+      `docs/design-m9.4-rings.md` section F names open only if the lock ever leaves the switch
+      half of a pass, which it has not.
 
 ## M8.12 -- the M8 exit measurement, frozen
 
@@ -5166,12 +5190,15 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**THE LEDGER IS EIGHT ROWS AND M9.0 HAS LANDED, SO THE REST ARE ASSIGNED AND UNAPPROVED.** `roadmap.md` assigns
-M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived from the
-mask, per-core ready queues, the wait-edge rule), M9.3 (the per-pair rings), M9.4 (the local
-scheduler leaves the lock), M9.5 (same-owner IPC leaves the lock), M9.6 (the console contract
-across cores) and M9.7 (write-up and exit measurement), and it carries each stage's content, its
-evidence gate and the rulings behind it -- including the ones a session might otherwise reopen:
+**M9.0 HAS LANDED. M9.4 IS NOW DECIDED; THE REST ARE STILL ASSIGNED AND UNAPPROVED.** `roadmap.md`
+assigns M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived
+from the mask, per-core ready queues, the wait-edge rule; M9.3 fused into it, under one lock the
+push needing no ring), M9.4 (the per-pair rings, landed under the lock inside stage 1's own
+regression budget; the local scheduler leaving the lock was REFUSED by the stop condition, R0, on
+`esp32-wroom-benchsmp` at two cores), M9.5 (same-owner IPC leaves the lock), M9.6 (the console
+contract across cores), M9.7 (write-up and exit measurement) and M9.8 (the ESP32-C6 as an
+unattended AMP pair), and it carries each stage's content, its evidence gate and the rulings behind
+it -- including the ones a session might otherwise reopen:
 ownership and the rings land UNDER the lock in both outcomes, an endpoint's owner is the home of its
 first receiver, cross-core inheritance is a ring kind with a ceiling as an admission rule, a line
 follows its claimer and a waiter follows its line, eight cores is a scenario and not a target, and
@@ -5335,6 +5362,35 @@ owed.
       names and status codes and never content, so two different edits to one tracked file keyed
       the same stamp while the header promised a tree byte for byte. A `git diff HEAD` cksum sits
       beside it now; untracked files remain keyed by name, which is stated rather than implied.
+
+- [x] **FIVE FURTHER M9.4 FINDINGS CLOSE WITH THE MERGED SCHEDULER.** P6 (the doorbell payload
+      copy) already carries its own LANDED line above, in the M8.11 section.
+      **THE LX6 REENT/BOOT PANIC.** `2026-09-24-m94-silicon.md` found `esp32-wroom-smp` panic at
+      boot (`assert: admissible or t == &kernel().idle_tcb`, `kernel/thread/thread.cc:291`) on a
+      tree carrying the dynamic-reent newlib above one LX6 core: every spawn now owes
+      `tls_stack_admissible` once `tls_block_size()` is non-zero, and the idle stacks were never
+      charged the carve. **CLOSED** by "Refuse at link an idle stack its thread-local block would
+      overrun", "Keep the thread-local carve off the spawn path's stack frame" and "Boot every
+      core's idle thread on an LX6 image above one kernel core": each core's idle thread now takes
+      its stack without a thread-local block, a host test runs the stack admission at that
+      posture, and any other thread's stack is refused at link if the carve cannot fit it.
+      **THE STRIDE WALLS.** `ARCH_TLS_FROM_SP`'s power-of-two stride requirement, previously forced
+      on LX6 and RV32IMAC, is gone: "Admit a caller stack of any size on LX6 at every core count"
+      and "Admit a caller stack of any size on RV32IMAC" seat the thread pointer from the context
+      by subtraction on both, as armv8a already did, so a caller may hand in a stack of any size at
+      any 16-byte boundary; each commit's self-test runs a thread on a stack that is neither a
+      power of two nor stride-aligned.
+      **THE ARMV8-A TRAP GATE.** "Measure the ARMv8-A trap stacks and size idle from the
+      measurement" and "Re-derive the ARMv8-A and LX6 trap figures over the merged scheduler"
+      re-measure the trap red zone on both backends over the merged M9.4 scheduler, closing the
+      same staleness `docs/design-m9.4-rings.md` section C records for the LX6 figure ("both are
+      stale on master").
+      **TWO CALL CYCLES BROKEN FOR THE ARMV8-A RED-ZONE GATE.** "Write a stuck GICv3 refusal
+      straight to the device" (the refusal no longer re-takes the kernel lock from inside that
+      lock's acquire poll) and "Raise an AMP node's own doorbell instead of servicing it inline"
+      (the AMP node service is no longer re-entered from its own send). **AND ONE ARM RESTATED
+      AGAINST THE NEW CONTRACT**: "Hold only the released cores to a doorbell service floor", since
+      a reschedule raise owes no rendezvous answer and the primary core may then serve none.
 
 
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
@@ -8517,7 +8573,7 @@ coalesced drain reproduces the intended order instead of inverting it.
       unexercised.** Arm 19 now reaches hop two; nothing reaches the bound. A third mutex and a
       fifth worker would do it, and the arm is already at the 4-worker pool ceiling, so this wants
       its own arm rather than an extension of that one.
-- [ ] **Arms whose order assertion still rests on a DURATION MARGIN, not on a deadline
+- [x] **Arms whose order assertion still rests on a DURATION MARGIN, not on a deadline
       ordering.** These do not invert under a coalesced drain -- every one of them satisfies
       "higher priority implies earlier deadline", which is why they are not the defect above --
       but each still needs one wall-clock span to outlast another, so a host stall past the 30 ms
@@ -8564,6 +8620,17 @@ coalesced drain reproduces the intended order instead of inverting it.
         establishes; it asserts progress rather than order now. See the section below.
       Preferred repair is the same as above, a handoff; where a span is genuinely the subject,
       the arm should at least detect its own vacuity instead of passing.
+      **RESOLVED 2026-09-24 (M9.4).** `call_donation_slow` is staged by a handoff on one
+      semaphore and carries no duration left: the caller and the spoiler park on it before the
+      server first runs, the server's first post readies the caller, which calls while the server
+      is awake, and its second post, after the recv has minted and boosted, readies the spoiler.
+      Under 30 busy loops on this 24-core box it went vacuous 13 of 48 runs before and 0 of 48
+      after, with no failure either side, and it still fails 4 of 4 with the recv-side mint boost
+      removed and 4 of 4 with the reply-donor term dropped from the priority funnel. Every other
+      arm listed here reports a lost window as vacuity instead of passing or failing through it:
+      `call_timeout_revert` and the three other donation arms on their spoiler's due instant
+      against the boosted span, `cap_reply_bound_fast`/`_slow` on the life of the first reply
+      capability, and `mutex_owner_died` on its owner's hold.
 
 **Why the remaining arms are safe, so the next reader can re-derive it rather than re-audit.**
 Every arm was checked against the inverting shape "a lower-priority worker establishes a
@@ -9440,7 +9507,7 @@ was read or measured.
       small arch/chip seam, not a kernel restructure". Shape of the fix: make the boards search
       path a LIST a consumer can extend, and let the board include-dir lookup search the same
       list. NOT M4.7 scope -- recorded so it does not evaporate. Read directly.
-- [ ] **Round-robin refunds a full quantum after a long preemption.**
+- [x] **Round-robin refunds a full quantum after a long preemption.**
       `kernel/sched/policy_fifo_rr.cc:114-127`, `policy_on_switch_in`: a slice survives the switch
       only while `slice_deadline_ns` is still in the future, so a preemption LONGER than the
       remaining quantum falls through to `arm_slice` and the thread is granted a fresh full one.
@@ -9456,6 +9523,10 @@ was read or measured.
       defect to fix, then, but an over-broad claim to bound: the invariant promises no
       equal-priority peer waits longer than one quantum of REAL time, and with a preemption longer
       than the remaining quantum the peer's actual wait is preemption plus quantum.
+      **FIXED AT M9.4** by "Expire a round-robin slice that ran out while its thread was
+      preempted": a deadline that passed while the thread was preempted is moved to the soonest
+      instant the timer can take and expires there, so the peer waits the preemption and not a
+      fresh quantum on top. `rr-quantum-is-wall-clock` states it and `tests/unit/rrslice` runs it.
 - [ ] **The concurrent capability-teardown path is never exercised.**
       `kernel/include/kickos/cap.h:326-328` states that an RR slice expiring in `sched::tick_rr` is
       the only thing that switches a dying thread out at a chunk boundary, and so the only way two
@@ -12550,13 +12621,16 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       being unwired and dropped by `--gc-sections`, so this is owed by the first caller that needs
       it. Raising the baseline is a real option and not a free one: the toolchain's multilibs are
       named for exact march strings, so a change is measured against them rather than assumed.
-- [ ] **`errnoprobe`'s decline is now REPRODUCED rather than argued, and the fix it names is
-      unchanged.** The registration comment said running it above one kernel core "would assert a
-      gate that can never pass"; that had never been tested, arm64 not registering it above one
-      core and no other four-core board registering it at all. The four-core RV64 board ran it and
-      got the seat's own failure, and the same app on the four-core arm64 preset got the identical
-      one. The seat belongs in thread-local storage; until then both registrations carry the
-      core-count clause.
+- [x] **`errnoprobe` passes above one kernel core, and thread-local storage was not its fix.**
+      The four-core RV64 board and the four-core arm64 preset both reported the seat's own failure:
+      the pinned aarch64-none-elf and riscv32-none-elf newlib are built without `__DYNAMIC_REENT__`
+      and without `_REENT_THREAD_LOCAL`, so their `libc.a` reads `_impure_ptr` directly and never
+      asks a hook a thread pointer could answer. **RESOLVED by ruling: our own newlib with dynamic
+      reent** (`conan/newlib`, the sourceware 4.6.0.20260123 release both toolchains bundle),
+      linked on every armv8a and rv64imac image in place of the toolchain's, its `__getreent`
+      answered per thread: the TLS control block's first word on armv8a, as lx6 does above one
+      core, and `tp` itself on rv64imac. Both registrations lost their core-count clause and
+      `reent_per_thread_cores` runs on both arches.
 
 - [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
       into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says

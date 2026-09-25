@@ -39,6 +39,7 @@ namespace kickos
         uint32_t g_sends = 0;
         uint32_t g_sent_mask = 0;
         uint32_t g_owed_at_send[CORES] = {};
+        uint32_t g_rendezvous = 0;
 
         uint32_t raise_total()
         {
@@ -75,7 +76,13 @@ namespace kickos
             {
                 g_owed_at_send[core] = 0;
             }
+            g_rendezvous = 0;
         }
+    }
+
+    // The lock's release publishes what the scheduler staged, and this gate stages nothing.
+    void sched_flush_owed(uint32_t)
+    {
     }
 
     void kpanic(char const* msg)
@@ -128,35 +135,45 @@ int arch_kernel_lock_held(void)
 }
 #endif
 
-// The cross-core raise the ask goes over. The cell is sampled from the target's seat, which is
-// what a real target's absorbing consumer would read: the raise is an edge and the poll in an
-// acquire loop acknowledges it without entering any scheduler, so the ask has to already stand
-// here or the edge can be absorbed before anything says one was owed.
-void arch_ipi_send(uint32_t cores)
+void arch_ipi_send(uint32_t)
 {
-    kickos::reschedfix::g_sends++;
-    kickos::reschedfix::g_sent_mask |= cores;
-    uint32_t const was = kickos::reschedfix::g_core;
-    for (uint32_t core = 0; core < kickos::reschedfix::CORES; core++)
-    {
-        if ((cores & (1u << core)) == 0)
-        {
-            continue;
-        }
-        kickos::reschedfix::g_core = core;
-        if (kickos_kernel_core_resched_owed() != 0)
-        {
-            kickos::reschedfix::g_owed_at_send[core] = 1u;
-        }
-    }
-    kickos::reschedfix::g_core = was;
+    kickos::reschedfix::g_rendezvous++;
 }
 
-// Where the doorbell would be raised on this core. An armed action fires here and is disarmed
-// first, so an action that asks again cannot arm itself.
-void arch_ipi_resched_self(void)
+// The raise, split the way a target sees it. A peer's bit is the cross-core raise the ask goes
+// over, and its cell is sampled from the target's seat, which is what a real target's absorbing
+// consumer would read: the raise is an edge and a poll acknowledges it without entering any
+// scheduler, so the ask has to already stand here or the edge can be absorbed before anything
+// says one was owed. The caller's own bit is where its doorbell is raised on itself; an armed
+// action fires there and is disarmed first, so an action that asks again cannot arm itself.
+void arch_ipi_raise(uint32_t cores)
 {
-    kickos::reschedfix::g_raised[kickos::reschedfix::g_core]++;
+    uint32_t const was = kickos::reschedfix::g_core;
+    uint32_t const self = 1u << was;
+    uint32_t const peers = cores & ~self;
+    if (peers != 0)
+    {
+        kickos::reschedfix::g_sends++;
+        kickos::reschedfix::g_sent_mask |= peers;
+        for (uint32_t core = 0; core < kickos::reschedfix::CORES; core++)
+        {
+            if ((peers & (1u << core)) == 0)
+            {
+                continue;
+            }
+            kickos::reschedfix::g_core = core;
+            if (kickos_kernel_core_resched_owed() != 0)
+            {
+                kickos::reschedfix::g_owed_at_send[core] = 1u;
+            }
+        }
+        kickos::reschedfix::g_core = was;
+    }
+    if ((cores & self) == 0)
+    {
+        return;
+    }
+    kickos::reschedfix::g_raised[was]++;
     uint32_t const held = kickos::reschedfix::g_acquired - kickos::reschedfix::g_released;
     if (held > kickos::reschedfix::g_held_at_raise)
     {
@@ -169,5 +186,4 @@ void arch_ipi_resched_self(void)
         action();
     }
 }
-
 }

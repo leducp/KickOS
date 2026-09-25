@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Test scaffolding for the shared window and the doorbell that drives it (KOS_SYS_AMP_PROBE).
-// Each op runs a whole scenario and answers a number.
 //
 // Gated on KICKOS_AMP_NODE and never on KICKOS_HAVE_ASPACE: a node's kernel need not translate.
 
@@ -17,6 +16,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/sys/abi.h>
@@ -660,6 +660,15 @@ namespace kickos
                 g_peer_seat_was = ARCH_IPI_SEAT_NONE;
                 return 1;
             }
+            case KOS_AMP_OP_CALL_HELD:
+            {
+                IrqLock lock;
+                if (not amp_probe_caller_ok(sched::current()))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                return amp::forge_call_held(amp_peer_node());
+            }
             case KOS_AMP_OP_MINT:
             {
                 IrqLock lock;
@@ -678,6 +687,22 @@ namespace kickos
                     (void)handle_close(c, cap);
                 }
                 return static_cast<uint64_t>(static_cast<int64_t>(rc));
+            }
+            case KOS_AMP_OP_PORT_PARKED:
+            {
+                IrqLock lock;
+                uint32_t const port = amp_self_port();
+                if (port >= amp::PORT_MAX)
+                {
+                    return 0;
+                }
+                Endpoint* const e =
+                    kernel().endpoints.at(static_cast<int>(amp::port_endpoint(port)));
+                if (e == nullptr or wq_peek_highest(e->recv_waiters) == nullptr)
+                {
+                    return 0;
+                }
+                return 1;
             }
             case KOS_AMP_OP_FAR_PARKED:
             {

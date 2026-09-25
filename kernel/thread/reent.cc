@@ -60,9 +60,8 @@ namespace kickos
         }
         s_seam = *src;
 
-        // REFUSED AT BOOT, because the fallback below is an ALIAS and not an error: a
-        // descriptor short of one bank per instance resolves two kernels' slots to one
-        // struct _reent, so they share an errno and nothing on any later path says so.
+        // The out-of-range fallback in reent_state_for_slot ALIASES the process-wide state, so a
+        // short descriptor would give two kernels' slots one errno with nothing to say so.
         size_t const banked =
             static_cast<size_t>(KICKOS_MAX_INSTANCES) * KICKOS_THREAD_SLOTS;
         if (s_seam.count < 0 or static_cast<size_t>(s_seam.count) < banked)
@@ -78,7 +77,6 @@ namespace kickos
         {
             return s_seam.shared;
         }
-        // The descriptor already guarantees one bank per instance; check the slot index.
         size_t const index =
             static_cast<size_t>(kickos_instance_index()) * KICKOS_THREAD_SLOTS
             + static_cast<size_t>(slot);
@@ -91,16 +89,12 @@ namespace kickos
 
     void reent_prime(struct arch_aspace* space, void* state)
     {
-        // s_seam.shared MUST stay pristine: reent_state_for_slot hands it out only for a TCB
-        // outside the pool, and seating it on a thread that prints would make every later
-        // prime inherit that thread's leftovers.
+        // s_seam.shared MUST stay pristine: every later prime copies it.
 #if defined(KICKOS_ENABLE_SELFTEST)
         note_write();
 #endif
 #if KICKOS_HAVE_ASPACE
-        // Both ends are app-half in one space, which is ep_copy's shape. They must be
-        // disjoint, as one space requires: the slot array and the process-wide state are
-        // different objects.
+        // ep_copy requires disjoint ends, which the slot array and the process-wide state are.
         if (not ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
                         reinterpret_cast<uintptr_t>(s_seam.shared), s_seam.stride))
         {
@@ -112,6 +106,15 @@ namespace kickos
 #endif
     }
 
+#if KICKOS_REENT_IN_TCB
+    void reent_seat_tcb(void* tls, void* state)
+    {
+        // TCB word 0: the TLS payload starts KICKOS_ARCH_TLS_TCB above the thread pointer.
+        void** const word = static_cast<void**>(__builtin_assume_aligned(tls, sizeof(void*)));
+        __builtin_memcpy(word, &state, sizeof(state));
+    }
+#endif
+#if not KICKOS_REENT_PER_THREAD
     void reent_seat(struct arch_aspace* space, void* state)
     {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -125,15 +128,15 @@ namespace kickos
             thread_cancel_escalate(sched::current(), CANCEL_SLAY);
         }
 #else
-        // -ffreestanding, so the ordinary memcpy name is never expanded and a pointer-width
-        // copy would lower to a call on every switch. The descriptor carries the word as
-        // void*, hence the alignment hint.
+        // __builtin_memcpy: under -ffreestanding a plain memcpy would lower to a call on every
+        // switch.
         (void)space;
         void** const word =
             static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));
         __builtin_memcpy(word, &state, sizeof(state));
 #endif
     }
+#endif
 }
 
 #endif

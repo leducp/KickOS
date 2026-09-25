@@ -5,7 +5,8 @@
 //
 //   nm --undefined-only <the object> | comm -23 - <its defined symbols>
 //
-// which is arch_cpu_id, arch_ipi_send and endpoint_far_reply_deliver at four nodes; kmemcpy
+// which is arch_cpu_id, arch_ipi_send, arch_ipi_fence, endpoint_far_call_deliver and
+// endpoint_far_reply_deliver at four nodes; kmemcpy
 // folds to memcpy where no address space is enforced. One thread of execution runs the arms,
 // so the doorbell only records: servicing it here would echo a payload an arm has not yet
 // inspected.
@@ -33,6 +34,7 @@ namespace kickos
         uint32_t g_reply_seq = 0;
         uint32_t g_reply_len = 0;
         uint8_t g_reply_first = 0;
+        uint32_t g_reply_hold = 0;
 
         void reset()
         {
@@ -78,18 +80,21 @@ namespace kickos
             g_reply_seq = 0;
             g_reply_len = 0;
             g_reply_first = 0;
+            g_reply_hold = 0;
         }
     }
 
     // No endpoint layer here: the window's own arms bind no port, so this answers as an
     // unbound one.
-    bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, void const*,
-                                   uint32_t, uint32_t)
+    bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, uint32_t,
+                                   uint32_t)
     {
         return false;
     }
 
-    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, void const* payload,
+    // A caller that takes the reply HOLDS it: releasing it is the arm's, as landing it is a
+    // resumed caller's.
+    bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
                                     uint32_t len)
     {
         ampfix::g_replies++;
@@ -100,7 +105,11 @@ namespace kickos
         ampfix::g_reply_first = 0;
         if (len != 0)
         {
-            ampfix::g_reply_first = static_cast<uint8_t const*>(payload)[0];
+            ampfix::g_reply_first = static_cast<uint8_t const*>(amp::hold_payload(hold))[0];
+        }
+        if (ampfix::g_reply_answer)
+        {
+            ampfix::g_reply_hold = hold;
         }
         return ampfix::g_reply_answer;
     }

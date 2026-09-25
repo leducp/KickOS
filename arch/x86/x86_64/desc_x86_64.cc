@@ -8,6 +8,7 @@
 #include <kickos/arch/desc.h>
 #include <kickos/arch/portio.h>
 #include <kickos/arch/trap.h>
+#include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_com1.h>
 
 #include <stdint.h>
@@ -58,6 +59,11 @@ namespace kickos::x86_64
         constexpr unsigned stack_bytes = 8192;
 
         constexpr unsigned nmi_stack_bytes = 4096;
+
+        static_assert(stack_bytes >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_IST,
+                      "the double-fault slot cannot hold the entry and its report");
+        static_assert(nmi_stack_bytes >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_IST,
+                      "the NMI and machine-check slots cannot hold the entry and its report");
 
         alignas(16) uint8_t g_kernel_stack[stack_bytes];
         alignas(16) uint8_t g_fault_stack[stack_bytes];

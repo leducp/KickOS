@@ -37,7 +37,11 @@ namespace kickos
         READY,    // on a ready list
         RUNNING,
         BLOCKED,  // parked: on a wait queue, on the timer delta list, or on neither
-        EXITED
+        EXITED,
+#if KICKOS_KERNEL_CORES > 1
+        // Runnable and on no ready structure: staged toward queue_core, which alone links it.
+        HANDED
+#endif
     };
 
     enum class Policy : uint8_t
@@ -87,8 +91,9 @@ namespace kickos
     {
         CANCEL_NONE = 0,
         CANCEL_KILL = 1, // cooperative: dies at its next syscall entry, keeps its window
-        // Its resume is claimed: it executes no further unprivileged instruction, since
-        // switch_to rebuilds the incoming context before arch_switch.
+        // Its resume is claimed: from its next switch-in it executes no further unprivileged
+        // instruction, switch_to rebuilding the incoming context before arch_switch. A victim
+        // running on a core is taken off it by that core's next pass.
         CANCEL_SLAY = 2
     };
 
@@ -147,8 +152,8 @@ namespace kickos
 
         char name_buf[KICKOS_THREAD_NAME_MAX] = {};
         char const* name = nullptr; // -> name_buf (set in thread_create); never a user pointer
-        uint8_t prio = 0;      // Effective priority: the only field sched/policy/wq read.
-                               // Sole writer is sched::set_prio (re-seats READY threads).
+        uint8_t prio = 0;      // Effective priority. Sole writer is sched::set_prio. Above one
+                               // core a ready list is keyed on rq_prio instead.
         uint8_t base_prio = 0; // assignment anchor; PI raises `prio` above it, never below
         Policy policy = Policy::FIFO;
         ThreadState state = ThreadState::INACTIVE;
@@ -174,12 +179,19 @@ namespace kickos
         // Spawn validates through sched_admit_mask; zero at the ABI selects task defaults.
         // A task grant cannot narrow once it has members. A zero field means an unused slot.
         uint32_t affinity = 0;
-        // The core whose ready structure holds this thread, its home. `affinity` says where a
-        // thread may run, this says where its scheduler state lives, and placement keeps it
-        // there unless the placement invariant moves it; the two coincide only when the mask
-        // is one bit. Written by publish_ready (sched.cc) alone, always inside `affinity`, and
-        // meaningless while blocked: a parked thread's waker chooses it afresh.
+        // The core whose ready structure holds this thread, its home, or the core a HANDED
+        // thread is staged toward. `affinity` says where a thread may run, this says where its
+        // scheduler state lives, and placement keeps it there unless the placement invariant
+        // moves it; the two coincide only when the mask is one bit. Written by the scheduler's
+        // publish alone (sched.cc), inside `affinity` when written, and meaningless while
+        // blocked: a parked thread's waker chooses it afresh.
         uint8_t queue_core = 0;
+        // The priority the linking core keyed this thread's ready list on. `prio` runs ahead of
+        // it while a request to that core is in flight.
+        uint8_t rq_prio = 0;
+        // Whether a RESEAT entry naming this pool slot is in some ring. It belongs to the SLOT,
+        // so a zeroing for the next occupant keeps it (thread_slot_keep).
+        uint8_t reseat_owed = 0;
         static_assert(KICKOS_KERNEL_CORES <= 32,
                       "a core set is a 32-bit mask, as the doorbell's core mask is "
                       "(arch_ipi_send) and as an AMP node mask is (kickos/ampwindow.h). "
@@ -191,8 +203,7 @@ namespace kickos
         // The notification this thread is bound to, by generational handle biased by one, so
         // the zero a fresh TCB carries means none (kickos/notify.h says why zero and not -1).
         // The pending bits live in that object and not here, so one word names it whatever
-        // its badge space. Same width and same slot as the word it replaced, so
-        // thread_scalar_bytes() and the TCB layout do not move. Written under IrqLock.
+        // its badge space. Written under IrqLock.
         int32_t notify_bound = KOS_NOTIFY_UNBOUND;
         uint64_t slice_deadline_ns = 0;
 
@@ -257,6 +268,13 @@ namespace kickos
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
         uint8_t call_frame_parked : 1 = 0;
         WaitKind wait_kind = WAIT_NONE;
+#if KICKOS_AMP_NODE
+        // The amp hold this thread must land or give back, biased by one so a fresh TCB holds
+        // none. Written by the doorbell service while the thread is parked and by the thread
+        // alone afterwards; every exit gives it back (cap_teardown), a slain thread never
+        // reaching the receive or call that would have landed it.
+        uint32_t far_hold = 0;
+#endif
 
         // The object the wait edge names, valid only for the kinds that document one.
         // Read it through the accessors below and never raw: an untagged cast is how a
@@ -438,6 +456,15 @@ namespace kickos
             }
         }
 #endif
+#if KICKOS_AMP_NODE
+        // Thread::far_hold: free in the padding before wait_obj where a pointer is 8. On a
+        // 32-bit target the TCB is closed, so it costs its width plus the tail padding back to
+        // uint64_t's alignment: 8 on armv7m, measured.
+        if (sizeof(void*) == 4)
+        {
+            bytes = bytes + alignof(uint64_t);
+        }
+#endif
         // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
         // stack_base/stack_size, so neither adds padding on any target.
         return bytes + sizeof(uintptr_t) + sizeof(size_t);
@@ -501,6 +528,25 @@ namespace kickos
     // declines, being set once the victim is inside its own teardown. This must stay the one
     // copy: the placement answer, the switch that owes the pass and the redirect that takes it
     // have to agree, and a second spelling beside them is the copy that goes stale.
+#if KICKOS_KERNEL_CORES > 1
+    // What a TCB's zeroing for the slot's next occupant must carry across: the RESEAT byte, an
+    // entry naming the slot being free to outlive its previous occupant in a ring.
+    struct ThreadSlotKeep
+    {
+        uint8_t reseat_owed;
+    };
+
+    inline ThreadSlotKeep thread_slot_keep(Thread const* t)
+    {
+        return ThreadSlotKeep{t->reseat_owed};
+    }
+
+    inline void thread_slot_restore(Thread* t, ThreadSlotKeep keep)
+    {
+        t->reseat_owed = keep.reseat_owed;
+    }
+#endif
+
     inline bool thread_slay_claim_pending(Thread const* t)
     {
         return t->cancel_kind == CANCEL_SLAY and not t->dying;
@@ -769,9 +815,8 @@ namespace kickos
             }
         }
 
-        // Index of a TCB in this pool, or -1 if it is not a pool slot, which today is idle and
-        // nothing else. Compares addresses as integers: subtracting pointers that may not point
-        // into slots[] is UB.
+        // Index of a TCB in this pool, or -1 if it is not a pool slot (idle). Compares addresses
+        // as integers: subtracting pointers that may not point into slots[] is UB.
         int index_of(Thread const* t) const
         {
             uintptr_t const base = reinterpret_cast<uintptr_t>(&slots[0]);

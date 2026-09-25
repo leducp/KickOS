@@ -257,6 +257,17 @@ namespace
                "reads clean, and nothing is left to say a reschedule was ever owed";
     }
 
+    TEST_F(ReschedOwed, the_ask_is_a_bare_raise_that_owes_no_rendezvous)
+    {
+        ask_as(CORE_A, 1u << CORE_B);
+
+        ASSERT_EQ(fix::g_sends, 1u) << "fixture: the ask raised core B";
+        EXPECT_EQ(fix::g_rendezvous, 0u)
+            << "the ask went over the rendezvous send, which bumps a request its target must "
+               "answer from the service body: every lock chain that can reach the ask then pays "
+               "the whole poll below it";
+    }
+
     TEST_F(ReschedOwed, the_ask_is_what_a_raise_absorbed_by_a_poll_survives_on)
     {
         ask_as(CORE_A, 1u << CORE_B);
@@ -273,14 +284,14 @@ namespace
             << "and the dispatch the restored raise wakes must still find the ask standing";
     }
 
-    TEST_F(ReschedOwed, the_ask_raises_every_core_it_names)
+    TEST_F(ReschedOwed, the_ask_raises_every_peer_it_names_and_not_its_caller)
     {
         ask_as(CORE_A, (1u << CORE_A) | (1u << CORE_B));
 
-        EXPECT_EQ(fix::g_sent_mask, (1u << CORE_A) | (1u << CORE_B))
-            << "the raise must name the whole mask asked: the backend services the calling "
-               "core's own bit itself rather than raising it, and a mask short of that bit "
-               "leaves the caller's own request cell unbumped";
+        EXPECT_EQ(fix::g_sent_mask, 1u << CORE_B) << "the peer the ask named was not raised";
+        EXPECT_EQ(fix::g_raised[CORE_A], 0u)
+            << "the ask raised its own caller, which then takes a doorbell at its unmask that "
+               "finds nothing owed: the caller reaches its own scheduler on the way out";
         EXPECT_NE(owed_as(CORE_B), 0) << "the peer it named is owed a reschedule";
         EXPECT_EQ(owed_as(CORE_A), 0)
             << "the asking core owes itself nothing: it is already in the kernel and reaches "

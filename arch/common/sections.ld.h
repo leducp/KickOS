@@ -63,8 +63,7 @@
            "KickOS: the link kept dynamic relocations, which nothing in a KickOS image applies; a PIE or shared-object flag reached the link")
 
 /* The PT_TLS template: the bytes each thread's TLS block is initialised FROM, not the block
- * itself. Every thread gets its own copy carved off the low end of its stack, so this is
- * link-time constant data.
+ * itself.
  *
  * .tbss MUST immediately follow .tdata. ld hard-errors on a non-adjacent pair, and the
  * offsets the compiler computes are relative to the two laid out back to back.
@@ -88,43 +87,67 @@
         __kickos_tbss_end = .;                                                \
     } > region
 
-/* On a variant 1 arch the ABI bias below the thread pointer is
- * align_up(KICKOS_ARCH_TLS_TCB, tls_align), not the constant the header states: an object
- * needing 16-byte alignment moves the first thread_local from tp+8 to tp+16 and every offset
- * with it. That alignment is known to the linker and not to C, so the case is refused here
- * rather than derived at runtime.
- *
- * Guarded on SIZEOF because ALIGNOF of an absent output section is not meaningful.
- */
 /* FAIL CLOSED WHERE THE FEATURE IS OFF, AND WHERE THE BLOCK WOULD NOT FIT.
  *
- * At KICKOS_TLS=0 the template above still COLLECTS .tdata/.tbss, being invoked
- * unconditionally, so nothing is orphaned and --orphan-handling=error stays quiet. Only ARM
- * then fails, and only by accident: __aeabi_read_tp goes undefined. rv32imac resolves a TPREL
- * access against tp with no undefined symbol at all, and rx-elf satisfies
- * ___emutls_get_address out of libgcc's process-global emutls. Both would link an image whose
- * thread_local is shared by every thread. So the emptiness is asserted here instead.
+ * At KICKOS_TLS=0 the template above still COLLECTS .tdata/.tbss, so nothing is orphaned.
+ * Only ARM then fails, and only by accident: __aeabi_read_tp goes undefined. rv32imac resolves
+ * a TPREL access against tp with no undefined symbol at all, and rx-elf satisfies
+ * ___emutls_get_address out of libgcc's process-global emutls, so both would link a
+ * thread_local every thread shares. The emptiness is asserted instead.
  *
- * At KICKOS_TLS=1 the carve gives each thread exactly one stride and seats the block at its
- * base, so a template larger than a stride minus the ABI bias cannot be seated. That is a
- * link-time fact and was a boot-time kpanic.
+ * At KICKOS_TLS=1 a template no default stack can carry would have every spawn refused.
  *
  * EMPTINESS IS DECIDED ON THE SIZES AND THE FIT ON THE SPAN, the same split kernel/thread/
- * tls.cc makes. With no thread_local anywhere the two symbols are not a span at all and their
- * difference is meaningless, so testing it alone refuses every image that declares none.
+ * tls.cc makes: with no thread_local anywhere the two symbols are not a span at all.
  *
- * ROUNDED, AND STRICTLY LESS, because that is what tls_stack_admissible asks: it compares the
- * stride against tls_block_size(), which is align_up(TCB + span, KICKOS_STACK_ALIGN), with
- * `size > block`. An unrounded `<=` here admits a payload that rounds up to exactly the
- * stride, which links and is then refused at every spawn.
+ * ROUNDED, AND STRICTLY LESS, because that is what tls_stack_admissible asks: `size > block`
+ * with block = align_up(TCB + span, KICKOS_STACK_ALIGN). An unrounded `<=` admits a payload
+ * that rounds up to exactly the stride, which links and is then refused at every spawn.
+ *
+ * A DEFAULT STACK PAYS THE CARVE ON TOP OF ITS FLOOR, as a spawn charges a caller's stack: the
+ * user and root stacks keep KICKOS_MIN_STACK_SIZE above their block, and where the thread
+ * pointer is SEATED so does idle's stack keep the arch's KICKOS_ARCH_IDLE_FLOOR
+ * (<kickos/arch/idle_floor.h>), or the thread overruns its stack on its first interrupt. With
+ * no thread_local the carve is the control block alone, under KICKOS_REENT_IN_TCB. A masking
+ * arch refuses idle's stack and carves nothing.
  */
+#define KICKOS_TLS_CARVE_ASSERT(size, floor, tls_msg, tcb_msg)                 \
+    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
+               || (size) >= (floor)                                           \
+                      + ALIGN(__kickos_tbss_end - __kickos_tdata_start        \
+                                  + KICKOS_ARCH_TLS_TCB,                      \
+                              KICKOS_STACK_ALIGN),                            \
+           tls_msg)                                                           \
+    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) != 0                                \
+               || (size) >= (floor)                                           \
+                      + KICKOS_REENT_IN_TCB                                   \
+                            * ALIGN(KICKOS_ARCH_TLS_TCB, KICKOS_STACK_ALIGN), \
+           tcb_msg)
+
+#if defined(KICKOS_TLS) && KICKOS_TLS && !KICKOS_TLS_FROM_SP
+#include <kickos/arch/idle_floor.h>
+#define KICKOS_TLS_IDLE_ASSERT()                                              \
+    KICKOS_TLS_CARVE_ASSERT(KICKOS_IDLE_STACK_SIZE, KICKOS_ARCH_IDLE_FLOOR,   \
+           "KickOS: KICKOS_IDLE_STACK_SIZE cannot hold idle's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first interrupt. Declare fewer or smaller thread_local objects, or raise KICKOS_IDLE_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
+           "KickOS: KICKOS_IDLE_STACK_SIZE cannot hold idle's TLS control block above KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first interrupt. Raise KICKOS_IDLE_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.")
+#else
+#define KICKOS_TLS_IDLE_ASSERT()
+#endif
+
 #if defined(KICKOS_TLS) && KICKOS_TLS
 #define KICKOS_TLS_FIT_ASSERT()                                               \
     ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
                || ALIGN(__kickos_tbss_end - __kickos_tdata_start              \
                             + KICKOS_ARCH_TLS_TCB,                            \
                         KICKOS_STACK_ALIGN) < KICKOS_TLS_STRIDE,              \
-           "KickOS: the thread_local template plus the ABI bias below the thread pointer does not fit one KICKOS_TLS_STRIDE, so no thread's block can hold it and every spawn would be refused. Declare fewer or smaller thread_local objects, or raise this board's stack size (which is the stride) in boards/<board>/configs/<variant>/defconfig.")
+           "KickOS: the thread_local template plus the ABI bias below the thread pointer does not fit one KICKOS_TLS_STRIDE, so no thread's block can hold it and every spawn would be refused. Declare fewer or smaller thread_local objects, or raise this board's stack size (which is the stride) in boards/<board>/configs/<variant>/defconfig.") \
+    KICKOS_TLS_CARVE_ASSERT(KICKOS_USER_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
+           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
+           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's TLS control block above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
+    KICKOS_TLS_CARVE_ASSERT(KICKOS_ROOT_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
+           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
+           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's TLS control block above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
+    KICKOS_TLS_IDLE_ASSERT()
 #else
 #define KICKOS_TLS_FIT_ASSERT()                                               \
     ASSERT(SIZEOF(.tdata) == 0,                                               \
@@ -150,6 +173,14 @@
            "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that is an emutls control block libgcc's single-threaded emutls would answer, handing every thread the same object. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")
 #endif
 
+/* On a variant 1 arch the ABI bias below the thread pointer is
+ * align_up(KICKOS_ARCH_TLS_TCB, tls_align), not the constant the header states: an object
+ * needing 16-byte alignment moves the first thread_local from tp+8 to tp+16 and every offset
+ * with it. That alignment is known to the linker and not to C, so the case is refused here
+ * rather than derived at runtime.
+ *
+ * Guarded on SIZEOF because ALIGNOF of an absent output section is not meaningful.
+ */
 #define KICKOS_TLS_ALIGN_ASSERT()                                             \
     ASSERT(SIZEOF(.tdata) == 0 || ALIGNOF(.tdata) <= 8,                       \
            "KickOS: a thread_local needs more than 8-byte alignment, which moves the ABI bias below the thread pointer and every TLS offset with it. KICKOS_ARCH_TLS_TCB states a fixed bias, so this is refused rather than mis-seated.")    \
@@ -165,15 +196,10 @@
 
 /* THE WINDOWS A CHIP DOES NOT CARVE, STATED EMPTY.
  *
- * kernel/domain/domain.cc, kernel/mem/aspace.cc and arch/common/arch_ram_common.cc reference
- * every bound below STRONGLY (include/kickos/klink.h), so a script that states none fails the
- * link naming the symbol. These bounds were once weak undefined references, which collapsed
- * absent into a zero indistinguishable from an empty window; that is how a monolithic
- * .init_array once ran every app constructor privileged and skipped the late walk with no
- * diagnostic (docs/reference/invariants.md, ctors-run-before-init-entry).
- *
- * Every reader tests end > start, so a pair of zeros admits nothing, which is what an absent
- * weak reference used to produce.
+ * Every bound below is referenced STRONGLY (include/kickos/klink.h), so a script that states
+ * none fails the link naming the symbol, and a weak reference would make absent read as an
+ * empty window (docs/reference/invariants.md, ctors-run-before-init-entry). Every reader tests
+ * end > start, so a pair of zeros admits nothing.
  */
 #define KICKOS_APP_CODE_WINDOW_NONE()                                         \
     KICKOS_LD_C_SYM(__kickos_code_start) = 0;                                 \

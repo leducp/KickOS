@@ -30,6 +30,11 @@ struct arch_context
     // TOP of this thread's kernel stack, seated by thread_create BEFORE arch_context_init and
     // preserved across arch_ctx_redirect. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
+
+#if KICKOS_REENT_PER_THREAD
+    // tp at every return to this thread: its libc reentrant state, what __getreent returns.
+    uintptr_t reent_tp;
+#endif
 };
 
 #endif
