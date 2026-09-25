@@ -144,7 +144,7 @@ xtensa_switch:
        retw continuation, since its full state is a 256-byte interrupt frame, so it is
        resumed by the shared rfe epilogue instead. */
     l32i    a3, a1, 0             /* reload `to` */
-    SEAT_THREADPTR a3, a4, a5
+    SEAT_THREADPTR a3, a4
     l32i    a5, a3, CTX_KIND      /* to->resume_kind */
     bnez    a5, .Lsw_resume_irq
     l32i    a1, a3, CTX_SP        /* a1 = to->sp   (switch stacks) */
@@ -198,7 +198,7 @@ arch_start:
     SPILL_ALL_WINDOWS
 
     l32i    a3, a1, 0
-    SEAT_THREADPTR a3, a4, a5
+    SEAT_THREADPTR a3, a4
     l32i    a5, a3, CTX_KIND      /* first->resume_kind */
     bnez    a5, .Lstart_resume_irq
     l32i    a1, a3, CTX_SP       /* a1 = first->sp */

@@ -80,7 +80,7 @@ extern "C"
 void kickos_doorbell_poll(void);
 
 // The part's lowering of the raise, over every core named in `cores`. The CALLING core's bit
-// never reaches here: arch_ipi_send services it inline.
+// reaches here only on an AMP node; everywhere else arch_ipi_send services it inline.
 void kickos_doorbell_raise(uint32_t cores);
 
 #if KICKOS_NUM_CORES > 1

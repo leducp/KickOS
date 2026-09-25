@@ -5,10 +5,6 @@
  *
  * SYSCALL loads no stack pointer, so the entry loads one by hand out of the gs base; the
  * task-state segment's rsp0 serves the interrupt-gate path. Both are written on every switch.
- *
- * DO NOT rename this to a *_trap_stack.h: tests/static/check_trap_redzone_decls.sh uses that
- * suffix to pick the arches it holds to a full declaration, and nothing here has been measured
- * under -fcallgraph-info.
  */
 
 #ifndef KICKOS_ARCH_RING3_H

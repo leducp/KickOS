@@ -27,7 +27,9 @@
 #
 # The reader resolves which word an access names rather than guessing from position: objdump
 # annotates the `addi` that forms a global's address with that global's symbol, and a base
-# register is tracked from the annotation to the access that uses it. Bindings are dropped at
+# register is tracked from the annotation to the access that uses it. Where the low half is 0
+# objdump prints that `addi` as an unannotated `mv`, so an `auipc` value is also carried and
+# resolved against the image's symbol table by exact address. Bindings are dropped at
 # every branch target and at every instruction this reader does not model, because the
 # disassembly is in address order and a basic-block boundary is where a linear walk would
 # otherwise carry in a binding from a branch it never took. An unresolved publish fails; an
@@ -74,6 +76,59 @@ scratch_dir
 # Half a program: `seen` and the body scope come from gate.sh's scoped_body, which reads
 # tests/lib/objdump_scope.awk ahead of this file.
 cat > "$TMP/reader.awk" <<'AWK'
+function hexval(h,    i, c, v)
+{
+    v = 0
+    h = tolower(h)
+    sub(/^0x/, "", h)
+    for (i = 1; i <= length(h); i++) {
+        c = index("0123456789abcdef", substr(h, i, 1)) - 1
+        if (c < 0) { return -1 }
+        v = v * 16 + c
+    }
+    return v
+}
+
+function hex8(v,    out, i, d)
+{
+    out = ""
+    for (i = 0; i < 8; i++) {
+        d = v % 16
+        out = substr("0123456789abcdef", d + 1, 1) out
+        v = (v - d) / 16
+    }
+    return out
+}
+
+# A 64-bit address as two 32-bit halves, because awk's numbers are doubles.
+function pad16(h)
+{
+    h = tolower(h)
+    sub(/^0x/, "", h)
+    while (length(h) < 16) { h = "0" h }
+    return h
+}
+
+# The address `off` bytes from the 16-digit `a`, or "" where the low half carries: the reader
+# refuses to guess rather than model the carry.
+function addr_add(a, off,    hi, lo)
+{
+    hi = substr(a, 1, 8)
+    lo = hexval(substr(a, 9, 8)) + off
+    if (lo < 0 || lo >= 4294967296) { return "" }
+    return hi hex8(lo)
+}
+
+BEGIN {
+    if (symtab != "") {
+        while ((getline sl < symtab) > 0) {
+            n_sf = split(sl, sf, " ")
+            if (n_sf >= 3 && sf[1] ~ /^[0-9a-fA-F]+$/) { symat[pad16(sf[1])] = sf[n_sf] }
+        }
+        close(symtab)
+    }
+}
+
 function shortname(s)
 {
     # The three words this gate knows, out of a mangled anonymous-namespace symbol whose
@@ -186,7 +241,7 @@ END {
         sub(/^[^ \t]*[ \t]*/, "", ops)
 
         # A join point: a binding formed on one path says nothing on another.
-        if (addr in target) { delete bind }
+        if (addr in target) { delete bind; delete val }
 
         if (mnem == "fence") {
             if (ops == "") {
@@ -232,6 +287,19 @@ END {
                 # source.
                 n_src = split(ops, src, ",")
                 for (k = 1; k <= n_src; k++) { gsub(/[ \t]/, "", src[k]) }
+                nv = ""
+                if (mnem == "auipc" && n_src == 2) {
+                    imm = hexval(src[2])
+                    if (imm >= 524288) { imm -= 1048576 }
+                    if (imm != -1) { nv = addr_add(pad16(addr), imm * 4096) }
+                } else if (mnem == "mv" && (src[2] in val)) {
+                    nv = val[src[2]]
+                } else if (mnem == "addi" && symref == "" && (src[2] in val) \
+                           && src[3] ~ /^-?[0-9]+$/) {
+                    nv = addr_add(val[src[2]], src[3] + 0)
+                }
+                delete val[rd]
+                if (nv != "") { val[rd] = nv }
                 carried = ""
                 if (mnem == "mv" || (mnem == "addi" && symref == "")) {
                     if (src[2] in bind) { carried = bind[src[2]] }
@@ -241,6 +309,8 @@ END {
                 }
                 if (mnem == "addi" && symref != "") {
                     bind[rd] = shortname(symref)
+                } else if (nv != "" && (nv in symat)) {
+                    bind[rd] = shortname(symat[nv])
                 } else if (carried != "") {
                     bind[rd] = carried
                 } else {
@@ -249,13 +319,17 @@ END {
             }
         } else if (!is_nodef(mnem)) {
             delete bind
+            delete val
         }
     }
 }
 AWK
 
+# The symbol table an unannotated address resolves against: the planted one for the controls,
+# the image's own for the verdict.
+FENCE_SYMTAB=""
 read_body() { # <listing> <symbol>
-    scoped_body "$TMP/reader.awk" "$1" "$2"
+    scoped_body "$TMP/reader.awk" "$1" "$2" -v symtab="$FENCE_SYMTAB"
 }
 
 # The verdict over one body's records: one line on stdout, or fail().
@@ -494,7 +568,28 @@ sed 's/fence[[:space:]]*rw,rw/fence	r,r/' "$TMP/plant_ok" > "$TMP/plant_rr"
 sed 's/# 000000000041a048 <_ZN12_GLOBAL__N_1L14g_irq_unmaskedE>//' \
     "$TMP/plant_ok" > "$TMP/plant_unbound"
 
-for _p in plant_nofence plant_late plant_tso plant_rr plant_unbound; do
+# The low half 0 that objdump prints as an unannotated `mv`, resolved only through the table.
+cat > "$TMP/plant_mv" <<'EOF'
+0000000000003040 <planted_mv>:
+    3040:	csrrci	a4,sstatus,2
+    3044:	nop
+    3048:	auipc	a5,0x417
+    304c:	mv	a5,a5
+    3050:	amoor.w	zero,a0,(a5)
+    3054:	fence	rw,rw
+    3058:	auipc	a2,0x417
+    305c:	addi	a2,a2,-20
+    3060:	amoand.w	a5,a3,(a2)
+    3064:	ret
+EOF
+cat > "$TMP/plant_syms" <<'EOF'
+000000000041a040 0000000000000004 b _ZN12_GLOBAL__N_1L12g_irq_raisedE
+000000000041a044 0000000000000004 b _ZN12_GLOBAL__N_1L13g_irq_pendingE
+000000000041a048 0000000000000004 b _ZN12_GLOBAL__N_1L14g_irq_unmaskedE
+EOF
+grep -v g_irq_unmasked "$TMP/plant_syms" > "$TMP/plant_syms_short"
+
+for _p in plant_nofence plant_late plant_tso plant_rr plant_unbound plant_mv plant_syms_short; do
     require_nonempty "$TMP/$_p" "the planted listing '$_p' came out empty, so the control it
   carries would refuse for the wrong reason"
 done
@@ -547,6 +642,19 @@ ctl_refuses "$TMP/plant_unbound" planted_unmask g_irq_unmasked g_irq_pending \
     "a publish this reader cannot resolve to a named word, which is UNKNOWN and not a pass"
 ctl_refuses "$TMP/plant_ok" a_symbol_no_listing_carries g_irq_unmasked - \
     "a symbol the listing does not carry, so a renamed body would read as a clean one"
+ctl_refuses "$TMP/plant_mv" planted_mv g_irq_unmasked g_irq_pending \
+    "an unannotated address with no symbol table to resolve it against"
+FENCE_SYMTAB="$TMP/plant_syms"
+ctl_accepts "$TMP/plant_mv" planted_mv g_irq_unmasked g_irq_pending \
+    'writes g_irq_unmasked at #5' \
+    "an auipc whose low half is 0, printed as an unannotated mv, resolved by exact address"
+ctl_accepts "$TMP/plant_mv" planted_mv g_irq_unmasked g_irq_pending \
+    'amoand.w on g_irq_pending at #9' \
+    "an auipc and an unannotated addi resolved by exact address"
+FENCE_SYMTAB="$TMP/plant_syms_short"
+ctl_refuses "$TMP/plant_mv" planted_mv g_irq_unmasked g_irq_pending \
+    "an address the symbol table names no word at, which is UNKNOWN and not a pass"
+FENCE_SYMTAB=""
 
 # --- the planted listings above one kernel core --------------------------------
 # planted_take reaches its acked word through an index added to the annotated base, which is
@@ -665,6 +773,8 @@ for sym in $bodies; do
   gone" ;;
     esac
 done
+
+FENCE_SYMTAB="$TMP/nm"
 
 # --- the instruction stream ---------------------------------------------------
 tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"

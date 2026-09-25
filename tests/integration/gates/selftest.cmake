@@ -78,6 +78,10 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
    AND KICKOS_MAX_THREADS LESS ${_selftest_crowd})
   list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
 endif()
+# reent_per_thread_cores holds one checker and two switchers at once.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_MAX_THREADS LESS 3)
+  list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
+endif()
 
 # Allow peer-dependent tests to skip when an AMP image runs alone. The merged
 # partition gate requires them to run when a peer is available.

@@ -64,6 +64,7 @@
 
     .equ CTX_SP,          KICKOS_RV64_CTX_OFF_SP
     .equ CTX_KERNEL_SP,   KICKOS_RV64_CTX_OFF_KERNEL_SP
+    .equ CTX_REENT_TP,    KICKOS_RV64_CTX_OFF_REENT_TP
 
 /* Displacements into this hart's per-CPU block (percpu.h), static_asserted against offsetof in
    arch_rv64imac.cc. The block begins where the trap stack ends, so its address IS the value
@@ -350,12 +351,21 @@ kickos_rv64_stvec:
  */
 .Lrestore:
     /* gp and tp are both U-mode writable and absent from the frame, so every resume forces them
-       back to their canonical values. */
+       back to their canonical values: tp is the resumed thread's libc state, and zero while a
+       secondary hart's ctx_current is still null during bring-up. */
     .option push
     .option norelax
     ld      gp, .Lgp_anchor
     .option pop
+#if KICKOS_REENT_PER_THREAD
+    PERCPU_CELL tp, PERCPU_CTX_CURRENT
+    ld      tp, 0(tp)
+    beqz    tp, 1f
+    ld      tp, CTX_REENT_TP(tp)
+1:
+#else
     li      tp, 0
+#endif
     ld      t0, F_SSTATUS(sp)
     csrw    sstatus, t0
     ld      t0, F_SEPC(sp)

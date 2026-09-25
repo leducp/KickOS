@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Semaphore ping-pong and IPC microbenchmarks. Report throughput from the
-// monotonic clock and cycle metrics through kos_bench. Omit time conversion
-// when KOS_BENCH_OP_CYCCNT_HZ is zero.
-// The IPC sweep measures copying and kernel phases under IrqLock.
-// App output uses kickos::emit; kernel benchmark tables use the kernel
-// console, so benchmark variants select kickos_services_none.
+// Semaphore ping-pong and IPC microbenchmarks. The kernel prints its benchmark tables on the
+// kernel console, so benchmark variants select kickos_services_none.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -30,32 +26,51 @@ namespace
     constexpr int BENCH_IRQ_LINE = KICKOS_IRQ_FREE_BASE + 0;
     constexpr int BENCH_E2E_LINE = KICKOS_IRQ_FREE_BASE + 1;
     constexpr int IRQ_SAMPLES = KOS_BENCH_SAMPLES_MAX;
-    // Per PASS, and the sweep runs two passes per kernel core.
-    constexpr int E2E_SAMPLES = 25;
     constexpr uint32_t E2E_PAIRS_PER_CORE = 2;
-    // What e2e_sweep runs, and the denominator the kernel echoes beside the raises it let
+    // Per PASS, the sweep running two passes per kernel core: the fewest that make the local row
+    // carry the 1000 samples a p99 is stated at.
+    constexpr uint32_t E2E_ROW_SAMPLES = 1000;
+    constexpr int E2E_SAMPLES = static_cast<int>(
+        (E2E_ROW_SAMPLES + KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE - 1u)
+        / (KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE));
+    // The sweep size e2e_sweep runs: the denominator the kernel prints beside the raises it let
     // through.
     constexpr uint32_t E2E_SWEEP_PASSES =
         KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE * static_cast<uint32_t>(E2E_SAMPLES);
-    // Yields this thread will spend waiting for the waiter to park, and then for it to close.
+    // A yield count, not a time: the bound on each wait for the waiter to park or to close.
     constexpr int E2E_TRIES = 2000;
-    // The instrument's own tail, measured once per run: the return to userspace, the device
-    // read, and the trap back in.
+    // The tare, once per run: the return to userspace, the device read and the trap back in.
     constexpr int E2E_TARE_SAMPLES = 64;
     // An MPU rounds a grant up to what it can describe and the rounded window must still lie
     // inside the block that was reserved.
     constexpr uint32_t E2E_DEV_BYTES = 4096;
-    // Rounds the players run before waking the reporter: a throughput window of a
-    // fraction of a second on fast silicon, a few seconds on a slow M0.
+    // Rounds per throughput window: a few seconds on a slow M0.
     constexpr uint32_t ROUNDS_PER_REPORT = 20000;
-    // Rounds the doorbell probe runs per core per window.
+    // Per core per window.
     constexpr uint32_t DOORBELL_ROUNDS = KOS_BENCH_ROUNDS_MAX;
-    // An upper bound on the walk alone: a core set is a 32-bit mask everywhere KickOS runs.
+    // Bounds the walk only; the kernel's refusal ends it. A core set is a 32-bit mask.
     constexpr uint32_t CORE_WALK_MAX = 32;
-    // Bounded so main RETURNS: root's exit reaches kickos_terminate, and a board built
-    // with KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader instead of needing a
-    // physical button press for the next capture.
+    // Bounded so main RETURNS: root's exit reaches kickos_terminate, and a board built with
+    // KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader without a button press.
     constexpr unsigned THROUGHPUT_REPORTS = 3;
+#if KICKOS_KERNEL_CORES > 1
+    constexpr uint32_t TAG_CALLREPLY = 0;
+    constexpr uint32_t TAG_W1 = 1;
+    constexpr uint32_t TAG_W2 = 2;
+    constexpr uint32_t TAG_W3 = 3;
+    constexpr uint32_t TAG_PUSH = 4;
+    constexpr uint32_t TAG_RESEAT = 5;
+
+    // Printed only by an image carrying the scheduler's own counters (KICKOS_BENCH_SCHED).
+    void sched_report(uint32_t tag)
+    {
+#if KICKOS_BENCH_SCHED
+        (void)kos_bench(KOS_BENCH_OP_SCHED_PRINT, tag, 0);
+#else
+        (void)tag;
+#endif
+    }
+#endif
 
     kos::Semaphore* g_a = nullptr;    // MAIN's caps
     kos::Semaphore* g_b = nullptr;
@@ -65,8 +80,8 @@ namespace
 
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
-    constexpr int CH_A = 1;      // ping-pong sem A
-    constexpr int CH_B = 2;      // ping-pong sem B
+    constexpr int CH_A = 1;
+    constexpr int CH_B = 2;
     constexpr int CH_GATE = 3;   // reporter-wake gate, delegated to player_b only
     constexpr int CH_RESUME = 4; // posted by the reporter as the next window opens, player_b only
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
@@ -142,11 +157,11 @@ namespace
     Atomic<uint32_t, Order::RELAXED> g_e2e_done{0};
     // 0 until the waiter reaches its loop; negative says why it did not.
     Atomic<int32_t, Order::RELAXED> g_e2e_grant_rc{0};
+    // Passes whose set-up settled before their first raise, published by the pass handshake.
+    Atomic<uint32_t, Order::RELAXED> g_e2e_settled{0};
 
     void e2e_waiter(void*)
     {
-        // The line is attached to this object by root; the waiter only has to become its
-        // bound thread.
         if (kos_notify_bind(CH_E2E_NOTE) != 0)
         {
             kos_sem_post(CH_E2E_READY);
@@ -195,6 +210,18 @@ namespace
             {
                 break;
             }
+            // The pass's own set-up is not a sample: the post that started it, and the placement
+            // that moved root off this core, settle before the first raise.
+            int q = 0;
+            while (q < E2E_TRIES and kos_bench(KOS_BENCH_OP_E2E_QUIET, 0, 0) == 0)
+            {
+                kos_yield();
+                q++;
+            }
+            if (q < E2E_TRIES)
+            {
+                g_e2e_settled = g_e2e_settled + 1;
+            }
             for (int i = 0; i < E2E_SAMPLES; i++)
             {
                 uint32_t const before = g_e2e_done;
@@ -217,8 +244,7 @@ namespace
         }
     }
 
-    // Root claims the line and hands a wait-only copy to the waiter, which outranks both root
-    // and the raiser.
+    // The waiter outranks both root and the raiser.
     bool e2e_start()
     {
         g_e2e_dev = kos_ram_alloc(E2E_DEV_BYTES);
@@ -310,15 +336,16 @@ namespace
         return true;
     }
 
-    // The raiser on each core in turn, the waiter pinned to the line's claim core throughout.
-    // The line is delivered on the claim core whoever injects it, so every wake is local and
-    // the raiser's placement moves only where the raise is injected.
+    // The line is delivered on its claim core whoever injects it, and the waiter is pinned
+    // there, so every wake is local and the raiser's placement moves only where the raise is
+    // injected.
     void e2e_sweep()
     {
         if (g_e2e_tid == KOS_THREAD_NONE or g_e2e_rid == KOS_THREAD_NONE)
         {
             return;
         }
+        g_e2e_settled = 0;
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
             for (uint32_t d = 0; d < E2E_PAIRS_PER_CORE; d++)
@@ -328,6 +355,11 @@ namespace
                 kos_sem_wait(g_e2e_pass);
             }
         }
+        char s[64];
+        ksnprintf(s, sizeof(s), "  e2e-settle: settled=%u/%u\n",
+                  static_cast<unsigned>(g_e2e_settled.load()),
+                  static_cast<unsigned>(KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE));
+        kickos::emit(s);
     }
 
     void e2e_stop()
@@ -403,9 +435,8 @@ namespace
                 ns_per_sw = static_cast<uint32_t>(d_ns / switches);
             }
 
-            // Every %u argument is cast to `unsigned`: uint32_t is `unsigned long` on the
-            // newlib targets and plain `unsigned` on the host and Xtensa, and `unsigned` is
-            // 32-bit everywhere KickOS runs.
+            // Every %u argument is cast to `unsigned`: uint32_t is `unsigned long` on the newlib
+            // targets and `unsigned` elsewhere, and `unsigned` is 32-bit everywhere KickOS runs.
             char s[160];
             ksnprintf(s, sizeof(s),
                       "  throughput: %u ctx-sw/s  (%u ns/sw avg over %u switches / %u ms)\n",
@@ -413,6 +444,9 @@ namespace
                       static_cast<unsigned>(switches),
                       static_cast<unsigned>(d_ns / 1000000ull));
             kickos::emit(s);
+#if KICKOS_KERNEL_CORES > 1
+            sched_report(TAG_W1);
+#endif
 
             // The kernel places this thread before each burst and refuses a core it does not
             // schedule, which is what ends the walk; at one kernel core the first call is
@@ -425,38 +459,28 @@ namespace
                 }
             }
 
-            // Cycles only where switch.S bracketed them. The kernel writes one line per
-            // named distribution and hands back the SWITCH sample count.
+            // Returns the SWITCH sample count, 0 where switch.S brackets no cycles.
             uint32_t const scnt = bench_u32(KOS_BENCH_OP_DIST_PRINT, 0, 0);
             if (scnt == 0)
             {
-                // no cycle counter on this arch; throughput is the metric
                 continue;
             }
 
-            // Every row below is a NAMED DISTRIBUTION the kernel fills and prints. The
-            // worst-case slot is ONE accumulator re-reported per span, so each row's n is
-            // that span's.
             (void)kos_bench(KOS_BENCH_OP_IRQ_SWEEP, IRQ_SAMPLES, 0);
-            uint32_t const nspans = bench_u32(KOS_BENCH_OP_WCASE_SPANS, 0, 0);
-            for (uint32_t si = 0; si < nspans; si++)
-            {
-                (void)kos_bench(KOS_BENCH_OP_IRQ_WCASE, si, IRQ_SAMPLES);
-            }
+            (void)kos_bench(KOS_BENCH_OP_IRQ_WCASE, IRQ_SAMPLES, 0);
             e2e_sweep();
             (void)kos_bench(KOS_BENCH_OP_E2E_PRINT, E2E_SWEEP_PASSES, 0);
         }
         e2e_stop();
     }
 
-    // Call/reply round-trip: the same 2-switches-per-round handoff as the sem ping-pong
-    // above. Both peers are SPAWNED, so the figure is worker-to-worker and not root's.
+    // Both call/reply peers are SPAWNED, so the figure is worker-to-worker and not root's.
     constexpr uint32_t CALLREPLY_REPS = 20000;
 
     // A peer MUST outrank root (prio KICKOS_PRIO_MIN + 1 == 2): it posts `done` as its last
     // act but reaches EXITED only afterwards, and root preempting it on that post leaves the
-    // peer READY, holding a slot ThreadPool::alloc cannot reclaim for the next sweep step.
-    // On a 3-slot pool that spawn is -KOS_ENOMEM.
+    // peer READY, holding a slot ThreadPool::alloc cannot reclaim for the next sweep step: on
+    // a 3-slot pool that spawn is -KOS_ENOMEM.
     constexpr uint8_t CR_PRIO = 4;
 
     // Written by measure_callreply BEFORE it spawns either peer, so neither peer races it.
@@ -476,7 +500,6 @@ namespace
         memset(&opts, 0, sizeof(opts));
         opts.ep = 1;
         opts.timeout_us = KOS_TIMEOUT_NONE;
-        // Send the previous reply while receiving the next request.
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
@@ -494,7 +517,6 @@ namespace
             reply_cap = opts.info.reply_cap;
             reply_len = static_cast<size_t>(n);
         }
-        // Send the final reply without receiving again.
         if (reply_cap != KOS_CAP_NONE)
         {
             kos_reply(reply_cap, buf, reply_len);
@@ -625,12 +647,10 @@ namespace
     // One size only: the D1 cost does not scale with the message.
     constexpr uint32_t CR_DONATE_SPAN = 32;
 
-    // The bounded-run invariant: a distribution bucket counts in uint32_t
-    // (kernel/include/kickos/bench_hist.h), so a run
-    // posting 2^32 samples to one slot wraps and every percentile read off it is wrong with
-    // nothing on the wire saying so. Each call/reply rep and each ping-pong round drives two
-    // switches and a switch posts one sample to each slot on the switch path, so this product
-    // is the busiest slot to an order of magnitude; the margin below carries the rest.
+    // A distribution bucket counts in uint32_t (kernel/include/kickos/bench_hist.h), so 2^32
+    // samples to one slot wrap silently. Each call/reply rep and each ping-pong round drives two
+    // switches, each posting one sample to every switch-path slot, so this is the busiest slot to
+    // an order of magnitude; the margin below carries the rest.
     constexpr uint64_t BENCH_BUSIEST_SLOT =
         2ull * (static_cast<uint64_t>(CALLREPLY_REPS)
                     * (2ull * (sizeof(CR_SPANS) / sizeof(CR_SPANS[0])) + 1ull)
@@ -639,6 +659,388 @@ namespace
                   "these rep counts drive a distribution slot towards a 32-bit wrap; the "
                   "percentiles under it would be wrong and no row would say so");
 }
+
+#if KICKOS_KERNEL_CORES > 1
+namespace
+{
+    // --- the scheduler's workloads (docs/design-m9.4-rings.md, section G) ----------------
+    // Every thread a workload spawns is joined before the next starts, and all of them outrank
+    // root.
+    constexpr uint32_t W_ROUNDS = 5000;
+    constexpr uint8_t W_PRIO = 3;
+    constexpr uint8_t W_HOG_PRIO = 6;
+    constexpr uint8_t W_MOVED_PRIO = 4;
+    constexpr uint32_t W_RR_QUANTUM_NS = 1000000;
+    constexpr uint32_t W_PUSH_ROUNDS = 200;
+    // How long the push probe waits on one handoff before it names the round and stops.
+    constexpr uint64_t W_PUSH_GIVEUP_NS = 2000000000ull;
+    // Spins between clock reads: the clock is a syscall, and a round that completes inside
+    // this many never reads it, so a healthy probe adds nothing to the report it prints.
+    constexpr uint32_t W_SPIN_POLL = 1u << 16;
+    constexpr uint32_t W_RESEAT_ROUNDS = 500;
+
+    // A ping-pong pair's caps: A@1, B@2. Root's own table is sized for the declared peak and
+    // not for every pair at once, so it closes its handles once the players hold theirs and
+    // joins the players instead of waiting on a third semaphore.
+    constexpr int W_A = 1;
+    constexpr int W_B = 2;
+
+    void w_player_a(void*)
+    {
+        for (uint32_t i = 0; i < W_ROUNDS; i++)
+        {
+            kos_sem_wait(W_A);
+            kos_sem_post(W_B);
+        }
+    }
+
+    void w_player_b(void*)
+    {
+        for (uint32_t i = 0; i < W_ROUNDS; i++)
+        {
+            kos_sem_post(W_A);
+            kos_sem_wait(W_B);
+        }
+    }
+
+    struct Pair
+    {
+        kos::thread::Handle a;
+        kos::thread::Handle b;
+    };
+
+    // Two players on `mask`; 0 is the default set. Both are joined by the caller.
+    bool pair_spawn(uint32_t mask, Pair* out)
+    {
+        kos_cap_t a = KOS_CAP_NONE;
+        kos_cap_t b = KOS_CAP_NONE;
+        if (kos_sem_create(0, &a) != 0)
+        {
+            return false;
+        }
+        if (kos_sem_create(0, &b) != 0)
+        {
+            kos_handle_close(a);
+            return false;
+        }
+        kos_cap_grant caps[] = {{a, CH_FULL}, {b, CH_FULL}};
+        out->a = kos::thread::create_caps(w_player_a, nullptr, "w_a", W_PRIO, caps, 2,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, mask);
+        out->b = kos::thread::create_caps(w_player_b, nullptr, "w_b", W_PRIO, caps, 2,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, mask);
+        kos_handle_close(a);
+        kos_handle_close(b);
+        return out->a.valid() and out->b.valid();
+    }
+
+    // A player whose partner was refused waits for good, so a half pair is cancelled first.
+    void pair_join(Pair const& p)
+    {
+        if (p.a.valid() != p.b.valid())
+        {
+            (void)p.a.kill();
+            (void)p.b.kill();
+        }
+        if (p.a.valid())
+        {
+            (void)p.a.join(KOS_TIMEOUT_NONE);
+        }
+        if (p.b.valid())
+        {
+            (void)p.b.join(KOS_TIMEOUT_NONE);
+        }
+    }
+
+    void w_line(char const* name, uint32_t switches, uint64_t d_ns)
+    {
+        char s[128];
+        ksnprintf(s, sizeof(s), "  %s: %u switches in %u us\n", name,
+                  static_cast<unsigned>(switches), static_cast<unsigned>(d_ns / 1000u));
+        kickos::emit(s);
+    }
+
+    // W2: one pinned pair per core, all at once.
+    void w2_pairs()
+    {
+        uint32_t const n = KICKOS_KERNEL_CORES;
+        Pair pairs[4] = {};
+        uint32_t spawned = 0;
+        (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+        uint64_t const t0 = kos::clock_now();
+        for (uint32_t c = 0; c < n and c < 4; c++)
+        {
+            if (not pair_spawn(1u << c, &pairs[c]))
+            {
+                break;
+            }
+            spawned++;
+        }
+        for (uint32_t c = 0; c < 4; c++)
+        {
+            pair_join(pairs[c]);
+        }
+        uint64_t const d = kos::clock_now() - t0;
+        w_line("w2", spawned * W_ROUNDS * 2u, d);
+        sched_report(TAG_W2);
+    }
+
+    Atomic<uint32_t, Order::RELAXED> g_w_stop{0};
+
+    void w_spinner(void*)
+    {
+        while (g_w_stop == 0)
+        {
+        }
+    }
+
+    // W3: an unpinned equal-priority pair, with round-robin spinners on wide masks beside it.
+    void w3_wide()
+    {
+        uint32_t const n = KICKOS_KERNEL_CORES;
+        Pair p = {};
+        kos::thread::Handle spin[3] = {};
+        g_w_stop = 0;
+        (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+        uint64_t const t0 = kos::clock_now();
+        (void)pair_spawn(0, &p);
+        for (uint32_t i = 0; i + 1 < n and i < 3; i++)
+        {
+            spin[i] = kos::thread::create_caps(w_spinner, nullptr, "w_rr", W_PRIO, nullptr, 0,
+                                               KOS_POLICY_RR, W_RR_QUANTUM_NS);
+        }
+        pair_join(p);
+        uint64_t const d = kos::clock_now() - t0;
+        g_w_stop = 1;
+        w_line("w3", W_ROUNDS * 2u, d);
+        sched_report(TAG_W3);
+        for (kos::thread::Handle const& h : spin)
+        {
+            if (h.valid())
+            {
+                (void)h.join(KOS_TIMEOUT_NONE);
+            }
+        }
+    }
+
+    // The push probe: every core but core 1 holds a spinning hog above the moved thread, which is
+    // readied on core 0 behind its hog and pushed when core 1's hog parks.
+    Atomic<uint32_t, Order::RELAXED> g_h1_on{0};
+    Atomic<uint32_t, Order::RELAXED> g_park_req{0};
+    Atomic<uint32_t, Order::RELAXED> g_moved{0};
+    constexpr int P_START = 1; // every probe thread: waited once before it begins
+    constexpr int P_H1 = 2;    // hog 0 and hog 1: hog 1's release
+    constexpr int P_M = 3;     // hog 0 and the moved thread: the moved thread's release
+
+    // Spins until `cell` reads `want`, false once W_PUSH_GIVEUP_NS have passed.
+    bool p_await(Atomic<uint32_t, Order::RELAXED>& cell, uint32_t want)
+    {
+        uint64_t deadline = 0;
+        uint32_t spins = 0;
+        while (cell != want)
+        {
+            spins++;
+            if (spins < W_SPIN_POLL)
+            {
+                continue;
+            }
+            spins = 0;
+            uint64_t const now = kos::clock_now();
+            if (deadline == 0)
+            {
+                deadline = now + W_PUSH_GIVEUP_NS;
+            }
+            else if (now >= deadline)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void p_stall(uint32_t round, char const* what)
+    {
+        char s[96];
+        ksnprintf(s, sizeof(s), "  push-probe: STALL round=%u/%u (%s)\n",
+                  static_cast<unsigned>(round), static_cast<unsigned>(W_PUSH_ROUNDS), what);
+        kickos::emit(s);
+    }
+
+    void p_hog0(void*)
+    {
+        kos_sem_wait(P_START);
+        for (uint32_t r = 1; r <= W_PUSH_ROUNDS; r++)
+        {
+            kos_sem_post(P_H1);
+            if (not p_await(g_h1_on, r))
+            {
+                p_stall(r, "hog 1 never ran");
+                break;
+            }
+            kos_sem_post(P_M);
+            g_park_req = r;
+            if (not p_await(g_moved, r))
+            {
+                p_stall(r, "the moved thread was never pushed");
+                break;
+            }
+        }
+        g_w_stop = 1;
+        kos_sem_post(P_H1);
+        kos_sem_post(P_M);
+    }
+
+    void p_hog1(void*)
+    {
+        kos_sem_wait(P_START);
+        uint32_t r = 0;
+        while (true)
+        {
+            kos_sem_wait(P_H1);
+            if (g_w_stop != 0)
+            {
+                return;
+            }
+            r++;
+            g_h1_on = r;
+            // A stall ends the probe without ever publishing this round's park request.
+            while (g_park_req != r and g_w_stop == 0)
+            {
+            }
+        }
+    }
+
+    void p_moved(void*)
+    {
+        kos_sem_wait(P_START);
+        uint32_t r = 0;
+        while (true)
+        {
+            kos_sem_wait(P_M);
+            if (g_w_stop != 0)
+            {
+                return;
+            }
+            r++;
+            g_moved = r;
+        }
+    }
+
+    void p_spinner(void*)
+    {
+        kos_sem_wait(P_START);
+        while (g_w_stop == 0)
+        {
+        }
+    }
+
+    void w4_push()
+    {
+        uint32_t const n = KICKOS_KERNEL_CORES;
+        kos::Semaphore start(0);
+        kos_cap_t h1 = KOS_CAP_NONE;
+        kos_cap_t m = KOS_CAP_NONE;
+        if (kos_sem_create(0, &h1) != 0 or kos_sem_create(0, &m) != 0)
+        {
+            kickos::emit("  push-probe: SKIP (no semaphore)\n");
+            kos_handle_close(h1);
+            return;
+        }
+        kos_cap_grant caps[] = {{start.id(), CH_FULL}, {h1, CH_FULL}, {m, CH_FULL}};
+        g_w_stop = 0;
+        g_h1_on = 0;
+        g_park_req = 0;
+        g_moved = 0;
+        kos::thread::Handle hs[6] = {};
+        uint32_t k = 0;
+        hs[k++] = kos::thread::create_caps(p_hog0, nullptr, "p_hog0", W_HOG_PRIO, caps, 3,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_TASK_NONE, nullptr, 0, 1u << 0);
+        hs[k++] = kos::thread::create_caps(p_hog1, nullptr, "p_hog1", W_HOG_PRIO, caps, 3,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_TASK_NONE, nullptr, 0, 1u << 1);
+        hs[k++] = kos::thread::create_caps(p_moved, nullptr, "p_moved", W_MOVED_PRIO, caps, 3);
+        for (uint32_t c = 2; c < n and k < 6; c++)
+        {
+            hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, caps, 3,
+                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                               KOS_TASK_NONE, nullptr, 0, 1u << c);
+        }
+        kos_handle_close(h1);
+        kos_handle_close(m);
+        bool all = true;
+        for (uint32_t i = 0; i < k; i++)
+        {
+            if (not hs[i].valid())
+            {
+                all = false;
+            }
+        }
+        if (all)
+        {
+            (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+            for (uint32_t i = 0; i < k; i++)
+            {
+                start.post();
+            }
+            (void)hs[0].join(KOS_TIMEOUT_NONE);
+            sched_report(TAG_PUSH);
+        }
+        else
+        {
+            kickos::emit("  push-probe: SKIP (thread pool too small)\n");
+            g_w_stop = 1;
+            for (uint32_t i = 0; i < k; i++)
+            {
+                start.post();
+            }
+            // The two releases are the threads' own now, so a thread still waiting on one is
+            // cancelled instead.
+            for (uint32_t i = 0; i < k; i++)
+            {
+                (void)hs[i].kill();
+            }
+        }
+        for (uint32_t i = 0; i < k; i++)
+        {
+            if (hs[i].valid())
+            {
+                (void)hs[i].join(KOS_TIMEOUT_NONE);
+            }
+        }
+    }
+
+    // The reseat probe: a thread spinning on core 1, re-masked from this core over and over with
+    // core 1 in every mask, so each request is re-seated by that core with the thread running.
+    void w4_reseat()
+    {
+        g_w_stop = 0;
+        auto t = kos::thread::create_caps(w_spinner, nullptr, "r_spin", W_MOVED_PRIO, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_TASK_NONE, nullptr, 0, 1u << 1);
+        if (not t.valid())
+        {
+            kickos::emit("  reseat-probe: SKIP (thread pool too small)\n");
+            return;
+        }
+        (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+        for (uint32_t r = 0; r < W_RESEAT_ROUNDS; r++)
+        {
+            uint32_t mask = (1u << 1) | (1u << 0);
+            if ((r & 1u) != 0)
+            {
+                mask = 1u << 1;
+            }
+            (void)kos_thread_set_affinity(t.id(), mask);
+            kos_yield();
+        }
+        sched_report(TAG_RESEAT);
+        g_w_stop = 1;
+        (void)t.join(KOS_TIMEOUT_NONE);
+    }
+}
+#endif
 
 // KOS_AUTH_IRQ for the end-to-end span's line mint, KOS_AUTH_MEMORY for the device window
 // root reserves and grants, and KOS_AUTH_SYSTEM because main returns and root's exit is a
@@ -674,11 +1076,10 @@ int main(int, char**)
         measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 0);
     }
 
-    // The generic arm of EVERY span, so one run holds both sides of the fastpath comparison
-    // and its own control. Above KOS_CALL_REG_BYTES kos_call already issues this same trap,
-    // so those rows must differ by one flat constant, the failed register-form attempt; a
-    // ragged difference there says the two arms were not measured under the same conditions
-    // and the whole capture is void.
+    // Above KOS_CALL_REG_BYTES kos_call already issues this same trap, so those rows must
+    // differ from the register arm by one flat constant, the failed register-form attempt; a
+    // ragged difference there means the two arms were not measured alike and the capture is
+    // void.
     for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
     {
         measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 1);
@@ -687,6 +1088,9 @@ int main(int, char**)
     // Read the phase table's donate row against the equal-priority rows above.
     measure_callreply(CR_DONATE_SPAN, CR_PRIO + 1u, CR_PRIO, 0);
     (void)kos_bench(KOS_BENCH_OP_PHASE_PRINT, 0, 0); // the kernel writes the table
+#if KICKOS_KERNEL_CORES > 1
+    sched_report(TAG_CALLREPLY);
+#endif
     kickos::emit("\n");
 
     kos::Semaphore a(0), b(0), gate(0), resume(0);
@@ -717,6 +1121,12 @@ int main(int, char**)
     }
 
     reporter_loop();
+#if KICKOS_KERNEL_CORES > 1
+    w2_pairs();
+    w3_wide();
+    w4_push();
+    w4_reseat();
+#endif
     kickos::emit("bench: done\n");
     return 0;
 }

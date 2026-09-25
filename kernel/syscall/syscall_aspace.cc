@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Address-space self-test syscalls. Each runs a scenario and returns a result.
-// CAP_OBJECTS and CAP_SEED allocate frames and require AUTH_MEMORY; other
-// probes do not expose unrestricted allocation or mapping.
+// CAP_OBJECTS and CAP_SEED allocate frames and require AUTH_MEMORY.
 
 #include <kickos/arch/arch.h>
 
@@ -66,8 +64,6 @@ namespace kickos
             return true;
         }
 
-        // Reached through the acquire pair rather than through the running translation, so
-        // an arm that fails leaves the caller alive to report it.
         uint64_t op_roundtrip()
         {
             struct arch_aspace* const space = arch_aspace_create();
@@ -115,8 +111,6 @@ namespace kickos
             return trip;
         }
 
-        // An identity map cannot produce this: two unequal virtual pages onto one frame
-        // would give two different pages.
         uint64_t op_alias()
         {
             struct arch_aspace* const space = arch_aspace_create();
@@ -135,8 +129,8 @@ namespace kickos
             {
                 void* const a = arch_aspace_acquire(space, VA_A);
                 void* const b = arch_aspace_acquire(space, VA_B);
-                // The seam names the frame behind each page, so this compares frames: a
-                // windowed backend hands back two unequal slot addresses for one frame.
+                // Compares the frame behind each page: a windowed backend can hand back
+                // two unequal slot addresses for one frame.
                 bool const same_frame = arch_aspace_frame_at(space, VA_A) == frame
                                         and arch_aspace_frame_at(space, VA_B) == frame;
                 bool const translated = VA_A != VA_B and
@@ -158,8 +152,8 @@ namespace kickos
                 {
                     arch_aspace_release(space, VA_B);
                 }
-                // One of the two leaves goes before destroy walks the tree: both name the
-                // same frame, and destroy frees what a space maps.
+                // One leaf is unmapped before destroy: both name the same frame, and
+                // destroy frees per leaf it maps.
                 (void)arch_aspace_unmap(space, VA_B, 1);
             }
             arch_aspace_destroy(space);
@@ -182,8 +176,8 @@ namespace kickos
             }
             uint32_t const rw = ARCH_MAP_R | ARCH_MAP_W;
             uint64_t bits = 0;
-            // The kernel's own arena, granule-aligned: a high-half address by construction
-            // on any port whose kernel lives there, rather than a literal this file invents.
+            // Granule-aligned kernel arena base: a high-half address by construction on any
+            // port whose kernel lives there.
             uintptr_t const high = arch_ram_base() & ~static_cast<uintptr_t>(g - 1);
             if (arch_aspace_map(space, high, frame, 1, rw, ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
             {
@@ -232,8 +226,8 @@ namespace kickos
                 }
                 if (rc == ARCH_ASPACE_OK)
                 {
-                    // The leaves name frames the pool never handed out, so they go before the
-                    // destroy that would offer them back to it.
+                    // Unmapped before destroy: these frames were never handed out by the pool,
+                    // and destroy would otherwise offer them back to it.
                     (void)arch_aspace_unmap(space, VA_B, 2);
                 }
             }
@@ -264,9 +258,9 @@ namespace kickos
             return cap_check_authority(sched::current(), AUTH_MEMORY);
         }
 
-        // Every frame a whole cycle took must come back, tables included.
-        // The two kinds resolve through the same chokepoint every other kind does.
-        // Nothing here composes an address; only yes/no bits cross back.
+        // Every frame a whole cycle took must come back, tables included. Both capability
+        // kinds resolve through the same chokepoint as any other object. Nothing here
+        // composes an address; only yes/no bits cross back.
         uint64_t op_cap_objects()
         {
             IrqLock lock;
@@ -386,12 +380,12 @@ namespace kickos
             return bits;
         }
 
-        // A LOW-HALF ADDRESS FAR FROM DRAM, and never a physical base out of the frame pool:
-        // that window is where ustack_alloc maps every thread stack, so an address inside it
-        // is one a CHILD's stack may take even where nothing in this space names it yet.
+        // A low-half address, far from DRAM and never a physical base out of the frame pool:
+        // ustack_alloc maps every thread stack in this window, so an address inside it is one
+        // a CHILD's stack may take even where nothing in this space names it yet.
         constexpr uintptr_t VA_SEED = 0x14000000;
-        // Pages per candidate: a holder adds offsets to pick an address of its own and must
-        // stay inside the window this checked.
+        // A holder adds offsets to pick an address of its own and must stay inside the
+        // window this checked.
         constexpr size_t VA_SEED_PAGES = 16u;
 
         int g_seed_obj = FRAME_RUN_NONE;
@@ -532,9 +526,8 @@ namespace kickos
                 // unmap, owns a frame's life.
                 arch_aspace_destroy(space);
             }
-            // Every op, not just this cycle: no scenario in this file may hand the pool a
-            // frame it does not own, and the allocator absorbs both a double free and a
-            // stranger's address, so this counter is the only place either surfaces.
+            // The allocator absorbs both a double free and a stranger's address silently, so
+            // this refused-count check is the only place either surfaces, for every op here.
             if (frame_pool_refused() != 0)
             {
                 return ~static_cast<uint64_t>(0);
@@ -547,9 +540,9 @@ namespace kickos
             return before - after;
         }
 
-        // Cross two leaf-table boundaries without assuming a table geometry.
-        // Entries are at least four bytes; a table therefore covers at most granule/4 pages.
-        // Use device outputs so no leaf owns a pool frame.
+        // Entries are at least four bytes, so a table covers at most granule/4 pages; the
+        // span below crosses two such tables without assuming their geometry further.
+        // Uses device outputs so no leaf owns a pool frame.
         uint64_t op_span()
         {
             constexpr arch_phys_addr_t SPAN_PA = 0x08000000;
@@ -567,7 +560,7 @@ namespace kickos
             uint64_t ok = 0;
             if (arch_aspace_map(space, span_va, SPAN_PA, span_pages, ARCH_MAP_R, ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
-                // Check consecutive frames and acquire offsets while holding at most two pages.
+                // Holds at most two pages at once (first, and the one under test).
                 constexpr uintptr_t IN_PAGE = 0x40;
                 unsigned char* const first = static_cast<unsigned char*>(arch_aspace_acquire(space, span_va));
                 uintptr_t const mask = static_cast<uintptr_t>(g - 1u);
@@ -613,8 +606,8 @@ namespace kickos
             return ok;
         }
 
-        // Acquire the same page twice and release by (space, VA), without tokens.
-        // Device outputs require temporary slots. Do not dereference these pointers.
+        // Release identifies a hold by (space, VA), without tokens. Device outputs require
+        // temporary slots; do not dereference these pointers.
         uint64_t op_acquire_dup()
         {
             constexpr arch_phys_addr_t DUP_PA = 0x08000000;
@@ -638,8 +631,8 @@ namespace kickos
                 {
                     bits |= KOS_ASPACE_DUP_STABLE;
                 }
-                // One of the two holds goes back while the other is still outstanding, so the
-                // next page acquired must not be answered with the address that hold names.
+                // One hold goes back while the other is still outstanding: the next page
+                // acquired must not be answered with the address that hold names.
                 if (b != nullptr)
                 {
                     arch_aspace_release(space, DUP_VA_A);
@@ -661,8 +654,8 @@ namespace kickos
                 {
                     bits |= KOS_ASPACE_DUP_REUSABLE;
                 }
-                // Both leaves go before destroy walks the tree: their outputs are device
-                // addresses the pool never handed out, and destroy frees what a space maps.
+                // Unmapped before destroy: their outputs are device addresses the pool never
+                // handed out, and destroy frees per leaf it maps.
                 (void)arch_aspace_unmap(space, DUP_VA_A, 1);
                 (void)arch_aspace_unmap(space, DUP_VA_B, 1);
             }
@@ -670,8 +663,8 @@ namespace kickos
             return bits;
         }
 
-        // Check copies across noncontiguous physical pages. Map the outer frames of
-        // a three-frame run at adjacent VAs; an unsplit memcpy would corrupt the middle frame.
+        // Maps the outer frames of a three-frame run at adjacent VAs; an unsplit memcpy
+        // would corrupt the middle frame.
         uint64_t op_split_access()
         {
             constexpr size_t HALF = 8; // bytes each side of the page boundary
@@ -686,8 +679,8 @@ namespace kickos
             if (sa != nullptr and sb != nullptr and ra != 0 and rb != 0)
             {
                 arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(g);
-                // The same two virtual pages in both spaces, which is what makes the copy
-                // below a pair of equal numbers naming different memory.
+                // The same two virtual pages in both spaces: the copy below is a pair of
+                // equal numbers naming different memory.
                 bool const built =
                     arch_aspace_map(sa, VA_A, ra, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
                     arch_aspace_map(sa, VA_A + g, ra + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
@@ -703,8 +696,8 @@ namespace kickos
                     static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A));
                 unsigned char* const bhi =
                     static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A + g));
-                // Reached by the pool's own route, so it is never mapped in either space and
-                // an access that lands there did not split.
+                // Reached by the pool's own route: never mapped in either space, so an
+                // access that lands there did not split.
                 unsigned char* const spill =
                     static_cast<unsigned char*>(frame_pool_ptr(ra + step));
                 if (built and alo != nullptr and ahi != nullptr and blo != nullptr and
@@ -729,9 +722,9 @@ namespace kickos
                     {
                         pat[i] = static_cast<unsigned char>(0x40u + i);
                     }
-                    // The seam's own answer is folded into the bit: a copy that stopped at the
-                    // first granule it could not acquire leaves a tail the byte compare below
-                    // cannot always separate from a whole move.
+                    // to_ok is folded into the bit: a copy that stopped at the first granule
+                    // it could not acquire leaves a tail the byte compare below cannot always
+                    // separate from a whole move.
                     bool const to_ok = kaccess_to_user(sa, cross, pat, sizeof(pat));
                     bool landed = to_ok;
                     bool untouched = true;
@@ -765,9 +758,8 @@ namespace kickos
                     {
                         bits |= KOS_ASPACE_SPLIT_FROM_USER;
                     }
-                    // One address, two spaces, and the range straddles the boundary in
-                    // both. The destination's numbers equal the source's, which a
-                    // per-process image makes ordinary.
+                    // One address, two spaces, and the range straddles the boundary in both:
+                    // a per-process image makes equal source and destination numbers ordinary.
                     bool const ep_ok = ep_copy(sa, cross, sb, cross, 2 * HALF);
                     bool crossed = ep_ok;
                     for (size_t i = 0; i < HALF; i++)
@@ -781,9 +773,8 @@ namespace kickos
                         bits |= KOS_ASPACE_SPLIT_CROSS_SPACE;
                     }
                 }
-                // Each release is the one that PAIRS: a release beside an acquire that
-                // answered null surrenders a hold somebody else is holding, the count being of
-                // calls (arch.h, arch_aspace_acquire).
+                // A release beside an acquire that answered null surrenders a hold somebody
+                // else is holding: the count is of calls (arch.h, arch_aspace_acquire).
                 if (alo != nullptr)
                 {
                     arch_aspace_release(sa, VA_A);
@@ -801,8 +792,8 @@ namespace kickos
                     arch_aspace_release(sb, VA_A + g);
                 }
             }
-            // Unmapped and freed here rather than left to destroy: a map that failed leaves
-            // its frame unmapped, so the space cannot be the one owner of all six.
+            // Unmapped and freed here: a map that failed leaves its frame unmapped, so the
+            // space cannot be the one owner of all six.
             if (sa != nullptr)
             {
                 (void)arch_aspace_unmap(sa, VA_A, 1);
@@ -834,9 +825,9 @@ namespace kickos
             return bits;
         }
 
-        // The fourth transition, taken by the CPU rather than by a walk of our own: with the
-        // space active, an ordinary load of a page just unmapped must fault. Nothing here
-        // returns on a working backend.
+        // With the space active, an ordinary load of a page just unmapped must fault: the
+        // CPU takes the transition, not a walk of our own. Nothing here returns on a
+        // working backend.
         uint64_t op_touch_unmapped()
         {
             struct arch_aspace* const space = arch_aspace_create();
@@ -862,26 +853,24 @@ namespace kickos
             arch_aspace_release(space, VA_A);
 
             // Announced before the switch, because this space maps no console: the gate
-            // compares this address against the FAR the dump reports, so the arm asserts
-            // which page faulted rather than only that something did.
+            // compares this address against the FAR the dump reports, asserting which page
+            // faulted.
             kprintf("[aspace] unmapped 0x%lx, expecting a translation fault\n",
                     static_cast<unsigned long>(VA_A));
 
             // Masked throughout: the console and the interrupt controller are low addresses
-            // on this chip and this space maps neither, so any ISR taken here would run
+            // on this chip, and this space maps neither, so an ISR taken here would run
             // against a space that cannot reach them.
             IrqLock lock;
-            // The switch path caches which space is installed, and this activates one behind
-            // its back, so the cache is dropped rather than left naming a space that is no
-            // longer the root.
+            // The switch path caches which space is installed; this activates one behind its
+            // back, so the cache is dropped here.
             aspace_forget_current();
             arch_aspace_activate(space);
             uint32_t const seen = *word_at(reinterpret_cast<void*>(VA_A));
             (void)arch_aspace_unmap(space, VA_A, 1);
             uint32_t const after = *word_at(reinterpret_cast<void*>(VA_A));
             // Reached only where the load above did not fault: a backend whose unmap left the
-            // translation standing answers a value here instead of a dump. Back to the caller's
-            // own space, which is the root mapping the app text it returns to.
+            // translation standing answers a value here instead of a dump.
             aspace_activate_for(sched::current());
             arch_aspace_destroy(space);
             kickos_frame_free(frame);
@@ -892,9 +881,9 @@ namespace kickos
             return 2 + static_cast<uint64_t>(after == PATTERN_B);
         }
 
-        // Edit the caller's space and let userspace perform the loads.
-        // RV64 without SUM cannot test user pages through supervisor loads.
-        // Release only after the caller confirms the seeded word.
+        // Edits the caller's space and lets userspace perform the loads: RV64 without SUM
+        // cannot test user pages through supervisor loads. Release only after the caller
+        // confirms the seeded word.
         constexpr uintptr_t VA_U = 0x20000000;
         arch_phys_addr_t g_here_frame = 0;
 
@@ -955,7 +944,7 @@ namespace kickos
                 return 0;
             }
             // Announced before the unmap: the gate compares this address against the one the
-            // fault report names, so the arm asserts WHICH page faulted.
+            // fault report names, asserting which page faulted.
             kprintf("[aspace] unmapped 0x%lx, expecting a translation fault\n",
                     static_cast<unsigned long>(VA_U));
             if (arch_aspace_unmap(space, VA_U, 1) != ARCH_ASPACE_OK)
@@ -977,10 +966,9 @@ namespace kickos
             return before - after;
         }
 
-        // Fail each frame allocation in turn and check cleanup immediately, before
-        // a later create can reclaim leftover state. Also check double-free counters.
-        // A zero donor_base tests ordinary creation; otherwise use a reservation
-        // from the caller's range list for grant-based creation.
+        // Checks cleanup immediately after each injected failure, before a later create can
+        // reclaim leftover state. A zero donor_base tests ordinary creation; otherwise uses
+        // a reservation from the caller's range list for grant-based creation.
         uint64_t op_forced_unwind(uintptr_t donor_base)
         {
             IrqLock lock;
@@ -1068,8 +1056,8 @@ namespace kickos
         uint64_t op_domain_balance()
         {
             IrqLock lock;
-            // Resolves with no reference, all landing on one free slot, so every resolve
-            // after the first must return what the last one left.
+            // Unreferenced resolves all land on one free slot: every resolve after the
+            // first must return what the last one left.
             size_t const before_reuse = frame_pool_free();
             Domain* last = nullptr;
             for (int i = 0; i < 4; i++)
@@ -1084,9 +1072,6 @@ namespace kickos
             }
             domain_release(last);
             size_t const lost_reuse = frames_lost(before_reuse);
-            // The release itself, weighed from after the resolve: over a resolve and a release
-            // together the reuse cleanup above hands back exactly the space a missing release
-            // destroy kept, and the pair reads as balanced.
             int derr = 0;
             Domain* const one = domain_for(DOM_CALLER_MEM_AUTH, nullptr, 0, 0, nullptr, &derr);
             if (one == nullptr)
@@ -1270,8 +1255,6 @@ namespace kickos
             }
             case KOS_ASPACE_OP_REENT_SEATING:
             {
-                // Bit 0 confirms a space-less switch occurred; bit 1 records an
-                // incorrect write to the app mapping during that switch.
                 uint64_t out = 0;
                 if (aspace_unseated_switch_ins() != 0)
                 {
@@ -1295,6 +1278,10 @@ namespace kickos
             case KOS_ASPACE_OP_RELEASE_RUNS:
             {
                 return aspace_release_runs();
+            }
+            case KOS_ASPACE_OP_THREADS_LIVE:
+            {
+                return sched::live_count();
             }
             case KOS_ASPACE_OP_MAP_TLBI:
             {

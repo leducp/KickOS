@@ -9,7 +9,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Core counts default to one when no board configuration is included.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif
@@ -23,13 +22,13 @@
 #define KICKOS_KERNEL_CORES 1
 #endif
 
-// Isolated cores run only threads whose explicit affinity mask includes them.
-// Applies only to the shared-kernel model.
+// Isolated cores run only threads whose explicit affinity mask names them. Shared-kernel model
+// only.
 #ifndef KICKOS_ISOLATED_CORES
 #define KICKOS_ISOLATED_CORES 0
 #endif
 
-// Mask of this kernel's cores. Avoid shifting by 32 for a 32-core kernel.
+// Mask of this kernel's cores, spelled so a 32-core kernel never shifts by 32.
 #define KICKOS_CORE_SET_ALL (~0u >> (32 - KICKOS_KERNEL_CORES))
 
 // Whether one kernel spans every core. A model, independent of the core count.
@@ -51,8 +50,7 @@
 // Several AMP nodes share one image; the core register identifies each node.
 #define KICKOS_AMP_SHARED_IMAGE (KICKOS_AMP_NODE && !KICKOS_AMP_OWN_IMAGE)
 
-// Per-arch definition of `struct arch_context` (opaque to the kernel; sized by the arch).
-// Resolved to arch/<arch>/include/kickos/arch/context.h.
+// Per-arch `struct arch_context`, opaque to the kernel and sized by the arch.
 #include <kickos/arch/context.h>
 
 // Architecture-specific MPU descriptors. Included only with KICKOS_HAVE_MPU;
@@ -90,8 +88,8 @@ int arch_reboot(void);
 // 3. Preserve the first three arguments.
 // 4. Branch to kickos_panic_report without a call edge.
 // Keep all state in registers, never shared BSS: cores may panic together.
-// Implement in assembly except on ARCH_SIM. The branch keeps the reporter
-// out of trap red-zone callgraph bounds. No fallback is provided.
+// Implement in assembly except on ARCH_SIM; no fallback is provided. A call edge would put
+// the reporter inside the trap red-zone callgraph bounds.
 void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
                               uintptr_t top) __attribute__((noreturn));
 
@@ -121,6 +119,8 @@ uint32_t arch_cpu_id(void);
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
 void arch_ipi_send(uint32_t cores);
 void arch_ipi_wait(uint32_t cores);
+// Whether every core in the mask other than the caller has answered the caller's latest send.
+bool arch_ipi_answered(uint32_t cores);
 
 // Full store-to-load barrier. Release/acquire alone does not order an earlier
 // store against a later load; AMP startup needs this ordering on both nodes.
@@ -131,11 +131,13 @@ void arch_ipi_fence(void);
 #define arch_ipi_fence() ((void)0)
 #endif
 
-// Raise this core's doorbell to deliver a pending reschedule after unmasking.
+// The part's bare raise of the doorbell on every core in `cores`, the caller's own included,
+// with no rendezvous request and so no answer owed. A raise the calling core makes on itself
+// under its own mask is taken at the unmask.
 #if KICKOS_KERNEL_CORES > 1
-void arch_ipi_resched_self(void);
+void arch_ipi_raise(uint32_t cores);
 #else
-#define arch_ipi_resched_self() ((void)0)
+#define arch_ipi_raise(cores) ((void)(cores))
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -177,10 +179,9 @@ void arch_amp_release_peers(void);
 void arch_kernel_lock(void);
 void arch_kernel_unlock(void);
 #if defined(KICKOS_DEBUG) && KICKOS_DEBUG
-// Nonzero while THE CALLING CORE holds the lock, which is the only question a release can be
-// checked against: a release taken where this reads zero hands the lock to a ticket nobody drew,
-// after which no draw ever matches and every core spins for good. Shared across the backends
-// (<kickos/arch/klock_owner.h>), which write the cell it reads.
+// Nonzero while the calling core holds the lock. A release where this reads zero hands the lock
+// to a ticket nobody drew, and every core then spins for good. Defined once for all backends,
+// which write its cell (<kickos/arch/klock_owner.h>).
 int arch_kernel_lock_held(void);
 #endif
 #else
@@ -201,6 +202,12 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size);
 
+#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB
+// Make `state` the thread pointer this context resumes with, which is what __getreent returns.
+// Survives arch_ctx_redirect.
+void arch_context_seat_reent(struct arch_context* ctx, void* state);
+#endif
+
 // Switch from from to to, immediately or at exception return. The scheduler
 // must allow deferred completion. Call with interrupts masked or from an ISR;
 // backends need not make the switch atomic.
@@ -212,11 +219,9 @@ void arch_start(struct arch_context* boot, struct arch_context* first);
 
 // --- Critical section (RAII-wrapped by kernel IrqLock) ---------------------
 typedef uintptr_t arch_irq_state_t;
-// An arch whose mask or unmask is a couple of instructions defines that half in its own
-// kickos/arch/irq_inline.h and marks which half it took, so IrqLock carries no call for it.
-// A half no header takes stays an ordinary out-of-line seam, and so does every half on an
-// arch shipping no such header: the host unit fixtures answer this seam with definitions of
-// their own, and an inline body would take that substitution away from them.
+// An arch may define either half inline in kickos/arch/irq_inline.h, marking it with
+// KICKOS_ARCH_IRQ_SAVE_INLINE or KICKOS_ARCH_IRQ_RESTORE_INLINE. Every other half stays out of
+// line: the host unit fixtures substitute their own definitions.
 #if defined(__has_include) && __has_include(<kickos/arch/irq_inline.h>)
 #include <kickos/arch/irq_inline.h>
 #endif
@@ -287,7 +292,7 @@ uint32_t arch_trace_now(void);
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // Stamp the thread trace ID into its saved context once. Switch tracing must
 // read IDs from the contexts being swapped, since an ISR may change scheduler
-// state before the physical swap. Present only with telemetry.
+// state before the physical swap.
 void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id);
 #endif
 
@@ -335,24 +340,20 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 // Replace the active MPU set with nonoverlapping regions on switch-in.
 // Attributes describe user access. image holds encoded descriptors; regions
 // provides addresses for backends such as sim mprotect, which denies all
-// unlisted arena memory. image is null only without KICKOS_HAVE_MPU; in that
-// configuration MpuSet::apply makes no call here.
+// unlisted arena memory. image is null only without KICKOS_HAVE_MPU.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image);
 
-// Program the set recorded by arch_mpu_apply after a deferred physical switch.
-// No-op when apply programs hardware immediately or when no MPU exists; every
-// backend must provide a definition. Called from a switch epilogue, and from
-// arch_mpu_apply_now below, which brackets it; a grant that must be live before
-// its syscall returns goes through THAT, never through apply then commit.
+// Program the set arch_mpu_apply recorded, after a deferred physical switch. No-op when apply
+// programs the hardware at once or no MPU exists; every backend must define it. A grant that
+// must be live before its syscall returns uses arch_mpu_apply_now, never apply then commit.
 void kickos_arch_mpu_commit(void);
 
-// Program this region set into the hardware NOW, for a grant (kos_mem_self_grant)
-// that must be effective before the syscall returns. It must NOT become the image
-// a pended switch commits: a deferred backend keeps ONE stash cell, and leaving
-// this set in it would have the switch epilogue program the caller's descriptors
-// onto the incoming thread. Same arguments as arch_mpu_apply. Every backend must
-// provide a definition; where apply already programs the hardware this is apply.
+// Program this set into the hardware now, for a grant that must be live before its syscall
+// returns (kos_mem_self_grant). It must not become the image a pended switch commits: a
+// deferred backend keeps one stash cell, and the switch epilogue would program the caller's
+// descriptors onto the incoming thread. Arguments as arch_mpu_apply. Every backend must define
+// it; where apply already programs the hardware this is apply.
 void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
                         struct arch_mpu_encoded const* image);
 
@@ -424,9 +425,9 @@ static inline size_t kickos_pow2_ceil(size_t want)
     return p;
 }
 
-// Required block alignment; equal to region size in power-of-two mode.
-// With KICKOS_TLS, every block uses a power-of-two stride so masking SP
-// produces the correct thread pointer.
+// Required block alignment; equal to region size in power-of-two mode. Where the thread
+// pointer is SP masked down to the stride, every block also sits on its own power-of-two
+// stride, or the mask lands in a neighbour's block.
 static inline size_t arch_ram_region_align(size_t want)
 {
     size_t const min = arch_mpu_min_region();
@@ -439,7 +440,7 @@ static inline size_t arch_ram_region_align(size_t want)
             geometry = arch_ram_region_size(want);
         }
     }
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
     size_t const stride = kickos_pow2_ceil(want);
     if (stride > geometry)
     {
@@ -503,7 +504,6 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len);
 bool arch_user_data_writable(uintptr_t ptr, size_t len);
 
 // An address that faults on unprivileged access (sim: a reserved arena page no domain owns).
-// Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);
 
 // Opaque translating address spaces, selected instead of MPU regions.
@@ -549,7 +549,7 @@ enum arch_aspace_result
 };
 
 // The mapping granule in bytes, a power of two, and the unit `va`, `pa` and `pages` are counted
-// in. The frame allocator and the guard-page arithmetic read this one answer.
+// in.
 size_t arch_aspace_granule(void);
 
 // Create an empty user space with the fixed kernel range mapped, or return
@@ -810,7 +810,7 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 #if KICKOS_KERNEL_CORES > 1
 // Release the kernel lock inside the physical swap, after saving the outgoing
 // context and moving to the incoming stack. This prevents peers from choosing
-// a thread whose saved state is stale. Also raise arch_ipi_resched_self for
+// a thread whose saved state is stale. Also raises this core's own doorbell for
 // pending work; a deferred ISR switch leaves this release to the swap.
 void kickos_switch_unlock(void);
 
@@ -901,13 +901,12 @@ void kickos_fault_record(char const* status_name, uint64_t status,
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Report a damaged kickos_trapstack_witness from the panic path after
-// kpanic_enter; stay silent if intact. The self-test checks that trap entry
-// cannot write through a user SP into kernel memory.
+// kpanic_enter; stay silent if intact.
 void kickos_trapstack_witness_report(void);
 
 // Record a nested trap's frame and interrupted thread stack bounds to check
 // that it used a kernel stack. Pass lo == 0 with no current thread. Record
-// counters only; KOS_SYS_NEST_WITNESS reads them for shutdown reporting.
+// counters only.
 void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi);
 uint32_t kickos_nestwitness_count(int which);
 #endif

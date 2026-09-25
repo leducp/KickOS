@@ -36,6 +36,8 @@ namespace
     constexpr size_t PTES = GRANULE / sizeof(uint64_t);
     constexpr int LEVEL_ROOT = 1;
     constexpr int LEVEL_LEAF = 3;
+    static_assert(LEVEL_LEAF - LEVEL_ROOT + 1 == 3,
+                  "tests/static/trap_redzone_roots.txt bounds each table walk at 3 activations");
 
     // Acquire uses the direct RAM mapping and needs no temporary slots.
     constexpr size_t ACQUIRE_CAPACITY = SIZE_MAX;

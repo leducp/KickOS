@@ -7,10 +7,10 @@ add_subdirectory(telemetry)
 if(KICKOS_BUILD_UNIT_TESTS)
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
+      amphold ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
       deathspace drvbringup fastrefuse faultline frame fusedwake grantnocache irqquiesce kstring
-      ktime mapexec mapfence mpuskip mtimeconv placeadmit ramowner reschedowed slotpool taskbudget tlscarve
+      ktime mapexec mapfence mpuskip mtimeconv placeadmit ramowner reschedowed slotpool taskbudget
       uartclass vrange)
     add_subdirectory(${_unit})
   endforeach()
@@ -20,12 +20,13 @@ if(KICKOS_BUILD_UNIT_TESTS)
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
       cancelkind capbadge capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
-      schedwake slayhook taskdeath taskpool wildstack)
+      rrslice schedwake slayhook taskdeath taskpool wildstack)
     add_subdirectory(${_unit})
   endforeach()
 
   add_subdirectory(exitquiesce)
-  foreach(_unit IN ITEMS heldassert irqlinecore migrateask parkdeath placement slaypeer)
+  foreach(_unit IN ITEMS heldassert irqlinecore migrateask parkdeath placement schedring slaypeer
+      tlscarve)
     add_subdirectory(${_unit})
   endforeach()
 endif()

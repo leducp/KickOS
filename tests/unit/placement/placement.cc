@@ -15,6 +15,9 @@
 //                push it, and the holder does on its next pass. No core takes a thread off
 //                another's structure.
 //
+// A thread moved to a peer is handed to it, and only that peer's dispatch links it, so an arm
+// asserting where a thread runs runs the target's dispatch first.
+//
 // The ask is a counter before it is a doorbell (kernel/sync/klock.cc), and a counter is
 // readable on the host, where the doorbell is not.
 
@@ -26,6 +29,8 @@
 #include <kickos/thread.h>
 
 #include "kseam_test.h"
+
+#include <new>
 
 using namespace kickos;
 using namespace kickos::testfix;
@@ -208,6 +213,10 @@ TEST_F(Placement, a_declined_equal_priority_wake_moves_to_an_idle_core)
         << "an equal-priority wake with a wide mask waits for its waker to park while a core it "
            "may run on idles";
     EXPECT_NE(owed_at(CORE_PEER), 0) << "the thread was moved to a core nobody told to look";
+
+    dispatch_as(CORE_PEER);
+
+    EXPECT_EQ(kernel().current[CORE_PEER], b) << "the idle core's dispatch did not take it";
 }
 
 // The same-core handoff: two threads pinned to one core. The wake stays and asks nobody,
@@ -242,6 +251,10 @@ TEST_F(Placement, a_wake_declined_by_a_strictly_higher_current_is_pushed_to_an_i
            "runs nothing, and under FIFO nothing later is owed that would move it";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the thread was moved to a core nobody told to look, so it waits there instead";
+
+    dispatch_as(CORE_PEER);
+
+    EXPECT_EQ(kernel().current[CORE_PEER], b) << "the idle core's dispatch did not take it";
 }
 
 // The selftest's hang, on the host: a wake whose waker is exiting has no pass to decline it in,
@@ -269,11 +282,15 @@ TEST_F(Placement, a_wake_from_an_exiting_thread_is_placed_by_the_pass_it_cannot_
 
     ASSERT_EQ(kernel().current[CORE_ME], spinner)
         << "fixture: the exit's own pass seats the thread above the joiner";
-    ASSERT_EQ(joiner->state, ThreadState::READY) << "fixture: the exit woke its joiner";
+    ASSERT_NE(joiner->state, ThreadState::BLOCKED) << "fixture: the exit woke its joiner";
     EXPECT_EQ(joiner->queue_core, CORE_PEER)
         << "the joiner waits behind the spinner on the exiting thread's core while the peer "
            "idles, and nothing later is owed that would move it";
     EXPECT_NE(owed_at(CORE_PEER), 0) << "the joiner was moved to a core nobody told to look";
+
+    dispatch_as(CORE_PEER);
+
+    EXPECT_EQ(kernel().current[CORE_PEER], joiner) << "the idle core's dispatch did not take it";
 }
 
 // Threads readied while this core runs below them all expect its next pass, and that pass takes
@@ -310,6 +327,10 @@ TEST_F(Placement, threads_readied_ahead_of_one_pass_are_placed_by_the_pass_that_
     EXPECT_NE(owed_at(CORE_PEER), 0) << "the thread was moved to a core nobody told to look";
     EXPECT_EQ(low->queue_core, CORE_ME)
         << "the second declined thread followed the first onto a core that now runs above it";
+
+    dispatch_as(CORE_PEER);
+
+    EXPECT_EQ(kernel().current[CORE_PEER], under) << "the idle core's dispatch did not take it";
 }
 
 // A core's level is what its next pass seats, READY threads included, so the first thread a
@@ -349,23 +370,26 @@ TEST_F(Placement, a_core_that_falls_below_a_peers_ready_thread_asks_that_peer_to
     EXPECT_NE(owed_at(CORE_ME), 0)
         << "the peer fell below a thread waiting behind a higher priority here and asked this "
            "core nothing, so the thread waits for as long as FIFO keeps the runner on the CPU";
-    EXPECT_EQ(kernel().push_asked[CORE_ME], 1u << CORE_PEER)
+    EXPECT_TRUE(drop_asked(CORE_PEER, CORE_ME))
         << "the ask carried no request naming the core that fell";
 
-    settle();
-    pass_as(CORE_ME);
+    drain(CORE_PEER);
+    dispatch_as(CORE_ME);
 
     ASSERT_EQ(kernel().current[CORE_ME], h.runner) << "fixture: this core keeps its runner";
     EXPECT_EQ(h.t->queue_core, CORE_PEER)
         << "the holder took the request and pushed nothing, so the drop was asked for and lost";
     EXPECT_NE(owed_at(CORE_PEER), 0) << "the thread was pushed to a core nobody told to look";
 
-    pass_as(CORE_PEER);
+    dispatch_as(CORE_PEER);
 
     EXPECT_EQ(kernel().current[CORE_PEER], h.t) << "the pushed thread was not the peer's pick";
 }
 
-TEST_F(Placement, a_drop_uncovering_only_threads_pinned_elsewhere_asks_nobody)
+// The asker reads a holder's level and never its structure, so a holder running above it is
+// asked whatever it holds; the holder re-reads the asker over its own structure and moves only a
+// thread the asker may run.
+TEST_F(Placement, a_drop_ask_to_a_holder_with_nothing_to_push_moves_nothing)
 {
     Held h = held(PRIO_UNDER);
     h.t->affinity = 1u << CORE_ME;
@@ -374,9 +398,14 @@ TEST_F(Placement, a_drop_uncovering_only_threads_pinned_elsewhere_asks_nobody)
 
     ASSERT_EQ(kernel().current[CORE_PEER], kernel().idle[CORE_PEER])
         << "fixture: the peer fell to its idle";
-    EXPECT_EQ(owed_at(CORE_ME), 0)
-        << "a core was asked to push a thread whose mask does not name the core that fell";
-    EXPECT_EQ(kernel().push_asked[CORE_ME], 0u) << "a request stands for a thread nobody may take";
+
+    drain(CORE_PEER);
+    dispatch_as(CORE_ME);
+
+    EXPECT_EQ(h.t->queue_core, CORE_ME)
+        << "the holder pushed a thread whose mask does not name the core that fell";
+    EXPECT_FALSE(drop_asked(CORE_PEER, CORE_ME)) << "the holder's dispatch left the request standing";
+    EXPECT_EQ(owed_at(CORE_PEER), 0) << "the core that fell was asked to take a thread it may not run";
 }
 
 // Strictly above: a core falling to a thread's priority would run it only behind what it
@@ -388,14 +417,19 @@ TEST_F(Placement, a_drop_to_a_threads_own_priority_is_not_a_drop_for_that_thread
         IrqLock lock;
         sched::set_prio(h.hog, PRIO_UNDER);
     }
-    settle();
+    drain(CORE_ME);
 
-    pass_as(CORE_PEER);
+    dispatch_as(CORE_PEER);
 
     ASSERT_EQ(kernel().current[CORE_PEER], h.hog) << "fixture: the peer keeps its lowered hog";
-    EXPECT_EQ(owed_at(CORE_ME), 0)
-        << "a core that fell only to the thread's own priority asked for it, so the thread "
-           "would trade an equal wait here for an equal wait there at the cost of a push";
+
+    settle();
+    pass_as(CORE_ME);
+
+    EXPECT_EQ(h.t->queue_core, CORE_ME)
+        << "a core that fell only to the thread's own priority was handed it, so the thread "
+           "traded an equal wait here for an equal wait there at the cost of a push";
+    EXPECT_EQ(owed_at(CORE_PEER), 0) << "the core that fell was asked to take the thread";
 }
 
 TEST_F(Placement, a_thread_waiting_behind_an_equal_on_its_own_core_is_pushed_to_a_dropping_core)
@@ -410,8 +444,8 @@ TEST_F(Placement, a_thread_waiting_behind_an_equal_on_its_own_core_is_pushed_to_
         << "the peer fell below a thread waiting behind an equal here and asked this core "
            "nothing, so the thread waits for the runner to park while the peer idles";
 
-    settle();
-    pass_as(CORE_ME);
+    drain(CORE_PEER);
+    dispatch_as(CORE_ME);
 
     EXPECT_EQ(h.t->queue_core, CORE_PEER) << "the holder did not push what the fallen core asked";
 }
@@ -431,8 +465,8 @@ TEST_F(Placement, lowering_a_peers_running_thread_asks_that_peer_for_the_pass_th
         << "the peer's running thread fell below a thread this core holds and the peer was "
            "not asked for the pass that would see it";
 
-    settle();
-    pass_as(CORE_PEER);
+    drain(CORE_ME);
+    dispatch_as(CORE_PEER);
 
     ASSERT_EQ(kernel().current[CORE_PEER], h.hog) << "fixture: the peer keeps its hog";
     EXPECT_NE(owed_at(CORE_ME), 0)
@@ -470,31 +504,34 @@ TEST_F(Placement, a_core_is_placed_on_only_once_started_and_asks_for_what_waits_
         << "the peer started below a thread waiting behind a higher priority here and asked "
            "for nothing, so the thread strands on a core that never looks again";
 
-    pass_as(CORE_ME);
+    dispatch_as(CORE_ME);
 
     EXPECT_EQ(t->queue_core, CORE_PEER) << "the holder did not push what the started core asked";
+
+    dispatch_as(CORE_PEER);
+
+    EXPECT_EQ(kernel().current[CORE_PEER], t) << "the started core's dispatch did not take it";
 }
 
-// The request is a hint and the holder's pass re-reads it: a core whose level rose again before
+// The request is a hint and the holder's dispatch re-reads it: a core whose level rose again before
 // the holder looked is no longer below the thread and gets nothing.
 TEST_F(Placement, a_push_is_not_made_once_the_core_that_asked_no_longer_sits_below)
 {
     Held h = held(PRIO_UNDER);
     h.hog->affinity = 1u << CORE_PEER;
     hog_parks(h);
-    ASSERT_EQ(kernel().push_asked[CORE_ME], 1u << CORE_PEER)
-        << "fixture: the peer's fall stands as a request";
+    ASSERT_TRUE(drop_asked(CORE_PEER, CORE_ME)) << "fixture: the peer's fall stands as a request";
 
     wake_as(CORE_PEER, h.hog);
     ASSERT_EQ(kernel().current[CORE_PEER], h.hog) << "fixture: the peer rose again";
-    settle();
+    drain(CORE_PEER);
 
-    pass_as(CORE_ME);
+    dispatch_as(CORE_ME);
 
     EXPECT_EQ(h.t->queue_core, CORE_ME)
         << "the holder pushed on a stale request, onto a core now running above the thread";
     EXPECT_EQ(owed_at(CORE_PEER), 0) << "a core above the thread was asked to take it";
-    EXPECT_EQ(kernel().push_asked[CORE_ME], 0u) << "the holder's pass left the request standing";
+    EXPECT_FALSE(drop_asked(CORE_PEER, CORE_ME)) << "the holder's dispatch left the request standing";
 }
 
 namespace
@@ -564,4 +601,198 @@ TEST_F(Placement, a_decline_pass_does_not_revisit_a_thread_it_already_passed)
     EXPECT_EQ(wide->queue_core, CORE_PEER) << "the wide thread waits behind `top` while the peer idles";
     EXPECT_EQ(g_passed_answers, 0u)
         << "the walk returned to a thread it had passed before the one it moved";
+}
+
+// A core's level is published at every change of its bitmap, so a span that readies a thread
+// there and takes no pass has already moved what the next placer reads.
+TEST_F(Placement, a_level_changed_in_a_span_with_no_pass_is_seen_by_the_next_placer)
+{
+    Duo d = duo();
+    Thread* const x = parked(SLOT_HOG, PRIO_HOG, d.runner);
+    x->affinity = 1u << CORE_PEER;
+    Thread* const y = parked(SLOT_T, PRIO_UNDER, d.runner);
+    uint32_t const was = g_core;
+    g_core = CORE_PEER;
+    {
+        IrqLock lock;
+        EXPECT_TRUE(sched::wake_no_resched(x)) << "fixture: the thread was parked";
+    }
+    g_core = was;
+    ASSERT_TRUE(x->state == ThreadState::READY and x->queue_core == CORE_PEER)
+        << "fixture: the peer readied a thread on itself and took no pass";
+
+    wake_as(CORE_ME, y);
+
+    EXPECT_EQ(y->queue_core, CORE_ME)
+        << "the placer read the peer as idle: its level had risen in a span with no pass, and "
+           "a cell published only at a pass end still said idle";
+}
+
+namespace
+{
+    int cell_level(uint32_t core)
+    {
+        return static_cast<int>(kernel().sched_out[core].level.load()) - 1;
+    }
+
+    int bitmap_top(uint32_t core)
+    {
+        uint32_t const bm = kernel().ready_bitmap[core];
+        if (bm == 0)
+        {
+            return -1;
+        }
+        return 31 - __builtin_clz(bm);
+    }
+
+    // Straight through the policy, so no placement moves the thread off the core under test.
+    void link_on_me(Thread* t)
+    {
+        IrqLock lock;
+        t->queue_core = static_cast<uint8_t>(CORE_ME);
+        t->rq_prio = t->prio;
+        t->state = ThreadState::READY;
+        kernel().policy->on_ready(t);
+    }
+
+    void unlink_from_me(Thread* t)
+    {
+        IrqLock lock;
+        kernel().policy->on_remove(t);
+        t->state = ThreadState::BLOCKED;
+    }
+
+    Thread* bare(int slot, uint8_t prio)
+    {
+        Thread* const t = new (&g_fx.t[slot]) Thread{};
+        t->base_prio = prio;
+        t->prio = prio;
+        t->affinity = 1u << CORE_ME;
+        t->id = static_cast<uint16_t>(slot + 1);
+        return t;
+    }
+}
+
+// The cell is stored only where an edit moves the top, so every edit that moves it, and none
+// that does not, must leave it naming the top.
+TEST_F(Placement, a_started_cores_level_follows_the_top_of_its_bitmap_through_every_edit)
+{
+    (void)duo();
+    ASSERT_EQ(cell_level(CORE_ME), bitmap_top(CORE_ME)) << "fixture: started with the runner seated";
+    Thread* const lo = bare(SLOT_T, PRIO_LOW);
+    Thread* const eq = bare(SLOT_U, PRIO_RUNNER);
+    Thread* const hi = bare(SLOT_HOG, PRIO_HOG);
+    struct Step
+    {
+        Thread* t;
+        bool link;
+        char const* what;
+    };
+    Step const steps[] = {
+        {lo, true, "a link below the top"},        {hi, true, "a link above the top"},
+        {eq, true, "a link into a non-empty list"}, {lo, false, "an unlink below the top"},
+        {hi, false, "an unlink of the top"},        {eq, false, "an unlink leaving its list"},
+        {hi, true, "a link above the top again"},   {lo, true, "a link below it again"},
+        {hi, false, "an unlink of the top again"},  {lo, false, "the last unlink below"},
+    };
+    for (Step const& st : steps)
+    {
+        if (st.link)
+        {
+            link_on_me(st.t);
+        }
+        else
+        {
+            unlink_from_me(st.t);
+        }
+        EXPECT_EQ(cell_level(CORE_ME), bitmap_top(CORE_ME))
+            << "after " << st.what << ", peers read a level the bitmap no longer has";
+    }
+}
+
+// A peer places only on a started core, and the start is the only moment a cell leaves zero.
+TEST_F(Placement, a_core_publishes_its_level_at_its_start_and_not_before)
+{
+    Thread* const runner = seat_pool(SLOT_RUNNER, PRIO_RUNNER);
+    (void)add_peer_idle();
+    {
+        IrqLock lock;
+        sched::reschedule();
+    }
+    ASSERT_EQ(kernel().current[CORE_ME], runner) << "fixture: the runner runs here";
+    EXPECT_EQ(kernel().sched_out[CORE_PEER].level.load(), 0u)
+        << "a core read as started before it seated anything";
+    settle();
+    g_core = CORE_PEER;
+    sched::start();
+    g_core = CORE_ME;
+    ASSERT_EQ(kernel().current[CORE_PEER], kernel().idle[CORE_PEER])
+        << "fixture: the peer started on its idle";
+    EXPECT_EQ(cell_level(CORE_PEER), static_cast<int>(KICKOS_PRIO_IDLE))
+        << "a started core still reads as not started, so no peer ever places on it";
+}
+
+namespace
+{
+    // What a pass on CORE_ME decides about a wake it declines, with the peer's ready structure,
+    // bitmap, seat and record either intact or poisoned. The peer runs `hog_prio`.
+    uint32_t declined_wake_goes_to(uint8_t hog_prio, bool poison)
+    {
+        Held h = held(PRIO_UNDER);
+        uint32_t const was = g_core;
+        g_core = CORE_PEER;
+        {
+            IrqLock lock;
+            sched::set_prio(h.hog, hog_prio);
+        }
+        g_core = was;
+        Thread* const y = parked(SLOT_U, PRIO_UNDER, h.runner);
+        if (poison)
+        {
+            Kernel& k = kernel();
+            for (uint32_t p = 0; p < KICKOS_NUM_PRIO; p++)
+            {
+                k.ready[CORE_PEER][p].head = reinterpret_cast<ListNode*>(0x1);
+                k.ready[CORE_PEER][p].tail = reinterpret_cast<ListNode*>(0x1);
+            }
+            k.ready_bitmap[CORE_PEER] = 0;
+            k.current[CORE_PEER] = nullptr;
+            k.seated_prio[CORE_PEER] = 0;
+        }
+        wake_as(CORE_ME, y);
+        uint32_t const where = y->queue_core;
+        // The poisoned structure is never walked again: the next arm resets the whole instance.
+        return where;
+    }
+}
+
+// The placer reads a peer's level cell and what is on its way there, never the peer's lists,
+// bitmap, running thread or seated record: poisoning all four moves no decision.
+// A peer's cell is compared before anything on its way there is read, and the comparison must
+// not shade the boundary: one level below takes the thread, its own level does not.
+TEST_F(Placement, a_declined_wake_takes_a_peer_one_level_below_and_not_one_at_its_own)
+{
+    static_assert(PRIO_LOW + 1 == PRIO_UNDER, "the arm needs a peer exactly one level below");
+    uint32_t const one_below = declined_wake_goes_to(PRIO_LOW, false);
+    reset();
+    uint32_t const level_with = declined_wake_goes_to(PRIO_UNDER, false);
+
+    EXPECT_EQ(one_below, CORE_PEER) << "a peer one level below the wake was passed over";
+    EXPECT_EQ(level_with, CORE_ME) << "a peer level with the wake was taken as below it";
+}
+
+TEST_F(Placement, no_pass_reads_a_peers_ready_structure)
+{
+    uint32_t const above = declined_wake_goes_to(PRIO_HOG, false);
+    reset();
+    uint32_t const above_poisoned = declined_wake_goes_to(PRIO_HOG, true);
+    reset();
+    uint32_t const below = declined_wake_goes_to(PRIO_PEER_LOW, false);
+    reset();
+    uint32_t const below_poisoned = declined_wake_goes_to(PRIO_PEER_LOW, true);
+
+    ASSERT_EQ(above, CORE_ME) << "fixture: a peer above the wake keeps it off";
+    ASSERT_EQ(below, CORE_PEER) << "fixture: a peer below the wake takes it";
+    EXPECT_EQ(above_poisoned, above) << "a placement read the peer's bitmap";
+    EXPECT_EQ(below_poisoned, below) << "a placement read the peer's running thread";
 }

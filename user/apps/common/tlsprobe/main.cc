@@ -10,7 +10,22 @@
 
 namespace
 {
+// By ISA: only M-profile ARM and RX give unprivileged code no per-thread register, so every
+// other arch owes a caller stack of any size its own thread-local block.
+#if defined(__arm__) or defined(__RX__)
+#define TLSPROBE_CALLER_STACK 0
+#else
+#define TLSPROBE_CALLER_STACK 1
+#endif
+#if not TLSPROBE_CALLER_STACK
     constexpr int WORKERS = 2;
+#else
+    // The last worker runs on a stack its caller supplies: half a stride, so neither one stride
+    // wide nor, in general, stride-aligned. It must be admitted and still get its own block.
+    constexpr int WORKERS = 3;
+    constexpr uint32_t CALLER_STACK = KICKOS_TLS_STRIDE / 2u;
+    static_assert(CALLER_STACK >= KICKOS_MIN_STACK_SIZE, "below the per-arch stack floor");
+#endif
 
     // .tdata (a non-zero initialiser) and .tbss (no initialiser).
     //
@@ -20,9 +35,7 @@ namespace
     thread_local volatile unsigned g_seeded = 0xA5A5A5A5u;
     thread_local unsigned g_written = 0;
 
-    // `done` PUBLISHES the four fields above it: the worker fills them and stores it last,
-    // main reads it first. Plain words gave the reader no ordering and let its poll loop keep
-    // the flag in a register, so the whole struct was a data race.
+    // `done` PUBLISHES the four fields above it: the worker stores it last, main reads it first.
     struct Report
     {
         unsigned addr;
@@ -91,11 +104,30 @@ int main(int, char**)
     }
     g_written = 0x4F4F5400u;
 
-    for (int k = 0; k < WORKERS; k++)
+    for (int k = 0; k < 2; k++)
     {
         kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
                             "tlsw", 10);
     }
+#if TLSPROBE_CALLER_STACK
+    {
+        // Allocation grants nothing, and where a backend translates the block is not mapped.
+        void* const stack = kos_ram_alloc(CALLER_STACK);
+        int rc = -1;
+        if (stack != nullptr and kos_mem_self_grant(stack, CALLER_STACK, 0) == 0)
+        {
+            rc = kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(2)),
+                                     "tlsc", 10, KOS_POLICY_FIFO, 0, false, nullptr, 0, stack,
+                                     CALLER_STACK)
+                     .error();
+        }
+        char d[72];
+        ksnprintf(d, sizeof(d), "[tlsprobe] w2 caller stack %x size %x spawn %d\n",
+                  static_cast<unsigned>(reinterpret_cast<uintptr_t>(stack)),
+                  static_cast<unsigned>(CALLER_STACK), rc);
+        kos::print(d);
+    }
+#endif
 
     for (int spin = 0; spin < 200; spin++)
     {
@@ -158,10 +190,18 @@ int main(int, char**)
                   g_report[k].read_back, verdict);
         kos::print(b);
     }
-    if (WORKERS == 2 and g_report[0].addr == g_report[1].addr and g_report[0].done != 0)
+    for (int i = 0; i < WORKERS; i++)
     {
-        kos::print("[tlsprobe] w0 and w1 SHARE ONE BLOCK\n");
-        bad++;
+        for (int j = i + 1; j < WORKERS; j++)
+        {
+            if (g_report[i].done != 0 and g_report[j].done != 0
+                and g_report[i].addr == g_report[j].addr)
+            {
+                ksnprintf(b, sizeof(b), "[tlsprobe] w%d and w%d SHARE ONE BLOCK\n", i, j);
+                kos::print(b);
+                bad++;
+            }
+        }
     }
     if (g_written != 0x4F4F5400u)
     {

@@ -33,4 +33,9 @@
 #endif
 #define KICKOS_TLS_FROM_SP TLSCARVE_FROM_SP
 
+#ifdef KICKOS_REENT_IN_TCB
+#undef KICKOS_REENT_IN_TCB
+#endif
+#define KICKOS_REENT_IN_TCB TLSCARVE_REENT_IN_TCB
+
 #include "../../../kernel/thread/tls.cc"

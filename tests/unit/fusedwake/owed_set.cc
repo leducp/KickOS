@@ -105,7 +105,7 @@ namespace
         // run ahead of the server during setup.
         for (Thread* t : {f->answered, f->sender})
         {
-            kernel().policy->on_remove(t);
+            detach_ready(t);
             t->state = ThreadState::BLOCKED;
         }
         {
@@ -114,7 +114,7 @@ namespace
         }
         ASSERT_EQ(sched::current(), f->server);
         // Give the peer a running thread so it is eligible for reschedule requests.
-        kernel().policy->on_remove(f->peer_running);
+        detach_ready(f->peer_running);
         f->peer_running->state = ThreadState::RUNNING;
         kickos::testfix::seat_running_on(f->peer_running, CORE_PEER);
 
@@ -194,7 +194,7 @@ TEST_F(FusedWake, the_sender_behind_the_answered_caller_is_announced)
 
     ASSERT_EQ(serve(&f), static_cast<int32_t>(sizeof(f.sender_buf)));
     ASSERT_EQ(f.answered->wait_result, 0);
-    ASSERT_EQ(f.sender->state, ThreadState::READY);
+    ASSERT_EQ(f.sender->state, ThreadState::HANDED) << "fixture: the sender was handed to the peer";
     EXPECT_TRUE(owed_on(CORE_PEER))
       << "the popped sender runs only on the peer, which was never asked";
 }
@@ -206,7 +206,8 @@ TEST_F(FusedWake, the_answered_caller_the_sender_outranks_is_announced)
     ASSERT_NO_FATAL_FAILURE(stage(&f, PRIO_LOW, ON_PEER, PRIO_HIGH, ON_ME));
 
     ASSERT_EQ(serve(&f), static_cast<int32_t>(sizeof(f.sender_buf)));
-    ASSERT_EQ(f.answered->state, ThreadState::READY);
+    ASSERT_EQ(f.answered->state, ThreadState::HANDED)
+        << "fixture: the answered caller was handed to the peer";
     ASSERT_EQ(f.sender->state, ThreadState::READY);
     EXPECT_TRUE(owed_on(CORE_PEER))
       << "the answered caller runs only on the peer, which was never asked";

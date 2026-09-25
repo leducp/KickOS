@@ -732,11 +732,12 @@ config KICKOS_IDLE_STACK_SIZE
 	help
 	  Idle is privileged and its body is arch_idle_wait alone, so it never enters
 	  the syscall path and KICKOS_MIN_STACK_SIZE does not bind it. What does is
-	  the PREEMPTION red zone, the frame a tick or a device IRQ builds on the
-	  stack it interrupted plus whatever the kernel runs below that: 688 on lx6,
-	  the deepest in the fleet, against 384 on rv32imac. The range floor cannot
-	  state a per-arch figure, so each backend static_asserts its own zone against
-	  this knob and a board set below it fails the build rather than the thread.
+	  the frame an interrupt builds on the stack it interrupted plus whatever the
+	  kernel runs below that. The range floor cannot state a per-arch figure, so a
+	  backend states its own zone and a board set below it fails the build rather
+	  than the thread. Where the arch seats its thread pointer, idle also takes
+	  its thread-local block off this stack, and the link refuses an image whose
+	  block no longer leaves that zone above it.
 
 config KICKOS_ROOT_STACK_SIZE
 	int "Root thread stack"
@@ -807,17 +808,14 @@ config KICKOS_KERNEL_STACKS
 config KICKOS_KERNEL_STACK_SIZE
 	int
 	default 1184 if ARCH_RV32IMAC
-	# PROVISIONAL: taken from armv8a, not measured on this arch.
+	# Above what rv64_trap_stack.h's kernel-block classes ask of it.
 	default 4096 if ARCH_RV64IMAC
-	# PROVISIONAL: not measured, and above every 32-bit figure because the uniform
-	# exception frame is 800 bytes and a blocking syscall holds two of them at once.
+	# Above what armv8a_trap_stack.h's kernel-block classes ask of it.
 	default 4096 if ARCH_ARMV8A
-	# PROVISIONAL: taken from armv8a, not measured on this arch. The backend asserts a
-	# structural floor of 368.
+	# Above what x86_64_trap_stack.h's kernel-block classes ask of it.
 	default 4096 if ARCH_X86_64
 	default 1120 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
-	default 1456 if ARCH_ARMV7M && KICKOS_ENABLE_SELFTEST && !KICKOS_AMP_POSTURE_NONE
 	default 1008 if ARCH_ARMV7M
 	default 896 if ARCH_ARMV6M
 	default 1024
@@ -869,10 +867,11 @@ config KICKOS_PANIC_STACK_SIZE
 	default 944 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 432 if ARCH_ARMV7M
 	default 1024 if ARCH_LX6
-	# PROVISIONAL AND UNBACKED, not a measurement: no trap_redzone_roots.txt class walks
-	# these three, and none of them carries a static_assert either.
+	# Above armv8a_trap_stack.h's PANIC figure.
 	default 2048 if ARCH_ARMV8A
+	# Above rv64_trap_stack.h's PANIC figure.
 	default 2048 if ARCH_RV64IMAC
+	# Above x86_64_trap_stack.h's PANIC figure.
 	default 2048 if ARCH_X86_64
 	default 1024
 	help
@@ -880,19 +879,12 @@ config KICKOS_PANIC_STACK_SIZE
 	  pointer here before the banner prints, so the console descent lands on this array
 	  instead of below whatever frame the assertion fired in.
 
-	  NOT A KNOB, which is why it has no prompt, and a board may only RAISE it. THE RULE
-	  FOR A DEFAULT IS THE NEXT MULTIPLE OF 64 STRICTLY ABOVE the arch's deepest measured
-	  reporter, so a reading that is already 64-aligned still gains a step: 384 measured on
-	  rv32imac gives 448, 308 on rxv3 gives 320, 304 on armv6m and on armv7m gives 320, 800
-	  on armv7m telemetry gives 832, 736 on lx6 gives 768. Strictly above and not merely
-	  rounded, because a byte here costs ONE shared array rather than one per thread slot,
-	  and the enforced figure is what a future change is measured against.
-
-	  THE THREE PROVISIONAL FIGURES ARE THE EXCEPTION and say so at their lines: no class
-	  in trap_redzone_roots.txt walks armv8a, rv64imac or x86_64, so those numbers are
-	  UNBACKED rather than measured, and none of the three carries the static_assert the
-	  five measured arches do, there being no arch macro to assert against. Porting the
-	  gate to them is what turns those into figures.
+	  NOT A KNOB, which is why it has no prompt, and a board may only RAISE it. ON THE
+	  MICROCONTROLLER ARCHES THE DEFAULT IS THE ARCH HEADER'S PANIC FRAME PLUS ITS PANIC
+	  DEPTH, rounded up to 16, and that depth was set at the next multiple of 64 strictly
+	  above the deepest reporter measured when it was set; each <arch>_trap_stack.h states
+	  what it reads now. THE TRANSLATING ARCHES KEEP 2048, well above their measured
+	  reporter: RAM is plentiful there, and one figure keeps them alike.
 
 	  WHY IT EXISTS. The reporter walks the whole console, and every KICKOS_ASSERT on a
 	  dispatch chain can reach it. Charged to the chain it fired on, that tail would be the
@@ -934,10 +926,11 @@ config KICKOS_TLS
 	  pointer. A number typed into a defconfig cannot track a template the linker owns.
 	  With no thread_local declared the carve is zero bytes and this costs nothing.
 
-	  IT DOES NOT GIVE YOU A PER-THREAD errno. newlib reaches its reentrant state
-	  through _impure_ptr, not through a thread_local, so errno and the rest of that
-	  state come from the per-thread struct _reent every non-sim board carries, not
-	  from this knob.
+	  errno IS NOT A thread_local. It lives in newlib's reentrant state, the per-thread
+	  struct _reent every non-sim board carries. On armv8a, and where lx6 runs one
+	  kernel on more than one core, each thread finds that state through the first
+	  word of the control block this knob carves, so there it cannot be turned off
+	  and the configure refuses KICKOS_TLS=n by name.
 
 	  IT COSTS NO MPU DESCRIPTOR. The stack is already one region under one descriptor,
 	  and the carve is inside it. Raising ctx.stack_lo above the carve is what keeps a
@@ -959,16 +952,17 @@ config KICKOS_TLS
 	  value the thread chose. The entry never reads it: tp is written FROM the control
 	  block at both ends, exactly as gp already is.
 
-	  IT FORCES POWER-OF-TWO STACK SIZES. Unprivileged code on ARM has no register that
-	  differs per thread except SP, so __aeabi_read_tp is SP masked down to the thread's
-	  own block. That is correct only when the blocks are STRIDED by a power of two, so
-	  with this on every arena block is aligned to its own rounded size and
-	  KICKOS_USER_STACK_SIZE and KICKOS_ROOT_STACK_SIZE must be powers of two and must
-	  round to the SAME one. The top-level CMakeLists.txt refuses each failure by name at
-	  configure time, and cmake/boot_arena.cmake mirrors the align leg so the link-time
-	  assert models the geometry the allocator produces. On a part too small to pay that
-	  rounding, turning this off costs a thread_local and keeps a thread: f302nucleo and
-	  bluepill-c8 both make that trade.
+	  WHERE THE ARCH SELECTS ARCH_TLS_FROM_SP IT FORCES POWER-OF-TWO STACK SIZES.
+	  Unprivileged code on ARM has no register that differs per thread except SP, so
+	  __aeabi_read_tp is SP masked down to the thread's own block. That is correct only
+	  when the blocks are STRIDED by a power of two, so there every arena block is
+	  aligned to its own rounded size and KICKOS_USER_STACK_SIZE and
+	  KICKOS_ROOT_STACK_SIZE must be powers of two and must round to the SAME one. The
+	  top-level CMakeLists.txt refuses each failure by name at configure time, and
+	  cmake/boot_arena.cmake mirrors the align leg so the link-time assert models the
+	  geometry the allocator produces. On a part too small to pay that rounding, turning
+	  this off costs a thread_local and keeps a thread: f302nucleo and bluepill-c8 both
+	  make that trade.
 
 config KICKOS_MIN_STACK_SIZE
 	int
@@ -977,15 +971,16 @@ config KICKOS_MIN_STACK_SIZE
 	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
-	# PROVISIONAL: not measured on this arch. Raised off the generic 1024 for an
-	# 800-byte uniform exception frame against armv7m's ~100.
-	default 2048 if ARCH_ARMV8A
+	# An interrupt nests below the death path on the thread's own stack.
+	default 2816 if ARCH_ARMV8A
 	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
 	# console bracket it does not compile. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
 	default 1024 if ARCH_RV32IMAC
-	# PROVISIONAL: taken from armv8a, not measured on this arch.
-	default 2048 if ARCH_RV64IMAC
+	# An interrupt nests below a privileged thread's return on its own stack.
+	default 2304 if ARCH_RV64IMAC
+	# An interrupt nests below a privileged caller's syscall on its own stack.
+	default 1536 if ARCH_X86_64
 	default 896 if ARCH_LX6
 	default 1024
 	help
@@ -1138,6 +1133,16 @@ config KICKOS_BENCH
 	  Brackets the switch body with the core's own cycle counter. That counter is
 	  not arch_trace_now, so this knob does not answer to HAS_TRACE_CLOCK; the
 	  brackets live in each switch.S that carries them.
+
+config KICKOS_BENCH_SCHED
+	bool "The scheduler's own bench counters, above one kernel core"
+	depends on KICKOS_BENCH && KICKOS_MULTICORE_SHARED
+	default n
+	help
+	  Counts every lock acquisition and scheduler pass by what entered the kernel,
+	  brackets each pass's switch half, and times the ring deliveries, for the
+	  scheduler's report. Those counters sit on the switch and syscall paths, so
+	  every other figure the bench prints is taken with this off.
 
 config KICKOS_SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"

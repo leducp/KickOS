@@ -10,14 +10,14 @@
 # `__indirect_call` for every call through a pointer. The units of the build's own compile
 # database are merged, and the longest weighted path from the declared roots is the answer.
 #
-# Nothing is defaulted: every figure comes from the declaration files or from the caller, a
-# red zone derived from a silent under-approximation being worse than none at all.
+# Nothing is defaulted: every figure comes from the declaration files or from the caller.
 #
 # Node title scoping. An internal-linkage function is titled "<path>:<mangled>", so titles
 # are keyed by basename plus mangled tail: two TUs each with a static `helper` do not merge
 # into one node, and the same static seen from two .ci files does. A node with no
-# "bytes (static)" is defined outside the C/C++ the compiler saw (assembly, libgcc) and must
-# be declared in the unsized-allowance list or the run fails.
+# frame figure, "bytes (static)" or x86_64's "bytes (dynamic,bounded)", is defined outside the
+# C/C++ the compiler saw (assembly, libgcc) and must be declared in the unsized-allowance list
+# or the run fails.
 #
 # Site keys. An indirect call is named by its caller and an ordinal, `<caller>@<n>/<count>`,
 # ranking that caller's located sites by (basename, line, column) out of <count> it makes.
@@ -37,6 +37,10 @@ import shlex
 import sys
 
 NODE_RE = re.compile(r'^node:\s*\{\s*title:\s*"([^"]*)"\s*label:\s*"([^"]*)"')
+# x86_64 gcc qualifies a frame its pushes move as "dynamic,bounded", and the figure is then the
+# bound. A bare "dynamic" states no bound and is refused where it is read.
+FRAME_RE = re.compile(r'(\d+) bytes \((static|dynamic,bounded)\)')
+UNBOUNDED_RE = re.compile(r'\d+ bytes \(dynamic\)')
 EDGE_RE = re.compile(
     r'^edge:\s*\{\s*sourcename:\s*"([^"]*)"\s*targetname:\s*"([^"]*)"'
     r'(?:\s*label:\s*"([^"]*)")?')
@@ -96,7 +100,7 @@ def records(path):
 
 
 class Decl(object):
-    def __init__(self, roots_path, arch):
+    def __init__(self, roots_path, arch, kernel_cores):
         self.arch = arch
         self.header = None
         self.presets = []
@@ -108,7 +112,11 @@ class Decl(object):
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
+        self.scoped_excludes = []                    # [(mangled, [class], reason, optional)]
         self.unsized = collections.OrderedDict()      # symbol -> (bytes, reason)
+        self.unsized_calls = {}                       # symbol -> [(callee, optional)]
+        self.recurse = collections.OrderedDict()      # symbol -> (activations, reason)
+        self.link_maps = None                         # glob under the build dir, or None
         self.floor_files = None
         self.floor_nodes = None
         seen_arch = set()
@@ -120,9 +128,8 @@ class Decl(object):
                 seen_arch.add(f[1])
             if len(f) < 2:
                 die('%s: record "%s" has no arch' % (where, kind))
-            # Every arch's floor, not just this run's: a later record replaces an earlier one,
-            # so a duplicate has to be refused by whichever arch happens to be measured or the
-            # arch it disarms is the one arch that cannot report it.
+            # Every arch's floor, not just this run's: a duplicate replaces the earlier record,
+            # and the arch it disarms is never the one measuring.
             if kind == 'floor':
                 self._check_floor(where, f, reason, floor_at)
             if f[1] != arch:
@@ -205,18 +212,79 @@ class Decl(object):
                         ' how a margin goes quiet' % (where, f[2]))
                 # '?' as on a root: the symbol is absent from some boards' graphs, so its
                 # absence contributes nothing instead of failing as a stale declaration.
-                self.excludes.append((f[2].lstrip('?'), reason, f[2].startswith('?')))
+                if len(f) == 3:
+                    self.excludes.append((f[2].lstrip('?'), reason, f[2].startswith('?')))
+                    continue
+                # class=<CLASS>[,<CLASS>]: a claim about what those classes measure, so it cuts
+                # their walks whatever stack they spend, and no other class's.
+                if len(f) != 4 or not f[3].startswith('class='):
+                    die('%s: exclude wants <arch> <symbol> [class=<CLASS>[,<CLASS>]...]' % where)
+                scope = f[3][len('class='):].split(',')
+                for cls in scope:
+                    if cls not in self.macros:
+                        die('%s: exclude %s names class "%s", declared nowhere above it for %s'
+                            % (where, f[2], cls, arch))
+                self.scoped_excludes.append((f[2].lstrip('?'), scope, reason,
+                                             f[2].startswith('?')))
             elif kind == 'unsized':
                 if reason is None:
                     die('%s: unsized %s carries no "reason:"; the byte cost has to say'
                         ' where it was measured' % (where, f[2]))
-                if len(f) != 4:
-                    die('%s: unsized wants <arch> <symbol> <bytes>' % where)
+                shape = ('%s: unsized wants <arch> <symbol> <bytes> [cores=1|cores>1]'
+                         ' [calls=<callee>[,<callee>]...]' % where)
+                if len(f) < 4:
+                    die(shape)
                 try:
                     cost = int(f[3])
                 except ValueError:
                     die('%s: unsized %s cost "%s" is not a number' % (where, f[2], f[3]))
+                scope = None
+                calls = None
+                for opt in f[4:]:
+                    if opt.startswith('calls=') and calls is None:
+                        calls = [c for c in opt[len('calls='):].split(',')]
+                        if '' in calls:
+                            die(shape)
+                    elif opt.startswith('cores') and scope is None and calls is None:
+                        scope = opt
+                    else:
+                        die(shape)
+                if scope is not None:
+                    if scope not in (SCOPE_ONE_CORE, SCOPE_MULTI_CORE):
+                        die('%s: unsized %s scope "%s" is neither %s nor %s'
+                            % (where, f[2], scope, SCOPE_ONE_CORE, SCOPE_MULTI_CORE))
+                    if not in_scope(scope, None, kernel_cores):
+                        continue
+                if f[2] in self.unsized:
+                    die('%s: unsized %s declared twice for this posture' % (where, f[2]))
                 self.unsized[f[2]] = (cost, reason)
+                if calls is not None:
+                    self.unsized_calls[f[2]] = [(c.lstrip('?'), c.startswith('?'))
+                                                for c in calls]
+            elif kind == 'link':
+                if reason is None:
+                    die('%s: link carries no "reason:"; it has to say which images the maps'
+                        ' are of' % where)
+                if len(f) != 3 or not f[2].startswith('maps=') or f[2] == 'maps=':
+                    die('%s: link wants <arch> maps=<glob under the build directory>' % where)
+                if self.link_maps is not None:
+                    die('%s: link declared twice for %s' % (where, arch))
+                self.link_maps = f[2][len('maps='):]
+            elif kind == 'recurse':
+                if reason is None:
+                    die('%s: recurse %s carries no "reason:"; the bound has to say what'
+                        ' stops the recursion' % (where, f[2]))
+                if len(f) != 4:
+                    die('%s: recurse wants <arch> <symbol> <activations>' % where)
+                try:
+                    count = int(f[3])
+                except ValueError:
+                    die('%s: recurse %s bound "%s" is not a number' % (where, f[2], f[3]))
+                if count < 2:
+                    die('%s: recurse %s bound %d is not a recursion' % (where, f[2], count))
+                if f[2] in self.recurse:
+                    die('%s: recurse %s declared twice' % (where, f[2]))
+                self.recurse[f[2]] = (count, reason)
             else:
                 die('%s: unknown record "%s"' % (where, kind))
         if arch not in seen_arch:
@@ -460,14 +528,10 @@ def pretty_leaf(name):
 # --- the corpus, keyed to the build that wrote it ------------------------------
 
 def entry_output(where, e):
-    """The object path one compile-database entry writes.
+    """The object path one compile-database entry writes; any other shape is refused by name.
 
-    Every shape that is not that is refused here, by name. This file is machine written, so a
-    surprise in it means the generator changed or the tree is not what it claims; a traceback
-    out of this function would read as a broken gate rather than as the refusal it is. The
-    `arguments` list is the trap worth naming: a string there answers `in` and `index` as a
-    substring search, which yields a plausible path and a corpus diagnostic about the wrong
-    thing.
+    A string where the `arguments` list belongs answers `in` and `index` as a substring
+    search, which yields a plausible path and a corpus diagnostic about the wrong thing.
     """
     obj = e.get('output')
     if obj is not None:
@@ -496,11 +560,7 @@ def entry_output(where, e):
 
 
 def build_units(build_dir):
-    """Absolute .ci path -> source file, one entry per C/C++ unit this build compiles.
-
-    compile_commands.json is the build's own record of what it asked the compiler for, and a
-    directory that is not this build cannot produce one that agrees.
-    """
+    """Absolute .ci path -> source file, one entry per C/C++ unit this build compiles."""
     path = os.path.join(build_dir, 'compile_commands.json')
     try:
         db = json.load(open(path))
@@ -535,11 +595,9 @@ def build_units(build_dir):
 def corpus(build_dir):
     """The .ci files of this build, refusing a tree that is not exactly this build's.
 
-    The count is not the check. A .ci outlives the unit that wrote it: a source dropped from a
-    target leaves its own behind, and a scratch tree shared with another checkout collects
-    that checkout's, so a corpus can be complete-looking and hold code the image cannot
-    contain while missing a unit the image does. Both directions are refused by identity here;
-    the declared floor below stays as the gross guard on a build that barely started.
+    The count is not the check: a .ci outlives the unit that wrote it, and a scratch tree
+    shared with another checkout collects that checkout's, so both directions are refused by
+    identity. The declared floor stays the gross guard on a build that barely started.
     """
     want = build_units(build_dir)
     # realpath on both sides: the database records the path cmake resolved, and a build
@@ -568,17 +626,13 @@ def corpus(build_dir):
 class Graph(object):
     """This build's .ci files merged, minus the ones the link threw away.
 
-    Compiled is not linked: a .ci file is written by the compiler, so the corpus on disk
-    includes translation units that never entered the image. KickOS resolves an optional
-    arch/chip seam by archive-member extraction, so beside every backend sits an
-    unextracted <symbol>_default.cc fallback, and reading it both inflates depths and
-    invents recursion: arch/common/arch_console_write_sync_default.cc calls
-    arch_console_write, which on a board with a real backend goes through console_tx and
-    back, so the merged graph shows a console cycle the image cannot contain.
-    dropped_tus() applies the tree's own extraction rule to skip them.
+    Compiled is not linked. Beside every backend sits an unextracted <symbol>_default.cc seam
+    fallback, and reading it inflates depths and invents recursion, a console cycle through
+    arch_console_write_sync_default.cc among them; dropped_tus() skips those. A `link` record
+    narrows the corpus further, to the units an image's map LOADs.
     """
 
-    def __init__(self, ci_dir):
+    def __init__(self, ci_dir, link_maps=None):
         self.size = {}
         self.dynobj = {}
         self.label = {}
@@ -588,10 +642,18 @@ class Graph(object):
         self.definers = collections.defaultdict(set)  # global key -> {defining TU path}
         self.unbound = set()
         self.dropped = []
+        self.unlinked = []
         self.files = 0
         self._spec = {}
         self._located = {}
+        self._ci_dir = ci_dir
         found = corpus(ci_dir)
+        if link_maps is not None:
+            # Keyed by .ci and not by unit: one source compiled into two targets is two units
+            # with one title, and only the linked one may define its symbols.
+            self.unlinked = [ci for ci in found if not self.linked(ci, link_maps)]
+            gone = set(self.unlinked)
+            found = [ci for ci in found if ci not in gone]
         tu_of = {}
         defined = collections.defaultdict(set)        # TU path -> {global key}
         for ci in found:
@@ -604,7 +666,7 @@ class Graph(object):
                         tu = m.group(1)
                     continue
                 m = NODE_RE.match(line)
-                if m and 'bytes (static)' in m.group(2):
+                if m and FRAME_RE.search(m.group(2)):
                     key = node_key(m.group(1))
                     if ':' in key:
                         continue                      # file-scoped, cannot collide
@@ -628,17 +690,50 @@ class Graph(object):
                 self.definers[key].discard(tu)
         self._index_sites()
 
+    @staticmethod
+    def load_set(ci_dir, pattern):
+        """Every input the declared link maps LOAD, as real paths."""
+        maps = sorted(glob.glob(os.path.join(ci_dir, pattern), recursive=True))
+        if not maps:
+            die('NO LINK MAP: %s matches nothing under %s, so no unit can be shown to be in an'
+                ' image and the corpus would fall back to everything compiled' % (pattern, ci_dir))
+        loaded = set()
+        for m in maps:
+            n = 0
+            for line in open(m, errors='replace'):
+                if line.startswith('LOAD /'):
+                    loaded.add(os.path.realpath(line[len('LOAD '):].strip()))
+                    n += 1
+            if n == 0:
+                die('NO LINK MAP: %s carries no LOAD line, so it names no input of its image'
+                    % m)
+        return loaded
+
+    def linked(self, ci, pattern):
+        """Whether the unit behind this .ci is an input of an image the maps describe.
+
+        A raw object is one when a map LOADs it by path; an archive member is one when a map
+        LOADs the archive its target writes beside its CMakeFiles directory. Member
+        extraction is the seam rule's business and stays with dropped_tus().
+        """
+        if not hasattr(self, '_loaded'):
+            self._loaded = self.load_set(self._ci_dir, pattern)
+        stem = ci[:-len('.ci')]
+        for ext in ('.obj', '.o'):
+            if os.path.realpath(stem + ext) in self._loaded:
+                return True
+        m = re.match(r'(.*)/CMakeFiles/([^/]+)\.dir/', ci)
+        if m and os.path.realpath('%s/lib%s.a' % (m.group(1), m.group(2))) in self._loaded:
+            return True
+        return False
+
     def dropped_tus(self, defined):
         """The seam fallbacks the link cannot have extracted.
 
-        arch/CMakeLists.txt states the rule and tests/static/check_seam_defaults.sh enforces
-        it: a fallback lives alone in a <name>_default.cc translation unit, so the member is
-        pulled in only when nothing else defines its symbol. A _default.cc whose every
-        global is also defined elsewhere is therefore, by that rule, not in the image.
-        Restricted to the _default.cc naming on purpose: two rival non-fallback definitions
-        (spi_mock.cc against spi_proxy.cc, one main.cc per app) are also mutually exclusive
-        at link time, and there the rule says nothing about which one won, so they are left
-        in and refused later if the measurement actually reaches them.
+        A fallback lives alone in a <name>_default.cc unit (arch/CMakeLists.txt, enforced by
+        tests/static/check_seam_defaults.sh), so one whose every global is defined elsewhere
+        is not in the image. Only that naming: two rival non-fallback definitions say nothing
+        about which one won, so they stay in and are refused if the walk reaches them.
         """
         skip = set()
         for tu, keys in defined.items():
@@ -659,7 +754,10 @@ class Graph(object):
                 label = m.group(2)
                 self.label[key] = label.split('\\n')[0]
                 self.pretty[key] = pretty_name(label)
-                s = re.search(r'(\d+) bytes \(static\)', label)
+                if UNBOUNDED_RE.search(label):
+                    die('UNBOUNDED FRAME: %s in %s states a dynamic frame with no bound, so no'
+                        ' depth through it is one' % (key, ci))
+                s = FRAME_RE.search(label)
                 if s:
                     self.size[key] = max(self.size.get(key, 0), int(s.group(1)))
                 d = re.search(r'(\d+) dynamic objects', label)
@@ -835,9 +933,11 @@ class Graph(object):
 # --- longest weighted path -----------------------------------------------------
 
 class Walk(object):
-    def __init__(self, graph, excluded):
+    def __init__(self, graph, excluded, recurse):
         self.g = graph
         self.excluded = excluded
+        # node -> activations. Its self-edge is folded into its weight and never walked.
+        self.recurse = recurse
         self.memo = {}
         self.stack = []
         self.onstack = set()
@@ -847,7 +947,12 @@ class Walk(object):
         for t in sorted(self.g.edges.get(fn, ())):
             if t in self.excluded:
                 continue
+            if t == fn and fn in self.recurse:
+                continue
             yield t
+
+    def weight(self, fn):
+        return self.g.size.get(fn, 0) * self.recurse.get(fn, 1)
 
     def depth(self, fn):
         if fn in self.onstack:
@@ -863,7 +968,7 @@ class Walk(object):
             best = max(best, self.depth(t))
         self.stack.pop()
         self.onstack.discard(fn)
-        self.memo[fn] = self.g.size.get(fn, 0) + best
+        self.memo[fn] = self.weight(fn) + best
         return self.memo[fn]
 
     def chain(self, fn, seen=()):
@@ -877,6 +982,8 @@ class Walk(object):
                 best = d
                 nxt = t
         step = '%s[%d]' % (self.g.label.get(fn, fn), self.g.size.get(fn, 0))
+        if fn in self.recurse:
+            step += 'x%d' % self.recurse[fn]
         if nxt is None or best == 0:
             return [step]
         return [step] + self.chain(nxt, seen + (fn,))
@@ -928,8 +1035,7 @@ def usage():
 
 
 def check_file(path):
-    """Shape-check every record in the bindings file. Builds nothing and reads no graph, so it
-    covers the arches no board on this box configures."""
+    """Shape-check every record in the bindings file, reading no graph."""
     n_records = 0
     for n, f, _reason in records(path):
         check_site_shape('%s:%d' % (path, n), f)
@@ -994,7 +1100,7 @@ def run(argv):
     opt, enforced, not_compiled = parse_argv(argv)
     arch = opt['arch']
     preset = opt['preset']
-    decl = Decl(opt['roots'], arch)
+    decl = Decl(opt['roots'], arch, opt['kernel-cores'])
     if preset not in decl.presets:
         die('preset %s is not declared for arch %s in %s (declared: %s)'
             % (preset, arch, opt['roots'], ' '.join(decl.presets)))
@@ -1011,15 +1117,11 @@ def run(argv):
             die('--not-compiled names class %s, which %s declares nowhere for %s'
                 % (cls, opt['roots'], arch))
 
-    # Building the graph settles which units this run measures, against the build's own
-    # compile database, and refuses a stale, partial or shared tree by name.
-    graph = Graph(opt['ci-dir'])
+    graph = Graph(opt['ci-dir'], decl.link_maps)
 
     # --- the corpus floor, before any key is resolved and any absence asserted --
-    # The gross guard the identity check above cannot give: a tree whose compile database is
-    # itself near empty agrees with it at every step. Ahead of the binding and root resolution
-    # below because those die on whichever symbol happens to be missing, which names a stale
-    # declaration for what is really an unbuilt tree and sends the reader to the wrong file.
+    # A tree whose compile database is itself near empty agrees with it at every step. Ahead of
+    # the resolution below, which would otherwise name a stale declaration for an unbuilt tree.
     _floor_nodes = len(graph.universe())
     if graph.files < decl.floor_files:
         die('CORPUS FLOOR: %d .ci file(s) under %s, and %s declares a floor of %d for %s.'
@@ -1055,6 +1157,19 @@ def run(argv):
                 ' the printed without-exclusions figure would be a duplicate' % spec)
         excluded.add(key)
 
+    scoped = collections.defaultdict(set)             # class -> {excluded key}
+    for spec, classes, reason, optional in decl.scoped_excludes:
+        key = graph.resolve(spec)
+        if key is None:
+            if optional:
+                report.append('  exclusion %s for %s: not in this graph, unused'
+                              % (spec, ','.join(classes)))
+                continue
+            die('declared exclusion %s for %s is not in the graph; the declaration is stale'
+                % (spec, ','.join(classes)))
+        for cls in classes:
+            scoped[cls].add(key)
+
     # An allowance the graph does not have is reported, not failed: the list spans the
     # fleet's boards and a given image need not pull every libgcc helper.
     unsized_keys = {}
@@ -1069,32 +1184,66 @@ def run(argv):
             continue
         unsized_keys[key] = cost
         graph.size[key] = cost
+        # The declared calls of an assembly body are the only edges it has: no .ci file
+        # carries one, so a callee that is gone must refuse rather than charge nothing.
+        for callee, optional in decl.unsized_calls.get(sym, ()):
+            target = graph.resolve(callee)
+            if target is None:
+                if optional:
+                    report.append('  unsized %s call %s: not in this graph, unused'
+                                  % (sym, callee))
+                    continue
+                die('ABSENT CALLEE: unsized %s declares a call to "%s", which is not in the'
+                    ' graph; the body\'s charge would silently lose that descent'
+                    % (sym, callee))
+            graph.edges[key].add(target)
 
-    walk = Walk(graph, excluded)
-    bare = Walk(graph, set())
+    recurse_keys = {}
+    for sym, (count, _reason) in decl.recurse.items():
+        key = graph.resolve(sym)
+        if key is None:
+            die('declared recursion %s is not in the graph; the declaration is stale' % sym)
+        if key not in graph.edges.get(key, ()):
+            die('declared recursion %s has no call edge to itself in this graph; the'
+                ' declaration is stale, and a bound it no longer needs would still multiply'
+                ' its frame' % sym)
+        recurse_keys[key] = count
 
-    # A stack=trap or stack=kernel class is measured with nothing excluded: the exclusion set
+    walks = {}
+
+    def walk_with(cut):
+        cut = frozenset(cut)
+        if cut not in walks:
+            walks[cut] = Walk(graph, cut, recurse_keys)
+        return walks[cut]
+
+    bare = walk_with(())
+
+    # A stack=trap or stack=kernel class is measured with no plain exclusion applied: that set
     # exists only to keep a thread's red zone under the spawn floor, and neither class spends
-    # a thread stack.
+    # a thread stack. A class= exclusion is a claim about the class and applies on any stack.
     def walk_for(cls):
+        base = excluded
         if cls in decl.off_thread():
-            return bare
-        return walk
+            base = set()
+        return walk_with(set(base) | scoped.get(cls, set()))
 
     print('trap_redzone: arch=%s preset=%s (%d .ci files read, %d unextracted seam'
           ' fallbacks skipped, %d nodes, %d indirect sites)'
           % (arch, preset, graph.files, len(graph.dropped), len(graph.universe()),
              len(present)))
+    if decl.link_maps is not None:
+        print('trap_redzone: %d unit(s) compiled into no image %s LOADs skipped'
+              % (len(graph.unlinked), decl.link_maps))
     for line in report:
         print(line)
 
     measured = {}
     for cls in decl.classes:
-        w = walk_for(cls)
         best = 0
         winner = None
         for key in roots[cls]:
-            d = w.depth(key)
+            d = walk_for(cls).depth(key)
             if winner is None or d > best:
                 best = d
                 winner = key
@@ -1118,18 +1267,21 @@ def run(argv):
               % (macro_frame, frame, macro_depth, enf_depth, frame + enf_depth))
         if winner is not None:
             print('  deepest root %s:' % winner)
-            print('    ' + ' -> '.join(w.chain(winner)))
+            print('    ' + ' -> '.join(walk_for(cls).chain(winner)))
 
     # Report-only: the same measurement with nothing excluded, so a deliberately excluded
     # tail cannot grow unwatched.
-    if decl.excludes:
+    if decl.excludes or scoped:
         print()
         print('WITHOUT the declared exclusions (report only, never a failure):')
         for spec, reason, _optional in decl.excludes:
             print('  excluded %s' % spec)
             print('    reason: %s' % reason)
+        for spec, classes, reason, _optional in decl.scoped_excludes:
+            print('  excluded %s from %s' % (spec, ','.join(classes)))
+            print('    reason: %s' % reason)
         for cls in decl.classes:
-            if cls in decl.off_thread():
+            if walk_for(cls) is bare:
                 print('  %-6s already measured that way, see above' % cls)
                 continue
             b = 0
@@ -1180,9 +1332,9 @@ def run(argv):
             % (key, graph.dynobj[key]))
 
     seen_cycles = set()
-    cycles = list(walk.cycles)
-    if decl.off_thread():
-        cycles += bare.cycles
+    cycles = []
+    for w in walks.values():
+        cycles += w.cycles
     for cyc in cycles:
         if not (set(cyc) & reach):
             continue

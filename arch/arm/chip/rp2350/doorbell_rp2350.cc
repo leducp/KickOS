@@ -28,7 +28,6 @@ namespace reg = kickos::rp2350::reg;
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
-    // Defined below; node_vectors.S puts it in the doorbell line of node 1's table.
     void kickos_rp2350_doorbell_service(void);
 }
 
@@ -61,9 +60,12 @@ namespace
     // OUT_SET carries no target field and one flag is the whole rendezvous.
     constexpr uint32_t DOORBELL_BIT = 1u;
 
-    // Bounds a wait that can no longer be answered, so a lost raise REPORTS rather than
-    // hanging the machine. Far above the handful of iterations an answer takes.
-    constexpr uint32_t DOORBELL_WAIT_SPINS = 4000000u;
+    // How long a peer may leave a request unanswered before it is taken as lost, and the spins
+    // between two clock reads while waiting. A duration, never an iteration count: a spinning
+    // waiter's rate is not the peer's.
+    constexpr uint64_t DOORBELL_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
+    constexpr uint32_t CLOCK_CHECK_SPINS = 256u;
+    static_assert((CLOCK_CHECK_SPINS & (CLOCK_CHECK_SPINS - 1u)) == 0u, "tested as a mask");
 
     char const WAIT_STUCK[] = "KickOS: rp2350 doorbell unanswered by core ";
     char const WAIT_STUCK_NL[] = "\n";
@@ -183,8 +185,8 @@ uint32_t arch_cpu_id(void)
 }
 #endif
 
-// The far side of the doorbell, on the calling core. Reached from the node vector table
-// (node_vectors.S) and from a poll inside a spin, and MASKED either way.
+// The far side of the doorbell, on the calling core. Always entered with interrupts masked,
+// whether from hardware or from a poll.
 //
 // ITS STACK DEPTH IS UNMEASURED. Entered from the vector table this body runs in handler mode,
 // where ARMv7-M forces SP_main, and tests/static/trap_redzone_roots.txt roots no armv7m class
@@ -281,6 +283,9 @@ void arch_ipi_wait(uint32_t cores)
     uint32_t const me = arch_doorbell_core();
     uint32_t const peers = cores & ~(1u << me);
 
+    // Zero until the first clock read arms it, so the bound runs from when an answer was first
+    // missing.
+    uint64_t deadline = 0;
     for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
     {
         if ((peers & (1u << to)) == 0)
@@ -292,12 +297,20 @@ void arch_ipi_wait(uint32_t cores)
         while (g_answer[to].seq[me].load() != asked)
         {
             spins++;
-            if (spins > DOORBELL_WAIT_SPINS)
+            if ((spins & (CLOCK_CHECK_SPINS - 1u)) == 0u)
             {
-                arch_console_write(WAIT_STUCK, sizeof(WAIT_STUCK) - 1);
-                hex1(to);
-                arch_console_write(WAIT_STUCK_NL, sizeof(WAIT_STUCK_NL) - 1);
-                kfault_terminate();
+                uint64_t const now = arch_clock_now();
+                if (deadline == 0)
+                {
+                    deadline = now + DOORBELL_WAIT_NS;
+                }
+                else if (now > deadline)
+                {
+                    arch_console_write(WAIT_STUCK, sizeof(WAIT_STUCK) - 1);
+                    hex1(to);
+                    arch_console_write(WAIT_STUCK_NL, sizeof(WAIT_STUCK_NL) - 1);
+                    kfault_terminate();
+                }
             }
             doorbell_poll();
             __asm volatile("yield" ::: "memory");

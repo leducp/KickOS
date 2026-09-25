@@ -223,6 +223,11 @@ namespace kickos
     {
     }
 
+    // The lock's release publishes what the scheduler staged, and this gate stages nothing.
+    void sched_flush_owed(uint32_t)
+    {
+    }
+
     void park_queueless(Thread*, WaitKind, void*)
     {
     }
@@ -566,7 +571,7 @@ int arch_kernel_lock_held(void)
 #endif
 
 // The raise the real klock.cc restores an owed reschedule with.
-void arch_ipi_resched_self(void)
+void arch_ipi_raise(uint32_t)
 {
 }
 

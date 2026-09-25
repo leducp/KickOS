@@ -13,7 +13,6 @@
 #include <kickos/task.h>
 #include <kickos/reent.h>
 #include <kickos/tls.h>
-#include <kickos/ustack.h>
 
 namespace kickos
 {
@@ -141,7 +140,13 @@ namespace kickos
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
+#if KICKOS_KERNEL_CORES > 1
+        ThreadSlotKeep const keep = thread_slot_keep(t);
+#endif
         kmemset(t, 0, sizeof(*t));
+#if KICKOS_KERNEL_CORES > 1
+        thread_slot_restore(t, keep);
+#endif
         // Must follow the kmemset, which would otherwise zero the chunk directory AND the
         // free-list head the caller already reserved and threaded.
         t->caps = attr.cap_run;
@@ -275,33 +280,15 @@ namespace kickos
 
         // The TLS carve comes off the low end of the thread's own stack, inside the region
         // added above, and raising stack_lo past it keeps the thread's SP out of its own
-        // thread_local storage. Idle may take none; the exemption is keyed on the idle TCB by
-        // IDENTITY, since keying it on size would let a caller-supplied stack skip the carve
-        // while __aeabi_read_tp went on answering for it.
+        // thread_local storage.
+        void* const tls_home = tls_carve(t, stack_base, stack_size);
         void* ustack = stack_base;
         size_t usize = stack_size;
-        size_t const tls = tls_block_size();
-        if (tls != 0)
+        if (tls_home != nullptr)
         {
-            bool const admissible =
-                tls_stack_admissible(reinterpret_cast<uintptr_t>(stack_base), stack_size);
-            KICKOS_ASSERT(admissible or t == &kernel().idle_tcb);
-            if (admissible)
-            {
-                // A mapped stack is named by a virtual address in the CHILD's space, which
-                // is not the running one at spawn, so the block is reached through the
-                // physical map; VA == PA there. An arena block and a caller-supplied pointer
-                // are not pool frames and are directly dereferenceable.
-                void* seat = stack_base;
-                void* const alias = ustack_kptr(reinterpret_cast<uintptr_t>(stack_base));
-                if (alias != nullptr)
-                {
-                    seat = alias;
-                }
-                tls_seat(seat);
-                ustack = static_cast<unsigned char*>(stack_base) + tls;
-                usize = stack_size - tls;
-            }
+            size_t const tls = tls_block_size();
+            ustack = static_cast<unsigned char*>(stack_base) + tls;
+            usize = stack_size - tls;
         }
 #if KICKOS_KERNEL_STACKS
         // Seated before arch_context_init, which reads it: a backend may build the thread's
@@ -335,6 +322,14 @@ namespace kickos
         int const rslot = kernel().threads.index_of(t);
         t->reent = reent_state_for_slot(rslot);
         t->reent_fresh = rslot >= 0;
+#if KICKOS_REENT_IN_TCB
+        if (tls_home != nullptr)
+        {
+            reent_seat_tcb(tls_home, t->reent);
+        }
+#elif KICKOS_REENT_PER_THREAD
+        arch_context_seat_reent(&t->ctx, t->reent);
+#endif
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         arch_trace_stamp_id(&t->ctx, t->id);

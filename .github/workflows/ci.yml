@@ -184,6 +184,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: aarch64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
@@ -219,6 +223,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: aarch64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
@@ -261,6 +269,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: aarch64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
@@ -296,6 +308,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: aarch64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
@@ -425,6 +441,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: rv64imac_lp64
+          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv64 >/dev/null 2>&1 \
@@ -708,6 +728,10 @@ jobs:
           packages: cmake ninja-build qemu-system-arm qemu-system-misc curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
       - uses: ./.github/actions/riscv-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: aarch64 rv64imac_lp64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
       - uses: ./.github/actions/arm-toolchain
       - name: the emulators every image gate in this job boots on
         run: |

@@ -1,25 +1,10 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * ESP32 (Xtensa LX6) startup: the reset entry (_start), the VECBASE exception/
- * interrupt vector table, and the first-level (level-1) interrupt entry. The ROM
- * loader copies the image segments into internal SRAM and jumps to _start (the
- * ELF entry). _start initializes the register-window state, sets the stack, points
- * VECBASE at this table, and makes the first WINDOWED call into C.
- *
- * WINDOWED ABI (Xtensa ISA, Windowed Register Option): the six window over/
- * underflow vectors are MANDATORY, since any call4/8/12 that outruns the physical
- * register file traps here to spill/fill a frame's registers to/from its stack
- * base save area. The exact s32e/l32e offsets and rfwo/rfwu returns are the
- * ISA-canonical handlers. Vector VECBASE offsets are the fixed LX6 layout
- * (XCHAL_*_VECOFS): window vectors at 0x000..0x140 (64 bytes apart), the level
- * interrupt / exception vectors at 0x180..0x3C0.
- *
- * Level-1 interrupts (the CCOMPARE0 timer is internal line 6, a level-1 line)
- * arrive at the User exception vector with EXCCAUSE=LEVEL1INTERRUPT(4); the entry
- * saves the interruptee's state, dispatches to C, and on exit either resumes the
- * interruptee via rfe or completes a switch requested from ISR context
- * (_kickos_int_level1).
+ * The six window over/underflow vectors are mandatory: any call4/8/12 that outruns
+ * the physical register file traps into them. Their s32e/l32e offsets and rfwo/rfwu
+ * returns are the ISA-canonical handlers, and the VECBASE offsets are the fixed LX6
+ * layout (XCHAL_*_VECOFS).
  */
 
 /* PS bit fields (corebits.h): INTLEVEL[3:0], EXCM=bit4(0x10), UM=bit5(0x20),
@@ -32,7 +17,7 @@
 
     .set EXCCAUSE_LEVEL1INTERRUPT, 4
 
-/* arch_context field offsets + resume_kind values (context.h; guarded by the
+/* arch_context field offsets and resume_kind values (context.h, guarded by the
    static_asserts in arch_xtensa.cc). Must match switch.S. */
     .set CTX_SP,    0
     .set CTX_PS,    4
@@ -44,9 +29,8 @@
 /* SPILL_ALL_WINDOWS: flush every live ancestor window of the current call chain
    to its stack, leaving WindowStart with a single live frame. Requires WOE=1,
    EXCM=0, INTLEVEL>=EXCM_LEVEL (PS_SPILL). The 64-AR rotw sequence is the one the
-   Xtensa ISA Reference Manual mandates (Windowed Register Option). Must stay
-   identical to the copy in arch/xtensa/lx6/switch.S; the two files are assembled
-   separately. */
+   Xtensa ISA Reference Manual mandates. Must stay identical to the copy in
+   arch/xtensa/lx6/switch.S. */
     .macro SPILL_ALL_WINDOWS
     and     a12, a12, a12
     rotw    3
@@ -60,12 +44,6 @@
     rotw    4
     .endm
 
-/* Level-1 interrupt frame (built on the interruptee's stack). 256 bytes. The F_*
-   offsets are single-sourced in the shared asm-safe header (also #included by the
-   C++ frame fabricator arch_context_init); the FPU save area (F_F0/F_FCR/F_FSR)
-   fits the a-regs' slack (they end at 0x5C; 0x60..0xA7 was unused). FP is banked
-   ONLY on this preemptive path: the cooperative switch's caller-saved f-regs are
-   spilled by the compiler, so xtensa_switch needs none. */
 #include <kickos/arch/xtensa_frame.h>
 #include <kickos/arch/lx6_switch_unlock.inc>
 #include <kickos/arch/lx6_percpu.inc>
@@ -73,34 +51,30 @@
     .text
 
 /* ------------------------------------------------------------------------- */
-/* Reset entry: the image's ELF entry point (ENTRY(_start)).                    */
+/* Reset entry                                                               */
 /* ------------------------------------------------------------------------- */
-/* CORE_PROLOGUE: the state EVERY core seats for itself, out of reset, before it can make a
- * windowed call. PS, WindowBase, WindowStart and VECBASE are per-core registers, and a core
- * that skips this takes its first window overflow into the ROM vectors with no report.
- * `stack_top` is this core's own boot stack (esp32.ld). */
+/* CORE_PROLOGUE: every core must run this for itself before its first windowed call.
+ * PS, WindowBase, WindowStart and VECBASE are per-core registers, and a core that skips
+ * this takes its first window overflow into the ROM vectors with no report. */
     .macro  CORE_PROLOGUE stack_top
-    /* Setup mode: window machinery off so the window-state writes below cannot
-       trap. */
+    /* Window machinery off so the window-state writes below cannot trap. */
     movi    a0, PS_SETUP
     wsr.ps  a0
     rsync
-    /* Window state: base 0, only window 0 live (a bare-metal reset must not trust
-       leftover WindowBase/WindowStart). */
+    /* Reset does not guarantee WindowBase/WindowStart: seat base 0, window 0 live. */
     movi    a0, 0
     wsr.windowbase a0
     rsync
     movi    a0, 1
     wsr.windowstart a0
     rsync
-    /* Stack + relocated vectors. BOTH CORES POINT AT ONE TABLE: the window vectors touch
-       nothing but EXCSAVE1 and the faulting thread's own stack. VECBASE is per core. */
+    /* Both cores point at one table: the vectors touch nothing but EXCSAVE1 and the
+       faulting thread's own stack. */
     movi    a1, \stack_top
     movi    a0, _kickos_vectors
     wsr.vecbase a0
     rsync
-    /* Enable the windowed ABI (WOE=1), keep interrupts masked until the first
-       thread runs. */
+    /* Interrupts stay masked until the first thread runs. */
     movi    a0, PS_BOOT
     wsr.ps  a0
     rsync
@@ -111,17 +85,14 @@
     .type _start, @function
 _start:
     CORE_PROLOGUE _estack
-    /* First WINDOWED call into C (call4 rotates the window; Reset_Handler's entry
-       allocates its frame). Does not return. -mlongcalls relaxes the range. */
+    /* Does not return. The call4 reach relies on -mlongcalls. */
     call4   Reset_Handler
 1:  j       1b
     .size _start, .-_start
 
 #if KICKOS_NUM_CORES > 1
 /* ------------------------------------------------------------------------- */
-/* APP_CPU's reset entry. The ROM jumps here with the address the primary left in    */
-/* DPORT_APPCPU_CTRL_REG_D (kickos_esp32_release_secondaries, chip_esp32.cc), and    */
-/* the core enters on its OWN boot stack (esp32.ld).                                 */
+/* APP_CPU reset entry                                                       */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _kickos_lx6_core1_entry
@@ -134,29 +105,26 @@ _kickos_lx6_core1_entry:
 #endif
 
 /* ------------------------------------------------------------------------- */
-/* Common halt: mask everything (incl. NMI) and park. noreturn.                */
+/* Common halt                                                               */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _kickos_lx6_halt
     .type _kickos_lx6_halt, @function
 _kickos_lx6_halt:
     rsil    a0, 15
-    /* waiti 15, NOT waiti 0: waiti writes PS.INTLEVEL from its immediate, so
-       `waiti 0` would UNMASK everything the rsil just masked. Park masked. */
+    /* waiti writes PS.INTLEVEL from its immediate: `waiti 0` would unmask what the
+       rsil just masked. */
 1:  waiti   15
     j       1b
     .size _kickos_lx6_halt, .-_kickos_lx6_halt
 
 /* ------------------------------------------------------------------------- */
-/* Unhandled synchronous exception (e.g. Coprocessor0Disabled from an FP insn   */
-/* in an integer-only build, see chip_esp32.cc). Capture the fault special         */
-/* registers, then make a WINDOWED C call into the reporter to dump them over the  */
-/* console before the shared dead-end. Entered EXCM=1 with a0 = EXCCAUSE (read by   */
-/* _UserExceptionVector) and a1 = the interruptee SP. The four special regs go into */
-/* the call4 argument registers (a6-a9) BEFORE the window ABI is re-enabled: a later */
-/* window spill overwrites EPC1/EXCVADDR, but the captured GPR copies survive. Best- */
-/* effort: assumes a1 is usable (a stack fault can't be dumped). noreturn.          */
+/* Unhandled synchronous exception                                           */
 /* ------------------------------------------------------------------------- */
+/* Entered EXCM=1 with a0 = EXCCAUSE and a1 = the interruptee SP. The special registers
+   must reach the call4 argument registers (a6-a9) before WOE is re-enabled: a window
+   overflow overwrites EPC1/EXCVADDR. Assumes a1 is usable, so a stack fault cannot be
+   reported. */
     .align 4
     .global _kickos_lx6_fault
     .type _kickos_lx6_fault, @function
@@ -173,19 +141,10 @@ _kickos_lx6_fault:
     .size _kickos_lx6_fault, .-_kickos_lx6_fault
 
 /* ------------------------------------------------------------------------- */
-/* Level-1 interrupt entry, taken when EXCCAUSE == LEVEL1INTERRUPT. On       */
-/* entry: EXCM=1, EPC1 = interrupted PC, original a0 stashed in EXCSAVE1, a1 */
-/* = interruptee SP. Saves a full frame on the interruptee stack, spills the */
-/* interruptee's ancestor windows to its stack, runs the C dispatcher at     */
-/* INTLEVEL=1, then on exit either resumes the interruptee (rfe) or, if a    */
-/* switch was requested from ISR context (g_arch_switch_pending), completes  */
-/* the deferred swap: the preempted thread is banked in this interrupt-frame */
-/* format and the incoming thread is resumed by the path its resume_kind     */
-/* selects (retw for a cooperatively-blocked thread, rfe for a               */
-/* previously-preempted one). The switch decision is made in C during        */
-/* dispatch; the physical swap happens here, on the way back to thread       */
-/* level.                                                                    */
+/* Level-1 interrupt entry                                                   */
 /* ------------------------------------------------------------------------- */
+/* Entered EXCM=1 with EPC1 = interrupted PC, original a0 in EXCSAVE1 and a1 =
+   interruptee SP. */
     .align 4
     .global _kickos_int_level1
     .type _kickos_int_level1, @function
@@ -222,10 +181,9 @@ _kickos_int_level1:
     s32i    a14, a1, F_A14
     s32i    a15, a1, F_A15
 
-    /* FPU (CP0): a preempted thread may hold live f-regs at an arbitrary PC (FP is
-       caller-saved, so this is the ONLY switch path that must bank them). CP0 is
-       enabled globally (kickos_lx6_init); these coprocessor ops are gated by
-       CPENABLE, not EXCM, so they run here. a1 = frame base. */
+    /* FPU (CP0): f-regs are caller-saved, so this preemptive path is the only switch
+       path that banks them. The ops are gated by CPENABLE (CP0 enabled globally in
+       kickos_lx6_init), not by EXCM. */
     ssi     f0,  a1, F_F0
     ssi     f1,  a1, F_F0 + 4
     ssi     f2,  a1, F_F0 + 8
@@ -247,16 +205,12 @@ _kickos_int_level1:
     rur.fsr a2
     s32i    a2, a1, F_FSR
 
-    /* Flush the interruptee's remaining live windows (its ancestor frames) to its
-       OWN stack, so a switch-away at interrupt exit can abandon the register file
-       without losing them. Mandatory: an ancestor frame that never overflowed
-       lives only in the physical window file and would be clobbered by the next
-       thread. It also leaves WindowStart a single live frame, the precondition
-       BOTH resume paths rely on (retw and rfe; see switch.S). The spill must run
-       with a1 = the interruptee's ORIGINAL sp (F_A1), so each ancestor flushes to
-       its real base save area and reloads from there on resume; a1 survives the
-       spill (the only register that does), so recompute the frame base after.
-       Window overflow clobbers EPC1, but F_PC already holds the saved PC. */
+    /* Flush the interruptee's ancestor windows to its own stack: a frame that never
+       overflowed lives only in the register file, where the next thread would clobber
+       it. Both resume paths (retw and rfe, see switch.S) rely on the single live frame
+       this leaves. a1 must be the interruptee's original sp (F_A1) so each ancestor
+       spills to its real base save area; a1 is the only register the spill preserves.
+       The spill clobbers EPC1; F_PC already holds it. */
     l32i    a1, a1, F_A1          /* a1 = interruptee original sp */
     movi    a2, PS_SPILL
     wsr.ps  a2
@@ -271,66 +225,54 @@ _kickos_int_level1:
     addi    a3, a3, 1
     s32i    a3, a2, 0
 
-    /* C-callable posture: WOE=1, EXCM=0, INTLEVEL=1 (mask level-1 re-entry, allow
-       higher). A window over/underflow during the C body spills/reloads the
-       interruptee's ancestor frames onto its own stack, which is transparent here. */
+    /* INTLEVEL=1 masks level-1 re-entry and leaves higher levels open. */
     movi    a2, PS_ISR_C
     wsr.ps  a2
     rsync
     call4   kickos_lx6_dispatch_l1
 
     /* --- interrupt exit + deferred-switch completion ------------------------
-       Still WOE=1, EXCM=0, INTLEVEL=1 (PS_ISR_C, unchanged by the dispatcher's
-       balanced call/retw). a1 = frame base. WindowStart is a single live frame
-       (the entry spill + the dispatcher's balanced window use), so both resume
-       tails below are legal here. */
+       PS is still PS_ISR_C and a1 the frame base. WindowStart is a single live
+       frame, which both resume tails below require. */
     PERCPU_CELL a2, g_isr_depth, a3
     l32i    a3, a2, 0
     addi    a3, a3, -1
     s32i    a3, a2, 0
 
-    /* Preemption pending? (arch_switch set it from ISR context.) If not, resume the
-       interruptee from its own frame through the shared rfe epilogue, a1 = frame. */
     PERCPU_CELL a2, g_arch_switch_pending, a4
     l32i    a3, a2, 0
     beqz    a3, _kickos_lx6_irq_restore
     movi    a3, 0
     s32i    a3, a2, 0             /* consume the request */
 
-    /* Save the preempted thread (= g_arch_current) in the interrupt-frame format:
-       its full frame is at a1, F_PC/F_PS/... already populated. Record the frame
-       base and mark it IRQ so its next resume takes the rfe path. */
+    /* The preempted thread's frame at a1 is already complete; bank it as IRQ. */
     PERCPU_CELL a2, g_arch_current, a3
     l32i    a2, a2, 0             /* a2 = interruptee ctx* (seeded by arch_start) */
     s32i    a1, a2, CTX_SP        /* current->sp = frame base */
     movi    a3, RESUME_IRQ
     s32i    a3, a2, CTX_KIND
 #if KICKOS_TELEMETRY
-    /* SWITCH record: a2 = from ctx*, g_arch_next = to ctx*. call4 is legal here
-       (EXCM=0, WOE=1, single-frame window); a1/a2 survive it (below its window). */
+    /* call4 is legal here (EXCM=0, WOE=1, single-frame window); a1/a2 survive it. */
     PERCPU_CELL a3, g_arch_next, a4
     l32i    a3, a3, 0
     l32i    a6, a2, CTX_TID       /* from_tid */
     l32i    a7, a3, CTX_TID       /* to_tid */
     call4   kickos_trace_switch_done
 #endif
-    /* g_arch_current = g_arch_next; load the incoming ctx*. */
     PERCPU_CELL a2, g_arch_next, a4
     l32i    a3, a2, 0             /* a3 = incoming ctx* */
     PERCPU_CELL a2, g_arch_current, a4
     s32i    a3, a2, 0
 
-    /* THE THIRD SEATING SITE. An interrupt that decides a switch never enters
-       xtensa_switch, so seating THREADPTR there alone leaves the incoming thread
-       running on the OUTGOING thread's pointer until its next cooperative switch. */
-    SEAT_THREADPTR a3, a2, a4
+    /* An interrupt-decided switch never enters xtensa_switch: without this seat the
+       incoming thread runs on the outgoing thread's THREADPTR until its next
+       cooperative switch. */
+    SEAT_THREADPTR a3, a2
 
-    /* Resume the incoming thread by the path its resume_kind selects. */
     l32i    a2, a3, CTX_KIND
     bnez    a2, .Lint_resume_irq
-    /* COOP: retw into its cooperative continuation, as xtensa_switch's retw resume
-       does. The window file is a single frame, so WindowBase is irrelevant and the
-       underflow rebuilds the incoming chain from incoming->sp. */
+    /* COOP: with a single live frame WindowBase does not matter; the underflow
+       rebuilds the incoming chain from incoming->sp. */
     l32i    a1, a3, CTX_SP        /* incoming->sp (switch frame) */
     SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
     l32i    a4, a3, CTX_PS
@@ -344,12 +286,11 @@ _kickos_int_level1:
     .size _kickos_int_level1, .-_kickos_int_level1
 
 /* ------------------------------------------------------------------------- */
-/* Shared rfe restore epilogue. Entry: a1 = the base of a 256-byte interrupt    */
-/* frame; WindowStart a single live frame. Reached three ways: no-switch exit,   */
-/* a preemptive switch to a previously-preempted (IRQ) thread, and xtensa_switch  */
-/* resuming such a thread from THREAD context (switch.S). Re-enters EXCM=1 so the */
-/* PS/window restore + rfe are not interruptible mid-sequence; rfe clears EXCM.   */
+/* Shared rfe restore epilogue                                               */
 /* ------------------------------------------------------------------------- */
+/* Entry: a1 = interrupt frame base, WindowStart a single live frame. Also entered from
+   thread context (switch.S), so it raises EXCM itself: the restore and rfe must not be
+   interrupted mid-sequence. */
     .global _kickos_lx6_irq_restore
     .type _kickos_lx6_irq_restore, @function
 _kickos_lx6_irq_restore:
@@ -372,9 +313,7 @@ _kickos_lx6_irq_restore:
     l32i    a2, a1, F_PS
     wsr.ps  a2                    /* restore interruptee PS; rfe clears its EXCM */
 
-    /* FPU (CP0): reload the banked f-regs + control/status before the a-regs (a2 is
-       free scratch here; a1 is still the frame base). Symmetric with the L1-entry
-       save; only threads resumed via this rfe path were preempted with live FP. */
+    /* FPU (CP0): mirrors the level-1 entry save. */
     lsi     f0,  a1, F_F0
     lsi     f1,  a1, F_F0 + 4
     lsi     f2,  a1, F_F0 + 8
@@ -417,8 +356,7 @@ _kickos_lx6_irq_restore:
     .size _kickos_lx6_irq_restore, .-_kickos_lx6_irq_restore
 
 /* ------------------------------------------------------------------------- */
-/* VECBASE vector table. Window vectors are real (mandatory); the level/exception */
-/* vectors route to the level-1 entry (interrupts) or halt (unhandled).           */
+/* VECBASE vector table                                                      */
 /* ------------------------------------------------------------------------- */
     .section .vectors, "ax"
 

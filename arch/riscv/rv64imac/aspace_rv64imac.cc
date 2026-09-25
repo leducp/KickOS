@@ -43,6 +43,8 @@ namespace
     static_assert(PTES == (static_cast<size_t>(1) << INDEX_BITS),
                   "an entry index does not span exactly one table page");
     static_assert(LEVEL_ROOT > LEVEL_LEAF, "a mode with no non-leaf level has no walk");
+    static_assert(LEVEL_ROOT - LEVEL_LEAF + 1 <= 4,
+                  "tests/static/trap_redzone_roots.txt bounds each table walk at 4 activations");
 
     // Sign extension separates the user half from the kernel half.
     constexpr uintptr_t LOW_HALF_END = static_cast<uintptr_t>(1) << (KICKOS_RV64_VA_BITS - 1);

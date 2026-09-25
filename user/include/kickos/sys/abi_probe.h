@@ -71,7 +71,7 @@ enum kos_aspace_op
     // IDs count frames from the image's first text page; they are not addresses.
     KOS_ASPACE_OP_FRAME_AT = 12,
     // () -> KOS_ASPACE_SPLIT_* results for adjacent virtual pages backed
-    // by nonadjacent frames, built by the kernel probe.
+    // by nonadjacent frames.
     KOS_ASPACE_OP_SPLIT_ACCESS = 13,
     // (0 or reservation) -> KOS_ASPACE_UNWIND_* results, with allocation-failure
     // injection depth above KOS_ASPACE_UNWIND_DEPTH_SHIFT. Zero tests no-grant
@@ -126,7 +126,10 @@ enum kos_aspace_op
     // zero: members must leave the space before dropping the last reference.
     KOS_ASPACE_OP_RELEASE_PEER_HITS = 50,
     // () -> space destroys since boot; confirms the peer-hit check actually ran.
-    KOS_ASPACE_OP_RELEASE_RUNS = 51
+    KOS_ASPACE_OP_RELEASE_RUNS = 51,
+    // () -> threads that have not finished exiting, idle excepted. A thread returns its stack
+    // frames and, as its task's last member, its space before it leaves this count.
+    KOS_ASPACE_OP_THREADS_LIVE = 52
 };
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect
@@ -151,7 +154,7 @@ enum kos_amp_op
     KOS_AMP_OP_SEND_REFUSED = 8, // sends it refused
     KOS_AMP_OP_SERVICED = 9,     // doorbell services that drained its inboxes
     KOS_AMP_OP_REPLY_DROP = 10,  // replies taken and then refused by the tag validation
-    // () -> 1 while a thread awaits a remote reply; required by hostile reply tests.
+    // () -> 1 while a thread awaits a remote reply.
     KOS_AMP_OP_FAR_PARKED = 11,
     // (record) -> 1 if a remote reply handle resolves to a local thread.
     // Must be zero: remote record indices lie outside the local pool.
@@ -175,8 +178,7 @@ enum kos_amp_op
     // Root only. Return 1 if moved, or 0 when unsupported (skip the test).
     KOS_AMP_OP_PEER_HOLD = 17,
     // (port) -> signed result of privileged endpoint mint for the first peer.
-    // Root only. Any minted cap is closed before return. The probe reaches
-    // argument checks that unprivileged endpoint creation cannot reach.
+    // Root only. Any minted cap is closed before return.
     KOS_AMP_OP_MINT = 18,
     // (node) -> calls deferred because the reply ring had no free slot.
     // The call remains unread; this counts backpressure, not lost messages.
@@ -219,6 +221,16 @@ enum kos_amp_op
      * node's, derived in the kernel; never accept a node ID. Return 0.
      */
     KOS_AMP_OP_APP_SERVED_BUMP = 29,
+    /* () -> call slots from the first peer this node still holds: taken and not yet
+     * released. A delivered call is held until its receiver has landed it and, where no
+     * reply capability reached that receiver, answered it. Root only.
+     */
+    KOS_AMP_OP_CALL_HELD = 30,
+    /* () -> 1 while a thread is parked in receive on the endpoint bound to this node's first
+     * configured port, the one KOS_AMP_FORGE_PEER_CALL publishes on. A forge played before it
+     * reads 1 finds no receiver and is refused on the spot.
+     */
+    KOS_AMP_OP_PORT_PARKED = 31,
     /* Invalid-op test selector, never dispatched. Keep last so new ops cannot
      * turn the rejection test into a valid request.
      */

@@ -21,7 +21,7 @@
 // (kickos_switch_unlock inside the swap, then klock_leave), and one booked from an interrupt
 // releases once, klock_detach having left `owed` set across the klock_leave that follows it.
 // Both halves are read here, the cell through kickos_kernel_core_resched_owed and the raise
-// through the seam's arch_ipi_resched_self.
+// through the seam's arch_ipi_raise.
 
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
@@ -496,7 +496,7 @@ namespace kickos
                 IrqLock lock;
                 sched::set_prio(hog, PRIO_HOG_STEPPED);
             }
-            pass_as_peer();
+            dispatch_as(CORE_PEER);
 
             EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
                 << "the first pass that could pick the victim did not, so a slain READY "

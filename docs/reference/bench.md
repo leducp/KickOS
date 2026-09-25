@@ -189,9 +189,13 @@ new instrument is a `BD_` name, a format label and the site that calls `bench_di
 | `BD_LOCK_WAIT` | the spin inside `arch_kernel_lock`, above one kernel core only |
 | `BD_DOORBELL` | one whole doorbell round, above one kernel core only |
 | `BD_IRQ_ENTRY` | a raise on the bench's own line to the handler's first instruction |
-| `BD_IRQ_WCASE` | the same, with the raise at the START of a masked span of 0, 64, 256 or 1024 bytes. ONE slot for the four, cleared and re-reported per span |
+| `BD_IRQ_WCASE` | the same, with the raise at the START of a masked span of 0, 64, 256 or 1024 bytes. One slot per span, the four filled by ONE sweep that takes a sample of each in turn every round |
 | `BD_IRQ_E2E_LOCAL` | the raise, through delivery, dispatch and the wake, to the woken USERSPACE thread's first read of its device window, where that thread ran on the core that took the interrupt |
 | `BD_IRQ_E2E_CROSS` | the same span where it did not, above one kernel core only, and empty by construction (see "Locality" below) |
+| `BD_CALL_RT` | a `kos_call`'s whole round trip, syscall entry to return, on the caller's core; a call that resumes on another core is not a sample. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
+| `BD_SCHED_DRAIN` | one reschedule dispatch's drain of the rings toward its core, in cycles, and `BD_SCHED_DRAIN_N` the entries it applied, a count. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
+| `BD_PUSH_E2E` | nanoseconds from a drop ask to the first instruction, on the asker, of the thread its holder pushed. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
+| `BD_RESEAT_E2E` | nanoseconds from a RESEAT request to the re-seated thread's next instruction on its core: the dispatch that applied it for a running thread, its switch-in for a READY one. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
 
 `BD_SWITCH`, `BD_LOCK_HOLD` and `BD_LOCK_WAIT` are fed by the running workload. `BD_DOORBELL`
 is fed by a probe that runs immediately BEFORE the report, so it prints with those three and
@@ -494,11 +498,59 @@ the reset that opens each report window, so the distribution is driven by a prob
 (`KOS_BENCH_OP_DOORBELL_PROBE`) that runs a fixed burst of real rounds through the same seam,
 once per kernel core, before each report.
 
+### The scheduler's report (`KOS_BENCH_OP_SCHED_PRINT`)
+
+**Only an image built with `KICKOS_BENCH_SCHED` prints it, and the knob is off by default.** Its
+counters and brackets sit on the switch, syscall and lock paths, so an image carrying them prices
+every other row of the bench above what the kernel costs; every other figure is read from an image
+built without it. `tools/bench/bench.sh` builds one with `EXTRA_CMAKE=-DKICKOS_BENCH_SCHED=ON`.
+Without it the `BD_CALL_RT`, `BD_SCHED_DRAIN`, `BD_SCHED_DRAIN_N`, `BD_PUSH_E2E` and
+`BD_RESEAT_E2E` slots do not exist, the op answers `-KOS_ENOSYS`, and the workloads below still
+run and print their own lines. The knob depends on `KICKOS_MULTICORE_SHARED`, so a
+`-DKICKOS_BENCH_SCHED=ON` on a one-core image is refused at configure by name.
+
+Above one kernel core the bench prints one report per workload, each since the reset that opened
+it and labelled by a `tag`: 0 the call/reply sweep, 1 each throughput window, 2 one pinned
+ping-pong pair per core all at once, 3 an unpinned equal-priority pair beside round-robin
+spinners on wide masks, 4 the push probe, 5 the reseat probe. These are the workloads of
+`../design-m9.4-rings.md` section G; the last five slots of the table above print here and not
+in the ordinary report.
+
+THE PUSH PROBE GIVES A HANDOFF UP AFTER 2 S AND SAYS WHICH. Its hog spins on each round's two
+handoffs, reading the clock only once every 65536 spins, so a round that completes inside that
+never enters the kernel for it. A handoff still missing 2 s after the first read prints
+`push-probe: STALL round=R/200 (<which handoff>)` and stops every probe thread, so the probe's
+report still prints and the bench goes on.
+
+ACQUISITIONS ARE COUNTED BY WHAT BROUGHT THE CORE IN. Each core holds the reason in force: a
+syscall, a reschedule dispatch and the timer set theirs on entry and restore it on the way out,
+and everything else is `other`. An acquisition in `klock_attach`, a switch taking the lock back
+for the thread it resumed, is `resume` whatever the reason. A syscall that parks and resumes on
+another core restores `other` there, so a reason is the core's and not the thread's.
+
+A PASS IS CHARGED TO ITS REASON AND TO WHETHER IT PARKS, the outgoing thread being neither
+RUNNING nor READY at its start. `run=` and `park=` give passes and the switches among them;
+`pass=` is the cycles of all those passes and `perform=` the switch half of the switching ones,
+from the incoming thread's first store in `switch_book` to the swap's release in
+`kickos_switch_unlock`, less the placement and drop decisions made inside it. On a switch booked
+from an interrupt that release is at the exception exit, so the rest of the handler is in it.
+The figures are totals, so a reader divides by whichever count its ratio needs.
+
+`sched-rings` counts handoffs, handoffs handed on because a mask no longer named their target,
+RESEATs, drop asks, drop asks the holder answered with nothing to push, and dispatches that left
+entries past their budget.
+
+On an emulator the counts are the figures and the cycles are shape: section G of the design
+reads no emulator time.
+
 ### The IRQ block, and what its two halves discriminate
 
 `irq-probe` names the line the board declared free (`KICKOS_IRQ_FREE_BASE`, a chip constant in
 `chip_limits.h`) and how many times the sweep raised it; `wcase-probe` says the same for each
-masked span, which is its own sweep. **The denominator is not decoration.** `n=0` beside
+masked span. **The four spans are sampled in turn inside one sweep**, because the gate compares
+their rows with one another and an emulator's cycle rate follows its host: four sweeps taken one
+after the other under a host whose speed moves between them (a busy SMT sibling is enough) price
+the same bytes differently, and the growth and label arms then refuse a correct kernel. **The denominator is not decoration.** `n=0` beside
 `raised=0` is a line the kernel never attached; `n=0` beside `raised=100` is a raise that
 reached no handler. The row alone shows neither, and a bench that named a line its controller
 could not raise printed a clean `0/0/0` for as long as it did.
@@ -638,6 +690,23 @@ board still closed 200 of 200 and dropped none, and its locality split moved fro
 175/25, the classification following where the waiter happened to be rather than where the
 sweep placed it.
 
+**EACH PASS SETTLES ITS OWN SET-UP BEFORE ITS FIRST RAISE.** The post that starts a pass wakes the
+raiser, which above one kernel core displaces root, and root is placed on a peer whose dispatch
+links it and switches it in before root parks again. Raised into that, a pass's first sample
+measures the set-up and not the delivery. So before its first raise the raiser polls
+`KOS_BENCH_OP_E2E_QUIET`, which answers under the kernel lock from the cores' own seats and ring
+indices: 1 once every other kernel core runs its idle thread and no thread is on its way to any
+core. The poll is bounded like the raise retries, and a pass that never settles raises anyway.
+So each sweep ends in `e2e-settle: settled=N/P`, the passes whose poll saw that state out of the
+`P` the sweep ran, the same count on every kernel core. `tests/integration/check_bench_irqspan.sh`
+refuses a report with no such mark, one that does not parse, and one no sweep could print, and
+states a short `N` in its verdict rather than refusing it.
+
+**THE SWEEP IS SIZED FOR ITS p99.** The local row carries 1000 samples, the floor a `p99` is stated
+at (below): each pass runs `ceil(1000 / (2 * kernel cores))` raises, 250 at two cores and 500 at
+one. It is the floor and not more because every sample is a raise, a wake and a return to
+userspace, which the slowest board pays for in each of the three report windows.
+
 ### Locality, and why every wake is local
 
 The tier-1 ISR stamps the core it runs on; the close compares that against the core the waiter
@@ -667,7 +736,8 @@ not hold, and the gate refuses it.
   where the choice was between refusing the figure and printing the maximum outright. Under 100
   samples the 99th nearest rank IS the largest sample, and a few hundred put one or two samples
   above it, so what a swept row was publishing is its top sample under a percentile's name: the
-  `irq` and `wcase-irq` rows carry 100, `e2e-local` 50 and `e2e-cross` 150. At the floor the top
+  `irq` and `wcase-irq` rows carry 100, and `e2e-local` carried 50 before the sweep was sized for
+  its p99. At the floor the top
   percent is ten samples rather than one. The workload-fed `switch`, `lock-hold` and `lock-wait`
   rows carry tens of thousands and are unaffected. Two things follow. A capture taken before
   M8.12 labels those rows `p50/p99/max` and its middle column is a bucket floor rather than a
@@ -710,10 +780,13 @@ not hold, and the gate refuses it.
 and checks that each reported value is a floor within an eighth of an octave of the
 nearest-rank quantile it names. `tests/integration/check_bench_doorbell.sh` reads the `doorbell-probe` lines and the doorbell
 report: one burst per kernel core, each run ON THE CORE IT WAS ASKED FOR and moving that core's
-OWN sample count by exactly the rounds it ran, every per-core row carrying one burst, the rows
-totalling the aggregate, and each row's MINIMUM a multiple of the raise floor that core measured
-inside the same burst. The last of those is the only arm that sees a bracket closed inside the
-raise: such a bracket still reports a full, ordered, correctly indexed distribution.
+OWN sample count by exactly the rounds it ran, every round HELD (each peer's answer in the cells
+right after the bracket closed), every per-core row carrying one burst, and the rows totalling the
+aggregate. The held count is the only arm that sees a bracket closed before the answers: such a
+bracket still reports a full, ordered, correctly indexed distribution. It is a count and not a
+ratio of cycle figures because an emulator on a loaded host can hold the raising core up for the
+whole of the peers' service, which a probe counting rounds answered before the raise returned
+measured at 62 to 64 of 64 on `qemu-arm64-benchsmp` under host load.
 `tests/integration/check_bench_lock.sh` reads the `lock-probe`
 line the kernel prints from three nested `IrqLock`s: the counts must move by exactly one, on the
 probing core, from a starting depth of zero. Zero says the bracket never accumulated or wrote a

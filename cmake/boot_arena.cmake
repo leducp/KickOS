@@ -43,9 +43,9 @@ function(kickos_pow2_ceil want out)
 endfunction()
 
 # Natural alignment the block must sit on. Mirrors arch_ram_region_align(), INCLUDING its
-# KICKOS_TLS leg, which is read from the resolved configuration rather than passed: the C
-# side reads the same knob out of board_config.h and a fourth parameter here would let a
-# caller model a geometry the allocator does not produce.
+# stride leg, which is read from the resolved configuration rather than passed: the C side
+# reads the same knobs and a fourth parameter here would let a caller model a geometry the
+# allocator does not produce.
 function(kickos_region_align want mn pow2 out)
   set(_geometry 16)
   if(NOT mn EQUAL 0)
@@ -54,7 +54,7 @@ function(kickos_region_align want mn pow2 out)
       kickos_region_size("${want}" "${mn}" "${pow2}" _geometry)
     endif()
   endif()
-  if(KICKOS_TLS)
+  if(KICKOS_TLS AND KICKOS_TLS_FROM_SP)
     kickos_pow2_ceil("${want}" _stride)
     if(_stride GREATER _geometry)
       set(_geometry "${_stride}")

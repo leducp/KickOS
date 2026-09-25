@@ -105,7 +105,6 @@ namespace kickos
     // structure. The core must never touch ready state except through these hooks.
     struct SchedPolicy
     {
-        // Scheduling decision.
         Thread* (*pick_next)();           // highest-priority runnable thread
         void (*on_ready)(Thread*);        // enqueue a now-runnable thread
         void (*on_remove)(Thread*);       // dequeue a thread leaving the run set
@@ -115,7 +114,7 @@ namespace kickos
         // Timed-event seam: the core owns the clock, the policy the deadline. on_switch_in
         // arms the incoming thread; next_timed_event is the earliest policy deadline for the
         // tickless timer (UINT64_MAX = none), answered for the thread named in the argument
-        // rather than for whatever currently[] holds: the switch path knows the incoming
+        // rather than for whatever current[] holds: the switch path knows the incoming
         // thread before it is seated.
         void (*on_switch_in)(Thread*);
         uint64_t (*next_timed_event)(Thread const*);
@@ -132,8 +131,16 @@ namespace kickos
         SchedPlacement (*place)(Thread const* t, uint32_t home);
         Thread* (*push_candidate)(uint32_t holder, uint32_t target);
         Thread* (*declined)(uint32_t core, int above, SchedWalk* walk);
+        // `core` has seated its first thread: until now peers read it as not started.
+        void (*on_start)(uint32_t core);
 #endif
     };
+
+#if KICKOS_KERNEL_CORES > 1
+    // What `core`'s next pass seats if nothing more arrives: its published level raised by every
+    // thread already on its way there, or -1 before it starts. Caller holds the exclusion.
+    int sched_effective_level(uint32_t core);
+#endif
 
     // Scheduler locking rules:
     // - "Caller holds the exclusion" requires interrupt masking and, on SMP, the
@@ -160,10 +167,15 @@ namespace kickos
         void add(Thread* t);
 
 #if KICKOS_KERNEL_CORES > 1
-        // Set an already-validated nonempty affinity mask. A READY thread is placed again at
-        // once, a blocked one at its next wake. A running thread excluded from its current
-        // core is asked off it through that core's own pass.
+        // Set an already-validated nonempty affinity mask. A READY thread linked here is placed
+        // again at once, a blocked one at its next wake. A thread linked on a peer, or handed
+        // toward one, is re-read by that peer's dispatch, whose pass moves a running one off it.
         void set_affinity(Thread* t, uint32_t mask);
+
+        // Asks the core `t` is linked on or headed to for a pass that re-reads its priority, mask
+        // and claim: this core's own pass when `t` is linked here, else that core's dispatch.
+        // Caller holds the exclusion.
+        void reseat(Thread* t);
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
@@ -224,8 +236,9 @@ namespace kickos
         // threads through policy hooks before changing prio, which indexes their lists.
         // BLOCKED threads need no reorder because wait queues scan priorities at pop.
         // Does not reschedule the calling core or apply the task priority ceiling; inherited
-        // priority is kernel-controlled. Above one core a READY thread is placed again, and a
-        // peer whose running thread is lowered is asked for a pass. Caller holds the exclusion.
+        // priority is kernel-controlled. Above one core a READY thread linked here is placed
+        // again, and a thread linked on a peer, or handed toward one, is re-seated by that
+        // peer's dispatch. Caller holds the exclusion.
         void set_prio(Thread* t, uint8_t p);
 
         // What this death is, which is the one thing exit_current cannot derive: a fault
@@ -264,8 +277,7 @@ namespace kickos
         // Live non-idle thread count (0 => nothing left to run).
         unsigned live_count();
 
-        // The active policy's earliest timed event for `t` (ns), or UINT64_MAX for none (RR
-        // slice expiry currently; the core itself carries no notion of a "slice"). `t` may
+        // The active policy's earliest timed event for `t` (ns), or UINT64_MAX for none. `t` may
         // be null.
         uint64_t next_timed_event(Thread const* t);
         // Runs in the timer ISR on every expiry: if the active policy has a

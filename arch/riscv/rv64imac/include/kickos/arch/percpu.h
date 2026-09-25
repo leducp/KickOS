@@ -9,8 +9,8 @@
 // sscratch it already had. The stack grows down from the block, so no frame the entry builds
 // can reach a field, and an sp above the top is already refused by the entry's range test.
 //
-// S-mode has no hart-identity CSR: mhartid is machine-mode only, tp is parked at 0 and is
-// U-mode writable. sscratch is neither readable nor writable from U-mode, so the identity a
+// S-mode has no hart-identity CSR: mhartid is machine-mode only, and tp is U-mode writable and
+// holds the resumed thread's libc state. sscratch is neither readable nor writable from U-mode, so the identity a
 // row carries cannot be forged from below.
 
 #ifndef KICKOS_ARCH_PERCPU_H

@@ -223,9 +223,14 @@ void kickos_doorbell_raise(uint32_t cores)
 #if KICKOS_KERNEL_CORES > 1
 // sip.SSIP is supervisor-owned, so this hart raises its own doorbell directly rather than
 // through the CLINT and the machine-mode trampoline a peer's raise needs.
-void arch_ipi_resched_self(void)
+void arch_ipi_raise(uint32_t cores)
 {
-    doorbell_raise_self();
+    uint32_t const self = 1u << arch_cpu_id();
+    kickos_rv64_doorbell_send(cores & ~self);
+    if ((cores & self) != 0)
+    {
+        doorbell_raise_self();
+    }
 }
 #endif
 

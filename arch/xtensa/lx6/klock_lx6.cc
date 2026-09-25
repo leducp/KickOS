@@ -193,13 +193,13 @@ void kickos_doorbell_poll(void)
     kickos_lx6_doorbell_clear();
     kickos_lx6_doorbell_service();
 #if KICKOS_KERNEL_CORES > 1
-    // After the clear that absorbed it. arch_ipi_resched_self sets this same trigger, so the
-    // clear above drops a reschedule this core owes itself. klock_leave carries it for an
-    // ordinary critical section; the park and the selfcheck release through arch_kernel_unlock
-    // and read no cell, so without this the ask stays owed with the trigger clear.
+    // After the clear that absorbed it. A self raise sets this same trigger, so the clear above
+    // drops a reschedule this core owes itself. klock_leave carries it for an ordinary critical
+    // section; the park and the selfcheck release through arch_kernel_unlock and read no cell,
+    // so without this the ask stays owed with the trigger clear.
     if (kickos_kernel_core_resched_owed() != 0)
     {
-        arch_ipi_resched_self();
+        arch_ipi_raise(1u << arch_cpu_id());
     }
     // A peer's device-line post rides the same trigger, and the clear dropped it too.
     if (kickos_lx6_inject_owed() != 0)
@@ -216,11 +216,11 @@ void kickos_doorbell_raise(uint32_t cores)
 }
 
 #if KICKOS_KERNEL_CORES > 1
-// A core raises its own trigger: the matrix routes it to this core's own doorbell input, and
-// the input is level, so a raise made under this core's mask stands until it unmasks.
-void arch_ipi_resched_self(void)
+// A core's own trigger is routed to its own doorbell input, and the input is level, so a raise
+// made under this core's mask stands until it unmasks.
+void arch_ipi_raise(uint32_t cores)
 {
-    kickos_lx6_doorbell_send(1u << arch_cpu_id());
+    kickos_lx6_doorbell_send(cores);
 }
 #endif
 

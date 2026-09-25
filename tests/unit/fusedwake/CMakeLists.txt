@@ -33,7 +33,7 @@ kickos_add_kernel_host_lib(kickos_kseam_ipc_smp
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
            "${PROJECT_SOURCE_DIR}/kernel/syscall"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_BENCH=1)
+          KICKOS_BENCH=1 KICKOS_BENCH_SCHED=1)
 
 kickos_add_unit_test(NAME fused_wake SOURCES owed_set.cc
   LIBRARIES kickos_kseam_ipc_smp)

@@ -36,7 +36,6 @@
 #define BENCH_DIST_FMT_CYC(label) "  " label " %u/%u/%u cyc  (min/avg/max, n=%u)\n"
 #define BENCH_DIST_FMT_CNT(label) "  " label " %u/%u/%u  (min/avg/max, n=%u)\n"
 #define BENCH_E2E_FMT(label) "  " label " %u/%u/%u ns  (min/avg/max, n=%u)\n"
-// The min/avg/max format does not depend on sample count.
 #define BENCH_DIST_FMT_MAX(label) BENCH_DIST_FMT(label)
 #define BENCH_DIST_FMT_CYC_MAX(label) BENCH_DIST_FMT_CYC(label)
 #define BENCH_DIST_FMT_CNT_MAX(label) BENCH_DIST_FMT_CNT(label)
@@ -72,9 +71,8 @@ namespace
         g_irq_seen = 1;
     }
 
-    // End-to-end IRQ span. Accept a sample only if a span is open, the closer
-    // is the armed waiter, its switch count advanced, and an ISR ran. Other
-    // samples increment g_e2e_dropped. Armed and parked are distinct states.
+    // End-to-end IRQ span. A sample stands only if a span is open, the closer is the armed
+    // waiter, its switch count advanced, and an ISR ran; any other is dropped.
     enum E2eMode : uint32_t
     {
         E2E_IDLE = 0,
@@ -84,12 +82,11 @@ namespace
         E2E_TARED
     };
 
-    // State publishes the ordinary data fields. On SMP, release/acquire orders
-    // ARMED metadata, PARKED readiness, and RAISED timestamp t0.
-    // Transitions use loads and stores, not compare-and-swap. The benchmark
-    // semaphore handshake serializes one armer, raiser, closer, and reporter;
-    // concurrent users are unsupported (docs/reference/bench.md).
-    // Single-core builds need only compiler ordering against interrupts.
+    // The mode publishes the plain fields: on SMP its release/acquire orders the ARMED
+    // metadata, PARKED readiness and the RAISED t0. Transitions are plain loads and stores: the
+    // benchmark's semaphore handshake serializes one armer, raiser, closer and reporter, and
+    // concurrent users are unsupported (docs/reference/bench.md). One core needs only compiler
+    // ordering against interrupts.
 #if KICKOS_KERNEL_CORES > 1
     using E2eState = Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>;
 #else
@@ -100,7 +97,6 @@ namespace
     constinit uint32_t g_e2e_epoch = 0;
     // The state publishes this 64-bit timestamp; kickos::Atomic supports only 32-bit fields.
     constinit uint64_t g_e2e_t0 = 0;
-    // Written by the closer and read by the reporter.
     constinit Atomic<uint32_t, Order::RELAXED> g_e2e_closed = 0;
     constinit Atomic<uint32_t, Order::RELAXED> g_e2e_dropped = 0;
     // Count requested passes, including those that never parked and closed no sample.
@@ -113,7 +109,7 @@ namespace
     constinit volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
 
     // STIR can pend an ARM interrupt while PRIMASK is set. Other targets use
-    // arch_irq_inject, which may be unsupported. Include the method in the report.
+    // arch_irq_inject, which may be unsupported.
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
 #define BENCH_RAISE_NAME "stir"
 #else
@@ -130,7 +126,6 @@ namespace
 #endif
     }
 
-// Report the handler core: none for no delivery, mixed for multiple cores.
 #define BENCH_IRQ_PROBE_FMT(label)                                                             \
     "  " label ": line=%u raise=" BENCH_RAISE_NAME " on=%u raised=%u hcore=%u foreign=%u"      \
     " win=%u\n"
@@ -159,7 +154,6 @@ namespace
         }
         return true;
     }
-    // Reject spans that irq_masked_once would truncate.
     static_assert(wcase_spans_fit(BENCH_LAT_SPAN_MAX),
                   "a WCASE_SPANS entry exceeds BENCH_LAT_SPAN_MAX");
 
@@ -287,10 +281,21 @@ namespace
         BENCH_DIST_ENTRY("irq:      "),
         // WCASE_FMT selects the span label without adding a printf argument.
         BENCH_DIST_ENTRY_NONE(),
+        BENCH_DIST_ENTRY_NONE(),
+        BENCH_DIST_ENTRY_NONE(),
+        BENCH_DIST_ENTRY_NONE(),
         // End-to-end rows use nanoseconds because per-core cycle counters are not
         // synchronized. Their labels are in E2E_FMT.
         BENCH_DIST_ENTRY_NONE(),
 #if KICKOS_KERNEL_CORES > 1
+        BENCH_DIST_ENTRY_NONE(),
+#endif
+#if KICKOS_BENCH_SCHED_ON
+        BENCH_DIST_ENTRY("call-rt:  "),
+        BENCH_DIST_ENTRY("sched-drain:"),
+        BENCH_DIST_ENTRY_CNT("sched-drain-n:"),
+        // Nanoseconds, labelled in SCHED_E2E_FMT.
+        BENCH_DIST_ENTRY_NONE(),
         BENCH_DIST_ENTRY_NONE(),
 #endif
     };
@@ -306,12 +311,20 @@ namespace
     static_assert(sizeof(WCASE_FMT) / sizeof(WCASE_FMT[0])
                       == sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]),
                   "one label per masked span, in span order");
+    static_assert(kickos::BD_IRQ_WCASE_LAST - kickos::BD_IRQ_WCASE + 1u
+                      == sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]),
+                  "one distribution per masked span");
 
     constexpr StatFmt E2E_FMT_LOCAL = {BENCH_E2E_FMT("e2e-local:"),
                                        BENCH_E2E_FMT_MAX("e2e-local:")};
 #if KICKOS_KERNEL_CORES > 1
     constexpr StatFmt E2E_FMT_CROSS = {BENCH_E2E_FMT("e2e-cross:"),
                                        BENCH_E2E_FMT_MAX("e2e-cross:")};
+#endif
+#if KICKOS_BENCH_SCHED_ON
+    constexpr StatFmt PUSH_E2E_FMT = {BENCH_E2E_FMT("push-e2e:"), BENCH_E2E_FMT_MAX("push-e2e:")};
+    constexpr StatFmt RESEAT_E2E_FMT = {BENCH_E2E_FMT("reseat-e2e:"),
+                                        BENCH_E2E_FMT_MAX("reseat-e2e:")};
 #endif
 
     // Require 1000 samples for p99, leaving ten samples in the top percent.
@@ -451,8 +464,7 @@ extern "C"
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // C entry point for the kernel lock's ticket draw, called once per acquisition by the
-    // backend that owns the counters.
+    // One sample per kernel-lock acquisition: its ticket draw's retries and queue depth.
     void kickos_bench_lock_draw(uint32_t retries, uint32_t queued)
     {
         BenchRow& r = row();
@@ -480,6 +492,257 @@ extern "C"
         dist_add_row(row(), kickos::BD_SWITCH, delta);
     }
 }
+
+#if KICKOS_BENCH_SCHED_ON
+namespace
+{
+    struct PassAcc
+    {
+        uint32_t passes;
+        uint32_t switches;
+        uint64_t pass_cyc;
+        uint64_t perform_cyc;
+    };
+
+    // Each core writes only its own row, the pass it has open included.
+    struct KICKOS_BENCH_PERCORE_ALIGNED SchedRow
+    {
+        uint32_t acq[kickos::BR_COUNT];
+        PassAcc pass[kickos::BR_COUNT][2]; // [reason][the pass parks its outgoing thread]
+        uint32_t count[kickos::BS_COUNT];
+        uint32_t reason;
+        uint32_t open;
+        uint32_t park;
+        uint32_t performing;
+        uint32_t drain_applied;
+        uint32_t drain_base;
+        kickos::BenchTick pass_start;
+        kickos::BenchTick perform_start;
+        kickos::BenchTick decide_start;
+        kickos::BenchTick decided;
+        kickos::BenchTick drain_start;
+    };
+
+    constinit SchedRow g_sched[KICKOS_KERNEL_CORES] = {};
+
+    SchedRow& sched_row() { return g_sched[kickos_kernel_core()]; }
+
+    // Per pool slot, the nanosecond a push or a RESEAT toward the slot's thread began, 0 for none.
+    // Written and read under the kernel lock.
+    enum MoveKind : uint32_t
+    {
+        MOVE_NONE = 0,
+        MOVE_PUSH,
+        MOVE_RESEAT
+    };
+    struct MoveStamp
+    {
+        uint64_t t0;
+        uint32_t kind;
+    };
+    constinit MoveStamp g_move[KICKOS_THREAD_SLOTS] = {};
+    // [asker][holder]: when the asker's standing drop ask toward the holder was made.
+    constinit uint64_t g_drop_t0[KICKOS_KERNEL_CORES][KICKOS_KERNEL_CORES] = {};
+
+    int move_slot(kickos::Thread const* t)
+    {
+        return kickos::kernel().threads.index_of(t);
+    }
+
+    // The span closes on the thread's first instruction, so a stamp the switch-in finds is its
+    // sample and is spent.
+    void move_close(kickos::Thread const* t)
+    {
+        int const s = move_slot(t);
+        if (s < 0 or g_move[s].kind == MOVE_NONE)
+        {
+            return;
+        }
+        uint64_t const ns = arch_clock_now() - g_move[s].t0;
+        uint32_t d = kickos::BD_PUSH_E2E;
+        if (g_move[s].kind == MOVE_RESEAT)
+        {
+            d = kickos::BD_RESEAT_E2E;
+        }
+        g_move[s].kind = MOVE_NONE;
+        dist_add_row(row(), d, ns);
+    }
+}
+
+extern "C"
+{
+    uint32_t kickos_bench_reason_enter(uint32_t reason)
+    {
+        SchedRow& r = sched_row();
+        uint32_t const was = r.reason;
+        r.reason = reason;
+        return was;
+    }
+
+    void kickos_bench_reason_leave(uint32_t was)
+    {
+        sched_row().reason = was;
+    }
+
+    void kickos_bench_acquired(uint32_t resume)
+    {
+        SchedRow& r = sched_row();
+        uint32_t reason = r.reason;
+        if (resume != 0)
+        {
+            reason = kickos::BR_RESUME;
+        }
+        r.acq[reason]++;
+    }
+
+    void kickos_bench_pass_open(void)
+    {
+        SchedRow& r = sched_row();
+        kickos::Thread const* const c = kickos::sched::current();
+        r.park = 0;
+        if (c != nullptr and c->state != kickos::ThreadState::RUNNING
+            and c->state != kickos::ThreadState::READY)
+        {
+            r.park = 1;
+        }
+        r.open = 1;
+        r.performing = 0;
+        r.decided = 0;
+        r.pass_start = bench_cyccnt();
+    }
+
+    // A pass that switched nothing.
+    void kickos_bench_pass_close(void)
+    {
+        kickos::BenchTick const end = bench_cyccnt();
+        SchedRow& r = sched_row();
+        if (r.open == 0)
+        {
+            return;
+        }
+        r.open = 0;
+        PassAcc& a = r.pass[r.reason][r.park];
+        a.passes++;
+        a.pass_cyc += end - r.pass_start;
+    }
+
+    void kickos_bench_perform_open(void)
+    {
+        SchedRow& r = sched_row();
+        if (r.open == 0)
+        {
+            return;
+        }
+        r.performing = 1;
+        r.perform_start = bench_cyccnt();
+    }
+
+    void kickos_bench_decide_open(void)
+    {
+        sched_row().decide_start = bench_cyccnt();
+    }
+
+    void kickos_bench_decide_close(void)
+    {
+        SchedRow& r = sched_row();
+        r.decided += bench_cyccnt() - r.decide_start;
+    }
+
+    // In the swap's release, on the incoming thread's side of it.
+    void kickos_bench_switched(void)
+    {
+        kickos::BenchTick const end = bench_cyccnt();
+        SchedRow& r = sched_row();
+        move_close(kickos::sched::current());
+        if (r.open == 0 or r.performing == 0)
+        {
+            return;
+        }
+        r.open = 0;
+        r.performing = 0;
+        PassAcc& a = r.pass[r.reason][r.park];
+        a.passes++;
+        a.switches++;
+        a.pass_cyc += end - r.pass_start;
+        a.perform_cyc += end - r.perform_start - r.decided;
+    }
+
+    void kickos_bench_sched_count(uint32_t which)
+    {
+        sched_row().count[which]++;
+    }
+
+    void kickos_bench_drop_asked(uint32_t holder)
+    {
+        g_drop_t0[kickos_kernel_core()][holder] = arch_clock_now();
+        sched_row().count[kickos::BS_DROP_ASK]++;
+    }
+
+    void kickos_bench_pushed(kickos::Thread const* t, uint32_t asker)
+    {
+        int const s = move_slot(t);
+        uint64_t const t0 = g_drop_t0[asker][kickos_kernel_core()];
+        if (s < 0 or t0 == 0)
+        {
+            return;
+        }
+        g_move[s].t0 = t0;
+        g_move[s].kind = MOVE_PUSH;
+    }
+
+    void kickos_bench_reseat_asked(kickos::Thread const* t)
+    {
+        int const s = move_slot(t);
+        if (s < 0)
+        {
+            return;
+        }
+        g_move[s].t0 = arch_clock_now();
+        g_move[s].kind = MOVE_RESEAT;
+        sched_row().count[kickos::BS_RESEAT]++;
+    }
+
+    // A running thread's next instruction follows the dispatch that re-seated it; a READY one's
+    // is its switch-in, and a request retired for a thread in flight or parked is no sample.
+    void kickos_bench_reseat_applied(kickos::Thread const* t, int running)
+    {
+        int const s = move_slot(t);
+        if (s < 0 or g_move[s].kind != MOVE_RESEAT)
+        {
+            return;
+        }
+        if (running < 0)
+        {
+            g_move[s].kind = MOVE_NONE;
+            return;
+        }
+        if (running > 0)
+        {
+            move_close(t);
+        }
+    }
+
+    void kickos_bench_drain_open(void)
+    {
+        SchedRow& r = sched_row();
+        r.drain_base = r.drain_applied;
+        r.drain_start = bench_cyccnt();
+    }
+
+    void kickos_bench_drain_applied(void)
+    {
+        sched_row().drain_applied++;
+    }
+
+    void kickos_bench_drain_close(void)
+    {
+        kickos::BenchTick const end = bench_cyccnt();
+        SchedRow& r = sched_row();
+        dist_add_row(row(), kickos::BD_SCHED_DRAIN, end - r.drain_start);
+        dist_add_row(row(), kickos::BD_SCHED_DRAIN_N, r.drain_applied - r.drain_base);
+    }
+}
+#endif
 
 namespace kickos
 {
@@ -684,6 +947,23 @@ namespace kickos
             r.lock_site_max.store(0, std::memory_order_relaxed);
             r.lock_site_gen.store(0, std::memory_order_relaxed);
         }
+#if KICKOS_BENCH_SCHED_ON
+        // The counts only: a core's reason in force and its open pass stay as they are.
+        for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+        {
+            SchedRow& s = g_sched[c];
+            for (uint32_t i = 0; i < BR_COUNT; i++)
+            {
+                s.acq[i] = 0;
+                s.pass[i][0] = PassAcc{};
+                s.pass[i][1] = PassAcc{};
+            }
+            for (uint32_t i = 0; i < BS_COUNT; i++)
+            {
+                s.count[i] = 0;
+            }
+        }
+#endif
         // Reset counters with their distributions. Preserve the one-time tare and
         // the live waiter state, which may already be armed on another core.
         g_e2e_closed = 0;
@@ -693,7 +973,6 @@ namespace kickos
         g_bench_lock[kickos_kernel_core()].start = bench_cyccnt();
     }
 
-    // Print aggregate and per-core values. The caller selects the span label.
     static void dist_print_fmt(uint32_t d, DistFmt const& f)
     {
         // Snapshot buckets before the accumulator and compute all output from that copy.
@@ -769,7 +1048,6 @@ namespace kickos
 #endif
     }
 
-    // Print an aggregate distribution in nanoseconds.
     static void dist_print_ns(uint32_t d, StatFmt const& fmt)
     {
 #if !BENCH_HEADLINE_MIN
@@ -875,10 +1153,12 @@ namespace kickos
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    // Measure one complete round: request peers and wait for all replies.
-    // Both timestamps come from this core because counters are not synchronized.
-    // Placement precedes the IrqLock; peers reply without scheduling, so no
-    // switch occurs inside the interval. All rounds share one lock-hold sample.
+    // Both timestamps come from this core: counters are not synchronized. Placement precedes the
+    // IrqLock and peers reply without scheduling, so no switch falls inside the interval. All
+    // rounds share one lock-hold sample.
+    //
+    // `held` witnesses that each bracket closes after every answer, and must stay a count: under
+    // host load one emulated raise can outlast every peer's service, so no duration can.
     uint32_t bench_doorbell_probe_print(uint32_t core, uint32_t rounds)
     {
         Thread* const self = sched::current();
@@ -894,7 +1174,7 @@ namespace kickos
         uint32_t me = 0;
         uint32_t moved = 0;
         uint32_t ran = 0;
-        uint32_t raise_lo = 0xFFFFFFFFu;
+        uint32_t held = 0;
         {
             IrqLock lock;
             me = kickos_kernel_core();
@@ -911,14 +1191,11 @@ namespace kickos
             {
                 KICKOS_BENCH_MARK(bd);
                 arch_ipi_send(peers);
-                // Measure the raise alone as a control within the same round.
-                uint32_t const mid = bench_cyccnt();
                 arch_ipi_wait(peers);
                 KICKOS_BENCH_DIST_SPAN(BD_DOORBELL, bd);
-                uint32_t const raised = mid - bd;
-                if (raised < raise_lo)
+                if (arch_ipi_answered(peers))
                 {
-                    raise_lo = raised;
+                    held++;
                 }
                 ran++;
             }
@@ -927,14 +1204,10 @@ namespace kickos
         }
         sched::set_affinity(self, saved);
 
-        if (ran == 0)
-        {
-            raise_lo = 0;
-        }
-        kprintf_paced("  doorbell-probe: asked=%u on=%u ran=%u db+%u raise=%u\n",
+        kprintf_paced("  doorbell-probe: asked=%u on=%u ran=%u db+%u held=%u\n",
                 static_cast<unsigned>(core), static_cast<unsigned>(me),
                 static_cast<unsigned>(ran), static_cast<unsigned>(moved),
-                static_cast<unsigned>(raise_lo));
+                static_cast<unsigned>(held));
         return ran;
     }
 #endif
@@ -989,7 +1262,7 @@ namespace kickos
             return -KOS_EBUSY;
         }
         g_irq_line = line;
-        irq_line_op(line, LineOp::CLEAR); // Discard pending events before arming.
+        irq_line_op(line, LineOp::CLEAR);
         irq_line_op(line, LineOp::UNMASK);
         return 0;
     }
@@ -1029,7 +1302,7 @@ namespace kickos
         IrqSample s = {0, 0, BENCH_CORE_NONE, IRQ_SILENT};
         if (g_irq_seen == 0)
         {
-            return s; // No interrupt observed.
+            return s;
         }
         s.window = bench_cyccnt() - t0;
         s.core = g_irq_core;
@@ -1210,38 +1483,49 @@ namespace kickos
         return dist_total(BD_IRQ_ENTRY).count;
     }
 
-    uint32_t bench_irq_wcase_spans()
-    {
-        return sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]);
-    }
+    // Kept off the syscall frame, whose depth every trap header's kernel-stack reserve bounds.
+    static constinit IrqTally g_wcase_tally[sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0])] = {};
 
-    uint32_t bench_irq_wcase_sweep(uint32_t span_index, uint32_t samples)
+    // One of each span per round: the rows are compared with one another, so a host whose speed
+    // moves during the sweep must move all four alike.
+    uint32_t bench_irq_wcase_sweep(uint32_t samples)
     {
-        if (span_index >= bench_irq_wcase_spans())
+        constexpr uint32_t SPANS = sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]);
+        for (uint32_t k = 0; k < SPANS; k++)
         {
-            return 0;
+            dist_reset_one(BD_IRQ_WCASE + k);
         }
-        dist_reset_one(BD_IRQ_WCASE);
         IrqPlacement const p = irq_place();
-        IrqTally t = {0, 0, 0, BENCH_CORE_NONE, 0};
+        IrqTally* const t = g_wcase_tally;
+        for (uint32_t k = 0; k < SPANS; k++)
+        {
+            t[k] = {0, 0, 0, BENCH_CORE_NONE, 0};
+        }
         for (uint32_t i = 0; i < samples and g_irq_line >= 0; i++)
         {
-            IrqSample const s = irq_masked_once(g_irq_line, WCASE_SPANS[span_index]);
-            irq_tally(t, s);
-            if (s.verdict == IRQ_LOCAL)
+            for (uint32_t k = 0; k < SPANS; k++)
             {
-                bench_dist_add(BD_IRQ_WCASE, s.cyc);
+                IrqSample const s = irq_masked_once(g_irq_line, WCASE_SPANS[k]);
+                irq_tally(t[k], s);
+                if (s.verdict == IRQ_LOCAL)
+                {
+                    bench_dist_add(BD_IRQ_WCASE + k, s.cyc);
+                }
             }
         }
         irq_unplace(p);
-        irq_tally_print(BENCH_IRQ_PROBE_FMT("wcase-probe"),
-                BENCH_IRQ_PROBE_FMT_NONE("wcase-probe"),
-                BENCH_IRQ_PROBE_FMT_MIXED("wcase-probe"), t, p);
-        dist_print_fmt(BD_IRQ_WCASE, WCASE_FMT[span_index]);
-        return dist_total(BD_IRQ_WCASE).count;
+        uint32_t taken = 0;
+        for (uint32_t k = 0; k < SPANS; k++)
+        {
+            irq_tally_print(BENCH_IRQ_PROBE_FMT("wcase-probe"),
+                    BENCH_IRQ_PROBE_FMT_NONE("wcase-probe"),
+                    BENCH_IRQ_PROBE_FMT_MIXED("wcase-probe"), t[k], p);
+            dist_print_fmt(BD_IRQ_WCASE + k, WCASE_FMT[k]);
+            taken += dist_total(BD_IRQ_WCASE + k).count;
+        }
+        return taken;
     }
 
-    // Record the waiter, its IRQ and its switch count for validation at close.
     int bench_e2e_arm(int line)
     {
         if (line < 0 or line >= KICKOS_MAX_IRQ)
@@ -1287,6 +1571,33 @@ namespace kickos
         g_e2e_raised = g_e2e_raised + 1;
         bench_irq_raise(line);
         return 0;
+    }
+
+    int bench_e2e_quiet()
+    {
+        IrqLock lock;
+        Kernel const& k = kernel();
+        uint32_t const me = kickos_kernel_core();
+        for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+        {
+            if (c != me and k.current[c] != k.idle[c])
+            {
+                return 0;
+            }
+        }
+#if KICKOS_KERNEL_CORES > 1
+        for (uint32_t p = 0; p < KICKOS_KERNEL_CORES; p++)
+        {
+            for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+            {
+                if (k.sched_out[p].staged[c] != k.sched_in[c].tail[p].load())
+                {
+                    return 0;
+                }
+            }
+        }
+#endif
+        return 1;
     }
 
     int bench_e2e_tare()
@@ -1358,6 +1669,65 @@ namespace kickos
         return 0;
     }
 
+#if KICKOS_BENCH_SCHED_ON
+    void bench_sched_print(uint32_t tag)
+    {
+        constexpr char const* REASON[BR_COUNT] = {"other", "syscall", "resume", "resched",
+                                                  "timer"};
+        uint32_t const switches = dist_total(BD_SWITCH).count;
+        kprintf_paced("  sched-report: tag=%u switches=%u\n", static_cast<unsigned>(tag),
+                      static_cast<unsigned>(switches));
+        for (uint32_t i = 0; i < BR_COUNT; i++)
+        {
+            uint32_t acq = 0;
+            PassAcc run = {};
+            PassAcc park = {};
+            for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+            {
+                SchedRow const& s = g_sched[c];
+                acq += s.acq[i];
+                run.passes += s.pass[i][0].passes;
+                run.switches += s.pass[i][0].switches;
+                run.pass_cyc += s.pass[i][0].pass_cyc;
+                run.perform_cyc += s.pass[i][0].perform_cyc;
+                park.passes += s.pass[i][1].passes;
+                park.switches += s.pass[i][1].switches;
+                park.pass_cyc += s.pass[i][1].pass_cyc;
+                park.perform_cyc += s.pass[i][1].perform_cyc;
+            }
+            // Totals and not averages, so a reader divides by whichever count it needs.
+            kprintf_paced("    %s: acq=%u run=%u/%u pass=%llu perform=%llu"
+                          " park=%u/%u pass=%llu perform=%llu\n",
+                          REASON[i], static_cast<unsigned>(acq),
+                          static_cast<unsigned>(run.passes), static_cast<unsigned>(run.switches),
+                          static_cast<unsigned long long>(run.pass_cyc),
+                          static_cast<unsigned long long>(run.perform_cyc),
+                          static_cast<unsigned>(park.passes), static_cast<unsigned>(park.switches),
+                          static_cast<unsigned long long>(park.pass_cyc),
+                          static_cast<unsigned long long>(park.perform_cyc));
+        }
+        uint32_t n[BS_COUNT] = {};
+        for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+        {
+            for (uint32_t i = 0; i < BS_COUNT; i++)
+            {
+                n[i] += g_sched[c].count[i];
+            }
+        }
+        kprintf_paced("  sched-rings: handoffs=%u handed-on=%u reseats=%u drop-asks=%u"
+                      " drop-idle=%u drain-over=%u\n",
+                      static_cast<unsigned>(n[BS_HANDOFF]), static_cast<unsigned>(n[BS_HANDED_ON]),
+                      static_cast<unsigned>(n[BS_RESEAT]), static_cast<unsigned>(n[BS_DROP_ASK]),
+                      static_cast<unsigned>(n[BS_DROP_IDLE]),
+                      static_cast<unsigned>(n[BS_DRAIN_OVER]));
+        dist_print_fmt(BD_CALL_RT, DIST_FMT[BD_CALL_RT]);
+        dist_print_fmt(BD_SCHED_DRAIN, DIST_FMT[BD_SCHED_DRAIN]);
+        dist_print_fmt(BD_SCHED_DRAIN_N, DIST_FMT[BD_SCHED_DRAIN_N]);
+        dist_print_ns(BD_PUSH_E2E, PUSH_E2E_FMT);
+        dist_print_ns(BD_RESEAT_E2E, RESEAT_E2E_FMT);
+    }
+#endif
+
     void bench_e2e_print(uint32_t asked)
     {
         uint32_t tmin = 0;
@@ -1367,13 +1737,11 @@ namespace kickos
             tmin = g_e2e_tare.min;
             tavg = static_cast<uint32_t>(g_e2e_tare.sum / g_e2e_tare.count);
         }
-        // Keep the method in the literal to avoid a stack-passed printf argument.
         kprintf_paced("  e2e-probe: line=%u closed=%u dropped=%u"
                 " tare=%u/%u ns  (min/avg, n=%u)\n",
                 static_cast<unsigned>(g_bench_e2e_line), static_cast<unsigned>(g_e2e_closed),
                 static_cast<unsigned>(g_e2e_dropped), static_cast<unsigned>(tmin),
                 static_cast<unsigned>(tavg), static_cast<unsigned>(g_e2e_tare.count));
-        // Compare the requested sweep size with the accepted raise count.
         kprintf_paced("  e2e-passes: asked=%u raised=%u\n", static_cast<unsigned>(asked),
                 static_cast<unsigned>(g_e2e_raised));
         dist_print_ns(BD_IRQ_E2E_LOCAL, E2E_FMT_LOCAL);

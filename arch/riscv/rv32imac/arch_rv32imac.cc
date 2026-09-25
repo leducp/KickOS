@@ -1,35 +1,29 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RISC-V RV32IMAC arch backend: the ISA-generic half of the arch.h seam. Context switch,
-// trap entry, syscall trampoline and first-thread entry are in switch.S; the chip layer
-// (arch/riscv/chip/{virt,esp32c6}) supplies the hardware edges.
+// RISC-V RV32IMAC arch backend, ISA-generic half; switch.S and arch/riscv/chip/ hold the rest.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/rv_trap_stack.h> // the trap guard's derived figures + ctx offsets
+#include <kickos/arch/idle_floor.h>
+#include <kickos/arch/rv_trap_stack.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
+#include <kickos/trace/record.h>
 
 #include <bit>
 
 #include <stddef.h>
 #include <stdint.h>
 
-// A mismatch mislabels every SESSION record; the id comes from the CMake ladder and this
-// chip's caps.cmake.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RISCV,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RISCV for rv32imac");
 
-// kfault_terminate is the shared panic/fault dead-end (kernel.h).
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
-// Kernel MPU-violation reporter (kernel/init/console.cc): a U-mode access fault is a PMP
-// domain violation and routes here, which emits the shared MPU FAULT marker.
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 
 // 0 keeps only the one-line fault marker.
@@ -41,8 +35,7 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 // ctx.sp = its base, low to high) is 32 words / 128 bytes:
 //   [0 mepc][1 mstatus][2 ra][3 t0][4 t1][5 t2][6 s0][7 s1][8 a0]..[15 a7]
 //   [16 s2]..[25 s11][26 t3][27 t4][28 t5][29 t6][30 sp][31 pad]
-// gp and tp are out of the frame: tp is set once in _start, and gp is re-anchored by
-// .Lrestore on every switch (switch.S carries why).
+// gp and tp are not in the frame: .Lrestore writes both on every resume.
 namespace
 {
     enum : uint32_t
@@ -54,16 +47,14 @@ namespace
     static_assert(KICKOS_RV_TRAP_F_SP % 4 == 0, "F_SP is not a word offset");
     static_assert(F_SP < FRAME_WORDS, "F_SP lies outside the frame");
 
-    // mstatus bits (RISC-V Privileged ISA v1.10). MIE is KICKOS_RV32_MSTATUS_MIE, the
-    // inline critical section's own (kickos/arch/irq_inline.h).
+    // MIE is KICKOS_RV32_MSTATUS_MIE (kickos/arch/irq_inline.h).
     constexpr uint32_t MSTATUS_MPIE = 1u << 7;
     constexpr uint32_t MSTATUS_MPP_M = 3u << 11; // MPP = machine (U = 0)
 
 }
 
-// switch.S hard-codes each offset below as a literal displacement, so a field inserted
-// ahead of the bounds leaves the trap guard comparing sp against trace_tid.
-// rv_trap_stack.h holds the single definition; these assert the struct agrees with it.
+// switch.S hard-codes each offset below as a literal displacement; rv_trap_stack.h holds
+// the single definition.
 static_assert(offsetof(struct arch_context, sp) == KICKOS_RV_CTX_OFF_SP,
               "switch.S expects ctx.sp @0");
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -76,11 +67,22 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV_CTX_OFF_STACK
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV_CTX_OFF_KERNEL_SP,
               "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
-// The alignment the trap prologue requires of any stack pointer it builds on.
-// The reporter's own array (kernel/init/console.cc), cut to the Kconfig figure and measured
-// against the header's by check_trap_redzone.sh. A board may only RAISE it.
+#if defined(KICKOS_TLS) && KICKOS_TLS
+static_assert(offsetof(struct arch_context, tls_base) == KICKOS_RV_CTX_OFF_KERNEL_SP + 4,
+              ".Lrestore loads ctx.tls_base at F_CTX_TLS_BASE");
+
+namespace kickos
+{
+    size_t tls_block_size();
+}
+#endif
+// The panic reporter's stack (kernel/init/console.cc) is sized by Kconfig; a board may only
+// RAISE it.
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV_PANIC_FRAME + KICKOS_RV_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+// The link checks the same floor above idle's thread-local carve.
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
+              "the switch frame does not fit this board's idle stack");
 
 static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_RV_TRAP_SP_ALIGN, "
@@ -89,27 +91,25 @@ static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
 static_assert(sizeof(struct arch_context) >= KICKOS_RV_CTX_OFF_KERNEL_SP + sizeof(uint32_t),
               "the guard reads a word past the end of struct arch_context");
 
-// The frame the prologue builds and the frame arch_context_init fabricates are one object,
-// and the guard prices the prologue's own descent at KICKOS_RV_TRAP_FRAME.
+// The frame the prologue builds and the one arch_context_init fabricates are one object.
 static_assert(FRAME_WORDS * 4 == KICKOS_RV_TRAP_FRAME,
               "the fabricated frame and the trap guard disagree on the frame size");
-// The syscall requirement's structural half is the ecall frame plus the msip frame the
-// deferred switcher builds at whatever depth the dispatch reached, both on the kernel stack.
+// The ecall frame plus the msip frame the deferred switcher builds below the dispatch, both
+// on the kernel stack.
 static_assert(KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME,
               "the syscall requirement must hold exactly two frames");
-// SYSPRIV is the SYS chain with a subtree removed, so it cannot be the larger. The gate
-// scrapes both as plain immediates, so a swap between them is not a typo the compiler
-// catches.
+// SYSPRIV is the SYS chain with a subtree removed. Both are scraped as plain immediates, so
+// only this catches a swap between them.
 static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV <= KICKOS_RV_TRAP_KERNEL_DEPTH_SYS,
               "the tail-excluded syscall depth exceeds the tail-included one");
-// A privileged thread still spends its OWN stack: its ecall arrives with mstatus.MPP=M, so
-// .Ltrap_from_m_ctx keeps frame and dispatch on the sp it interrupted. No bound refuses an
-// M-mode sp, so a floor under this requirement buys an overflow rather than a refusal.
+// A privileged thread's ecall arrives with MPP=M, so .Ltrap_from_m_ctx keeps frame and
+// dispatch on its OWN sp. No bound refuses an M-mode sp, so a floor under this requirement
+// overflows rather than refuses.
 static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_NEED_SYSPRIV,
               "the spawn floor cannot hold a privileged thread's own syscall dispatch");
-// The death path splits in two: the fault and slay stubs relocate to the thread's own kernel
-// block, kickos_fault_stack_top answering with ctx.kernel_sp, so the BLOCK above its canary
-// holds them; kickos_thread_return does not relocate, so the spawn floor holds it.
+// The fault and slay stubs relocate to the thread's kernel block (kickos_fault_stack_top
+// answers ctx.kernel_sp), so the block above its canary holds them; kickos_thread_return does
+// not relocate, so the spawn floor holds it.
 static_assert(KICKOS_RV_TRAP_NEST_EXIT == KICKOS_RV_TRAP_FRAME,
               "the death path's frame term is the msip frame a reschedule puts below it");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
@@ -118,24 +118,21 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
 static_assert(KICKOS_MIN_STACK_SIZE
                   >= KICKOS_RV_TRAP_NEST_EXIT + KICKOS_RV_TRAP_KERNEL_DEPTH_RET,
               "the spawn floor cannot hold a privileged thread's entry return");
-// With no block seated every U-mode trap takes the refusal path, so this arch cannot be
-// configured without the blocks. ARCH_KERNEL_STACKS_MANDATORY puts `range 1 1` on the knob;
-// this fires if that select is ever dropped.
+// With no block seated every U-mode trap takes the refusal path. ARCH_KERNEL_STACKS_MANDATORY
+// forces the knob to 1; this fires if that select is dropped.
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "rv32imac's trap entry builds every U-mode frame on ctx.kernel_sp");
-// The deepest a syscall drives a kernel stack is the ecall frame, the dispatch below it,
-// the msip frame a blocking dispatch takes at that depth, and the switcher below that. The
-// lowest word of the block is the overflow canary (kernel/thread/thread.cc), so the
-// requirement must fit ABOVE it: a ceiling that merely equals it reports an overflow on the
-// deepest legitimate descent.
+// A syscall's deepest descent is the ecall frame, the dispatch, the msip frame a blocking
+// dispatch takes at that depth, and the switcher. The block's lowest word is the overflow
+// canary (kernel/thread/thread.cc), so the requirement must fit ABOVE it.
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYS
                       + KICKOS_RV_TRAP_SWITCH_DEPTH,
               "KICKOS_KERNEL_STACK_SIZE is below the rv32imac syscall kernel-stack "
               "requirement plus its canary word: raise the per-arch default in Kconfig, "
               "never the depth, which is a measurement");
-// The .Lintr arms and .Lfault land on that same block, and neither figure is ordered against
-// the syscall depth above, so the clause above does not imply either of these.
+// Neither the .Lintr nor the .Lfault figure is ordered against the syscall depth, so the
+// clause above does not imply these.
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RV_TRAP_FRAME + KICKOS_RV_TRAP_KERNEL_DEPTH,
               "the kernel block cannot hold an interrupt's dispatch plus its canary word");
@@ -146,24 +143,23 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
 
 extern "C"
 {
-    // Shared with switch.S. No leading underscore (RISC-V ELF symbol convention).
+    // Shared with switch.S.
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_current = nullptr;
     kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_next = nullptr;
 
-    // switch.S loads each as a plain word at offset 0. Nothing else enforces the layout.
+    // switch.S loads each as a plain word at offset 0.
     static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
-    // Bumped by the timer/soft/external trap paths alone (switch.S), so arch_in_isr() reads
+    // Bumped only by the timer, soft and external trap paths (switch.S), so arch_in_isr() is
     // false throughout syscall_dispatch and the msip switch.
     uint32_t g_isr_depth = 0;
 
-    // Trusted per-hart trap stack. mscratch holds its top while a thread runs, so trap_entry
-    // swaps onto it before it touches the interrupted sp, and a U-mode thread's sp never
-    // selects where the prologue's own scratch lands. It also carries the frame of every
-    // M-mode trap whose frame is not a thread's saved context, and the kernel C below it.
-    // rv_trap_stack.h derives the size; check_trap_redzone.sh re-measures the depth half.
+    // Per-hart trap stack. mscratch holds its top while a thread runs, so trap_entry swaps
+    // onto it before touching the interrupted sp and a U-mode sp never selects where the
+    // prologue's scratch lands. It also carries every M-mode trap frame that is not a
+    // thread's saved context, and the kernel C below it.
     alignas(16) uint8_t g_rv_trap_stack[KICKOS_NUM_CORES][KICKOS_RV_TRAP_STACK_SIZE];
     static_assert(KICKOS_RV_TRAP_STACK_SIZE % KICKOS_RV_TRAP_SP_ALIGN == 0,
                   "the trap-stack top must land on the alignment the prologue requires");
@@ -171,21 +167,17 @@ extern "C"
                   "a nested frame would fill the whole trap stack, leaving nowhere for the "
                   "kernel C below it; how much is enough is what the gate measures");
 
-    // CLINT machine-software-interrupt-pending register for this hart, set by the chip's
-    // arch_init because the CLINT base differs per chip. arch_switch writes 1 to pend the
-    // deferred switch; the msip switcher (switch.S) writes 0 to clear it.
+    // This hart's CLINT msip register; the chip's arch_init sets it.
     volatile uint32_t* g_clint_msip = nullptr;
 
 #if KICKOS_BENCH
-    // Null means `rdcycle`. A core whose `rdcycle` traps (the ESP32-C6 HP core has no Zicntr
-    // counters) points this at a free-running MMIO counter instead, set before the first
-    // switch.
+    // Null means `rdcycle`. A core whose `rdcycle` traps (the ESP32-C6 HP core has no Zicntr)
+    // points this at a free-running MMIO counter before the first switch.
     volatile uint32_t* g_bench_cycle_src = nullptr;
 #endif
 
-    // switch.S entry points + the kernel/user thread-return trampolines.
     void trap_entry(void);
-    void kickos_rv_mtvec(void); // the vectored mtvec table (switch.S)
+    void kickos_rv_mtvec(void);
     void kickos_thread_return(void);
     void kickos_user_thread_return(void);
 }
@@ -193,20 +185,18 @@ extern "C"
 extern "C"
 {
 
-// Anything file-local below is `static`, never an anonymous namespace: C language linkage
-// overrides the namespace, so an anonymous namespace nested here emits an unmangled GLOBAL
-// symbol.
+// File-local symbols below are `static`, never an anonymous namespace: under C language
+// linkage an anonymous namespace still emits an unmangled GLOBAL symbol.
 
-// CMSIS core clock, defined + maintained by the chip at PLL bring-up.
 extern uint32_t SystemCoreClock;
 uint64_t arch_cpu_clock_hz(void)
 {
     return SystemCoreClock;
 }
 
-// --- Context init: fabricate a first-resume frame (see the layout above) -----
-// Identical to what the msip switcher saves, so the first switch-in (arch_start) restores
-// it and mret's into entry(arg).
+// --- Context init --------------------------------------------------------------
+// The fabricated frame must match what the msip switcher saves: arch_start restores it and
+// mret's into entry(arg).
 void arch_context_init(struct arch_context* ctx,
                        void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size,
@@ -224,58 +214,58 @@ void arch_context_init(struct arch_context* ctx,
     uint32_t ret = reinterpret_cast<uint32_t>(kickos_thread_return);
     if (privileged)
     {
-        mstatus |= MSTATUS_MPP_M; // return to M-mode (privileged thread)
+        mstatus |= MSTATUS_MPP_M;
     }
     else
     {
-        ret = reinterpret_cast<uint32_t>(kickos_user_thread_return); // MPP=U (0)
+        ret = reinterpret_cast<uint32_t>(kickos_user_thread_return); // MPP stays U (0)
     }
 
     f[F_MEPC] = reinterpret_cast<uint32_t>(entry);
     f[F_MSTATUS] = mstatus;
-    f[F_RA] = ret;                              // entry() returns here
-    f[F_A0] = reinterpret_cast<uint32_t>(arg);  // first C argument
-    // The sp .Lrestore leaves on. Nothing else seats it in a fabricated frame.
+    f[F_RA] = ret;
+    f[F_A0] = reinterpret_cast<uint32_t>(arg);
+    // The sp .Lrestore resumes on; nothing else seats it in a fabricated frame.
     f[F_SP] = static_cast<uint32_t>(top);
     ctx->sp = reinterpret_cast<uint32_t>(f);
 
-    // trap_entry validates the interrupted U-mode sp against these before it stores a frame
-    // through it. `top` is the aligned high edge the first frame base sits below, so a
-    // running thread's sp stays in [stack_lo, stack_hi].
+    // trap_entry refuses an interrupted U-mode sp outside [stack_lo, stack_hi] before it
+    // stores a frame through it.
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    // The carve sits directly below the stack this is handed.
+    ctx->tls_base = ctx->stack_lo - static_cast<uint32_t>(::kickos::tls_block_size());
+#endif
 
-    // ctx->kernel_sp IS DELIBERATELY UNTOUCHED. thread_create seats it BEFORE this call and
-    // is the only writer of the zero that means no block seated, which the trusted entry's
-    // refusal path keys on; clearing it here would wipe the block off every fresh thread.
+    // ctx->kernel_sp IS DELIBERATELY UNTOUCHED: thread_create seats it before this call, and
+    // its zero (no block seated) is what the trusted entry's refusal path keys on.
 }
 
-// The result has to be seated where .Lrestore reloads a0 from: ctx->sp is the frame base.
+// ctx->sp is the frame base, where .Lrestore reloads a0 from.
 void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 {
     reinterpret_cast<uint32_t*>(ctx->sp)[F_A0] = result;
 }
 
-// The fabricated frame's F_MSTATUS carries MPP=M, so the mret that resumes it lands in
-// M-mode. Works entirely through the saved frame, so it applies to a context that is not
-// running; arch_fault_redirect_to_exit is the live-CSR half.
+// Works entirely through the saved frame, so it applies to a context that is not running;
+// arch_fault_redirect_to_exit is the live-CSR half.
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched:
-    // lost, the thread carries 0 through its own teardown and every trap on the way takes the
-    // entry's refusal path.
+    // kernel_sp is put back explicitly: lost, the thread carries 0 through its own teardown
+    // and every trap on the way takes the entry's refusal path.
     uintptr_t const kernel_sp = ctx->kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    uint32_t const tls_base = ctx->tls_base;
+#endif
 #if KICKOS_KERNEL_STACKS
-    // The stub is rebuilt on the thread's own kernel block, so no privileged frame is
-    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
-    // block TOP, discarding whatever dispatch frames it held, which is what keeps the block
-    // requirement the MAX of the dispatch and exit classes rather than their sum.
+    // The stub is rebuilt at the TOP of the thread's own kernel block, so no privileged frame
+    // lands on memory the thread or a domain sibling can write, and the block requirement is
+    // the MAX of the dispatch and exit classes rather than their sum.
     //
-    // stack_lo and stack_hi are saved and put back because arch_context_init derives them
-    // from what it is handed, and handing it the block would leave the context describing
-    // kernel .bss as this thread's stack.
-    // tests/static/check_death_stack_seating.sh holds this shape.
+    // stack_lo and stack_hi are put back, or the context would describe the kernel block as
+    // this thread's stack. tests/static/check_death_stack_seating.sh holds this shape.
     if (kernel_sp != 0)
     {
         uint32_t const lo = ctx->stack_lo;
@@ -286,17 +276,23 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         ctx->stack_lo = lo;
         ctx->stack_hi = hi;
         ctx->kernel_sp = kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+        ctx->tls_base = tls_base;
+#endif
         return;
     }
 #endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
+#if defined(KICKOS_TLS) && KICKOS_TLS
+    ctx->tls_base = tls_base;
+#endif
 }
 
-// --- Switch: record the target + pend the msip switcher ---------------------
+// --- Switch ------------------------------------------------------------------
 // Always deferred, in ISR and thread context alike: the physical swap happens in the msip
-// trap. Entered under the kernel IrqLock (mstatus.MIE=0), so the pended msip fires once the
-// lock releases or the current trap returns.
+// trap. Entered with mstatus.MIE=0, so the pended msip fires once the lock releases or the
+// current trap returns.
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
     (void)from; // the switcher saves g_arch_current
@@ -309,15 +305,13 @@ int arch_in_isr(void)
     return g_isr_depth != 0;
 }
 
-// --- Trace clock: the cycle CSR (rdcycle), 32-bit raw ------------------------
-// Wraps; the host reconstructs absolute time from the SESSION clock_hz anchors.
-// kickos_rv32_init enables mcounteren.CY where the core has the CSR
-// (arch_rv_has_mcounteren), so a U-mode thread can read it there.
+// --- Trace clock --------------------------------------------------------------
+// 32-bit and wraps; the host reconstructs absolute time from the SESSION clock_hz anchors.
+// U-mode can read it only where kickos_rv32_init enabled mcounteren.CY.
 //
-// The counter is per-CORE, not per-arch. Without Zicntr this instruction is illegal in
-// M-mode too, so the trap lands in the kernel; the ESP32-C6 HP core is such a part and its
-// caps.cmake declares KICKOS_HAVE_TRACE_CLOCK 0. A chip with a counter that is not rdcycle
-// overrides this function.
+// Without Zicntr this instruction is illegal in M-mode too; the ESP32-C6 HP core is such a
+// part and declares KICKOS_HAVE_TRACE_CLOCK 0. A chip whose counter is not rdcycle overrides
+// this function.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -336,8 +330,8 @@ static uint32_t pmp_napot_addr(uintptr_t base, size_t size)
          | ((static_cast<uint32_t>(size) >> 3) - 1u);
 }
 
-// cfg byte: A=NAPOT (0b11<<3) | R | W? | X?  (attr = the U-mode rights; M-mode bypasses
-// these unlocked entries).
+// cfg byte: A=NAPOT (0b11<<3) | R | W? | X?. attr is the U-mode rights; M-mode bypasses these
+// unlocked entries.
 static uint8_t pmp_cfg(uint32_t attr)
 {
     uint32_t c = 0x18u | 0x1u; // NAPOT | R
@@ -352,9 +346,7 @@ static uint8_t pmp_cfg(uint32_t attr)
     return static_cast<uint8_t>(c);
 }
 
-// The cfg BYTES ride four to a pmpcfg word, so the packing is a property of the whole set.
-// A region PMP cannot name (arch_mpu_region_encodable) is left cfg 0, which grants no
-// access at all: the encoding fails closed.
+// A region PMP cannot name is left cfg 0, which grants no access: the encoding fails closed.
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out)
 {
@@ -388,12 +380,10 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return seated;
 }
 
-// A POINTER into the caller's TCB, not a copy: every commit on this arch is preceded by an
-// apply inside the SAME MIE=0 window (the msip trap, the .Lecall fastpath tail, arch_start,
-// and arch_mpu_apply_now, which stashes, commits and puts the booked image back), so nothing
-// can rewrite the image in between. Thread slots come from a static pool and are never
-// returned to an allocator, so a pointer left over from an earlier switch still addresses
-// valid storage.
+// A POINTER into the caller's TCB, not a copy: every commit is preceded by an apply inside
+// the SAME MIE=0 window (the msip trap, the .Lecall fastpath tail, arch_start, and
+// arch_mpu_apply_now), so nothing can rewrite the image in between. Thread slots come from a
+// static pool and are never freed, so a stale pointer still addresses valid storage.
 static struct arch_mpu_encoded const* g_pend_image = nullptr;
 
 #if KICKOS_BENCH
@@ -414,10 +404,9 @@ static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
 }
 #endif
 
-// STASH-ONLY (deferred-commit seam): kickos_arch_mpu_commit writes the PMP CSRs from the
-// .Lswitch epilogue AFTER the physical msip-driven swap. An eager apply would run the
-// OUTGOING user thread under the incoming PMP set until msip fires, faulting on its own
-// stack.
+// STASH-ONLY: kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch epilogue AFTER the
+// physical swap. An eager apply would run the OUTGOING user thread under the incoming PMP set
+// until msip fires, faulting on its own stack.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
                     struct arch_mpu_encoded const* image)
 {
@@ -426,8 +415,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     g_pend_image = image;
 }
 
-// Runs after the physical swap, in the M-mode trap with MIE=0, so the CSR writes are
-// already atomic against interrupts and must NOT toggle MIE.
+// Runs in the M-mode trap with MIE=0, so it must NOT toggle MIE.
 void kickos_arch_mpu_commit(void)
 {
 #if KICKOS_BENCH
@@ -439,16 +427,13 @@ void kickos_arch_mpu_commit(void)
         return;
     }
     uint32_t const* const addr = img->addr;
-    // Addresses first, then the two cfg words, which activate the entries. This overwrites
-    // the permissive bootstrap TOR entry (kickos_rv32_init); the kernel is in M-mode here
-    // and bypasses PMP, so the transient is safe. csrw takes an IMMEDIATE CSR number, so
-    // the entries are spelled out rather than indexed.
+    // Addresses first, then the two cfg words, which activate the entries. Overwriting the
+    // bootstrap TOR entry is safe: the kernel is in M-mode here and bypasses PMP. csrw takes
+    // an IMMEDIATE CSR number, so the entries are spelled out rather than indexed.
     //
-    // EVERY ENTRY, EVERY COMMIT, and the measurement is why: the eight pmpaddr CSRs are
-    // individually addressable, but skipping one costs a load and a taken branch where
-    // writing it costs a load and a csrw, so a per-entry skip spends more instructions than
-    // the writes it saves. The ARM backends skip because a descriptor there is four MMIO
-    // stores (docs/reference/invariants.md, mpu-commit-writes-what-changed).
+    // EVERY ENTRY, EVERY COMMIT, by measurement: skipping an entry costs a load and a taken
+    // branch where writing it costs a load and a csrw (docs/reference/invariants.md,
+    // mpu-commit-writes-what-changed).
     __asm volatile("csrw pmpaddr0, %0" ::"r"(addr[0]) : "memory");
     __asm volatile("csrw pmpaddr1, %0" ::"r"(addr[1]) : "memory");
     __asm volatile("csrw pmpaddr2, %0" ::"r"(addr[2]) : "memory");
@@ -459,21 +444,18 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("csrw pmpaddr7, %0" ::"r"(addr[7]) : "memory");
     __asm volatile("csrw pmpcfg0, %0" ::"r"(img->cfg[0]) : "memory");
     __asm volatile("csrw pmpcfg1, %0" ::"r"(img->cfg[1]) : "memory");
-    // Order the PMP update before the mret that drops to U-mode. The priv spec says the
-    // writing hart sees PMP changes on its next access; the fence is the conservative
-    // guarantee across the M to U transition.
+    // Orders the PMP update before the mret to U-mode; the priv spec only promises the
+    // writing hart sees it on its next access.
     __asm volatile("fence" ::: "memory");
 #if KICKOS_BENCH
     kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
 #endif
 }
 
-// THE STASH IS RESTORED, and that is this entry's whole reason to exist: a switch to another
-// thread may already be pended behind the caller, and the stash is ONE cell. Leaving this set
-// in it would have the epilogue program the CALLER's regions onto the incoming thread, which
-// would then run under them until the next switch re-stashed. Self-bracketed: an interrupt
-// between the two writes below could decide a switch, and the restore would then drop the
-// image that switch stashed.
+// THE STASH IS RESTORED: a switch may already be pended behind the caller and the stash is
+// ONE cell, so leaving this set in it would program the CALLER's regions onto the incoming
+// thread. Self-bracketed: an interrupt between the two writes could decide a switch, and the
+// restore would then drop the image that switch stashed.
 void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
                         struct arch_mpu_encoded const* image)
 {
@@ -495,10 +477,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)n;
     (void)image;
 }
-// .Lswitch and arch_start call this unconditionally.
 void kickos_arch_mpu_commit(void) {}
 
-// Nothing is deferred on this backend, so the set is already live when apply returns.
 void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
                         struct arch_mpu_encoded const* image)
 {
@@ -511,8 +491,6 @@ size_t arch_mpu_min_region(void)
     return 8u; // RISC-V PMP NAPOT minimum region size
 }
 
-// PMP NAPOT needs a power-of-two size >= 8 with the base naturally aligned to it
-// (the encoding folds the size into the trailing address bits).
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 8u or (size & (size - 1)) != 0)
@@ -527,14 +505,13 @@ int arch_mpu_region_pow2(void)
     return 1;
 }
 
-// A PMP entry carries permissions with no memory type, and the parts in tree reach the
-// arena uncached, so it is already in the state a nocache grant asks for.
+// A PMP entry carries no memory type, and the parts in tree reach the arena uncached, so it
+// is already in the state a nocache grant asks for.
 int arch_mpu_nocache_support(void)
 {
     return ARCH_MPU_NOCACHE_ALREADY;
 }
 
-// Rule 7 (arch.h): RISC-V has no bit-band alias.
 int arch_bitband_present(void)
 {
     return 0;
@@ -542,32 +519,28 @@ int arch_bitband_present(void)
 
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
-// arch_irq_inject fakes a device firing (test/bench scaffolding, arch.h). ONE physical
-// doorbell carries every logical line and g_inject_line tells the trap which line it was,
-// so arch_irq_mask/unmask stay pure-software and decoupled from the physical interrupt.
+// ONE physical doorbell carries every logical line and g_inject_line tells the trap which
+// line it was, so arch_irq_mask/unmask stay pure-software and decoupled from the physical
+// interrupt.
 //
-// virt default: the SUPERVISOR SOFTWARE interrupt (mip.SSIP, software-writable, mcause=1)
-// as a private channel. SSIP needs S-mode, present on the QEMU virt CPU.
+// virt: the SUPERVISOR SOFTWARE interrupt (mip.SSIP, software-writable, mcause=1), which
+// needs S-mode, present on the QEMU virt CPU.
 //
-// ESP32-C6 override (chip_esp32c6.cc): the C6 HP core is M/U-only and has no SSIP, so its
-// override raises a real machine interrupt through the interrupt matrix and INTPRI, from a
-// FROM_CPU source on a dedicated CPU interrupt ID. That ID vectors here as mcause=<ID>, the
-// C6 reporting mcause = interrupt ID rather than the standard 11, and switch.S demuxes it
-// to .Lext and kickos_rv_ext_dispatch below.
+// ESP32-C6 (chip_esp32c6.cc): the HP core is M/U-only with no SSIP, so its override raises a
+// real machine interrupt from a FROM_CPU source on a dedicated CPU interrupt ID. The C6
+// reports mcause = that ID rather than the standard 11, and switch.S demuxes it to .Lext.
 static constexpr uint32_t MIP_SSIP = 1u << 1;
 
 // bit set = line masked. All lines start MASKED at reset (the arch.h reset contract).
 static uint32_t g_irq_masked = 0xFFFFFFFFu;
-// the pending software-injected line
 static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line = -1;
 
 // bit set = a raise landed on this software line while masked, latched one-deep and
 // redelivered at unmask. A real PLIC line holds its own pending in hardware.
 static uint32_t g_irq_pending = 0;
 
-// The rv32imac chip hooks; every fallback body lives in its own TU (<symbol>_default.cc).
-// arch_rv_hw_{un,}mask reach a REAL controller line from INSIDE the arch critical section,
-// and arch_rv_ext_eoi de-asserts a level source at the head of the external-doorbell trap.
+// Chip hooks, each fallback in its own TU (<symbol>_default.cc). arch_rv_hw_{un,}mask run
+// INSIDE the arch critical section; arch_rv_ext_eoi de-asserts a level source.
 void arch_rv_inject_deliver(int line);
 void arch_rv_hw_unmask(int line);
 void arch_rv_hw_mask(int line);
@@ -582,7 +555,7 @@ void arch_irq_mask(int line)
     }
     arch_irq_state_t s = arch_irq_save();
     g_irq_masked |= (1u << line);
-    // Injected lines live in the software bitmask above; only a REAL line reaches here.
+    // Only a REAL line reaches the controller; injected lines live in the bitmask above.
     arch_rv_hw_mask(line);
     arch_irq_restore(s);
 }
@@ -599,9 +572,8 @@ void arch_irq_unmask(int line)
     // glitch in the controller's transient state (C6 TRM 1.6.3.2: configure with MIE
     // cleared and a FENCE).
     arch_rv_hw_unmask(line);
-    // A raise taken while the line was masked redelivers now through the doorbell. It sets
-    // mip.SSIP with MIE=0, so it fires at arch_irq_restore, on the normal ISR path rather
-    // than as a direct post.
+    // A raise taken while masked redelivers through the doorbell with MIE=0, so it fires at
+    // arch_irq_restore on the normal ISR path rather than as a direct post.
     if ((g_irq_pending & (1u << line)) != 0)
     {
         g_irq_pending &= ~(1u << line);
@@ -633,7 +605,6 @@ void arch_irq_inject(int irq)
     arch_irq_state_t s = arch_irq_save();
     if ((g_irq_masked & (1u << irq)) != 0)
     {
-        // A masked line latches the raise one-deep, redelivered at unmask.
         g_irq_pending |= (1u << irq);
     }
     else
@@ -644,8 +615,7 @@ void arch_irq_inject(int irq)
     arch_irq_restore(s);
 }
 
-// SSIP dispatch (switch.S .Lssoft, virt), ISR context. kickos_isr_irq masks the line and
-// wakes its driver (kernel/irq/irq.cc); the driver re-unmasks via irq_ack.
+// SSIP dispatch (switch.S .Lssoft), ISR context.
 void kickos_rv_dispatch_soft(void)
 {
     __asm volatile("csrc mip, %0" ::"r"(MIP_SSIP) : "memory");
@@ -657,9 +627,8 @@ void kickos_rv_dispatch_soft(void)
     }
 }
 
-// External-doorbell dispatch (switch.S .Lext), ISR context, on a chip whose
-// arch_rv_inject_deliver raises a real machine external interrupt (the C6). The EOI comes
-// first so a level source cannot re-fire.
+// External-doorbell dispatch (switch.S .Lext), ISR context. The EOI comes first so a level
+// source cannot re-fire.
 void kickos_rv_ext_dispatch(void)
 {
     arch_rv_ext_eoi();
@@ -677,20 +646,19 @@ void arch_idle_wait(void)
     __asm volatile("wfi");
 }
 
-// Inside the window kernel/bench/bench.cc's injected-IRQ arm measures, so the witness is
-// out of a bench build.
+// Out of a bench build: it sits inside the window kernel/bench/bench.cc's injected-IRQ arm
+// measures.
 #if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
-// Nested-trap witness (arch.h), from switch.S's .Lintr demux once msip is out and the whole
-// frame is saved at `frame`. An interrupt taken with mstatus.MPP=M interrupted the kernel,
-// and if that was a syscall dispatch then the sp it found is the CALLING THREAD'S, at
-// whatever depth the dispatch reached, with no bound applied. mstatus comes out of the
-// frame rather than the live CSR because .Lrestore is what will consume it.
+// Nested-trap witness (arch.h), from .Lintr once the whole frame is saved at `frame`. An
+// interrupt taken with MPP=M interrupted the kernel; in a syscall dispatch its sp is the
+// CALLING THREAD'S, at any depth, with no bound applied. mstatus comes from the frame rather
+// than the live CSR because .Lrestore is what will consume it.
 void kickos_rv_nested_witness(void* frame)
 {
     uint32_t const* const f = static_cast<uint32_t const*>(frame);
     if ((f[F_MSTATUS] & MSTATUS_MPP_M) == 0)
     {
-        return; // interrupted U-mode: the bounds-checked thread stack is where it belongs
+        return; // interrupted U-mode, on the bounds-checked thread stack
     }
     struct arch_context* const c = g_arch_current;
     uintptr_t lo = 0;
@@ -705,14 +673,12 @@ void kickos_rv_nested_witness(void* frame)
 #endif
 
 // --- Fault isolation ----------------------------------------------------------
-// mstatus.MPP is the privilege BEFORE the trap and lives in a CSR, so it is valid whatever
-// the stack did. NOT the thread's identity: .Lecall runs syscall dispatch in M-mode on the
-// thread's kernel stack, so a fault there is a kernel bug and MPP says so.
+// mstatus.MPP is valid whatever the stack did, but it is NOT the thread's identity: .Lecall
+// runs syscall dispatch in M-mode, so a fault there is a kernel bug and MPP says so.
 //
-// The frame is the one trap_entry built on the thread's own kernel stack, so that is what
-// the bounds test asks about. A refused sp (wild, misaligned, or a thread with no block
-// seated) leaves the frame on the per-hart trap stack instead, and the prologue runs M-mode
-// and bypasses the unlocked PMP entries, so this test is what catches such a frame.
+// A refused sp (wild, misaligned, or no block seated) leaves the frame on the per-hart trap
+// stack, and the M-mode prologue bypasses the unlocked PMP entries, so the kernel-stack
+// bounds test is what catches such a frame.
 bool arch_fault_is_user_thread(void* frame)
 {
     uint32_t mstatus;
@@ -724,9 +690,9 @@ bool arch_fault_is_user_thread(void* frame)
     return kickos_fault_frame_on_kernel_stack(frame, FRAME_WORDS * 4);
 }
 
-// Mirrors .Lecall: mepc at the stub and MPP=M so the mret lands M-mode on this thread's own
-// stack, sp still on the trap frame. MIE is 0 for the whole trap, so MPIE is what turns
-// interrupts back on for the stub, which blocks and reschedules.
+// Mirrors .Lecall: mepc at the stub and MPP=M so the mret lands M-mode, sp still on the trap
+// frame. MIE is 0 for the whole trap, so MPIE is what re-enables interrupts for the stub,
+// which blocks and reschedules.
 void arch_fault_redirect_to_exit(void* frame)
 {
     uint32_t mcause;
@@ -754,20 +720,17 @@ void arch_fault_redirect_to_exit(void* frame)
 }
 
 // --- Wild sp refused by the trap entry (switch.S .Ltrap_wild) -----------------
-// Contain the offending thread instead of ending the system for it. Returns the context the
-// caller must resume, and null when it must fall through to the generic dump.
+// Returns the context to resume, or null to fall through to the generic dump.
 //
-// NOTHING MAY PANIC HERE. kpanic_enter masks IRQs irreversibly and belongs to the terminating
-// path alone, which is .Lfault's.
+// NOTHING MAY PANIC HERE. kpanic_enter masks IRQs irreversibly and belongs to .Lfault's
+// terminating path alone.
 //
-// g_arch_current and NOT the scheduler's current: this one tracks the PHYSICAL switch, so it
-// names the thread whose sp was refused even when a booked switch has already published
-// another one as current.
+// g_arch_current and NOT the scheduler's current: it tracks the PHYSICAL switch, so it names
+// the thread whose sp was refused even when a booked switch has already published another.
 struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
 {
-    // NAMED: a thread that overflows its own stack reaches this refusal before the PMP-denial
-    // report runs, so without the name here a stack overflow dies anonymously. Read on the trap
-    // stack, where this reporter already runs, and never from the exit stub.
+    // The name is read here, on the trap stack, and never from the exit stub: a stack
+    // overflow reaches this refusal before the PMP-denial report, so it would die anonymously.
     char const* who = "?";
     struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, &who);
     if (next == nullptr)
@@ -775,14 +738,12 @@ struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
         return nullptr;
     }
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Silent when intact, and read HERE as well as on .Lfault's path: what it witnesses is
-    // what the prologue wrote through the refused sp, which containment does not change.
-    // Left to the panic alone it would go unread on exactly the arms that now survive.
+    // Read here as well as on .Lfault's path: it witnesses what the prologue wrote through
+    // the refused sp, which containment does not change.
     kickos_trapstack_witness_report();
 #endif
-    // Reached only when containment SUCCEEDED: the null return above sends switch.S to
-    // .Lfault, which prints its own. tests/lib/panic.ere matches "=== RISC-V TRAP", so
-    // spelling this one that way would make assert_no_panic blind to the difference.
+    // tests/lib/panic.ere matches "=== RISC-V TRAP", so spelling this one that way would
+    // make assert_no_panic blind to the difference.
     ::kickos::kprintf("\n=== RISC-V CONTAINED (wild stack) ===\n");
 #if KICKOS_PANIC_DUMP
     ::kickos::kprintf("  thread '%s' sp=0x%x\n", who, static_cast<unsigned>(sp));
@@ -794,9 +755,8 @@ struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
 }
 
 // --- Unhandled trap (switch.S .Lfault) ----------------------------------------
-// A TRUE return means .Lfault must mret instead of dumping: the redirect above already
-// re-pointed mepc/mstatus at the stub. ecall-from-M (mcause 11) is demuxed before .Lfault
-// and never reaches here; ecall-from-U (8) does, but only from .Ltrap_wild, when the trap
+// A TRUE return means .Lfault must mret instead of dumping: the redirect already re-pointed
+// mepc/mstatus at the stub. ecall-from-U (8) reaches here only from .Ltrap_wild, when the
 // guard refused the caller's sp before any frame was built.
 bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
                             uint32_t mstatus, void* frame)
@@ -807,14 +767,13 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     {
         return true;
     }
-    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+    kpanic_enter();
 #if defined(KICKOS_ENABLE_SELFTEST)
-    kickos_trapstack_witness_report(); // names a U-mode sp that reached kernel memory
+    kickos_trapstack_witness_report();
 #endif
-    // An access fault taken FROM U-mode is a PMP domain violation, on instruction fetch
-    // (mcause 1) as well as load (5) and store (7). The same fault from M-mode is a kernel
-    // bug, M-mode bypassing the unlocked PMP entries, so it falls through to the generic
-    // dump.
+    // An access fault FROM U-mode (fetch 1, load 5, store 7) is a PMP domain violation. From
+    // M-mode it is a kernel bug, M-mode bypassing the unlocked PMP entries, and takes the
+    // generic dump.
     bool const from_user = (mstatus & MSTATUS_MPP_M) == 0;
     if (from_user and (mcause == 1 or mcause == 5 or mcause == 7))
     {
@@ -855,7 +814,6 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     }
     else if (mcause == 8)
     {
-        // Only .Ltrap_wild sends an ecall here, so the cause is the refused sp.
         what = "ecall on a refused stack";
     }
     else if (mcause == 12)
@@ -888,42 +846,38 @@ void kickos_rv32_init(void)
 {
     g_isr_depth = 0;
 
-    // VECTORED mode (low 2 bits = 01), the one mode the ESP32-C6 core supports, pointed at
-    // the 256B-aligned vector table in switch.S; every slot jumps to trap_entry.
+    // VECTORED mode (low 2 bits = 01), the only mode the ESP32-C6 core supports; the table
+    // in switch.S is 256B-aligned.
     uintptr_t tv = reinterpret_cast<uintptr_t>(kickos_rv_mtvec) | 1u;
     __asm volatile("csrw mtvec, %0" ::"r"(tv) : "memory");
     (void)trap_entry; // referenced by the asm vector table, not directly here
 
-    // trap_entry swaps sp with mscratch on entry, so mscratch must hold this before the
-    // first trap, and thus before the first mret to U-mode. Indexed by core, and sized on
-    // the ROW rather than the array, so a second core takes its own and not the far end of
-    // everyone's.
+    // mscratch must hold this before the first trap, so before the first mret to U-mode.
+    // Sized on the ROW rather than the array, so a second core takes its own and not the far
+    // end of everyone's.
     uint8_t* const trap_stack = g_rv_trap_stack[arch_cpu_id()];
     uintptr_t const trap_sp =
         reinterpret_cast<uintptr_t>(&trap_stack[KICKOS_RV_TRAP_STACK_SIZE]);
     __asm volatile("csrw mscratch, %0" ::"r"(trap_sp) : "memory");
 
     // msip (bit 3, the deferred switch), mtip (bit 7, the tickless clock) and ssip (bit 1,
-    // the injected-IRQ test channel). ssip fires only via arch_irq_inject and only where
-    // S-mode exists; on an M/U-only core the bit is read-only-zero.
+    // the injected-IRQ test channel). On an M/U-only core ssip is read-only-zero.
     uint32_t mie = (1u << 3) | (1u << 7) | (1u << 1);
     __asm volatile("csrw mie, %0" ::"r"(mie) : "memory");
 
     // mcounteren CY|TM|IR, so U-mode reads of cycle/time/instret do not trap. The write
-    // itself traps on a core without the CSR (the ESP32-C6 HP core), and that fault hangs
-    // bring-up, so it is gated on arch_rv_has_mcounteren.
+    // itself traps on a core without the CSR (the ESP32-C6 HP core) and hangs bring-up.
     if (arch_rv_has_mcounteren() != 0)
     {
         __asm volatile("csrw mcounteren, %0" ::"r"(0x7u) : "memory");
     }
 
     // Permissive bootstrap PMP: ONE entry over the whole address space, R+W+X, U-accessible.
-    // RISC-V is fail-CLOSED, so a U-mode access with NO matching entry faults and an
-    // unprivileged thread cannot fetch its first instruction without this. No isolation
-    // until arch_mpu_apply refines per-thread PMP.
+    // PMP is fail-CLOSED, so without it an unprivileged thread cannot fetch its first
+    // instruction.
     //
     // TOR (A=01, top = pmpaddr0<<2) and not the all-ones NAPOT idiom: the ESP32-C6 PMP does
-    // not honor the all-ones-NAPOT match-everything case and U-mode still takes an
+    // not honor all-ones NAPOT as match-everything and U-mode still takes an
     // instruction-access fault, whereas TOR with pmpaddr0 = 0xFFFFFFFF covers every 32-bit
     // address on both it and QEMU virt. pmpcfg0 byte0 = TOR(0x08)|X(0x4)|W(0x2)|R(0x1).
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");

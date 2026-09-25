@@ -533,16 +533,13 @@ cannot express either of the two parts this work names is not the default.
   images must agree on a region at a fixed address, outside either one's own allocations. That is
   the AMP partition layout section 9 leaves open, and meeting it deliberately is better than
   inheriting it from a linker that was never asked.
-- **AND A DOORBELL MAP, WHICH THE TREE DOES NOT HAVE, SO THE POSTURE IS REFUSED AT CONFIGURE.**
-  `amp::send` rings its peer with `arch_ipi_send(1u << to)`, spending a NODE index as a hardware
-  CORE mask. That holds only under the shared image, where a node's identity IS the core register;
-  under one image per node the two are unrelated, and nothing in the tree maps a node onto the core
-  carrying it, so the doorbell would ring the wrong core and answer OK.
-  `KICKOS_AMP_POSTURE_OWN_IMAGE` is therefore offered by Kconfig and REFUSED by `CMakeLists.txt`,
-  the refusal naming the missing map rather than the broken line. This sits beside the placement
-  contract above and not under it: both are the partition layout section 9 leaves open, and both
-  are what an own-image part owes before its first boot. No board in the tree selects the posture,
-  so the refusal costs nothing today.
+- **AND A DOORBELL MAP.** A node index is a hardware core only under the shared image, where a
+  node's identity IS the core register. Under one image per node the two are unrelated, so every
+  ring goes through `amp::core_of` (`kernel/amp/ampmap.cc`), which answers the core carrying a node
+  from the partition's own list, one entry per node and checked for width at compile time. Ringing
+  the node index directly would ring the wrong core and answer OK. This sits beside the placement
+  contract above and not under it: both are the partition layout, and both are what an own-image
+  part owes before its first boot.
 
 **THE CONTRACT COVERS EVERY CELL TWO NODES BOTH WRITE, WHICH IS MORE THAN THE WINDOW, and getting
 this wrong presents as a HANG rather than as a build error.** A doorbell backend keeps its
@@ -820,9 +817,16 @@ justifies a verdict of its own rather than folding it into EMPTY, which is the c
 the wrong one -- a ring holding unread calls is not an empty ring, and a consumer reporting EMPTY
 for it would report a peer's waiting traffic as absent.
 
-**A REPLY RING SLOT IS RECLAIMED AT TAKE.** Delivering a reply wakes a parked caller inside the
-doorbell handler: it resolves the token, copies into the caller's buffer, and wakes it. No service
-thread is involved and nothing about it can wait on one.
+**A REPLY RING SLOT IS RECLAIMED WHEN ITS CALLER HAS LANDED IT.** Delivering a reply wakes a parked
+caller inside the doorbell handler: it resolves the token, hands the caller the slot, and wakes it,
+copying nothing. The caller copies the reply out of the slot in its own call and releases it; the
+reply ring then gains the call ring's reclamation, a released mask per pair with the tail advanced
+over the leading released run, so callers land out of order while reclamation stays ordered. No
+service thread is involved and nothing about it can wait on one: the release waits on the caller
+alone, and a caller that exits without landing gives the slot back at its exit. A starved caller
+holding the oldest slot delays the tail, so the serving node answers RESERVE to further calls from
+this node until it runs, which is the ordered reclamation this freeze already chose, bounded by
+RING_SLOTS replies.
 
 **THAT ASYMMETRY IS NOT A CONVENIENCE. IT IS WHAT REMOVES A LIVENESS CYCLE**, and a cycle is not a
 sizing input. One ring per direction carrying both classes deadlocks under the rule above: the
@@ -965,14 +969,18 @@ an overflow rather than the region absorbing one.
 #### What the receiving side owes, and one shape that has bitten three times
 
 **A RECEIVER ONCE POPPED IS COMPLETED WHATEVER FOLLOWS.** It is off its queue, so a return that
-left it there would park it on nothing. A record it cannot be handed a capability for is
-FORGOTTEN rather than answered, and the call slot stays the taker's to release, so the far
-caller gets an empty reply instead of waiting on one nobody can send.
+left it there would park it on nothing. Its call is a record before it is popped, and the
+receiver holds that record until it has landed the payload out of the held call slot in its own
+receive; the masked service copies nothing. A record it cannot be handed a capability for is
+ANSWERED by that landing, an empty reply that releases the slot, so the far caller is never left
+waiting on one nobody can send. A receiver that exits without landing gives the record back the
+same way.
 
-**AND THAT ANSWER IS PUBLISHED AT ONE SITE AND NEVER PER ARM.** Every refusal past the pop reaches
-one bool whose single caller publishes the empty reply, because a far caller under
-KOS_TIMEOUT_NONE has no deadline: an answer written into each refusing arm is one more thread
-leaked for the life of the image every time an arm is added.
+**AND THAT ANSWER IS PUBLISHED AT TWO SITES, ONE EITHER SIDE OF THE POP, AND NEVER PER ARM.** Every
+refusal before the pop reaches one bool whose single caller publishes the empty reply, and every
+refusal after it is an answer to the record, because a far caller under KOS_TIMEOUT_NONE has no
+deadline: an answer written into each refusing arm is one more thread leaked for the life of the
+image every time an arm is added.
 
 **NOTHING PARKED ON THE PORT IS REFUSED ON THE SPOT rather than held for a service that may
 arrive.** Holding a slot for an absence fills the ring behind it, and a ring full of calls
@@ -1039,8 +1047,9 @@ any doorbell. A CREDIT RETURN is not a publication: what it changes is a far-own
 the only code that reads that tail is the reservation inside a take, which runs only from the
 service body, which runs only from a doorbell. A node whose call was declined for want of a reply
 slot has nothing of its own to publish and so nothing to ring itself with, and no rescan reaches
-it. So the take that advances a reply ring's tail RAISES THE NODE WHOSE ANSWERS THAT SLOT BELONGED
-TO, unconditionally, and that raise is a mechanism rather than a hint. **This was got wrong first
+it. So every advance of a reply ring's tail, the release of a landed reply, a dropped slot or a
+resynchronisation, RAISES THE NODE WHOSE ANSWERS THAT SLOT BELONGED TO, unconditionally, and that
+raise is a mechanism rather than a hint. **This was got wrong first
 and the arm that should have caught it supplied the missing pass itself**: a unit control called
 the service body by hand after the drain, which is exactly the edge production has no source for,
 so it asserted a positive outcome over a stimulus no doorbell would ever produce. An arm for a
@@ -1910,17 +1919,24 @@ Two halves hold the invariant, and neither is a pull. **At the decline**, a pass
 thread behind an equal or higher one moves it, from its holder's own structure, to the started core
 in its mask whose level is lowest and strictly below it, ties to the lowest index, and asks that
 core; with no such core it stays. A wake still publishes to its waker: the placement is decided
-where the pass knows what it seats. **At the drop**, a core whose seated priority falls asks the
-holder of each READY thread it would now take, one waiting there behind equal or higher priority
-and ranked strictly above the new level, to push it; the holder moves one thread per request on its
-next pass, after re-reading the asker's level. The request is a bit per asker in
-`Kernel::push_asked`, written under the one lock and carried by the ordinary doorbell. A core's
-start counts as a fall from nothing, and lowering a peer's running thread asks that peer for the
-pass that sees its fall.
+where the pass knows what it seats. **At the drop**, a core whose seated priority falls asks every
+started holder whose level is above its own to push it a thread; the holder moves one per request
+in the dispatch the ask's raise enters, choosing over its own structure, after re-reading the
+asker's level: a READY
+thread waiting there behind equal or higher priority, ranked strictly above that level, that the
+asker may run. The asker reads the holder's level cell and never its structure, so a holder with
+nothing it may push is asked and moves nothing. The request is a sequence per ordered pair, one
+writer each, raised by the flush that ends the asker's span. A core's start counts as a fall from
+nothing, and lowering a peer's running thread reaches that peer as a RESEAT, whose dispatch
+re-seats it and takes the pass that sees its fall.
 
-A core takes nothing off another's structure: the only cross-core publish is made by the thread's
-holder or its waker, under the lock. A core that has not started is never a placement target, having
-no scheduler yet to act on the doorbell; its own start picks what it already holds.
+A core takes nothing off another's structure and links nothing into one: a thread its holder, waker
+or creator sends to a peer is HANDED onto the ring from this core to that one, and the peer links it
+in the dispatch that enters its scheduler (`design-m9.4-rings.md`). A placement reads a peer's level
+from the cell that core publishes at every change of its bitmap, with every thread already on its
+way there counted, and never reads the peer's ready structure, running thread or seated record. A core that has not started is never a placement
+target, having no scheduler yet to act on the doorbell; its own start links and picks what was
+handed to it.
 
 ### Placement rests on every kernel core taking its own scheduler passes
 
@@ -2075,8 +2091,8 @@ and it is made at every entry that takes a mask: the spawn boundary, `kos_thread
 
 The placement half is entirely behind `#if KICKOS_KERNEL_CORES > 1` and contributes NOTHING to a
 single-core image. `Task::core_set`, `Thread::affinity`, `sched_placeable_on`, `sched::set_affinity`,
-`sched::add_idle`, `available_to`, the placement hooks, `Kernel::seated_prio`, `Kernel::push_asked`
-and `switch_book`'s mask test are all absent from such a build, `kos_thread_set_affinity` is
+`sched::add_idle`, `available_to`, the placement hooks, `Kernel::seated_prio`, the per-pair rings
+and cells, and `switch_book`'s mask test are all absent from such a build, `kos_thread_set_affinity` is
 `-KOS_ENOSYS`, and `kos_thread_self` answers `KOS_THREAD_NONE`.
 
 **The PRIORITY CEILING does not fold, and it is not meant to.** It is unconditional where the core

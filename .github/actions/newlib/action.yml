@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# The dynamic-reent newlib an armv8a or rv64imac board links, via Conan (conan/newlib, consumed
+# through conan/board). Run AFTER the toolchain action whose compiler builds it: the recipe
+# takes that compiler from the toolchain variable and never from PATH.
+# Call it ONCE per job with every multilib the job needs: each cache entry carries Conan's
+# package database, so a second restore into the same store replaces the first one's.
+name: Provision the dynamic-reent newlib via Conan
+description: Build (cached) kickos-newlib for each listed multilib and export the variables their toolchain files read.
+
+inputs:
+  multilibs:
+    description: Space-separated conan/board multilib options, from aarch64 and rv64imac_lp64.
+    required: true
+  toolchain-bins:
+    description: Space-separated cross toolchain bin/ directories the multilibs build with; part of the cache key.
+    required: true
+  conan-version:
+    description: Conan 2 version to install.
+    required: false
+    default: "2.31.2"
+
+runs:
+  using: composite
+  steps:
+    - name: Conan venv, and the pinned client
+      shell: bash
+      env:
+        CONAN_VERSION: ${{ inputs.conan-version }}
+      # Its own venv, as the gtest action does: its bin/ holds a python that would shadow the
+      # interpreter the rest of the job runs on.
+      run: |
+        [ -x ~/conan-venv/bin/conan ] || {
+          python3 -m venv ~/conan-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/conan-venv
+          }
+          ~/conan-venv/bin/pip install --disable-pip-version-check "conan==${CONAN_VERSION}"
+        }
+
+    - name: Cache the newlib package
+      uses: actions/cache@v4
+      with:
+        path: ~/.conan2/p
+        key: conan2-${{ runner.os }}-newlib-${{ inputs.multilibs }}-${{ hashFiles('conan/newlib/**', 'conan/board/**') }}-${{ inputs.toolchain-bins }}
+
+    - name: Build or restore the packages
+      shell: bash
+      env:
+        MULTILIBS: ${{ inputs.multilibs }}
+      # --build=missing so a cache miss builds newlib rather than failing the job. The recipe
+      # refuses a toolchain whose bundled newlib release conandata.yml does not pin.
+      run: |
+        ~/conan-venv/bin/conan profile detect --exist-ok
+        ~/conan-venv/bin/conan export conan/newlib
+        for m in ${MULTILIBS}; do
+          ~/conan-venv/bin/conan install conan/board -o "&:multilib=${m}" \
+            --output-folder="$HOME/kickos-newlib" --build=missing
+        done
+
+    - name: Export the package folders
+      shell: bash
+      env:
+        MULTILIBS: ${{ inputs.multilibs }}
+      run: |
+        for m in ${MULTILIBS}; do
+          sed -e 's/^export //' -e 's/"//g' "$HOME/kickos-newlib/kickos-newlib-${m}.sh" >> "$GITHUB_ENV"
+        done

@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Per-core benchmark distributions, histograms and phase accumulators.
-// Instrumentation is disabled when KICKOS_BENCH is zero.
 
 #ifndef KICKOS_BENCH_H
 #define KICKOS_BENCH_H
@@ -17,6 +16,15 @@
 #define KICKOS_BENCH_TICK_BITS 64
 #else
 #define KICKOS_BENCH_TICK_BITS 32
+#endif
+
+// The scheduler's own counters (KICKOS_BENCH_SCHED): off, the bench measures the kernel without
+// them.
+#if defined(KICKOS_BENCH) && KICKOS_BENCH && KICKOS_KERNEL_CORES > 1 \
+    && defined(KICKOS_BENCH_SCHED) && KICKOS_BENCH_SCHED
+#define KICKOS_BENCH_SCHED_ON 1
+#else
+#define KICKOS_BENCH_SCHED_ON 0
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
@@ -43,9 +51,8 @@ namespace kickos
         // already ahead of that ticket when it was drawn.
         BD_LOCK_DRAW,
         BD_LOCK_QUEUE,
-        // A count too: peers one reschedule ask reaches. Its n is how many asks were made,
-        // which is an UPPER BOUND on the entries they cause and not a count of them: several
-        // asks to one core between two takes collapse into a single take.
+        // A count too: peers one reschedule ask reaches. Its n counts asks, an UPPER BOUND on
+        // the entries they cause: several asks to one core between two takes collapse into one.
         BD_RESCHED_ASK,
         // The consumed half, and the exact one: a sample per take that stood, so its n is the
         // entries a core made because a peer asked.
@@ -53,16 +60,29 @@ namespace kickos
         // Request all peers, raise the doorbell and wait for every reply.
         BD_DOORBELL,
 #endif
-        // The following slots are populated and printed by explicit sweeps.
-        // Exclude them from ordinary workload reporting.
+        // Populated and printed by explicit sweeps, outside ordinary workload reporting.
         BD_IRQ_ENTRY,
-        // Reuse this slot for each masked span size, resetting it between spans.
+        // One slot per masked span, filled together by one interleaved sweep.
         BD_IRQ_WCASE,
+        BD_IRQ_WCASE_LAST = BD_IRQ_WCASE + 3,
         // From IRQ raise to the woken userspace thread reading its device window.
         // Split by whether the waiter and handler ran on the same core.
         BD_IRQ_E2E_LOCAL,
 #if KICKOS_KERNEL_CORES > 1
         BD_IRQ_E2E_CROSS,
+#endif
+#if KICKOS_BENCH_SCHED_ON
+        // Fed by the workload and printed by the scheduler's own report, not the ordinary one.
+        // A call's whole round trip, entry to return, on the caller's core; a call that resumes
+        // on another core is not a sample.
+        BD_CALL_RT,
+        // One dispatch's drain: its cycles, and the entries it applied, a count.
+        BD_SCHED_DRAIN,
+        BD_SCHED_DRAIN_N,
+        // Nanoseconds from a drop ask, or from a RESEAT request, to the first instruction of
+        // the thread it moved or re-seated, on that thread's core.
+        BD_PUSH_E2E,
+        BD_RESEAT_E2E,
 #endif
         BD_COUNT
     };
@@ -160,10 +180,77 @@ extern "C" volatile uint32_t* g_bench_cycle_src;
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-// Fed by the scheduler, not by the lock: one sample per reschedule ask, valued by the peers it
-// reaches, so the row's n counts asks and a zero-peer ask stays a sample.
+// One sample per reschedule ask, valued by the peers it reaches; a zero-peer ask is a sample.
 extern "C" void kickos_bench_resched_ask(uint32_t peers);
 extern "C" void kickos_bench_resched_take(void);
+
+namespace kickos
+{
+    struct Thread;
+
+    // What brought a core into the kernel, which its acquisitions and passes are charged to.
+    // RESUME is a switch's re-acquisition and is never a pass's reason.
+    enum BenchReason : uint8_t
+    {
+        BR_OTHER = 0,
+        BR_SYSCALL,
+        BR_RESUME,
+        BR_RESCHED,
+        BR_TIMER,
+        BR_COUNT
+    };
+
+    enum BenchSchedCount : uint32_t
+    {
+        BS_HANDOFF = 0,  // a thread staged toward a peer
+        BS_HANDED_ON,    // a handoff whose mask no longer named its target
+        BS_RESEAT,       // a RESEAT staged
+        BS_DROP_ASK,     // a drop ask made
+        BS_DROP_IDLE,    // a drop ask answered with nothing to push
+        BS_DRAIN_OVER,   // a dispatch that left entries past its budget
+        BS_COUNT
+    };
+}
+
+// Set by an entry point for what follows and restored as it leaves; returns what it replaced.
+extern "C" uint32_t kickos_bench_reason_enter(uint32_t reason);
+extern "C" void kickos_bench_reason_leave(uint32_t was);
+
+namespace kickos
+{
+    // An entry point's reason for the scope that holds it, restored on the core it leaves from.
+    class BenchReasonScope
+    {
+    public:
+        explicit BenchReasonScope(uint32_t reason)
+            : was_(kickos_bench_reason_enter(reason))
+        {
+        }
+        ~BenchReasonScope() { kickos_bench_reason_leave(was_); }
+        BenchReasonScope(BenchReasonScope const&) = delete;
+        BenchReasonScope& operator=(BenchReasonScope const&) = delete;
+
+    private:
+        uint32_t was_;
+    };
+}
+extern "C" void kickos_bench_acquired(uint32_t resume);
+// A pass's two halves: its whole span, and within it the switch from the incoming thread's first
+// store to the swap's release, less the placement and drop decisions made inside it.
+extern "C" void kickos_bench_pass_open(void);
+extern "C" void kickos_bench_pass_close(void);
+extern "C" void kickos_bench_perform_open(void);
+extern "C" void kickos_bench_decide_open(void);
+extern "C" void kickos_bench_decide_close(void);
+extern "C" void kickos_bench_switched(void);
+extern "C" void kickos_bench_sched_count(uint32_t which);
+extern "C" void kickos_bench_drop_asked(uint32_t holder);
+extern "C" void kickos_bench_pushed(kickos::Thread const* t, uint32_t asker);
+extern "C" void kickos_bench_reseat_asked(kickos::Thread const* t);
+extern "C" void kickos_bench_reseat_applied(kickos::Thread const* t, int running);
+extern "C" void kickos_bench_drain_open(void);
+extern "C" void kickos_bench_drain_applied(void);
+extern "C" void kickos_bench_drain_close(void);
 #endif
 
 // Force inlining at -Os to keep call overhead out of measured phases.
@@ -261,6 +348,12 @@ namespace kickos
     uint32_t bench_doorbell_probe_print(uint32_t core, uint32_t rounds);
 #endif
 
+#if KICKOS_BENCH_SCHED_ON
+    // The scheduler's own report since the last reset: acquisitions and passes by entry reason,
+    // the ring counters and the rows the ordinary report leaves out. `tag` names the workload.
+    void bench_sched_print(uint32_t tag);
+#endif
+
     uint64_t bench_cyccnt_hz();
 
     // Attach, clear and unmask the entry-latency IRQ for both sweeps.
@@ -268,16 +361,16 @@ namespace kickos
     int bench_irq_setup(int line);
     // Reset, populate and print a distribution; return its sample count.
     uint32_t bench_irq_sweep(uint32_t samples);
-    uint32_t bench_irq_wcase_sweep(uint32_t span_index, uint32_t samples);
-    uint32_t bench_irq_wcase_spans();
+    uint32_t bench_irq_wcase_sweep(uint32_t samples);
 
     // Only the waiter may arm and close the interval; the raiser only injects.
-    // Reject closes from other threads.
     int bench_e2e_arm(int line);
     // Publish the park under the same kernel lock used by the ISR wake.
     void bench_e2e_park_mark();
     // Return -KOS_EBUSY until the waiter parks, excluding fast-path wait returns.
     int bench_e2e_raise();
+    // 1 when no other core runs anything but its idle thread and nothing is in flight toward any.
+    int bench_e2e_quiet();
     // Measure the return/read/trap overhead without injecting an interrupt.
     int bench_e2e_tare();
     int bench_e2e_close();
@@ -364,9 +457,8 @@ namespace kickos
     constexpr uint32_t BENCH_CORE_NONE = 0xFFFFFFFFu;
     extern Atomic<uint32_t, Order::RELAXED> g_bench_e2e_isr_core;
     extern Atomic<int32_t, Order::RELAXED> g_bench_e2e_line;
-    // THE ARMED LINE AND NO OTHER. The caller is the generic event trampoline, which is the
-    // ISR of every driver-style claim, so a foreign line firing inside an open span would
-    // otherwise restamp the core and flip the sample's local/cross classification.
+    // The armed line only: the caller is the ISR of every driver-style claim, and a foreign
+    // line firing inside an open span would restamp the core and flip its local/cross class.
     KICKOS_BENCH_INLINE void bench_e2e_isr_mark(int line)
     {
         if (line != g_bench_e2e_line)
@@ -460,6 +552,86 @@ namespace kickos
         (void)(peers);                  \
     } while (false)
 #define KICKOS_BENCH_RESCHED_TAKE() \
+    do                             \
+    {                              \
+    } while (false)
+#endif
+
+// The scheduler's own instrument, above one kernel core only.
+#if KICKOS_BENCH_SCHED_ON
+#define KICKOS_BENCH_ACQUIRED(resume) ::kickos_bench_acquired(resume)
+#define KICKOS_BENCH_PASS_OPEN() ::kickos_bench_pass_open()
+#define KICKOS_BENCH_PASS_CLOSE() ::kickos_bench_pass_close()
+#define KICKOS_BENCH_PERFORM_OPEN() ::kickos_bench_perform_open()
+#define KICKOS_BENCH_DECIDE_OPEN() ::kickos_bench_decide_open()
+#define KICKOS_BENCH_DECIDE_CLOSE() ::kickos_bench_decide_close()
+#define KICKOS_BENCH_SWITCHED() ::kickos_bench_switched()
+#define KICKOS_BENCH_SCHED_COUNT(which) ::kickos_bench_sched_count(which)
+#define KICKOS_BENCH_DROP_ASKED(holder) ::kickos_bench_drop_asked(holder)
+#define KICKOS_BENCH_PUSHED(t, asker) ::kickos_bench_pushed((t), (asker))
+#define KICKOS_BENCH_RESEAT_ASKED(t) ::kickos_bench_reseat_asked(t)
+#define KICKOS_BENCH_RESEAT_APPLIED(t, running) ::kickos_bench_reseat_applied((t), (running))
+#define KICKOS_BENCH_DRAIN_OPEN() ::kickos_bench_drain_open()
+#define KICKOS_BENCH_DRAIN_APPLIED() ::kickos_bench_drain_applied()
+#define KICKOS_BENCH_DRAIN_CLOSE() ::kickos_bench_drain_close()
+#else
+#define KICKOS_BENCH_ACQUIRED(resume) \
+    do                                \
+    {                                 \
+    } while (false)
+#define KICKOS_BENCH_PASS_OPEN() \
+    do                           \
+    {                            \
+    } while (false)
+#define KICKOS_BENCH_PASS_CLOSE() \
+    do                            \
+    {                             \
+    } while (false)
+#define KICKOS_BENCH_PERFORM_OPEN() \
+    do                              \
+    {                               \
+    } while (false)
+#define KICKOS_BENCH_DECIDE_OPEN() \
+    do                             \
+    {                              \
+    } while (false)
+#define KICKOS_BENCH_DECIDE_CLOSE() \
+    do                              \
+    {                               \
+    } while (false)
+#define KICKOS_BENCH_SWITCHED() \
+    do                          \
+    {                           \
+    } while (false)
+#define KICKOS_BENCH_SCHED_COUNT(which) \
+    do                                  \
+    {                                   \
+    } while (false)
+#define KICKOS_BENCH_DROP_ASKED(holder) \
+    do                                  \
+    {                                   \
+    } while (false)
+#define KICKOS_BENCH_PUSHED(t, asker) \
+    do                                \
+    {                                 \
+    } while (false)
+#define KICKOS_BENCH_RESEAT_ASKED(t) \
+    do                               \
+    {                                \
+    } while (false)
+#define KICKOS_BENCH_RESEAT_APPLIED(t, running) \
+    do                                          \
+    {                                           \
+    } while (false)
+#define KICKOS_BENCH_DRAIN_OPEN() \
+    do                            \
+    {                             \
+    } while (false)
+#define KICKOS_BENCH_DRAIN_APPLIED() \
+    do                               \
+    {                                \
+    } while (false)
+#define KICKOS_BENCH_DRAIN_CLOSE() \
     do                             \
     {                              \
     } while (false)

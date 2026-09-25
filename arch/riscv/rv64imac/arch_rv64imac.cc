@@ -394,6 +394,10 @@ static_assert(offsetof(struct arch_context, tls_base) == KICKOS_RV64_CTX_OFF_TLS
 #endif
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV64_CTX_OFF_KERNEL_SP,
               "the U-mode entry loads ctx.kernel_sp at CTX_KERNEL_SP");
+#if KICKOS_REENT_PER_THREAD
+static_assert(offsetof(struct arch_context, reent_tp) == KICKOS_RV64_CTX_OFF_REENT_TP,
+              "the restore loads ctx.reent_tp at CTX_REENT_TP");
+#endif
 
 // With no block seated every U-mode trap takes the refusal path, so this arch cannot be
 // configured without the blocks. ARCH_KERNEL_STACKS_MANDATORY puts `range 1 1` on the knob;
@@ -406,11 +410,28 @@ static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "a kernel block's top must land on the alignment the prologue requires");
 static_assert(KICKOS_RV64_TRAP_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "the trap-stack top must land on the alignment the prologue requires");
-// Structural only: a blocking syscall holds the ecall frame and the switch frame on the block
-// at once, and the lowest word of a block is its overflow canary. The dispatch depth below them
-// is unmeasured on this arch, so no figure here stands in for it (rv64_frame.h).
-static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint64_t) >= 2 * KICKOS_RV64_FRAME,
-              "the kernel block cannot hold a blocking syscall's two frames plus its canary");
+static_assert(KICKOS_RV64_TRAP_FRAME == KICKOS_RV64_FRAME,
+              "rv64_trap_stack.h prices the frame every entry builds");
+// The gate reads KICKOS_RV64_TRAP_NEST as an immediate, so the sum is spelled out there.
+static_assert(KICKOS_RV64_TRAP_NEST == KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_TRAP_DEPTH_IRQ,
+              "KICKOS_RV64_TRAP_NEST is an interrupt's frame plus its dispatch");
+// The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_TRAP_DEPTH_SYSK,
+              "the kernel block cannot hold the U-mode entry plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV64_TRAP_NEST + KICKOS_RV64_TRAP_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_RV64_TRAP_DEPTH_EXITKSW,
+              "the kernel block cannot hold the relocated death path's switch");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV64_TRAP_NEST + KICKOS_RV64_TRAP_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV64_TRAP_DEPTH_RETSW,
+              "the spawn floor cannot hold a privileged thread's entry return through the switch");
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_RV64_TRAP_NEST + KICKOS_RV64_TRAP_DEPTH_IDLE,
+              "an S-mode interrupt does not fit this board's idle stack");
+static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV64_PANIC_FRAME + KICKOS_RV64_PANIC_DEPTH,
+              "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
 
 extern "C"
 {
@@ -429,6 +450,9 @@ void arch_context_init(struct arch_context* ctx,
     ctx->stack_hi = top;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = 0;
+#endif
+#if KICKOS_REENT_PER_THREAD
+    ctx->reent_tp = 0;
 #endif
     // ctx->kernel_sp is read, not written, here: thread_create seats the block before this
     // call and owns the zero that means none is seated.
@@ -487,6 +511,9 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 #if defined(KICKOS_TLS) && KICKOS_TLS
     uintptr_t const tls_base = ctx->tls_base;
 #endif
+#if KICKOS_REENT_PER_THREAD
+    uintptr_t const reent_tp = ctx->reent_tp;
+#endif
 #if KICKOS_KERNEL_STACKS
     // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what it
     // is handed, and handing it the block would leave the context describing kernel .bss as this
@@ -503,6 +530,9 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 #if defined(KICKOS_TLS) && KICKOS_TLS
         ctx->tls_base = tls_base;
 #endif
+#if KICKOS_REENT_PER_THREAD
+        ctx->reent_tp = reent_tp;
+#endif
         return;
     }
 #endif
@@ -511,7 +541,17 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif
+#if KICKOS_REENT_PER_THREAD
+    ctx->reent_tp = reent_tp;
+#endif
 }
+
+#if KICKOS_REENT_PER_THREAD
+void arch_context_seat_reent(struct arch_context* ctx, void* state)
+{
+    ctx->reent_tp = reinterpret_cast<uintptr_t>(state);
+}
+#endif
 
 // Synchronous in thread context and deferred from an ISR, which arch.h permits.
 //

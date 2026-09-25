@@ -30,7 +30,8 @@ namespace kickos
         extern uint32_t g_reply_thread; // the tag, verbatim
         extern uint32_t g_reply_seq;
         extern uint32_t g_reply_len;
-        extern uint8_t g_reply_first; // payload[0], or 0 at zero length
+        extern uint8_t g_reply_first; // payload[0] read through the hold, or 0 at zero length
+        extern uint32_t g_reply_hold;  // the hold the last routing handed a caller that took it
 
         void reset();
     }

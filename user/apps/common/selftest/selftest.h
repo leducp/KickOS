@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// What the self-test translation units share.
 
 #ifndef KICKOS_USER_APPS_COMMON_SELFTEST_SELFTEST_H
 #define KICKOS_USER_APPS_COMMON_SELFTEST_SELFTEST_H
@@ -157,11 +155,13 @@ namespace selftest
     // A member of ANOTHER task gets its own copy of this image's static data, so every report
     // from one crosses on an ENDPOINT and every release crosses on a semaphore. A global
     // would be written in the member's copy and read in root's.
-    constexpr uint32_t PLACE_JOIN_US = 2000000u;
     extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // root's report endpoint, delegated at child index 1
 #endif
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+    // The live thread count while root runs alone, read before the first arm spawns.
+    extern KICKOS_SELFTEST_LOCAL uintptr_t g_live_rest;
+    KICKOS_SELFTEST_LOCAL void settle_exits();
     KICKOS_SELFTEST_LOCAL void t_cap_objects();
     KICKOS_SELFTEST_LOCAL void t_cap_map();
     KICKOS_SELFTEST_LOCAL void t_stack_slot_returns();
@@ -263,6 +263,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_threads_reach_every_core();
     KICKOS_SELFTEST_LOCAL void t_irq_cross_core_wake();
     KICKOS_SELFTEST_LOCAL void t_irq_reclaim_stale_raise();
+    KICKOS_SELFTEST_LOCAL void t_reent_per_thread_cores();
 #endif
 
 }

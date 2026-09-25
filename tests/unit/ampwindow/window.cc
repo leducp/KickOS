@@ -57,14 +57,26 @@ namespace
 
     uint32_t g_last_slot = 0;
 
+    // What a receiver's landing reads: the held call slot itself, which take_call no longer
+    // copies out of.
+    void land_call(uint32_t me, uint32_t from, uint32_t slot, uint32_t len, void* out)
+    {
+        amp::Slot const& s = amp::ring_for(amp::Class::CALL, me, from).slot[slot % amp::RING_SLOTS];
+        for (uint32_t i = 0; i < len and i < amp::SLOT_BYTES; i++)
+        {
+            static_cast<uint8_t*>(out)[i] = s.payload[i];
+        }
+    }
+
     amp::Verdict take_tagged_as(uint32_t me, uint32_t from, void* out, uint32_t* out_len,
                                 uint32_t* out_port, amp::ReplyTag* out_tag)
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Verdict const v = amp::take_call(from, out, out_len, out_port, out_tag, &g_last_slot);
+        amp::Verdict const v = amp::take_call(from, out_len, out_port, out_tag, &g_last_slot);
         if (v == amp::Verdict::TOOK)
         {
+            land_call(me, from, g_last_slot, *out_len, out);
             amp::release_call(from, g_last_slot);
         }
         fix::g_node = was;
@@ -74,13 +86,12 @@ namespace
     // A take that HOLDS its slot, for the arms that exercise the record bound.
     amp::Verdict take_held_as(uint32_t me, uint32_t from, uint32_t* out_slot)
     {
-        uint8_t buf[amp::SLOT_BYTES];
         uint32_t len = 0;
         uint32_t port = amp::PORT_MAX;
         amp::ReplyTag tag = {};
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Verdict const v = amp::take_call(from, buf, &len, &port, &tag, out_slot);
+        amp::Verdict const v = amp::take_call(from, &len, &port, &tag, out_slot);
         fix::g_node = was;
         return v;
     }
@@ -93,12 +104,24 @@ namespace
         fix::g_node = was;
     }
 
+    // A take, and the landing of a caller that resumes at once: the bytes out of the held slot,
+    // then its release.
     amp::Verdict take_reply_as(uint32_t me, uint32_t from, void* out, uint32_t* out_len,
                                uint32_t* out_port, amp::ReplyTag* out_tag)
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::Verdict const v = amp::take_reply(from, out, out_len, out_port, out_tag);
+        uint32_t slot = 0;
+        amp::Verdict const v = amp::take_reply(from, out_len, out_port, out_tag, &slot);
+        if (v == amp::Verdict::TOOK)
+        {
+            amp::Slot const& s = amp::ring_for(amp::Class::REPLY, me, from).slot[slot];
+            for (uint32_t i = 0; i < *out_len; i++)
+            {
+                static_cast<uint8_t*>(out)[i] = s.payload[i];
+            }
+            amp::release_reply(from, slot);
+        }
         fix::g_node = was;
         return v;
     }
@@ -1051,8 +1074,7 @@ namespace
 
         ASSERT_EQ(amp::Sent::OK, send_as(NODE_A, NODE_B, amp::PORT_ECHO, payload, 4u));
         fix::g_node = NODE_B;
-        ASSERT_EQ(amp::Verdict::TOOK,
-                  amp::take_call(NODE_A, out, &len, &port, &tag, &slot));
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_A, &len, &port, &tag, &slot));
         uint32_t const token = amp::inbound_seat(NODE_A, slot, TAG_CARRIED);
         ASSERT_NE(amp::FAR_RECORD_NONE, token);
 
@@ -1131,7 +1153,8 @@ namespace
         uint32_t port = amp::PORT_MAX;
         amp::ReplyTag tag = {};
         fix::g_node = NODE_A;
-        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, buf, &len, &port, &tag, &got));
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &got));
+        land_call(NODE_A, NODE_B, got, len, buf);
         fix::g_node = 0;
         EXPECT_EQ(2u % amp::RING_SLOTS, got);
         EXPECT_EQ(1u, len);
@@ -1260,14 +1283,14 @@ namespace
         EXPECT_EQ(call[1], good.buf[1]);
     }
 
-    // THE POSITIVE FORM OF THE SAME CLAIM, and the one the defect was found by: every call the
-    // peer published is ANSWERED. A peer that drains its reply ring late used to lose the reply
-    // to the call it published after the ring filled, and then to strand that call instead.
+    // THE POSITIVE FORM OF THE SAME CLAIM: every call the peer published is ANSWERED. A peer
+    // that drains its reply ring late can lose the reply to the call it published after the
+    // ring filled, stranding that call.
     //
     // NOT ONE SERVICE PASS IS TAKEN BY HAND. Every pass below is one pump_doorbells found a
-    // raise for, so an arm that passes says a real doorbell would have carried it. An earlier
-    // form of this arm called node_service after the drain and supplied the very edge the tree
-    // had no source for, which is what hid the strand.
+    // raise for, so an arm that passes says a real doorbell would have carried it. A
+    // node_service pass called by hand after the drain supplies an edge the tree may have no
+    // source for, and hides a stranded call.
     TEST_F(AmpWindow, every_call_is_answered_even_when_the_peer_drains_its_replies_late)
     {
         constexpr uint32_t CALLS = amp::RING_SLOTS + 1u;
@@ -1825,10 +1848,15 @@ namespace
 
         amp::Ring& rr = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
         // A tail no well-formed consumer stores: it only ever advances, and this node publishes
-        // nothing past the ring's depth beyond the tail it last read.
+        // nothing past the ring's depth beyond the tail it last read. The consumer RESTARTED
+        // onto it, which is how one running this file regresses its tail, so its own cursor is
+        // re-seeded from it.
         uint32_t const forged = 0u - (amp::RING_SLOTS + 2u);
         rr.head.v.store(0u);
         rr.tail.v.store(forged);
+        fix::g_node = NODE_B;
+        amp::window_init();
+        fix::g_node = 0;
 
         uint32_t const was_reset = amp::counts(NODE_A).tail_reset;
         for (uint32_t i = 1; i < amp::DEPTH_STRIKES; i++)
@@ -2001,7 +2029,7 @@ namespace
         uint32_t slot = 0;
         amp::ReplyTag tag = {};
         fix::g_node = NODE_A;
-        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, buf, &len, &port, &tag, &slot));
+        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_B, &len, &port, &tag, &slot));
         fix::g_node = 0;
 
         // The malformed producer, on the slot this node is holding: a length no slot can hold
@@ -2009,6 +2037,7 @@ namespace
         amp::Slot& s = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B).slot[slot];
         s.len.store(amp::SLOT_BYTES * 4u);
         s.port.store(PORT_UNMINTED);
+        land_call(NODE_A, NODE_B, slot, len, buf);
 
         EXPECT_EQ(3u, len);
         EXPECT_EQ(amp::PORT_ECHO, port);
@@ -2024,5 +2053,124 @@ namespace
             ASSERT_EQ(OUT_FILL, buf[i]) << "byte " << i << " past the message";
         }
         release_as(NODE_A, NODE_B, slot);
+    }
+
+    // --- A reply slot is held until its caller lands it -----------------------------------
+    // The service copies nothing out of a reply the tag resolves: the caller named holds the
+    // slot, lands it in its own call and releases it, so the tail and the credit raise both
+    // wait for that release, and the order the callers land in is not the order reclaimed.
+
+    namespace
+    {
+        // One reply from NODE_B to a caller on NODE_A that takes it, served; the hold it was
+        // handed comes back.
+        uint32_t reply_held_at_a(uint8_t fill)
+        {
+            uint8_t const payload[1] = {fill};
+            fix::g_reply_answer = true;
+            EXPECT_EQ(amp::Sent::OK,
+                      send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, payload, 1u));
+            fix::g_reply_hold = 0u;
+            service_as(NODE_A);
+            return fix::g_reply_hold;
+        }
+
+        void release_hold_as(uint32_t me, uint32_t hold)
+        {
+            uint32_t const was = fix::g_node;
+            fix::g_node = me;
+            amp::hold_release(hold);
+            fix::g_node = was;
+        }
+    }
+
+    TEST_F(AmpWindow, a_reply_its_caller_holds_keeps_the_tail_and_the_credit_until_it_lands)
+    {
+        amp::Ring const& in = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
+        fix::g_sends = 0;
+        fix::g_sent_mask = 0;
+        uint32_t const hold = reply_held_at_a(0x31u);
+        ASSERT_EQ(1u, fix::g_replies);
+        EXPECT_EQ(0x31u, fix::g_reply_first) << "the hold does not name the reply's own slot";
+        EXPECT_EQ(0u, in.tail.v.load()) << "the service released a slot its caller holds";
+        EXPECT_EQ(0u, fix::g_sent_mask & (1u << NODE_B)) << "credit returned before the landing";
+
+        release_hold_as(NODE_A, hold);
+        EXPECT_EQ(1u, in.tail.v.load());
+        EXPECT_EQ(1u << NODE_B, fix::g_sent_mask & (1u << NODE_B))
+            << "the release that frees the slot returned no credit";
+    }
+
+    TEST_F(AmpWindow, landings_out_of_order_reclaim_in_order_and_return_the_credit_once)
+    {
+        amp::Ring const& in = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
+        uint32_t const first = reply_held_at_a(0x41u);
+        uint32_t const second = reply_held_at_a(0x42u);
+        ASSERT_NE(first, second);
+        fix::g_sends = 0;
+        fix::g_sent_mask = 0;
+
+        release_hold_as(NODE_A, second);
+        EXPECT_EQ(0u, in.tail.v.load()) << "the younger landing moved the tail past the older";
+        EXPECT_EQ(0u, fix::g_sends) << "a release that freed nothing rang the producer";
+
+        release_hold_as(NODE_A, first);
+        EXPECT_EQ(2u, in.tail.v.load()) << "the older landing did not reclaim the run behind it";
+        EXPECT_EQ(1u, fix::g_sends);
+        EXPECT_EQ(1u << NODE_B, fix::g_sent_mask);
+    }
+
+    TEST_F(AmpWindow, a_reply_whose_tag_names_no_caller_is_released_by_the_service_behind_a_held_one)
+    {
+        amp::Ring const& in = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
+        uint32_t const held = reply_held_at_a(0x51u);
+
+        // Refused by the endpoint layer: nobody lands it, so the service releases it, and the
+        // tail still waits for the older one.
+        uint8_t const stray[1] = {0x52u};
+        fix::g_reply_answer = false;
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, stray, 1u));
+        service_as(NODE_A);
+        EXPECT_EQ(0u, in.tail.v.load());
+
+        release_hold_as(NODE_A, held);
+        EXPECT_EQ(2u, in.tail.v.load()) << "the refused reply was never released";
+
+        // Alone, the refused reply is released by the service itself, credit and all.
+        fix::g_sends = 0;
+        fix::g_sent_mask = 0;
+        ASSERT_EQ(amp::Sent::OK,
+                  send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, stray, 1u));
+        service_as(NODE_A);
+        EXPECT_EQ(3u, in.tail.v.load());
+        EXPECT_EQ(1u << NODE_B, fix::g_sent_mask & (1u << NODE_B));
+    }
+
+    // A resynchronisation adopts the far head under a slot a caller holds. That hold names its
+    // slot by a masked index, which the next wrap reuses, so its release must be refused rather
+    // than land on the new tenant.
+    TEST_F(AmpWindow, a_hold_a_resynchronisation_abandoned_releases_nothing_when_it_lands)
+    {
+        amp::Ring& in = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
+        uint32_t const stale = reply_held_at_a(0x61u);
+
+        // A whole multiple of RING_SLOTS, so the adopted tail masks back onto the held slot and
+        // the next reply lands on it.
+        in.head.v.store(2u * amp::RING_SLOTS);
+        for (uint32_t i = 0; i < amp::DEPTH_STRIKES; i++)
+        {
+            service_as(NODE_A);
+        }
+        uint32_t const resynced = in.head.v.load();
+        ASSERT_EQ(resynced, in.tail.v.load()) << "the resynchronisation never ran";
+
+        uint32_t const fresh = reply_held_at_a(0x62u);
+        ASSERT_NE(fresh, 0u);
+        release_hold_as(NODE_A, stale);
+        EXPECT_EQ(resynced, in.tail.v.load()) << "an abandoned hold released a later tenant";
+
+        release_hold_as(NODE_A, fresh);
+        EXPECT_EQ(resynced + 1u, in.tail.v.load());
     }
 }

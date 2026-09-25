@@ -3,14 +3,12 @@
  *
  * The RV64IMAC save-frame geometry, read by BOTH switch.S and arch_rv64imac.cc so the
  * fabricated frame and the one the trap prologue builds are one object.
- *
- * DO NOT RENAME THIS TO A `_trap_stack.h` SUFFIX. tests/static/check_trap_redzone_decls.sh globs
- * that suffix under arch/ to decide which arches it holds to a declaration in
- * tests/static/trap_redzone_roots.txt, and no depth figure here has been measured.
  */
 
 #ifndef KICKOS_ARCH_RV64_FRAME_H
 #define KICKOS_ARCH_RV64_FRAME_H
+
+#include <kickos/arch/rv64_trap_stack.h>
 
 /* Byte offsets from the frame base (ctx.sp), low to high. gp and tp stay OUT of the frame: both
  * are U-mode writable, and the entry re-anchors both instead, at .Ltrap_regs and at .Lrestore.
@@ -76,11 +74,7 @@
 
 /* The trusted per-hart trap stack (kickos_rv64_percpu, percpu.h). sscratch holds its top
  * while a thread runs, so the entry swaps onto it before it touches the interrupted sp.
- *
- * THE DEPTH IS PROVISIONAL: nothing has run -fcallgraph-info on this arch and this port ships no
- * record in tests/static/trap_redzone_roots.txt, so it is not a measured figure.
  */
-#define KICKOS_RV64_TRAP_NESTED_DEPTH 3840
 #define KICKOS_RV64_TRAP_STACK_SIZE \
     (KICKOS_RV64_FRAME + KICKOS_RV64_TRAP_NESTED_DEPTH)
 
@@ -125,5 +119,6 @@
 #define KICKOS_RV64_CTX_OFF_KERNEL_SP 24
 #endif
 #endif
+#define KICKOS_RV64_CTX_OFF_REENT_TP (KICKOS_RV64_CTX_OFF_KERNEL_SP + 8)
 
 #endif /* KICKOS_ARCH_RV64_FRAME_H */

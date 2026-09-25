@@ -23,6 +23,7 @@ namespace tap
 #define KICKOS_TAP_MAX_TESTS 128
 #endif
         constexpr int MAX_TESTS = KICKOS_TAP_MAX_TESTS;
+        static_assert(MAX_TESTS <= 9999, "REASON_CHARS_MAX budgets a four-digit test index");
 
         struct Entry
         {
@@ -48,6 +49,7 @@ namespace tap
         };
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
+        static_assert(sizeof(g_msg) > REASON_CHARS_MAX);
         // Orthogonal to the verdict, and that is the whole of the category: the arm runs and
         // reaches its own conclusion, and this only decides how that conclusion is read. Its
         // reason needs storage of its own because a failing arm has already written g_msg.
@@ -97,8 +99,20 @@ namespace tap
         // Stands in for the tail of a line the assembly buffer could not hold, and carries
         // the newline so a cut line still ends where a reader counts.
         constexpr char CUT[] = "<TRUNCATED>\n";
+        constexpr char REASON_CUT[] = "<TRUNCATED>";
 
-        // Assemble one line and write it. The newline is the emitter's, never a caller's: a
+        // A reason cut here and never marked would reach the stream looking whole, since the
+        // line it lands in can still fit.
+        void record(char* dst, size_t cap, char const* fmt, va_list ap)
+        {
+            int const w = kvsnprintf(dst, cap, fmt, ap);
+            if (w >= 0 and static_cast<size_t>(w) >= cap)
+            {
+                memcpy(dst + cap - sizeof(REASON_CUT), REASON_CUT, sizeof(REASON_CUT));
+            }
+        }
+
+        // The newline is the emitter's, never a caller's: a
         // line that fills the buffer would otherwise lose its own and run into the result
         // line after it, which leaves that one uncountable at line start and drops it from
         // every by-line parse. A format string that carries a '\n' of its own gets a blank
@@ -107,7 +121,7 @@ namespace tap
         // second write can land inside another node's line.
         void emitv(char const* pfx, size_t pfxlen, char const* fmt, va_list ap)
         {
-            char b[224];
+            char b[LINE_BYTES];
             memcpy(b, pfx, pfxlen);
             int const w = kvsnprintf(b + pfxlen, sizeof(b) - pfxlen, fmt, ap);
             size_t const want = pfxlen + static_cast<size_t>(w);
@@ -140,7 +154,7 @@ namespace tap
             {
                 return;
             }
-            kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+            record(g_msg, sizeof(g_msg), fmt, ap);
             g_verdict = v;
         }
 
@@ -153,7 +167,7 @@ namespace tap
         }
     }
 
-    void add(char const* name, TestFn fn)
+    void add_named(char const* name, TestFn fn)
     {
         if (g_count < MAX_TESTS)
         {
@@ -175,7 +189,7 @@ namespace tap
         }
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+        record(g_msg, sizeof(g_msg), fmt, ap);
         va_end(ap);
         g_verdict = Verdict::FAIL; // outranks a skip recorded earlier
     }
@@ -200,7 +214,7 @@ namespace tap
     {
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(g_todo_msg, sizeof(g_todo_msg), fmt, ap);
+        record(g_todo_msg, sizeof(g_todo_msg), fmt, ap);
         va_end(ap);
         g_todo = true;
     }
@@ -213,7 +227,7 @@ namespace tap
         }
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+        record(g_msg, sizeof(g_msg), fmt, ap);
         va_end(ap);
         g_verdict = Verdict::PARTIAL;
     }
@@ -315,15 +329,12 @@ namespace tap
             emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d",
                   g_count + 1, g_dropped, MAX_TESTS);
         }
-        // All three always emitted, zero included: a gate reconciles its by-name permission
-        // set against these counts, so an absent line must mean "truncated run", never
-        // "none of those". `# vacuous: N` carries no permission set to reconcile and is
-        // stated for the same reason in reverse: it is what proves the gate's marker parse
-        // still matches, so a wording change here cannot retire the category in silence.
-        // The three counts are disjoint. The completion marker must keep the
-        // `# all tests passed` substring the gates grep for.
-        // Stated zero included, for the reason the three above are: an absent line must mean
-        // a truncated run and never "none of those". `todo-fixed` is the one a gate acts on.
+        // All five lines are always emitted, zero included: a gate reconciles its by-name
+        // permission set against these counts, so an absent line must mean "truncated run",
+        // never "none of those". `# vacuous: N` carries no permission set to reconcile and is
+        // stated for the same reason in reverse, to prove the gate's marker parse still
+        // matches. The three counts are disjoint; `todo-fixed` is the one a gate acts on. The
+        // completion marker must keep the `# all tests passed` substring the gates grep for.
         emitf("# todo: %d", todo_owed);
         emitf("# todo-fixed: %d", todo_fixed);
         emitf("# skipped: %d", skipped);

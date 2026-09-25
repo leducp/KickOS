@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The official sourceware release tarballs, one per newlib a pinned cross toolchain bundles. The
+# recipe builds the release whose version the toolchain's _newlib_version.h reports.
+sources:
+  "4.5.0.20241231":
+    url: "https://sourceware.org/pub/newlib/newlib-4.5.0.20241231.tar.gz"
+    sha256: "33f12605e0054965996c25c1382b3e463b0af91799001f5bb8c0630f2ec8c852"
+  "4.6.0.20260123":
+    url: "https://sourceware.org/pub/newlib/newlib-4.6.0.20260123.tar.gz"
+    sha256: "6ff27e3bf022666f43f7802255be680eeff722ac181b1725d21e2e8318604ee3"

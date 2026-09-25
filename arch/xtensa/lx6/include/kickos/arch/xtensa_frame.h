@@ -6,8 +6,8 @@
  * (arch/xtensa/lx6/arch_xtensa.cc), so the offsets live here once.
  *
  * Asm-safe: plain object and function-like #defines only, with no C types and no literal
- * suffixes gas cannot parse, so this is includable from both a .cc and a cpp-processed .S.
- * No C struct mirrors the frame, so there is nothing to static_assert these offsets against.
+ * suffixes gas cannot parse. No C struct mirrors the frame, so nothing static_asserts the F_*
+ * offsets.
  */
 #ifndef KICKOS_ARCH_XTENSA_FRAME_H
 #define KICKOS_ARCH_XTENSA_FRAME_H
@@ -46,39 +46,24 @@
 /* Frame size, 16-byte aligned. */
 #define F_SIZE 0x100
 
+/* arch_context.tls_base (context.h), which trace_tid precedes where telemetry is compiled. */
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#define KICKOS_LX6_CTX_TLS_BASE 20
+#else
+#define KICKOS_LX6_CTX_TLS_BASE 16
+#endif
+
 #ifdef __ASSEMBLER__
 #if defined(KICKOS_TLS) && KICKOS_TLS
-/* Seat THREADPTR for the thread whose context pointer is in \ctx, from that thread's own
- * saved sp masked down to its stack block. Xtensa TLS is variant 1, so THREADPTR is the block
- * base and the compiler adds the offset the linker computed.
- *
- * THE SAVED sp IS ALWAYS THAT THREAD'S OWN: lx6 selects no ARCH_HAS_KERNEL_STACKS, so there is
- * no second stack a frame could be sitting on when it is saved. If that changes this becomes
- * wrong in the same way masking F_SP is wrong on rv32imac.
- *
- * The -1 is the edge of the range: a stack top is EXCLUSIVE, so an empty stack has sp exactly
- * at base + stride and a plain mask returns the NEXT block.
- *
- * movi with the negated stride rather than srli/slli: srli takes an immediate of 0..15 and a
- * board with a larger stack would silently be out of range.
- *
- * THREE SITES INVOKE THIS: xtensa_switch and arch_start in switch.S, and the PREEMPTIVE switch
- * at the tail of _kickos_int_level1, which never enters xtensa_switch. Seating it in switch.S
- * alone leaves the incoming thread on the OUTGOING thread's pointer until its next
- * cooperative switch.
- *
- * IDLE GETS AN ADDRESS INSIDE A NEIGHBOUR'S BLOCK, its stack being below one stride and taking
- * no carve. Its body is arch_idle_wait and it reaches no thread_local; the no_privileged_tls
- * gate is what keeps that true. */
-    .macro  SEAT_THREADPTR ctx, tmp0, tmp1
-    l32i    \tmp0, \ctx, CTX_SP
-    addi    \tmp0, \tmp0, -1
-    movi    \tmp1, -KICKOS_TLS_STRIDE
-    and     \tmp0, \tmp0, \tmp1
-    wur.threadptr \tmp0
+/* Seat THREADPTR for the thread whose context pointer is in \ctx. EVERY SWITCH-IN INVOKES THIS,
+ * the preemptive one at the tail of _kickos_int_level1 included: a missed site leaves the
+ * incoming thread on the outgoing thread's thread_local storage and libc state. */
+    .macro  SEAT_THREADPTR ctx, tmp
+    l32i    \tmp, \ctx, KICKOS_LX6_CTX_TLS_BASE
+    wur.threadptr \tmp
     .endm
 #else
-    .macro  SEAT_THREADPTR ctx, tmp0, tmp1
+    .macro  SEAT_THREADPTR ctx, tmp
     .endm
 #endif
 #endif // __ASSEMBLER__

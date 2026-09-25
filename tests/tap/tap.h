@@ -16,14 +16,90 @@
 #ifndef KICKOS_TESTS_TAP_TAP_H
 #define KICKOS_TESTS_TAP_TAP_H
 
+#include <stddef.h>
+
 namespace tap
 {
     using TestFn = void (*)();
 
+    // A line that does not fit is emitted cut and marked, and the gate refuses the run.
+    constexpr size_t LINE_BYTES = 224;
+    constexpr size_t NAME_CHARS_MAX = 32;
+    // What every directive carries whole beside any name. The widest line is
+    // `ok NNNN - <name> # SKIP VACUOUS <reason>`, plus its newline and terminator.
+    constexpr size_t REASON_CHARS_MAX = LINE_BYTES - 2 - (sizeof("ok 9999 - ") - 1)
+                                        - NAME_CHARS_MAX - (sizeof(" # SKIP VACUOUS ") - 1);
+    constexpr size_t UNBOUNDED = static_cast<size_t>(-1) / 2;
+
+    // The most characters `fmt` expands to, every conversion at its widest. A %s is
+    // UNBOUNDED: its argument is not in the format.
+    constexpr size_t format_chars_max(char const* fmt)
+    {
+        size_t n = 0;
+        size_t i = 0;
+        while (fmt[i] != '\0')
+        {
+            if (fmt[i] != '%')
+            {
+                n++;
+                i++;
+                continue;
+            }
+            i++;
+            bool wide = false;
+            while (fmt[i] == 'l' or fmt[i] == 'z')
+            {
+                wide = true;
+                i++;
+            }
+            char const c = fmt[i];
+            if (c == '\0')
+            {
+                return n;
+            }
+            i++;
+            if (c == 's')
+            {
+                return UNBOUNDED;
+            }
+            size_t width = 1;
+            if (c == 'd' or c == 'i')
+            {
+                width = 11;
+            }
+            else if (c == 'u')
+            {
+                width = 10;
+            }
+            else if (c == 'x')
+            {
+                width = 8;
+            }
+            else if (c == 'p')
+            {
+                width = 2 + 2 * sizeof(void*);
+            }
+            if (wide and (c == 'd' or c == 'i' or c == 'u' or c == 'x'))
+            {
+                width = 20;
+            }
+            n += width;
+        }
+        return n;
+    }
+
     // Register a test. Call before run_all(). A registration past MAX_TESTS is dropped,
     // and run_all() then emits an extra `not ok - tap_registry_overflow` and fails the
     // suite, so a truncated registry can never read as a clean run.
-    void add(char const* name, TestFn fn);
+    void add_named(char const* name, TestFn fn);
+
+    template <size_t N>
+    void add(char const (&name)[N], TestFn fn)
+    {
+        static_assert(N - 1 <= NAME_CHARS_MAX,
+                      "a TAP name past NAME_CHARS_MAX voids REASON_CHARS_MAX for every arm");
+        add_named(name, fn);
+    }
 
     // Mark the current test failed with a printf-style diagnostic. First failure
     // per test wins, and a failure always outranks a skip.
@@ -48,6 +124,8 @@ namespace tap
     // The reason must say how far outside the window the run fell, or the permission hides
     // the same gap the missing detection did.
     // Like tap::skip it only records and does not return: follow it with `return`.
+    // Call it through TAP_SKIP_VACUOUS, which bounds the reason at build time: the skip fires
+    // only under load, which is where an over-long reason would first be seen.
     void skip_vacuous(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
     // Mark the current test expected to fail: the arm is right and the tree is wrong, and the
@@ -90,6 +168,14 @@ namespace tap
     // tests/integration/check_tap_stream.sh). A vacuity skip has no list anywhere.
     int run_all();
 }
+
+#define TAP_SKIP_VACUOUS(fmt, ...)                                                  \
+    do                                                                              \
+    {                                                                               \
+        static_assert(::tap::format_chars_max(fmt) <= ::tap::REASON_CHARS_MAX,      \
+                      "this vacuity reason can overrun the TAP line: shorten it");  \
+        ::tap::skip_vacuous(fmt __VA_OPT__(, ) __VA_ARGS__);                        \
+    } while (0)
 
 // Assert `cond`; on failure record "<file>:<line>: <expr>" and return from the current test,
 // which the harness marks "not ok". Only valid inside a registered test function (void).

@@ -47,6 +47,9 @@ namespace kickos
         // published behind it can be absorbed before it exists.
         extern uint32_t g_owed_at_send[CORES];
 
+        // Rendezvous requests made, each owing its target an answer.
+        extern uint32_t g_rendezvous;
+
         // Total raises restored across every core.
         uint32_t raise_total();
 

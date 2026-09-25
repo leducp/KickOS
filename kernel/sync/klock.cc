@@ -7,6 +7,7 @@
 
 #include <kickos/bench.h>
 #include <kickos/instance.h>
+#include <kickos/sched.h>
 #include <kickos/sys/atomic.h>
 
 #include <stddef.h>
@@ -56,6 +57,44 @@ namespace kickos
             KICKOS_DEBUG_ASSERT(::arch_kernel_lock_held() != 0);
             arch_kernel_unlock();
         }
+
+        inline __attribute__((always_inline)) bool resched_owed_on(uint32_t me)
+        {
+            for (uint32_t from = 0; from < KICKOS_KERNEL_CORES; from++)
+            {
+                if (g_asked[from].seq[me].load() != g_took[me].seq[from].load())
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // The end of a span that booked no swap, or of the swap's own: what the span staged is
+        // published, and a reschedule a poll absorbed is raised again, since only the dispatch
+        // that enters the scheduler consumes the cell.
+        inline __attribute__((always_inline)) void span_end(void)
+        {
+            uint32_t me = kickos_kernel_core();
+            if (sched_flush(me))
+            {
+                // Read again rather than held across the call: held, it is a spill on lx6,
+                // which deepens every trap chain that ends a span.
+                me = kickos_kernel_core();
+            }
+            if (resched_owed_on(me))
+            {
+                arch_ipi_raise(1u << me);
+            }
+        }
+
+        inline __attribute__((always_inline)) void drop(void)
+        {
+            KlockRow& r = g_row[kickos_kernel_core()];
+            r.depth = 0;
+            r.owed = 0;
+            release();
+        }
     }
 
     void klock_enter(void)
@@ -68,6 +107,7 @@ namespace kickos
             KICKOS_BENCH_MARK(bw);
             arch_kernel_lock();
             KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
+            KICKOS_BENCH_ACQUIRED(0);
         }
         r.depth = r.depth + 1u;
     }
@@ -79,13 +119,7 @@ namespace kickos
         if (r.depth == 0 and r.owed == 0)
         {
             release();
-            // Sends a raise, not a scheduler pass; the cell is left standing since only the
-            // dispatch that enters the scheduler consumes it, so a raise a poll absorbed must
-            // be carried again.
-            if (::kickos_kernel_core_resched_owed() != 0)
-            {
-                arch_ipi_resched_self();
-            }
+            span_end();
         }
     }
 
@@ -121,41 +155,39 @@ namespace kickos
             KICKOS_BENCH_MARK(bw);
             arch_kernel_lock();
             KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
+            KICKOS_BENCH_ACQUIRED(1);
         }
         r.depth = depth;
     }
 
     void klock_drop(void)
     {
-        KlockRow& r = g_row[kickos_kernel_core()];
-        r.depth = 0;
-        r.owed = 0;
-        release();
+        drop();
     }
 
     // Runs once the outgoing frame is parked and this core stands on the incoming one; the
     // unlock's release publishes that parked frame.
+    // The other half of klock_leave's arm, not a duplicate of it: a swap booked from an
+    // interrupt runs at the exception exit, so klock_detach left `owed` set and the klock_leave
+    // that follows the booking releases nothing and raises nothing. This is the release that
+    // ends that span, the only one a deferred backend reaches.
     extern "C" void kickos_switch_unlock(void)
     {
-        klock_drop();
-        // The other half of klock_leave's arm, not a duplicate of it: a swap booked from an
-        // interrupt runs at the exception exit, so klock_detach left `owed` set and the
-        // klock_leave that follows the booking releases nothing and raises nothing. This is
-        // the release that ends that span, the only one a deferred backend reaches.
-        if (::kickos_kernel_core_resched_owed() != 0)
-        {
-            arch_ipi_resched_self();
-        }
+        KICKOS_BENCH_SWITCHED();
+        drop();
+        span_end();
     }
 
     // The one body that gives a cross-core raise scheduling meaning: a second publisher of
     // this cell would put the ask ahead of a raise nobody ordered it against.
     void klock_resched_ask(uint32_t cores)
     {
-        // Sets the cell before sending the raise, for peers alone: the raise is an edge the
-        // acquire loop's poll may absorb instead of the vector, and the cell is what outlives it.
-        ::kickos_kernel_core_resched_owe(cores & ~(1u << kickos_kernel_core()));
-        arch_ipi_send(cores);
+        // Sets the cell before the raise, for peers alone: the raise is an edge a poll may
+        // absorb instead of the vector, and the cell is what outlives it. A bare raise: a
+        // reschedule owes no rendezvous answer.
+        uint32_t const peers = cores & ~(1u << kickos_kernel_core());
+        ::kickos_kernel_core_resched_owe(peers);
+        arch_ipi_raise(peers);
     }
 
     // No raise here: the release that ends this core's lock span carries it, via
@@ -185,13 +217,9 @@ namespace kickos
 
     extern "C" int kickos_kernel_core_resched_owed(void)
     {
-        uint32_t const me = kickos_kernel_core();
-        for (uint32_t from = 0; from < KICKOS_KERNEL_CORES; from++)
+        if (resched_owed_on(kickos_kernel_core()))
         {
-            if (g_asked[from].seq[me].load() != g_took[me].seq[from].load())
-            {
-                return 1;
-            }
+            return 1;
         }
         return 0;
     }

@@ -141,9 +141,11 @@ namespace
     // One TargetList window addresses 16 affinity 0 values, and RS selects which window.
     constexpr uint32_t SGI_TARGETS_PER_WINDOW = 16;
 
+    // The device directly: an RWP wait can run inside the kernel lock's acquire poll, where the
+    // console route would take that lock again.
     [[noreturn]] void refuse(char const* msg, size_t n)
     {
-        arch_console_write(msg, n);
+        arch_console_write_sync(msg, n);
         kfault_terminate();
     }
 

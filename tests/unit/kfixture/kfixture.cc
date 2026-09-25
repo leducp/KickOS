@@ -404,6 +404,61 @@ namespace kickos
             sched::start();
         }
 
+#if KICKOS_KERNEL_CORES > 1
+        bool unstage(Thread const* t)
+        {
+            Kernel& k = kernel();
+            int const slot = k.threads.index_of(t);
+            bool found = false;
+            if (slot < 0)
+            {
+                return false;
+            }
+            for (uint32_t p = 0; p < KICKOS_KERNEL_CORES; p++)
+            {
+                for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+                {
+                    uint16_t* const ring = k.sched_slot[p][c];
+                    uint32_t const tail = k.sched_in[c].tail[p].load();
+                    uint32_t const head = k.sched_out[p].head[c].load();
+                    uint32_t const staged = k.sched_out[p].staged[c];
+                    uint32_t kept = tail;
+                    uint32_t kept_head = tail;
+                    for (uint32_t i = tail; i != staged; i++)
+                    {
+                        uint16_t const e = ring[i & (SCHED_RING_DEPTH - 1u)];
+                        if (static_cast<int>(e) == slot)
+                        {
+                            found = true;
+                            continue;
+                        }
+                        ring[kept & (SCHED_RING_DEPTH - 1u)] = e;
+                        kept++;
+                        if (i - tail < head - tail)
+                        {
+                            kept_head = kept;
+                        }
+                    }
+                    k.sched_out[p].staged[c] = kept;
+                    k.sched_out[p].head[c].store(kept_head);
+                }
+            }
+            return found;
+        }
+#endif
+
+        // Keyed on the rings and not on `state`, which a caller may already have rewritten.
+        void detach_ready(Thread* t)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            if (unstage(t))
+            {
+                return;
+            }
+#endif
+            kernel().policy->on_remove(t);
+        }
+
         // base_prio is the anchor a priority recompute falls back to.
         Thread* spawn(int slot, uint8_t prio)
         {
@@ -438,7 +493,14 @@ namespace kickos
                 exit(1);
             }
             Kernel& k = kernel();
+#if KICKOS_KERNEL_CORES > 1
+            // The slot's own state survives its reuse, as it does across thread_create.
+            ThreadSlotKeep const keep = thread_slot_keep(&k.threads.slots[slot]);
+#endif
             Thread* w = new (&k.threads.slots[slot]) Thread{};
+#if KICKOS_KERNEL_CORES > 1
+            thread_slot_restore(w, keep);
+#endif
             w->base_prio = prio;
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
@@ -459,7 +521,7 @@ namespace kickos
 
         void park_join(Thread* w, Thread* target)
         {
-            kernel().policy->on_remove(w);
+            detach_ready(w);
             w->state = ThreadState::BLOCKED;
             w->wait_kind = WAIT_JOIN;
             w->wait_obj = target;
@@ -495,7 +557,7 @@ namespace kickos
         void park_plain_sender(Thread* w, Endpoint* ep)
         {
             w->state = ThreadState::BLOCKED;
-            kernel().policy->on_remove(w);
+            detach_ready(w);
             w->wait_queue = &ep->send_waiters;
             w->wait_kind = WAIT_EP_SEND;
             w->wait_obj = ep;
@@ -574,7 +636,7 @@ namespace kickos
         void park_sem_waiter(Thread* w, Semaphore* s)
         {
             w->state = ThreadState::BLOCKED;
-            kernel().policy->on_remove(w);
+            detach_ready(w);
             w->wait_queue = &s->waiters;
             w->wait_kind = WAIT_SEM;
             w->wait_obj = s;
@@ -585,7 +647,7 @@ namespace kickos
         void park_sleeper(Thread* w, uint64_t deadline_ns)
         {
             w->state = ThreadState::BLOCKED;
-            kernel().policy->on_remove(w);
+            detach_ready(w);
             w->wait_queue = nullptr;
             w->wait_kind = WAIT_SLEEP;
             w->wait_obj = nullptr;
@@ -600,7 +662,7 @@ namespace kickos
         void park_mutex_waiter(Thread* w, Mutex* m)
         {
             w->state = ThreadState::BLOCKED;
-            kernel().policy->on_remove(w);
+            detach_ready(w);
             w->wait_queue = &m->waiters;
             w->wait_kind = WAIT_MUTEX;
             w->wait_obj = m;

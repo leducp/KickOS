@@ -5,6 +5,8 @@
 // (arch/arm64/chip/virt_arm64) supplies the hardware edges, switch.S the frame and entries.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/armv8a_trap_stack.h>
+#include <kickos/arch/idle_floor.h>
 #include <kickos/arch/percpu.h>
 #include <kickos/arch/core_stack.ld.h>
 #include <kickos/diag.h>
@@ -39,7 +41,7 @@ extern "C" void kickos_armv8a_thread_exit(void);
 
 // switch.S spells these as literal displacements, so a change on one side alone is a silent
 // wrong offset.
-constexpr size_t ARMV8A_FRAME_SIZE = 800;
+constexpr size_t ARMV8A_FRAME_SIZE = KICKOS_ARMV8A_TRAP_FRAME;
 constexpr size_t ARMV8A_F_X30 = 240;
 constexpr size_t ARMV8A_F_ELR = 248;
 constexpr size_t ARMV8A_F_SPSR = 256;
@@ -56,6 +58,30 @@ static_assert(ARMV8A_F_FP % 16 == 0, "the vector bank needs 16-byte alignment fo
 
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv8a selects ARCH_KERNEL_STACKS_MANDATORY, so the blocks must exist");
+
+// The gate reads KICKOS_ARMV8A_TRAP_NEST as an immediate, so the sum is spelled out there.
+static_assert(KICKOS_ARMV8A_TRAP_NEST == KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_TRAP_DEPTH_IRQ,
+              "KICKOS_ARMV8A_TRAP_NEST is an interrupt's frame plus its dispatch");
+// The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_TRAP_DEPTH_SYSK,
+              "the kernel block cannot hold the EL0 synchronous entry plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_ARMV8A_TRAP_NEST + KICKOS_ARMV8A_TRAP_DEPTH_EXITK,
+              "the kernel block cannot hold the relocated death path plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW,
+              "the kernel block cannot hold the relocated death path's switch");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV8A_TRAP_NEST + KICKOS_ARMV8A_TRAP_DEPTH_RET,
+              "the spawn floor cannot hold a privileged thread's entry return");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV8A_TRAP_DEPTH_RETSW,
+              "the spawn floor cannot hold a privileged thread's entry return through the switch");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV8A_TRAP_DEPTH_FAULT,
+              "the spawn floor cannot hold a privileged fault's reporter");
+static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_ARMV8A_PANIC_FRAME + KICKOS_ARMV8A_PANIC_DEPTH,
+              "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+// The link checks the same floor above idle's thread-local carve.
+static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
+              "an EL1h interrupt does not fit this board's idle stack");
 
 // The incoming thread's kernel block top, published because a vector slot cannot reach the TCB.
 // Read by the REPORTING slots alone (vectors.S), which cover exception classes this port never

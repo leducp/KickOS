@@ -61,3 +61,60 @@ extern "C" void kickos_bench_resched_ask(uint32_t)
 extern "C" void kickos_bench_resched_take(void)
 {
 }
+
+// The scheduler's own instrument, called the same way and recorded nowhere here.
+extern "C"
+{
+    uint32_t kickos_bench_reason_enter(uint32_t)
+    {
+        return 0;
+    }
+    void kickos_bench_reason_leave(uint32_t)
+    {
+    }
+    void kickos_bench_acquired(uint32_t)
+    {
+    }
+    void kickos_bench_pass_open(void)
+    {
+    }
+    void kickos_bench_pass_close(void)
+    {
+    }
+    void kickos_bench_perform_open(void)
+    {
+    }
+    void kickos_bench_decide_open(void)
+    {
+    }
+    void kickos_bench_decide_close(void)
+    {
+    }
+    void kickos_bench_switched(void)
+    {
+    }
+    void kickos_bench_sched_count(uint32_t)
+    {
+    }
+    void kickos_bench_drop_asked(uint32_t)
+    {
+    }
+    void kickos_bench_pushed(kickos::Thread const*, uint32_t)
+    {
+    }
+    void kickos_bench_reseat_asked(kickos::Thread const*)
+    {
+    }
+    void kickos_bench_reseat_applied(kickos::Thread const*, int)
+    {
+    }
+    void kickos_bench_drain_open(void)
+    {
+    }
+    void kickos_bench_drain_applied(void)
+    {
+    }
+    void kickos_bench_drain_close(void)
+    {
+    }
+}

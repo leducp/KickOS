@@ -192,7 +192,7 @@ void kickos_doorbell_poll(void)
     // reschedule among them, and the cell is what says one was owed.
     if (kickos_kernel_core_resched_owed() != 0)
     {
-        arch_ipi_resched_self();
+        arch_ipi_raise(1u << arch_cpu_id());
     }
 #endif
     arch_irq_restore(state);
@@ -204,11 +204,11 @@ void kickos_doorbell_raise(uint32_t cores)
 }
 
 #if KICKOS_KERNEL_CORES > 1
-// GICD_SGIR reaches the sending core like any other target, and the pending state is one bit,
-// so a raise over one already pending is idempotent.
-void arch_ipi_resched_self(void)
+// The SGI reaches the sending core like any other target, and the pending state is one bit, so
+// a raise over one already pending is idempotent.
+void arch_ipi_raise(uint32_t cores)
 {
-    kickos_armv8a_gic_doorbell_send(1u << arch_cpu_id());
+    kickos_armv8a_gic_doorbell_send(cores);
 }
 #endif
 

@@ -1976,7 +1976,7 @@ exactly what a store buffer produces, so a barrier on one side alone does not re
 primitive is `arch_ipi_fence`, declared at `arch/include/kickos/arch/arch.h:125-127` and
 implemented as a full fence per backend -- `arch/arm64/armv8a/klock_armv8a.cc:173-181`,
 `arch/riscv/rv64imac/klock_rv64imac.cc:224-232`,
-`arch/arm/chip/rp2350/doorbell_rp2350.cc:261-268` -- each carrying the same one-line warning. Both
+`arch/arm/chip/rp2350/doorbell_rp2350.cc:263-270` -- each carrying the same one-line warning. Both
 sides use it: the sender fences and RE-READS the seat before deciding to defer
 (`arch/arm64/common/arch_arm64_gicv3.cc:498-499`), and the receiver fences before its first
 service pass (`ampwindow.cc:1721-1727`) and again when a parked core wakes
@@ -2189,15 +2189,17 @@ request snapshot and before it stores its answer. That ordering is checked out o
 is a failure rather than a pass.
 
 The wait is the generic doorbell rendezvous at
-`arch/common/doorbell_protocol.cc:274-303`. It spins on the answer SEQUENCE and never on the
-raise (`:267-273`), because on a part whose wake can be erased by a set racing a clear a
+`arch/common/doorbell_protocol.cc:267-307`. It spins on the answer SEQUENCE and never on the
+raise (`:264-266`), because on a part whose wake can be erased by a set racing a clear a
 raise-watching wait would sit until its bound expired and then kill the machine over a race whose
-whole cost is meant to be latency. It polls its OWN doorbell inside the loop (`:299`) because two
+whole cost is meant to be latency. It polls its OWN doorbell inside the loop (`:303`) because two
 cores can each be an initiator waiting on the other. Local interrupts are OFF throughout: every
 kernel caller is inside an interrupt lock (`kernel/include/kickos/irqlock.h:33-38`; call sites at
 `kernel/irq/irq.cc:210,213,386,541,893`), and the service body on the far side runs masked too.
-There IS a bound and it is FATAL rather than a graceful exit: a fixed spin count
-(`doorbell_protocol.cc:43-45`) after which the core prints and terminates (`:290-296`). Neither
+There IS a bound and it is FATAL rather than a graceful exit: a duration, `PEER_WAIT_NS`, read
+from `arch_clock_now` once every `CLOCK_CHECK_SPINS` spins, after which the core prints and
+terminates. A spin count would have been a bound on the waiter's own rate, which a loaded host
+does not tie to the peer's: an emulated peer only late by a third of a second tripped one. Neither
 `line_op_ask` nor `irq_line_op` has a return value, so there is no failure path back to the
 caller -- the only two exits are answered or terminated. ISR context is refused
 (`irq_route.cc:133-144`): the ask is taken only outside a handler, because a rendezvous entered
@@ -2245,7 +2247,7 @@ primitive and the same fatal bound -- the ARM64 instruction-side rendezvous
 `arch/arm64/armv8a/aspace_armv8a.cc:700,771,806`), the RISC-V translation rendezvous
 (`arch/riscv/rv64imac/klock_rv64imac.cc:251`, from
 `arch/riscv/rv64imac/aspace_rv64imac.cc:323,883,912`), and the one-shot doorbell bring-up
-selfcheck (`arch/common/doorbell_protocol.cc:147,167`). Beside those sit two spins that are not
+selfcheck (`arch/common/doorbell_protocol.cc:138,155`). Beside those sit two spins that are not
 this primitive: the kernel-lock acquire, which spins until a remote core releases and polls its own
 doorbell inside the loop and is UNBOUNDED (`klock_armv8a.cc:229-240`), and the bounded peer-start
 await at `kernel/init/kmain.cc:203-220`. The AMP window of row 3 spins on nothing at all.

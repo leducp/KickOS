@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Check doorbell rounds from each kernel core: placement, sample counts, totals
-# and ordering. Each round must include the raise and all peer replies.
-# Compare its minimum with the same core's raise-only measurement.
-# Read the expected burst size from the capture.
+# Check doorbell rounds from each kernel core: placement, sample counts, totals and ordering,
+# and that every round's bracket closed with each peer's answer in hand. Every arm is a count:
+# on an emulator under host load one raise can outlast the peers' whole service, so no cycle
+# figure here is bounded. Read the expected burst size from the capture.
 # --controls checks fixed reports and expected failure counts.
 #
 # Usage: check_bench_doorbell.sh <elf> <kernel cores> | --controls
@@ -49,30 +49,19 @@ rc=0
 
 # Read the first report window only.
 read_report() { # <report text>
-    # A round is one raise plus the wait for every peer, so this floor depends on the peer
-    # count and not a constant: at one peer the round is a raise plus a single answer and the
-    # two cost about the same, while the three-peer factor lands inside the distribution rather
-    # than under it. Across 30 report windows the round-to-raise minimum ran 3.49 at three peers
-    # and 1.87 at one on arm64, the tight arch; rv64 read 5.52 at one peer and never approached
-    # either figure.
-    _span_factor=2
-    if [ "$want" -le 2 ]; then
-        _span_factor=1.5
-    fi
-    read -r bursts rounds misplaced shortruns unmoved dn d50 d99 dmax rows full rowsum tooshort \
-            sw50 <<EOF
-$(printf '%s\n' "$1" | awk -v SPAN_FACTOR="$_span_factor" '
+    read -r bursts rounds misplaced shortruns unmoved unheld dn d50 d99 dmax rows full rowsum <<EOF
+$(printf '%s\n' "$1" | awk '
     function tail_n(s,   t) { t = s; sub(/.*n=/, "", t); sub(/[^0-9].*$/, "", t); return t + 0 }
     function part(s, i,   f) { split(s, f, "/"); return f[i] + 0 }
 
     /^  doorbell-probe:/ && dseen == 0 {
-        asked = -1; on = -2; ran = 0; moved = 0
+        asked = -1; on = -2; ran = 0; moved = 0; held = -1
         for (i = 2; i <= NF; i++) {
             if ($i ~ /^asked=[0-9]+$/) { asked = substr($i, 7) + 0 }
             if ($i ~ /^on=[0-9]+$/)    { on    = substr($i, 4) + 0 }
             if ($i ~ /^ran=[0-9]+$/)   { ran   = substr($i, 5) + 0 }
             if ($i ~ /^db\+[0-9]+$/)   { moved = substr($i, 4) + 0 }
-            if ($i ~ /^raise=[0-9]+$/) { raise[on] = substr($i, 7) + 0; raised++ }
+            if ($i ~ /^held=[0-9]+$/)  { held  = substr($i, 6) + 0 }
         }
         bursts++
         # Use the first burst as the expected count for every core.
@@ -80,9 +69,11 @@ $(printf '%s\n' "$1" | awk -v SPAN_FACTOR="$_span_factor" '
         if (asked != on)      { misplaced++ }
         if (ran != rounds)    { shortruns++ }
         if (moved != rounds)  { unmoved++ }
+        # An unparsed held reads -1, so a report missing the field is refused rather than
+        # passing on an in-range zero.
+        if (held != ran)      { unheld++ }
         next
     }
-    /^  switch:/ && swseen == 0 { swseen = 1; sw50 = part($2, 1); cur = "switch"; next }
     /^  doorbell: / && dseen == 0 {
         dseen = 1; cur = "db"
         d50 = part($2, 1); d99 = part($2, 2); dmax = part($2, 3); dn = tail_n($0)
@@ -92,21 +83,17 @@ $(printf '%s\n' "$1" | awk -v SPAN_FACTOR="$_span_factor" '
     /^ +core [0-9]+: / {
         if (cur == "db") {
             n = tail_n($0)
-            c = $2; sub(/:$/, "", c); c = c + 0
             rows++
             rowsum += n
             if (n == rounds) { full++ }
-            # Compare round minimum with the raise-only cost on the same core.
-            # SPAN_FACTOR sets the minimum ratio.
-            if (raised > 0 && part($3, 1) < SPAN_FACTOR * raise[c]) { tooshort++ }
         }
         next
     }
     { cur = "" }
-    END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-                 bursts + 0, rounds + 0, misplaced + 0, shortruns + 0, unmoved + 0,
+    END { printf "%d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                 bursts + 0, rounds + 0, misplaced + 0, shortruns + 0, unmoved + 0, unheld + 0,
                  dn + 0, d50 + 0, d99 + 0, dmax + 0,
-                 rows + 0, full + 0, rowsum + 0, tooshort + 0, sw50 + 0 }')
+                 rows + 0, full + 0, rowsum + 0 }')
 EOF
 }
 
@@ -129,6 +116,10 @@ doorbell_arms() {
     if [ "$unmoved" -ne 0 ]; then
         bad "$unmoved burst(s) left the RAISING core's own sample count short of $rounds; the
   bracket never accumulates, or it accumulated on a peer's row"
+    fi
+    if [ "$unheld" -ne 0 ]; then
+        bad "$unheld burst(s) closed a round's bracket before every peer had answered it; the
+  distribution then prices the raise alone, and every count below still reads correct"
     fi
 
     # The burst, per-core and aggregate counts are linked: inconsistent counts
@@ -154,26 +145,16 @@ doorbell_arms() {
   come out of ONE read of each row, so they can only differ if a row was printed twice or
   dropped"
     fi
-
-    mode="counts only (the switch line reports a p50 of 0, so this board has no cycle source)"
-    if [ "$sw50" -gt 0 ]; then
-        mode="counts and cycles"
-        if [ "$tooshort" -ne 0 ]; then
-            bad "$tooshort core row(s) report a minimum under $_span_factor times the raise floor that core
-  measured in the same burst; the bracket is closing inside the raise, before any peer could
-  have answered, and every count above still reads correct"
-        fi
-    fi
 }
 
 # Four-core RV64 fixture. Keep other distributions to test row selection.
 ctl_four() {
     printf '%s\n' \
 '  throughput: 18928 ctx-sw/s  (52830 ns/sw avg over 40000 switches / 2113 ms)' \
-'  doorbell-probe: asked=0 on=0 ran=64 db+64 raise=3400' \
-'  doorbell-probe: asked=1 on=1 ran=64 db+64 raise=5980' \
-'  doorbell-probe: asked=2 on=2 ran=64 db+64 raise=3060' \
-'  doorbell-probe: asked=3 on=3 ran=64 db+64 raise=3420' \
+'  doorbell-probe: asked=0 on=0 ran=64 db+64 held=64' \
+'  doorbell-probe: asked=1 on=1 ran=64 db+64 held=64' \
+'  doorbell-probe: asked=2 on=2 ran=64 db+64 held=64' \
+'  doorbell-probe: asked=3 on=3 ran=64 db+64 held=64' \
 '  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)' \
 '  switch:    1280/7168/67180 cyc  (p50/p99/max, n=40004)' \
 '    core 0: 560/1686/67180 cyc  (min/avg/max, n=8951)' \
@@ -204,8 +185,8 @@ ctl_four() {
 ctl_two() {
     printf '%s\n' \
 '  throughput: 42768 ctx-sw/s  (23381 ns/sw avg over 40000 switches / 935 ms)' \
-'  doorbell-probe: asked=0 on=0 ran=64 db+64 raise=1092' \
-'  doorbell-probe: asked=1 on=1 ran=64 db+64 raise=1252' \
+'  doorbell-probe: asked=0 on=0 ran=64 db+64 held=64' \
+'  doorbell-probe: asked=1 on=1 ran=64 db+64 held=64' \
 '  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)' \
 '  switch:    208/512/8987 cyc  (p50/p99/max, n=40098)' \
 '    core 0: 150/238/8987 cyc  (min/avg/max, n=23712)' \
@@ -260,8 +241,7 @@ if [ "$controls_only" -eq 1 ]; then
     ctl 'four cores, every burst fed' 4 pass 0 "$(ctl_four)"
     # Without a cycle source, counts remain valid and all measured values are zero.
     ctl 'a board reporting counts and no cycles' 4 pass 0 \
-        "$(ctl_four | sed 's|raise=[0-9]*|raise=0|
-                           s|^\(  switch: *\)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
+        "$(ctl_four | sed 's|^\(  switch: *\)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
                            s|^\(  lock-hold: \)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
                            s|^\(  lock-wait: \)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
                            s|^\(  doorbell:  \)[0-9]*/[0-9]*/[0-9]*|\10/0/0|
@@ -273,16 +253,14 @@ if [ "$controls_only" -eq 1 ]; then
         "$(ctl_four | sed '/^  doorbell-probe: asked=3 /d')"
     # Zero rounds must fail even when all counts agree.
     ctl 'bursts that ran no round at all' 4 refuse 1 \
-        "$(ctl_four | sed 's|ran=64 db+64|ran=0 db+0|
-                           s|raise=[0-9]*|raise=0|
+        "$(ctl_four | sed 's|ran=64 db+64 held=64|ran=0 db+0 held=0|
                            s|^\(  doorbell:  \)30720/68720/68720 cyc  (p50/max/max, n=256)|\10/0/0 cyc  (p50/max/max, n=0)|
                            s|^\(    core [0-9]*: \)[0-9]*/[0-9]*/[0-9]* cyc  (min/avg/max, n=64)|\10/0/0 cyc  (min/avg/max, n=0)|')"
-    # Move core 2's burst to core 1. Both span comparisons still pass.
     ctl 'a burst that ran somewhere else' 4 refuse 1 \
         "$(ctl_four | sed 's|^  doorbell-probe: asked=2 on=2 |  doorbell-probe: asked=2 on=1 |')"
-    # Change only completed rounds, preserving the sample delta.
+    # Change only completed rounds, preserving the sample delta; every round it ran was held.
     ctl 'a burst short of the rounds it was asked for' 4 refuse 1 \
-        "$(ctl_four | sed 's|^\(  doorbell-probe: asked=3 on=3 \)ran=64|\1ran=60|')"
+        "$(ctl_four | sed 's|^\(  doorbell-probe: asked=3 on=3 \)ran=64 db+64 held=64|\1ran=60 db+64 held=60|')"
     ctl 'a burst whose own count never moved' 4 refuse 1 \
         "$(ctl_four | sed 's|^\(  doorbell-probe: asked=3 on=3 ran=64 \)db+64|\1db+0|')"
 
@@ -298,24 +276,17 @@ if [ "$controls_only" -eq 1 ]; then
     ctl 'an aggregate under the bursts that fed it' 4 refuse 2 \
         "$(ctl_four | sed 's|^\(  doorbell:  30720/68720/68720 cyc  (p50/max/max, n=\)256)|\1252)|')"
 
-    # Core 1 has the largest raise floor; shorten its span without changing ordering.
-    ctl 'a round trip closed inside its own raise' 4 refuse 1 \
-        "$(ctl_four | sed 's|^\(    core 1: \)15340/|\16000/|')"
-
-    # 2715/1092 is 2.49 and 4238/1252 is 3.39, so the unedited two-core report clears both
-    # factors and says only that the fixture is sound.
-    ctl 'a two-core report whose rounds clear the floor' 2 pass 0 "$(ctl_two)"
-    # 1900/1092 is 1.74: inside the three-peer factor and above the one-peer factor, so it is
-    # the sample the calibration exists for.
-    ctl 'a two-core round between the two factors' 2 pass 0 \
-        "$(ctl_two | sed 's|^\(    core 0: \)2715/|\11900/|')"
-    # 1500/1092 is 1.37, under the one-peer factor, so the arm still fires at this width.
-    ctl 'a two-core round closed inside its own raise' 2 refuse 1 \
-        "$(ctl_two | sed 's|^\(    core 0: \)2715/|\11500/|')"
-    # 10000/5980 is 1.67, the same band the two-core control above is accepted in, but refused
-    # here: the calibration is per-width rather than a blanket loosening.
-    ctl 'a four-core round in the band two cores accept' 4 refuse 1 \
-        "$(ctl_four | sed 's|^\(    core 1: \)15340/|\110000/|')"
+    ctl 'a burst that closed a round before its answers' 4 refuse 1 \
+        "$(ctl_four | sed 's|^\(  doorbell-probe: asked=2 on=2 ran=64 db+64 \)held=64|\1held=63|')"
+    # An absent field must refuse, not read as a zero that some other count happens to match.
+    ctl 'a burst that reports no held count' 4 refuse 1 \
+        "$(ctl_four | sed 's|^\(  doorbell-probe: asked=1 on=1 ran=64 db+64\) held=64|\1|')"
+    # A round no longer than a raise is what a contended emulator reports, and no arm judges it.
+    ctl 'a round whose minimum sits at its own raise' 4 pass 0 \
+        "$(ctl_four | sed 's|^\(    core 1: \)15340/|\1600/|')"
+    ctl 'a two-core report, every burst fed' 2 pass 0 "$(ctl_two)"
+    ctl 'a two-core burst that closed a round before its answers' 2 refuse 1 \
+        "$(ctl_two | sed 's|^\(  doorbell-probe: asked=0 on=0 ran=64 db+64 \)held=64|\1held=0|')"
 
     echo "PASS: $_ctl_pass planted report(s) accepted and $_ctl_refuse refused, each naming its
   own arm"
@@ -330,5 +301,5 @@ assert_no_panic "the bench image panicked while the doorbell bursts ran"
 if [ "$rc" -ne 0 ]; then
     exit 1
 fi
-echo "PASS: $bursts burst(s) of $rounds, each on the core asked for; doorbell n=$dn p50=$d50 p99=$d99 max=$dmax over $rows rows; $mode"
+echo "PASS: $bursts burst(s) of $rounds, each on the core asked for; doorbell n=$dn p50=$d50 p99=$d99 max=$dmax over $rows rows, every round held"
 exit 0
