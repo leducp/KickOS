@@ -57,6 +57,7 @@ namespace kickos::x86_64
         constexpr uint32_t icr_self_fixed = (1u << 14) | (1u << 18);
         constexpr uint32_t icr_delivery_pending = 1u << 12;
         constexpr uint32_t msr_x2apic_self_ipi = 0x83f;
+        constexpr uint32_t msr_x2apic_icr = 0x830;
         constexpr uint32_t icr_poll_bound = 100000;
 
         // The measurement window, in the chip reference's own ticks: long enough that one
@@ -249,6 +250,27 @@ namespace kickos::x86_64
         calibrate();
     }
 
+    void apic_init_secondary(void)
+    {
+        // The BSP has already selected x2APIC or xAPIC and calibrated the
+        // shared timer rate. The controller enable and LVT registers are local
+        // to each processor, so the AP must install them for itself.
+        uint64_t base = read_msr(msr_apic_base);
+        if ((base & apic_base_enable) == 0)
+        {
+            base |= apic_base_enable;
+            write_msr(msr_apic_base, base);
+        }
+        if (g_x2)
+        {
+            write_msr(msr_apic_base, base | apic_base_extd);
+        }
+        apic_write(reg_svr, svr_software_enable | vector_spurious);
+        apic_write(reg_tpr, 0);
+        mask_local_vectors();
+        apic_write(reg_tdcr, tdcr_divide_1);
+    }
+
     // desc_init loads the interrupt table ahead of apic_init, so an acknowledgement can arrive
     // while the xAPIC window is still unresolved; without the guard the write lands at offset
     // 0xb0 of the low identity map.
@@ -276,6 +298,24 @@ namespace kickos::x86_64
             spin++;
         }
         apic_write(reg_icr_lo, icr_self_fixed | vector_doorbell);
+    }
+
+    void apic_doorbell_send(uint32_t cores)
+    {
+        for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; ++core)
+        {
+            if ((cores & (1u << core)) == 0)
+            {
+                continue;
+            }
+            // The q35 SMP posture requires x2APIC and uses APIC IDs 0..N-1.
+            // INIT/SIPI discovery verifies that correspondence before releasing a peer.
+            if (g_x2)
+            {
+                write_msr(msr_x2apic_icr,
+                          (static_cast<uint64_t>(core) << 32) | vector_doorbell);
+            }
+        }
     }
 
     uint64_t apic_timer_hz(void)

@@ -1273,7 +1273,8 @@ why this milestone takes the slot ahead of the driver era rather than following 
 is a maintainer's judgement rather than a consequence of anything else in this file. **The axis is
 solved against open**: the driver model is already proven in this tree by working implementations
 against the expected model, so what the driver era holds is BREADTH of a settled pattern and can be scheduled
-whenever; how a kernel this size should be locked above one core has no answer here yet.
+whenever; how a kernel this size should be locked above one core is the M9 question. M9.5's
+measured answer is recorded below.
 
 **THE MILESTONE IS NAMED FOR A QUESTION AND ITS ANSWER MAY BE THAT THE LOCK STAYS.** What it owes is
 per-core scheduler ownership and ready queues, remote-work inboxes instead of a core reaching into a
@@ -1310,7 +1311,7 @@ file owns only the number.
 | M9.2 | ownership and placement under the lock: per-core ready queues, a home placed by priority and pushed by its holder, the wait-edge rule, a line pinned to its claimer |
 | M9.3 | fused into M9.2: under one lock the push needs no ring |
 | M9.4 | the per-pair rings landed under the lock, inside stage 1's own regression budget; the local scheduler leaving the lock was REFUSED by the stop condition (R0), at two cores on silicon |
-| M9.5 | same-owner IPC leaves the lock, blocked on the lifetime question |
+| M9.5 | DECIDED: retain the single BKL after the x86 owner-local mixed-workload gate and whole-transaction lock audit; keep x86 CLH arbitration of that same BKL, with ticket backends elsewhere (see `docs/design-m9.5-bkl-options.md`) |
 | M9.6 | the console contract across cores: who may speak, in the SMP and the AMP shape |
 | M9.7 | the write-up, the contract changes, and the M9 exit measurement |
 | M9.8 | the ESP32-C6 as an AMP pair: the LP core as a second node beside the HP core, the first AMP pair the bench runs unattended |
@@ -1345,10 +1346,9 @@ stage. A list with no stage is what made M8 need a tail at all, so each now name
 becomes M9.7, so the five lock stages keep the numbers their evidence gates and recorded rulings
 were written against.
 
-**EVERY ROW AFTER M9.0 IS ASSIGNED AND NOT YET APPROVED, and the distinction is the point of
-assigning them.** A number here fixes what a stage IS, so that the evidence gate can refuse the
-stage without the argument moving to a different number afterwards. M9.0 can start whenever, being
-read-only, the envelope recompute included. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN
+**THE TABLE IS A LEDGER OF ASSIGNED QUESTIONS, NOT A PROMISE OF EVERY OPTIMIZATION.** A number
+here fixes what a stage IS, so that the evidence gate can refuse the stage without the argument
+moving to a different number afterwards. **AND THE LADDER IS NOT A COMMITMENT TO ITS OWN
 SHAPE.** These rows are the plan as it reads today, and this file has renumbered and re-cut worse than
 this when the work found
 something: a discovery moves the roadmap rather than the roadmap constraining the discovery, so a
@@ -1468,25 +1468,34 @@ precedent**: on a deadline path the shape is a publication plus a completion cel
 a blocking cross-core wait spends the asker's core interrupt-masked on a peer that may be spinning
 for the very lock the asker holds.
 
-**CAPABILITY LIFETIME IS THE NAMED PRECONDITION OF M9.5 AND IS NOT DECIDED HERE.** Resolve-to-use is
-one continuous lock today and generations are a detector rather than a guarantee, and this file
-already rules that the protection stays until a lifetime replacement is DESIGNED. Three candidates
-stand: keep the lock on the resolve, in which case M9.5 buys hold length alone; freeze the topology,
-which is a mechanism M10 owns; or timestamp quiescence, which is the answer that survives
-translation. **An epoch or a quiescence flag beside the existing release point is refused as a
-second answer**, per section 4 of the multicore contract. The plan assumes the lock is kept on the
-resolve, quiescence runs as a spike, and the question is reopened before M9.5 with M8.12's split of
-the locked span into resolve, handoff and scheduling in hand.
+**CAPABILITY LIFETIME WAS THE PRECONDITION FOR ANY M9.5 BKL BREAK.** A
+resolve-to-use span remains under one lock; generations detect stale handles
+but do not keep a resolved object alive. The owner-local experiment left
+topology and teardown under the BKL and was removed after its mixed-workload
+gate. No epoch or quiescence flag was added beside the existing release point.
+Any future BKL break must first supply one complete lifetime and exclusion
+protocol, rather than a second answer for the same object.
 
-**EIGHT CORES IS A SCENARIO AND NOT A TARGET.** No preset configures more than four, and an
-emulator's timing model cannot witness cost at any width, so an eight-core run answers questions
-about ring storage, drain work and arrays that assumed four -- never about latency, and never the
-choice between the two outcomes. **M9's verdict is provisional AT WIDTH rather than provisional
-entirely**, which is a correction M9.1 made: a shared kernel now runs on silicon, on the two LX6
-cores of `esp32-wroom-benchsmp`, and that is the project's only multi-core configuration with a
-live cycle counter. Two cores is not four and one part is not a fleet, so the silicon re-check at
-width is still the RK3588-class part, which belongs to the driver era rather than to this
-milestone. Its feasibility spike may run at any time; the
+M9.5's x86 experiment kept capability topology and teardown behind the global
+lock and had that lock wait for active owner-local spans. It introduced no
+epoch or second reclaim predicate. The pinned mixed-workload gate in
+`docs/archive/M9.5_x86_ipc_mixed.md` led to removal of that second exclusion
+path. The whole-transaction audit in
+`docs/design-m9.5-ipc-lock-feasibility.md` found no small per-object protocol
+that also covers timeout, close, donation and switch-frame publication.
+Read-side schemes have no measured read-heavy kernel workload to accelerate.
+M9.5 therefore retains the single BKL and accepts x86 CLH as a contained
+change to its arbitration; neither the IPC transaction nor capability lifetime
+changes. `docs/design-m9.5-bkl-options.md` holds the complete decision, and
+`docs/book/one-lock-many-ready-queues.md` teaches the lock/ready-queue split.
+
+**M9's verdict is provisional AT WIDTH rather than provisional entirely.**
+M9.4's refusal measured two LX6 cores on silicon. M9.4.1 later brought up
+x86_64 SMP at twelve cores under KVM, and M9.5 pinned its vCPUs to distinct
+physical host cores to measure the x86 lock decision. That result applies to
+this host and workload mix, not to other architectures or CPU classes. The
+silicon re-check on an RK3588-class part still belongs to the driver era. Its
+feasibility spike may run at any time; the
 requirement-5 ruling for a part whose clusters share an ISA but not a performance class, and the
 per-cluster constants, belong to that port.
 

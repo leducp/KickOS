@@ -1,0 +1,151 @@
+SPDX-License-Identifier: CECILL-C
+Copyright (c) 2026 Philippe Leduc
+
+--- a/arch/arm64/armv8a/klock_armv8a.cc
++++ b/arch/arm64/armv8a/klock_armv8a.cc
+@@ -5 +5 @@
+-// raise, the service body's context synchronization event, the ticket draw's exclusive pair,
++// raise, the service body's context synchronization event, the CLH tail exchange,
+@@ -12,3 +12,2 @@
+-// The lock is a ticket pair: a draw takes g_next_ticket with LDXR/STXR, and the holder alone
+-// advances g_now_serving with a plain load and an STLR. Both counters are written only inside
+-// this file.
++// The lock is one CLH queue: each core publishes a request with an exclusive tail exchange,
++// waits on its predecessor's request, and releases with a store to its own request.
+@@ -38 +37 @@
+-    void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
++    void kickos_bench_lock_draw_clh(void);
+@@ -58,44 +57 @@
+-    // Separate lines: every draw takes g_next_ticket's line exclusive in the inner-shareable
+-    // domain, which on a shared line would invalidate it under every waiter loading
+-    // g_now_serving. DDI 0487 M.b B2.12.5 (page B2-340) asks for a reservation granule between
+-    // objects reached by exclusive accesses.
+-    alignas(KICKOS_DOORBELL_LINE) uint32_t g_next_ticket = 0;
+-    alignas(KICKOS_DOORBELL_LINE) uint32_t g_now_serving = 0;
+-
+-    // The acquire half of the lock: it pairs with the STLR the holder releases with.
+-    uint32_t now_serving(void)
+-    {
+-        uint32_t v = 0;
+-        __asm volatile("ldar %w0, [%1]" : "=r"(v) : "r"(&g_now_serving) : "memory");
+-        return v;
+-    }
+-
+-    // LDXR, not LDAXR: a drawn ticket grants nothing and so owes no acquire.
+-    //
+-    // No call may enter the retry interval: DDI 0487 M.b B2.12.5 (page B2-340), condition 2,
+-    // forbids any direct or indirect System register write, address translation instruction,
+-    // cache or TLB maintenance instruction, exception generating instruction, exception return,
+-    // indirect branch or Branch with Link between a Store-Exclusive returning a failing result
+-    // and the retry of the corresponding Load-Exclusive, or a PE without FEAT_LSE loses its
+-    // forward-progress guarantee. The bench arm's counter is a plain ADD, which that list does
+-    // not name.
+-#if KICKOS_BENCH
+-    uint32_t kernel_lock_draw(uint32_t& retries)
+-    {
+-        uint32_t tick = 0;
+-        uint32_t want = 0;
+-        uint32_t res = 0;
+-        uint32_t tries = 0;
+-        __asm volatile("1:     add     %w3, %w3, #1\n"
+-                       "       ldxr    %w0, [%4]\n"
+-                       "       add     %w1, %w0, #1\n"
+-                       "       stxr    %w2, %w1, [%4]\n"
+-                       "       cbnz    %w2, 1b\n"
+-                       : "=&r"(tick), "=&r"(want), "=&r"(res), "+r"(tries)
+-                       : "r"(&g_next_ticket)
+-                       : "memory");
+-        retries = tries - 1u;
+-        return tick;
+-    }
+-#else
+-    uint32_t kernel_lock_draw(void)
++    struct alignas(KICKOS_DOORBELL_LINE) ClhRequest
+@@ -103,9 +59,24 @@
+-        uint32_t tick = 0;
+-        uint32_t want = 0;
+-        uint32_t res = 0;
+-        __asm volatile("1:     ldxr    %w0, [%3]\n"
+-                       "       add     %w1, %w0, #1\n"
+-                       "       stxr    %w2, %w1, [%3]\n"
+-                       "       cbnz    %w2, 1b\n"
+-                       : "=&r"(tick), "=&r"(want), "=&r"(res)
+-                       : "r"(&g_next_ticket)
++        uint32_t pending;
++    };
++    struct alignas(KICKOS_DOORBELL_LINE) ClhNode
++    {
++        ClhRequest* mine;
++        ClhRequest* predecessor;
++    };
++    constinit ClhRequest g_clh_request[KICKOS_KERNEL_CORES + 1] = {};
++    constinit ClhNode g_clh_node[KICKOS_KERNEL_CORES] = {};
++    constinit ClhRequest* g_clh_tail = &g_clh_request[KICKOS_KERNEL_CORES];
++
++    // An exchange here must stay in the kernel image. GCC's generic exchange
++    // calls __aarch64_swp8_acq_rel on this toolchain, which links at an app
++    // address. Keep the entire exclusive retry in one asm block: no call or
++    // system-register access can interrupt it on an A53 without FEAT_LSE.
++    ClhRequest* exchange_tail(ClhRequest* mine)
++    {
++        ClhRequest* previous = nullptr;
++        uint32_t failed = 0;
++        __asm volatile("1: ldaxr %0, [%2]\n"
++                       "   stlxr %w1, %3, [%2]\n"
++                       "   cbnz %w1, 1b"
++                       : "=&r"(previous), "=&r"(failed)
++                       : "r"(&g_clh_tail), "r"(mine)
+@@ -113 +84 @@
+-        return tick;
++        return previous;
+@@ -116 +86,0 @@
+-#endif
+@@ -271,4 +241,3 @@
+-// The turn test precedes the poll: when the turn has come the previous holder has released, so
+-// no lock-holding initiator can be waiting on this core's answer and the skipped poll strands
+-// nobody. The draw itself carries no poll either, so a core observed spinning answers only once
+-// it has finished drawing.
++// The predecessor test precedes the poll: once it has released, no lock-holding initiator can
++// be waiting on this core's answer and the skipped poll strands nobody. The exchange itself
++// carries no poll, so a core observed spinning answers once it has joined the queue.
+@@ -276,0 +246,7 @@
++    ClhNode& node = g_clh_node[arch_cpu_id()];
++    if (node.mine == nullptr)
++    {
++        node.mine = &g_clh_request[arch_cpu_id()];
++    }
++    __atomic_store_n(&node.mine->pending, 1u, __ATOMIC_RELAXED);
++    node.predecessor = exchange_tail(node.mine);
+@@ -278,5 +254 @@
+-    uint32_t retries = 0;
+-    uint32_t const ticket = kernel_lock_draw(retries);
+-    kickos_bench_lock_draw(retries, ticket - now_serving());
+-#else
+-    uint32_t const ticket = kernel_lock_draw();
++    kickos_bench_lock_draw_clh();
+@@ -284 +256 @@
+-    while (true)
++    while (__atomic_load_n(&node.predecessor->pending, __ATOMIC_ACQUIRE) != 0u)
+@@ -286,5 +257,0 @@
+-        if (now_serving() == ticket)
+-        {
+-            kickos::klock::owner_take();
+-            return;
+-        }
+@@ -293,0 +261 @@
++    kickos::klock::owner_take();
+@@ -296,2 +264 @@
+-// STLR pairs with the LDAR the wait reads the turn with, so everything done under the lock
+-// publishes before the next ticket is served.
++// The release store pairs with the next holder's acquire load of this request.
+@@ -301,7 +268,3 @@
+-    uint32_t v = 0;
+-    __asm volatile("ldr  %w0, [%1]\n"
+-                   "add  %w0, %w0, #1\n"
+-                   "stlr %w0, [%1]"
+-                   : "=&r"(v)
+-                   : "r"(&g_now_serving)
+-                   : "memory");
++    ClhNode& node = g_clh_node[arch_cpu_id()];
++    __atomic_store_n(&node.mine->pending, 0u, __ATOMIC_RELEASE);
++    node.mine = node.predecessor;

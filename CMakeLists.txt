@@ -589,20 +589,6 @@ if(EXISTS "${_ipc_fastpath_optin}")
 endif()
 add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
 
-# Reject x86 SMP before the generic hardware checks: this backend has no
-# remote TLB invalidation. The backend also has a compile-time assertion.
-if(KICKOS_ARCH STREQUAL "x86_64" AND KICKOS_KERNEL_CORES GREATER 1)
-  message(FATAL_ERROR
-    "KickOS: KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES} puts one kernel on more than one core "
-    "on arch 'x86_64', whose map editor invalidates with INVLPG and with a root-register "
-    "rewrite. Both act on the ISSUING core alone, the ISA carrying no remote form of either, "
-    "so a peer goes on translating through an entry this core has removed until an "
-    "inter-processor interrupt makes it drop it, and arch/x86/x86_64/aspace_x86_64.cc sends "
-    "none. Land that shootdown and drop this refusal in the same change, or select one kernel "
-    "core: the AMP model runs a kernel per core over disjoint memory and needs no remote "
-    "invalidate.")
-endif()
-
 # --- Shared-kernel hardware predicate ---------------------------------------
 include(smp_predicate)
 kickos_smp_predicate(

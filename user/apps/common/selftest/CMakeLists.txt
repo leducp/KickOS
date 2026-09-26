@@ -239,6 +239,9 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 25") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise, reent_per_thread_cores
 endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STREQUAL "x86_64")
+  math(EXPR _tap_arms "${_tap_arms} + 1") # fp_trapped_every_core
+endif()
 
 # The same count per REGION. The regions are separated by the `#undef TAP_ADD` lines in
 # main.cc: region 1 ends after endpoint_send_timeout, region 2 after call_prepop_death,
@@ -296,6 +299,9 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 25") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise, reent_per_thread_cores
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STREQUAL "x86_64")
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # fp_trapped_every_core
 endif()
 
 # Every region main.cc cuts owes a count, and the counts must add up to the whole suite. That

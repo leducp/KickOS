@@ -2,9 +2,12 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The kernel lock's own bound -- fair arbitration per backend
 
-> **Status: LANDED.** M9.1, recorded 2026-09-22. The lock is a ticket on every shared-kernel
-> backend, and the worst wait is derived per backend or the backend records that it cannot be.
-> One backend records that it cannot be, and that is a result rather than a gap.
+> **Status: LANDED.** M9.1, recorded 2026-09-22. At this stage the lock became a
+> ticket on every shared-kernel backend, and the worst wait was derived per
+> backend or recorded as underivable. One backend records that it cannot be,
+> and that is a result rather than a gap. M9.5 later changed x86_64 alone to
+> a CLH queue while retaining one BKL; see
+> [the M9.5 record](design-m9.5-bkl-options.md).
 
 ## What this stage was for
 

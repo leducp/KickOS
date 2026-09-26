@@ -2,14 +2,14 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The KickOS Book
 
-**Focus.** The Book is the *how & why* of KickOS: what it is, why it is built this way, and --
-as a second purpose -- a teach-how-a-microkernel-works text. It is durable narrative, written
-to be read by someone evaluating, learning from, or porting KickOS. It is **not** the exact
-technical contract: that is the *Reference* (`../reference/`), which is code-synced and wins on
-any disagreement with the code. The Book *explains* and links into the Reference for the precise
-contract; a concept here does not become a bug when the code is refactored. (Roadmap/task status
-lives in `../../roadmap.md` + `../../TODO.md`; validated state in `../archive/M1_state.md`. The Book
-does not narrate how we got here.)
+**Focus.** The Book teaches how an OS kernel works, using KickOS as a worked example.
+It introduces the problem and the main design choices, weighs their tradeoffs, then
+explains what KickOS chose and why. It is durable narrative for someone learning from,
+evaluating, or porting KickOS. It is **not** the exact technical contract:
+that is the *Reference* (`../reference/`), which is code-synced and wins on
+any disagreement with the code. The Book explains and links into the Reference
+for precise rules. Roadmap and task status live in `../../roadmap.md` and
+`../../TODO.md`; the Book teaches the design without narrating the commit path.
 
 **What KickOS is.** A minimal, seL4-principled microkernel RTOS: a small trusted kernel
 (scheduler, IPC/sync, tickless time, interrupt plumbing, memory protection) with everything
@@ -30,11 +30,11 @@ seam, not a kernel restructure. The design choices (capabilities over ambient gl
 minimal syscall surface, with `read`/`open`/`socket` as userspace stubs over IPC and the
 debug-console `write` the sole sanctioned kernel exception) are downstream of this goal.
 
-**Second purpose -- teach how a microkernel works.** The Book doubles as a learning resource:
-a reader who knows minimal C/C++ and the basics of the compile/link/flash pipeline should be
-able to follow how a real microkernel is built, using KickOS as the worked example. That means a
-few *concept* chapters (what an OS/kernel is, monolithic vs micro, scheduling, interrupts,
-memory protection) that stand on their own before the KickOS-specific chapters. **Main
+**Learning path.** A reader who knows minimal C/C++ and the basics of the
+compile/link/flash pipeline should be able to follow how a real microkernel is
+built, using KickOS as the worked example. That calls for concept chapters on
+what a kernel is, monolithic and microkernel designs, scheduling, interrupts and
+memory protection before the KickOS-specific chapters. **Main
 further-reading reference: Andrew S. Tanenbaum, *Modern Operating Systems* / *Operating
 Systems: Design and Implementation*** -- cite the relevant Tanenbaum chapter where a concept
 is introduced, so a learner who wants the full theory has the canonical pointer. Concept
@@ -66,6 +66,7 @@ guided tour. A reader who just wants the exact contract can go straight to `../r
 | 2.2 | The blocking substrate: one wait/wake primitive | what "blocking" is (park/wake) and the lost-wakeup; why one shared primitive beats a fork per object; the waitq (`wq_block`/`wq_pop_highest`, the lazy at-pop scan) + the pop-transfer-wake protocol whose step 2 is the only extension point; the wait edge as the reverse lookup a thread-side waker needs, and why the pop retracts it; the `wait_result` status channel; the timed wait as the second waker the same shape absorbs, and the two-list discipline it costs; the deferred-switch stale-read hazard and the `wq_confirm_resume` barrier | [`the-blocking-substrate-one-wait-wake-primitive.md`](the-blocking-substrate-one-wait-wake-primitive.md); binds to `reference/invariants.md` (deferred-switch, switch-frame) + `kernel/sync/sync.cc`, `kernel/sched/sched.cc` |
 | 2.3 | Priority inheritance: lending a thread its blocker's urgency | priority inversion (the Pathfinder bug); why a PI mutex is the one sync object beyond the semaphore (PI is a scheduler action userspace cannot do); plain PI vs priority ceiling; the effective-vs-base invariants + `sched::set_prio` as sole writer; the two-pass boost (cycle detect then boost) and the chain walk; revert-by-recompute over the held list; the PI-stops-at-semaphores boundary; owner-died via `wait_result` | [`priority-inheritance-lending-urgency.md`](priority-inheritance-lending-urgency.md); binds to `reference/architecture.md` ("Synchronization surface") + `kernel/sched/sched.cc` |
 | 2.4 | An atomic buys definedness, not atomicity | what `volatile` promises (no elision, no register caching, ordering against other volatile accesses) and what it does not (no inter-thread visibility, no ordering against plain accesses); why a 32-bit aligned load and store are already single instructions, so the atomic buys DEFINEDNESS rather than atomicity, and the relaxed form emits the same instruction (a data race is UB, and UB is what licenses hoisting a value into a register across a poll loop, eliding a store, splitting an access); why relaxed suffices for a value that means only itself and stops sufficing the moment it implies something about neighbouring data, which is where acquire/release begin; read-modify-write as the ISA-split dividing line (inline on armv7m, rv32imac, Xtensa and the host; a libcall on armv6m and RXv3, which a freestanding link cannot resolve) and libatomic's lock table as the deadlock an ISR would find there; why `is_always_lock_free` is the wrong guard (an all-operations guarantee, so it refuses the boards whose load and store are inline) and why a width bound is a proxy that must say so; the 64-bit case as a different problem (a libcall on every backend); a two-writer field as a lock problem, where the atomic restates what the critical section already provides; carrying the ordering in the TYPE because a bare `=` is seq_cst and one omitted spelling silently costs a fence, with the backend that emits no barrier at all as a lesson about where a bug is observable; the C/C++ shared-header spelling | [`an-atomic-buys-definedness-not-atomicity.md`](an-atomic-buys-definedness-not-atomicity.md); binds to [`../reference/style.md`](../reference/style.md) (the `volatile`/atomic rule and the exposed surface) + [`../reference/invariants.md`](../reference/invariants.md) (`cycle64-wrap-extend-atomic`, `console-publish-prime-atomic`) + [`../design-m7-smp.md`](../design-m7-smp.md) (the per-part multicore primitive) + `system/include/kickos/sys/atomic.h` |
+| 2.5 | One kernel lock, many ready queues | what a scheduler's ready queue is; one global queue versus one per core, with placement, affinity, balancing and shared-state tradeoffs; why queue topology and kernel exclusion are separate choices; why KickOS uses per-core ready ownership under one BKL; ticket versus CLH arbitration as a lock implementation detail | [`one-lock-many-ready-queues.md`](one-lock-many-ready-queues.md); binds to `reference/architecture.md` ("Scheduler"), `reference/invariants.md` (per-core ready and ring publication), `kernel/sync/klock.cc` + `kernel/sched/sched.cc` |
 | 3 | Interrupt model | two-tier IRQ (direct ISR vs IRQ-as-event), the arch dispatch seam, real-peripheral demux (per arch), the buffered console ring | `reference/console.md` + `console_tx.h` + `arch_*` |
 | 3.5 | Context switching & the silicon contract | what a thread's saved state is; why the switch (and minimal startup) must be assembly; the per-arch contract axes (register file, trap entry, deferred-switch trigger, FP, privilege) | [`context-switching-and-the-silicon-contract.md`](context-switching-and-the-silicon-contract.md); binds to `reference/invariants.md` |
 | 3.6 | Thread stacks & the KISS tension | who owns a thread's stack under a no-free bump arena; why static pools burn RAM and bump-on-demand leaks; constraining to one size class so the free-list stays trivial; userspace-owned stacks | [`thread-stacks-and-the-kiss-tension.md`](thread-stacks-and-the-kiss-tension.md); binds to `reference/architecture.md` |

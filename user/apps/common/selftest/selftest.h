@@ -264,6 +264,9 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_irq_cross_core_wake();
     KICKOS_SELFTEST_LOCAL void t_irq_reclaim_stale_raise();
     KICKOS_SELFTEST_LOCAL void t_reent_per_thread_cores();
+#if defined(__x86_64__)
+    KICKOS_SELFTEST_LOCAL void t_fp_trapped_every_core();
+#endif
 #endif
 
 }

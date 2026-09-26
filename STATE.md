@@ -16,10 +16,10 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 AND M9.1 HAVE LANDED AND M9.2, FUSED WITH M9.3, IS ON ITS BRANCH.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.4 HAVE MERGED AND M9.5 IS ON ITS BRANCH, DECIDED.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned; M9.0 is read-only and every stage below it is assigned and not approved. The M9.0 section
+assigned; M9.6 and later remain assigned. The M9.0 section
 at the bottom of this file carries what the survey, the stack verdict and the entry envelope
 established, and what a reader of the numbers alone would get wrong.
 
@@ -983,6 +983,12 @@ The whole point of this file. A green fleet pass says none of the following.
   refusal of ANY thread-fault record became a by-name permission set. `aspacefault` STAYS a
   dying-image gate and that is the scenario, its read being the kernel's own at the current-EL
   vector where the kill rule declines it.
+- **ON QEMU THE BENCH GATES JUDGE ONE REPORT WINDOW, SO A DEFECT THAT FIRST SHOWS IN THE SECOND IS
+  GREEN THERE.** `check_bench_irqspan.sh` stops the image at its first `e2e-local` line, and the
+  other bench image gates poll too. Found 2026-09-25 by mutation: a `bench_reset` that skipped the
+  sweep row left the e2e row climbing 1000, 2000, 3000 across silicon's three windows, and every
+  QEMU gate passed it. Only a silicon capture refuses it: `bench.sh`'s own verdict, and
+  `BENCH_CAPTURE=<log> check_bench_irqspan.sh <cores>`, which judges each window.
 
 ## Board caveats a matrix does not carry
 
@@ -3491,9 +3497,24 @@ ONES.** As first built it was 4.3 percent slower than master on call/reply and t
 worse, on pinned pairs that never cross a core. Measured hit rates drove the repair: 520039 of
 520078 wakes are same-core, a flush with anything staged is 0.007 percent, a level store that
 changes the cell is zero of half a million switch-ins. At the tip it is inside the 1 percent budget
-against master on silicon. **The margin is thin and one piece of it is unexplained**: call/reply
-moved about 1.5 percent between the perf tip and the final tip, landing somewhere in the review and
-load-robustness fixes, and no bisect has attributed it.
+against master on silicon, and the margin was thin: call/reply 8 B moved 983 ns between the perf tip
+and the final tip. **A silicon bisect attributed all of it** (2026-09-25, one capture per distinct
+image). 950 ns was the bench instrument's own, from "Sample the four masked IRQ spans in turn inside
+one sweep": three sweep-only slots joined the per-core row every accumulator indexes, and at -Os an
+accumulator re-derives that row's address per field, one instruction longer at the new stride, so
+every phase bracket paid (`NEST` 125 to 128 cycles). No production image carried it. The other 33 ns
+are -Os block placement with no instruction added to the path, and they stay: 25 ns in `SWITCH_BOOK`
+from "Expire a round-robin slice that ran out while its thread was preempted" (the FIFO arm of the
+switch-in hook became a taken branch), and 8 ns spread over the call composites from "Refuse the
+scheduler bench knob below two kernel cores" (the syscall dispatcher's blocks moved).
+
+**KEEPING THE SWEPT SLOTS IN A ROW OF THEIR OWN MADE EVERY BENCH IMAGE'S INSTRUMENT CHEAPER, SO NO
+BENCH ROW IS COMPARABLE ACROSS THAT CHANGE.** It restores the phase brackets exactly (`NEST` 125), but
+the smaller row also lets the compiler hold the address in the distribution adds, and puts the phase
+table within a load's immediate offset on every board: on esp32-wroom-benchsmp call/reply 8 B reads
+63223 ns after it against 65981 before, lock-hold and lock-wait drop buckets, and one-core boards'
+accumulators shrink too, unmeasured on silicon. Every earlier capture, M9.4's D6 references
+included, carries the costlier instrument; post-fix master is the reference from here on.
 
 **THE BENCH'S OWN SCHEDULER ACCOUNTING COST 10 PERCENT AND IS NOW OFF BY DEFAULT.** A bench image
 with it on measures the instrument; `KICKOS_BENCH_SCHED` is refused below two kernel cores. The
@@ -3516,7 +3537,8 @@ settled; a short count is printed, not refused.
   milestone; their frame figures for assembly entries are hand records re-derived from the linked
   image, and a change under them moves nothing unless the record is re-derived too.
 - Zero-slack figures a reader should know before adding a frame: esp32-wroom-benchsmp PREEMPT,
-  qemu-arm64-benchgicv3 SYSK, EXITK, EXITKSW and RET, qemu-riscv SYSPRIV.
+  qemu-arm64-benchgicv3 SYSK, EXITK, EXITKSW and RET, qemu-riscv SYSPRIV, qemu-x86_64-bench SYSK
+  and EXITKSW.
 - The load-robustness fixes were reproduced with planted delays and host hogs on this box; CI's
   runners were not measured.
 
@@ -3530,6 +3552,54 @@ stacks too small on armv8a, rv64 and x86_64 once an interrupt nests under a thre
 one power-of-two stride on LX6 or RV32IMAC: both seat their thread pointer from the context at every
 switch-in, as armv8a does. armv6m, armv7m and rxv3 still derive it from the stack pointer, because
 unprivileged code there has no per-thread register; porting.md says so per arch.
+
+## M9.5: one lock kept, x86_64 joins the shared kernel, and what these green runs do NOT say
+
+**THE LOCK STAYS ONE LOCK, AND ONLY ITS ARBITRATION CHANGED, ON x86_64 ALONE.** x86_64 queues its
+kernel lock CLH; ARM64, RV64 and LX6 keep the ticket. An owner-local IPC path beside the lock was
+built on x86 and removed when the mixed workload did not pay for a second exclusion protocol, and
+per-object locking of whole IPC transactions was judged not buildable small: it needs a new
+lifetime and publication protocol across IPC, capabilities, deadlines, the scheduler and the
+switch. `docs/design-m9.5-bkl-options.md` carries the decision and its numbers.
+
+**x86_64 RUNS A SHARED KERNEL ON q35 AT TWO TO TWELVE CORES, AND ITS TLB SHOOTDOWN IS A FULL
+RENDEZVOUS PER INVALIDATION.** Every map edit above one core raises the doorbell on every online
+peer and waits; a peer answers by reloading CR3, which flushes everything this backend maps
+(PCIDs are never enabled and nothing is global), and a wait that times out terminates rather than
+letting the edit stand. Unmapping N pages costs N rounds: nothing batches them.
+
+**THE x86 SMP GATES NEED `-smp` AND x2APIC, AND WITHOUT EITHER THE IMAGE REFUSES AT BOOT.**
+`kickos_qemu_machine` passes both above one core. A hand run or a new harness that drops them sees
+every x86 SMP gate fail in a second on `q35 SMP requires x2APIC`, which reads as a broken build.
+
+**THE FLOATING-POINT TRAP IS PER CORE, SO EVERY CORE APPLIES IT.** The port saves no x87 or vector
+state and refuses both through CR0 and CR4, and an application processor comes out of INIT with
+those bits clear. `fp_trapped_every_core` reads the machine status word on each core from ring 3;
+with the application processors' call removed it fails, core 1 reading `0x11`.
+
+**WHAT THESE GREEN RUNS DO NOT SAY.**
+- Every x86 SMP figure is QEMU: TCG for the gates, KVM on this box's pinned host cores for the
+  measurements. No physical x86 SMP machine has run this kernel.
+- The x2APIC interrupt-command write that raises a doorbell has no fence before it, and the ISA
+  does not serialise that write. KVM and TCG trap it, which serialises it, so a peer seeing the
+  interrupt before the request, and the five-second terminate that would follow, is unwitnessed.
+- Bring-up assumes dense APIC IDs with the boot core at 0, and parses no MADT.
+- The application processors take the boot core's paging depth, CR4.LA57 included, but this
+  OVMF never hands over in five-level paging, even with `la57` offered, so that path is unwitnessed.
+- The gates catch a broken CLH handoff; a lock admitting two holders was caught only incidentally,
+  by an unrelated panic in the selftest, while `hello` and `sched_exit` passed it.
+- One CLH boot timed out in firmware before the kernel's first marker; its cause is not
+  localised, and twenty boots of each lock after it completed.
+- The x86 CLH gain depends on the baseline: the ticket figures in `M9.5_x86_clh.md` and
+  `M9.5_x86_ipc_pinned.md` differ by about 10 percent at twelve local pairs, and nothing records why.
+- CLH on LX6 was measured on silicon (+1.2 percent on contended yields) and not adopted; CLH on
+  ARM64 ran only under TCG.
+
+**AN ARRAY SIZED BY THE CORE COUNT ON A TRAP CHAIN DEEPENS EVERY CLASS THAT REACHES IT, AND THE
+FOUR-CORE PRESETS CANNOT SHOW IT.** The ARM64 doorbell service's request snapshot and the bench
+report's per-core accumulator copy were two, and at twelve cores they overran SYSK, EXITK and RET
+by 32 to 48 bytes on chains the four-core GICv3 preset held at zero slack. Both now live in
+per-core storage, which is what `qemu-arm64-benchsmp12`'s red-zone registration witnesses.
 
 ## Where to go next
 

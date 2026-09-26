@@ -19,7 +19,7 @@
  * the interrupt nested at its deepest byte with the switch cut, and the switch with nothing
  * below it.
  *
- * Each figure is the deepest reading over both x86_64 presets. Thread-stack figures are rounded
+ * Each figure is the deepest reading over the x86_64 presets at its core count. Thread-stack figures are rounded
  * up to the next multiple of 64, kernel-block ones stay at the measurement, and the arrays
  * sized once per image take the next multiple of 64 strictly above. x86_64 gcc counts a
  * function's own return-address slot in its frame, so the assembly bodies below do too.
@@ -48,20 +48,20 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 536
 
-/* The ring 3 syscall on the block. 944 on qemu-x86_64-bench, the bench arm that prints:
- *   syscall_dispatch[96] -> bench_irq_sweep[128] -> dist_print_fmt[112] -> kprintf_paced[368]
+/* The ring 3 syscall on the block. 960 on qemu-x86_64-bench, the bench arm that prints:
+ *   syscall_dispatch[96] -> bench_irq_sweep[128] -> dist_print_fmt[128] -> kprintf_paced[368]
  *   -> kconsole_write[8] -> console_emit[64] -> arch_console_write[8]
  *   -> console_tx_insert_line[64] -> console_write_line_sync[48] -> arch_console_write_sync[32]
  *   -> com1_putc[8] -> com1_slot_free[8]
  * 824 on qemu-x86_64, a reply-receive whose exit teardown wakes into the switch. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 944
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 960
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below. 944 on
+/* The same dispatch on a privileged caller's own stack with an interrupt nested below. 960 on
  * qemu-x86_64-bench down SYSK's chain, 744 on qemu-x86_64, a spawn's domain lookup. NEST + 960
  * = 1496, rounded up to 1536 for KICKOS_MIN_STACK_SIZE. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 960
 
-/* The same dispatch through the switch: 944 on qemu-x86_64-bench, 824 on qemu-x86_64. */
+/* The same dispatch through the switch: 960 on qemu-x86_64-bench, 824 on qemu-x86_64. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 960
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 320
@@ -95,5 +95,33 @@
  *   -> com1_putc[8] -> com1_slot_free[8] */
 #define KICKOS_X86_64_PANIC_FRAME 8
 #define KICKOS_X86_64_PANIC_DEPTH 320
+
+/* The SMP doorbell, lock wait and route service lengthen reachable call chains. These bounds
+ * cover qemu-x86_64-smp12's callgraph after every reachable indirect site was bound.
+ * The largest thread zone is 760 + 1536 = 2296 bytes, rounded to a 2304-byte spawn floor. */
+#if KICKOS_KERNEL_CORES > 1
+#undef KICKOS_X86_64_TRAP_DEPTH_IRQ
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 576
+#undef KICKOS_X86_64_TRAP_NEST
+#define KICKOS_X86_64_TRAP_NEST 760
+#undef KICKOS_X86_64_TRAP_DEPTH_SYSK
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1536
+#undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1536
+#undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1536
+#undef KICKOS_X86_64_TRAP_DEPTH_IST
+#define KICKOS_X86_64_TRAP_DEPTH_IST 576
+#undef KICKOS_X86_64_TRAP_DEPTH_EXITK
+#define KICKOS_X86_64_TRAP_DEPTH_EXITK 896
+#undef KICKOS_X86_64_TRAP_DEPTH_EXITKSW
+#define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 896
+#undef KICKOS_X86_64_TRAP_DEPTH_RET
+#define KICKOS_X86_64_TRAP_DEPTH_RET 896
+#undef KICKOS_X86_64_TRAP_DEPTH_RETSW
+#define KICKOS_X86_64_TRAP_DEPTH_RETSW 896
+#undef KICKOS_X86_64_PANIC_DEPTH
+#define KICKOS_X86_64_PANIC_DEPTH 512
+#endif
 
 #endif

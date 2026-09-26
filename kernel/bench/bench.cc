@@ -278,6 +278,14 @@ namespace
         BENCH_DIST_ENTRY_CNT("resched-take:"),
         BENCH_DIST_ENTRY("doorbell: "),
 #endif
+#if KICKOS_BENCH_SCHED_ON
+        BENCH_DIST_ENTRY("call-rt:  "),
+        BENCH_DIST_ENTRY("sched-drain:"),
+        BENCH_DIST_ENTRY_CNT("sched-drain-n:"),
+        // Nanoseconds, labelled in PUSH_E2E_FMT and RESEAT_E2E_FMT.
+        BENCH_DIST_ENTRY_NONE(),
+        BENCH_DIST_ENTRY_NONE(),
+#endif
         BENCH_DIST_ENTRY("irq:      "),
         // WCASE_FMT selects the span label without adding a printf argument.
         BENCH_DIST_ENTRY_NONE(),
@@ -285,17 +293,9 @@ namespace
         BENCH_DIST_ENTRY_NONE(),
         BENCH_DIST_ENTRY_NONE(),
         // End-to-end rows use nanoseconds because per-core cycle counters are not
-        // synchronized. Their labels are in E2E_FMT.
+        // synchronized. Their labels are in E2E_FMT_LOCAL and E2E_FMT_CROSS.
         BENCH_DIST_ENTRY_NONE(),
 #if KICKOS_KERNEL_CORES > 1
-        BENCH_DIST_ENTRY_NONE(),
-#endif
-#if KICKOS_BENCH_SCHED_ON
-        BENCH_DIST_ENTRY("call-rt:  "),
-        BENCH_DIST_ENTRY("sched-drain:"),
-        BENCH_DIST_ENTRY_CNT("sched-drain-n:"),
-        // Nanoseconds, labelled in SCHED_E2E_FMT.
-        BENCH_DIST_ENTRY_NONE(),
         BENCH_DIST_ENTRY_NONE(),
 #endif
     };
@@ -345,6 +345,12 @@ namespace
 
     // Ordinary reports exclude slots populated by explicit sweeps.
     constexpr uint32_t DIST_SWEPT_FIRST = kickos::BD_IRQ_ENTRY;
+    constexpr uint32_t DIST_SWEPT_COUNT = kickos::BD_COUNT - DIST_SWEPT_FIRST;
+#if KICKOS_BENCH_SCHED_ON
+    constexpr uint32_t DIST_ORDINARY_END = kickos::BD_CALL_RT;
+#else
+    constexpr uint32_t DIST_ORDINARY_END = DIST_SWEPT_FIRST;
+#endif
 
     // The benchmark bounds sample counts to fit 32-bit buckets; see bench_hist.h.
     struct DistSlot
@@ -355,9 +361,11 @@ namespace
 #endif
     };
 
+    // The slots the workload feeds. At -Os every accumulator re-derives its row's address per
+    // field, at a cost set by the row's stride, so a swept slot here would tax every sample.
     struct KICKOS_BENCH_PERCORE_ALIGNED BenchRow
     {
-        DistSlot dist[kickos::BD_COUNT];
+        DistSlot dist[DIST_SWEPT_FIRST];
         Acc phase[kickos::PH_COUNT];
         // Publish the maximum and its release address together. lock_site_gen is odd
         // during an update. All three fields are atomic because readers can overlap writes.
@@ -367,8 +375,14 @@ namespace
         std::atomic<uint32_t> lock_site_gen;
     };
 
+    struct KICKOS_BENCH_PERCORE_ALIGNED SweepRow
+    {
+        DistSlot dist[DIST_SWEPT_COUNT];
+    };
+
 #if KICKOS_KERNEL_CORES > 1
-    static_assert(sizeof(BenchRow) % KICKOS_BENCH_CACHE_LINE == 0,
+    static_assert(sizeof(BenchRow) % KICKOS_BENCH_CACHE_LINE == 0
+                      and sizeof(SweepRow) % KICKOS_BENCH_CACHE_LINE == 0,
                   "a row shorter than a line would share one with the next writer");
 #endif
 
@@ -376,13 +390,23 @@ namespace
     constexpr uint32_t LOCK_SITE_READ_TRIES = 8u;
 
     constinit BenchRow g_row[KICKOS_KERNEL_CORES] = {};
+    constinit SweepRow g_sweep[KICKOS_KERNEL_CORES] = {};
 
     BenchRow& row() { return g_row[kickos_kernel_core()]; }
 
+    DistSlot& dist_slot(uint32_t c, uint32_t d)
+    {
+        if (d < DIST_SWEPT_FIRST)
+        {
+            return g_row[c].dist[d];
+        }
+        return g_sweep[c].dist[d - DIST_SWEPT_FIRST];
+    }
+
 #if !BENCH_HEADLINE_MIN
-    static_assert(sizeof(BenchRow) % sizeof(uint32_t) == 0,
+    static_assert(sizeof(BenchRow) % sizeof(uint32_t) == 0
+                      and sizeof(SweepRow) % sizeof(uint32_t) == 0,
                   "the stride between two rows must be a whole number of buckets");
-    constexpr uint32_t DIST_STRIDE = sizeof(BenchRow) / sizeof(uint32_t);
 
     // Use one snapshot buffer per core to avoid reporter races and large stack use.
     // Keep its index fixed if the reporter migrates during the read.
@@ -393,10 +417,25 @@ namespace
     kickos::BenchHistSnap& dist_snapshot(uint32_t d)
     {
         kickos::BenchHistSnap& s = g_dist_snap[kickos_kernel_core()];
-        kickos::bench_hist_snapshot(&g_row[0].dist[d].hist[0], DIST_STRIDE, KICKOS_KERNEL_CORES,
-                                    s);
+        uint32_t stride = sizeof(BenchRow) / sizeof(uint32_t);
+        if (d >= DIST_SWEPT_FIRST)
+        {
+            stride = sizeof(SweepRow) / sizeof(uint32_t);
+        }
+        kickos::bench_hist_snapshot(&dist_slot(0, d).hist[0], stride, KICKOS_KERNEL_CORES, s);
         return s;
     }
+#endif
+
+#if KICKOS_KERNEL_CORES > 1
+    // Each core's accumulator as one report read it, one buffer per reporting core like the
+    // percentile snapshot: on the stack it would deepen the print chain, which a trap class
+    // charges, by an accumulator per core.
+    struct AccSnap
+    {
+        Acc core[KICKOS_KERNEL_CORES];
+    };
+    constinit AccSnap g_acc_snap[KICKOS_KERNEL_CORES] = {};
 #endif
 
     Acc dist_total(uint32_t d)
@@ -404,16 +443,15 @@ namespace
         Acc a = {};
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
-            acc_merge(a, g_row[c].dist[d].acc);
+            acc_merge(a, dist_slot(c, d).acc);
         }
         return a;
     }
 
     // Keep inline to avoid an extra frame on the switch tail.
-    inline __attribute__((always_inline)) void dist_add_row(BenchRow& r, uint32_t d,
-                                                            kickos::BenchTick delta)
+    inline __attribute__((always_inline)) void dist_add_slot(DistSlot& sl,
+                                                             kickos::BenchTick delta)
     {
-        DistSlot& sl = r.dist[d];
         if (not acc_add(sl.acc, delta))
         {
             return;
@@ -421,6 +459,17 @@ namespace
 #if !BENCH_HEADLINE_MIN
         sl.hist[kickos::bench_bucket(static_cast<uint32_t>(delta))]++;
 #endif
+    }
+
+    inline __attribute__((always_inline)) void dist_add_row(BenchRow& r, uint32_t d,
+                                                            kickos::BenchTick delta)
+    {
+        dist_add_slot(r.dist[d], delta);
+    }
+
+    void sweep_add(uint32_t d, kickos::BenchTick delta)
+    {
+        dist_add_slot(g_sweep[kickos_kernel_core()].dist[d - DIST_SWEPT_FIRST], delta);
     }
 
     // Baseline for trap-handler fastpath switches, which bypass BD_SWITCH timing.
@@ -431,11 +480,12 @@ namespace
         kickos::IrqLock lock;
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
-            g_row[c].dist[d].acc = Acc{};
+            DistSlot& sl = dist_slot(c, d);
+            sl.acc = Acc{};
 #if !BENCH_HEADLINE_MIN
             for (uint32_t i = 0; i < kickos::BENCH_HIST; i++)
             {
-                g_row[c].dist[d].hist[i] = 0;
+                sl.hist[i] = 0;
             }
 #endif
         }
@@ -470,6 +520,13 @@ extern "C"
         BenchRow& r = row();
         dist_add_row(r, kickos::BD_LOCK_DRAW, retries);
         dist_add_row(r, kickos::BD_LOCK_QUEUE, queued);
+    }
+
+    // CLH's exchange has no retry result. Its predecessor chain does not expose
+    // a queue length, so leave draw-queue unsampled rather than report zero.
+    void kickos_bench_lock_draw_clh(void)
+    {
+        dist_add_row(row(), kickos::BD_LOCK_DRAW, 0u);
     }
 
     // One sample per reschedule ask, valued by the peers it reaches. A zero-peer ask is a
@@ -876,7 +933,7 @@ namespace kickos
 
     void bench_dist_add(uint32_t dist, BenchTick delta)
     {
-        if (dist >= BD_COUNT)
+        if (dist >= DIST_SWEPT_FIRST)
         {
             return;
         }
@@ -907,7 +964,7 @@ namespace kickos
     // Read this core only so probes detect samples written to the wrong row.
     uint32_t bench_dist_count(uint32_t dist)
     {
-        if (dist >= BD_COUNT)
+        if (dist >= DIST_SWEPT_FIRST)
         {
             return 0;
         }
@@ -931,11 +988,12 @@ namespace kickos
             BenchRow& r = g_row[c];
             for (uint32_t d = 0; d < BD_COUNT; d++)
             {
-                r.dist[d].acc = Acc{};
+                DistSlot& sl = dist_slot(c, d);
+                sl.acc = Acc{};
 #if !BENCH_HEADLINE_MIN
                 for (uint32_t i = 0; i < BENCH_HIST; i++)
                 {
-                    r.dist[d].hist[i] = 0;
+                    sl.hist[i] = 0;
                 }
 #endif
             }
@@ -981,15 +1039,15 @@ namespace kickos
         kickos::BenchHistSnap const& hist = dist_snapshot(d);
 #endif
 #if KICKOS_KERNEL_CORES > 1
-        Acc snap[KICKOS_KERNEL_CORES];
+        Acc* const snap = g_acc_snap[kickos_kernel_core()].core;
         Acc agg = {};
         for (uint32_t i = 0; i < KICKOS_KERNEL_CORES; i++)
         {
-            snap[i] = g_row[i].dist[d].acc;
+            snap[i] = dist_slot(i, d).acc;
             acc_merge(agg, snap[i]);
         }
 #else
-        Acc const agg = g_row[0].dist[d].acc;
+        Acc const agg = dist_slot(0, d).acc;
 #endif
         uint32_t const c = agg.count;
 #if BENCH_HEADLINE_MIN
@@ -1080,7 +1138,7 @@ namespace kickos
         kprintf_paced("  switch-probe: fastpath-swaps=%u  (swapped inside the trap, so not in"
                       " the switch row)\n",
                 static_cast<unsigned>(fast_taken - g_ipc_fast_base));
-        for (uint32_t d = 0; d < DIST_SWEPT_FIRST; d++)
+        for (uint32_t d = 0; d < DIST_ORDINARY_END; d++)
         {
             dist_print_fmt(d, DIST_FMT[d]);
         }
@@ -1472,7 +1530,7 @@ namespace kickos
             irq_tally(t, s);
             if (s.verdict == IRQ_LOCAL)
             {
-                bench_dist_add(BD_IRQ_ENTRY, s.cyc);
+                sweep_add(BD_IRQ_ENTRY, s.cyc);
             }
         }
         irq_unplace(p);
@@ -1509,7 +1567,7 @@ namespace kickos
                 irq_tally(t[k], s);
                 if (s.verdict == IRQ_LOCAL)
                 {
-                    bench_dist_add(BD_IRQ_WCASE + k, s.cyc);
+                    sweep_add(BD_IRQ_WCASE + k, s.cyc);
                 }
             }
         }
@@ -1661,11 +1719,11 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         if (isr != kickos_kernel_core())
         {
-            bench_dist_add(BD_IRQ_E2E_CROSS, d);
+            sweep_add(BD_IRQ_E2E_CROSS, d);
             return 0;
         }
 #endif
-        bench_dist_add(BD_IRQ_E2E_LOCAL, d);
+        sweep_add(BD_IRQ_E2E_LOCAL, d);
         return 0;
     }
 

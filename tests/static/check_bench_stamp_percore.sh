@@ -67,6 +67,13 @@ case "$arch" in
         BASE='sscratch'
         PCREL='auipc'
         ;;
+    x86_64)
+        MODE=base
+        SYMS=kickos_x86_64_switch_now
+        BRANCH='^(j[a-z]*|call|ret)$'
+        BASE='%gs:'
+        PCREL='%rip'
+        ;;
     lx6)
         MODE=index
         # The entry banks the previous switch's cost and opens the next; the close stands past
@@ -234,6 +241,10 @@ read_body() { # <listing> <symbol>
             echo "    1004:	csrr	t1,sscratch"
             echo "    1008:	addi	t1,t1,24"
             echo "    100c:	sw	t0,0(t1)" ;;
+        x86_64)
+            echo "    1004:	mov	%eax,%gs:0x10"
+            echo "    1008:	nop"
+            echo "    100c:	nop" ;;
         lx6)
             echo "    1004:	l32r	a6, 1100 <pool+0x0> (3ffb5748 <g_bench_sw_end>)"
             echo "    1007:	rsr.prid	a5"
@@ -256,6 +267,10 @@ read_body() { # <listing> <symbol>
             echo "    1004:	auipc	t1,0x1"
             echo "    1008:	addi	t1,t1,24"
             echo "    100c:	sw	t0,0(t1)" ;;
+        x86_64)
+            echo "    1004:	lea	0x10(%rip),%rax <g_bench_sw_start>"
+            echo "    1008:	nop"
+            echo "    100c:	nop" ;;
         lx6)
             echo "    1004:	l32r	a6, 1100 <pool+0x0> (3ffb5748 <g_bench_sw_end>)"
             echo "    1007:	l32i.n	a4, a6, 0"
@@ -271,6 +286,7 @@ read_body() { # <listing> <symbol>
     case "$arch" in
         armv8a)   echo "    1000:	b	2000 <kickos_armv8a_switch_now_real>" ;;
         rv64imac) echo "    1000:	j	2000 <kickos_rv64_switch_now_real>" ;;
+        x86_64)   echo "    1000:	jmp	2000 <kickos_x86_64_switch_now_real>" ;;
         lx6)      echo "    1000:	j	2000 <xtensa_switch_real>" ;;
     esac
     echo "    1004:	nop"

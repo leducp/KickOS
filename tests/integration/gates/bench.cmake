@@ -40,18 +40,23 @@ kickos_host_gate(${_tag}_bench_phase_table_controls)
 # Inspect per-core switch timestamp addressing in the linked image.
 # Runtime tests cannot expose sharing because the kernel lock serializes the bracket.
 if(KICKOS_KERNEL_CORES GREATER 1)
+  set(_bench_image "$<TARGET_FILE:bench>")
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    get_target_property(_bench_image bench KICKOS_IMAGE_FILE)
+  endif()
   add_test(NAME ${_tag}_bench_stamp_percore
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_stamp_percore.sh"
-            "$<TARGET_FILE:bench>" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
+            "${_bench_image}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
   kickos_host_gate(${_tag}_bench_stamp_percore)
 endif()
 
-# Check SMP release/acquire instructions in the linked image; QEMU TCG does
-# not expose missing memory ordering. Single-core builds intentionally use relaxed state.
-if(KICKOS_KERNEL_CORES GREATER 1)
+# Check SMP release/acquire instructions where the architecture has distinct acquire/release
+# instructions. x86 TSO uses the same MOV for relaxed, acquire and release; disassembly cannot
+# distinguish a source-level downgrade there. Its runtime E2E gate still runs above one core.
+if(KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_ARCH STREQUAL "x86_64")
   add_test(NAME ${_tag}_bench_e2e_publish
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_e2e_publish.sh"
-            "$<TARGET_FILE:bench>" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
+            "${_bench_image}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
   kickos_host_gate(${_tag}_bench_e2e_publish)
 endif()
 

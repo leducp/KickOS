@@ -16,6 +16,10 @@
 #include <kickos/chip_com1.h>
 #include <kickos/chip_q35.h>
 
+#if KICKOS_KERNEL_CORES > 1
+#include <kickos/arch/doorbell_protocol.h>
+#endif
+
 #include <fatal_status.ld.h>
 
 #include <stdint.h>
@@ -65,6 +69,35 @@ namespace
     size_t g_ram_size = 0;
     uintptr_t g_ram_next = 0;
 
+#if KICKOS_KERNEL_CORES > 1
+    constexpr size_t ap_stack_bytes = 16384;
+    alignas(16) uint8_t g_ap_stack[KICKOS_KERNEL_CORES - 1][ap_stack_bytes];
+    uint32_t g_ap_arrived[KICKOS_KERNEL_CORES] = {};
+    uint32_t g_online_mask = 1u;
+
+    extern "C" int kickos_x86_64_ap_prepare(void (*entry)(void), uintptr_t stack_top);
+    extern "C" void kickos_x86_64_ap_start(uint32_t apic_id);
+    extern "C" void kickos_x86_64_doorbell_park(void);
+    extern "C" void kickos_x86_64_fp_trap(void);
+
+    [[noreturn]] void ap_main(void)
+    {
+        uint32_t const me = boot_apic_id();
+        if (me == 0 or me >= KICKOS_KERNEL_CORES)
+        {
+            arch_shutdown(KICKOS_FATAL_STATUS);
+        }
+        kickos_x86_64_fp_trap();
+        desc_init_secondary();
+        ring3_cpu_init();
+        apic_init_secondary();
+        __atomic_fetch_or(&g_online_mask, 1u << me, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ap_arrived[me], 1u, __ATOMIC_RELEASE);
+        kickos_x86_64_doorbell_park();
+        __builtin_unreachable();
+    }
+#endif
+
     void outl(uint16_t port, uint32_t value)
     {
         __asm__ volatile("outl %0, %1" : : "a"(value), "Nd"(port) : "memory");
@@ -101,6 +134,13 @@ namespace
 
 extern "C"
 {
+
+#if KICKOS_KERNEL_CORES > 1
+uint32_t kickos_x86_64_online_cores(void)
+{
+    return __atomic_load_n(&g_online_mask, __ATOMIC_ACQUIRE);
+}
+#endif
 
 // --- The reference timebase apic_init measures against ----------------------
 uint32_t kickos_x86_ref_hz(void)
@@ -153,6 +193,35 @@ void arch_init(void)
     // table the firmware owns.
     aspace_init(arch_ram_base(), arch_ram_size());
     apic_init();
+#if KICKOS_KERNEL_CORES > 1
+    if (not apic_is_x2())
+    {
+        com1_puts("KickOS: q35 SMP requires x2APIC\n");
+        arch_shutdown(KICKOS_FATAL_STATUS);
+    }
+    for (uint32_t core = 1; core < KICKOS_KERNEL_CORES; ++core)
+    {
+        uintptr_t const top = reinterpret_cast<uintptr_t>(g_ap_stack[core - 1])
+                              + ap_stack_bytes;
+        if (kickos_x86_64_ap_prepare(ap_main, top) == 0)
+        {
+            com1_puts("KickOS: q35 AP trampoline prepare failed\n");
+            arch_shutdown(KICKOS_FATAL_STATUS);
+        }
+        kickos_x86_64_ap_start(core);
+        uint64_t const deadline = tsc_now() + apic_tsc_hz() * 5u;
+        while (__atomic_load_n(&g_ap_arrived[core], __ATOMIC_ACQUIRE) == 0)
+        {
+            if (tsc_now() > deadline)
+            {
+                com1_puts("KickOS: q35 AP did not arrive\n");
+                arch_shutdown(KICKOS_FATAL_STATUS);
+            }
+            __asm__ volatile("pause" ::: "memory");
+        }
+    }
+    kickos_doorbell_selfcheck();
+#endif
 }
 
 // --- Console ----------------------------------------------------------------

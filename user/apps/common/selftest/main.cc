@@ -8892,6 +8892,9 @@ int main(int, char**)
     TAP_ADD("slice_preempts_every_core", t_slice_preempts_every_core);
     TAP_ADD("threads_reach_every_core", t_threads_reach_every_core);
     TAP_ADD("reent_per_thread_cores", t_reent_per_thread_cores);
+#if defined(__x86_64__)
+    TAP_ADD("fp_trapped_every_core", t_fp_trapped_every_core);
+#endif
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task);

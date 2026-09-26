@@ -51,6 +51,7 @@ live="${3:?$_usage}"
 backend="${4:?$_usage}"
 
 require_number "$want" "the expected core count"
+want_hex="$(printf '%x' "$want")"
 require_literal "$live" "the liveness pattern"
 if [ "$want" -le 1 ]; then
     fail "expected core count is $want. At one core the doorbell and the lock are empty macros
@@ -227,7 +228,7 @@ TRACE="$TMP/gic.log"
 # --- The boot, with QEMU's GIC model logging beside the console ----------------
 echo "== $want core(s), doorbell round with the GIC model traced =="
 QEMU_EXTRA="${QEMU_EXTRA:-} -d $CHAN_ITEMS -D $TRACE"
-poll_image "$elf" "$CHECK_HEAD$want core\\(s\\) answered" "$live"
+poll_image "$elf" "$CHECK_HEAD$want_hex core\\(s\\) answered" "$live"
 
 # --- Channel 1: what the image said ------------------------------------------
 count_literal "$UNANSWERED"
@@ -282,7 +283,7 @@ if [ "$KOS_COUNT" -ne 1 ]; then
     printf '%s\n' "$OUT" | grep -F -e "$CHECK_HEAD"
     fail "the doorbell line appeared $KOS_COUNT times; the round runs once per machine"
 fi
-count_literal "$CHECK_HEAD$want$CHECK_TAIL"
+count_literal "$CHECK_HEAD$want_hex$CHECK_TAIL"
 if [ "$KOS_COUNT" -ne 1 ]; then
     printf '%s\n' "$OUT" | grep -F -e "$CHECK_HEAD"
     fail "the doorbell line does not name $want cores answering"

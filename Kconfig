@@ -68,10 +68,20 @@ config KICKOS_CORES_TWO
 config KICKOS_CORES_FOUR
 	bool "Four cores"
 
+config KICKOS_CORES_EIGHT
+	bool "Eight cores"
+	depends on BOARD_QEMU_X86_64
+
+config KICKOS_CORES_TWELVE
+	bool "Twelve cores"
+	depends on BOARD_QEMU_X86_64 || BOARD_QEMU_ARM64
+
 endchoice
 
 config KICKOS_NUM_CORES
 	int
+	default 12 if KICKOS_CORES_TWELVE
+	default 8 if KICKOS_CORES_EIGHT
 	default 4 if KICKOS_CORES_FOUR
 	default 2 if KICKOS_CORES_TWO
 	default 1
@@ -980,6 +990,7 @@ config KICKOS_MIN_STACK_SIZE
 	# An interrupt nests below a privileged thread's return on its own stack.
 	default 2304 if ARCH_RV64IMAC
 	# An interrupt nests below a privileged caller's syscall on its own stack.
+	default 2304 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
 	default 1536 if ARCH_X86_64
 	default 896 if ARCH_LX6
 	default 1024

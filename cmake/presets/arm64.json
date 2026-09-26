@@ -41,6 +41,13 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     },
     {
+      "name": "qemu-arm64-benchsmp12",
+      "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), twelve cores + GICv3 + KICKOS_BENCH",
+      "inherits": "qemu-arm64",
+      "binaryDir": "${sourceDir}/build/qemu-arm64-benchsmp12",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp12" }
+    },
+    {
       "name": "qemu-arm64-benchgicv3",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + GICv3 + KICKOS_BENCH",
       "inherits": "qemu-arm64",
@@ -123,6 +130,7 @@
     { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench" },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp" },
     { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp" },
+    { "name": "qemu-arm64-benchsmp12", "configurePreset": "qemu-arm64-benchsmp12" },
     { "name": "qemu-arm64-benchgicv3", "configurePreset": "qemu-arm64-benchgicv3" },
     { "name": "qemu-arm64-benchsmp2", "configurePreset": "qemu-arm64-benchsmp2" },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso" },
@@ -140,6 +148,7 @@
     { "name": "qemu-arm64-bench", "configurePreset": "qemu-arm64-bench", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smp", "configurePreset": "qemu-arm64-smp", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-benchsmp", "configurePreset": "qemu-arm64-benchsmp", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-benchsmp12", "configurePreset": "qemu-arm64-benchsmp12", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-benchgicv3", "configurePreset": "qemu-arm64-benchgicv3", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-benchsmp2", "configurePreset": "qemu-arm64-benchsmp2", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-smpiso", "configurePreset": "qemu-arm64-smpiso", "output": { "outputOnFailure": true } },

@@ -3,10 +3,8 @@
 //
 // x86_64 arch backend: the ISA-generic half of the arch.h seam.
 //
-// The interrupt controller is SOFTWARE, with one physical doorbell. There is no I/O APIC, so a
-// logical line has no hardware pending state of its own: the mask, the latch and the
-// doorbell's carry are the three bitmaps below, and a self-directed local-APIC interrupt rings
-// the bell.
+// The interrupt controller is SOFTWARE, with the local APIC doorbell on each core. There is
+// no I/O APIC, so the routed core, mask, latch and each core's delivery bits live in memory.
 
 // BEFORE arch.h, and the position is load-bearing: an attribute binds only on a symbol's FIRST
 // declaration, and the visibility attribute is what keeps the reference PC-relative
@@ -39,6 +37,9 @@ extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_thread_exit(void);
 // the syscall trap. An unprivileged thread's entry returns HERE and never into
 // kickos_thread_return, which is kernel text it may not call.
 extern "C" KICKOS_X86_64_LOCAL void kickos_user_thread_return(void);
+#if KICKOS_KERNEL_CORES > 1
+extern "C" void kickos_x86_64_doorbell_service(void);
+#endif
 
 namespace
 {
@@ -107,16 +108,20 @@ namespace
     // built.
     constexpr uint64_t RFLAGS_RESERVED_ONE = 1ull << 1;
 
-    // The entry runs with interrupts masked by the gate itself, so it is the only writer and
-    // no atomic is owed.
-    uint32_t g_isr_depth = 0;
+    // The entry runs with interrupts masked by the gate itself. A physical
+    // context and a deferred destination belong to that processor alone.
+    struct alignas(64) CpuState
+    {
+        uint32_t isr_depth;
+        struct arch_context* ctx_current;
+        struct arch_context* switch_to;
+    };
+    CpuState g_cpu_state[KICKOS_KERNEL_CORES] = {};
 
-    // The context PHYSICALLY on the CPU. One interrupt can reschedule several times, and every
-    // arch_switch after the first names a thread the scheduler has merely published, whose
-    // registers are still nowhere; saving the interrupted frame through such a `from` would
-    // write it over a context that never ran.
-    struct arch_context* g_ctx_current = nullptr;
-    struct arch_context* g_switch_to = nullptr;
+    CpuState& local_state(void)
+    {
+        return g_cpu_state[arch_cpu_id()];
+    }
 
     // The software controller. Bit set = masked, and every line starts masked, which is arch.h's
     // reset contract. Bounded by the CHIP's line count: a line past it would be tracked here and
@@ -128,9 +133,35 @@ namespace
     // Bit set = a raise landed while the line was masked, latched one-deep and redelivered at
     // unmask.
     uint32_t g_irq_pending = 0;
+    // Zero means no owner; otherwise the assigned core plus one. The kernel's
+    // claim and release protocol changes this under its cross-core lock.
+    uint32_t g_irq_route_plus1[IRQ_LINES] = {};
     // The lines the doorbell is carrying. A bitmap the handler drains, so every line rung
     // before a delivery is dispatched by it; arch.h's floor is one shared cell.
-    uint32_t g_doorbell_lines = 0;
+    alignas(64) uint32_t g_doorbell_lines[KICKOS_KERNEL_CORES] = {};
+
+    uint32_t line_core(int line)
+    {
+        uint32_t const route = __atomic_load_n(&g_irq_route_plus1[line], __ATOMIC_ACQUIRE);
+        if (route == 0)
+        {
+            return arch_cpu_id();
+        }
+        return route - 1u;
+    }
+
+    void ring_line(int line, uint32_t core)
+    {
+        __atomic_fetch_or(&g_doorbell_lines[core], 1u << line, __ATOMIC_RELEASE);
+        if (core == arch_cpu_id())
+        {
+            kickos::x86_64::apic_doorbell();
+        }
+        else
+        {
+            kickos::x86_64::apic_doorbell_send(1u << core);
+        }
+    }
 
     // The incoming block goes to TWO places, the task-state segment and the per-core block, so
     // both are written together or one entry class loads a stale pointer. A blockless context
@@ -138,7 +169,7 @@ namespace
     // one that was faults immediately.
     void publish_current(struct arch_context* to)
     {
-        g_ctx_current = to;
+        local_state().ctx_current = to;
         kickos::x86_64::tss_set_rsp0(to->kernel_sp);
         kickos::x86_64::cpu_set_kernel_sp(to->kernel_sp);
     }
@@ -147,21 +178,47 @@ namespace
     // set behind the index is delivered by that ring.
     void dispatch_doorbell(void)
     {
+        uint32_t* const carry = &g_doorbell_lines[arch_cpu_id()];
         for (int line = 0; line < IRQ_LINES; line++)
         {
             uint32_t const bit = 1u << line;
-            if ((g_doorbell_lines & bit) == 0)
+            if ((__atomic_fetch_and(carry, ~bit, __ATOMIC_ACQ_REL) & bit) == 0)
             {
                 continue;
             }
-            g_doorbell_lines &= ~bit;
             kickos_isr_irq(line);
         }
     }
 }
 
+#if KICKOS_NUM_CORES > 1
+namespace kickos::x86_64
+{
+uint32_t boot_apic_id(void)
+{
+    uint32_t a = 0;
+    uint32_t b = 0;
+    uint32_t c = 0;
+    uint32_t d = 0;
+    __asm__ volatile("cpuid"
+                     : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(1u), "c"(0u));
+    return b >> 24;
+}
+}
+#endif
+
 extern "C"
 {
+
+#if KICKOS_NUM_CORES > 1
+uint32_t arch_cpu_id(void)
+{
+    uint32_t id = 0;
+    __asm__ volatile("movl %%gs:%c1, %0" : "=r"(id) : "i"(KICKOS_X86_64_CPU_CORE_ID));
+    return id;
+}
+#endif
 
 // --- Context / switching ----------------------------------------------------
 // Builds the frame kickos_x86_64_resume pops. An iretq loads no return address, so the
@@ -254,12 +311,13 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
-    if (g_isr_depth != 0)
+    CpuState& cpu = local_state();
+    if (cpu.isr_depth != 0)
     {
         // Deferred, which arch.h permits: the interrupted thread's state is already in the
         // frame the entry built, so the swap is two stores at the exception exit. `from` is
         // dropped here; see g_ctx_current.
-        g_switch_to = to;
+        cpu.switch_to = to;
         return;
     }
     // Thread context under the kernel IrqLock, so no interrupt observes the cell between this
@@ -291,7 +349,7 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 // requires: the kernel's blocking primitives depend on that.
 int arch_in_isr(void)
 {
-    return g_isr_depth != 0;
+    return local_state().isr_depth != 0;
 }
 
 // --- Clocks -----------------------------------------------------------------
@@ -404,17 +462,15 @@ void arch_dcache_invalidate(void* addr, size_t bytes)
 }
 
 // --- Interrupt controller ---------------------------------------------------
-// Self-bracketed per arch.h: each body does its own interrupts-masked section over the two
-// bitmaps, so a caller need not hold IrqLock.
+// The software controller's mask and pending cells are atomic, so callers may update them
+// without holding IrqLock. A pending raise is redelivered when unmask wins the race.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= IRQ_LINES)
     {
         return;
     }
-    arch_irq_state_t const state = arch_irq_save();
-    g_irq_masked |= (1u << line);
-    arch_irq_restore(state);
+    __atomic_fetch_or(&g_irq_masked, 1u << line, __ATOMIC_SEQ_CST);
 }
 
 void arch_irq_unmask(int line)
@@ -423,17 +479,14 @@ void arch_irq_unmask(int line)
     {
         return;
     }
-    arch_irq_state_t const state = arch_irq_save();
-    g_irq_masked &= ~(1u << line);
+    uint32_t const bit = 1u << line;
+    __atomic_fetch_and(&g_irq_masked, ~bit, __ATOMIC_SEQ_CST);
     // A raise taken while the line was masked redelivers now through the doorbell, which is
     // rung with interrupts masked and so fires at arch_irq_restore.
-    if ((g_irq_pending & (1u << line)) != 0)
+    if ((__atomic_fetch_and(&g_irq_pending, ~bit, __ATOMIC_SEQ_CST) & bit) != 0)
     {
-        g_irq_pending &= ~(1u << line);
-        g_doorbell_lines |= (1u << line); // BEFORE the raise, so the entry sees it
-        kickos::x86_64::apic_doorbell();
+        ring_line(line, line_core(line));
     }
-    arch_irq_restore(state);
 }
 
 void arch_irq_clear_pending(int line)
@@ -442,9 +495,35 @@ void arch_irq_clear_pending(int line)
     {
         return;
     }
-    arch_irq_state_t const state = arch_irq_save();
-    g_irq_pending &= ~(1u << line);
-    arch_irq_restore(state);
+    __atomic_fetch_and(&g_irq_pending, ~(1u << line), __ATOMIC_SEQ_CST);
+}
+
+void arch_irq_route(int line, uint32_t core)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return;
+    }
+    uint32_t route = 0;
+    if (core < KICKOS_KERNEL_CORES)
+    {
+        route = core + 1u;
+    }
+    __atomic_store_n(&g_irq_route_plus1[line], route, __ATOMIC_RELEASE);
+}
+
+int arch_irq_line_core(int line)
+{
+    if (line < 0 or line >= IRQ_LINES)
+    {
+        return KICKOS_IRQ_LINE_CORE_NONE;
+    }
+    uint32_t const route = __atomic_load_n(&g_irq_route_plus1[line], __ATOMIC_ACQUIRE);
+    if (route == 0)
+    {
+        return KICKOS_IRQ_LINE_CORE_NONE;
+    }
+    return static_cast<int>(route - 1u);
 }
 
 // Test scaffolding (arch.h).
@@ -454,17 +533,21 @@ void arch_irq_inject(int irq)
     {
         return;
     }
-    arch_irq_state_t const state = arch_irq_save();
-    if ((g_irq_masked & (1u << irq)) != 0)
+    uint32_t const bit = 1u << irq;
+    if ((__atomic_load_n(&g_irq_masked, __ATOMIC_SEQ_CST) & bit) != 0)
     {
-        g_irq_pending |= (1u << irq);
+        __atomic_fetch_or(&g_irq_pending, bit, __ATOMIC_SEQ_CST);
+        // If unmask won the race before the latch, deliver this raise now.
+        if ((__atomic_load_n(&g_irq_masked, __ATOMIC_SEQ_CST) & bit) == 0
+            and (__atomic_fetch_and(&g_irq_pending, ~bit, __ATOMIC_SEQ_CST) & bit) != 0)
+        {
+            ring_line(irq, line_core(irq));
+        }
     }
     else
     {
-        g_doorbell_lines |= (1u << irq); // BEFORE the raise, so the entry sees it
-        kickos::x86_64::apic_doorbell();
+        ring_line(irq, line_core(irq));
     }
-    arch_irq_restore(state);
 }
 
 // --- Fault isolation --------------------------------------------------------
@@ -542,6 +625,7 @@ void arch_idle_wait(void)
 // can follow from it.
 kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
 {
+    CpuState& cpu = local_state();
     uint64_t const vector = frame->vector;
     if (vector == kickos::x86_64::vector_spurious)
     {
@@ -561,28 +645,35 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     }
 
     kickos::x86_64::apic_eoi();
-    g_isr_depth++;
+    cpu.isr_depth++;
     if (vector == kickos::x86_64::vector_timer)
     {
         kickos_isr_timer();
     }
     else
     {
+#if KICKOS_KERNEL_CORES > 1
+        kickos_x86_64_doorbell_service();
+        if (kickos_kernel_core_resched_take() != 0)
+        {
+            kickos_kernel_core_resched();
+        }
+#endif
         dispatch_doorbell();
     }
-    g_isr_depth--;
+    cpu.isr_depth--;
 
-    if (g_switch_to == nullptr)
+    if (cpu.switch_to == nullptr)
     {
         return frame;
     }
     // The interrupted frame IS the outgoing context's saved state, so publishing it is one
     // store; the incoming context's own frame is what the epilogue then pops.
-    struct arch_context* const to = g_switch_to;
-    g_switch_to = nullptr;
-    if (g_ctx_current != nullptr)
+    struct arch_context* const to = cpu.switch_to;
+    cpu.switch_to = nullptr;
+    if (cpu.ctx_current != nullptr)
     {
-        g_ctx_current->sp = reinterpret_cast<uintptr_t>(frame);
+        cpu.ctx_current->sp = reinterpret_cast<uintptr_t>(frame);
     }
     publish_current(to);
     return reinterpret_cast<kickos::x86_64::trap_frame*>(to->sp);

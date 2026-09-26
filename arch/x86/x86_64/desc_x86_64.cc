@@ -6,7 +6,9 @@
 // over.
 
 #include <kickos/arch/desc.h>
+#include <kickos/arch/arch.h>
 #include <kickos/arch/portio.h>
+#include <kickos/arch/ring3.h>
 #include <kickos/arch/trap.h>
 #include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_com1.h>
@@ -65,14 +67,32 @@ namespace kickos::x86_64
         static_assert(nmi_stack_bytes >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_IST,
                       "the NMI and machine-check slots cannot hold the entry and its report");
 
-        alignas(16) uint8_t g_kernel_stack[stack_bytes];
-        alignas(16) uint8_t g_fault_stack[stack_bytes];
-        alignas(16) uint8_t g_nmi_stack[nmi_stack_bytes];
-        alignas(16) uint8_t g_mce_stack[nmi_stack_bytes];
+        struct alignas(64) CpuDesc
+        {
+            alignas(16) uint8_t kernel_stack[stack_bytes];
+            alignas(16) uint8_t fault_stack[stack_bytes];
+            alignas(16) uint8_t nmi_stack[nmi_stack_bytes];
+            alignas(16) uint8_t mce_stack[nmi_stack_bytes];
+            alignas(16) gdt_entry gdt[gdt_entries];
+            alignas(16) tss64 tss;
+        };
 
-        alignas(16) gdt_entry g_gdt[gdt_entries];
-        alignas(16) tss64 g_tss;
+        CpuDesc g_cpu[KICKOS_KERNEL_CORES];
         alignas(16) idt_gate g_idt[idt_vectors];
+
+        CpuDesc& local(void)
+        {
+            return g_cpu[arch_cpu_id()];
+        }
+
+        CpuDesc& local_boot(void)
+        {
+#if KICKOS_NUM_CORES > 1
+            return g_cpu[boot_apic_id()];
+#else
+            return g_cpu[0];
+#endif
+        }
 
         struct __attribute__((packed)) tss_desc_hi
         {
@@ -80,61 +100,61 @@ namespace kickos::x86_64
             uint32_t reserved;
         };
 
-        void set_entry(unsigned index, uint8_t access, uint8_t flags)
+        void set_entry(CpuDesc& c, unsigned index, uint8_t access, uint8_t flags)
         {
-            g_gdt[index].limit_lo = 0xffff;
-            g_gdt[index].base_lo = 0;
-            g_gdt[index].base_mid = 0;
-            g_gdt[index].access = access;
-            g_gdt[index].flags_limit_hi = flags;
-            g_gdt[index].base_hi = 0;
+            c.gdt[index].limit_lo = 0xffff;
+            c.gdt[index].base_lo = 0;
+            c.gdt[index].base_mid = 0;
+            c.gdt[index].access = access;
+            c.gdt[index].flags_limit_hi = flags;
+            c.gdt[index].base_hi = 0;
         }
 
-        void clear_entry(unsigned index)
+        void clear_entry(CpuDesc& c, unsigned index)
         {
-            g_gdt[index].limit_lo = 0;
-            g_gdt[index].base_lo = 0;
-            g_gdt[index].base_mid = 0;
-            g_gdt[index].access = 0;
-            g_gdt[index].flags_limit_hi = 0;
-            g_gdt[index].base_hi = 0;
+            c.gdt[index].limit_lo = 0;
+            c.gdt[index].base_lo = 0;
+            c.gdt[index].base_mid = 0;
+            c.gdt[index].access = 0;
+            c.gdt[index].flags_limit_hi = 0;
+            c.gdt[index].base_hi = 0;
         }
 
-        void build_tss(void)
+        void build_tss(CpuDesc& c)
         {
-            g_tss.reserved0 = 0;
-            g_tss.rsp0 = reinterpret_cast<uint64_t>(g_kernel_stack) + stack_bytes;
-            g_tss.rsp1 = 0;
-            g_tss.rsp2 = 0;
-            g_tss.reserved1 = 0;
+            c.tss.reserved0 = 0;
+            c.tss.rsp0 = reinterpret_cast<uint64_t>(c.kernel_stack) + stack_bytes;
+            c.tss.rsp1 = 0;
+            c.tss.rsp2 = 0;
+            c.tss.reserved1 = 0;
             for (unsigned i = 0; i < 7; ++i)
             {
-                g_tss.ist[i] = 0;
+                c.tss.ist[i] = 0;
             }
-            g_tss.ist[ist_double_fault - 1] =
-                reinterpret_cast<uint64_t>(g_fault_stack) + stack_bytes;
-            g_tss.ist[ist_nmi - 1] =
-                reinterpret_cast<uint64_t>(g_nmi_stack) + nmi_stack_bytes;
-            g_tss.ist[ist_machine_check - 1] =
-                reinterpret_cast<uint64_t>(g_mce_stack) + nmi_stack_bytes;
-            g_tss.reserved2 = 0;
-            g_tss.reserved3 = 0;
+            c.tss.ist[ist_double_fault - 1] =
+                reinterpret_cast<uint64_t>(c.fault_stack) + stack_bytes;
+            c.tss.ist[ist_nmi - 1] =
+                reinterpret_cast<uint64_t>(c.nmi_stack) + nmi_stack_bytes;
+            c.tss.ist[ist_machine_check - 1] =
+                reinterpret_cast<uint64_t>(c.mce_stack) + nmi_stack_bytes;
+            c.tss.reserved2 = 0;
+            c.tss.reserved3 = 0;
             // Past the end of the segment: no I/O permission bitmap, so port access from
             // anything but ring 0 is refused.
-            g_tss.iomap_base = static_cast<uint16_t>(sizeof(tss64));
+            c.tss.iomap_base = static_cast<uint16_t>(sizeof(tss64));
         }
 
-        void build_tss_descriptor(void)
+        void build_tss_descriptor(CpuDesc& c)
         {
-            uint64_t const base = reinterpret_cast<uint64_t>(&g_tss);
-            g_gdt[gdt_index_tss].limit_lo = static_cast<uint16_t>(sizeof(tss64) - 1);
-            g_gdt[gdt_index_tss].base_lo = static_cast<uint16_t>(base & 0xffff);
-            g_gdt[gdt_index_tss].base_mid = static_cast<uint8_t>((base >> 16) & 0xff);
-            g_gdt[gdt_index_tss].access = access_tss;
-            g_gdt[gdt_index_tss].flags_limit_hi = 0;
-            g_gdt[gdt_index_tss].base_hi = static_cast<uint8_t>((base >> 24) & 0xff);
+            uint64_t const base = reinterpret_cast<uint64_t>(&c.tss);
+            c.gdt[gdt_index_tss].limit_lo = static_cast<uint16_t>(sizeof(tss64) - 1);
+            c.gdt[gdt_index_tss].base_lo = static_cast<uint16_t>(base & 0xffff);
+            c.gdt[gdt_index_tss].base_mid = static_cast<uint8_t>((base >> 16) & 0xff);
+            c.gdt[gdt_index_tss].access = access_tss;
+            c.gdt[gdt_index_tss].flags_limit_hi = 0;
+            c.gdt[gdt_index_tss].base_hi = static_cast<uint8_t>((base >> 24) & 0xff);
 
-            tss_desc_hi* const hi = reinterpret_cast<tss_desc_hi*>(&g_gdt[gdt_index_tss + 1]);
+            tss_desc_hi* const hi = reinterpret_cast<tss_desc_hi*>(&c.gdt[gdt_index_tss + 1]);
             hi->base_hi = static_cast<uint32_t>(base >> 32);
             hi->reserved = 0;
         }
@@ -167,11 +187,11 @@ namespace kickos::x86_64
             }
         }
 
-        void load_gdt(void)
+        void load_gdt(CpuDesc& c)
         {
             desc_ptr p;
-            p.limit = static_cast<uint16_t>(sizeof(g_gdt) - 1);
-            p.base = reinterpret_cast<uint64_t>(&g_gdt);
+            p.limit = static_cast<uint16_t>(sizeof(c.gdt) - 1);
+            p.base = reinterpret_cast<uint64_t>(&c.gdt);
             __asm__ volatile("lgdt %0" ::"m"(p) : "memory");
 
             // The code selector is not writable, so it is reloaded through a far return. The
@@ -208,23 +228,30 @@ namespace kickos::x86_64
         }
     }
 
-    void desc_init(void)
+    void desc_init_secondary(void)
     {
-        clear_entry(gdt_index_null);
-        set_entry(gdt_index_kernel_code, access_code, flags_code64);
-        set_entry(gdt_index_kernel_data, access_data, flags_data);
-        set_entry(gdt_index_user_data, access_data_user, flags_data);
-        set_entry(gdt_index_user_code, access_code_user, flags_code64);
-        build_tss();
-        build_tss_descriptor();
-        build_idt();
+        CpuDesc& c = local_boot();
+        clear_entry(c, gdt_index_null);
+        set_entry(c, gdt_index_kernel_code, access_code, flags_code64);
+        set_entry(c, gdt_index_kernel_data, access_data, flags_data);
+        set_entry(c, gdt_index_user_data, access_data_user, flags_data);
+        set_entry(c, gdt_index_user_code, access_code_user, flags_code64);
+        build_tss(c);
+        build_tss_descriptor(c);
 
-        load_gdt();
+        load_gdt(c);
 
         uint16_t const tr = sel_tss;
         __asm__ volatile("ltr %0" ::"r"(tr) : "memory");
 
         load_idt();
+    }
+
+    void desc_init(void)
+    {
+        // The IDT is immutable once built and can be shared by every processor.
+        build_idt();
+        desc_init_secondary();
     }
 
     desc_ptr read_gdtr(void)
@@ -268,7 +295,7 @@ namespace kickos::x86_64
 
     uintptr_t gdt_address(void)
     {
-        return reinterpret_cast<uintptr_t>(&g_gdt);
+        return reinterpret_cast<uintptr_t>(&local().gdt);
     }
 
     uintptr_t idt_address(void)
@@ -278,17 +305,17 @@ namespace kickos::x86_64
 
     uintptr_t tss_address(void)
     {
-        return reinterpret_cast<uintptr_t>(&g_tss);
+        return reinterpret_cast<uintptr_t>(&local().tss);
     }
 
     uint64_t tss_rsp0(void)
     {
-        return g_tss.rsp0;
+        return local().tss.rsp0;
     }
 
     void tss_set_rsp0(uint64_t top)
     {
-        g_tss.rsp0 = top;
+        local().tss.rsp0 = top;
     }
 
     uint64_t tss_ist(unsigned slot)
@@ -297,17 +324,17 @@ namespace kickos::x86_64
         {
             return 0;
         }
-        return g_tss.ist[slot - 1];
+        return local().tss.ist[slot - 1];
     }
 
     uintptr_t fault_stack_lo(void)
     {
-        return reinterpret_cast<uintptr_t>(g_fault_stack);
+        return reinterpret_cast<uintptr_t>(local().fault_stack);
     }
 
     uintptr_t fault_stack_hi(void)
     {
-        return reinterpret_cast<uintptr_t>(g_fault_stack) + stack_bytes;
+        return reinterpret_cast<uintptr_t>(local().fault_stack) + stack_bytes;
     }
 
     void desc_report(void)

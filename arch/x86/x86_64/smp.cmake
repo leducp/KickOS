@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+set(KICKOS_ARCH_SMP_COHERENT 1)
+set(KICKOS_ARCH_SMP_EXCLUSION 1)
+set(KICKOS_ARCH_SMP_IDENTITY 1)

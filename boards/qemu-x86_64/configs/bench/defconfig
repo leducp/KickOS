@@ -7,6 +7,10 @@ CONFIG_BOARD_QEMU_X86_64=y
 # config variant and its protection is the page tables rather than a knob.
 CONFIG_KICKOS_ENABLE_SELFTEST=y
 CONFIG_KICKOS_BENCH=y
+CONFIG_KICKOS_MAX_THREADS=32
+CONFIG_KICKOS_MAX_ENDPOINTS=16
+CONFIG_KICKOS_TASK_ENDPOINT_BUDGET=12
+CONFIG_KICKOS_CAP_TABLE_SUPPLY=32
 
 # No service list is pinned because this board declares none and the default is already
 # kickos_services_none: a console driver is a thread and its device is an interrupt source,

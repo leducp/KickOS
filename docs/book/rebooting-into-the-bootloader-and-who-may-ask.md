@@ -4,24 +4,13 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Rebooting into the bootloader, and who may ask
 
-> Three different acts hide behind the word *reboot*, and telling them apart is most of
-> the work. Stopping execution, restarting your own firmware, and ceasing to be the
-> firmware so that something else may install a new one differ in what survives, in what
-> the host must do next, and above all in blast radius -- and only the third makes an
-> unattended development loop possible. The mechanism for that third act is unportable
-> in a way no seam can paper over, so the seam has to be allowed to answer "this chip
-> cannot"; where a vendor does hand you an indirection, the stable thing is the *name*
-> and never the address; and deciding who may ask is a sharper capability question than
-> it looks, because bootloader entry is keyed to no resource at all and therefore cannot
-> be authorised by possessing one. It closes on the one claim nothing inside the target
-> can witness, and on the way out of that: when the destroyed observer leaves behind a
-> machine that admits the next operation, the absent button press *is* the measurement --
-> provided the hand-back is wired at every place the system can end, which is more than
-> one place. Binds to [`../reference/architecture.md`](../reference/architecture.md)
-> ("User/kernel separation", "Object model, capabilities & IPC"),
-> [`../reference/invariants.md`](../reference/invariants.md), and
-> [`../reference/porting.md`](../reference/porting.md) (the arch-seam fallback
-> convention).
+> "Reboot" can mean stopping, restarting the same firmware, or handing control
+> to a bootloader that accepts a new image. This chapter separates those acts,
+> compares the hardware paths to the third, and asks who may request it. It also
+> shows how to test an operation whose successful target can no longer report
+> back. Exact contracts live in the [architecture](../reference/architecture.md),
+> [invariants](../reference/invariants.md), and
+> [porting](../reference/porting.md) references.
 
 ## The problem: "reboot" names at least three acts
 

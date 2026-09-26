@@ -98,47 +98,31 @@ maintenance.
   this thread serves. Mutex waiters are the donor this chapter walks; the other two are
   call/reply donation (Chapter 8.5), and one recompute funnel takes the max over all
   three. Boosting and reverting are both just re-establishing I2.
-- **I3 -- ready-list integrity.** The ready structure files a thread by its `prio`
-  (Chapter 2), and it holds the `RUNNING` thread as well as the `READY` ones. So no
-  code may change the `prio` of a thread in either of those states in place: it must be
-  removed from the ready structure, have its priority changed, and be re-added, or the
-  per-priority lists and the priority bitmap corrupt silently. `RUNNING` is not the
-  exotic case here: on a boost the target is very often the thread that is running.
-  There is **one writer** of effective priority, and it obeys this.
+- **I3 -- ready-list integrity.** A core's ready structure files a thread by
+  the priority that core last seated, `rq_prio`, and it holds the `RUNNING`
+  thread as well as the `READY` ones. When a priority change is applied on the
+  holder's core, the thread must be removed, re-keyed and re-added; changing
+  the key in place would corrupt the lists and bitmap. A peer instead updates
+  `prio` and requests a `RESEAT`, so `prio` may run ahead of `rq_prio` until
+  the holder applies it. No peer edits the holder's ready structure. There is
+  **one writer entry point** for effective priority, and it obeys this rule.
 - **I4 -- atomicity.** Every boost, revert, and chain walk runs entirely inside the
-  same one `IrqLock` critical section as the block or transfer it accompanies. On a
-  single core that makes the whole priority manipulation indivisible.
+  same one `IrqLock` critical section as the block or transfer it accompanies.
+  The interrupt mask excludes local handlers; on a shared-kernel multicore
+  build, the BKL excludes peer cores too.
 
 ### The one writer: `sched::set_prio`
 
-I1 and I3 are enforced by funneling every effective-priority change through a single
-scheduler entry point:
-
-```
-void set_prio(Thread* t, uint8_t p)
-{
-    IrqLock lock;
-    if (t->prio == p)
-    {
-        return;
-    }
-    if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
-    {
-        kernel().policy->on_remove(t);   // I3: pull it out first
-        t->prio = p;
-        kernel().policy->on_ready(t);    // ...then re-file at the new priority
-        return;
-    }
-    t->prio = p;   // BLOCKED only: on no ready list, and on no prio-ordered queue
-}
-```
-
-Only a `BLOCKED` thread takes the new value in place, and it may precisely because
-neither structure it can be on is priority-ordered: wait queues are unsorted and scanned
-at pop (Chapter 2.2), and the timer list is sorted by deadline. A parked thread whose
-priority rises needs no re-queue. This is the lazy-scan payoff cashing in. Everything
-else goes through remove-change-re-add, and reading that branch as "READY only" is the
-mistake that corrupts the bitmap.
+I1 and I3 are enforced by funneling every effective-priority change through
+`sched::set_prio`. There are three cases. A `BLOCKED` thread takes the new
+value in place: endpoint and mutex wait queues are unsorted and scanned at pop
+(Chapter 2.2), and the timer list is sorted by deadline. A thread on this
+core's ready structure is removed, re-keyed and re-added locally, whether it
+is `READY` or `RUNNING`. A thread already linked on a peer gets a `RESEAT`
+request; a handed thread is re-read when linked or reseated as needed. The
+request carries no priority value, so an older request cannot overwrite a
+newer `prio`. The exact state checks are in `kernel/sched/sched.cc`; the
+ownership rule is in [the scheduler invariants](../reference/invariants.md).
 
 ## Boosting: the lock path
 

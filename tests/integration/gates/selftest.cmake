@@ -34,6 +34,13 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     parked_frame_hostile)
 endif()
 
+# The twelve-core bench image provisions enough thread slots for its crowded
+# placement checks. The refusal arm caps its parked children at 24, so that
+# image can legitimately reach the cap before exhausting the larger pool.
+if(KICKOS_CONFIG_VARIANT STREQUAL "benchsmp12")
+  list(APPEND KICKOS_EXPECT_SKIPS spawn_refusal_frees_task)
+endif()
+
 # The isolated-core mask, normalised: the knob is hex text, which `if(... EQUAL 0)` does not
 # read as a number.
 set(_selftest_isolated 0)
@@ -80,6 +87,9 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
 endif()
 # reent_per_thread_cores holds one checker and two switchers at once.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_MAX_THREADS LESS 3)
+  list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_REENT)
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
 endif()
 

@@ -83,6 +83,8 @@ namespace kickos::x86_64
     };
 
     void desc_init(void);
+    // After the BSP built the shared IDT, install this AP's own GDT and TSS.
+    void desc_init_secondary(void);
     void desc_report(void);
 
     desc_ptr read_gdtr(void);

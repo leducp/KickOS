@@ -143,7 +143,7 @@
  * KICKOS_THREAD_SLOTS blocks of a tail its image does not contain. bluepill-c8 has 3 slots
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
- * 768 enforced against 736 measured, tied by the two bench presets f411disco-bench and
+ * 768 enforced against 760 measured, tied by the two bench presets f411disco-bench and
  * xmc4800-relax-bench, whose bench arm prints; the 33 ordinary presets read 444 to 648, and the
  * two partition nodes pizero2350-amp2-n0 and -n1 read 668. 1240 enforced against 1000 measured
  * at qemu-telem through arch_shutdown's telemetry tail, the only telemetry variant of any

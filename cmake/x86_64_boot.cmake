@@ -43,6 +43,13 @@ add_library(kickos_x86_64_boot OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_boot)
 target_include_directories(kickos_x86_64_boot PRIVATE ${KICKOS_X86_64_INCLUDES})
 
+# The SMP boot witness reserves its SIPI page before the final UEFI memory-map
+# read. Keep that behavior off the ordinary X1-X5 and application handover.
+add_library(kickos_x86_64_boot_ap OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc")
+kickos_apply_freestanding(kickos_x86_64_boot_ap)
+target_include_directories(kickos_x86_64_boot_ap PRIVATE ${KICKOS_X86_64_INCLUDES})
+target_compile_definitions(kickos_x86_64_boot_ap PRIVATE KICKOS_X86_64_AP_BOOT=1)
+
 # The COM1 primitives, which the kernel-free images print through directly.
 add_library(kickos_x86_64_boot_com1 OBJECT "${KICKOS_Q35_DIR}/com1_q35.cc")
 kickos_apply_freestanding(kickos_x86_64_boot_com1)
@@ -63,6 +70,7 @@ kickos_apply_freestanding(kickos_x86_64_nobench)
 target_include_directories(kickos_x86_64_nobench PRIVATE ${KICKOS_X86_64_INCLUDES})
 
 # X2's subset: the tables, the report and the declining interrupt fallback.
+if(KICKOS_KERNEL_CORES EQUAL 1)
 add_library(kickos_x86_64_x2 OBJECT
   "${KICKOS_X86_64_DIR}/desc_x86_64.cc"
   "${KICKOS_X86_64_DIR}/fault_x86_64.cc"
@@ -240,6 +248,48 @@ add_custom_command(
   VERBATIM)
 list(APPEND KICKOS_X86_64_IMAGES "${KICKOS_X5_IMAGE}")
 
+# X6 is the AP-entry witness. It uses the same UEFI handover but reserves a low
+# SIPI page and releases one AP after ExitBootServices. It is built on demand.
+add_library(kickos_x86_64_probe6 OBJECT
+  "${KICKOS_X86_64_DIR}/landed_x6_x86_64.cc"
+  "${KICKOS_X86_64_DIR}/smp_boot_x86_64.cc"
+  "${KICKOS_X86_64_DIR}/smp_trampoline.S")
+kickos_apply_freestanding(kickos_x86_64_probe6)
+target_include_directories(kickos_x86_64_probe6 PRIVATE ${KICKOS_X86_64_INCLUDES})
+
+set(KICKOS_X6_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x6.efi")
+add_custom_command(
+  OUTPUT "${KICKOS_X6_IMAGE}"
+  COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
+          $<TARGET_OBJECTS:kickos_x86_64_probe6>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+          $<TARGET_OBJECTS:kickos_arch_x86_64>
+          $<TARGET_OBJECTS:kickos_chip_q35>
+  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+          -o "${KICKOS_X6_IMAGE}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
+          $<TARGET_OBJECTS:kickos_x86_64_probe6>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+          --start-group
+          "$<TARGET_FILE:kickos_chip_q35>"
+          "$<TARGET_FILE:kickos_arch_x86_64>"
+          --end-group
+  DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
+          $<TARGET_OBJECTS:kickos_x86_64_probe6>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+          "$<TARGET_FILE:kickos_chip_q35>"
+          "$<TARGET_FILE:kickos_arch_x86_64>"
+          "${KICKOS_NO_GOT}"
+          "${KICKOS_X86_64_PE_SCRIPT}"
+  COMMENT "x86_64: linking the two-core AP-entry witness"
+  COMMAND_EXPAND_LISTS
+  VERBATIM)
+add_custom_target(x6_image DEPENDS "${KICKOS_X6_IMAGE}")
+
 set(KICKOS_X1_ESP "${PROJECT_BINARY_DIR}/esp.img")
 add_custom_command(
   OUTPUT "${KICKOS_X1_ESP}"
@@ -383,6 +433,9 @@ endif()
 message(STATUS "KickOS: x86_64 libraries plus the X1 through X5 images; `ninja x1-run`, "
                "`ninja x2-run`, `ninja x3-run`, `ninja x4-run` and `ninja x5-run` take the "
                "witnesses")
+else()
+  message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
+endif()
 
 # ---------------------------------------------------------------------------
 # The APPLICATION images: the same eight archives the root CMakeLists groups for every other
@@ -437,7 +490,8 @@ set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
 # be extracted; the link then fails undefined at the end. The archive form is right for the
 # arch and chip halves, where a fallback TU sits beside the chip's own definition and member
 # order resolves it, and wrong here.
-set(_kos_x86_64_install_objects kickos_x86_64_boot kickos_x86_64_landed_kernel)
+set(_kos_x86_64_install_objects kickos_x86_64_boot kickos_x86_64_boot_ap
+  kickos_x86_64_landed_kernel)
 if(TARGET kickos_x86_64_nopool)
   list(APPEND _kos_x86_64_install_objects kickos_x86_64_nopool)
 endif()

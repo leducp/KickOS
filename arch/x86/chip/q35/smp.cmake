@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+set(KICKOS_CHIP_SMP_INTERRUPT 1)
+set(KICKOS_CHIP_SMP_SYMMETRIC 1)
+set(KICKOS_CHIP_SMP_TARGETING 1)
