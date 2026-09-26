@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 45 documents = 29 LANDED + 9 ACTIVE + 7 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 49 documents = 31 LANDED + 9 ACTIVE + 9 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -54,6 +54,8 @@ Two things follow from this that are easy to get wrong:
 | Document | Subject |
 |---|---|
 | [`design-m9-lock-bound.md`](../design-m9-lock-bound.md) | M9.1's ticket lock: one algorithm over three backends, the worst wait derived per backend or recorded as underivable, the interrupt mask evaluated and refused, and the first shared-kernel silicon measurement this project has taken |
+| [`design-m9.4-rings.md`](../design-m9.4-rings.md) | M9.4's per-pair rings: every cross-core hand-over and re-seat travels on a ring the target drains, under the one lock (stage 1, landed), and the switch half leaving the lock was refused by the numeric stop condition (stage 2) |
+| [`design-m9.5-bkl-options.md`](../design-m9.5-bkl-options.md) | M9.5's decision: one big kernel lock for every shared-kernel transaction, CLH arbitration on x86_64 and ticket arbitration elsewhere, with the x86, ARM64 and LX6 measurements behind it |
 | [`design-task9-mmio-driver.md`](../design-task9-mmio-driver.md) | The MMIO grant-at-spawn mechanism + the `arch_mpu_region_encodable` seam -- what makes an unprivileged userspace driver possible |
 | [`design-mpu-commit-deferred.md`](../design-mpu-commit-deferred.md) | The enforcement-soundness seam: stash the region set at the switch decision, program it from the switch epilogue |
 | [`design-cxx-under-mpu.md`](../design-cxx-under-mpu.md) | Full C++ (exceptions/STL/RTTI) from an unprivileged thread under enforcement, across four EH models |
@@ -104,6 +106,8 @@ Two things follow from this that are easy to get wrong:
 | [`design-m7-smp.md`](../design-m7-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp. **ANSWERED AND REFUSED (2026-09-18)**: neither lever is built, the page carries the numbers and the four tests that would reopen it. It stays here because nothing was committed to code, not because the question is open |
+| [`design-m9.5-local-ipc.md`](../design-m9.5-local-ipc.md) | An owner-local IPC path on x86 beside the lock, measured on pinned KVM. **REMOVED**: the mixed workload did not pay for a second exclusion protocol, and the kernel keeps the single lock path |
+| [`design-m9.5-ipc-lock-feasibility.md`](../design-m9.5-ipc-lock-feasibility.md) | A source-level gate on locking whole IPC transactions per object: no small prototype is ready to benchmark, because a safe one needs a new lifetime and publication protocol across IPC, capabilities, deadlines, the scheduler and the switch |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
 | [`design-m9-reference-kernels.md`](../design-m9-reference-kernels.md) | The M9.0 reference-kernel survey: nineteen rows, each with its licence, covering lock domains, acquisition order, remote wake, migration, whether the lock is released inside the switch, the kernel stack model and what each project publishes about itself -- plus where KickOS already sits among them. Cited by path, copied from nowhere, and it does not rank |

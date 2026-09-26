@@ -13,6 +13,11 @@
 # NO common/startup_ranges.cc: the UEFI loader places .data with its initialised content and
 # zero-fills the tail of a section whose virtual size exceeds its raw size, so there is no
 # copy table and no zero table for a Reset_Handler to walk.
+set(_x86_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
+list(REMOVE_ITEM _x86_defaults
+  common/arch_irq_line_core_default.cc
+  common/arch_irq_route_default.cc)
+
 set(KICKOS_ARCH_SOURCES
   x86/x86_64/arch_x86_64.cc
   x86/x86_64/apic_x86_64.cc
@@ -23,7 +28,11 @@ set(KICKOS_ARCH_SOURCES
   x86/x86_64/trap_x86_64.S
   x86/x86_64/switch.S
   x86/x86_64/panic_stack.S
-  ${KICKOS_SEAM_DEFAULTS_COMMON})
+  x86/x86_64/klock_x86_64.cc
+  x86/x86_64/smp_boot_x86_64.cc
+  x86/x86_64/smp_trampoline.S
+  common/doorbell_protocol.cc
+  ${_x86_defaults})
 
 # The fault report prints through the chip's COM1 primitives: the same reporter serves the
 # kernel-free boot images, which link no kernel to print with.

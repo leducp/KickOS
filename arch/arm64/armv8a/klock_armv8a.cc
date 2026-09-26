@@ -54,6 +54,15 @@ namespace
 #endif
 #endif
 
+    // The requests the service answers, one row per core: on the stack they would deepen every
+    // trap class that polls the doorbell by a word per core. One row is enough because the
+    // service is entered masked and nothing it calls before its answers enters it again.
+    struct alignas(KICKOS_DOORBELL_LINE) AskedRow
+    {
+        uint32_t seq[KICKOS_DOORBELL_CORES];
+    };
+    AskedRow g_asked[KICKOS_DOORBELL_CORES] = {};
+
 #if KICKOS_KERNEL_CORES > 1
     // Separate lines: every draw takes g_next_ticket's line exclusive in the inner-shareable
     // domain, which on a shared line would invalidate it under every waiter loading
@@ -126,7 +135,7 @@ void kickos_arm64_doorbell_service(void)
     uint32_t const me = arch_doorbell_core();
     // Observed once and answered from the observation, never re-read: the ISB below must
     // attest to THIS snapshot, and a request raised after it is not one it covers.
-    uint32_t asked[KICKOS_DOORBELL_CORES] = {};
+    uint32_t* const asked = g_asked[me].seq;
     bool owed = false;
     for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {

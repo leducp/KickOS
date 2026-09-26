@@ -18,17 +18,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Also enforce the single-core limit when compiled outside the root CMake build.
-static_assert(KICKOS_KERNEL_CORES == 1,
-              "INVLPG and the root-register rewrite act on the issuing core alone and this "
-              "file sends no shootdown, so a peer goes on translating through an entry removed "
-              "here");
-
 extern "C"
 {
     arch_phys_addr_t kickos_frame_alloc(void);
     void kickos_frame_free(arch_phys_addr_t frame);
     void kfault_terminate(void) __attribute__((noreturn));
+#if KICKOS_KERNEL_CORES > 1
+    uint32_t kickos_x86_64_online_cores(void);
+#endif
 }
 
 namespace
@@ -264,6 +261,11 @@ namespace
         g_tlbi_issued++;
 #endif
         __asm__ volatile("invlpg (%0)" ::"r"(va) : "memory");
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t const peers = kickos_x86_64_online_cores() & ~(1u << arch_cpu_id());
+        arch_ipi_send(peers);
+        arch_ipi_wait(peers);
+#endif
     }
 
     // Keep the root register and residency record in sync.
@@ -278,6 +280,11 @@ namespace
     void invalidate_all(void)
     {
         install_root(read_cr3());
+#if KICKOS_KERNEL_CORES > 1
+        uint32_t const peers = kickos_x86_64_online_cores() & ~(1u << arch_cpu_id());
+        arch_ipi_send(peers);
+        arch_ipi_wait(peers);
+#endif
     }
 
     uint64_t root_key(struct arch_aspace* space)

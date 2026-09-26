@@ -1382,9 +1382,13 @@ fi
 # plan AND owes every marker below.
 case $APP in
   selftest*) WANT_TAP=1; WANT_BENCH=0 ;;
+  bench_smp*) WANT_TAP=0; WANT_BENCH=0 ;;
   bench*)    WANT_TAP=0; WANT_BENCH=1 ;;
   *)         WANT_TAP=0; WANT_BENCH=0 ;;
 esac
+if [ "$APP" = bench_smp ] && ! grep -aq '^smp-lock: done' "$LOG"; then
+  refuse "$LOG has no smp-lock completion marker."
+fi
 if [ -z "$LAST" ]; then
   if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
     # A console that IS the device cannot deliver its own head, so the plan line is gone

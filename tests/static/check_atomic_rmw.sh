@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The no-RMW rule: no atomic read-modify-write anywhere in the tracked tree. An RMW on a
+# The no-RMW rule for portable target code. An RMW on a
 # 32-bit atomic is a `__atomic_fetch_add_4`-class LIBCALL on armv6m and rxv3 and inline on
 # armv7m, xtensa and the host, so an RMW written against the sim or a Cortex-M4 board builds
 # and links green, and only picopi or microbit refuses it, at LINK time: a freestanding link
@@ -14,7 +14,9 @@
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_atomic_rmw.sh
 #
-#   corpus     tracked *.c, *.cc, *.cpp, *.h, *.hh, *.hpp, *.inc, *.h.in and *.S. Source
+#   corpus     tracked *.c, *.cc, *.cpp, *.h, *.hh, *.hpp, *.inc, *.h.in and *.S, except
+#              x86-only arch code and the host-only m941 lock probe, whose hardware atomics
+#              do not link into armv6m or rxv3. Source
 #              only: a scan of the markdown tree would report the prose stating the rule.
 #
 #   comments   tests/lib/strip_comments.awk blanks `//`, `/* */` and every literal BEFORE
@@ -312,9 +314,12 @@ NEGK="$(awk '{ s += $1 } END { print s + 0 }' "$TMP/st/nw/kept")"
 
 # --- the corpus ---------------------------------------------------------------------------
 corpus_sources "$TMP/all"
-N="$(wc -l < "$TMP/all" | tr -d ' ')"
+# x86-only lock and interrupt state require hardware RMWs, and the host probe models one.
+# Neither source can reach the small MCUs whose libatomic absence this gate enforces.
+grep -vE '^(arch/x86/|tools/bench/m941_lock_scaling[.]cc$)' "$TMP/all" > "$TMP/portable"
+N="$(wc -l < "$TMP/portable" | tr -d ' ')"
 
-detect "$TMP/all" "$TMP/w"
+detect "$TMP/portable" "$TMP/w"
 
 DN="$(cut -f3 "$TMP/w/names" | sort -u | wc -l | tr -d ' ')"
 DM="$(awk -F"$TAB" '$4 == "member" { print $3 }' "$TMP/w/names" | sort -u | wc -l | tr -d ' ')"

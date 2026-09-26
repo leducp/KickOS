@@ -4,8 +4,8 @@
 
 > Every protection system answers one question: *this subject is asking to do this thing to
 > this object -- is it allowed?* There are two ways to answer it, they are transposes of the
-> same truth, and which one you pick decides things that look unrelated to protection --
-> how fast your IPC is, whether you can take authority back, and whether recycling a task
+> same truth, and which one you pick affects things that look unrelated to protection --
+> the work on an IPC path, how you take authority back, and whether recycling a task
 > slot can silently hand away permissions. Prereq: chapter 0.3 (what a kernel is for).
 > Full theory: Tanenbaum, *Modern Operating Systems*, ch.9 (Security -- protection domains,
 > access control lists, capabilities).
@@ -13,8 +13,9 @@
 ## One question, one matrix, two ways to store it
 
 Write every subject in your system down the side and every object across the top, and put in
-each cell what that subject may do to that object. That is the **access matrix**, and it is
-the whole of protection. Everything else is a storage decision.
+each cell what that subject may do to that object. That is the **access matrix**: a
+useful model of object-specific rights. A real system must also decide how names,
+delegation, revocation and permissions without a specific object work.
 
 ```
               sem_A      endpoint_B   uart_window
@@ -36,36 +37,36 @@ each entry in that set *is* the authority -- an unforgeable reference that both 
 and conveys rights over it. To decide a request you do not ask who the subject is. You check
 that the reference it presented is one it actually holds.
 
-Same matrix. Opposite storage. And from that one choice, everything below follows.
+Same matrix, stored from opposite sides. The choice shapes the mechanisms below.
 
-## The runtime difference: a lookup versus a possession test
+## The runtime difference: where the lookup starts
 
-Under an access list the check is: *authenticate the subject, then search.* The subject hands
-you a **name** -- a path, an id, an integer -- and you consult a table keyed on who is asking.
+Under an access list the check is: *identify the subject, then look up its rights on the
+object.* The subject hands you a **name** -- a path, an id, an integer -- and you consult
+policy keyed on who is asking. An implementation may index or cache that policy; a list
+need not be scanned linearly on every request.
 
 Under capabilities the check is: *is this reference real, and does it carry the right?* The
 subject hands you the authority itself. There is no table keyed on identity, because identity
 is not what authorises anything.
 
-That difference has a cost consequence which decides the matter for a microkernel, and it is
-worth stating before the philosophy. **In a microkernel, IPC is the hot path.** Files, network
-stacks, drivers -- everything that would be a kernel call elsewhere is a message to a
-userspace server here, so the authority check on the message path runs at the frequency of
-*all system activity combined*. A possession test is a bounds check, a generation compare and
-a rights mask on a reference the caller already holds. An identity-keyed lookup is a search,
-on every send. One of those you can afford in the hottest path in the system; the other you
-cannot.
-
-This is not a small-system argument. It is why the whole L4 lineage, which exists because IPC
-speed is the thing that decides whether a microkernel is viable at all, is capability-based.
+That difference matters on a microkernel's IPC path. Files, network stacks and drivers
+may be reached through userspace servers, so the kernel must authorize frequent message
+operations. In KickOS, a task-relative capability resolves through a bounded table
+check, a generation compare and a rights mask. An access-list design would also need
+an object name and a subject identity whose lifetime and lookup rules the kernel can
+trust. Its cost depends on the chosen indexes and caches, so the storage orientation
+alone does not prove which implementation is faster. KickOS chooses the direct,
+bounded possession check because it fits its small tables and delegation model.
 
 ## Where they diverge
 
 ### Ambient authority, and the confused deputy
 
-Under an access list, every subject can *name* every object. Naming is unrestricted; the check
-is the only thing standing between the subject and the object. Authority is **ambient** -- it
-surrounds you, and you invoke it by mentioning a name.
+An access-list design often lets a subject name an object without holding
+authority to use it. The check then decides whether that subject's identity is
+allowed. If the namespace is broadly visible, this creates **ambient authority**:
+a service can invoke its own rights merely by mentioning an object's name.
 
 That produces a failure mode with a name of its own. A service acting on behalf of a client
 uses *its own* identity when it touches things, because identity is what authorises. So a
@@ -75,9 +76,12 @@ service -- holding more authority than its caller -- does it. The service has be
 asker's to use. (Norm Hardy named this in 1988, describing a compiler that would happily
 overwrite the billing database because the *compiler* was allowed to.)
 
-Under capabilities the client must hand the reference over. The deputy cannot reach what it
-was not given, because it cannot *name* what it was not given. The failure mode is not
-mitigated; it is unrepresentable.
+With capabilities, a service can ask the client to pass the authority for the requested
+operation. That makes the authority used for the request explicit and can prevent this
+form of confused-deputy error. The service may still hold authority of its own; if it
+uses that authority on a client's behalf without checking the request, it can still act
+as a confused deputy. Capabilities make the safer interface possible, but the service
+must use it.
 
 ### Delegation
 
@@ -107,8 +111,10 @@ should know which question you will be asked.
 
 ### Revocation: the access list's real win
 
-Take authority back under an access list and you are done: remove the entry. The check happens
-at access time, so the next attempt fails. Cost, O(1), one place.
+Take authority back under an access list by removing the entry. If each access checks
+the authoritative policy, the next attempt fails. Any cached decision needs an
+invalidation rule, and in-flight operations need a separate rule. The advantage is that
+the policy can remain at the object instead of following every delegated reference.
 
 Take authority back under capabilities and you have a problem, because a capability is
 authority *already distributed*. Somebody holds it. To revoke it you must find every copy --
@@ -119,31 +125,31 @@ capability is ever derived. Other designs pay differently: some make revocation 
 (destroy the object identity and every reference to it everywhere dies), and some decline
 revocation entirely and let a holder keep what it was given until it exits.
 
-**So if selective revocation is a requirement, an access list gives it away free and a
-capability system makes you buy it.** That is the honest trade, and it is the strongest thing
-that can be said for the access-list side.
+**Selective revocation is usually simpler to express in an access list; a capability
+system needs an explicit rule for distributed references.** Neither implementation
+gets the work of invalidation and concurrent use for free.
 
 ### The namespace
 
-An access list needs a global namespace: every subject must be able to *name* every object in
-order to ask about it. That namespace is itself a surface. If "you may not" and "there is no
-such thing" are distinguishable answers, the namespace is an oracle for probing what exists.
-Capability systems need no such namespace -- the set of names a subject can form is exactly
-the set of things it holds.
+An access-list design needs a way to name the object whose policy it checks,
+but that name need not live in one global namespace. A broadly visible namespace
+is itself a surface: if "you may not" and "there is no such thing" are
+distinguishable answers, a caller may probe what exists. A capability system
+can avoid a global object namespace for ordinary access: the references a
+subject holds provide the names it may use.
 
 ## Rights belong to the pair, not to the name
 
 A subtlety that catches people, and it is the same in both models once you see it: **rights are
 an attribute of the (subject, object) pair.** They are not a property of the object -- two
 subjects can hold the same object with different rights -- and in a well-built capability
-system they are not a property of the *token* either.
+system such as KickOS they are not a property of the userspace *token* either.
 
-That last point is worth dwelling on, because it is what makes a capability safe to hand to
-untrusted code. The thing userspace holds should be an opaque name -- an index, a number -- and
-the rights should live where the *kernel* keeps them. If rights were encoded in the token, the
-holder could inspect them, and every bit of the encoding would be an invitation to try
-forging a better one. When the token is just a name, "widen my own rights" is not a badly
-guarded operation; it is not an operation at all.
+That last point is worth dwelling on, because KickOS hands opaque task-relative
+names to untrusted code and keeps rights in kernel-held entries. Inspecting or
+changing the name cannot widen those rights. Other capability systems can encode
+rights in a protected or unforgeable token; the invariant is that the holder
+cannot mint wider authority, not that every token has the same representation.
 
 A consequence that surprises people: the same subject may legitimately hold the *same object
 twice*, at two names, with different rights. A server may hold an endpoint with full rights
@@ -167,12 +173,13 @@ different kind of permission and it deserves a genuinely different mechanism.
 
 Skip the philosophy and ask these:
 
-1. **Is an authority check on your hot path?** If yes -- and in a microkernel it is, because
-   IPC carries everything -- a possession test wins and the argument is over.
-2. **Do you need to take authority back from a running subject?** If yes, an access list gives
-   it to you free and a capability system charges you for it. Decide *before* you build, not
-   after; retrofitting revocation into a capability system means retrofitting a derivation
-   structure into every table.
+1. **Is an authority check on your hot path?** If yes, compare the actual lookup and
+   caching costs. A bounded capability-table check is a good fit for KickOS's IPC path;
+   the storage model alone is not a benchmark.
+2. **Do you need to take authority back from a running subject?** If yes, choose the
+   revocation rule before you build. Access lists can centralize it; distributed
+   capabilities need a way to invalidate or trace copies, or a deliberately narrower
+   revocation promise.
 3. **Is your subject identity stable, or do you recycle it?** This one is the trap, and it is
    the next section.
 
@@ -226,7 +233,8 @@ flexibility it gives up.
 
 ## How KickOS answers it
 
-Possession, for the reason in question 1: IPC is the hot path and everything is built on it.
+Possession, for the reason in question 1: IPC is frequent, and KickOS can resolve its
+small task-relative table through a bounded check while passing authority explicitly.
 Resolution is a bounds check, a generation compare and a rights mask -- see chapter 8.1 for the
 resolve chokepoint and 8.7 for the generation.
 

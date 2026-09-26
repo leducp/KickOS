@@ -60,17 +60,6 @@ namespace kickos
         // Request all peers, raise the doorbell and wait for every reply.
         BD_DOORBELL,
 #endif
-        // Populated and printed by explicit sweeps, outside ordinary workload reporting.
-        BD_IRQ_ENTRY,
-        // One slot per masked span, filled together by one interleaved sweep.
-        BD_IRQ_WCASE,
-        BD_IRQ_WCASE_LAST = BD_IRQ_WCASE + 3,
-        // From IRQ raise to the woken userspace thread reading its device window.
-        // Split by whether the waiter and handler ran on the same core.
-        BD_IRQ_E2E_LOCAL,
-#if KICKOS_KERNEL_CORES > 1
-        BD_IRQ_E2E_CROSS,
-#endif
 #if KICKOS_BENCH_SCHED_ON
         // Fed by the workload and printed by the scheduler's own report, not the ordinary one.
         // A call's whole round trip, entry to return, on the caller's core; a call that resumes
@@ -83,6 +72,18 @@ namespace kickos
         // the thread it moved or re-seated, on that thread's core.
         BD_PUSH_E2E,
         BD_RESEAT_E2E,
+#endif
+        // Populated and printed by explicit sweeps, outside ordinary workload reporting. These
+        // stay last: they live in a row of their own, apart from the slots the workload feeds.
+        BD_IRQ_ENTRY,
+        // One slot per masked span, filled together by one interleaved sweep.
+        BD_IRQ_WCASE,
+        BD_IRQ_WCASE_LAST = BD_IRQ_WCASE + 3,
+        // From IRQ raise to the woken userspace thread reading its device window.
+        // Split by whether the waiter and handler ran on the same core.
+        BD_IRQ_E2E_LOCAL,
+#if KICKOS_KERNEL_CORES > 1
+        BD_IRQ_E2E_CROSS,
 #endif
         BD_COUNT
     };
@@ -328,6 +329,7 @@ namespace kickos
     // saturated and exclude them from statistics. Inline switches can include
     // suspension or migration between unsynchronized counters.
     void bench_phase_add(uint32_t phase, BenchTick delta);
+    // Both take a slot below BD_IRQ_ENTRY and refuse a swept one.
     void bench_dist_add(uint32_t dist, BenchTick delta);
     // Record the outermost lock interval and retain the release address of its maximum.
     void bench_lock_hold_add(BenchTick delta, void* site);

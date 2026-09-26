@@ -19,6 +19,7 @@
 // probe4_x86_64.cc is what walks the whole hierarchy.
 
 #include <kickos/arch/desc.h>
+#include <kickos/arch/arch.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/chip_com1.h>
@@ -69,7 +70,12 @@ namespace kickos::x86_64
         constexpr uint32_t scn_mem_discardable = 0x02000000u;
         constexpr uint32_t scn_mem_write = 0x80000000u;
 
-        alignas(64) cpu_block g_cpu = {0, 0};
+        alignas(64) cpu_block g_cpu[KICKOS_KERNEL_CORES] = {};
+
+        cpu_block& local_cpu(void)
+        {
+            return g_cpu[arch_cpu_id()];
+        }
 
         static_assert(sizeof(cpu_block) == KICKOS_X86_64_CPU_SIZE,
                       "switch.S addresses the block with literal displacements");
@@ -77,6 +83,10 @@ namespace kickos::x86_64
                       "switch.S loads the kernel stack at CPU_KERNEL_SP");
         static_assert(offsetof(cpu_block, user_rsp) == KICKOS_X86_64_CPU_USER_RSP,
                       "switch.S parks the caller's stack pointer at CPU_USER_RSP");
+        static_assert(offsetof(cpu_block, sw_start) == KICKOS_X86_64_CPU_SW_START,
+                      "switch.S timestamps the swap in this core's block");
+        static_assert(offsetof(cpu_block, core_id) == KICKOS_X86_64_CPU_CORE_ID,
+                      "arch_cpu_id reads the core ID from this GS offset");
         static_assert(KICKOS_X86_64_SEL_USER_CODE == sel_user_code,
                       "switch.S stamps the user code selector as an immediate");
         static_assert(KICKOS_X86_64_SEL_USER_DATA == sel_user_data,
@@ -241,6 +251,25 @@ namespace kickos::x86_64
         }
     }
 
+    void ring3_cpu_init(void)
+    {
+        // Both GS bases are per-processor, as are the syscall MSRs.
+        uint32_t id = 0;
+#if KICKOS_NUM_CORES > 1
+        id = boot_apic_id();
+#endif
+        g_cpu[id].core_id = id;
+        write_msr(msr_gs_base, reinterpret_cast<uint64_t>(&g_cpu[id]));
+        write_msr(msr_kernel_gs_base, 0);
+
+        uint64_t const star = (static_cast<uint64_t>((sel_user_data & ~3u) - 8) << 48)
+                              | (static_cast<uint64_t>(sel_kernel_code) << 32);
+        write_msr(msr_star, star);
+        write_msr(msr_lstar, reinterpret_cast<uint64_t>(&kickos_x86_64_syscall_entry));
+        write_msr(msr_fmask, fmask);
+        write_msr(msr_efer, read_msr(msr_efer) | efer_sce);
+    }
+
     void ring3_init(uintptr_t ram_base, size_t ram_size)
     {
         uint64_t const cr4 = read_cr4();
@@ -314,30 +343,17 @@ namespace kickos::x86_64
         // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
         // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
         // the base it is holding but never the one the entry gets.
-        write_msr(msr_gs_base, reinterpret_cast<uint64_t>(&g_cpu));
-        write_msr(msr_kernel_gs_base, 0);
-
-        // IA32_STAR carries both instructions' selector bases: bits 47:32 for SYSCALL and
-        // bits 63:48 for SYSRET, which reads SS from that field plus 8 and CS from plus 16.
-        uint64_t const star = (static_cast<uint64_t>((sel_user_data & ~3u) - 8) << 48)
-                              | (static_cast<uint64_t>(sel_kernel_code) << 32);
-        write_msr(msr_star, star);
-        write_msr(msr_lstar, reinterpret_cast<uint64_t>(&kickos_x86_64_syscall_entry));
-        write_msr(msr_fmask, fmask);
-
-        // LAST, so no SYSCALL can be executed before the three registers above name where it
-        // goes and what it masks.
-        write_msr(msr_efer, read_msr(msr_efer) | efer_sce);
+        ring3_cpu_init();
     }
 
     void cpu_set_kernel_sp(uint64_t top)
     {
-        g_cpu.kernel_sp = top;
+        local_cpu().kernel_sp = top;
     }
 
     uint64_t cpu_kernel_sp(void)
     {
-        return g_cpu.kernel_sp;
+        return local_cpu().kernel_sp;
     }
 
     bool image_range_mapped(uintptr_t ptr, size_t len, bool need_write)

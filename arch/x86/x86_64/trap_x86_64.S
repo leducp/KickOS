@@ -91,8 +91,21 @@ kickos_x86_64_trap_common:
     pushq   %r14
     pushq   %r15
     movq    %rsp, %rdi
+#if KICKOS_KERNEL_CORES > 1
+    movq    %rdi, %r12
+#endif
     andq    $-16, %rsp
     call    kickos_x86_64_trap
+#if KICKOS_KERNEL_CORES > 1
+    cmpq    %r12, %rax
+    je      .Ltrap_no_switch
+    movq    %rax, %r12
+    movq    %rax, %rsp
+    andq    $-16, %rsp
+    call    kickos_switch_unlock
+    movq    %r12, %rax
+.Ltrap_no_switch:
+#endif
     movq    %rax, %rsp
 
 /* The resume epilogue. rsp names the base of a struct trap_frame, and the pops mirror the

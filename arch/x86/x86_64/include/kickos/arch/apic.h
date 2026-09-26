@@ -16,10 +16,12 @@ namespace kickos::x86_64
     constexpr unsigned vector_spurious = 0xf0;
 
     void apic_init(void);
+    void apic_init_secondary(void);
 
     // A fixed-delivery interrupt to this core alone, carrying the software interrupt
     // controller's injected lines, taken as soon as the interrupt flag is set.
     void apic_doorbell(void);
+    void apic_doorbell_send(uint32_t cores);
 
     // End of interrupt. NOT owed for the spurious vector (Intel SDM Vol 3).
     void apic_eoi(void);

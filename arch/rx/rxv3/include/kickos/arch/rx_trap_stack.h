@@ -101,13 +101,13 @@
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    44  the same epilogue and so the same chain as _PENDSW, kept a macro of its
  *                    own because it is a distinct SITE with its own guard.
- *   _SYSK       796  ENFORCED over 764 measured, as headroom. THE PANIC REPORTER IS NOT ON
+ *   _SYSK       796  ENFORCED over 788 measured, as headroom. THE PANIC REPORTER IS NOT ON
  *                    THIS CHAIN: kpanic leaves this stack before it prints
  *                    (kickos_panic_stack_enter, switch.S). kickos_ipc_fastpath is the other
  *                    root and is dominated. rx72m-bench sets the measurement, its bench arm
  *                    printing:
  *                    syscall_dispatch[36] -> syscall_body[116] -> bench_irq_sweep[116]
- *                    -> dist_print_fmt[68] -> kprintf_paced[288] -> kvsnprintf[44]
+ *                    -> dist_print_fmt[92] -> kprintf_paced[288] -> kvsnprintf[44]
  *                    -> emit_uint[64] -> __umoddi3[32].
  *                    rx72m-st reads 672, a spawn's grant admission:
  *                    syscall_dispatch[36] -> syscall_body[112] -> thread_create_call[248]

@@ -262,6 +262,11 @@ can report that**, because the obligation reads as discharged by whichever backe
 caller looking exactly like a rule that is honoured. Measured: the tree held exactly one caller of
 `kickos_switch_unlock`, in the armv8a switch, at the point a second shared-kernel backend needed it.
 
+M9.5 tested an x86_64 owner-local IPC mode and writer barrier, then removed
+them after the mixed-workload decision (see `docs/design-m9.5-local-ipc.md`).
+The shared kernel retains one BKL exclusion path and the switch hook remains
+its frame-publication point.
+
 ### N3. One lock and not two, bought by interrupt affinity
 
 The reference kernel this lineage cites splits into a task lock and an interrupt lock precisely

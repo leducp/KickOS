@@ -163,12 +163,15 @@ site x86_64 * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_s
 site x86_64 * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
 site x86_64 * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
 site x86_64 * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site x86_64 * kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-site x86_64 * kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site x86_64 * kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
+site x86_64 cores=1 kickos::sched::add@1/1         policy_fifo_rr.cc:policy_on_ready
+site x86_64 cores=1 kickos::sched::start@1/2       policy_fifo_rr.cc:policy_pick_next
+site x86_64 cores=1 kickos::sched::start@2/2       policy_fifo_rr.cc:policy_on_switch_in
+site x86_64 cores>1 kickos::sched::start@1/3       policy_fifo_rr.cc:policy_pick_next
+site x86_64 cores>1 kickos::sched::start@2/3       policy_fifo_rr.cc:policy_on_switch_in
+site x86_64 cores>1 kickos::sched::start@3/3       policy_fifo_rr.cc:policy_on_start
 site x86_64 * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
 site x86_64 * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site x86_64 * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
+site x86_64 cores=1 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
 site x86_64 * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
 site x86_64 * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
 site x86_64 * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
@@ -181,6 +184,14 @@ site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                irq.cc:irq_event_isr \
                                console_tx.cc:console_tx_isr_trampoline \
                                ?bench.cc:bench_irq_handler
+site x86_64 cores>1 kickos_kernel_core_resched@1/2 policy_fifo_rr.cc:policy_push_candidate
+site x86_64 cores>1 kickos_kernel_core_resched@2/2 policy_fifo_rr.cc:policy_on_remove
+site x86_64 cores>1 sched.cc:link_ready@1/1        policy_fifo_rr.cc:policy_on_ready
+site x86_64 cores>1 sched.cc:place@1/2             policy_fifo_rr.cc:policy_place
+site x86_64 cores>1 sched.cc:place@2/2             policy_fifo_rr.cc:policy_on_remove
+site x86_64 cores>1 sched.cc:place_declined@1/1    policy_fifo_rr.cc:policy_declined
+site x86_64 cores>1 sched.cc:ring_drain@1/2        policy_fifo_rr.cc:policy_on_remove
+site x86_64 cores>1 sched.cc:ring_drain@2/2        policy_fifo_rr.cc:policy_on_ready
 # --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
 # Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the arch
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
@@ -359,6 +370,23 @@ site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@1/4   chip_virt_arm64.cc
 site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
 site armv8a qemu-arm64-benchsmp2 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
+
+site armv8a qemu-arm64-benchsmp12 console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp12 console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp12 console_tx_write@1/5         chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp12 console_tx_write@2/5         chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp12 console_tx_write@3/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp12 console_tx_write@4/5         chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp12 console_tx_write@5/5         chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp12 console_tx_isr@1/3           chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp12 console_tx_isr@2/3           chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp12 console_tx_isr@3/3           chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp12 console_tx_flush_sync@1/1    chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp12 console_tx_deinit@1/1        chip_virt_arm64.cc:pl011_tx_irq_disable
+site armv8a qemu-arm64-benchsmp12 console_tx_insert_line@1/4   chip_virt_arm64.cc:pl011_tx_irq_enable
+site armv8a qemu-arm64-benchsmp12 console_tx_insert_line@2/4   chip_virt_arm64.cc:pl011_tx_slot_free
+site armv8a qemu-arm64-benchsmp12 console_tx_insert_line@3/4   chip_virt_arm64.cc:pl011_tx_push
+site armv8a qemu-arm64-benchsmp12 console_tx_insert_line@4/4   chip_virt_arm64.cc:pl011_tx_push
 
 site armv8a qemu-arm64-smpiso console_tx.cc:wait_slot@1/1  chip_virt_arm64.cc:pl011_tx_slot_free
 site armv8a qemu-arm64-smpiso console_tx.cc:drain_sync@1/1 chip_virt_arm64.cc:pl011_tx_push
@@ -614,39 +642,25 @@ site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@2/4   chip_virt_rv64
 site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@3/4   chip_virt_rv64.cc:ns16550_tx_push
 site rv64imac qemu-riscv64-benchsmp2 console_tx_insert_line@4/4   chip_virt_rv64.cc:ns16550_tx_push
 
-site x86_64 qemu-x86_64 console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64 console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64 console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
-site x86_64 qemu-x86_64 console_tx_write@2/5         console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64 console_tx_write@3/5         console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64 console_tx_write@4/5         console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64 console_tx_write@5/5         console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64 console_tx_isr@1/3           console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64 console_tx_isr@2/3           console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64 console_tx_isr@3/3           console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64 console_tx_flush_sync@1/1    console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64 console_tx_deinit@1/1        console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64 console_tx_insert_line@1/4 console_q35.cc:q35_tx_irq_enable
-site x86_64 qemu-x86_64 console_tx_insert_line@2/4 console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64 console_tx_insert_line@3/4 console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64 console_tx_insert_line@4/4 console_q35.cc:q35_tx_push
+# Every x86_64 preset uses the q35 COM1 backend, including SMP variants.
+site x86_64 * console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
+site x86_64 * console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
+site x86_64 * console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
+site x86_64 * console_tx_write@2/5         console_q35.cc:q35_tx_slot_free
+site x86_64 * console_tx_write@3/5         console_q35.cc:q35_tx_push
+site x86_64 * console_tx_write@4/5         console_q35.cc:q35_tx_irq_disable
+site x86_64 * console_tx_write@5/5         console_q35.cc:q35_tx_push
+site x86_64 * console_tx_isr@1/3           console_q35.cc:q35_tx_slot_free
+site x86_64 * console_tx_isr@2/3           console_q35.cc:q35_tx_push
+site x86_64 * console_tx_isr@3/3           console_q35.cc:q35_tx_irq_disable
+site x86_64 * console_tx_flush_sync@1/1    console_q35.cc:q35_tx_irq_disable
+site x86_64 * console_tx_deinit@1/1        console_q35.cc:q35_tx_irq_disable
+site x86_64 * console_tx_insert_line@1/4 console_q35.cc:q35_tx_irq_enable
+site x86_64 * console_tx_insert_line@2/4 console_q35.cc:q35_tx_slot_free
+site x86_64 * console_tx_insert_line@3/4 console_q35.cc:q35_tx_push
+site x86_64 * console_tx_insert_line@4/4 console_q35.cc:q35_tx_push
 
-site x86_64 qemu-x86_64-bench console_tx.cc:wait_slot@1/1  console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64-bench console_tx.cc:drain_sync@1/1 console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64-bench console_tx_write@1/5         console_q35.cc:q35_tx_irq_enable
-site x86_64 qemu-x86_64-bench console_tx_write@2/5         console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64-bench console_tx_write@3/5         console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64-bench console_tx_write@4/5         console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64-bench console_tx_write@5/5         console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64-bench console_tx_isr@1/3           console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64-bench console_tx_isr@2/3           console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64-bench console_tx_isr@3/3           console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64-bench console_tx_flush_sync@1/1    console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64-bench console_tx_deinit@1/1        console_q35.cc:q35_tx_irq_disable
-site x86_64 qemu-x86_64-bench console_tx_insert_line@1/4   console_q35.cc:q35_tx_irq_enable
-site x86_64 qemu-x86_64-bench console_tx_insert_line@2/4   console_q35.cc:q35_tx_slot_free
-site x86_64 qemu-x86_64-bench console_tx_insert_line@3/4   console_q35.cc:q35_tx_push
-site x86_64 qemu-x86_64-bench console_tx_insert_line@4/4   console_q35.cc:q35_tx_push
+
 # POINTER C: Kernel::irq_table[irq].handler.
 # irq_init fills every entry with irq_default_handler. Userspace cannot install
 # handlers; bench_irq_handler exists only in benchmark builds.

@@ -177,8 +177,8 @@ a silicon run is judged by the same parser as an emulated one.
 
 ## The in-kernel instrument: named distributions
 
-`kernel/bench/bench.cc` keeps one row per kernel core, and inside each row a small set of NAMED
-DISTRIBUTIONS declared in `kickos/bench.h` as `BD_*`. A distribution is an accumulator
+`kernel/bench/bench.cc` keeps, per kernel core, a small set of NAMED DISTRIBUTIONS declared in
+`kickos/bench.h` as `BD_*`, in two rows split at `DIST_SWEPT_FIRST` (below). A distribution is an accumulator
 (min/max/count/sum) plus a log-linear histogram, and one report path serves all of them, so a
 new instrument is a `BD_` name, a format label and the site that calls `bench_dist_add`.
 
@@ -188,21 +188,31 @@ new instrument is a `BD_` name, a format label and the site that calls `bench_di
 | `BD_LOCK_HOLD` | the OUTERMOST `IrqLock` bracket, depth zero to depth zero |
 | `BD_LOCK_WAIT` | the spin inside `arch_kernel_lock`, above one kernel core only |
 | `BD_DOORBELL` | one whole doorbell round, above one kernel core only |
-| `BD_IRQ_ENTRY` | a raise on the bench's own line to the handler's first instruction |
-| `BD_IRQ_WCASE` | the same, with the raise at the START of a masked span of 0, 64, 256 or 1024 bytes. One slot per span, the four filled by ONE sweep that takes a sample of each in turn every round |
-| `BD_IRQ_E2E_LOCAL` | the raise, through delivery, dispatch and the wake, to the woken USERSPACE thread's first read of its device window, where that thread ran on the core that took the interrupt |
-| `BD_IRQ_E2E_CROSS` | the same span where it did not, above one kernel core only, and empty by construction (see "Locality" below) |
 | `BD_CALL_RT` | a `kos_call`'s whole round trip, syscall entry to return, on the caller's core; a call that resumes on another core is not a sample. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
 | `BD_SCHED_DRAIN` | one reschedule dispatch's drain of the rings toward its core, in cycles, and `BD_SCHED_DRAIN_N` the entries it applied, a count. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
 | `BD_PUSH_E2E` | nanoseconds from a drop ask to the first instruction, on the asker, of the thread its holder pushed. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
 | `BD_RESEAT_E2E` | nanoseconds from a RESEAT request to the re-seated thread's next instruction on its core: the dispatch that applied it for a running thread, its switch-in for a READY one. Above one kernel core, with `KICKOS_BENCH_SCHED` only |
+| `BD_IRQ_ENTRY` | a raise on the bench's own line to the handler's first instruction |
+| `BD_IRQ_WCASE` | the same, with the raise at the START of a masked span of 0, 64, 256 or 1024 bytes. One slot per span, the four filled by ONE sweep that takes a sample of each in turn every round |
+| `BD_IRQ_E2E_LOCAL` | the raise, through delivery, dispatch and the wake, to the woken USERSPACE thread's first read of its device window, where that thread ran on the core that took the interrupt |
+| `BD_IRQ_E2E_CROSS` | the same span where it did not, above one kernel core only, and empty by construction (see "Locality" below) |
 
 `BD_SWITCH`, `BD_LOCK_HOLD` and `BD_LOCK_WAIT` are fed by the running workload. `BD_DOORBELL`
 is fed by a probe that runs immediately BEFORE the report, so it prints with those three and
-its figures belong to the same window. Every slot from `BD_IRQ_ENTRY` down is filled by a sweep
+its figures belong to the same window. The scheduler slots are fed by the workload too and
+printed by the scheduler's own report. Every slot from `BD_IRQ_ENTRY` down is filled by a sweep
 that runs AFTER the report and is printed by the op that ran it: printed with the others it
 would report the window before its own sweep. That boundary is `DIST_SWEPT_FIRST`, and a slot
 added on the wrong side of it reports the previous window with nothing saying so.
+
+THE SWEPT SLOTS LIVE IN A ROW OF THEIR OWN, AND THE SLOTS THE WORKLOAD FEEDS ARE ALONE IN THEIRS.
+At `-Os` an accumulator re-derives its row's address at each field it touches, and on LX6 the
+multiply by the row's stride is a run of shift-and-add instructions whose length the stride
+sets. A slot added to the workload row can therefore tax every bracket in the phase table and
+every distribution sample, and it shows
+in `NEST`: three sweep-only slots sharing that row moved `NEST` from 125 to 128 cycles and
+call/reply 8 B by 950 ns on `esp32-wroom-benchsmp` (measured 2026-09-25). A new sweep slot goes
+after `BD_IRQ_ENTRY`; `bench_dist_add` and `bench_dist_count` refuse one.
 
 THE PING-PONG PLAYERS ARE PINNED TOGETHER TO CORE 0, so the throughput row and the switch
 distribution are the SAME-CORE HANDOFF, by placement and not by default. Their priority is equal,

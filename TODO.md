@@ -5190,13 +5190,14 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**M9.0 HAS LANDED. M9.4 IS NOW DECIDED; THE REST ARE STILL ASSIGNED AND UNAPPROVED.** `roadmap.md`
+**M9.0 THROUGH M9.5 ARE DECIDED; M9.6 AND LATER REMAIN ASSIGNED.** `roadmap.md`
 assigns M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived
 from the mask, per-core ready queues, the wait-edge rule; M9.3 fused into it, under one lock the
 push needing no ring), M9.4 (the per-pair rings, landed under the lock inside stage 1's own
 regression budget; the local scheduler leaving the lock was REFUSED by the stop condition, R0, on
-`esp32-wroom-benchsmp` at two cores), M9.5 (same-owner IPC leaves the lock), M9.6 (the console
-contract across cores), M9.7 (write-up and exit measurement) and M9.8 (the ESP32-C6 as an
+`esp32-wroom-benchsmp` at two cores), M9.5 (tested whether IPC should leave the lock and retained
+one BKL with x86 CLH arbitration), M9.6 (the console contract across cores), M9.7 (write-up and
+exit measurement) and M9.8 (the ESP32-C6 as an
 unattended AMP pair), and it carries each stage's content, its evidence gate and the rulings behind
 it -- including the ones a session might otherwise reopen:
 ownership and the rings land UNDER the lock in both outcomes, an endpoint's owner is the home of its

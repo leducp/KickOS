@@ -31,7 +31,8 @@
  *   _TRAP  176 on the five non-bench presets, 208 on the two bench ones:
  *          kickos_isr_timer -> ktime_on_timer -> endpoint_wait_abort -> sched::wake
  *          -> pick_and_seat -> arch_ctx_redirect[32] -> arch_context_init[32]
- *   _SYS   736 on both bench presets, the arm that prints: syscall_dispatch[80]
+ *   _SYS   784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, the arm that prints:
+ *          syscall_dispatch[80]
  *          -> bench_irq_sweep[112] -> dist_print_fmt -> kprintf_paced[320] -> the console.
  *          704 off KICKOS_BENCH.
  *
@@ -52,7 +53,7 @@
  *     -> task_for -> domain_for -> grant_region_admissible -> grant_hits_reserved[80]
  *   gcc inlines syscall_body into syscall_dispatch per board: esp32c6-wroom reads 608, the two
  *   flat presets 544.
- *   KICKOS_BENCH 1, 736 on both bench presets, down the console. */
+ *   KICKOS_BENCH 1, 784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console. */
 #if KICKOS_BENCH
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
 #else

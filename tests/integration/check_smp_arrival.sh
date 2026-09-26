@@ -43,6 +43,7 @@ live="${3:?$_usage}"
 backend="${4:?$_usage}"
 
 require_number "$want" "the expected core count"
+want_hex="$(printf '%x' "$want")"
 require_literal "$live" "the liveness pattern"
 if [ "$want" -le 1 ]; then
     fail "expected core count is $want. A single-core image prints no arrival banner at all,
@@ -124,7 +125,7 @@ full_extra="${QEMU_EXTRA:-}"
 # are the banner and a line it emits afterwards.
 echo "== $want core(s) requested, machine given $want =="
 QEMU_EXTRA="$full_extra"
-poll_image "$elf" "$BANNER_HEAD$want core\\(s\\) online" "$live"
+poll_image "$elf" "$BANNER_HEAD$want_hex core\\(s\\) online" "$live"
 
 count_literal "$BAD_ENTRY"
 if [ "$KOS_COUNT" -ne 0 ]; then
@@ -145,7 +146,7 @@ if [ "$KOS_COUNT" -ne 0 ]; then
 fi
 assert_no_panic "the image panicked while bringing the secondaries up"
 
-count_literal "$BANNER_HEAD$want$BANNER_TAIL"
+count_literal "$BANNER_HEAD$want_hex$BANNER_TAIL"
 if [ "$KOS_COUNT" -eq 0 ]; then
     fail "no '$BANNER_HEAD$want$BANNER_TAIL' line. The release either did not run or did not
   reach its positive statement, and an absent refusal is not a witness: an image that

@@ -14,7 +14,9 @@
  * because that is the one the entry loads before it can address anything else. */
 #define KICKOS_X86_64_CPU_KERNEL_SP  0
 #define KICKOS_X86_64_CPU_USER_RSP   8
-#define KICKOS_X86_64_CPU_SIZE      16
+#define KICKOS_X86_64_CPU_SW_START  16
+#define KICKOS_X86_64_CPU_CORE_ID   20
+#define KICKOS_X86_64_CPU_SIZE      64
 
 /* The selectors the syscall entry writes into the frame it builds; arch_syscall issues the
  * instruction only from ring 3 (switch.S). */
@@ -42,15 +44,23 @@
 namespace kickos::x86_64
 {
     // One per core, reached through the gs base. Written by the arch layer on every switch.
-    struct cpu_block
+    struct alignas(64) cpu_block
     {
         uint64_t kernel_sp;
         uint64_t user_rsp;
+        uint32_t sw_start;
+        uint32_t core_id;
     };
+
+    // Used only before this processor has installed its GS block. Once ring3_cpu_init
+    // completes, arch_cpu_id reads cpu_block::core_id with one GS-relative load.
+    uint32_t boot_apic_id(void);
 
     // Make ring 3 reachable and arm the fast syscall pair. Call AFTER desc_init. The range
     // is the conventional memory user stacks are carved out of.
     void ring3_init(uintptr_t ram_base, size_t ram_size);
+    // APs inherit the BSP's shared page tables but need their own GS base and syscall MSRs.
+    void ring3_cpu_init(void);
 
     // The running thread's kernel stack top, published to the block above.
     void cpu_set_kernel_sp(uint64_t top);

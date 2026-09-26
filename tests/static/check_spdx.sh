@@ -46,6 +46,9 @@ classify() {
         # JSON: no comment production in the grammar, and CMake's preset parser rejects one.
         *.json)
             printf 'none\n' ;;
+        # Tab-separated benchmark data: a header comment would become a data row.
+        *.tsv)
+            printf 'none\n' ;;
         # `//` or `/* */`.
         *.c|*.cc|*.cpp|*.h|*.hh|*.hpp|*.S|*.inc|*.ld|*.lds)
             printf 'need\n' ;;
@@ -71,6 +74,10 @@ classify() {
         # Plain text with no comment syntax, but a licence-scanning tool expects the tag on
         # line 1.
         LICENSE|*/LICENSE)
+            printf 'need\n' ;;
+        # A unified diff: `git apply` reads every line before the first file header as
+        # commentary.
+        *.patch)
             printf 'need\n' ;;
         *)
             printf 'refuse\n' ;;
@@ -144,6 +151,8 @@ arm refuse tests/lib/panic.ere.bak
 arm refuse kernel/lib/panic.ere
 arm none   CMakePresets.json
 arm refuse boards/x/presets.jsonc
+arm none   docs/archive/M9.4.1_x86_smp_yield.tsv
+arm refuse docs/archive/M9.4.1_x86_smp_yield.tsvx
 arm need   kernel/sched.cc
 arm need   arch/arm/armv7m/vectors.S
 arm need   docs/reference/style.md
@@ -166,6 +175,8 @@ arm need   LICENSE
 arm need   docs/LICENSE
 arm refuse LICENCE
 arm refuse README
+arm need   docs/archive/M9.5_arm64_clh.patch
+arm refuse docs/archive/M9.5_arm64_clh.patch.orig
 
 C_NEED=0
 C_NONE=0
@@ -181,12 +192,12 @@ while IFS="$TAB" read -r want path; do
         refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
     esac
 done < "$TMP/classify_controls"
-[ "$i" -eq 27 ] || fail "$i classify() control(s) ran, expected 27"
+[ "$i" -eq 31 ] || fail "$i classify() control(s) ran, expected 31"
 # All three verdicts, or a classify() collapsed onto one of them would satisfy every equality
 # above and still classify the whole tree wrong.
-[ "$C_NEED" -eq 13 ] || fail "classify() answered need for $C_NEED of 13 controls"
-[ "$C_NONE" -eq 5 ] || fail "classify() answered none for $C_NONE of 5 controls"
-[ "$C_REFUSE" -eq 9 ] || fail "classify() answered refuse for $C_REFUSE of 9 controls"
+[ "$C_NEED" -eq 14 ] || fail "classify() answered need for $C_NEED of 14 controls"
+[ "$C_NONE" -eq 6 ] || fail "classify() answered none for $C_NONE of 6 controls"
+[ "$C_REFUSE" -eq 11 ] || fail "classify() answered refuse for $C_REFUSE of 11 controls"
 
 # The header check. Each positive is one clause: no tag at all, a tag one line past the
 # window, a copyright line not beside the tag, the two words in PROSE, and a copyright line

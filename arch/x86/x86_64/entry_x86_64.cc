@@ -21,6 +21,12 @@ extern "C" __attribute__((visibility("hidden"))) void kickos_x86_64_early_trap(v
 // is the last moment those bounds can be taken.
 extern "C" void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size);
 
+extern "C" void kickos_x86_64_fp_trap(void);
+
+#if defined(KICKOS_X86_64_AP_BOOT)
+extern "C" int kickos_x86_64_ap_reserve(kickos::uefi::boot_services* bs);
+#endif
+
 // tools/run-qemu-x86_64.sh greps for this string; move both or the arm fails.
 #define KICKOS_X1_TOKEN "KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover"
 
@@ -273,27 +279,14 @@ namespace
         com1_puts("\n");
     }
 
-    // The port saves no x87, MMX, vector or extended state, so these six bits refuse every
-    // instruction that touches any of it. -mno-sse -mno-mmx -mno-80387 bind the COMPILER; these
-    // bits bind the machine, against a thread executing a raw opcode.
-    //
     // Installed AFTER ExitBootServices: firmware's own code runs with vector state of its own.
     void fp_trap_install(void)
     {
-        uint64_t cr0 = read_cr0();
-        uint64_t cr4 = read_cr4();
-        report_fp(KICKOS_X1_TOKEN " fp found", cr0, cr4);
-
-        cr0 |= cr0_em | cr0_ts | cr0_mp;
-        cr4 &= ~(cr4_osfxsr | cr4_osxmmexcpt | cr4_osxsave);
-        write_cr0(cr0);
-        write_cr4(cr4);
-
+        report_fp(KICKOS_X1_TOKEN " fp found", read_cr0(), read_cr4());
+        kickos_x86_64_fp_trap();
         // READ BACK, so the line below reports the machine's answer and not the value asked
         // for: both registers hold bits the processor may refuse to change.
-        cr0 = read_cr0();
-        cr4 = read_cr4();
-        report_fp(KICKOS_X1_TOKEN " fp trapped", cr0, cr4);
+        report_fp(KICKOS_X1_TOKEN " fp trapped", read_cr0(), read_cr4());
     }
 
     // The interrupt table this port owns between ExitBootServices and desc_init: firmware's
@@ -327,6 +320,16 @@ namespace
         p.base = reinterpret_cast<uint64_t>(&g_early_idt);
         __asm__ volatile("lidt %0" ::"m"(p) : "memory");
     }
+}
+
+// The port saves no x87, MMX, vector or extended state, so these six bits refuse every
+// instruction that touches any of it. -mno-sse -mno-mmx -mno-80387 bind the COMPILER; these
+// bits bind the machine, against a thread executing a raw opcode. They are per core, so every
+// core applies them before it runs a thread.
+extern "C" void kickos_x86_64_fp_trap(void)
+{
+    write_cr0(read_cr0() | cr0_em | cr0_ts | cr0_mp);
+    write_cr4(read_cr4() & ~(cr4_osfxsr | cr4_osxmmexcpt | cr4_osxsave));
 }
 
 // Entered with the hardware frame on whatever stack was live. It reports and halts, so the
@@ -376,6 +379,15 @@ extern "C" KICKOS_EFIAPI status_t efi_main(handle_t image_handle, system_table* 
     com1_puts("\n");
 
     boot_services* bs = systab->boot_services;
+
+#if defined(KICKOS_X86_64_AP_BOOT)
+    // Allocate before GetMemoryMap: AllocatePages changes the map key EBS needs.
+    if (kickos_x86_64_ap_reserve(bs) == 0)
+    {
+        com1_puts(KICKOS_X1_TOKEN " FAIL no low SIPI page\n");
+        halt();
+    }
+#endif
 
     uint64_t map_size = map_buffer_bytes;
     uint64_t map_key = 0;

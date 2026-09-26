@@ -1795,6 +1795,7 @@ namespace selftest
     }
 
     // --- libc reentrant state across cores: two threads of one task at the same instant ----
+#if KICKOS_LIBC_REENT
     // The checker holds EINVAL on core 1 while two switchers ping-pong on core 0, each switch
     // there being a seat for the incoming thread. Every errno is set by libc itself.
     constexpr unsigned RE_SWITCHERS = 2;
@@ -2017,5 +2018,58 @@ namespace selftest
         TAP_CHECK(g_re_seen.load() == RE_SWITCHERS * RE_ROUNDS);
         TAP_CHECK(g_re_reads.load() > 0u);
     }
+#else
+    void t_reent_per_thread_cores()
+    {
+        tap::skip("this board has no target libc reentrant state");
+    }
+#endif
+
+#if defined(__x86_64__)
+    // --- The floating-point trap on every core ----------------------------------------------
+    // CR0.EM makes every x87 instruction raise #NM and every SSE instruction #UD, and TS with MP
+    // traps the rest of the family. The bits are per core, and SMSW reads them from ring 3
+    // while CR4.UMIP is clear.
+    constexpr uint32_t FP_TRAP_MSW = (1u << 1) | (1u << 2) | (1u << 3);
+    Atomic<uint32_t, Order::RELAXED> g_fp_msw{0};
+
+    void fp_msw_worker(void*)
+    {
+        pl_wait_go();
+        uint16_t msw = 0;
+        __asm__ volatile("smsw %0" : "=r"(msw));
+        g_fp_msw = msw;
+        g_pl_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+    }
+
+    void t_fp_trapped_every_core()
+    {
+        uint32_t trapped = 0;
+        for (uint32_t c = 0; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            pl_reset();
+            g_fp_msw = 0;
+            auto w = kos::thread::create(fp_msw_worker, nullptr, "fpmsw", 12);
+            if (not w.valid())
+            {
+                tap::skip("thread pool too small");
+                return;
+            }
+            int const rc = kos::thread::pin(w.id(), c);
+            g_pl_go = 1;
+            int const joined = w.join();
+            uint32_t const msw = g_fp_msw;
+            uint32_t const core = g_pl_core;
+            tap::diag("core %u: machine status word 0x%x, sampled on core %u",
+                      static_cast<unsigned>(c), static_cast<unsigned>(msw),
+                      static_cast<unsigned>(core));
+            if (rc == 0 and joined == 0 and core == c and (msw & FP_TRAP_MSW) == FP_TRAP_MSW)
+            {
+                trapped |= 1u << c;
+            }
+        }
+        TAP_CHECK(trapped == PL_ALL);
+    }
+#endif
 #endif
 }

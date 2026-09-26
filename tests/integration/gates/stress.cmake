@@ -54,8 +54,12 @@ endif()
 # the emulator's execution log and is architecture-neutral; its second reads the trap log on
 # rv64, whose line names the hart and the cause where the GIC's event names the interface and
 # the INTID.
+# The stress app caps its conservation set at 3 pairs plus 6 sleepers. At twelve
+# cores that is only twelve live workers, many of them asleep, so it cannot
+# require an unpinned worker to visit every core. The twelve-core ARM64
+# selftest's threads_reach_every_core arm supplies that placement check.
 if((KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
-   AND KICKOS_KERNEL_CORES GREATER 1)
+   AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_KERNEL_CORES LESS 12)
   kickos_add_qemu_test(NAME ${_tag}_smp_threads TARGET stress
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
     ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" ${KICKOS_ARCH}

@@ -15,9 +15,6 @@
  * -fcallgraph-info walk stops at a body with no call edge, which is what keeps the console
  * tail off every measured chain.
  */
-#if KICKOS_KERNEL_CORES > 1
-#error "one kernel over several x86_64 cores has no per-core panic seat here"
-#endif
     .balign 16
     .globl kickos_panic_stack_enter
 kickos_panic_stack_enter:

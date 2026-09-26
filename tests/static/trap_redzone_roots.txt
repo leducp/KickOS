@@ -478,6 +478,7 @@ preset  armv8a qemu-arm64-smp
 preset  armv8a qemu-arm64-benchsmp
 preset  armv8a qemu-arm64-benchgicv3
 preset  armv8a qemu-arm64-benchsmp2
+preset  armv8a qemu-arm64-benchsmp12
 preset  armv8a qemu-arm64-smpiso
 preset  armv8a qemu-arm64-gicv3
 preset  armv8a qemu-arm64-amp
@@ -636,6 +637,10 @@ recurse rv64imac aspace_rv64imac.cc:map_into 4 reason: one activation per level,
 arch    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h
 preset  x86_64 qemu-x86_64
 preset  x86_64 qemu-x86_64-bench
+preset  x86_64 qemu-x86_64-smp2
+preset  x86_64 qemu-x86_64-smp4
+preset  x86_64 qemu-x86_64-smp8
+preset  x86_64 qemu-x86_64-smp12
 link    x86_64 maps=**/*.efi.map reason: kickos_x86_64_link_image writes one per application image (cmake/x86_64_image.cmake), and the boot images it does not link write none
 class   x86_64 IRQ       frame=KICKOS_X86_64_TRAP_FRAME_IRQ depth=KICKOS_X86_64_TRAP_DEPTH_IRQ
 class   x86_64 IRQK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IRQ \
@@ -695,7 +700,7 @@ floor   armv7m   files=85 nodes=600 reason: all 38 declared armv7m presets swept
 floor   armv6m   files=85 nodes=600 reason: all 4 declared armv6m presets swept 2026-09-12; smallest 109 files/836 nodes on picopi-flat, largest 138 files on microbit and 974 nodes on picopi-st
 floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swept 2026-09-12; smallest 99 files/830 nodes on esp32c6-wroom-flat, largest 134 files on esp32c6-wroom-st and 971 nodes on qemu-riscv-bench
 floor   rxv3     files=75 nodes=650 reason: all 4 declared rxv3 presets swept, the first three 2026-09-12 and rx72m-bench 2026-09-20; smallest 99 files/852 nodes on rx72m-flat, largest 127 files/1101 nodes on rx72m-bench
-floor   armv8a   files=90 nodes=700 reason: all 15 declared armv8a presets swept 2026-09-24; smallest 134 files/1173 nodes on qemu-arm64, largest 140 files on qemu-arm64-benchsmp, -benchgicv3 and -benchsmp2 and 1362 nodes on qemu-arm64-benchgicv3
+floor   armv8a   files=90 nodes=700 reason: all 16 declared armv8a presets swept 2026-09-26; smallest 134 files/1174 nodes on qemu-arm64, largest 142 files and 1360 nodes on qemu-arm64-benchsmp12
 floor   rv64imac files=90 nodes=700 reason: all 6 declared rv64imac presets swept 2026-09-25; smallest 133 files/1206 nodes on qemu-riscv64 and -sv48, largest 137 files on -benchsmp and -benchsmp2 and 1372 nodes on -benchsmp
 floor   x86_64   files=85 nodes=700 reason: both declared x86_64 presets swept 2026-09-25, counted after the units no application map LOADs; 108 files/1022 nodes on qemu-x86_64, 110 files/1063 nodes on qemu-x86_64-bench
 floor   lx6      files=75 nodes=650 reason: all 5 declared lx6 presets swept, the first three 2026-09-12, esp32-wroom-bench 2026-09-13 and esp32-wroom-benchsmp 2026-09-22; smallest 103 files/909 nodes on esp32-wroom, largest 127 files/1182 nodes on esp32-wroom-benchsmp
