@@ -5,9 +5,9 @@
 // that tells the kernel where both are. The user side of kernel/include/kickos/reent.h; compiled
 // on every board but the sim, whose libc is the host's.
 //
-// Newlib reaches its reentrant state as _REENT, which is __getreent() on lx6 and on the
-// conan/newlib builds armv8a and rv64imac link, and _impure_ptr on every other pinned toolchain;
-// errno is a member of that state.
+// Newlib reaches its reentrant state as _REENT: __getreent() on lx6, armv8a and rv64imac,
+// and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target links
+// its own pinned conan/newlib build; errno is a member of that state.
 
 #include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
 #include <kickos/reent.h>

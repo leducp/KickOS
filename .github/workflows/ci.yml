@@ -93,6 +93,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: armv6m armv7m armv7em_fp_softfp armv7em_dp_softfp armv8m_fp_softfp
+          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-arm >/dev/null 2>&1 \
@@ -367,6 +371,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: rv32imac_ilp32
+          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
@@ -411,6 +419,10 @@ jobs:
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
       - uses: ./.github/actions/riscv-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: rv32imac_ilp32
+          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
@@ -568,6 +580,10 @@ jobs:
         with:
           packages: cmake ninja-build curl xz-utils file
       - uses: ./.github/actions/xtensa-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: xtensa_esp32
+          toolchain-bins: ${{ env.KICKOS_XTENSA_BIN }}
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
@@ -616,6 +632,21 @@ jobs:
           # qemu-telem needs the emulator for its image tests.
           packages: cmake ninja-build qemu-system-arm curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      - name: Select this board's newlib multilib
+        run: |
+          case '${{ matrix.preset }}' in
+            picopi*) m=armv6m ;;
+            bluepill*|due) m=armv7m ;;
+            teensy41*) m=armv7em_dp_softfp ;;
+            pizero2350*) m=armv8m_fp_hard ;;
+            frdmk64f*|f411disco*|blackpill*|f302nucleo*|xmc4800*|qemu-telem) m=armv7em_fp_softfp ;;
+            *) echo 'No newlib multilib for ${{ matrix.preset }}' >&2; exit 1 ;;
+          esac
+          echo "KICKOS_NEWLIB_MULTILIB=$m" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: ${{ env.KICKOS_NEWLIB_MULTILIB }}
+          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       # Run host checks here; qemu-telem image tests are selected separately below.
@@ -659,6 +690,21 @@ jobs:
         with:
           packages: cmake ninja-build curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      - name: Select this board's newlib multilib
+        run: |
+          case '${{ matrix.preset }}' in
+            picopi*) m=armv6m ;;
+            bluepill*) m=armv7m ;;
+            teensy41*) m=armv7em_dp_softfp ;;
+            pizero2350*) m=armv8m_fp_hard ;;
+            frdmk64f*|f411disco*|blackpill*|xmc4800*) m=armv7em_fp_softfp ;;
+            *) echo 'No newlib multilib for ${{ matrix.preset }}' >&2; exit 1 ;;
+          esac
+          echo "KICKOS_NEWLIB_MULTILIB=$m" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: ${{ env.KICKOS_NEWLIB_MULTILIB }}
+          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure
@@ -679,6 +725,10 @@ jobs:
         with:
           packages: cmake ninja-build curl xz-utils
       - uses: ./.github/actions/arm-toolchain
+      - uses: ./.github/actions/newlib
+        with:
+          multilibs: armv8m_fp_hard
+          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - name: armv8-M shared-image AMP, the provisional scaffolding
         run: |
           # The shared image uses two cores but declares no AMP crossings, so amp-pin
@@ -728,11 +778,11 @@ jobs:
           packages: cmake ninja-build qemu-system-arm qemu-system-misc curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
       - uses: ./.github/actions/riscv-toolchain
+      - uses: ./.github/actions/arm-toolchain
       - uses: ./.github/actions/newlib
         with:
-          multilibs: aarch64 rv64imac_lp64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
-      - uses: ./.github/actions/arm-toolchain
+          multilibs: aarch64 rv64imac_lp64 armv7em_fp_softfp
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }} ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - name: the emulators every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \

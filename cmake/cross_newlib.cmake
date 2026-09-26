@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The dynamic-reent newlib an image links in place of the toolchain's own (conan/newlib).
+# The pinned newlib an image links in place of the toolchain's own (conan/newlib).
 #
 # The toolchain's newlib stays on disk and in its include path, so it is REMOVED from the
 # search: -nostdinc, then the compiler's own system directories back in their order with the
@@ -11,10 +11,13 @@
 # The package's lib/ goes first on the link line, so every -lc the rescan group and the driver
 # add resolves there; a configure-time link trace proves that it does.
 
-# kickos_require_dynreent_newlib(<label> <cc> <cxx> <env-var> <flags>...)
+# kickos_require_newlib(<label> <cc> <cxx> <env-var> <dynamic|static> <flags>...)
 #
 # Sets _kos_newlib_c, _kos_newlib_cxx and _kos_newlib_link in the caller.
-function(kickos_require_dynreent_newlib _label _cc _cxx _var)
+function(kickos_require_newlib _label _cc _cxx _var _reent)
+  if(NOT _reent MATCHES "^(dynamic|static)$")
+    message(FATAL_ERROR "KickOS ${_label} toolchain: invalid newlib reentrancy '${_reent}'")
+  endif()
   set(_flags ${ARGN})
   set(${_var} "$ENV{${_var}}" CACHE PATH
       "The kickos-newlib package folder (include/, lib/) this multilib links")
@@ -31,9 +34,8 @@ function(kickos_require_dynreent_newlib _label _cc _cxx _var)
          "and configure again in that shell.")
   if(_dir STREQUAL "")
     message(FATAL_ERROR
-      "KickOS ${_label} toolchain: ${_var} is unset. Arch '${KICKOS_ARCH}' links a newlib whose "
-      "libc reaches its reentrant state through __getreent(), which the runtime answers per "
-      "thread; the toolchain's own libc reads one shared _impure_ptr instead. ${_how}")
+      "KickOS ${_label} toolchain: ${_var} is unset. Arch '${KICKOS_ARCH}' requires its "
+      "pinned ${_reent}-reent newlib. ${_how}")
   endif()
 
   # Ahead of the stamp: a cached folder can be deleted or emptied between configures.
@@ -45,10 +47,15 @@ function(kickos_require_dynreent_newlib _label _cc _cxx _var)
     endif()
   endforeach()
 
-  set(_stamp "${_dir}|${_cxx}|${_flags}")
+  file(STRINGS "${_dir}/kickos-newlib.txt" _pkg_reent REGEX "^reent=")
+  if(NOT _pkg_reent STREQUAL "reent=${_reent}")
+    message(FATAL_ERROR "KickOS ${_label} toolchain: ${_var}=${_dir} has ${_pkg_reent}; "
+      "this board requires reent=${_reent}. ${_how}")
+  endif()
+  set(_stamp "${_dir}|${_cxx}|${_reent}|${_flags}")
   if(DEFINED CACHE{KICKOS_NEWLIB_OK_${_label}}
      AND "$CACHE{KICKOS_NEWLIB_OK_${_label}}" STREQUAL "${_stamp}")
-    message(STATUS "KickOS ${_label} toolchain: dynamic-reent newlib from ${_dir}")
+    message(STATUS "KickOS ${_label} toolchain: ${_reent}-reent newlib from ${_dir}")
     set(_kos_newlib_c "$CACHE{KICKOS_NEWLIB_C_${_label}}" PARENT_SCOPE)
     set(_kos_newlib_cxx "$CACHE{KICKOS_NEWLIB_CXX_${_label}}" PARENT_SCOPE)
     set(_kos_newlib_link "$CACHE{KICKOS_NEWLIB_LINK_${_label}}" PARENT_SCOPE)
@@ -68,8 +75,7 @@ function(kickos_require_dynreent_newlib _label _cc _cxx _var)
       "this board selects '${_our_multi}'. ${_how}")
   endif()
 
-  # Dynamic reentrancy is a property of both halves: headers that expand _REENT to the hook,
-  # and a libc.a whose members call it and that defines none.
+  # Reentrancy is a property of both halves: the headers and libc must agree.
   get_filename_component(_bin "${_cc}" DIRECTORY)
   get_filename_component(_cc_name "${_cc}" NAME)
   string(REGEX REPLACE "gcc$" "nm" _nm_name "${_cc_name}")
@@ -131,17 +137,28 @@ function(kickos_require_dynreent_newlib _label _cc _cxx _var)
   endforeach()
 
   set(_probe "${CMAKE_BINARY_DIR}/CMakeFiles/kickos-newlib-probe-${_label}.c")
+  if(_reent STREQUAL "dynamic")
+    set(_header_check "#if !defined(__DYNAMIC_REENT__)\n#error KICKOS_PROBE_STATIC_REENT\n#endif\n")
+  else()
+    set(_header_check "#if defined(__DYNAMIC_REENT__)\n#error KICKOS_PROBE_DYNAMIC_REENT\n#endif\n")
+  endif()
   file(WRITE "${_probe}"
-    "#include <sys/reent.h>\n#include <errno.h>\n"
-    "#if !defined(__DYNAMIC_REENT__)\n#error KICKOS_PROBE_STATIC_REENT\n#endif\n"
+    "#include <sys/reent.h>\n#include <errno.h>\n${_header_check}"
     "int kickos_newlib_probe(void) { return errno + (_REENT != 0); }\n")
   separate_arguments(_c_list UNIX_COMMAND "${_inc_c}")
   execute_process(COMMAND "${_cc}" ${_flags} ${_c_list} -fsyntax-only "${_probe}"
                   RESULT_VARIABLE _hrc OUTPUT_QUIET ERROR_VARIABLE _herr)
-  if(NOT _rc EQUAL 0 OR _ncallers EQUAL 0 OR NOT _ndefiners EQUAL 0 OR NOT _hrc EQUAL 0)
+  set(_reent_ok TRUE)
+  if(_reent STREQUAL "dynamic" AND (_ncallers EQUAL 0 OR NOT _ndefiners EQUAL 0))
+    set(_reent_ok FALSE)
+  endif()
+  if(_reent STREQUAL "static" AND NOT _ncallers EQUAL 0)
+    set(_reent_ok FALSE)
+  endif()
+  if(NOT _rc EQUAL 0 OR NOT _reent_ok OR NOT _hrc EQUAL 0)
     string(STRIP "${_herr}" _herr)
     message(FATAL_ERROR
-      "KickOS ${_label} toolchain: ${_var}=${_dir} is not a dynamic-reent newlib: "
+      "KickOS ${_label} toolchain: ${_var}=${_dir} is not a ${_reent}-reent newlib: "
       "${_ncallers} libc.a member(s) call __getreent, ${_ndefiners} define it, and the header "
       "probe answered '${_herr}'. ${_how}")
   endif()
@@ -163,7 +180,7 @@ function(kickos_require_dynreent_newlib _label _cc _cxx _var)
   set(KICKOS_NEWLIB_CXX_${_label} "${_inc_cxx}" CACHE INTERNAL "")
   set(KICKOS_NEWLIB_LINK_${_label} "${_link}" CACHE INTERNAL "")
   set(KICKOS_NEWLIB_OK_${_label} "${_stamp}" CACHE INTERNAL "")
-  message(STATUS "KickOS ${_label} toolchain: dynamic-reent newlib from ${_dir}")
+  message(STATUS "KickOS ${_label} toolchain: ${_reent}-reent newlib from ${_dir}")
   set(_kos_newlib_c "${_inc_c}" PARENT_SCOPE)
   set(_kos_newlib_cxx "${_inc_cxx}" PARENT_SCOPE)
   set(_kos_newlib_link "${_link}" PARENT_SCOPE)

@@ -321,8 +321,8 @@ KickOS/
                                     #   descriptor chain, CPU baseline, program search, link rules
     cross_cxx_capability.cmake      # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
-    cross_newlib.cmake              # swaps the toolchain's newlib for the dynamic-reent
-                                    #   conan/newlib package, refusing one that is not
+    cross_newlib.cmake              # swaps the toolchain's newlib for the pinned
+                                    #   conan/newlib package and checks its reentrancy ABI
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
     cap_geometry.cmake              # the table's structural constants, emitted to C
     cap_table.cmake                 # the configure-time capability-width sum + supply check
@@ -952,15 +952,15 @@ feeds the slave app.
   (`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_kill/_getpid`, `_impure_ptr`/reent,
   `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
-  toolchain newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
+  pinned newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 - **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
   thread slot its own `struct _reent`, primed at the thread's first switch-in, and points libc at
   the running thread's copy. Under `KICKOS_REENT_PER_THREAD` libc calls `__getreent()` and the
   thread pointer answers it, written once by `thread_create` and never by a switch: through the
   first word of the thread's TLS control block on armv8a and on lx6 above one kernel core
   (`KICKOS_REENT_IN_TCB`, which rides on `KICKOS_TLS`), and as `tp` itself on rv64imac, which
-  resumes every thread with it. armv8a and rv64imac get that hook from the newlib
-  `conan/newlib` builds, which the toolchain files require. Elsewhere libc reads one word
+  resumes every thread with it. armv8a, rv64imac and lx6 get that hook from their pinned
+  `conan/newlib` builds. Elsewhere libc reads one word
   (`&_impure_ptr`, or the word behind `__getreent` on lx6 at one core), and `switch_book` and
   `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is correct only while
   one core runs its readers. `errno` is that struct's first member, so this, and not a

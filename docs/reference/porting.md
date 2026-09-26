@@ -366,12 +366,12 @@ other path to compile.
 **`errno` is neither of these.** It is a member of newlib's reentrant state, one `struct _reent`
 per thread slot in the app-data window, and a per-thread `errno` follows that state and not a
 `thread_local`. Where libc finds the running thread's copy is per toolchain. A newlib that reads
-the global `_impure_ptr` directly (the stock arm-none-eabi, riscv32-none-elf and rx-elf builds)
+the global `_impure_ptr` directly (the pinned Cortex-M, RV32 and RX builds)
 has one such word per address space, which the kernel rewrites at every switch, so it is correct
 only while one core runs the threads sharing it. A newlib that asks `__getreent()` is answered per
-thread by the thread pointer (`KICKOS_REENT_PER_THREAD`): xtensa-esp-elf's own above one kernel
-core, and on armv8a and rv64imac the `conan/newlib` package, which `cmake/cross_newlib.cmake`
-swaps in for the toolchain's and refuses by name when it is missing or not dynamic-reent. The
+thread by the thread pointer (`KICKOS_REENT_PER_THREAD`): lx6 above one kernel core, armv8a and
+rv64imac. `cmake/cross_newlib.cmake` swaps each pinned package in for the toolchain's libc and
+refuses one with the wrong reentrancy mode. The
 answer is the first word of the TLS control block where the ABI reserves one
 (`KICKOS_REENT_IN_TCB`, which makes `KICKOS_TLS` mandatory and the carve non-zero in every image,
 so an arch taking it seats its thread pointer from the context, as armv8a and lx6 do, or the stride
