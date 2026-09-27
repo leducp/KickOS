@@ -4,6 +4,7 @@
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 
 from conan import ConanFile
@@ -20,6 +21,17 @@ ARM_SPEC = {
                   "--enable-newlib-register-fini", "--enable-newlib-mb"],
     "machine": "ARM", "reent": "static",
 }
+
+# Match the Arm toolchain's newlib-nano header and its paired C++ archives. The
+# package still builds its own libc, so KickOS's reentrancy contract remains ours.
+ARM_NANO_CONFIGURE = [
+    "--disable-newlib-fseek-optimization", "--disable-newlib-fvwrite-in-streamio",
+    "--enable-lite-exit", "--disable-newlib-mb", "--enable-newlib-nano-formatted-io",
+    "--enable-newlib-nano-malloc", "--disable-newlib-unbuf-stream-opt",
+    "--disable-newlib-io-c99-formats", "--disable-newlib-io-long-long",
+    "--enable-newlib-reent-small", "--disable-newlib-register-fini",
+    "--disable-newlib-wide-orient",
+]
 
 
 def arm_spec(*flags):
@@ -126,10 +138,12 @@ class KickOSNewlib(ConanFile):
 
     options = {
         "multilib": list(MULTILIBS),
+        "flavor": ["full", "nano"],
         "toolchain": ["ANY"],
     }
     default_options = {
         "multilib": "aarch64",
+        "flavor": "full",
         "toolchain": "resolved",
     }
 
@@ -190,6 +204,20 @@ class KickOSNewlib(ConanFile):
 
     def validate(self):
         self._release()
+        if str(self.options.flavor) == "nano" and self._spec()["triple"] != "arm-none-eabi":
+            raise ConanInvalidConfiguration(
+                "the nano profile requires the Arm toolchain's matching newlib-nano "
+                "headers and C++ archives; this multilib has no validated pair.")
+        if str(self.options.flavor) == "nano":
+            header = os.path.join(self._toolchain_include(), "newlib-nano", "newlib.h")
+            if not os.path.isfile(header):
+                raise ConanInvalidConfiguration(f"Arm toolchain has no {header}.")
+            gcc = self._gcc()
+            for name in ("nano.specs", "libstdc++_nano.a", "libsupc++_nano.a"):
+                path = self._run(gcc, *self._spec()["flags"], f"-print-file-name={name}")
+                if not os.path.isfile(path):
+                    raise ConanInvalidConfiguration(
+                        f"Arm multilib {self.options.multilib} has no {name} ({path}).")
 
     def package_id(self):
         gcc = self._gcc(self._spec(info=True))
@@ -264,6 +292,8 @@ class KickOSNewlib(ConanFile):
             "--disable-nls",
             "--disable-newlib-supplied-syscalls",
         ] + spec["configure"]
+        if str(self.options.flavor) == "nano":
+            configure += ARM_NANO_CONFIGURE
         subprocess.run(configure, cwd=build_dir, env=env, check=True)
         jobs = str(os.cpu_count() or 1)
         subprocess.run(["make", "-j", jobs, "MAKEINFO=true", "all-target-newlib"],
@@ -281,7 +311,10 @@ class KickOSNewlib(ConanFile):
         spec = self._spec()
         bin_dir = os.path.dirname(self._gcc())
         ours = self._defines(os.path.join(root, "include", "newlib.h"))
-        stock = self._defines(os.path.join(self._toolchain_include(), "newlib.h"))
+        stock_header = os.path.join(self._toolchain_include(), "newlib.h")
+        if str(self.options.flavor) == "nano":
+            stock_header = os.path.join(self._toolchain_include(), "newlib-nano", "newlib.h")
+        stock = self._defines(stock_header)
         if ours != stock:
             raise ConanInvalidConfiguration(
                 "this build's newlib.h disagrees with the toolchain's, so struct layouts its "
@@ -315,8 +348,16 @@ class KickOSNewlib(ConanFile):
         spec = self._spec()
         root = os.path.join(self.build_folder, "stage", "usr", spec["triple"])
         copy(self, "*", os.path.join(root, "include"), os.path.join(self.package_folder, "include"))
-        for lib in ("libc.a", "libg.a", "libm.a"):
-            copy(self, lib, os.path.join(root, "lib"), os.path.join(self.package_folder, "lib"))
+        copy(self, "libm.a", os.path.join(root, "lib"),
+             os.path.join(self.package_folder, "lib"))
+        if str(self.options.flavor) == "nano":
+            for name in ("libc", "libg"):
+                shutil.copyfile(os.path.join(root, "lib", f"{name}.a"),
+                                os.path.join(self.package_folder, "lib", f"{name}_nano.a"))
+        else:
+            for lib in ("libc.a", "libg.a"):
+                copy(self, lib, os.path.join(root, "lib"),
+                     os.path.join(self.package_folder, "lib"))
         copy(self, "COPYING.NEWLIB", os.path.join(self.build_folder, "src"),
              os.path.join(self.package_folder, "licenses"))
         save(self, os.path.join(self.package_folder, "kickos-newlib.txt"),
@@ -325,7 +366,8 @@ class KickOSNewlib(ConanFile):
                         "flags=" + " ".join(spec["flags"]),
                         f"newlib={self._release()}",
                         f"reent={spec['reent']}",
+                        f"flavor={self.options.flavor}",
                         ""]))
 
     def package_info(self):
-        self.cpp_info.libs = ["c", "m"]
+        self.cpp_info.libs = ["c_nano" if str(self.options.flavor) == "nano" else "c", "m"]

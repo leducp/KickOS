@@ -96,6 +96,7 @@ jobs:
       - uses: ./.github/actions/newlib
         with:
           multilibs: armv6m armv7m armv7em_fp_softfp armv7em_dp_softfp armv8m_fp_softfp
+          nano-multilibs: armv6m
           toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
       - name: the emulator every image gate in this job boots on
         run: |

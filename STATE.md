@@ -16,10 +16,10 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED AND M9.7 IS DECIDED ON ITS BRANCH.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED, AND M9.7 AND M9.8 ARE DECIDED ON THEIR BRANCHES.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned; M9.8 and later remain assigned. The M9.0 section
+assigned; M9.9 remains assigned. The M9.0 section
 at the bottom of this file carries what the survey, the stack verdict and the entry envelope
 established, and what a reader of the numbers alone would get wrong.
 
@@ -3659,6 +3659,53 @@ It separates the scan from the full map and lives only in the
 [measurement record](docs/archive/M9.7_map_preflight.md). QEMU cannot price
 this scan on silicon or justify weakening the reject-before-edit rule; no
 instrumentation remains in the shipped kernel.
+
+## M9.8: Arm newlib-nano
+
+The pinned full newlib remains the default outside `microbit`, the QEMU Armv6-M test board.
+The Arm nano package uses the same source release and multilib, with the toolchain's nano
+`newlib.h` as its configuration check. A separate build directory selects it through the
+generated Conan script. Other cross architectures have no nano profile yet. The
+[size and gate record](docs/archive/M9.8_nano.md) prices the savings: about 2.0 KiB
+of static RAM on Blue Pill and 1.9 KiB on the emulated micro:bit in the small
+apps, whose nano build carves a 1 KiB heap, but little flash until formatted I/O
+enters the image. The QEMU
+micro:bit model has 32 KiB SRAM, twice the physical v1 part. The nano C++
+archives terminate on their first throw in the QEMU Cortex-M3 gate.
+The nano profile therefore does not export `kickos_cxx`. The RP2350 Cortex-M33 nano image
+builds and passes `trap_redzone`, the C header gate and its link bound. QEMU does not witness
+silicon timing or the full set of formatted-I/O extensions.
+
+Nano allocates each thread's `strtok`, time, `rand` and conversion scratch from the app heap
+on first use. A thread that ends through `kos_exit`, including C `exit()` and an unprivileged
+entry return, frees it first; `errnoprobe` witnesses this on qemu-m3 nano, and without the
+free its heap use grows by one thread's scratch per round. The residual leak is a thread that
+never runs its own code again: cancelled at a syscall entry, slain, faulted, or privileged and
+returning from its entry. Its blocks stay allocated until reset, because the slot's next
+prime drops the pointers and task death does not reclaim the image-wide heap. Freeing costs
+about 0.4 KiB of flash in a nano image that allocates nothing else, since `_free_r` now
+links there, and less where it already did. Full-profile images are unchanged. On a board
+that takes the terse diagnostic column, as the 64 KiB STM32 boards do, the reclaim arm
+touches only `strtok` and `rand` state, which keeps `errnoprobe` inside Blue Pill's flash in
+both profiles. Elsewhere it also touches the time state, and the conversion lists where the
+heap allows as below.
+
+Nano `microbit` defaults its heap to 1 KiB, which holds the 200 bytes of `strtok`, time and
+`rand` scratch one thread takes there for root and all four pool threads together; the
+full-profile comparison keeps heap 0. `microbit_errnoprobe` witnesses both the fit and the
+return at exit, and fails at heap 0 and without the exit-time free. A floating-point
+conversion adds up to 1,428 bytes a thread, which this heap cannot supply, so `errnoprobe`
+converts only where the heap is at least 2 KiB and the conversion lists' release stays
+witnessed on qemu-m3 alone. The carve moves no selftest arm, but the selftest images and
+`errnoprobe` each lose one 2 KiB arena block; one more would put `selftest_p3`'s
+`irq_as_event` over its 4 KiB page and into a skip.
+
+The `microbit` QEMU board now requests nano by default; `-DKICKOS_MICROBIT_FULL_NEWLIB=ON`
+permits a separate full-profile comparison. Pico still uses full newlib on the same
+`armv6m` multilib. With CI's Arm GNU 15.2 toolchain, the nano package builds and the
+micro:bit image passes the selected non-tree gates plus the separately polled `hello`
+and `reclaimwit_park` gates. The full profile without the override is refused at
+configure time; the override and Pico's full profile both configure.
 
 ## Where to go next
 

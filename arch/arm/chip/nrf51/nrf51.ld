@@ -118,7 +118,7 @@ SECTIONS
         _ebss = .;
     } > RAM
 
-    /* Kept even at the zero length this board configures: _sbrk is force-linked into
+    /* Kept even at the zero length full newlib configures: _sbrk is force-linked into
        every image (-u,_exit shares its TU), so its strong reference to
        _kickos_heap_start would break every link here. An allocating app fails at
        RUNTIME (malloc returns NULL), not at link. */
@@ -159,8 +159,7 @@ KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
-/* Opt-in link-time heap floor (undefined by default). The default heap here is empty,
-   so any floor fails the link unless KICKOS_USER_HEAP_SIZE is raised to match. */
+/* Opt-in link-time heap floor (undefined by default). */
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")

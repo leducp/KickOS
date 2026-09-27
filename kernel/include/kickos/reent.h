@@ -59,6 +59,12 @@ extern "C"
     };
 
     extern KickosReentSeam const kickos_reent_seam;
+
+    // User side, and defined only where libc builds per-thread scratch on the heap on first
+    // use: returns the calling thread's to the heap and clears it. The exit stub runs it
+    // before the trap because nothing after that can: the kernel reaches neither the heap nor
+    // the allocator, and the next prime of the slot overwrites the pointers.
+    void kickos_reent_release(void);
 }
 
 namespace kickos

@@ -193,6 +193,9 @@ source kickos-conan/newlib/kickos-newlib-aarch64.sh
 
 Choose the multilib for the board. The generated script exports the package path its cross
 toolchain file reads; see the [board reference](docs/reference/boards.md) for the full table.
+For an Arm board, `-o "&:flavor=nano"` builds the small-memory newlib profile;
+source `kickos-newlib-<m>-nano.sh` and configure it in a separate build directory.
+The `microbit` QEMU test board defaults to nano; other boards default to full newlib.
 
 ## CI coverage
 

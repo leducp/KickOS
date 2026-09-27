@@ -36,7 +36,7 @@ ignore armv7m * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore armv7m * tap::run_all@1/2 reason: userland test callback
 ignore armv7m * tap::run_all@2/2 reason: userland test callback
 ignore armv6m * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
-ignore armv6m * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
+ignore-if-present armv6m * __gnu_cxx::__verbose_terminate_handler@1/1 reason: full C++ has this terminate callback; nano does not build the C++ exception leaf
 ignore armv6m * kickos::driver::bring_up@1/1 reason: userland block initializer through a service descriptor
 ignore armv6m * kickos_root_entry@1/1 reason: userland app init-array constructor
 ignore armv6m * kickos_service_list_run@1/1 reason: userland service start callback

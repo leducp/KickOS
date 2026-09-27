@@ -104,7 +104,7 @@ endif()
 # A board joins this list only once its RAM covers the runtime heap and its linker script homes
 # the toolchain EH tables (EHABI .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj
 # .gcc_except_table) plus the runtime writable state inside the app grants.
-if(KICKOS_BOARD STREQUAL "frdmk64f"
+if(TARGET kickos_cxx AND (KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_CHIP STREQUAL "mps2"
    OR ((KICKOS_BOARD STREQUAL "picopi"
@@ -113,7 +113,7 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
    OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
-   OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+   OR KICKOS_BOARD STREQUAL "qemu-riscv64"))
   add_subdirectory(cxxtest)
 endif()
 

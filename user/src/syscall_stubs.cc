@@ -7,6 +7,11 @@
 #include <kickos/libc/string.h>
 #include <kickos/arch/arch.h>
 
+#if KICKOS_LIBC_REENT
+#include <kickos/reent.h>
+#include <sys/reent.h>
+#endif
+
 extern "C"
 {
 
@@ -317,6 +322,9 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
 
 void kos_exit(int code)
 {
+#if KICKOS_LIBC_REENT && defined(_REENT_SMALL)
+    kickos_reent_release();
+#endif
     arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), 0, 0, 0);
     __builtin_unreachable();
 }
