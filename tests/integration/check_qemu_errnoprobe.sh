@@ -22,12 +22,13 @@ fi
 # A VERDICT IS NOT COVERAGE. PASS is printed by whatever arms ran, so deleting one leaves the
 # gate green; each arm's own summary line is required by name. The letters are the app's
 # (main.cc): A the two workers plus root, B a reused slot, C an in-dispatch server, D a
-# preempted pair.
+# preempted pair, E threads ending with libc scratch on the heap.
 for _arm in \
     'A root at' \
     'B t[0-9] at' \
     'C srv' \
-    'D lo'
+    'D lo' \
+    'E rounds'
 do
     if ! has "\\[errnoprobe\\] $_arm"; then
         fail "errnoprobe printed no '$_arm' line, so that arm did not run and PASS covers less

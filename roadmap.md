@@ -1314,7 +1314,8 @@ file owns only the number.
 | M9.5 | DECIDED: retain the single BKL after the x86 owner-local mixed-workload gate and whole-transaction lock audit; keep x86 CLH arbitration of that same BKL, with ticket backends elsewhere (see `docs/design-m9.5-bkl-options.md`) |
 | M9.6 | DECIDED: one shared-kernel ring orders normal SMP lines; own-image AMP claims a shared UART across a line with a bounded lease, and drops a line on claim failure |
 | M9.7 | DECIDED: enforce caller-held scheduler exclusion on the located callgraph corpus, price map preflight, and freeze the M9 exit capture without cross-instrument speedup claims |
-| M9.8 | the ESP32-C6 as an AMP pair: the LP core as a second node beside the HP core, the first AMP pair the bench runs unattended |
+| M9.8 | DECIDED: Arm newlib-nano is available per multilib, defaults on the `microbit` QEMU test board, and keeps the exception-capable C++ leaf on full newlib |
+| M9.9 | the ESP32-C6 as an AMP pair: the LP core as a second node beside the HP core, the first AMP pair the bench runs unattended |
 
 **WHAT M8 HANDS M9, EACH ON THE STAGE THAT UNBLOCKS IT.** Every one was raised inside M8 and
 recorded in `TODO.md` with its evidence, and M8.13 reassigned them here as a list with no
@@ -1342,9 +1343,10 @@ stage. A list with no stage is what made M8 need a tail at all, so each now name
   preflight, which no frozen M8 baseline carries and no bench preset drives, so it needs the
   vehicle this milestone builds for the lock question anyway.
 
-**THE NUMBERING MOVED ONCE AND ONLY AT THE END.** The console stage takes M9.6 and the write-up
-becomes M9.7, so the five lock stages keep the numbers their evidence gates and recorded rulings
-were written against.
+**THE CONSOLE STAGE LEFT THE LOCK STAGES IN PLACE.** It took M9.6 and the write-up became
+M9.7, so the five lock stages kept the numbers their evidence gates and recorded rulings were
+written against. The optional libc profile now takes M9.8, moving the unattended AMP tail to
+M9.9 without changing those lock-stage numbers.
 
 **THE TABLE IS A LEDGER OF ASSIGNED QUESTIONS, NOT A PROMISE OF EVERY OPTIMIZATION.** A number
 here fixes what a stage IS, so that the evidence gate can refuse the stage without the argument
@@ -1543,7 +1545,15 @@ contexts are both checked out here, in two different shapes, and what is missing
 argues the first and the L4Re userland that programs the second. So the temporal half below has a
 mechanism to read today and no case for either shape.
 
-**M9.8 PUTS AN AMP PAIR ON THE BENCH THAT NEEDS NO HAND, AND IT IS A TAIL RATHER THAN A DRIVER-ERA
+**M9.8 PRICES THE SMALL-MEMORY LIBC PROFILE ON ARM MCUS.** The full pinned newlib stays the
+default outside the `microbit` QEMU test board. The nano profile builds from that same pinned
+source and selects the matching Arm multilib's nano header and C++ archives. It must keep the
+normal freestanding app path, prove the libc and reentrancy checks on QEMU, and measure flash
+and static RAM on a small board.
+Arm's nano C++ archives do not carry the unwind path the `kickos_cxx` exception contract needs,
+so that leaf is absent in this profile; full C++ keeps the full profile.
+
+**M9.9 PUTS AN AMP PAIR ON THE BENCH THAT NEEDS NO HAND, AND IT IS A TAIL RATHER THAN A DRIVER-ERA
 PORT.** Every AMP pair witnessed on silicon so far is an RP part, and an RP board needs its button
 to take a new image, so no AMP run is unattended. The ESP32-C6 already classes as AMP, its LP core
 failing requirement 5, and its technical reference manual gives the rest: one flat address space

@@ -1630,19 +1630,23 @@ read the shape before predicting a count.
 
 `KICKOS_USER_HEAP_SIZE 0` is a supported profile, not a broken one. Newlib falls back to
 unbuffered stdio when the stream-buffer `malloc` fails, so `printf` and `std::cout` still
-emit with no heap. The in-tree precedent is
-`nrf51`, whose chip default is heap 0 (`Kconfig`, `KICKOS_USER_HEAP_SIZE`) and whose
-`microbit_selftest` QEMU gate is green
-(`../../user/apps/common/selftest/CMakeLists.txt:96`).
+emit with no heap. The in-tree precedents are `nrf51`, whose chip default is heap 0
+(`Kconfig`, `KICKOS_USER_HEAP_SIZE`) for the full-newlib `microbit` build, and
+`bluepill-c8-st`. Under the nano profile heap 0 holds only for code that never calls a
+newlib function whose per-thread state nano builds on the heap (`strtok`,
+`localtime`/`asctime`, `rand`, `strtod` and the other floating-point conversions): the
+first such call fails a newlib assertion. Nano `microbit` therefore defaults to a 1 KiB
+heap (`boards.md`, *Pinned newlib for cross boards*).
 
-A heapless profile costs stdio **buffering**, and `malloc` for an app that wants it. It
-does not cost the standard-API surface. The project's rule that user-facing apps are
-written against `printf`/`std::cout` rather than `kos_*` requires those APIs to work, not
-a heap.
+A heapless profile costs stdio **buffering**, and `malloc` for an app that wants it. Under
+full newlib it does not cost the standard-API surface. The project's rule that user-facing
+apps are written against `printf`/`std::cout` rather than `kos_*` requires those APIs to
+work, not a heap.
 
 So the SRAM floor is **16 KiB with a static-allocation profile**, and the carve is a
-decision a variant can state, over a chip default declared in `Kconfig`: 0 on `nrf51`,
-2048 on `stm32f302`, 8192 on `stm32f103` and `stm32f411`, 16384 everywhere else.
+decision a variant can state, over a chip default declared in `Kconfig`: 1024 on nano
+`microbit`, 0 on `nrf51` otherwise, 2048 on `stm32f302` and `stm32f103`, 8192 on
+`stm32f411`, 16384 everywhere else.
 
 A part at the floor **plus MPU enforcement** is tighter still, because enforcement costs
 RAM of its own: region descriptors, per-domain data in `g_instance`

@@ -23,6 +23,32 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES KICKOS_BOARD)
 kickos_toolchain_board_descriptor("arm")
 kickos_toolchain_cpu_baseline("arm" "arm")
 
+# After the descriptor: an installed package's descriptor states KICKOS_MICROBIT_PACKAGE_NEWLIB,
+# the profile its libraries were built with. They size per-thread newlib state by that
+# profile's struct _reent, so the package links no other.
+if(KICKOS_BOARD STREQUAL "microbit")
+  set(_kos_microbit_full_default OFF)
+  if(KICKOS_MICROBIT_PACKAGE_NEWLIB STREQUAL "full")
+    set(_kos_microbit_full_default ON)
+  endif()
+  set(KICKOS_MICROBIT_FULL_NEWLIB ${_kos_microbit_full_default} CACHE BOOL
+      "Use full newlib instead of microbit's default nano profile")
+  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES KICKOS_MICROBIT_FULL_NEWLIB)
+  if(KICKOS_MICROBIT_FULL_NEWLIB)
+    set(_kos_microbit_flavor full)
+  else()
+    set(_kos_microbit_flavor nano)
+  endif()
+  if(DEFINED KICKOS_MICROBIT_PACKAGE_NEWLIB
+     AND NOT _kos_microbit_flavor STREQUAL KICKOS_MICROBIT_PACKAGE_NEWLIB)
+    message(FATAL_ERROR
+      "KickOS microbit: this KickOS package was built with ${KICKOS_MICROBIT_PACKAGE_NEWLIB} "
+      "newlib, but KICKOS_MICROBIT_FULL_NEWLIB=${KICKOS_MICROBIT_FULL_NEWLIB} asks for "
+      "${_kos_microbit_flavor}. Leave it unset in a fresh build directory, or build against "
+      "a KickOS package built with the ${_kos_microbit_flavor} profile.")
+  endif()
+endif()
+
 if(NOT DEFINED KICKOS_MFLOAT_ABI)
   message(FATAL_ERROR "KickOS arm toolchain: board '${KICKOS_BOARD}' states no float ABI; "
     "boards/${KICKOS_BOARD}/board.cmake or arch/arm/chip/${KICKOS_CHIP}/cpu.cmake must set "
@@ -61,9 +87,29 @@ elseif(_kos_multi STREQUAL "thumb/v8-m.main+fp/hard")
 else()
   message(FATAL_ERROR "KickOS arm toolchain: no pinned newlib for multilib '${_kos_multi}'")
 endif()
+set(_kos_newlib_flavor "")
+if(KICKOS_BOARD STREQUAL "microbit")
+  set(_kos_newlib_flavor FLAVOR ${_kos_microbit_flavor})
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
 kickos_require_newlib("arm" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  ${_kos_newlib_var} static ${_kos_cpu} -mthumb)
+  ${_kos_newlib_var} static ${_kos_newlib_flavor} ${_kos_cpu} -mthumb)
+if(KICKOS_BOARD STREQUAL "microbit")
+  if(DEFINED KICKOS_MICROBIT_PACKAGE_NEWLIB
+     AND NOT KICKOS_NEWLIB_FLAVOR STREQUAL KICKOS_MICROBIT_PACKAGE_NEWLIB)
+    message(FATAL_ERROR
+      "KickOS microbit: this KickOS package was built with ${KICKOS_MICROBIT_PACKAGE_NEWLIB} "
+      "newlib, but ${_kos_newlib_var} selects ${KICKOS_NEWLIB_FLAVOR}. Provision armv6m with "
+      "Conan -o \"&:flavor=${KICKOS_MICROBIT_PACKAGE_NEWLIB}\" in a fresh build directory, "
+      "or build against a KickOS package built with the ${KICKOS_NEWLIB_FLAVOR} profile.")
+  elseif(NOT KICKOS_NEWLIB_FLAVOR STREQUAL _kos_microbit_flavor)
+    message(FATAL_ERROR
+      "KickOS microbit: expected ${_kos_microbit_flavor} newlib, but "
+      "${_kos_newlib_var} selects ${KICKOS_NEWLIB_FLAVOR}. Provision armv6m with "
+      "Conan -o \"&:flavor=${_kos_microbit_flavor}\" in a fresh build directory. "
+      "Set -DKICKOS_MICROBIT_FULL_NEWLIB=ON only to compare the full profile.")
+  endif()
+endif()
 
 # -mthumb: Cortex-M is Thumb-only. -mno-unaligned-access: some parts (K64F) forbid
 # unaligned/burst accesses across a RAM bank boundary (0x2000_0000, SRAM_L|SRAM_U), so the

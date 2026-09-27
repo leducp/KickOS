@@ -4,14 +4,20 @@
 // Test per-thread errno across blocking switches, slot reuse, IPC fastpath,
 // and timer preemption. Use newlib strtol errors (ERANGE/EINVAL), not direct
 // assignments, to test libc state selection. Synchronize peers explicitly
-// and check required scheduling states.
+// and check required scheduling states. Also test that an exiting thread
+// hands the libc scratch it built on demand back to the heap.
 
+#include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/atomic.h>
 
 #include <errno.h>
+#include <malloc.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/reent.h>
+#include <time.h>
 
 namespace
 {
@@ -558,6 +564,113 @@ namespace
         (void)hi.join();
         (void)lo.join();
     }
+
+    // --- arm E: libc scratch handed back at thread exit ----------------------------------
+    //
+    // Where newlib builds its per-thread scratch on the heap on first use, the slot's next
+    // prime overwrites the pointers, so whatever an exiting thread does not free itself is
+    // lost. Every round starts a thread that touches each lazily built member it can reach
+    // through ISO C within the board's flash and then ends, alternately by returning and by
+    // exiting; the heap's in-use bytes must not move across the rounds. Root touches none of
+    // that state meanwhile, and nothing else in this image allocates.
+
+    constexpr unsigned RECLAIM_ROUNDS = 8;
+
+    Flag g_took = {}; // in-use bytes the last worker added
+    Flag g_reclaim_ran = {};
+    char g_tok[] = "a b";
+
+    unsigned heap_in_use()
+    {
+        return static_cast<unsigned>(mallinfo().uordblks);
+    }
+
+    void reclaim_worker(void* arg)
+    {
+        unsigned const before = heap_in_use();
+        g_tok[1] = ' '; // strtok overwrote it last round
+        (void)strtok(g_tok, " ");
+        (void)rand();
+#if !KICKOS_DIAG_TERSE
+        // A board short enough of flash to take the terse diagnostic column has none for these:
+        // full newlib's localtime and asctime bring its formatted I/O along, and nano's strtod
+        // its floating-point conversion.
+        time_t const t = 0;
+        (void)asctime(localtime(&t));
+#if defined(_REENT_SMALL) && KICKOS_USER_HEAP_SIZE >= 2048
+        // Only here: the full profile keeps this state inline but still takes its lists from
+        // the heap, and nothing hands those back. With the calls above this conversion takes
+        // 1,628 B of Arm nano heap, which a smaller carve refuses with an assertion.
+        (void)strtod("1.25e300", nullptr);
+#endif
+#endif
+        g_took = heap_in_use() - before;
+        g_reclaim_ran = g_reclaim_ran.load() + 1u;
+        if (arg != nullptr)
+        {
+            kos::exit(0);
+        }
+    }
+
+    bool reclaim_round(unsigned r)
+    {
+        void* arg = nullptr;
+        if ((r & 1u) != 0)
+        {
+            arg = g_tok;
+        }
+        kos::thread::Handle const h = kos::thread::create(reclaim_worker, arg, "recl", 10);
+        if (not h.valid())
+        {
+            return false;
+        }
+        (void)h.join();
+        return true;
+    }
+
+    void arm_reclaim()
+    {
+        // The first round may take one-time process-wide state (time zone, stdio) that is not
+        // any thread's to return.
+        if (not reclaim_round(0))
+        {
+            fault("[errnoprobe] E SPAWN FAILED\n");
+            return;
+        }
+        unsigned const base = heap_in_use();
+        for (unsigned r = 1; r <= RECLAIM_ROUNDS; r++)
+        {
+            if (not reclaim_round(r))
+            {
+                fault("[errnoprobe] E SPAWN FAILED\n");
+                return;
+            }
+        }
+        unsigned const now = heap_in_use();
+
+        char const* verdict = "ok";
+        if (g_reclaim_ran.load() != RECLAIM_ROUNDS + 1u)
+        {
+            verdict = "A WORKER NEVER RAN";
+            g_bad++;
+        }
+        else if (now > base)
+        {
+            verdict = "EXITED THREADS LEAK THEIR LIBC SCRATCH";
+            g_bad++;
+        }
+#ifdef _REENT_SMALL
+        else if (g_took.load() == 0)
+        {
+            verdict = "THE WORKER BUILT NO SCRATCH, so this arm proves nothing";
+            g_bad++;
+        }
+#endif
+        ksnprintf(g_line, sizeof(g_line),
+                  "[errnoprobe] E rounds %u per-thread %u in-use %u -> %u %s\n",
+                  RECLAIM_ROUNDS, g_took.load(), base, now, verdict);
+        say(g_line);
+    }
 }
 
 int main(int, char**)
@@ -568,6 +681,7 @@ int main(int, char**)
     arm_slot_reuse();
     arm_fastpath();
     arm_preemption();
+    arm_reclaim();
 
     if (g_bad == 0)
     {

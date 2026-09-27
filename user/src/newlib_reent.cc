@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// One struct _reent per thread slot, where libc finds the running thread's, and the descriptor
-// that tells the kernel where both are. The user side of kernel/include/kickos/reent.h; compiled
-// on every board but the sim, whose libc is the host's.
+// One struct _reent per thread slot, where libc finds the running thread's, the descriptor
+// that tells the kernel where both are, and the exit-time release of the scratch a _REENT_SMALL
+// libc allocates into a slot. The user side of kernel/include/kickos/reent.h; compiled on every
+// board but the sim, whose libc is the host's.
 //
 // Newlib reaches its reentrant state as _REENT: __getreent() on lx6, armv8a and rv64imac,
 // and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target links
@@ -12,6 +13,7 @@
 #include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
 #include <kickos/reent.h>
 
+#include <malloc.h>
 #include <sys/reent.h>
 
 // UNPRIVILEGED APP MEMORY, granted R/W to every unprivileged thread, so a peer can scribble
@@ -64,4 +66,58 @@ KickosReentSeam const kickos_reent_seam = {
     sizeof(struct _reent),
     KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
 };
+
+#ifdef _REENT_SMALL
+// Not _reclaim_reent: it skips the state _impure_ptr names, which on the static-reent targets
+// is the caller's own, and it runs the stdio cleanup hook, which closes the FILEs every thread
+// shares. The signal table stays for the reason _reclaim_reent gives.
+void kickos_reent_release(void)
+{
+    struct _reent* const r = _REENT;
+    struct _mprec* const mp = r->_mp;
+    if (mp != nullptr)
+    {
+        if (mp->_freelist != nullptr)
+        {
+            // Balloc sizes the list _Kmax + 1.
+            for (size_t k = 0; k <= _Kmax; k++)
+            {
+                struct _Bigint* b = mp->_freelist[k];
+                while (b != nullptr)
+                {
+                    struct _Bigint* const next = b->_next;
+                    _free_r(r, b);
+                    b = next;
+                }
+            }
+            _free_r(r, mp->_freelist);
+        }
+        _free_r(r, mp->_result);
+        struct _Bigint* p5 = mp->_p5s;
+        while (p5 != nullptr)
+        {
+            struct _Bigint* const next = p5->_next;
+            _free_r(r, p5);
+            p5 = next;
+        }
+        _free_r(r, mp);
+        r->_mp = nullptr;
+    }
+    _free_r(r, r->_emergency);
+    r->_emergency = nullptr;
+    _free_r(r, r->_r48);
+    r->_r48 = nullptr;
+    _free_r(r, r->_localtime_buf);
+    r->_localtime_buf = nullptr;
+    _free_r(r, r->_asctime_buf);
+    r->_asctime_buf = nullptr;
+    _free_r(r, r->_misc);
+    r->_misc = nullptr;
+    _free_r(r, r->_signal_buf);
+    r->_signal_buf = nullptr;
+    _free_r(r, r->_cvtbuf);
+    r->_cvtbuf = nullptr;
+    r->_cvtlen = 0;
+}
+#endif
 }

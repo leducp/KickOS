@@ -5196,14 +5196,14 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**M9.0 THROUGH M9.6 ARE DECIDED; M9.7 AND LATER REMAIN ASSIGNED.** `roadmap.md`
+**M9.0 THROUGH M9.8 ARE DECIDED; M9.9 REMAINS ASSIGNED.** `roadmap.md`
 assigns M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived
 from the mask, per-core ready queues, the wait-edge rule; M9.3 fused into it, under one lock the
 push needing no ring), M9.4 (the per-pair rings, landed under the lock inside stage 1's own
 regression budget; the local scheduler leaving the lock was REFUSED by the stop condition, R0, on
 `esp32-wroom-benchsmp` at two cores), M9.5 (tested whether IPC should leave the lock and retained
 one BKL with x86 CLH arbitration), M9.6 (the console contract across cores), M9.7 (write-up and
-exit measurement) and M9.8 (the ESP32-C6 as an
+exit measurement), M9.8 (Arm newlib-nano, default on the QEMU micro:bit) and M9.9 (the ESP32-C6 as an
 unattended AMP pair), and it carries each stage's content, its evidence gate and the rulings behind
 it -- including the ones a session might otherwise reopen:
 ownership and the rings land UNDER the lock in both outcomes, an endpoint's owner is the home of its
@@ -5260,6 +5260,14 @@ renumbered: the five lock stages keep the numbers their evidence gates were writ
       as kernel time. Reconcile the roadmap, architecture reference, invariants, teaching chapter
       and state record against the shipped one-BKL design. The six-preset, 30-capture
       record is `docs/archive/M9.7_exit.md`; the two SMP `e2e-cross` rows have no samples.
+
+- [x] **M9.8: ARM NEWLIB-NANO.** Keep the pinned full profile as the default outside the
+      `microbit` QEMU test board; select nano per Arm multilib through Conan, and refuse a
+      profile or toolchain mismatch at configure time. Measure flash and static RAM on a small
+      board, run the QEMU libc and reentrancy gates, and make the unavailable full-C++ exception
+      leaf explicit. Record the formatting differences and the scope of the evidence before
+      closing the stage. The matched sizes and QEMU gates are in
+      `docs/archive/M9.8_nano.md`; both micro:bit profiles pass the caller-held graph gate.
 
 **TWO LINES WENT BECAUSE THEY WERE STALE.** This section used to say the instrument constants M8.7
 owes this milestone and G-06 were actionable alongside M9.0. The five constants landed inside M8.7's

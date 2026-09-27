@@ -11,14 +11,31 @@
 # The package's lib/ goes first on the link line, so every -lc the rescan group and the driver
 # add resolves there; a configure-time link trace proves that it does.
 
-# kickos_require_newlib(<label> <cc> <cxx> <env-var> <dynamic|static> <flags>...)
+# kickos_require_newlib(<label> <cc> <cxx> <env-var> <dynamic|static> [FLAVOR <full|nano>]
+#                       <flags>...)
 #
+# FLAVOR names the profile the board requires, so the provisioning hint asks for that one.
 # Sets _kos_newlib_c, _kos_newlib_cxx and _kos_newlib_link in the caller.
 function(kickos_require_newlib _label _cc _cxx _var _reent)
   if(NOT _reent MATCHES "^(dynamic|static)$")
     message(FATAL_ERROR "KickOS ${_label} toolchain: invalid newlib reentrancy '${_reent}'")
   endif()
-  set(_flags ${ARGN})
+  cmake_parse_arguments(PARSE_ARGV 5 _kos_rn "" "FLAVOR" "")
+  if(DEFINED _kos_rn_FLAVOR AND NOT _kos_rn_FLAVOR MATCHES "^(full|nano)$")
+    message(FATAL_ERROR "KickOS ${_label} toolchain: invalid newlib profile '${_kos_rn_FLAVOR}'")
+  endif()
+  set(_flags ${_kos_rn_UNPARSED_ARGUMENTS})
+  # The cache entry below keeps the first configure's package whatever the environment says later.
+  if(NOT "$ENV{${_var}}" STREQUAL "" AND DEFINED CACHE{${_var}})
+    file(REAL_PATH "$ENV{${_var}}" _env_dir)
+    file(REAL_PATH "$CACHE{${_var}}" _cached_dir)
+    if(NOT _env_dir STREQUAL _cached_dir)
+      message(FATAL_ERROR
+        "KickOS ${_label} toolchain: the environment sets ${_var}=$ENV{${_var}}, but this "
+        "build directory was configured with ${_var}=$CACHE{${_var}}. Configure a fresh "
+        "build directory to link a different newlib package.")
+    endif()
+  endif()
   set(${_var} "$ENV{${_var}}" CACHE PATH
       "The kickos-newlib package folder (include/, lib/) this multilib links")
   set(ENV{${_var}} "${${_var}}")
@@ -26,11 +43,17 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
   # conan/board names each multilib's variable KICKOS_NEWLIB_<MULTILIB>.
   string(REGEX REPLACE "^KICKOS_NEWLIB_" "" _multilib "${_var}")
   string(TOLOWER "${_multilib}" _multilib)
+  set(_flavor_opt "")
+  set(_script "kickos-newlib-${_multilib}.sh")
+  if(_kos_rn_FLAVOR STREQUAL "nano")
+    set(_flavor_opt " -o \"&:flavor=nano\"")
+    set(_script "kickos-newlib-${_multilib}-nano.sh")
+  endif()
   string(CONCAT _how "Provision it from the source root with\n"
          "  conan export conan/newlib\n"
-         "  conan install conan/board -o \"&:multilib=${_multilib}\" --build=missing "
-         "--output-folder=<dir>\n"
-         "  source <dir>/kickos-newlib-${_multilib}.sh\n"
+         "  conan install conan/board -o \"&:multilib=${_multilib}\"${_flavor_opt} "
+         "--build=missing --output-folder=<dir>\n"
+         "  source <dir>/${_script}\n"
          "and configure again in that shell.")
   if(_dir STREQUAL "")
     message(FATAL_ERROR
@@ -39,7 +62,7 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
   endif()
 
   # Ahead of the stamp: a cached folder can be deleted or emptied between configures.
-  foreach(_need include/newlib.h include/sys/reent.h lib/libc.a lib/libm.a kickos-newlib.txt)
+  foreach(_need include/newlib.h include/sys/reent.h lib/libm.a kickos-newlib.txt)
     if(NOT EXISTS "${_dir}/${_need}")
       message(FATAL_ERROR
         "KickOS ${_label} toolchain: ${_var}=${_dir} has no ${_need}, so it is not a "
@@ -52,10 +75,38 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
     message(FATAL_ERROR "KickOS ${_label} toolchain: ${_var}=${_dir} has ${_pkg_reent}; "
       "this board requires reent=${_reent}. ${_how}")
   endif()
-  set(_stamp "${_dir}|${_cxx}|${_reent}|${_flags}")
+  file(STRINGS "${_dir}/kickos-newlib.txt" _pkg_flavor REGEX "^flavor=")
+  if(_pkg_flavor STREQUAL "" OR _pkg_flavor STREQUAL "flavor=full")
+    set(_flavor full)
+    set(_libc_name libc.a)
+  elseif(_pkg_flavor STREQUAL "flavor=nano" AND _label STREQUAL "arm")
+    set(_flavor nano)
+    set(_libc_name libc_nano.a)
+    foreach(_lib IN ITEMS libc_nano.a libg_nano.a)
+      if(NOT EXISTS "${_dir}/lib/${_lib}")
+        message(FATAL_ERROR "KickOS ${_label} toolchain: nano package lacks lib/${_lib}.")
+      endif()
+    endforeach()
+    foreach(_lib IN ITEMS nano.specs libstdc++_nano.a libsupc++_nano.a)
+      execute_process(COMMAND "${_cc}" ${_flags} -print-file-name=${_lib}
+                      OUTPUT_VARIABLE _found OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+      if(NOT IS_ABSOLUTE "${_found}" OR NOT EXISTS "${_found}")
+        message(FATAL_ERROR "KickOS ${_label} toolchain: nano package requires ${_lib} "
+          "in this Arm multilib; ${_cc} found '${_found}'.")
+      endif()
+    endforeach()
+  else()
+    message(FATAL_ERROR "KickOS ${_label} toolchain: unsupported newlib profile "
+      "'${_pkg_flavor}' in ${_dir}/kickos-newlib.txt.")
+  endif()
+  if(NOT EXISTS "${_dir}/lib/${_libc_name}")
+    message(FATAL_ERROR "KickOS ${_label} toolchain: package lacks lib/${_libc_name}.")
+  endif()
+  set(KICKOS_NEWLIB_FLAVOR "${_flavor}" CACHE INTERNAL "Selected pinned newlib profile" FORCE)
+  set(_stamp "${_dir}|${_cxx}|${_reent}|${_flavor}|${_flags}")
   if(DEFINED CACHE{KICKOS_NEWLIB_OK_${_label}}
      AND "$CACHE{KICKOS_NEWLIB_OK_${_label}}" STREQUAL "${_stamp}")
-    message(STATUS "KickOS ${_label} toolchain: ${_reent}-reent newlib from ${_dir}")
+    message(STATUS "KickOS ${_label} toolchain: ${_flavor} ${_reent}-reent newlib from ${_dir}")
     set(_kos_newlib_c "$CACHE{KICKOS_NEWLIB_C_${_label}}" PARENT_SCOPE)
     set(_kos_newlib_cxx "$CACHE{KICKOS_NEWLIB_CXX_${_label}}" PARENT_SCOPE)
     set(_kos_newlib_link "$CACHE{KICKOS_NEWLIB_LINK_${_label}}" PARENT_SCOPE)
@@ -79,7 +130,7 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
   get_filename_component(_bin "${_cc}" DIRECTORY)
   get_filename_component(_cc_name "${_cc}" NAME)
   string(REGEX REPLACE "gcc$" "nm" _nm_name "${_cc_name}")
-  execute_process(COMMAND "${_bin}/${_nm_name}" -A "${_dir}/lib/libc.a"
+  execute_process(COMMAND "${_bin}/${_nm_name}" -A "${_dir}/lib/${_libc_name}"
                   OUTPUT_VARIABLE _nm ERROR_QUIET RESULT_VARIABLE _rc)
   string(REGEX MATCHALL " U __getreent\n" _callers "${_nm}")
   string(REGEX MATCHALL " [TtWw] __getreent\n" _definers "${_nm}")
@@ -159,19 +210,26 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
     string(STRIP "${_herr}" _herr)
     message(FATAL_ERROR
       "KickOS ${_label} toolchain: ${_var}=${_dir} is not a ${_reent}-reent newlib: "
-      "${_ncallers} libc.a member(s) call __getreent, ${_ndefiners} define it, and the header "
+      "${_ncallers} ${_libc_name} member(s) call __getreent, ${_ndefiners} define it, and the header "
       "probe answered '${_herr}'. ${_how}")
   endif()
 
   set(_link "-L${_dir}/lib")
+  if(_flavor STREQUAL "nano")
+    string(APPEND _link " --specs=nano.specs")
+  endif()
+  separate_arguments(_link_list UNIX_COMMAND "${_link}")
   set(_trace_obj "${CMAKE_BINARY_DIR}/CMakeFiles/kickos-newlib-probe-${_label}.o")
-  execute_process(COMMAND "${_cc}" ${_flags} ${_c_list} ${_link} -nostdlib -Wl,-r
+  execute_process(COMMAND "${_cc}" ${_flags} ${_c_list} ${_link_list} -nostdlib -Wl,-r
                           -Wl,--trace "${_probe}" -lc -o "${_trace_obj}"
                   OUTPUT_VARIABLE _trace ERROR_VARIABLE _trace_err RESULT_VARIABLE _lrc)
   string(REGEX MATCHALL "[^\n]*libc\\.a[^\n]*" _libcs "${_trace}")
-  if(NOT _lrc EQUAL 0 OR NOT _libcs STREQUAL "${_dir}/lib/libc.a")
+  if(_flavor STREQUAL "nano")
+    string(REGEX MATCHALL "[^\n]*libc_nano\\.a[^\n]*" _libcs "${_trace}")
+  endif()
+  if(NOT _lrc EQUAL 0 OR NOT _libcs STREQUAL "${_dir}/lib/${_libc_name}")
     message(FATAL_ERROR
-      "KickOS ${_label} toolchain: a link with -L${_dir}/lib did not take libc.a from there:\n"
+      "KickOS ${_label} toolchain: a link with ${_link} did not take ${_libc_name} from there:\n"
       "${_trace}${_trace_err}")
   endif()
   file(REMOVE "${_trace_obj}")
@@ -180,7 +238,7 @@ function(kickos_require_newlib _label _cc _cxx _var _reent)
   set(KICKOS_NEWLIB_CXX_${_label} "${_inc_cxx}" CACHE INTERNAL "")
   set(KICKOS_NEWLIB_LINK_${_label} "${_link}" CACHE INTERNAL "")
   set(KICKOS_NEWLIB_OK_${_label} "${_stamp}" CACHE INTERNAL "")
-  message(STATUS "KickOS ${_label} toolchain: ${_reent}-reent newlib from ${_dir}")
+  message(STATUS "KickOS ${_label} toolchain: ${_flavor} ${_reent}-reent newlib from ${_dir}")
   set(_kos_newlib_c "${_inc_c}" PARENT_SCOPE)
   set(_kos_newlib_cxx "${_inc_cxx}" PARENT_SCOPE)
   set(_kos_newlib_link "${_link}" PARENT_SCOPE)

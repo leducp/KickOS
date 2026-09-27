@@ -760,6 +760,10 @@ config KICKOS_ROOT_STACK_SIZE
 config KICKOS_USER_HEAP_SIZE
 	int "Userspace heap the linker script carves"
 	range 0 1048576
+	# Nano takes each thread's strtok, time and rand scratch from here, 200 B a thread on
+	# microbit, so 1 KiB seats root and its four pool threads. It must stay under the
+	# 1,032 B the first buffered stdout write asks for, or that buffer takes it.
+	default 1024 if BOARD_MICROBIT && !KICKOS_MICROBIT_FULL_NEWLIB
 	default 0 if CHIP_NRF51
 	default 2048 if CHIP_STM32F302
 	# 20 KiB of SRAM: at 8192 the heaviest stm32f103 image has no arena past the two
@@ -770,7 +774,9 @@ config KICKOS_USER_HEAP_SIZE
 	help
 	  Read by the linker script. Every byte here is a byte the thread arena does
 	  not get. Zero carves nothing and still prints: newlib falls back
-	  to unbuffered stdio when the buffer malloc fails.
+	  to unbuffered stdio when the buffer malloc fails. Under nano, zero
+	  also fails a libc assertion at a thread's first strtok, localtime,
+	  rand or floating-point conversion.
 
 config KICKOS_KERNEL_STACKS
 	int

@@ -871,8 +871,9 @@ the board".
   recurs:
   1. That commit gave `nrf51.ld` the fleet-uniform 4 KiB `.userheap`, carved from RAM *ahead of*
      the thread arena. On 16 KiB SRAM that left ~1.5 KiB of arena -- not one 2 KiB thread stack --
-     so **every** `kos::thread::create` failed and the suite cascaded to 39 `not ok`. The heap is
-     now empty on this chip: no app built for the board allocates, so the arena gets the RAM.
+     so **every** `kos::thread::create` failed and the suite cascaded to 39 `not ok`. Under full
+     newlib the heap is empty on this chip, so the arena gets the RAM; nano carves the 1 KiB its
+     per-thread libc scratch needs (see *Pinned newlib for cross boards* below).
      (`_sbrk` shares a TU with `_exit` and the link force-links it, so the section has to stay,
      at zero length -- an allocating app here fails at runtime, not at link. See `nrf51.ld`.)
   2. With the arena restored the run then **hung** at `call_infoless_revert`, whose four workers
@@ -922,7 +923,8 @@ same-name C-only twin on `PATH` to fall through to.
 
 Every cross image links KickOS's pinned newlib in place of the toolchain's. AArch64, RV64 and
 Xtensa use `__getreent()`; Cortex-M, RV32 and RX use `_impure_ptr`. The package must
-match the toolchain's headers and the board's multilib. `cross_newlib.cmake` checks both and reads
+match the selected toolchain header profile and the board's multilib.
+`cross_newlib.cmake` checks both and reads
 the package location from an environment variable, one per multilib:
 
 | Multilib | Variable | Prerequisite toolchain variable |
@@ -952,6 +954,56 @@ source <dir>/kickos-newlib-<m>.sh
 command exports the matching variable above from the folder Conan built or restored. Configure
 after sourcing it, as with the cross toolchain variables. `.github/actions/newlib/action.yml` runs
 the same three steps in CI, cached by the multilib and the toolchain bin directory.
+
+Arm boards may select the small-memory `nano` profile:
+
+```sh
+conan install conan/board -o "&:multilib=armv7m" -o "&:flavor=nano" \
+  --build=missing --output-folder=<dir>
+source <dir>/kickos-newlib-armv7m-nano.sh
+```
+
+Use a fresh CMake build directory after switching profiles. The package compares its
+`newlib.h` with the Arm toolchain's nano header and the linker selects the nano C archive.
+Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
+implementations. Its formatted I/O omits C99 and long-long formats; floating-point
+`printf`/`scanf` require the app to link with `-u _printf_float`/`-u _scanf_float`,
+respectively. Arm's nano C++ archive does not unwind a thrown exception on the QEMU
+Cortex-M3 gate, so this profile does not export `kickos_cxx`; applications needing
+exceptions use the full profile. Other cross targets retain the full profile.
+
+Nano's per-thread `_reent` holds pointers where the full profile holds storage. A thread's
+first `strtok`, `localtime`, `asctime`, `rand`, `strsignal` or floating-point conversion
+allocates that thread's scratch from the app heap, and an allocation the heap cannot supply
+fails a newlib assertion instead of returning an error. A thread returns its scratch to the
+heap when it ends through `kos_exit`: calling it, calling C `exit()`, or returning from an
+unprivileged thread's entry function. A thread that ends without running its own code again
+keeps its scratch until the next thread started in its slot discards the pointers, and the
+blocks then stay allocated until reset: a cancelled thread that dies at a syscall entry, a
+slain or faulted thread, and a privileged thread returning from its entry. Task death
+reclaims nothing from the heap. The ESP32 newlib allocates the same scratch and takes the same
+exit path, but every thread's entry return goes through the kernel there, so only an explicit
+exit returns it.
+
+The `microbit` QEMU test board defaults to nano. Provision its `armv6m` multilib with
+`-o "&:flavor=nano"` and source `kickos-newlib-armv6m-nano.sh`; CI does this for its
+micro:bit run gate. Its 32 KiB emulated SRAM is larger than a physical micro:bit v1's
+16 KiB. For a full-profile comparison, provision the full `armv6m` package in another
+build directory and set `-DKICKOS_MICROBIT_FULL_NEWLIB=ON`. An installed `microbit`
+package links only the profile it was built with and refuses a consumer that asks for the
+other one. Pico keeps the full profile.
+
+Under nano, `microbit` defaults `KICKOS_USER_HEAP_SIZE` to 1,024 bytes; the full-profile
+build keeps the scratch inline and carves none. One thread's `strtok`, `localtime`,
+`asctime` and `rand` scratch measures 200 bytes there, so the heap holds it for root and
+all four pool threads at once, and `microbit_errnoprobe` fails if an ended thread keeps
+it. A floating-point conversion adds up to 1,428 bytes a thread (`strtod("1.25e300")`),
+which this heap cannot supply even once: an app that converts floating point sets
+`-DKICKOS_USER_HEAP_SIZE` in its build, and `errnoprobe` skips that conversion below
+2 KiB. The first buffered `stdout` write asks for 1,032 bytes, so it never fits and
+stdout stays unbuffered, as with no heap. The carve costs a `hello`-sized image no thread
+arena, the 2 KiB stack alignment absorbing it; each selftest image and `errnoprobe`
+gives up one 2 KiB arena block and runs the same arms with the same skips.
 
 ## Flashing
 

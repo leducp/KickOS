@@ -337,10 +337,13 @@ def check(build_dir, arch, preset, cores):
             continue
         words, sep, reason = line.partition(" reason:")
         fields = words.split()
-        if len(fields) != 4 or fields[0] != "ignore" or not sep or not reason.strip():
+        if len(fields) != 4 or fields[0] not in ("ignore", "ignore-if-present") \
+                or not sep or not reason.strip():
             raise ValueError(f"caller_held_indirect.txt:{number}: invalid ignore record")
         _, named_arch, named_preset, site = fields
         if named_arch == arch and named_preset in ("*", preset):
+            if fields[0] == "ignore-if-present" and site not in graph.all_sites():
+                continue
             if site in raw:
                 raise ValueError(f"caller_held_indirect.txt:{number}: {site} is already bound")
             raw[site] = ([], f"caller_held_indirect.txt:{number}")

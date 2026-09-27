@@ -939,6 +939,11 @@ if(KICKOS_BUILD_TESTS)
                       "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
                       "${_fs_redzone_preset}" "${KICKOS_ARCH}")
     set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
+    if(KICKOS_BOARD STREQUAL "microbit" AND KICKOS_MICROBIT_FULL_NEWLIB)
+      # The callgraph scratch tree must use the same explicit comparison profile.
+      set_tests_properties(trap_redzone PROPERTIES
+                           ENVIRONMENT "KICKOS_MICROBIT_FULL_NEWLIB=ON")
+    endif()
   endif()
 
   # Outside the _fs_redzone_preset guard: it asks whether the declaration set covers the
@@ -1166,21 +1171,27 @@ if(TARGET kickos_kernel)
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
-  # A pure-C / freestanding app links `kickos`; a full-C++ (exceptions/STL/RTTI) app links
-  # `kickos_cxx`.
+  # A pure-C / freestanding app links `kickos`. Arm's nano C++ archives omit unwind
+  # metadata needed by exceptions, so that profile does not export `kickos_cxx`.
   add_library(kickos INTERFACE)
   target_link_libraries(kickos INTERFACE kickos_core)
-  add_library(kickos_cxx INTERFACE)
-  target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  if(NOT KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
+    add_library(kickos_cxx INTERFACE)
+    target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  endif()
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
   if(KICKOS_ARCH STREQUAL "sim")
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
-    target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+    if(TARGET kickos_cxx)
+      target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+    endif()
   else()
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
-    target_link_libraries(kickos_cxx INTERFACE
-      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
+    if(TARGET kickos_cxx)
+      target_link_libraries(kickos_cxx INTERFACE
+        "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
+    endif()
   endif()
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
@@ -1191,28 +1202,33 @@ if(TARGET kickos_kernel)
     target_compile_options(kickos INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
     target_link_options(kickos INTERFACE -nostdlib++)
-    # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
-    # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
-    target_compile_options(kickos_cxx INTERFACE
-      "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+    if(TARGET kickos_cxx)
+      # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
+      # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+      target_compile_options(kickos_cxx INTERFACE
+        "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
       # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
       # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
-    target_link_libraries(kickos_cxx INTERFACE
-      "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
+      target_link_libraries(kickos_cxx INTERFACE
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
-    # Link the custom terminate handler as an object before libstdc++.
-    # This source requires exceptions and RTTI.
-    add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
-    target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
-    target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
-    # An object library links nothing: kickos_user/kickos_kernel here are usage
-    # requirements (include dirs) only, and PRIVATE keeps them off consumers.
-    target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
-    target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
+      # Link the custom terminate handler as an object before libstdc++.
+      # This source requires exceptions and RTTI.
+      add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
+      target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
+      target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
+      # An object library links nothing: kickos_user/kickos_kernel here are usage
+      # requirements (include dirs) only, and PRIVATE keeps them off consumers.
+      target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
+      target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
+    endif()
   endif()
 
   # kickos_core is a link dependency of both leaves, so it must be in the export set.
-  install(TARGETS kickos_core kickos kickos_cxx EXPORT KickOSTargets)
+  install(TARGETS kickos_core kickos EXPORT KickOSTargets)
+  if(TARGET kickos_cxx)
+    install(TARGETS kickos_cxx EXPORT KickOSTargets)
+  endif()
   # $<TARGET_OBJECTS:kickos_cxx_rt> lands verbatim in KickOSTargets.cmake, so the
   # object lib must be in the export set or an OOT find_package(KickOS) breaks.
   if(TARGET kickos_cxx_rt)
@@ -1451,6 +1467,17 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
       "\n# Appended at install: the CPU baseline this package was built with, which in tree\n"
       "# comes from arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake.\n"
       "${_kos_bake}")
+  endif()
+  if(KICKOS_BOARD STREQUAL "microbit")
+    if(KICKOS_MICROBIT_FULL_NEWLIB)
+      set(_kos_package_newlib full)
+    else()
+      set(_kos_package_newlib nano)
+    endif()
+    string(APPEND _kos_desc
+      "\n# Appended at install: the newlib profile this package's libraries were built with,\n"
+      "# the only one the shipped toolchain file accepts.\n"
+      "set(KICKOS_MICROBIT_PACKAGE_NEWLIB ${_kos_package_newlib})\n")
   endif()
   file(WRITE "${_kos_baked}" "${_kos_desc}")
   install(FILES "${_kos_baked}" DESTINATION "${KICKOS_CMAKE_DIR}")

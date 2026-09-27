@@ -32,17 +32,22 @@ class KickOSBoard(ConanFile):
 
     options = {
         "multilib": list(LIBC_ENV),
+        "flavor": ["full", "nano"],
     }
     default_options = {
         "multilib": "aarch64",
+        "flavor": "full",
     }
 
     def requirements(self):
         self.requires("kickos-newlib/1.0",
-                      options={"multilib": str(self.options.multilib)})
+                      options={"multilib": str(self.options.multilib),
+                               "flavor": str(self.options.flavor)})
 
     def generate(self):
         pkg = self.dependencies["kickos-newlib"].package_folder
         var = LIBC_ENV[str(self.options.multilib)]
-        save(self, os.path.join(self.generators_folder, f"kickos-newlib-{self.options.multilib}.sh"),
+        suffix = "-nano" if str(self.options.flavor) == "nano" else ""
+        save(self, os.path.join(self.generators_folder,
+                                f"kickos-newlib-{self.options.multilib}{suffix}.sh"),
              f'export {var}="{pkg}"\n')

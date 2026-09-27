@@ -18,7 +18,8 @@
 #     policy is not part of the interface);
 #   - every installed header compiles standalone with the package's OWN cross
 #     compiler and its OWN definitions (check_public_headers.sh);
-#   - the single-board guard rejects a cross-board request at find_package time.
+#   - the single-board guard rejects a cross-board request at find_package time;
+#   - a package whose descriptor fixes a micro:bit newlib profile refuses the other one.
 #
 # NOTHING HERE NAMES AN ARCH. The gate registers on one board per KICKOS_ARCH
 # (tests/integration/oot_arch_boards.txt), so the toolchain file, the ELF machine and the
@@ -131,6 +132,15 @@ the relink probe cannot tell which one the link uses"
   LD="$_ld"
 done
 [ -n "$LD" ] || fail "shipped linker script missing from package"
+
+# The consumer links the newlib package this build linked, not whichever one the shell running
+# the gate sourced: a package refuses a newlib profile other than its own.
+while IFS= read -r _row; do
+  [ -n "$_row" ] || continue
+  export "${_row%%:*}=${_row#*=}"
+done <<EOF
+$(grep -E '^KICKOS_NEWLIB_[A-Z0-9_]+:PATH=' "$KICKOS_BUILD/CMakeCache.txt" || true)
+EOF
 
 echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS_BOARD) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/build" -G "$GEN" \
@@ -313,5 +323,27 @@ the single-board guard and this arm witnesses nothing: \
 $(sed -n '1,3p' "$TMP/mismatch.log" | tr '\n' ' ')"
 fi
 
+PKG_NEWLIB="$(sed -n 's/^set(KICKOS_MICROBIT_PACKAGE_NEWLIB \([a-z]*\)).*/\1/p' "$DESC" | head -1)"
+PROFILE_NOTE=""
+if [ -n "$PKG_NEWLIB" ]; then
+  if [ "$PKG_NEWLIB" = nano ]; then
+    OTHER_FULL=ON
+  else
+    OTHER_FULL=OFF
+  fi
+  echo "== profile guard: a $PKG_NEWLIB package must refuse KICKOS_MICROBIT_FULL_NEWLIB=$OTHER_FULL =="
+  if "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/profile" -G "$GEN" \
+       -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \
+       -DKICKOS_MICROBIT_FULL_NEWLIB="$OTHER_FULL" >"$TMP/profile.log" 2>&1; then
+    fail "a $PKG_NEWLIB package configured a consumer with KICKOS_MICROBIT_FULL_NEWLIB=$OTHER_FULL \
+(the package's newlib profile guard is gone)"
+  fi
+  grep -q "this KickOS package was built with $PKG_NEWLIB newlib" "$TMP/profile.log" \
+    || fail "the other-profile configure failed without naming the package's $PKG_NEWLIB \
+profile, so it failed for some other reason than the profile guard: \
+$(sed -n '1,3p' "$TMP/profile.log" | tr '\n' ' ')"
+  PROFILE_NOTE="; other newlib profile rejected"
+fi
+
 echo "PASS: out-of-tree MCU app built for $WANT_MACHINE, imaged as $KIND and relinked; \
-headers compile; no flags leaked; cross-board rejected"
+headers compile; no flags leaked; cross-board rejected$PROFILE_NOTE"
