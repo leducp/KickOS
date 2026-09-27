@@ -751,12 +751,20 @@ int arch_irq_line_core(int line);
 bool arch_irq_line_kernel_owned(int line);
 
 // Console output:
-// write inserts one line with console_tx_insert_line and returns its result.
-// Rejected lines must not bypass the ring: that would interleave device writes.
+// write returns how many bytes of buf went out or were queued. A ring chip inserts
+// the line with console_tx_insert_line, whole or not at all, and a rejected line
+// must not bypass the ring: that would interleave device writes. An AMP image
+// sharing a UART writes polled and stops at the first byte its claim no longer
+// covers, so its count can be short. A CR may already have gone out for an uncounted newline;
+// the retry seam below remembers it until LF lands.
 // write_sync is bounded, polled output for panic, faults and startup, safe
 // without scheduling or IRQs. Each chip must define it; the fallback forwards
 // to write and cannot provide those guarantees.
 int arch_console_write(char const* buf, size_t n);
+#if KICKOS_AMP_OWN_IMAGE
+// Like arch_console_write, but carries a syscall writer's half-sent CR across short writes.
+int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
+#endif
 void arch_console_write_sync(char const* buf, size_t n);
 
 // Restore the console UART for panic output after user access. Handover

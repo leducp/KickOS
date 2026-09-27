@@ -129,7 +129,7 @@ namespace
             uint8_t const s = r8(win + rr::ICSR2);
             if ((s & fail & rr::ICSR2_AL) != 0u)
             {
-                return -KOS_EBUSY;
+                return -KOS_EAGAIN; // arbitration lost: another master won the bus
             }
             if ((s & fail & rr::ICSR2_NACKF) != 0u)
             {
@@ -400,7 +400,7 @@ namespace
         uint8_t const need = (uint8_t)(rr::ICCR2_BBSY | rr::ICCR2_MST);
         if ((c & need) != need)
         {
-            return -KOS_EBUSY;
+            return -KOS_EAGAIN; // this node no longer masters the bus
         }
         status_clear(win, rr::ICSR2_START);
         r8(win + rr::ICCR2) = rr::ICCR2_RS;

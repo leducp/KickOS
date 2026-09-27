@@ -135,8 +135,9 @@ namespace kickos
     // successful handoff takes a reference on the donor, which is why this is not const.
     //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
-    //   KOS_EPERM   inadmissible grant: reserved-block hit, out-of-arena, a memory type
-    //               this chip cannot honour, or a range the donor never reserved
+    //   KOS_EPERM   inadmissible grant: reserved-block hit, out-of-arena, or a range the
+    //               donor never reserved
+    //   KOS_ENOTSUP a memory type this chip cannot honour
     //   KOS_ENOMEM  the domain pool is full, no address space could be built, or the new
     //               space cannot take the range at the donor's address
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,

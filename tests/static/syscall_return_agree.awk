@@ -283,7 +283,7 @@ END {
 
     # --- clause: the three exhaustion answers are not collapsed ----------------
     # A syscall that asks the TASK's object budget has all three refusals: -KOS_ENOMEM for
-    # the pool, -KOS_EMFILE for the caller's capability table, -KOS_EOVERFLOW for the budget
+    # the pool, -KOS_EMFILE for the caller's capability table, -KOS_EAGAIN for the budget
     # itself. Whoever documents one and not the others has collapsed them, and the fixes are
     # opposite (more RAM against a wider declared table). The set is the budget gate's own
     # call sites, never a list kept here.
@@ -292,7 +292,7 @@ END {
         k = split(armlabels[gid], labs, " ")
         where = DISPATCH
         if (labs[1] in entries) { where = ABI ":" entryline[labs[1]] }
-        n3 = split("ENOMEM EMFILE EOVERFLOW", three, " ")
+        n3 = split("ENOMEM EMFILE EAGAIN", three, " ")
         for (j = 1; j <= n3; j++) {
             held = 0
             for (i = 1; i <= k; i++) {

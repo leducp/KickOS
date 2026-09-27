@@ -1505,7 +1505,7 @@ namespace selftest
     {
         uint64_t const deadline = kos_clock_now() + XIRQ_CLAIM_BUDGET_NS;
         int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
-        while (rc == -KOS_EBUSY and kos_clock_now() <= deadline)
+        while (rc == -KOS_EAGAIN and kos_clock_now() <= deadline)
         {
             kos_sleep_ns(XIRQ_CLAIM_POLL_NS);
             rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);

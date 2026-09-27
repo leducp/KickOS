@@ -9,7 +9,7 @@
 # tests/unit/consoletxsmp carries the two-core posture, where a drain runs on a core the
 # producer's mask never reached.
 kickos_add_unit_test(NAME console_tx_line
-  SOURCES line_atomicity.cc producer_drain.cc line_seam.cc
+  SOURCES line_atomicity.cc producer_drain.cc amp_retry.cc line_seam.cc
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
   KERNEL
   DEFINITIONS KICKOS_CONSOLE_TX_BARRIER=consoleline_publish_barrier)

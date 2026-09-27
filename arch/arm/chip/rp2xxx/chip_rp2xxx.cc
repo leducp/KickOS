@@ -11,6 +11,7 @@
 // and its PMSAv8 MPU backend) the code stays in that chip's own backend.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/console_retry.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
 
@@ -29,6 +30,39 @@ namespace reg = kickos::rp2xxx::reg;
 
 using kickos::rp2xxx::POLL_TIMEOUT;
 using kickos::rp2xxx::r32;
+
+#if KICKOS_AMP_OWN_IMAGE
+namespace
+{
+    enum class Put
+    {
+        STORED,
+        LOST,   // the claim ended or could not be had; dropped
+        WEDGED, // the FIFO never drained; dropped
+    };
+
+    // One byte under the partition claim, checked after the FIFO wait: the grant can end
+    // while a byte waits for room.
+    Put console_put(char c)
+    {
+        uint32_t spin = 0;
+        while ((r32(reg::uart::FR) & reg::uart::FR_TXFF) != 0)
+        {
+            if (++spin > KICKOS_POLL_SPIN_MAX)
+            {
+                kickos::rp2xxx::console_drop(true); // a wedged channel keeps no claim
+                return Put::WEDGED;
+            }
+        }
+        if (not kickos::rp2xxx::console_claim())
+        {
+            return Put::LOST;
+        }
+        r32(reg::uart::DR) = static_cast<uint8_t>(c);
+        return Put::STORED;
+    }
+}
+#endif
 
 namespace kickos::rp2xxx
 {
@@ -112,9 +146,36 @@ namespace
 extern "C"
 {
 
+#if KICKOS_AMP_OWN_IMAGE
+int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
+{
+    if (n == 0 or not kickos::rp2xxx::console_claim_open())
+    {
+        return 0;
+    }
+    // Masked as console_write_line_sync is, so a local ISR's output cannot land inside the
+    // line. Stops at the first byte the claim no longer covers: the count is what went out,
+    // and the rest is the caller's to offer again under a fresh claim.
+    arch_irq_state_t const irq = arch_irq_save();
+    bool const had_pending_cr = cr_pending != nullptr and *cr_pending;
+    size_t const landed = kickos::console_retry::write(
+        buf, n, cr_pending, [](char c) { return console_put(c) == Put::STORED; });
+    bool const ended_line = (landed != 0 and buf[landed - 1] == '\n') or
+                            (had_pending_cr and cr_pending != nullptr and not *cr_pending and
+                             landed == 0);
+    kickos::rp2xxx::console_drop(ended_line);
+    arch_irq_restore(irq);
+    return static_cast<int>(landed);
+}
+#endif
+
 int arch_console_write(char const* buf, size_t n)
 {
+#if KICKOS_AMP_OWN_IMAGE
+    return arch_console_write_retry(buf, n, nullptr);
+#else
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+#endif
 }
 
 void arch_console_write_sync(char const* buf, size_t n)
@@ -124,22 +185,35 @@ void arch_console_write_sync(char const* buf, size_t n)
         return;
     }
 #if KICKOS_AMP_OWN_IMAGE
-    kickos::rp2xxx::console_claim();
+    // Scoped to this call: a line this writer lost must not cost the next writer its own.
+    bool dropping = false;
 #endif
     for (size_t i = 0; i < n; i++)
     {
+#if KICKOS_AMP_OWN_IMAGE
+        if (dropping)
+        {
+            dropping = buf[i] != '\n';
+            continue;
+        }
+        // No caller here can offer the rest again, so a lost claim costs the rest of the line.
+        Put const put = console_put(buf[i]);
+        if (put == Put::WEDGED)
+        {
+            return; // bounded: a wedged UART must not hang the panic path (drop)
+        }
+        dropping = put == Put::LOST and buf[i] != '\n';
+#else
         uint32_t spin = 0;
         while ((r32(reg::uart::FR) & reg::uart::FR_TXFF) != 0)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-#if KICKOS_AMP_OWN_IMAGE
-                kickos::rp2xxx::console_drop(true); // a wedged channel keeps no claim
-#endif
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r32(reg::uart::DR) = static_cast<uint8_t>(buf[i]);
+#endif
     }
 #if KICKOS_AMP_OWN_IMAGE
     kickos::rp2xxx::console_drop(buf[n - 1] == '\n');

@@ -1616,7 +1616,7 @@ namespace kickos
         // Acquire the metadata published by the waiter.
         if (g_e2e_mode != E2E_PARKED)
         {
-            return -KOS_EBUSY;
+            return -KOS_EAGAIN;
         }
         int const line = g_bench_e2e_line;
         if (g_e2e_waiter == nullptr or line < 0)

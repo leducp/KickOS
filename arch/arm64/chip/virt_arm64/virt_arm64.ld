@@ -331,11 +331,10 @@ SECTIONS
         __kickos_amp_counts_start = .;
         KEEP(*(.amp_shared.counts))
         __kickos_amp_counts_end = .;
-        /* A chip backend's own partition-wide publication. This chip makes none, so the
-           input section is empty here and carries no non-empty assert; rp2350.ld places its
-           clock figure and console-claim owner here and asserts them. The ORDER is the
-           partition's and must stay identical either way. */
+        /* The claim shared by every image that writes the partition's one UART. */
+        __kickos_amp_chip_start = .;
         KEEP(*(.amp_shared.chip))
+        __kickos_amp_chip_end = .;
         /* Last, and with no ALIGN ahead of it: this section is empty unless
            KICKOS_AMP_DIAG_REPORT is on, and anywhere else it would move every object
            below it the moment a diagnostic is turned on. */
@@ -421,6 +420,9 @@ ASSERT(__kickos_amp_window_end > __kickos_amp_window_start,
 
 ASSERT(__kickos_amp_counts_end > __kickos_amp_counts_start,
        "KickOS: .amp_shared.counts is empty: a node sweeping a peer's row would read its own")
+
+ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
+       "KickOS: .amp_shared.chip is empty: the console claim must be shared by every node")
 #endif
 
 /* The app windows this script does not carve, stated EMPTY rather than left absent:

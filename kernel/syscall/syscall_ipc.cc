@@ -176,7 +176,7 @@ namespace kickos
             }
             if (rc == amp::Sent::FULL)
             {
-                return -KOS_EBUSY;
+                return -KOS_EAGAIN;
             }
             if (rc == amp::Sent::DEPTH)
             {
@@ -283,7 +283,7 @@ namespace kickos
         }
         if (not task_object_admit(CapType::CAP_ENDPOINT, c->task))
         {
-            return -KOS_EOVERFLOW;
+            return -KOS_EAGAIN;
         }
         Endpoint* ep = nullptr;
         int const i = endpoint_slot_claim(&ep);
@@ -369,7 +369,7 @@ namespace kickos
 
     // Return bytes sent or -KOS_E*. timeout_us bounds only the parked wait.
     // Endpoint death, timeout and cancellation send no data.
-    // Far endpoints never park; a full peer ring returns -KOS_EBUSY.
+    // Far endpoints never park; a full peer ring returns -KOS_EAGAIN.
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
     {
         if (len > KOS_EP_MSG_MAX)
@@ -526,7 +526,7 @@ namespace kickos
                 if (badge_out == 0)
                 {
                     s->call_state = CALL_NONE; // clear before waking
-                    s->wait_result = -KOS_ENOSYS;
+                    s->wait_result = -KOS_ENOTSUP;
                     // Remove this rejected caller's priority donation.
                     uint8_t const np = thread_effective_prio(c);
                     if (np != c->prio)
@@ -648,9 +648,9 @@ namespace kickos
     // Send a request and receive its reply in one buffer. Returns reply bytes
     // or -KOS_E*: EINVAL for length, EFAULT for buffers, EBADF/EPERM for capability
     // access, EPIPE for endpoint/server death, EMFILE for server reply-cap capacity,
-    // ENOSYS for a receiver without metadata, ETIMEDOUT, or ECANCELED.
+    // ENOTSUP for a receiver without metadata, ETIMEDOUT, or ECANCELED.
     // One deadline covers both send and reply waits. Far calls wait only for a
-    // reply and return EBUSY without side effects if the peer ring is full.
+    // reply and return EAGAIN without side effects if the peer ring is full.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
@@ -757,7 +757,7 @@ namespace kickos
                 // Probe before removing the receiver so a refusal cannot strand it.
                 if (w->ipc.badge_out == 0)
                 {
-                    return -KOS_ENOSYS; // Calls require receive metadata.
+                    return -KOS_ENOTSUP; // Calls require receive metadata.
                 }
                 if (w->dying)
                 {
@@ -879,7 +879,7 @@ namespace kickos
         }
 #endif
         KICKOS_BENCH_SPAN(PH_CALL_RESUME, bm_resume);
-        // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS/-KOS_ETIMEDOUT/-KOS_ECANCELED
+        // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOTSUP/-KOS_ETIMEDOUT/-KOS_ECANCELED
         return static_cast<int32_t>(c->wait_result);
     }
 

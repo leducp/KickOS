@@ -14,11 +14,12 @@
 // refuses a code added to kos_errno with no row here. That warning is the only thing
 // keeping the two in step; do not add a default.
 #define KICKOS_ERRNO_TABLE(X)                                                                     \
-    X(KOS_EPERM,      "privilege denied, missing capability right, or not the owner", "EPERM")    \
+    X(KOS_EPERM,      "privilege or authority denied, or not the owner",              "EPERM")    \
     X(KOS_ESRCH,      "reply target gone: the caller is stale",                       "ESRCH")    \
     X(KOS_EIO,        "the device did not play its part in the transfer",             "EIO")      \
     X(KOS_EBADF,      "handle names nothing valid",                                   "EBADF")    \
-    X(KOS_ENOTIFY,    "an interrupt notification ended the wait, no message",         "ENOTIFY")  \
+    X(KOS_EAGAIN,     "a later try may succeed; check for partial effects",          "EAGAIN")   \
+    X(KOS_EACCES,     "the capability lacks a right the operation needs",             "EACCES")   \
     X(KOS_ENOMEM,     "a pool, arena or descriptor budget could not allocate",        "ENOMEM")   \
     X(KOS_EFAULT,     "buffer not owned by the caller",                               "EFAULT")   \
     X(KOS_EBUSY,      "resource held or in use",                                      "EBUSY")    \
@@ -27,7 +28,8 @@
     X(KOS_EPIPE,      "endpoint has no receiver",                                     "EPIPE")    \
     X(KOS_EDEADLK,    "self, recursive, or cycle-closing lock",                       "EDEADLK")  \
     X(KOS_ENOSYS,     "not implemented on this chip",                                 "ENOSYS")   \
-    X(KOS_EOVERFLOW,  "a bounded counter is at its ceiling",                          "EOVERFLOW")\
+    X(KOS_ENOTIFY,    "an interrupt notification ended the wait, no message",         "ENOTIFY")  \
+    X(KOS_EOVERFLOW,  "a count is at its maximum and cannot take one more",           "EOVERFLOW")\
     X(KOS_ENOTSUP,    "well formed, but this backend cannot express it",             "ENOTSUP")  \
     X(KOS_ETIMEDOUT,  "the deadline passed and nothing happened",                     "ETIMEDOUT")\
     X(KOS_EALREADY,   "already in that state, so the call changed nothing",           "EALREADY") \

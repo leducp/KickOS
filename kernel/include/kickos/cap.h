@@ -563,7 +563,7 @@ namespace kickos
 
     // As cap_resolve, but distinguishes WHY it failed so a syscall can return the right
     // taxonomy code: on nullptr, *err is KOS_EBADF (bad index / empty / stale gen /
-    // wrong type / stale object) or KOS_EPERM (the cap lacks a required right). *err is
+    // wrong type / stale object) or KOS_EACCES (the cap lacks a required right). *err is
     // 0 on success. cap_resolve is this with the reason discarded.
     void* cap_resolve_e(Thread* c, uint32_t cap_handle, CapType want, uint8_t need, int* err);
 

@@ -261,12 +261,18 @@ namespace kickos
         uint16_t call_seq = 0;
         // A bitfield pair, and it has to stay one: the four bytes here are saturated against
         // `wait_obj`'s alignment, so a separate byte for the flag would cost every TCB four.
-        // CallState spends two bits of the seven.
-        uint8_t call_state : 7 = CALL_NONE;
+        // CallState spends two bits; AMP's console retry state uses the spare bit without
+        // growing any TCB.
+        uint8_t call_state : 6 = CALL_NONE;
         // Set only by the trap-handler IPC fastpath, which parks a caller with no kernel
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
         uint8_t call_frame_parked : 1 = 0;
+#if KICKOS_AMP_OWN_IMAGE
+        // The syscall's newline emitted CR but lost the UART claim before LF. Its next offer
+        // must send LF alone, even if another thread used the shared UART meanwhile.
+        uint8_t console_cr_pending : 1 = 0;
+#endif
         WaitKind wait_kind = WAIT_NONE;
 #if KICKOS_AMP_NODE
         // The amp hold this thread must land or give back, biased by one so a fresh TCB holds

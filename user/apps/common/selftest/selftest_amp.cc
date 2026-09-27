@@ -531,7 +531,7 @@ namespace selftest
         struct kos_reply_recv_opts fo;
         kos_reply_recv_opts_init(&fo, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, rbuf, kos_call_lens_pack(0, sizeof(rbuf)), &fo)
-                  == -KOS_EPERM);
+                  == -KOS_EACCES);
 
         // The call before the send: a far call finding nothing parked is refused on the spot,
         // and a one-thread peer answering the send is not parked.
@@ -1624,7 +1624,7 @@ namespace selftest
                 kos_reply_recv_opts_init(&po, cap, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
                 TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, probe,
                                          kos_call_lens_pack(0, sizeof(probe)), &po)
-                          == -KOS_EPERM);
+                          == -KOS_EACCES);
                 far++;
             }
         }

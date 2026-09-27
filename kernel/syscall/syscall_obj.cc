@@ -42,11 +42,11 @@ namespace kickos
             return -KOS_EINVAL; // initial count outside [0, KOS_SEM_COUNT_MAX]
         }
         // ASKED BEFORE THE POOL, so the answer does not depend on how full the pool happens
-        // to be. -KOS_EOVERFLOW is unambiguous here: cap_install returns only 0 or
+        // to be. -KOS_EAGAIN is unambiguous here: cap_install returns only 0 or
         // -KOS_EMFILE, so the budget is this call's only source of it.
         if (not task_object_admit(CapType::CAP_SEM, c->task))
         {
-            return -KOS_EOVERFLOW; // this task holds its ceiling of semaphores already
+            return -KOS_EAGAIN; // this task holds its ceiling of semaphores already
         }
         int const i = kernel().sems.alloc();
         Semaphore* const s = kernel().sems.at(i); // total over alloc()'s -1
@@ -88,7 +88,7 @@ namespace kickos
         }
         if (not task_object_admit(CapType::CAP_MUTEX, c->task))
         {
-            return -KOS_EOVERFLOW; // this task holds its ceiling of mutexes already
+            return -KOS_EAGAIN; // this task holds its ceiling of mutexes already
         }
         int const i = kernel().mutexes.alloc();
         Mutex* const m = kernel().mutexes.at(i); // total over alloc()'s -1

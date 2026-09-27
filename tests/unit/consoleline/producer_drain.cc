@@ -84,7 +84,7 @@ TEST_F(ConsoleTxProducerDrain, AFlushInTheDrainsPushDoesNotWalkTailPastHead)
 {
     consoleline::run_in_push(kDrainsFirstPush, flush_from_inside_the_push);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     expect_the_seat_ran_and_moved_tail();
     EXPECT_EQ(consoleline::wire(), kWireWithNoByteSentTwice);
 }
@@ -95,7 +95,7 @@ TEST_F(ConsoleTxProducerDrain, ADeinitInTheDrainsPushDoesNotWalkTailPastHead)
 {
     consoleline::run_in_push(kDrainsFirstPush, deinit_from_inside_the_push);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     expect_the_seat_ran_and_moved_tail();
     EXPECT_EQ(console_tx_armed(), 0);
     EXPECT_EQ(consoleline::wire(), kWireWithNoByteSentTwice);
@@ -110,12 +110,12 @@ TEST_F(ConsoleTxProducerDrain, AnInsertDoesNotPrimeWhileADrainOwnsAByteInFlight)
 {
     consoleline::run_in_push(kDrainsLastPush, insert_from_inside_the_push);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     // Not the shared control: a nested PUSH is what this arm forbids, so it proves the window
     // was real by the seat firing and the seated line being taken instead.
     ASSERT_TRUE(consoleline::push_seat_fired())
         << "the drain never reached the push the insert is seated in";
-    ASSERT_EQ(g_note_took, 1) << "the seated line was refused, so this arm read a full ring "
+    ASSERT_EQ(g_note_took, 2) << "the seated line was refused, so this arm read a full ring "
                                  "rather than the priming window";
     EXPECT_EQ(consoleline::max_push_depth(), 1u)
         << "a second writer pushed while the drain's byte was in flight";
@@ -138,7 +138,8 @@ TEST_F(ConsoleTxProducerDrain, SustainedPressureLosesNoLineAndLeavesNoDrainStand
         {
             line.push_back(static_cast<char>('a' + (i % 26u)));
         }
-        ASSERT_EQ(consoleline::write_line(line.data(), line.size(), 0), 1)
+        ASSERT_EQ(consoleline::write_line(line.data(), line.size(), 0),
+                  static_cast<int>(line.size()))
             << "round " << round << " was refused, but the drain empties the ring each time";
         expected += line;
         ASSERT_EQ(consoleline::wire(), expected) << "round " << round << " left bytes behind";
@@ -152,10 +153,10 @@ TEST_F(ConsoleTxProducerDrain, ALineInsertedInsideADrainIsCarriedByTheRunningDra
 {
     consoleline::run_in_push(kDrainsFirstPush, insert_from_inside_the_push);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     ASSERT_TRUE(consoleline::push_seat_fired())
         << "the drain never reached the push the line is seated in";
-    EXPECT_EQ(g_note_took, 1);
+    EXPECT_EQ(g_note_took, 2);
     EXPECT_EQ(consoleline::wire(), std::string("abcdefghZZ"));
 }
 
@@ -165,7 +166,7 @@ TEST_F(ConsoleTxProducerDrain, ALineInsertedInsideADrainEntersNoSecondDrain)
 {
     consoleline::run_in_push(kDrainsFirstPush, insert_from_inside_the_push);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     ASSERT_TRUE(consoleline::push_seat_fired());
     EXPECT_EQ(consoleline::max_push_depth(), 1u)
         << "a push ran inside another push, so a second drain was entered";
@@ -179,11 +180,11 @@ TEST_F(ConsoleTxProducerDrain, AWedgedChannelDiscardsTheRingRatherThanSpin)
     consoleline::set_slot_free(0);
     std::string const line(kTightRing - 1u, 'Q');
 
-    ASSERT_EQ(console_tx_insert_line(line.data(), line.size(), 0), 1);
+    ASSERT_EQ(console_tx_insert_line(line.data(), line.size(), 0), static_cast<int>(line.size()));
     EXPECT_TRUE(consoleline::wire().empty());
 
     consoleline::set_slot_free(1);
-    EXPECT_EQ(console_tx_insert_line(line.data(), line.size(), 0), 1)
+    EXPECT_EQ(console_tx_insert_line(line.data(), line.size(), 0), static_cast<int>(line.size()))
         << "a line the size of the whole ring was refused, so the wedged drain left the ring "
            "holding bytes nothing will ever carry";
 }
@@ -194,7 +195,7 @@ TEST_F(ConsoleTxProducerDrain, AChannelWithATxInterruptIsLeftToItsDrainIsr)
 {
     consoleline::reset(kRing, kIrqLine);
 
-    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(consoleline::write_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     EXPECT_EQ(consoleline::wire(), std::string("a"));
 
     consoleline::pump_tx_isr();

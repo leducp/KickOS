@@ -119,7 +119,7 @@ TEST_F(CapBadge, a_mint_from_a_badged_source_is_refused)
     ASSERT_EQ(notify_badge(t, src, 3u, &first), 0);
 
     uint32_t second = KCAP_INVALID;
-    EXPECT_EQ(notify_badge(t, first, 4u, &second), -KOS_EALREADY)
+    EXPECT_EQ(notify_badge(t, first, 4u, &second), -KOS_EACCES)
         << "a holder able to mint from its own badged copy reaches every bit of the object";
     EXPECT_EQ(second, KCAP_INVALID) << "a refused mint discloses no capability";
 

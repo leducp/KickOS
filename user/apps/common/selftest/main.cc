@@ -377,7 +377,7 @@ namespace
         // A badged copy is NOT a mint source: re-badging it would hand its holder the whole
         // object and the confinement would be vacuous.
         kos_cap_t again = KOS_CAP_NONE;
-        TAP_CHECK(kos_notify_badge(a, BIT_B, &again) == -KOS_EALREADY
+        TAP_CHECK(kos_notify_badge(a, BIT_B, &again) == -KOS_EACCES
                   and again == KOS_CAP_NONE);
         TAP_CHECK(kos_notify(a) == 0);
         TAP_CHECK(kos_notify(b) == 0);
@@ -1649,7 +1649,7 @@ namespace
             if (goB != KOS_CAP_NONE) { kos_sem_destroy(goB); }
             // Which supply ran out is the diagnosis, and the three have opposite fixes:
             // -KOS_EMFILE is this thread's capability table (widen the declared demand),
-            // -KOS_EOVERFLOW is this TASK's ceiling with the pool itself still holding slots
+            // -KOS_EAGAIN is this TASK's ceiling with the pool itself still holding slots
             // (raise KICKOS_TASK_SEMAPHORE_BUDGET, and the pool with it), anything else is an
             // object pool genuinely out. Reporting the middle one as "pool too small" is the
             // mislabelled skip syscall-return-abi warns about.
@@ -1658,7 +1658,7 @@ namespace
             {
                 why = "cap table too small (6 concurrent caps)";
             }
-            if (refused == -KOS_EOVERFLOW)
+            if (refused == -KOS_EAGAIN)
             {
                 why = "task object budget too small (6 concurrent objects)";
             }
@@ -2096,7 +2096,7 @@ namespace
     {
         uint64_t const deadline = kos_clock_now() + IRQ_EDGE_BUDGET_NS;
         int rc = kos_irq_claim(line, KOS_IRQ_EDGE, out);
-        while (rc == -KOS_EBUSY)
+        while (rc == -KOS_EAGAIN)
         {
             if (kos_clock_now() > deadline)
             {
@@ -3556,11 +3556,11 @@ namespace
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): the floor accepted an unprivileged caller's rodata
-        // pointer. Acceptance is the sign, not the count. kos_kconsole_write answers a short
-        // count when the console ring refuses a chunk and a negative code when it rejects the
-        // buffer, so a full-length assertion here reports on ring pressure and not on the
-        // readable floor this arm is named for.
-        if (g_cd_lit_rc < 0)
+        // pointer. kos_kconsole_write answers a short count or -KOS_EAGAIN when the console
+        // cannot take the bytes and -KOS_EFAULT when it rejects the buffer, so only a
+        // rejection reports on the readable floor this arm is named for; the rest is ring
+        // pressure.
+        if (g_cd_lit_rc < 0 and g_cd_lit_rc != -KOS_EAGAIN)
         {
             tap::fail("readable floor refused an unprivileged rodata buffer: rc %ld",
                       g_cd_lit_rc);
@@ -3714,8 +3714,8 @@ namespace
     }
 
     // --- Rights denial: send needs SIGNAL, recv needs WAIT -----------------------
-    Atomic<int, Order::RELAXED> g_ep_wait_send_rc{-99};   // WAIT-only cap send -> -KOS_EPERM
-    Atomic<int, Order::RELAXED> g_ep_signal_recv_rc{-99}; // SIGNAL-only cap recv -> -KOS_EPERM
+    Atomic<int, Order::RELAXED> g_ep_wait_send_rc{-99};   // WAIT-only cap send -> -KOS_EACCES
+    Atomic<int, Order::RELAXED> g_ep_signal_recv_rc{-99}; // SIGNAL-only cap recv -> -KOS_EACCES
     void ep_rights_worker(void*) // caps: done@1, E(WAIT)@2, E(SIGNAL)@3
     {
         char b[8] = {0};
@@ -3738,8 +3738,8 @@ namespace
         wait_n(1);
         int const ep_wait_send_rc = g_ep_wait_send_rc;
         int const ep_signal_recv_rc = g_ep_signal_recv_rc;
-        TAP_CHECK(ep_wait_send_rc == -KOS_EPERM);
-        TAP_CHECK(ep_signal_recv_rc == -KOS_EPERM);
+        TAP_CHECK(ep_wait_send_rc == -KOS_EACCES);
+        TAP_CHECK(ep_signal_recv_rc == -KOS_EACCES);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
@@ -4449,7 +4449,7 @@ namespace
         TAP_CHECK(kos_handle_close(g_gate) == 0);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         int32_t const ci_rc = g_ci_rc;
-        TAP_CHECK(ci_rc == -KOS_ENOSYS); // the call bounced off the info-less receiver
+        TAP_CHECK(ci_rc == -KOS_ENOTSUP); // the call bounced off the info-less receiver
         TAP_CHECK(count('a') == 1 and count('u') == 1 and count('m') == 1 and count('z') == 1);
         TAP_CHECK(nth('u', 1) < nth('m', 1)); // BOOST held: boosted server outran the spoiler's wake
         TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: server back at base, spoiler ran before it resumed
@@ -6517,13 +6517,13 @@ namespace
 
     // Allocate semaphores, then mutexes if their pool or task budget is exhausted.
     // This separates capability-table exhaustion (EMFILE) from object exhaustion
-    // (ENOMEM/EOVERFLOW). Combined budgets must cover the table's free slots
+    // (ENOMEM/EAGAIN). Combined budgets must cover the table's free slots
     // for cap_index0 and cap_gen_reuse to reach EMFILE.
     int fill_one_cap_typed(kos_cap_t* out, bool* is_sem)
     {
         *is_sem = true;
         int rc = kos_sem_create(0, out);
-        if (rc == -KOS_ENOMEM or rc == -KOS_EOVERFLOW)
+        if (rc == -KOS_ENOMEM or rc == -KOS_EAGAIN)
         {
             *is_sem = false;
             rc = kos_mutex_create(out);

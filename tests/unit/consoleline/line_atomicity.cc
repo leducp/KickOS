@@ -32,9 +32,9 @@ namespace
 }
 
 // A caller that hands over nothing owes no fallback.
-TEST_F(ConsoleTxLine, AnEmptyLineIsTakenAndOwesNoFallback)
+TEST_F(ConsoleTxLine, AnEmptyLineCountsNothingAndOwesNoFallback)
 {
-    EXPECT_EQ(consoleline::write_line("", 0, 0), 1);
+    EXPECT_EQ(consoleline::write_line("", 0, 0), 0);
     EXPECT_TRUE(consoleline::wire().empty());
 }
 
@@ -43,7 +43,7 @@ TEST_F(ConsoleTxLine, AnEmptyLineIsTakenAndOwesNoFallback)
 TEST_F(ConsoleTxLine, ALineIntoAnIdleChannelPutsItsFirstByteOnTheWire)
 {
     consoleline::reset(kRing, kIrqLine);
-    ASSERT_EQ(consoleline::write_line("hello", 5, 0), 1);
+    ASSERT_EQ(consoleline::write_line("hello", 5, 0), 5);
     EXPECT_EQ(consoleline::wire(), std::string("h"));
 
     consoleline::pump_tx_isr();
@@ -56,7 +56,7 @@ TEST_F(ConsoleTxLine, ALineIntoAnIdleChannelPutsItsFirstByteOnTheWire)
 // is on the wire by the time the insert returns.
 TEST_F(ConsoleTxLine, ALineAtAChannelWithNoTxInterruptIsDrainedBeforeTheInsertReturns)
 {
-    ASSERT_EQ(consoleline::write_line("hello", 5, 0), 1);
+    ASSERT_EQ(consoleline::write_line("hello", 5, 0), 5);
     EXPECT_EQ(consoleline::wire(), std::string("hello"));
 
     consoleline::pump_tx_isr();
@@ -75,10 +75,12 @@ TEST_F(ConsoleTxLine, ARefusedLineReachesTheDeviceNotAtAll)
     std::string const second(8, 'B');
     std::string const third(4, 'C');
 
-    ASSERT_EQ(consoleline::write_line(first.data(), first.size(), 0), 1);
+    ASSERT_EQ(consoleline::write_line(first.data(), first.size(), 0),
+              static_cast<int>(first.size()));
     ASSERT_EQ(consoleline::wire().size(), 1u) << "the prime alone; the rest has to be queued "
                                                  "for this arm to read an overtake at all";
-    ASSERT_EQ(consoleline::write_line(second.data(), second.size(), 0), 1);
+    ASSERT_EQ(consoleline::write_line(second.data(), second.size(), 0),
+              static_cast<int>(second.size()));
     ASSERT_EQ(consoleline::wire().size(), 1u);
 
     EXPECT_EQ(consoleline::write_line(third.data(), third.size(), 0), 0)
@@ -93,7 +95,7 @@ TEST_F(ConsoleTxLine, ARefusedLineReachesTheDeviceNotAtAll)
 // CR+LF is built during the copy, in the ring.
 TEST_F(ConsoleTxLine, ANewlineIsLoweredToCarriageReturnLineFeedInTheRing)
 {
-    ASSERT_EQ(consoleline::write_line("a\nb", 3, 1), 1);
+    ASSERT_EQ(consoleline::write_line("a\nb", 3, 1), 3);
     EXPECT_EQ(consoleline::wire(), std::string("a\r\nb"));
 }
 
@@ -103,11 +105,12 @@ TEST_F(ConsoleTxLine, ALineWhoseExpansionExactlyFillsTheRingIsTaken)
 {
     consoleline::reset(kRing, kIrqLine);
     std::string const prefill(8, 'P');
-    ASSERT_EQ(consoleline::write_line(prefill.data(), prefill.size(), 0), 1);
+    ASSERT_EQ(consoleline::write_line(prefill.data(), prefill.size(), 0),
+              static_cast<int>(prefill.size()));
     ASSERT_EQ(consoleline::wire().size(), 1u);
 
     std::string const line(4, '\n');
-    EXPECT_EQ(consoleline::write_line(line.data(), line.size(), 1), 1);
+    EXPECT_EQ(consoleline::write_line(line.data(), line.size(), 1), static_cast<int>(line.size()));
     console_tx_flush_sync();
     EXPECT_EQ(consoleline::wire(), prefill + "\r\n\r\n\r\n\r\n");
 }
@@ -118,7 +121,8 @@ TEST_F(ConsoleTxLine, ALineWhoseExpansionOverrunsTheRingByOneIsRefused)
 {
     consoleline::reset(kRing, kIrqLine);
     std::string const prefill(8, 'P');
-    ASSERT_EQ(consoleline::write_line(prefill.data(), prefill.size(), 0), 1);
+    ASSERT_EQ(consoleline::write_line(prefill.data(), prefill.size(), 0),
+              static_cast<int>(prefill.size()));
     ASSERT_EQ(consoleline::wire().size(), 1u);
 
     std::string line(4, '\n');
@@ -147,7 +151,7 @@ TEST_F(ConsoleTxLine, ALineInsertedInsideAnotherCopyIsRefused)
     g_nested_took = -1;
     consoleline::run_at_publish_barrier(insert_from_inside_the_copy);
 
-    ASSERT_EQ(consoleline::write_line("OUTER", 5, 0), 1);
+    ASSERT_EQ(consoleline::write_line("OUTER", 5, 0), 5);
     ASSERT_TRUE(consoleline::barrier_seat_fired()) << "the seated line never entered the "
                                                       "insert, so no re-entry was attempted";
     EXPECT_EQ(g_nested_took, 0);
@@ -163,6 +167,6 @@ TEST_F(ConsoleTxLine, ADisarmedRingWritesStraightAtTheDevice)
     console_tx_deinit();
     ASSERT_EQ(console_tx_armed(), 0);
 
-    EXPECT_EQ(consoleline::write_line("hello", 5, 0), 1);
+    EXPECT_EQ(consoleline::write_line("hello", 5, 0), 5);
     EXPECT_EQ(consoleline::wire(), std::string("hello"));
 }

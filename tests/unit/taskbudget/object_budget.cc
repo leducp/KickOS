@@ -205,7 +205,7 @@ namespace kickos
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = c;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "past its ceiling a task is refused, and with the budget's own code";
                 EXPECT_EQ(cap, KCAP_INVALID) << "a refused create discloses no capability";
                 EXPECT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
@@ -230,7 +230,7 @@ namespace kickos
 
                 uint32_t refused = KCAP_INVALID;
                 EXPECT_EQ(irq_claim(c, IRQ_LINES[KICKOS_TASK_IRQ_HANDLE_BUDGET], 0, &refused),
-                          -KOS_EOVERFLOW)
+                          -KOS_EAGAIN)
                     << "past its ceiling the fourth creator is refused, and with the budget's "
                        "own code; an admission asked about another kind admits this";
                 EXPECT_EQ(refused, KCAP_INVALID) << "a refused claim discloses no capability";
@@ -253,7 +253,7 @@ namespace kickos
                 ASSERT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET);
 
                 uint32_t refused = KCAP_INVALID;
-                EXPECT_EQ(notify_create(c, &refused), -KOS_EOVERFLOW)
+                EXPECT_EQ(notify_create(c, &refused), -KOS_EAGAIN)
                     << "past its ceiling the fifth creator is refused, and with the budget's "
                        "own code";
                 EXPECT_EQ(refused, KCAP_INVALID) << "a refused create discloses no capability";
@@ -275,7 +275,7 @@ namespace kickos
                     ASSERT_EQ(notify_create(c, &cap), 0);
                 }
                 uint32_t refused = KCAP_INVALID;
-                ASSERT_EQ(notify_create(c, &refused), -KOS_EOVERFLOW)
+                ASSERT_EQ(notify_create(c, &refused), -KOS_EAGAIN)
                     << "fixture: the task is at its notification ceiling";
 
                 uint32_t badged = KCAP_INVALID;
@@ -306,7 +306,7 @@ namespace kickos
                 }
 
                 uint32_t refused = KCAP_INVALID;
-                EXPECT_EQ(notify_create(c, &refused), -KOS_EOVERFLOW)
+                EXPECT_EQ(notify_create(c, &refused), -KOS_EAGAIN)
                     << "the object no capability names is still this task's, and the ceiling "
                        "counts it";
                 EXPECT_EQ(refused, KCAP_INVALID) << "a refused create discloses no capability";
@@ -357,7 +357,7 @@ namespace kickos
                 }
 
                 uint32_t refused = KCAP_INVALID;
-                EXPECT_EQ(notify_create(c, &refused), -KOS_EOVERFLOW)
+                EXPECT_EQ(notify_create(c, &refused), -KOS_EAGAIN)
                     << "the object the line raises into is this task's, named by no capability";
                 EXPECT_EQ(refused, KCAP_INVALID) << "a refused create discloses no capability";
                 EXPECT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET);
@@ -500,7 +500,7 @@ namespace kickos
                 uint32_t signalled = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = donor;
                 ASSERT_EQ(notify_create(donor, &signalled), 0);
-                EXPECT_EQ(irq_bind_notify(donor, line, signalled), -KOS_EOVERFLOW)
+                EXPECT_EQ(irq_bind_notify(donor, line, signalled), -KOS_EAGAIN)
                     << "the attach would seat this object on a peer that has no room for it";
                 EXPECT_GT(KICKOS_MAX_NOTIFY - live_notifies(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
@@ -544,7 +544,7 @@ namespace kickos
                 uint32_t refused = KCAP_INVALID;
                 ASSERT_EQ(irq_claim(first, IRQ_LINES[KICKOS_TASK_IRQ_HANDLE_BUDGET], 0,
                                     &refused),
-                          -KOS_EOVERFLOW);
+                          -KOS_EAGAIN);
 
                 Thread* const second = creator_in_task(SLOT_SECOND, 1);
                 ASSERT_NE(second->task, first->task) << "fixture: two distinct groups";
@@ -563,7 +563,7 @@ namespace kickos
                 ASSERT_EQ(live_mutexes(), 1);
 
                 kernel().current[kickos_kernel_core()] = c;
-                EXPECT_EQ(mutex_create(&cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(mutex_create(&cap), -KOS_EAGAIN)
                     << "the mutex budget refuses at one while the semaphore budget is two";
                 EXPECT_EQ(live_mutexes(), 1);
                 EXPECT_GT(KICKOS_MAX_MUTEXES - live_mutexes(), 0)
@@ -576,7 +576,7 @@ namespace kickos
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t refused = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = first;
-                ASSERT_EQ(sem_create(0, &refused), -KOS_EOVERFLOW);
+                ASSERT_EQ(sem_create(0, &refused), -KOS_EAGAIN);
 
                 Thread* const second = creator_in_task(SLOT_SECOND, 1);
                 ASSERT_NE(second->task, first->task) << "fixture: two distinct groups";
@@ -588,7 +588,7 @@ namespace kickos
                 kernel().current[kickos_kernel_core()] = second;
                 EXPECT_EQ(sem_create(0, &cap), 0) << "the ceiling is per task, not shared";
                 kernel().current[kickos_kernel_core()] = second;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "and the second task is bounded by the same ceiling";
             }
 
@@ -641,7 +641,7 @@ namespace kickos
                 }
 
                 kernel().current[kickos_kernel_core()] = holder;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "a task holding a ceiling of DELEGATED objects is at its ceiling";
                 EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
@@ -672,7 +672,7 @@ namespace kickos
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = holder;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "the survivor still holds a ceiling of objects, whoever made them";
                 EXPECT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
                     << "and the refusal spent no slot";
@@ -708,7 +708,7 @@ namespace kickos
                 EXPECT_EQ(sem_create(0, &own), 0)
                     << "two names for one object leave the holder one slot of headroom";
                 kernel().current[kickos_kernel_core()] = holder;
-                EXPECT_EQ(sem_create(0, &own), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &own), -KOS_EAGAIN)
                     << "and the second distinct slot is the ceiling";
             }
 
@@ -728,7 +728,7 @@ namespace kickos
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = holder;
-                ASSERT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW) << "fixture: at the ceiling";
+                ASSERT_EQ(sem_create(0, &cap), -KOS_EAGAIN) << "fixture: at the ceiling";
 
                 ASSERT_EQ(handle_close(holder, theirs[0]), 0);
                 ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
@@ -747,7 +747,7 @@ namespace kickos
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t cap = KCAP_INVALID;
                 kernel().current[kickos_kernel_core()] = sibling;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EOVERFLOW)
+                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "a thread of a task at its ceiling is at that ceiling too";
                 EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
@@ -1075,7 +1075,7 @@ namespace kickos
                 EXPECT_EQ(dyingwindow::g_admitted, 0)
                     << "the sibling was handed " << dyingwindow::g_admitted
                     << " creates while its own group's capabilities were merely unswept";
-                EXPECT_EQ(dyingwindow::g_last_rc, -KOS_EOVERFLOW)
+                EXPECT_EQ(dyingwindow::g_last_rc, -KOS_EAGAIN)
                     << "and the refusal must be the budget's own code";
                 EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
                     << "and the pool was not exhausted by the teardown either";

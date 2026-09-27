@@ -63,11 +63,7 @@ inline size_t offer(char const* s, size_t n, uint64_t& deadline)
     while (sent < n)
     {
         int32_t const w = kos_kconsole_write(s + sent, n - sent);
-        if (w < 0)
-        {
-            break; // a rejected buffer; no retry can change the answer
-        }
-        if (w == 0)
+        if (w == -KOS_EAGAIN)
         {
             uint64_t const now = kos_clock_now();
             if (deadline == 0)
@@ -80,6 +76,10 @@ inline size_t offer(char const* s, size_t n, uint64_t& deadline)
             }
             kos_yield();
             continue;
+        }
+        if (w <= 0)
+        {
+            break; // a rejected buffer; no retry can change the answer
         }
         deadline = 0;
         sent += static_cast<size_t>(w);

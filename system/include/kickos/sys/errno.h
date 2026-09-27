@@ -19,12 +19,13 @@
 
 enum kos_errno
 {
-    KOS_EPERM = 1,       // privilege denied / missing cap right / not the owner
+    KOS_EPERM = 1,       // privilege or authority denied, or not the owner
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
     KOS_EIO = 5,         // device transfer failed, e.g. I2C NACK or a peripheral error
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
-    KOS_ENOTIFY = 11,    // IRQ notification without a message; service the notified lines
+    KOS_EAGAIN = 11,     // retry may succeed; I2C arbitration loss can follow partial transfer
     KOS_ENOMEM = 12,     // allocation or MPU descriptor capacity exhausted
+    KOS_EACCES = 13,     // the capability lacks a right the operation needs
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
     KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
@@ -32,7 +33,8 @@ enum kos_errno
     KOS_EPIPE = 32,      // endpoint has no receiver (dead), or the last one left while parked
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall or architecture backend unavailable
-    KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
+    KOS_ENOTIFY = 42,    // IRQ notification without a message; service the notified lines
+    KOS_EOVERFLOW = 75,  // a count would exceed its field: a refcount or semaphore at its maximum
     KOS_ENOTSUP = 95,    // valid request unsupported by the device, e.g. frame format or rate
     KOS_ETIMEDOUT = 110, // deadline expired before completion; effects depend on the operation
     KOS_EALREADY = 114,  // requested state already present, e.g. an IRQ notification is pending

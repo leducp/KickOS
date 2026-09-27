@@ -85,18 +85,18 @@ namespace kickos
     // unbadged capability is the unconfined one, a badged copy reaches only its own bit, and
     // `src_cap` itself must be unbadged or a holder could re-reach the whole object. 0 with
     // the new capability in *out_cap, or -KOS_E*: EBADF, EINVAL (bit at or above
-    // KCAP_BADGE_BITS), EALREADY (the source is already badged), EMFILE (the caller's
+    // KCAP_BADGE_BITS), EACCES (a badged source cannot mint), EMFILE (the caller's
     // cap table), EOVERFLOW (the object's reference count is at its ceiling).
     int notify_badge(Thread* c, uint32_t src_cap, uint32_t bit, uint32_t* out_cap);
 
     // Raise this capability's badge bit. Requires CAP_SIGNAL. 0, -KOS_EALREADY where the bit
     // was already set (the raise had no effect and the notification stays pending), or
-    // -KOS_EBADF / -KOS_EPERM. An unbadged capability raises bit 0.
+    // -KOS_EBADF / -KOS_EACCES. An unbadged capability raises bit 0.
     int notify_signal(Thread* c, uint32_t cap_handle);
 
     // Bind the calling thread to the object. Requires CAP_WAIT. 0, -KOS_EBUSY (another
     // thread is bound, or `c` is already bound to a different object), or -KOS_EBADF /
-    // -KOS_EPERM. Rebinding the same thread to the same object succeeds. Takes a reference of
+    // -KOS_EACCES. Rebinding the same thread to the same object succeeds. Takes a reference of
     // its own, so closing the last capability while a thread is bound keeps the object alive.
     // A waiter cannot learn its signallers' badges; the accept mask is an argument of the wait.
     int notify_bind(Thread* c, uint32_t cap_handle);
@@ -109,8 +109,8 @@ namespace kickos
     // chained signaller whose badge is in `mask` and which owes a rearm is rearmed, so a
     // driver that never acks cannot deadlock its line. Consumed bits are cleared from pending and
     // written to *out_bits, and their signallers owe a rearm at the next wait.
-    // 0, or -KOS_E*: EBADF, EPERM (no CAP_WAIT, `c` is not the bound thread, or above one
-    // kernel core its own mask is not exactly its lines' claim core), EINVAL (an empty mask,
+    // 0, or -KOS_E*: EBADF, EACCES (no CAP_WAIT), EPERM (`c` is not the bound thread, or above
+    // one kernel core its own mask is not exactly its lines' claim core), EINVAL (an empty mask,
     // which could only ever block forever), ETIMEDOUT, ECANCELED.
     // `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
     int notify_wait(Thread* c, uint32_t cap_handle, uint32_t mask, uint32_t timeout_us,

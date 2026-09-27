@@ -6,11 +6,13 @@
 // machine defaulting to a core that refuses an A64 image.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/console_retry.h>
 #include <kickos/console_tx.h>
 
 #include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/config/limits.h> // bounded console claim wait
 #include <kickos/sys/atomic.h>
 
 #include "a53.h" // arch/arm64/common: the A53 facts and the timer seams both chips share
@@ -87,8 +89,8 @@ namespace
     // hang. The same reasoning binds the writer below.
     constexpr uint32_t UART_POLL_BOUND = 100000;
 
-    // --- Buffered console TX backend (console_tx.h). No TX interrupt is wired on this
-    // machine, so irq_line is -1 and the producer drains. ---
+#if !KICKOS_AMP_OWN_IMAGE
+    // One kernel owns this UART. No TX interrupt is wired, so the producer drains.
     int pl011_tx_slot_free(void) { return (*r32p(UART_FR) & UART_FR_TXFF) == 0; }
     void pl011_tx_push(uint8_t b) { *r32p(UART_DR) = static_cast<uint32_t>(b); }
     void pl011_tx_irq_enable(void) {}
@@ -97,6 +99,223 @@ namespace
     char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const pl011_console_backend = {
         pl011_tx_slot_free, pl011_tx_push, pl011_tx_irq_enable, pl011_tx_irq_disable};
+#else
+    // Private rings would drain independently into this one UART. Keep the AMP
+    // transmission on the polled path and arbitrate it in the shared window.
+    // A granule of its own: a peer's store to a neighbouring shared word would clear this
+    // node's exclusive monitor and fail its compare-exchange.
+    KICKOS_AMP_SHARED("chip") alignas(64) uint64_t g_console_claim = 0;
+    constexpr uint32_t CONSOLE_OWNER_SELF = KICKOS_AMP_NODE_ID + 1u;
+    constexpr uint32_t CONSOLE_HOLD_MS = 50u; // 512 bytes at 115200 8N1 take 44.4 ms
+    uint64_t g_console_token = 0;
+
+    uint32_t console_ticks(void)
+    {
+        uint64_t ticks = 0;
+        // The physical counter is common to the partition; CNTVCT may carry a
+        // per-core offset and would make one node's deadline meaningless to another.
+        __asm volatile("isb; mrs %0, cntpct_el0" : "=r"(ticks));
+        return static_cast<uint32_t>(ticks);
+    }
+
+    uint32_t console_hold_ticks(void)
+    {
+        uint64_t freq = 0;
+        __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+        // The bad-CNTFRQ reporter runs before peers are released. Give it a finite
+        // structural fallback even when firmware left the frequency unset.
+        if (freq == 0)
+        {
+            return 1000000u;
+        }
+        return static_cast<uint32_t>(freq / (1000u / CONSOLE_HOLD_MS));
+    }
+
+    // Ticks left on a grant, 0 once it has ended. A live deadline lies at most one hold
+    // ahead: the counter is truncated to 32 bits, and a dead holder's deadline would read as
+    // live again half a wrap later under a signed comparison.
+    uint32_t console_left(uint64_t token, uint32_t budget)
+    {
+        uint32_t const left = static_cast<uint32_t>(token >> 32) - console_ticks();
+        if (left > budget)
+        {
+            return 0;
+        }
+        return left;
+    }
+
+    uint64_t console_load(void)
+    {
+        uint64_t value = 0;
+        __asm volatile("ldar %0, [%1]" : "=r"(value) : "r"(&g_console_claim) : "memory");
+        return value;
+    }
+
+    bool console_compare_exchange(uint64_t& expected, uint64_t desired)
+    {
+        uint64_t observed = 0;
+        uint32_t failed = 0;
+        // The A53 has exclusives but no LSE. An inline one-shot CAS also keeps libgcc's
+        // outline-atomic helper out of the kernel image's low user-address window.
+        __asm volatile("ldaxr %0, [%2]\n"
+                       "cmp %0, %3\n"
+                       "b.ne 1f\n"
+                       "stlxr %w1, %4, [%2]\n"
+                       "b 2f\n"
+                       "1: clrex\n"
+                       "mov %w1, #1\n"
+                       "2:"
+                       : "=&r"(observed), "=&r"(failed)
+                       : "r"(&g_console_claim), "r"(expected), "r"(desired)
+                       : "cc", "memory");
+        expected = observed;
+        return failed == 0;
+    }
+
+    void console_release(void)
+    {
+        uint64_t const token = g_console_token;
+        g_console_token = 0;
+        if (token == 0)
+        {
+            return;
+        }
+        // A peer may have stolen an expired grant: never release its replacement. The
+        // store-exclusive can fail with the word unchanged, and a grant left standing makes
+        // every node wait out its deadline, so only a changed word ends the attempt.
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+        {
+            uint64_t expected = token;
+            if (console_compare_exchange(expected, 0) or expected != token)
+            {
+                return;
+            }
+        }
+    }
+
+    // The holder stops a margin short of its deadline, so a byte checked just before its
+    // store cannot land after a peer has taken the expired grant.
+    bool console_holding(uint32_t budget)
+    {
+        return g_console_token != 0 and console_load() == g_console_token and
+               console_left(g_console_token, budget) > budget / 64u;
+    }
+
+    bool console_try_acquire(uint32_t budget)
+    {
+        uint64_t expected = console_load();
+        if (expected != 0 and console_left(expected, budget) != 0)
+        {
+            return false;
+        }
+        uint64_t const token = (uint64_t(console_ticks() + budget) << 32) | CONSOLE_OWNER_SELF;
+        if (not console_compare_exchange(expected, token))
+        {
+            return false;
+        }
+        g_console_token = token;
+        return true;
+    }
+
+    // The masked wait, for a caller already masked: panic, fault and ISR output. A panicking
+    // node would otherwise lose every line that starts while its peer is inside one.
+    bool console_acquire(uint32_t budget)
+    {
+        uint32_t const start = console_ticks();
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+        {
+            if (console_try_acquire(budget))
+            {
+                return true;
+            }
+            if (static_cast<uint32_t>(console_ticks() - start) >= budget)
+            {
+                break;
+            }
+        }
+        return false;
+    }
+
+    enum class Put
+    {
+        STORED,
+        LOST,   // the claim ended or could not be had; released
+        WEDGED, // the FIFO never drained; released
+    };
+
+    // One byte under the claim, checked after the FIFO wait: the grant can end while a byte
+    // waits for room. `wait` takes a claim not yet held with the masked wait.
+    Put console_put(char c, uint32_t budget, bool wait)
+    {
+        uint32_t spin = 0;
+        while ((*r32p(UART_FR) & UART_FR_TXFF) != 0 and spin < UART_POLL_BOUND)
+        {
+            spin++;
+        }
+        if (spin == UART_POLL_BOUND)
+        {
+            console_release();
+            return Put::WEDGED;
+        }
+        if (not console_holding(budget))
+        {
+            // A stalled or dead holder must not block its peers, so a grant that has ended
+            // is never written into.
+            bool const lost = g_console_token != 0;
+            console_release();
+            if (lost)
+            {
+                return Put::LOST;
+            }
+            bool held = false;
+            if (wait)
+            {
+                held = console_acquire(budget);
+            }
+            else
+            {
+                held = console_try_acquire(budget);
+            }
+            if (not held)
+            {
+                return Put::LOST;
+            }
+        }
+        *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(c));
+        if (c == '\n')
+        {
+            console_release();
+        }
+        return Put::STORED;
+    }
+
+    // Waits out a peer's grant with interrupts open between attempts: the transmission
+    // masks, and a peer may hold the UART for a whole hold.
+    bool console_claim_open(void)
+    {
+        uint32_t const budget = console_hold_ticks();
+        uint32_t const start = console_ticks();
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
+        {
+            arch_irq_state_t const irq = arch_irq_save();
+            if (g_console_token != 0 and not console_holding(budget))
+            {
+                console_release();
+            }
+            bool const held = g_console_token != 0 or console_try_acquire(budget);
+            arch_irq_restore(irq);
+            if (held)
+            {
+                return true;
+            }
+            if (static_cast<uint32_t>(console_ticks() - start) >= budget)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+#endif
 
     // The refusal path's own writer, with the PL011 at the address the bus sees: the MMU
     // is off, so dev_va's high alias translates through nothing.
@@ -435,32 +654,88 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return n;
 }
 
+#if KICKOS_AMP_OWN_IMAGE
+int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
+{
+    if (n == 0 or not console_claim_open())
+    {
+        return 0;
+    }
+    // Masked as console_write_line_sync is, so a local ISR's output cannot land inside the
+    // line. Stops at the first byte the claim no longer covers: the count is what went out,
+    // and the rest is the caller's to offer again under a fresh claim.
+    uint32_t const budget = console_hold_ticks();
+    arch_irq_state_t const irq = arch_irq_save();
+    size_t const landed = kickos::console_retry::write(buf, n, cr_pending, [budget](char c) {
+        return console_put(c, budget, false) == Put::STORED;
+    });
+    arch_irq_restore(irq);
+    return static_cast<int>(landed);
+}
+#endif
+
 int arch_console_write(char const* buf, size_t n)
 {
+#if KICKOS_AMP_OWN_IMAGE
+    return arch_console_write_retry(buf, n, nullptr);
+#else
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+#endif
 }
 
 // The PL011 comes out of QEMU's reset already enabled at the machine's default baud, so
 // the polled path needs no bring-up.
 void arch_console_write_sync(char const* buf, size_t n)
 {
+#if KICKOS_AMP_OWN_IMAGE
+    uint32_t const budget = console_hold_ticks();
+    // Scoped to this call: a line this writer lost must not cost the next writer its own.
+    bool dropping = false;
+#endif
     for (size_t i = 0; i < n; i++)
     {
+        char const c = buf[i];
+#if KICKOS_AMP_OWN_IMAGE
+        if (dropping)
+        {
+            dropping = c != '\n';
+            continue;
+        }
+        // No caller here can offer the rest again, so a lost claim costs the rest of the line.
+        Put const put = console_put(c, budget, true);
+        if (put == Put::WEDGED)
+        {
+            return;
+        }
+        dropping = put == Put::LOST and c != '\n';
+#else
         uint32_t spin = 0;
         while ((*r32p(UART_FR) & UART_FR_TXFF) != 0 and spin < UART_POLL_BOUND)
         {
             spin++;
         }
-        *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
+        if (spin == UART_POLL_BOUND)
+        {
+            return;
+        }
+        *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(c));
+#endif
     }
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
+#if KICKOS_AMP_OWN_IMAGE
+    *storage = nullptr;
+    *size = 0;
+    *irq_line = -1;
+    return nullptr;
+#else
     *storage = console_tx_buf;
     *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = -1; // no TX line is routed on this machine; the producer drains
     return &pl011_console_backend;
+#endif
 }
 
 // TXFF says the FIFO can take a byte; BUSY says the device is still clocking one out, which

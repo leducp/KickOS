@@ -160,6 +160,20 @@ TEST_F(ConsoleTxMaskedWindow, DeinitSeatedInTheGapLeavesTheTxInterruptDisabled)
     EXPECT_FALSE(consoleseam::tx_irq_enabled());
 }
 
+// The console syscall adds up this count and answers -KOS_EAGAIN where it is 0, so a line
+// is counted whole when it fits and not at all when it does not.
+TEST_F(ConsoleTxMaskedWindow, InsertLineCountsWhatItQueuesAndNothingItRefuses)
+{
+    consoleseam::set_isr_runs_in_gap(false);
+    consoleseam::set_slot_free(0);
+    std::string const first = pattern(300, 'a');
+    std::string const second = pattern(300, 'A');
+    EXPECT_EQ(console_tx_insert_line(first.data(), first.size(), 0), 300);
+    EXPECT_EQ(console_tx_insert_line(second.data(), second.size(), 0), 0);
+    EXPECT_EQ(console_tx_insert_line(second.data(), 0, 0), 0);
+    EXPECT_TRUE(consoleseam::wire().empty());
+}
+
 // A zero-length write has no chunk to queue, so the chunk loop never runs. Falling through
 // it into the synchronous fallback drains every byte already queued with the mask held.
 TEST_F(ConsoleTxMaskedWindow, ZeroLengthWritePushesNothingUnderTheMask)

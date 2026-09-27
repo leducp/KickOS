@@ -16,10 +16,10 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.4 HAVE MERGED AND M9.5 IS ON ITS BRANCH, DECIDED.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.5 HAVE MERGED AND M9.6 IS DECIDED ON ITS BRANCH.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned; M9.6 and later remain assigned. The M9.0 section
+assigned; M9.7 and later remain assigned. The M9.0 section
 at the bottom of this file carries what the survey, the stack verdict and the entry envelope
 established, and what a reader of the numbers alone would get wrong.
 
@@ -3600,6 +3600,36 @@ FOUR-CORE PRESETS CANNOT SHOW IT.** The ARM64 doorbell service's request snapsho
 report's per-core accumulator copy were two, and at twelve cores they overran SYSK, EXITK and RET
 by 32 to 48 bytes on chains the four-core GICv3 preset held at zero slack. Both now live in
 per-core storage, which is what `qemu-arm64-benchsmp12`'s red-zone registration witnesses.
+
+## M9.6: the console across cores, and what the green runs do NOT say
+
+**A BOUNDED AMP CLAIM PRESERVES PROGRESS, NOT EVERY LINE.** ARM64 and RP2350 own-image kernels
+wait for their shared UART with interrupts open and hold it through a line, but a stalled holder
+can outlive its lease. A peer may then take the UART and the old holder discards the rest of
+that write when it notices. Every byte's store follows a fresh ownership check that stops short
+of the deadline, by a sixty-fourth of the lease on ARM64 and 200 us on RP2350, so only a stall
+longer than that margin between the check and the store writes into a peer's grant. A write
+stops at the first byte its claim no longer covers and returns how many went out, the
+`write(2)` shape, or `-KOS_EAGAIN` with none; a user write's remainder then goes out under a
+fresh claim, so a takeover splits a line around a peer's rather than losing or repeating
+bytes. Panic, fault and ISR output has no caller to retry and drops the rest of a line it
+loses, uncounted. The claim is not fair: a node that releases and claims again at once can
+win again.
+
+**WHAT THE GREEN RUNS SAY.** Thirty runs of each ARM64 partition gate, two and three images,
+kept every peer announcement whole; with the claim disabled the three-image gate tore an
+announcement in seven runs of thirty. They witness ordinary overlap only: no run exercises a
+dead node mid-line or a lease expiring inside a user write, and no gate observes how long a
+writer waits masked. RP2350's claim path has build and host-gate coverage here, not a
+two-image silicon console capture.
+
+**AN RP2350 PANIC RECLAIMS THE SHARED UART WITHOUT THE CLAIM.** The reclaim reprograms UART1 in
+straight-line stores, as `arch.h` requires of every reclaim body, so a node panicking while its
+peer transmits can cut the peer's line.
+
+**ONE SMP RING ORDERS ITS OWN KERNEL'S PRODUCERS ONLY.** The RV64 SMP image gates exercise the
+shared-kernel path, but do not force simultaneous console submissions on every core. A full
+ring can still drop a debug line; the contract protects the lines it accepts.
 
 ## Where to go next
 

@@ -1460,6 +1460,12 @@ inside the tree.
       not a lock.
       **AND IT IS M9.6, A STAGE OF ITS OWN.** It needs neither the lock nor the scheduler, so it
       attaches to nothing and depends on nothing above it.
+      **LANDED AT M9.6.** The SMP half needed nothing: one kernel's producers already insert
+      whole lines into one ring. RP2350 and ARM64 own-image AMP nodes claim their shared UART
+      for a line, waiting with interrupts open and holding a bounded lease. A write stops at
+      the first byte its claim no longer covers and returns what went out, the `write(2)`
+      shape, with `-KOS_EAGAIN` for none. The ARM64 partition gate now requires intact peer
+      announcements.
 
 - [x] **`join_stale_gen` ASSUMES A JOINED THREAD'S SLOT IS RECLAIMED, AND RECLAMATION IS LAZY AT
       THE NEXT SPAWN.** `user/apps/common/selftest/main.cc` (`join_stale_gen`), 5 runs in 320 at
@@ -5190,7 +5196,7 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**M9.0 THROUGH M9.5 ARE DECIDED; M9.6 AND LATER REMAIN ASSIGNED.** `roadmap.md`
+**M9.0 THROUGH M9.6 ARE DECIDED; M9.7 AND LATER REMAIN ASSIGNED.** `roadmap.md`
 assigns M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived
 from the mask, per-core ready queues, the wait-edge rule; M9.3 fused into it, under one lock the
 push needing no ring), M9.4 (the per-pair rings, landed under the lock inside stage 1's own
@@ -5221,6 +5227,16 @@ starts: **M9.2 takes four of the nine**, which makes the widest stage in the lad
 neither the lock nor the scheduler -- what it owes is a partition-wide contract for who may speak,
 in the SMP shape and the AMP one -- so it is M9.6 and the write-up moved to M9.7. Nothing else
 renumbered: the five lock stages keep the numbers their evidence gates were written against.
+
+- [x] **M9.6: ONE CONSOLE SPEAKER PER LINE ACROSS CORES.** SMP cores already submit complete
+      lines to one kernel ring. Own-image ARM64 and RP2350 AMP nodes arbitrate their shared UART
+      with a bounded claim held through a line; a write stops where its claim ends and counts
+      only what went out. `kos_kconsole_write` answers in the `write(2)` shape, `-KOS_EAGAIN`
+      when nothing went out, and a full far IPC ring answers `-KOS_EAGAIN` too. The ARM64
+      partition gates require each peer announcement intact and passed thirty consecutive runs
+      at two and at three images. RV64 SMP hello, errno and selftest passed. A deadline
+      prevents a dead AMP node from owning the UART forever, but cannot guarantee a complete
+      line when a node stalls; `STATE.md` records that limit.
 
 **TWO LINES WENT BECAUSE THEY WERE STALE.** This section used to say the instrument constants M8.7
 owes this milestone and G-06 were actionable alongside M9.0. The five constants landed inside M8.7's

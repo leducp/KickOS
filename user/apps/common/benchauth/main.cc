@@ -7,7 +7,7 @@
 // number, and every caller-supplied count is refused above the ceiling abi.h names.
 //
 // Three ops take no authority. RAISE injects the line the arm chose from a cap, and answers
-// -KOS_EBUSY to anybody until that waiter has parked. RESET answers 0 to anybody and clears the
+// -KOS_EAGAIN to anybody until that waiter has parked. RESET answers 0 to anybody and clears the
 // distributions. CLOSE answers -KOS_EPERM to a thread that is not the armed waiter and counts
 // the span into `dropped`, but ends the span either way.
 //
@@ -96,12 +96,12 @@ namespace
 
         rc = kos_bench(KOS_BENCH_OP_E2E_ARM, CH_IRQ_SIGNAL, 0);
         report_rc("child e2e_arm (SIGNAL-only cap)", rc);
-        check(rc == -KOS_EPERM, "a cap without WAIT cannot name the span's line");
+        check(rc == -KOS_EACCES, "a cap without WAIT cannot name the span's line");
 
         // Over the span root re-armed: the raise and the reset leave it open, the close ends it.
         rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
         report_rc("child e2e_raise", rc);
-        check(rc == -KOS_EBUSY, "a raise the parked waiter has not invited injects nothing");
+        check(rc == -KOS_EAGAIN, "a raise the parked waiter has not invited injects nothing");
 
         rc = kos_bench(KOS_BENCH_OP_RESET, 0, 0);
         report_rc("child reset", rc);
@@ -167,7 +167,7 @@ int main(int, char**)
 
     rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
     report_rc("root e2e_raise (no span open)", rc);
-    check(rc == -KOS_EBUSY, "KOS_AUTH_IRQ does not make a raise land either");
+    check(rc == -KOS_EAGAIN, "KOS_AUTH_IRQ does not make a raise land either");
 
     rc = kos_bench(KOS_BENCH_OP_RESET, 0, 0);
     report_rc("root reset", rc);

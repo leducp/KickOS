@@ -369,7 +369,7 @@ namespace kickos
     int bench_e2e_arm(int line);
     // Publish the park under the same kernel lock used by the ISR wake.
     void bench_e2e_park_mark();
-    // Return -KOS_EBUSY until the waiter parks, excluding fast-path wait returns.
+    // Return -KOS_EAGAIN until the waiter parks, excluding fast-path wait returns.
     int bench_e2e_raise();
     // 1 when no other core runs anything but its idle thread and nothing is in flight toward any.
     int bench_e2e_quiet();

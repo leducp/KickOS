@@ -291,8 +291,8 @@ namespace
     // Ownership is bounded by a DEADLINE taken when the claim is, never by what the holder
     // writes next: a node that stops mid-line, or dies there, would otherwise keep the lock for
     // as long as it lives and leave every later line unserialised. The holder drops the claim at
-    // its first release past the deadline, and a peer that spins its budget out against an
-    // expired one releases the register under the holder and takes it. So the bound holds with
+    // its first release past the deadline, and a peer that finds the deadline passed releases
+    // the register under the holder and takes it. So the bound holds with
     // the holder gone, which is what the console's "always works, even while dying" guarantee
     // needs.
     //
@@ -302,14 +302,16 @@ namespace
     // is then refused by that same test rather than ending a third claim, so the window costs a
     // shredded line and does not cascade.
     //
-    // A caller that loses the claim writes anyway; the cost is a shredded line.
-    //
-    // Interrupts are NOT masked across it: console.cc requires that the chip transport never be
-    // held under IrqLock across a transmission.
+    // A caller that loses the claim drops the rest of its line. It must never
+    // write into a peer's grant.
 
     // The wire time of the 512-byte run the claim is meant to cover: 512 bytes at 115200 8N1
     // is 44.4 ms. A holder past this is stalled or dead, not writing a long line.
     constexpr uint32_t CONSOLE_HOLD_MAX_US = 50000u;
+
+    // Two byte times at 115200. The holder stops this far short of its deadline, so a byte
+    // checked just before its store cannot land after a peer has taken the expired grant.
+    constexpr uint32_t CONSOLE_MARGIN_US = 200u;
 
     // Read by a peer whose own claim failed, so they live where both nodes look. Zeroed by the
     // partition primary before any peer runs (arch_amp_shared_zero). SPINLOCK31 serialises the
@@ -323,10 +325,23 @@ namespace
 
     bool g_console_held = false;
 
-    bool console_hold_expired()
+    // Microseconds left on the published grant, 0 once it has ended. A live deadline lies at
+    // most one hold ahead: TIMER0's low half wraps every ~71 min, and a dead holder's deadline
+    // would read as live again half a wrap later under a signed comparison.
+    uint32_t console_hold_left()
     {
-        // Half-range difference: TIMER0's low half wraps every ~71 min and a hold is tens of ms.
-        return (r32(reg::timer::TIMERAWL) - g_console_deadline) < 0x80000000u;
+        uint32_t const left = g_console_deadline - r32(reg::timer::TIMERAWL);
+        if (left > CONSOLE_HOLD_MAX_US)
+        {
+            return 0;
+        }
+        return left;
+    }
+
+    bool console_holding()
+    {
+        return g_console_held and g_console_owner == CONSOLE_OWNER_SELF and
+               console_hold_left() > CONSOLE_MARGIN_US;
     }
 
     void claim_taken()
@@ -337,49 +352,91 @@ namespace
         g_console_owner = CONSOLE_OWNER_SELF;
     }
 
+    bool console_try_claim()
+    {
+        if (r32(reg::sio::SPINLOCK31) != 0)
+        {
+            claim_taken();
+            return true;
+        }
+        // A claim past its bound, so its holder is stalled mid-line or gone. Any write to the
+        // register releases it, whichever core claimed it.
+        if (g_console_owner != 0 and console_hold_left() == 0)
+        {
+            r32(reg::sio::SPINLOCK31) = 1u;
+            if (r32(reg::sio::SPINLOCK31) != 0)
+            {
+                claim_taken();
+                return true;
+            }
+        }
+        return false;
+    }
 }
 
 namespace kickos::rp2xxx
 {
-    void console_claim(void)
+    bool console_claim(void)
     {
         // A fault landing inside a run this node already holds writes into it rather than
         // spinning its budget out against its own claim. One flag serves: this node drives one
         // core.
         if (g_console_held)
         {
-            return;
+            if (console_holding())
+            {
+                return true;
+            }
+            console_drop(true);
+            return false;
         }
+        // Reached with interrupts masked only by a caller already masked (panic, fault, ISR),
+        // console_claim_open having taken the claim for every other writer. A panicking node
+        // would otherwise lose every line that starts while its peer is inside one.
+        //
         // The wait and the grant it waits out are both TIMER0 microseconds. Counted in loop
         // iterations instead, the wait grows with a degraded core clock while the grant does
-        // not, and a contender whose patience has outrun the grant takes a line its holder is
-        // still legitimately inside. One grant's length from here covers any claim taken
-        // before this call.
+        // not. KICKOS_POLL_SPIN_MAX is the structural backstop and not the budget: a TIMER0
+        // that has stopped must still leave this node able to emit.
         uint32_t const waited_from = r32(reg::timer::TIMERAWL);
-        // KICKOS_POLL_SPIN_MAX is the structural backstop and not the budget: a TIMER0 that has
-        // stopped must still leave this node able to emit.
         for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
-            if (r32(reg::sio::SPINLOCK31) != 0)
+            if (console_try_claim())
             {
-                claim_taken();
-                return;
+                return true;
             }
             if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
             {
                 break;
             }
         }
-        // A claim past its bound, so its holder is stalled mid-line or gone. Any write to the
-        // register releases it, whichever core claimed it.
-        if (g_console_owner != 0 and console_hold_expired())
+        return false;
+    }
+
+    bool console_claim_open(void)
+    {
+        // console_write_line_sync masks for its whole transmission and a peer may hold the
+        // UART for a whole hold, so the wait for it keeps interrupts open between attempts.
+        uint32_t const waited_from = r32(reg::timer::TIMERAWL);
+        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
-            r32(reg::sio::SPINLOCK31) = 1u;
-            if (r32(reg::sio::SPINLOCK31) != 0)
+            arch_irq_state_t const irq = arch_irq_save();
+            if (g_console_held and not console_holding())
             {
-                claim_taken();
+                console_drop(true);
+            }
+            bool const held = g_console_held or console_try_claim();
+            arch_irq_restore(irq);
+            if (held)
+            {
+                return true;
+            }
+            if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
+            {
+                return false;
             }
         }
+        return false;
     }
 
     void console_drop(bool ended_line)
@@ -388,7 +445,7 @@ namespace kickos::rp2xxx
         {
             return;
         }
-        if (not ended_line and not console_hold_expired())
+        if (not ended_line and console_hold_left() != 0)
         {
             return;
         }

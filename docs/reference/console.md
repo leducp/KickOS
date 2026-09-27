@@ -112,6 +112,25 @@ legible. `console_tx_insert_line` copies a whole line under one `IrqLock` or ref
 refused line DOES NOT GO OUT, so nothing ever writes at the device beside the drain. A panic still takes the polled path: the system stops
 afterwards, so a line left queued is a line nobody reads.
 
+**Across cores, the speaker is the device owner, not the CPU.** SMP cores in one kernel
+insert normal lines into one ring; one drain sends its bytes. Own-image AMP kernels have
+separate rings, so they cannot use them to arbitrate one UART. RP2350 and QEMU ARM64 instead
+claim that UART in partition-shared state and keep the claim through the newline, including
+user writes that reach the chip in several chunks. The wait for a peer's claim keeps
+interrupts open; only the transmission is masked. The claim and wait are bounded: after a
+stalled holder's deadline another node may speak. A write stops at the first input byte its
+claim no longer covers and reports how many completed, so a user write's remainder is offered
+again under a fresh claim. A newline spends CR and LF on the UART; if the claim dies after CR,
+the thread remembers it and its next offer sends only LF, without repeating CR. A write
+with no complete input byte answers `-KOS_EAGAIN`. Panic, fault and ISR output, already masked
+and with no caller to offer the rest again, waits the bounded claim masked and drops the rest
+of a line it loses,
+uncounted. The holder rechecks its claim before each byte's store and stops a margin short
+of the deadline: only a stall longer than that margin between check and store writes into
+an expired grant. A lease expiry can split a line around a peer's; no claim promises that a
+dying node completes its output. The console is still a debug facility, not a reliable
+inter-node message channel.
+
 The ring is therefore MULTI-producer, and the exclusion is the lock rather than a structural
 claim about callers. What the ring buys over the locked writer is the SHAPE of the masked
 window: a copy instead of a transmission. That is why a ring too small to hold a line is a
@@ -173,8 +192,9 @@ the length of the shorter blocks.
 
 The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing
 counts it. The USER path is different: `kos_kconsole_write` splits a write into chunks,
-and the syscall STOPS at the first chunk the ring refused and returns how much landed,
-so userspace retries or gives up. Carrying on past a refusal would put a hole in the
+and the syscall STOPS at the first byte the console refused and returns how much landed,
+in the shape of `write(2)`: a short count, or `-KOS_EAGAIN` when no input byte completed, so userspace
+retries or gives up. Carrying on past a refusal would put a hole in the
 middle of a line whose tail arrived, which is worse than losing the line.
 
 **What userspace does with that short count is `kconsole_write_all`
@@ -314,19 +334,16 @@ Details specific to the sim:
 3. **The TX IRQ is enabled whenever the ring is non-empty.** The ISR disables it
    *only* on drain-to-empty; the producer *always* re-enables after publishing.
    It is stated of ONE ring over one gate bit, so **a chip whose kernels are several
-   supplies no backend at all**: two rings behind one enable bit means the node that
-   drains first clears the bit the other's queued bytes wait on, and on a part
-   delivering the line to every core both drains run on every transmit event. The
-   own-image RP2350 posture therefore has no ring on any node and every node writes
-   through the polled path, which claims a hardware lock across the LINE, a line
-   reaching that writer in several chunks, so a cooked line is not cut by the peer's.
+   supplies no backend at all**: two private rings cannot serialize access to one UART.
+   Own-image RP2350 and QEMU ARM64 instead write through a polled path and hold a
+   partition claim across chunks of a line. RP2350 uses a hardware spinlock; ARM64 uses
+   one atomic owner/deadline word in the shared window.
    **Ownership is bounded by a DEADLINE taken when the claim is, never by what the
    holder writes next**: a node that stops mid-line, or dies there, would otherwise
-   keep the lock for as long as it lives, and a peer that spins its budget out against
-   an expired deadline releases the register under the holder and takes it. That is
-   point 4 outranking this one -- the holder may be the node that is dying, so the
-   bound may not depend on it coming back. A caller that loses the claim writes anyway,
-   at the cost of a shredded line.
+   keep the UART indefinitely. A peer may take an expired claim. A write stops at the
+   first byte its claim does not cover and counts only what went out; it never
+   deliberately writes into a peer's claim. An expired holder can still leave a split
+   line on the wire.
 4. **Panic output must not depend on the buffered path or on a debug probe.** It
    flushes the ring, forces the sync path, and -- once the eventual userspace driver
    owns the UART -- must *reclaim + reinit* the peripheral and polled-print,
