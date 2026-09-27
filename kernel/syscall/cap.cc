@@ -942,7 +942,7 @@ namespace kickos
         }
         if ((e->rights & need) != need) // rights enforced HERE, nowhere else
         {
-            *err = KOS_EPERM; // named a valid cap but it lacks a required right
+            *err = KOS_EACCES; // named a valid cap but it lacks a required right
             return nullptr;
         }
         // WRAP: the stored global handle re-checks the object-gen in its own pool. A

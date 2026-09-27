@@ -224,18 +224,22 @@ extern "C"
     //
     // -KOS_EIO IS A NACK and `*xferred` IS WHERE IT HAPPENED. The code does not say address
     // versus data, per refusal 3 above; the count does, against the segment list the caller
-    // submitted. -KOS_EBUSY is arbitration lost or a bus no recovery could free.
+    // submitted. -KOS_EAGAIN is lost arbitration: earlier payload bytes may have reached the
+    // device, so retrying the whole list is safe only when the device operation is repeatable.
+    // -KOS_EBUSY means no recovery could free the bus.
     //
     // `xferred` IS MANDATORY AND IS WRITTEN BEFORE EVERY RETURN, failures included; a null
     // one is -KOS_EINVAL rather than a permitted "do not care", because a caller that drops
     // it drops the only discriminator a NACK has. It counts PAYLOAD bytes of `buf`, running
     // across the whole segment list, and the rule is this: bytes actually transferred BEFORE
-    // the failure. So a write segment contributes the bytes the device acknowledged, a read
+    // the failure. For a NACK, a write segment contributes the bytes the device acknowledged; a read
     // segment the bytes it stored, the address byte of a segment is never counted because it
     // is not payload, and the byte a NACK refused is not counted either. An address NACK is
     // therefore 0 bytes into that segment; a device that acknowledged two register-address
     // bytes and refused the first data byte of the same segment is 2. On success it is
-    // `len`.
+    // `len`. On arbitration loss, the controller cannot establish how many bytes of the
+    // current write segment the device accepted: `xferred` is a confirmed lower bound (all
+    // earlier completed segments), not proof that the rest had no effect.
     //
     // THERE IS NO SHORT TRANSFER. `len` above KOS_I2C_XFER_MAX is -KOS_EINVAL in EVERY
     // implementation. A consumer moving more splits it into transactions the target accepts

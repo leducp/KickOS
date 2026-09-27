@@ -22,12 +22,15 @@ extern "C"
 
 // Debug console: unbuffered, polling, straight at the kernel console, so it works in boot
 // and panic. NOT stdout: ordinary output is libc stdio over a userspace console driver.
-// Returns bytes written (a len-0 write is a legitimate 0), or -KOS_EFAULT for a buffer the
-// caller cannot read. THE COUNT CAN BE SHORT, and the usual cause is a FULL TRANSMIT RING
-// rather than a bad buffer: the walk stops at the first chunk the console refuses, which is
-// whatever an earlier burst has not drained yet. A page unmapped mid-write stops it too, the
-// chunks spanning no lock. kos_print discards both, so a line that has to survive a burst
-// goes through kickos::emit (sys/emit.h), which retries the remainder.
+// The write(2) shape: returns bytes written (a len-0 write is a legitimate 0), or with none
+// completed -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring, or a peer node
+// holding a shared UART; try again) or -KOS_EFAULT for a buffer the caller cannot read. THE
+// COUNT CAN BE SHORT, for the same causes: the walk stops at the first byte the console
+// cannot take. On an AMP UART, CR can precede an uncounted newline; retrying from the
+// reported count sends its LF without repeating CR. A page unmapped mid-write stops it too,
+// the chunks spanning no lock.
+// kos_print discards all of it, so a line that has to survive a burst goes through
+// kickos::emit (sys/emit.h), which retries the remainder.
 int32_t kos_kconsole_write(void const* buf, size_t len);
 void kos_print(char const* s);
 
@@ -39,11 +42,11 @@ void kos_sleep_ns(uint64_t ns);
 // kos_thread_params.caps rather than copying their values to another thread.
 // Semaphore creation grants WAIT, SIGNAL, and TRANSFER.
 // Creation errors are -KOS_ENOMEM for pool exhaustion, -KOS_EMFILE for a full
-// capability table, and -KOS_EOVERFLOW for the task's pool budget.
+// capability table, and -KOS_EAGAIN for the task's pool budget (free one to retry).
 // Also returns EINVAL for initial outside [0, KOS_SEM_COUNT_MAX] or a null/
 // misaligned out_cap, and EFAULT if out_cap is not writable (negative codes).
 int kos_sem_create(int initial, kos_cap_t* out_cap);
-// 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL).
+// 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EACCES (cap lacks WAIT/SIGNAL).
 int kos_sem_wait(kos_cap_t sem);
 // Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
 // not banked.
@@ -54,7 +57,7 @@ int kos_sem_post(kos_cap_t sem);
 // CAP_TRANSFER-only cap. A lower-priority holder contended by a higher-priority waiter is
 // boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
 // already hold returns -KOS_EDEADLK.
-int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
+int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
 // Acquire (ALL error-shaped codes are negative: see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous owner died holding it and
@@ -71,7 +74,7 @@ int kos_mutex_unlock(kos_cap_t mtx);
 // full rights; send requires SIGNAL and receive requires WAIT. Both block for
 // a peer and copy min(sent, capacity) bytes. Truncation is allowed.
 // Sends above KOS_EP_MSG_MAX fail with EINVAL; receive capacities are clamped.
-int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EOVERFLOW/-KOS_EINVAL/-KOS_EFAULT
+int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
 // The same endpoint, with its receiver in the kernel running on `node`: locality is settled
 // at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
 // carries SIGNAL alone, so a far endpoint is never received on or served locally.
@@ -86,9 +89,10 @@ int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 // did NOT happen and no bytes crossed).
 int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
 // Wait indefinitely for a receiver. Returns bytes transferred or -KOS_E*:
-// EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer, EBADF/EPERM
+// EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer, EBADF/EACCES
 // for an invalid capability or missing SIGNAL right, EPIPE for a dead endpoint
-// or loss of its last receiver. A zero-length message is valid.
+// or loss of its last receiver, EAGAIN for a far endpoint whose peer ring is full
+// (nothing sent; try again). A zero-length message is valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
 // Both parties receive EFAULT; any bytes already copied remain changed.
@@ -99,9 +103,10 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
 // in the server's recv info. -> reply bytes (>= 0), or a negative -KOS_E*: EINVAL (request >
-// KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EPERM (bad cap / no SIGNAL), EPIPE (dead
+// KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EACCES (bad cap / no SIGNAL), EPIPE (dead
 // endpoint or server died mid-call), EMFILE (the SERVER's cap table is full, so the reply cap
-// cannot be minted), ENOSYS (server took an info-less recv, so it hosts no calls).
+// cannot be minted), ENOTSUP (server took an info-less recv, so it hosts no calls), EAGAIN (a
+// far endpoint's peer ring is full: nothing sent, try again).
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // The same call, always through the buffer-carrying KOS_SYS_CALL trap: identical arguments,
 // identical result, identical in-place reply. It is the arm kos_call itself falls through to.
@@ -148,10 +153,12 @@ int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close
 // Start a thread. A thread handle spends the whole 32-bit word (abi.h, kos_thread_t) and
 // cannot share a return value with an errno: this returns 0 and writes the child's handle
 // to `*out_thread`, or a negative -KOS_E* (EINVAL/EFAULT malformed params or out-pointer,
-// EPERM privilege or authority, EBADF a grant naming no live cap, EBUSY an MMIO window a
-// live thread holds, ENOMEM thread pool / stack arena / domain pool, EOVERFLOW a delegated
-// object's refcount at its ceiling). `*out_thread` is ALWAYS written, KOS_THREAD_NONE on
-// every failure, and the out-pointer is validated BEFORE the child is created.
+// EPERM privilege or authority, EACCES a grant whose source cap lacks TRANSFER or a right it
+// asks to pass on, EBADF a grant naming no live cap, EBUSY an MMIO window a live thread holds,
+// ENOMEM thread pool / stack arena / domain pool, EAGAIN a destination task at one of its
+// pool budgets, EOVERFLOW a delegated object's refcount at its ceiling). `*out_thread` is
+// ALWAYS written, KOS_THREAD_NONE on every failure, and the out-pointer is validated BEFORE
+// the child is created.
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread);
 
 // End the CALLING thread with `code`, or the whole system when the caller is root: root's
@@ -203,7 +210,7 @@ int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_ma
 // Apply the same memory checks as spawn. Only the creator may add members.
 // Members cannot be privileged or supply separate mem_base; MMIO is per thread.
 // mem_flags must match any existing self-grant for the block.
-// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/EFAULT with KOS_TASK_NONE.
+// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/ENOTSUP/EFAULT with KOS_TASK_NONE.
 int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                     kos_task_t* out_task);
 
@@ -319,28 +326,30 @@ int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVA
 // Above one kernel core the claimer must be pinned to the core it runs on (-KOS_EPERM
 // otherwise), and the line is routed there; every thread that waits on, acks or discards it
 // must be pinned to that same core.
-// -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_ENOMEM (binding pool), -KOS_EMFILE (the
-// caller's cap table) or -KOS_EOVERFLOW (this TASK's ceiling of bindings, the pool still
-// having slots); the cap lands in *out_cap.
+// -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_EAGAIN (the line is still retiring from its
+// last holder, or this TASK is at its ceiling of bindings with the pool still having slots),
+// -KOS_ENOMEM (binding pool) or -KOS_EMFILE (the caller's cap table); the cap lands in
+// *out_cap.
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
 // Attach this line to a notification as one signaller among others. The ISR raises
 // `notify_cap`'s BADGE bit there, so badge the capability first if the object carries more
 // than one source. Needs KOS_CAP_WAIT on the line and KOS_CAP_SIGNAL on the notification.
-// ONE-WAY and once only: 0, -KOS_EALREADY (this line already signals something), -KOS_EBADF,
-// -KOS_EPERM (a missing right, or the notification already carries a line claimed on another
-// core) or -KOS_EOVERFLOW.
+// ONE-WAY and once only: 0, -KOS_EBUSY (this line already signals something), -KOS_EBADF,
+// -KOS_EACCES (a missing right), -KOS_EPERM (the notification already carries a line claimed
+// on another core), -KOS_EAGAIN (a holding task's notification budget) or -KOS_EOVERFLOW.
 int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap);
 // Rearm early after servicing the device, allowing IRQs during later work.
 // Optional: kos_notify_wait rearms on entry. Repeated acks have no effect.
 // -KOS_EINVAL for a line attached to no notification: arming it would open a source whose
 // raise lands nowhere. -KOS_EPERM also for a caller not pinned to the line's claim core.
-int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, -KOS_EBADF/-KOS_EPERM/-KOS_EINVAL
+// Unmask the line: 0, -KOS_EBADF/-KOS_EACCES/-KOS_EPERM/-KOS_EINVAL.
+int kos_irq_ack(kos_cap_t irq_cap);
 // Drop the controller's latched pending for the line. An EDGE binding's rearm deliberately
 // KEEPS that latch, and the controller is a reserved block no grant can reach, so this is
 // the only way to retire a pending the driver knows is stale. Neither masks nor unmasks: use
 // it between a wait return and the ack, where the ISR has already left the line masked.
 // Needs KOS_CAP_WAIT, and a caller pinned to the line's claim core.
-int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EACCES/-KOS_EPERM
 
 // --- Notifications -----------------------------------------------------------------------
 // A notification is a word of 32 badge bits with at most one bound waiter. An IRQ line
@@ -350,13 +359,13 @@ int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 // what confines its holder to one bit.
 //
 // Create one and install a full-rights capability naming it. 0, or -KOS_E* (ENOMEM pool,
-// EMFILE cap table, EOVERFLOW this TASK's ceiling of notifications, EINVAL/EFAULT out-ptr).
+// EMFILE cap table, EAGAIN this TASK's ceiling of notifications, EINVAL/EFAULT out-ptr).
 int kos_notify_create(kos_cap_t* out_cap);
 // MINT a second name for the same object, badged with `bit` (0..31) and carrying the
 // source's rights, so a signal through the new capability raises that bit and no other. The
 // badge is set AT THE COPY: an unbadged capability is the unconfined one and a badged copy
 // reaches its own bit only, which is why `source_cap` must itself be UNBADGED
-// (-KOS_EALREADY otherwise). Also -KOS_EBADF, -KOS_EINVAL (bit out of range), -KOS_EFAULT,
+// (-KOS_EACCES otherwise). Also -KOS_EBADF, -KOS_EINVAL (bit out of range), -KOS_EFAULT,
 // -KOS_EMFILE (the caller's cap table) or -KOS_EOVERFLOW.
 int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap);
 // Raise this capability's badge bit. Needs KOS_CAP_SIGNAL; touches no controller, so the
@@ -373,9 +382,9 @@ int kos_notify_unbind(kos_cap_t notify_cap);
 // Wait for any bit of `mask`, consuming and returning them in *out_bits. Every attached line
 // whose badge is in `mask` is rearmed on entry, so a driver that never acks still receives
 // every later interrupt. `timeout_us` is relative; KOS_TIMEOUT_NONE waits forever.
-// 0, or -KOS_E*: EBADF, EPERM (no KOS_CAP_WAIT, the caller is not the bound thread, or its
-// own core mask is not exactly the core the attached lines were claimed on), EINVAL (an empty
-// mask), EFAULT, ETIMEDOUT, ECANCELED.
+// 0, or -KOS_E*: EBADF, EACCES (no KOS_CAP_WAIT), EPERM (the caller is not the bound thread,
+// or its own core mask is not exactly the core the attached lines were claimed on), EINVAL
+// (an empty mask), EFAULT, ETIMEDOUT, ECANCELED.
 int kos_notify_wait(kos_cap_t notify_cap, uint32_t mask, uint32_t timeout_us,
                     uint32_t* out_bits);
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
@@ -448,7 +457,8 @@ void* kos_ram_alloc(size_t size);
 // MPU grants are limited by hardware region capacity. MMU reservations are
 // bounded at allocation.
 // Returns 0 or -KOS_E*:
-//   EPERM: missing authority, unowned/invalid range, or unsupported memory type.
+//   EPERM: missing authority, or an unowned/invalid range.
+//   ENOTSUP: a memory type this chip cannot honour.
 //   EINVAL: zero size, wraparound, unknown flags, or bad MPU region alignment.
 //   ENOMEM: descriptor budget exhausted.
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);

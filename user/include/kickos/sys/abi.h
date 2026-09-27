@@ -64,19 +64,22 @@ typedef uint32_t kos_task_t;
 enum kos_syscall_nr
 {
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, WHICH CAN BE SHORT
-                                //   where a page went away mid-stream, or -KOS_EFAULT
+                                //   where the console took part or a page went away
+                                //   mid-stream, or with no input byte completed -KOS_EAGAIN (the
+                                //   console can take nothing now; try again) or -KOS_EFAULT
                                 //   (bad buffer)
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
     KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
-                                //   EMFILE caller's cap table, EOVERFLOW task's sem budget,
+                                //   EMFILE caller's cap table, EAGAIN task's sem budget,
                                 //   EINVAL/EFAULT)
-    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM
-    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM, or -KOS_EOVERFLOW
+    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES
+    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES, or -KOS_EOVERFLOW
                                 //   with no waiter and the count at KOS_SEM_COUNT_MAX
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
     KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
-                                //   (EINVAL/EFAULT/EPERM/EBADF/EBUSY/ENOMEM/EOVERFLOW)
+                                //   (EINVAL/EFAULT/EPERM/EACCES/EBADF/EBUSY/ENOMEM/EAGAIN/
+                                //   EOVERFLOW)
     KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
                                 //   thread, or the SYSTEM when the caller is root, which
                                 //   needs KOS_AUTH_SYSTEM for it and panics without.
@@ -84,7 +87,7 @@ enum kos_syscall_nr
                                 //   for a line the kernel dispatches itself (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
     KOS_SYS_NOTIFY_CREATE = 11, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM notification
-                                //   pool, EMFILE caller's cap table, EOVERFLOW task's
+                                //   pool, EMFILE caller's cap table, EAGAIN task's
                                 //   notification budget, EINVAL/EFAULT out-ptr, EPERM)
     KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
@@ -92,15 +95,16 @@ enum kos_syscall_nr
                                 //   KOS_AUTH_IRQ, or the arch dispatches the line to a kernel
                                 //   vector of its own and no holder ever frees it), EINVAL
                                 //   (line/flags/out-ptr), EFAULT (out-ptr), EBUSY (line owned),
-                                //   ENOMEM (binding pool), EMFILE (cap table),
-                                //   EOVERFLOW (task's binding budget)
+                                //   EAGAIN (line still retiring from its last holder, or the
+                                //   task's binding budget), ENOMEM (binding pool), EMFILE (cap
+                                //   table)
     KOS_SYS_NOTIFY_WAIT = 15,   // (notify_cap, accept mask, timeout_us, uint32_t* out_bits)
                                 //   -> 0 with the consumed bits in *out_bits, or -KOS_E*:
-                                //   EBADF, EPERM (cap lacks WAIT, or the caller is not the
-                                //   bound thread), EINVAL (an empty mask, or a bad out-ptr),
+                                //   EBADF, EACCES (cap lacks WAIT), EPERM (the caller is not
+                                //   the bound thread), EINVAL (an empty mask, or a bad out-ptr),
                                 //   EFAULT (out-ptr), ETIMEDOUT, ECANCELED. KOS_TIMEOUT_NONE
                                 //   waits forever
-    KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
+    KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT)
                                 //   / -KOS_EINVAL (the line signals no notification)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
@@ -108,21 +112,22 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*)
     KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
-                                //   caller's cap table, EOVERFLOW task's mutex budget,
+                                //   caller's cap table, EAGAIN task's mutex budget,
                                 //   EINVAL/EFAULT)
     KOS_SYS_MUTEX_LOCK = 24,    // (cap)  -> 0 held; -KOS_EOWNERDEAD held-but-owner-died; -KOS_EBADF
                                 //   / -KOS_EDEADLK NOT held (see the wrapper decl for the caveat)
     KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
-                                  //   EMFILE caller's cap table, EOVERFLOW task's endpoint
+                                  //   EMFILE caller's cap table, EAGAIN task's endpoint
                                   //   budget, EINVAL/EFAULT)
     KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*: EINVAL (len
                                 //   above KOS_EP_MSG_MAX, rejected and never clamped), EFAULT
-                                //   (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right),
+                                //   (bad buffer), EBADF/EACCES (bad cap / no SIGNAL right),
                                 //   EPIPE (dead endpoint, or the last receiver left while
-                                //   parked). Parks indefinitely otherwise. EFAULT also answers
-                                //   a rendezvous copy refused at either end (sys.h)
-    KOS_SYS_NOTIFY_BIND = 28,   // (notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (cap lacks
+                                //   parked), EAGAIN (a far endpoint's peer ring is full;
+                                //   nothing sent). Parks indefinitely otherwise. EFAULT also
+                                //   answers a rendezvous copy refused at either end (sys.h)
+    KOS_SYS_NOTIFY_BIND = 28,   // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
                                 //   WAIT), EBUSY (another thread is bound, or the caller is
                                 //   already bound to a different object), EOVERFLOW (the
                                 //   object's reference count is at its ceiling)
@@ -135,12 +140,13 @@ enum kos_syscall_nr
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (no KOS_AUTH_PINMUX), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
-    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOSYS,
-                              //   EMFILE the SERVER's cap table has no slot for the reply cap)
+    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EACCES/EPIPE/ENOTSUP,
+                              //   EMFILE the SERVER's cap table has no slot for the reply cap,
+                              //   EAGAIN a far endpoint's peer ring is full and nothing was sent)
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
     KOS_SYS_MEM_SELF_GRANT = 37, // (base, size, kos_mem_flags) -> 0, or -KOS_E*
-                              //   (EPERM/EINVAL/ENOMEM). EPERM also covers a memory type
+                              //   (EPERM/EINVAL/ENOMEM/ENOTSUP). ENOTSUP is a memory type
                               //   this chip cannot honour; EINVAL an undefined flag bit.
     KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
                               //   (self-test only: the dispatch arm is compiled out unless
@@ -161,9 +167,9 @@ enum kos_syscall_nr
                                //   possession of the block at `base`, not on an authority bit.
     KOS_SYS_NOTIFY = 43,       // (notify_cap) -> 0, -KOS_EALREADY (this capability's badge bit
                                //    was already set and the raise had no effect), or
-                               //    -KOS_EBADF/-KOS_EPERM (missing SIGNAL). Raises the bit
+                               //    -KOS_EBADF/-KOS_EACCES (missing SIGNAL). Raises the bit
                                //    without touching any controller.
-    KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
+    KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
     KOS_SYS_THREAD_KILL = 45,  // (kos_thread_t) -> 0, -KOS_EBADF (bad/stale/exited handle),
@@ -173,8 +179,8 @@ enum kos_syscall_nr
                                //   exits itself.
     KOS_SYS_CALL_TIMED = 46,   // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
                                //   timeout_us) -> as KOS_SYS_CALL, plus -KOS_ETIMEDOUT
-    KOS_SYS_NOTIFY_UNBIND = 47, // (notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (cap lacks
-                               //   WAIT, or the caller is not the bound thread). Unconsumed
+    KOS_SYS_NOTIFY_UNBIND = 47, // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
+                               //   WAIT), EPERM (the caller is not the bound thread). Unconsumed
                                //   bits are LEFT pending for the next server.
     KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
                                //   INCLUDING a target that had already exited),
@@ -212,11 +218,12 @@ enum kos_syscall_nr
                                //   -KOS_EINVAL (bad op, bad line, no span open, or an
                                //   argument outside what the op admits), -KOS_ENOSYS (an op
                                //   this image's core count leaves nothing to measure),
-                               //   -KOS_EBUSY (the end-to-end waiter is not parked yet, or
-                               //   the span that closed was not a wake), -KOS_EBADF (the arm's
-                               //   handle names no live IRQ cap) or -KOS_EPERM (an op that
-                               //   reaches the controller or the doorbell issued without
-                               //   KOS_AUTH_IRQ, an arm whose cap carries no KOS_CAP_WAIT, or
+                               //   -KOS_EAGAIN (the end-to-end waiter is not parked yet),
+                               //   -KOS_EBUSY (the span that closed was not a wake), -KOS_EBADF
+                               //   (the arm's handle names no live IRQ cap), -KOS_EACCES (an
+                               //   arm whose cap carries no KOS_CAP_WAIT) or -KOS_EPERM (an op
+                               //   that reaches the controller or the doorbell issued without
+                               //   KOS_AUTH_IRQ, or
                                //   a thread that is not the armed waiter closing or taring a
                                //   span). The counted ops refuse a count above
                                //   KOS_BENCH_SAMPLES_MAX / KOS_BENCH_ROUNDS_MAX. The
@@ -289,21 +296,22 @@ enum kos_syscall_nr
     KOS_SYS_REPLY_RECV = 68,   // (reply_cap, buf, kos_call_lens_pack(reply_len, recv_cap),
                                //   kos_reply_recv_opts* in-out) -> received bytes, or
                                //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
-                               //   -KOS_EFAULT, -KOS_EPERM, -KOS_EBADF, -KOS_ESRCH,
-                               //   -KOS_EMFILE, -KOS_ENOSYS, -KOS_EPIPE, -KOS_ETIMEDOUT,
-                               //   -KOS_ECANCELED
+                               //   -KOS_EFAULT, -KOS_EPERM, -KOS_EACCES, -KOS_EBADF,
+                               //   -KOS_ESRCH, -KOS_EMFILE, -KOS_ENOTSUP, -KOS_EPIPE,
+                               //   -KOS_ETIMEDOUT, -KOS_ECANCELED
     KOS_SYS_NOTIFY_BADGE = 69, // (source notify_cap, bit, kos_cap_t* out) -> 0, or -KOS_E*:
                                //   EBADF, EINVAL (bit at or above 32, or a bad out-ptr),
-                               //   EFAULT (out-ptr), EALREADY (the source is already badged),
+                               //   EFAULT (out-ptr), EACCES (a badged source cannot mint),
                                //   EMFILE (caller's cap table), EOVERFLOW (the object's
                                //   reference count). MINTS a second name for the same object,
                                //   badged with `bit` and carrying the source's rights.
-    KOS_SYS_IRQ_BIND_NOTIFY = 70, // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EPERM (the
-                               //   line's cap lacks WAIT, the notification's lacks SIGNAL, or
-                               //   the notification carries a line claimed on another
-                               //   core), EALREADY (this line already signals something),
-                               //   EOVERFLOW (the object's reference count is at its
-                               //   ceiling). ONE-WAY: nothing detaches a live binding.
+    KOS_SYS_IRQ_BIND_NOTIFY = 70, // (irq_cap, notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (the
+                               //   line's cap lacks WAIT, or the notification's lacks SIGNAL),
+                               //   EPERM (the notification carries a line claimed on another
+                               //   core), EBUSY (this line already signals something), EAGAIN
+                               //   (a holding task's notification budget), EOVERFLOW (the
+                               //   object's reference count is at its ceiling). ONE-WAY:
+                               //   nothing detaches a live binding.
     KOS_SYS_THREAD_SELF = 71   // () -> the caller's own kos_thread_t, zero-extended to 64 bits.
                                //   Carried above one kernel core only; elsewhere the call is
                                //   unknown and refused -KOS_EINVAL.
@@ -354,7 +362,7 @@ enum kos_mem_flags
 {
     // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip whose
     // region descriptors carry no memory type and whose data cache sits over the arena REFUSES it
-    // with -KOS_EPERM; a chip with no cache in that path accepts it; a chip that TRANSLATES
+    // with -KOS_ENOTSUP; a chip with no cache in that path accepts it; a chip that TRANSLATES
     // answers from its page tables.
     KOS_MEM_NOCACHE = 1u << 0
 };
@@ -396,10 +404,10 @@ enum kos_bench_op
     // The end-to-end span, raise to the woken userspace thread's first device read. ARM,
     // TARE and CLOSE are the WAITER's; the kernel refuses a close from any other thread.
     // RAISE injects on the line the ARM named and takes no authority of its own.
-    KOS_BENCH_OP_E2E_ARM = 10,    // (irq_cap)   -> 0, -KOS_EBADF (no such cap) or -KOS_EPERM
+    KOS_BENCH_OP_E2E_ARM = 10,    // (irq_cap)   -> 0, -KOS_EBADF (no such cap) or -KOS_EACCES
                                   //   (the cap carries no KOS_CAP_WAIT). The span's line is
                                   //   the one that cap names.
-    KOS_BENCH_OP_E2E_RAISE = 11,  // ()          -> 0, or -KOS_EBUSY until the waiter has
+    KOS_BENCH_OP_E2E_RAISE = 11,  // ()          -> 0, or -KOS_EAGAIN until the waiter has
                                   //   published its own park, which the caller retries.
     KOS_BENCH_OP_E2E_TARE = 12,   // ()          -> 0. Opens a span with no raise, so the
                                   //   close prices the instrument's own tail.
@@ -426,7 +434,7 @@ enum kos_bench_op
 
 // Receive metadata: 8 bytes, aligned to 4. Plain sends have KOS_CAP_NONE;
 // calls supply a one-shot reply cap that the receiver must reply to or close.
-// Receiving without metadata rejects calls with -KOS_ENOSYS.
+// Receiving without metadata rejects calls with -KOS_ENOTSUP.
 struct kos_recv_info
 {
     uint32_t badge;      // sender badge (KOS_BADGE_NONE == 0 in this stage)
@@ -441,7 +449,7 @@ _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byt
 #endif
 
 // Receive flags; unknown bits return -KOS_EINVAL.
-// KOS_RECV_NO_INFO leaves info untouched and rejects calls with -KOS_ENOSYS.
+// KOS_RECV_NO_INFO leaves info untouched and rejects calls with -KOS_ENOTSUP.
 #define KOS_RECV_NO_INFO 0x1u
 
 // Arguments for KOS_SYS_REPLY_RECV. ep selects the receive endpoint.

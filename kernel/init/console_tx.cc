@@ -238,7 +238,7 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
     ConsoleTxRing& r = tx();
     if (n == 0)
     {
-        return 1;
+        return 0;
     }
 
     bool unbuffered = false;
@@ -308,10 +308,10 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
     if (unbuffered)
     {
         console_write_line_sync(buf, n);
-        return 1;
+        return static_cast<int>(n);
     }
     drain_in_producer();
-    return 1;
+    return static_cast<int>(n);
 }
 
 static void drain_in_producer(void)

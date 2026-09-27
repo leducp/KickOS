@@ -51,7 +51,7 @@ namespace consoleline
 
     // One line through a chip's console route: the ring takes it whole, or the refusal goes
     // straight at the device under one mask, with '\n' lowered as `crlf` asks. Returns what
-    // console_tx_insert_line returned.
+    // console_tx_insert_line returned: n, or 0 for a refused line.
     int write_line(char const* buf, size_t n, int crlf);
 }
 

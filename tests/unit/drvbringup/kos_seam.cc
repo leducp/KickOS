@@ -322,7 +322,7 @@ extern "C"
         if (g_seam.irq_bind_notify_fails)
         {
             note("bind!");
-            return -KOS_EALREADY;
+            return -KOS_EBUSY;
         }
         note("bind");
         return 0;

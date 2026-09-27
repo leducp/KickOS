@@ -885,6 +885,8 @@ namespace
         int const rc = kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again);
         if (g_stale.rebind_rc.load() != 0)
         {
+            EXPECT_EQ(g_stale.rebind_rc.load(), -KOS_EAGAIN)
+                << "a line refused only for its grace period must read as try-again, not held";
             EXPECT_EQ(rc, 0)
                 << "the line was refused after the dispatch holding its retired pair had left, "
                    "so the refusal is a permanent loss of the line rather than a grace period";

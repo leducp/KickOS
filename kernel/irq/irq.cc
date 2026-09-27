@@ -565,7 +565,7 @@ namespace kickos
         // creators: a task at its ceiling is refused without spending either.
         if (not task_object_admit(CapType::CAP_IRQ, c->task))
         {
-            return -KOS_EOVERFLOW; // this task holds its ceiling of bindings already
+            return -KOS_EAGAIN; // this task holds its ceiling of bindings already
         }
 #if KICKOS_KERNEL_CORES > 1
         // Before the allocation below: a retirement may still owe the pool the slot this claim
@@ -574,7 +574,12 @@ namespace kickos
         // One driver per line: free iff it still names the null-object default. This is also
         // what keeps the console line unclaimable until the kernel's own console_tx_deinit
         // has detached it.
-        if (k.irq_table[line].pub.load() != IRQ_PUB_NONE)
+        uint32_t const pub_now = k.irq_table[line].pub.load();
+        if ((pub_now & IRQ_PUB_RETIRING) != 0)
+        {
+            return -KOS_EAGAIN; // released, but a dispatch on another core may still hold it
+        }
+        if (pub_now != IRQ_PUB_NONE)
         {
             return -KOS_EBUSY;
         }
@@ -688,7 +693,7 @@ namespace kickos
         // The attachment lasts until the binding is released, keeping the ISR pointer valid.
         if (b->notify != nullptr)
         {
-            return -KOS_EALREADY;
+            return -KOS_EBUSY;
         }
         Notification* const n = static_cast<Notification*>(
             cap_resolve_e(c, notify_cap, CapType::CAP_NOTIFY, CAP_SIGNAL, &err));
@@ -722,7 +727,7 @@ namespace kickos
         // Check all tasks holding this IRQ before adding the notification to their holds.
         if (not task_object_admit_binding_notify(idx, obj))
         {
-            return -KOS_EOVERFLOW;
+            return -KOS_EAGAIN;
         }
         // The binding retains the notification independently of its capabilities.
         if (not obj_ref_inc(CapType::CAP_NOTIFY, obj, 0))

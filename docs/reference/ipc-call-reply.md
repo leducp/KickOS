@@ -101,15 +101,16 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EINVAL` | `send_len` exceeds `KOS_EP_MSG_MAX` |
 | `-KOS_EFAULT` | `buf` not readable (`send_len`) or not writable (`recv_cap`) by the caller, or the rendezvous copy was refused (see **A copy the boundary check cannot promise** below) |
 | `-KOS_EBADF` | bad endpoint cap |
-| `-KOS_EPERM` | missing `CAP_SIGNAL`, or no caller context |
+| `-KOS_EACCES` | missing `CAP_SIGNAL` |
+| `-KOS_EPERM` | no caller context |
 | `-KOS_EPIPE` | dead endpoint (`recv_holders == 0`), or the server died mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
-| `-KOS_ENOSYS` | the receiver took an info-less recv and cannot host a call |
+| `-KOS_ENOTSUP` | the receiver took an info-less recv and cannot host a call |
 
 Both buffer bound-checks run up front, in caller context, once. Two paths:
 
 - **Fastpath** (a receiver is already parked in recv): under one `IrqLock`, PROBE before
-  popping -- reject an info-less receiver (`ipc.badge_out == 0` -> `ENOSYS`) or a full
+  popping -- reject an info-less receiver (`ipc.badge_out == 0` -> `ENOTSUP`) or a full
   receiver table (`EMFILE`) with NO side effects, THEN pop, copy the request into the
   receiver's buffer, mint the reply cap into the receiver's table, deliver its
   `kos_recv_info`, repurpose the caller's `ipc` to the reply target, park the caller
@@ -248,7 +249,7 @@ Receive-half returns, the whole set a receive can answer:
 | `-KOS_ENOTIFY` | no message; an accepted notification ended the wait and `opts->notify` carries its bits. NOT spelled EAGAIN: a code reading as "try again" invites a loop that never services the device |
 | `-KOS_EINVAL` | `opts` null or misaligned, or an undefined `flags` bit. NOT a length: both halves of `lens` clamp |
 | `-KOS_EFAULT` | `opts` or `buf` not accessible, or a copy was refused |
-| `-KOS_EBADF` / `-KOS_EPERM` | bad endpoint cap, missing `CAP_WAIT`, or no caller context |
+| `-KOS_EBADF` / `-KOS_EACCES` / `-KOS_EPERM` | bad endpoint cap, missing `CAP_WAIT`, or no caller context |
 | `-KOS_ETIMEDOUT` | `opts->timeout_us` passed |
 | `-KOS_ECANCELED` | the caller was cancelled before or during the park |
 
@@ -420,14 +421,14 @@ out-struct they carried survives, nested in `kos_reply_recv_opts`:
   table; the receiver must eventually `kos_reply` it or `kos_handle_close` it. Test it
   against `KOS_CAP_NONE`: a handle fills all 32 bits, so no sign test works.
 - **Info-less receive** (`KOS_RECV_NO_INFO`): the receiver is NOT minted a reply cap and
-  REJECTS calls, so the caller's `kos_call` fails `-KOS_ENOSYS`. Plain sends are unaffected.
+  REJECTS calls, so the caller's `kos_call` fails `-KOS_ENOTSUP`. Plain sends are unaffected.
   It is a FLAG and not a null out-pointer because an opts struct always has an address, so
   without one the info-less posture and every other thing that struct carries would be
   mutually exclusive.
 
 This is a deliberate DoS closure: a service that must not have its handle table filled by
 untrusted callers (the console, which every task holds a `SIGNAL` cap on) receives info-less,
-so hostile `kos_call`s bounce with `ENOSYS` instead of burning cap slots and pinning the
+so hostile `kos_call`s bounce with `ENOTSUP` instead of burning cap slots and pinning the
 server's priority.
 
 **`kos_recv_info` never grew an input field, and the nesting is what keeps it that way.** A
@@ -455,7 +456,7 @@ receiver is WOKEN with `-KOS_EFAULT` rather than a byte count, because it is alr
 `recv_waiters` and nothing else would ever wake it. The same holds in the other direction
 (a receiver's scan over parked senders), for the fastpath call, and for `kos_reply`, whose
 cap is consumed regardless. `endpoint_recv_locked`'s scan STOPS at the refusal instead of
-continuing to the next sender, unlike the `ENOSYS`/`EMFILE` bounces: a bool does not say
+continuing to the next sender, unlike the `ENOTSUP`/`EMFILE` bounces: a bool does not say
 which end went away, so a scan that continued could pop and fault every queued sender on the
 receiver's own lost buffer.
 
@@ -473,7 +474,7 @@ ambiguity than there: the out-pointer is the RECEIVER's own, so every sender que
 would meet the same fault.
 
 An info-less receive has nothing to retract. `write_recv_info` answers true for `out == 0` and
-moves no byte, and `endpoint_recv_locked` bounces a `CALL_SEND_WAIT` sender `-KOS_ENOSYS` ahead of
+moves no byte, and `endpoint_recv_locked` bounces a `CALL_SEND_WAIT` sender `-KOS_ENOTSUP` ahead of
 any
 mint, so the retraction above is reached only where a real out-pointer was named.
 
@@ -664,10 +665,10 @@ calls on this arm, which carries the field whole, and after exactly 256 on the l
 **What DIVERGES from a local call is back-pressure, and it acts in BOTH directions.** A local
 caller parks on `send_waiters` until a receiver takes its request; a far caller cannot, the ring
 being finite and the far scheduler not this kernel's. So a full peer ring answers
-`-KOS_EBUSY` immediately, with nothing mutated. Per `../design-multicore.md` N6e that
+`-KOS_EAGAIN` immediately, with nothing mutated. Per `../design-multicore.md` N6e that
 refusal IS the contract: named, counted, spending no time, with no queue and no retry
-behind it, because how stale a dropped record may be is the workload's property and not the
-kernel's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
+inside the kernel, because how stale a dropped record may be is the workload's property and
+not the kernel's; whether to try again is the caller's. The rest of the window's refusals map to `-KOS_EPIPE` (a far index this node
 cannot believe) and `-KOS_EINVAL`.
 
 **Back-pressure also exists on the RECEIVING side, and it is not an errno and not a loss.**  A
@@ -830,7 +831,7 @@ until the reply is published, which is what bounds outstanding inbound calls fro
 `KOS_AMP_RING_SLOTS` (`../design-multicore.md` N6f). **The reply slot is reserved UP FRONT**: the
 take is admitted only where the reply ring toward that sender has room for the answer, and the
 answer consumes that reserve whether the receiver SERVED the call or the take was refused past it
--- an empty reply is a reply. So `-KOS_EBUSY` at the caller and `RESERVE` at the taker are the two
+-- an empty reply is a reply. So `-KOS_EAGAIN` at the caller and `RESERVE` at the taker are the two
 ends of ONE bound and not two unrelated refusals: the caller meets a full call ring toward the
 serving node, and the taker declines because the reply ring back toward that caller is full. Then,
 in order:
@@ -909,7 +910,7 @@ The cap is consumed exactly once per unpark:
 | endpoint destroyed while a reply is outstanding | nothing -- the cap names the CALLER, not the endpoint | server can still reply; woken normally |
 | mint fails, fastpath | fail the call `-KOS_EMFILE` BEFORE any side effect | error return, no state change |
 | mint fails, slowpath (pop at recv) | wake the popped caller `-KOS_EMFILE`, recv retries | woken, `-KOS_EMFILE` |
-| info-less receiver hit at recv (slowpath) | wake the popped caller `-KOS_ENOSYS`, recv keeps scanning | woken, `-KOS_ENOSYS` |
+| info-less receiver hit at recv (slowpath) | wake the popped caller `-KOS_ENOTSUP`, recv keeps scanning | woken, `-KOS_ENOTSUP` |
 | server closes / loses its `WAIT` cap while `ep->server == it` | close arm clears `ep->server` + recomputes | any lingering D2 donation dropped |
 
 The `CAP_REPLY` close arm runs the SAME full stale-resolve as `kos_reply` before waking,

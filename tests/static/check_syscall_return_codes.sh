@@ -47,7 +47,7 @@
 #
 #   exhausted  a syscall that charges the calling task's object budget must document all
 #              THREE exhaustion answers: -KOS_ENOMEM (the pool), -KOS_EMFILE (the caller's
-#              capability table), -KOS_EOVERFLOW (the budget). Their fixes are opposite, so a
+#              capability table), -KOS_EAGAIN (the budget). Their fixes are opposite, so a
 #              collapsed pair sends a reader at the wrong one. The set is the budget gate's
 #              own call sites and never a list kept here.
 #
@@ -362,7 +362,7 @@ int helper(uint32_t* out)
 {
     if (not task_object_admit(CapType::CAP_SEM, c->task))
     {
-        return -KOS_EOVERFLOW;
+        return -KOS_EAGAIN;
     }
     return -KOS_ENOMEM;
 }
@@ -378,11 +378,11 @@ uint64_t syscall_body(uintptr_t nr)
 }
 EOF
 st_abi "$TMP/st/abi.one" <<'EOF'
-    KOS_SYS_ALPHA = 1, // () -> 0, or -KOS_ENOMEM (the pool), -KOS_EOVERFLOW (the budget)
+    KOS_SYS_ALPHA = 1, // () -> 0, or -KOS_ENOMEM (the pool), -KOS_EAGAIN (the budget)
 EOF
 st_abi "$TMP/st/abi.three" <<'EOF'
     KOS_SYS_ALPHA = 1, // () -> 0, or -KOS_ENOMEM (the pool), -KOS_EMFILE (the table),
-                       //   -KOS_EOVERFLOW (the budget)
+                       //   -KOS_EAGAIN (the budget)
 EOF
 st_expect "collapsed-exhaustion" "$TMP/st/abi.one" "$TMP/st/rec.admit" 1
 st_expect "whole-exhaustion" "$TMP/st/abi.three" "$TMP/st/rec.admit" 0

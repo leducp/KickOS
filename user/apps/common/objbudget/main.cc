@@ -101,7 +101,7 @@ int main(int, char**)
     // to prevent: a slot must be left over for somebody else.
     int const refused = fill_endpoints();
     report_rc("endpoint_create at the ceiling", refused);
-    check(refused == -KOS_EOVERFLOW,
+    check(refused == -KOS_EAGAIN,
           "a task at its endpoint ceiling is refused with the budget's own code, not ENOMEM");
     check(held_n >= 1, "and the ceiling admitted at least one endpoint first");
 

@@ -35,7 +35,8 @@ namespace kickos::rp2xxx
     // One UART and two kernels: the chip owning a partition posture serialises the polled
     // writer against its peer. Defined by that chip, not here, the claim being its own
     // hardware's (chip_rp2350.cc).
-    void console_claim(void);
+    bool console_claim(void);
+    bool console_claim_open(void);
     void console_drop(bool ended_line);
 #endif
 }

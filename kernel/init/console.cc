@@ -251,7 +251,7 @@ extern "C" void console_write_line_sync(char const* buf, size_t n)
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    static int console_emit(char const* buf, size_t n, bool force_sync)
+    static int console_emit(char const* buf, size_t n, bool force_sync, bool* cr_pending)
     {
         // The count is taken under the same masked read that selects the transport, so
         // publish either drains this writer or the writer never reaches the device. The
@@ -266,13 +266,24 @@ namespace kickos
             //
             // The chip seam is the only door into the ring: every arch_console_write inserts
             // the line, and a line the ring refuses does not go out.
-            int took = 1;
+            int took = static_cast<int>(n);
             if (state == ConsoleState::KERNEL_OWNED and not g_console_panicking)
             {
+#if KICKOS_AMP_OWN_IMAGE
+                if (cr_pending != nullptr)
+                {
+                    took = arch_console_write_retry(buf, n, cr_pending);
+                }
+                else
+#endif
                 took = arch_console_write(buf, n);
             }
             else
             {
+                if (cr_pending != nullptr)
+                {
+                    *cr_pending = false;
+                }
                 console_write_line_sync(buf, n);
             }
             console_chip_writer_leave();
@@ -285,11 +296,15 @@ namespace kickos
         {
             console_write_line_sync(buf, n);
         }
+        if (cr_pending != nullptr)
+        {
+            *cr_pending = false;
+        }
         // USER_OWNED: the driver owns the UART and a kernel chip write is dropped BY DESIGN,
         // not by pressure. Reported as taken, because the distinction the caller acts on is
         // "the ring is full, try again" and no retry can win this one: the route is simply
         // not the chip any more. kvprintf_route reaches the published console separately.
-        return 1;
+        return static_cast<int>(n);
     }
 #endif
 
@@ -297,9 +312,11 @@ namespace kickos
     // context, so it takes the crit section for the few microseconds it needs. The chip
     // transport masks the ring COPY alone; only its refusal path masks a whole transmission,
     // which at 115200 is ~22 ms for a 256 B line.
-    static int kconsole_write_impl(char const* buf, size_t n, bool force_sync)
+    static int kconsole_write_impl(char const* buf, size_t n, bool force_sync,
+                                   bool* cr_pending = nullptr)
     {
         (void)force_sync;
+        (void)cr_pending;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
         // KICKOS_CONSOLE=none: the writer is a sink. Panic, fault and boot still run their
         // full paths and terminate the same way.
@@ -315,18 +332,33 @@ namespace kickos
 #if KICKOS_CONSOLE_CHIP
         // RAW: the '\n' lowering happens at the device end of the path, where one line stays
         // one emit. RTT above stays raw either way, its viewer cooking.
-        return console_emit(buf, n, force_sync);
+        return console_emit(buf, n, force_sync, cr_pending);
 #else
-        return 1;
+        return static_cast<int>(n);
 #endif
     }
 
-    // Nonzero when the ring TOOK the line; a refused line does not go out at all. kputs and
-    // kvprintf_route below drop that answer on purpose. Do not grow a retry here:
+    // The bytes of buf that went out or were queued. A ring takes a line whole or refuses it,
+    // and a refused line does not go out at all; an AMP chip sharing its UART stops at the
+    // first byte its claim no longer covers. kputs and kvprintf_route below drop that answer
+    // on purpose. Do not grow a retry here:
     // kprintf_paced is the one caller that can afford to wait, and it already does.
     int kconsole_write(char const* buf, size_t n)
     {
         return kconsole_write_impl(buf, n, false);
+    }
+
+    int kconsole_write_user(char const* buf, size_t n)
+    {
+#if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
+        Thread* const t = sched::current();
+        bool pending = t->console_cr_pending != 0;
+        int const took = kconsole_write_impl(buf, n, false, &pending);
+        t->console_cr_pending = pending;
+        return took;
+#else
+        return kconsole_write(buf, n);
+#endif
     }
 
     void kputs(char const* s)
@@ -384,9 +416,10 @@ namespace kickos
         va_end(ap);
         size_t const n = kstrlen(buf);
         uint32_t queued = console_tx_used();
+        bool cr_pending = false;
         for (uint32_t attempt = 0; attempt < KICKOS_CONSOLE_TX_SIZE; attempt++)
         {
-            if (kconsole_write(buf, n) != 0)
+            if (kconsole_write_impl(buf, n, false, &cr_pending) != 0)
             {
                 return;
             }

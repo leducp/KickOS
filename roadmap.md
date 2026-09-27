@@ -1312,7 +1312,7 @@ file owns only the number.
 | M9.3 | fused into M9.2: under one lock the push needs no ring |
 | M9.4 | the per-pair rings landed under the lock, inside stage 1's own regression budget; the local scheduler leaving the lock was REFUSED by the stop condition (R0), at two cores on silicon |
 | M9.5 | DECIDED: retain the single BKL after the x86 owner-local mixed-workload gate and whole-transaction lock audit; keep x86 CLH arbitration of that same BKL, with ticket backends elsewhere (see `docs/design-m9.5-bkl-options.md`) |
-| M9.6 | the console contract across cores: who may speak, in the SMP and the AMP shape |
+| M9.6 | DECIDED: one shared-kernel ring orders normal SMP lines; own-image AMP claims a shared UART across a line with a bounded lease, and drops a line on claim failure |
 | M9.7 | the write-up, the contract changes, and the M9 exit measurement |
 | M9.8 | the ESP32-C6 as an AMP pair: the LP core as a second node beside the HP core, the first AMP pair the bench runs unattended |
 

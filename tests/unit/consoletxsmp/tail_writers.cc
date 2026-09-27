@@ -95,7 +95,7 @@ TEST_F(ConsoleTxTailWriters, RemoteDrainDoesNotResendWhatTheInsertPrimed)
     consoletxsmp::hold_at_push(0u, release_the_drain);
     std::thread peer(remote_drain);
 
-    EXPECT_EQ(console_tx_insert_line(kLine, kLineLen, 0), 1);
+    EXPECT_EQ(console_tx_insert_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     peer.join();
     console_tx_flush_sync(); // whatever the ring still holds, so nothing is merely stranded
 
@@ -112,7 +112,7 @@ TEST_F(ConsoleTxTailWriters, RemoteDrainTouchesTheDeviceOnlyUnderTheLock)
     consoletxsmp::hold_at_push(0u, release_the_drain);
     std::thread peer(remote_drain);
 
-    EXPECT_EQ(console_tx_insert_line(kLine, kLineLen, 0), 1);
+    EXPECT_EQ(console_tx_insert_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     peer.join();
 
     expect_the_rendezvous_happened();
@@ -125,7 +125,7 @@ TEST_F(ConsoleTxTailWriters, RemoteDrainTouchesTheDeviceOnlyUnderTheLock)
 // entered on another core.
 TEST_F(ConsoleTxTailWriters, RemoteDrainDoesNotResendWhatASyncFlushIsDraining)
 {
-    ASSERT_EQ(console_tx_insert_line(kLine, kLineLen, 0), 1);
+    ASSERT_EQ(console_tx_insert_line(kLine, kLineLen, 0), static_cast<int>(kLineLen));
     ASSERT_EQ(consoletxsmp::wire().size(), 1u); // the prime alone; the rest sits in the ring
 
     consoletxsmp::hold_at_push(0u, release_the_drain);

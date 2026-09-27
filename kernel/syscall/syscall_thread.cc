@@ -368,12 +368,12 @@ namespace kickos
                 }
                 if ((se->rights & CAP_TRANSFER) != CAP_TRANSFER)
                 {
-                    return -KOS_EPERM;
+                    return -KOS_EACCES;
                 }
                 uint8_t const mask = g.rights_mask;
                 if ((mask & se->rights) != mask)
                 {
-                    return -KOS_EINVAL;
+                    return -KOS_EACCES;
                 }
                 deleg_obj[ci] = se->obj;
                 deleg_kind[ci] =
@@ -624,7 +624,7 @@ namespace kickos
         {
             cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
             spawn_unwind(k, attr, tk, stack, stack_size, i);
-            return -KOS_EOVERFLOW; // the destination task holds its ceiling of one of the pools
+            return -KOS_EAGAIN; // the destination task holds its ceiling of one of the pools
         }
 
         // obj_ref_inc must stay the last fallible step: after thread_create the unwind would
@@ -907,7 +907,7 @@ namespace kickos
                                     mem_attr, task_domain(c->task), &derr);
         if (t == nullptr)
         {
-            return -derr; // EPERM inadmissible grant, ENOMEM domain or task pool full
+            return -derr; // EPERM inadmissible grant, ENOTSUP memory type, ENOMEM pool/space
         }
         task_sched_inherit(t, c->task);
         *out_task = task_handle(t);

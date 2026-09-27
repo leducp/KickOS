@@ -83,7 +83,7 @@ int console_tx_armed(void);
 // chip-writer bracket, and is dropped only once a driver has the device.
 void console_tx_write(char const* buf, size_t n);
 
-// One line, indivisibly, or nothing (nonzero on success). NEVER WAITS, so it is safe from ISR
+// One line, indivisibly, or nothing: returns n or 0. NEVER WAITS, so it is safe from ISR
 // and fault context. crlf nonzero expands '\n' to CR+LF during the copy.
 //
 // A LINE THAT DOES NOT FIT IS REFUSED WHOLE AND DOES NOT GO OUT. The caller owes it NO

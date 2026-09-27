@@ -64,7 +64,7 @@ namespace kickos
         // without churning a slot.
         if (not task_object_admit(CapType::CAP_NOTIFY, c->task))
         {
-            return -KOS_EOVERFLOW;
+            return -KOS_EAGAIN;
         }
         int const i = k.notifies.alloc();
         Notification* const n = k.notifies.at(i); // total over alloc()'s -1: one refusal below
@@ -109,7 +109,7 @@ namespace kickos
         // every bit of the object and the confinement a badge exists for is vacuous.
         if (cap_badge(*e) != KCAP_BADGE_NONE)
         {
-            return -KOS_EALREADY;
+            return -KOS_EACCES;
         }
         int const obj = e->obj;
         uint8_t const rights = e->rights;

@@ -46,7 +46,7 @@ namespace
         while (true)
         {
             // Info-less recv: this sink counts plain sends only (a client kos_call
-            // bounces -KOS_ENOSYS rather than minting a reply cap here).
+            // bounces -KOS_ENOTSUP rather than minting a reply cap here).
             struct kos_reply_recv_opts opts;
             kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);

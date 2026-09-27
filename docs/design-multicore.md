@@ -1217,28 +1217,14 @@ it carrying initialised bytes into memory a peer may already be using; the loade
 PAIR of nodes disjoint; and every node's base distinct, two nodes linked at one base being the
 collapse N6c names and one that every arm on the node owning that base passes.
 
-**A GATE MAY NOT READ THE QUIETER NODE'S CONSOLE LINE.** The nodes of a partition share one
-console, and no claim a chip offers across two kernels may be unbounded, so the stream
-interleaves at byte granularity BY RULING and any single line from the quieter node can arrive
-cut in half. A part that claims nothing and a part whose claim a starving peer may take from a
-holder past its deadline differ in the RATE and not in the ruling. A gate that greps for such a
-line is measuring the console rather than the claim, and it fails on a draw: measured here at
-about one run in ten, on a gate whose only fault was reading the peer's own banner. **Witness a
-peer through a counter the OTHER node reads** -- the window's per-node rows exist for exactly
-that -- and never through what the peer printed.
-
-**AND READING THIS NODE'S OWN LINE IS NOT SUFFICIENT EITHER: A LINE IS SAFE BY WHEN IT PRINTS AND
-NOT BY WHO PRINTED IT.** The reading node writes the same console, so a line IT prints while the
-peers are still booting is cut by their banners exactly as a peer's line would be. What separates an
-exposed line from a safe one is whether any ordering exists between the writers. A line printed
-after a peer's reply has one, that peer having queued its own line before it replied, and measured
-zero tears in 300 runs under load. The BOOT window has none, the banners being queued by kernels
-that have exchanged nothing yet, and the one assertion printed at app entry tore 7 times in those
-same 300 runs. **So a gate reads only lines printed after a barrier that says every node has queued
-its whole boot output** -- each node publishes its per-node row once its banner and its app's
-announcement are queued, so a sweep that has read every row has read past every byte a peer writes
-while booting -- and the gate ASSERTS that ordering in the capture rather than trusting the app to
-keep it.
+**PEER CONSOLE LINES ARE GATED WHOLE, AND THE CLAIM, NOT TIMING, KEEPS THEM WHOLE.** One private
+TX ring per node cannot arbitrate one UART: a peer's announcement shreds under another node's
+banner about one run in ten. The shared UART therefore carries a bounded partition claim, held
+across the chunks of one line; a write whose claim cannot be acquired, or is lost, drops the
+rest of its line. The partition gate checks each peer's complete app announcement, and still
+witnesses peer liveness through a counter the *other* node reads: a debug line may be dropped
+under a bounded wait even when the app ran. The app-alive sweep checks the app's causal order
+only.
 
 **AND A GREEN RUN OF A TWO-KERNEL GATE WITNESSES LESS THAN A GREEN RUN OF A ONE-KERNEL GATE.**
 The interleaving, the order the two kernels reach their first publication, and which of them is

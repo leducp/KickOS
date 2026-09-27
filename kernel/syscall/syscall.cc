@@ -93,12 +93,19 @@ namespace kickos
                       "a chunk of all newlines must fit the ring, or a full-width write is "
                       "refused whatever the ring holds");
 
-        // noinline keeps the chunk buffer off syscall_dispatch's frame.
-        __attribute__((noinline)) size_t console_write_user(uintptr_t buf, size_t len)
+        // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
+        // the bytes that went out, or with none, -KOS_EAGAIN where the console could take
+        // nothing now and -KOS_EFAULT where the buffer went away.
+        __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[CONSOLE_CHUNK];
             struct arch_aspace* const space = user_space_of(sched::current());
+            if (len == 0)
+            {
+                return 0;
+            }
             size_t done = 0;
+            int32_t none = -KOS_EAGAIN;
             while (done < len)
             {
                 size_t n = len - done;
@@ -108,18 +115,24 @@ namespace kickos
                 }
                 if (not kaccess_from_user(chunk, space, buf + done, n))
                 {
+                    none = -KOS_EFAULT;
                     break;
                 }
                 // A line longer than this buffer is several inserts, and under pressure the
-                // ring can refuse one and accept the next: carrying on would put a hole in the
-                // middle of a line whose tail arrived.
-                if (kconsole_write(chunk, n) == 0)
+                // console can refuse one and accept the next: carrying on would put a hole in
+                // the middle of a line whose tail arrived.
+                size_t const took = static_cast<size_t>(kconsole_write_user(chunk, n));
+                done += took;
+                if (took < n)
                 {
                     break;
                 }
-                done += n;
             }
-            return done;
+            if (done == 0)
+            {
+                return none;
+            }
+            return static_cast<int32_t>(done);
         }
 
         // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
@@ -275,8 +288,7 @@ uint64_t syscall_body(uintptr_t nr,
                 // NOT 0: a len-0 write legitimately returns 0.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            // A short count where a granule went away mid-stream.
-            return console_write_user(a0, len);
+            return static_cast<uint64_t>(console_write_user(a0, len));
         }
         case KOS_SYS_YIELD:
         {
@@ -1059,7 +1071,7 @@ uint64_t syscall_body(uintptr_t nr,
             // memory type would otherwise answer 0 to a request it silently drops.
             if (not grant_nocache_admissible(attr))
             {
-                return static_cast<uint64_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(-KOS_ENOTSUP);
             }
             // Already reachable costs no descriptor. Where the mapping CARRIES the memory type
             // the question is asked of the TYPE in both directions: a request naming no type

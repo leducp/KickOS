@@ -291,7 +291,7 @@ namespace kickos
         // reserved, which no MMIO block and no kernel address can be.
         if (not grant_nocache_admissible(attr))
         {
-            *err = KOS_EPERM; // a memory type this chip cannot honour
+            *err = KOS_ENOTSUP; // a memory type this chip cannot honour
             return nullptr;
         }
 #else

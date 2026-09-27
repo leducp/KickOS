@@ -127,17 +127,17 @@ namespace kickos
     // Claim an unused line with AUTH_IRQ and install a full-rights CAP_IRQ.
     // Leave it masked until the server's first wait or ack. Return 0 with out_cap,
     // or -KOS_E*: ENOMEM for pool exhaustion, EMFILE for a full cap table,
-    // EOVERFLOW for the task budget, EBUSY for an occupied or retiring line.
+    // EAGAIN for the task budget or a line still retiring, EBUSY for an occupied line.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
 
     // Attach this line to the notification `notify_cap` names, as one signaller among
     // others: the ISR raises that capability's badge bit there. Requires CAP_WAIT on the
     // line and CAP_SIGNAL on the notification, and copies the badge into the binding, since
     // ISR context may resolve no capability. Takes a reference on the object.
-    // One-way and once only: 0, -KOS_EALREADY (this line already signals something),
-    // -KOS_EBADF, -KOS_EPERM (a missing right, or the notification already carries a line
-    // claimed on another core) or -KOS_EOVERFLOW (the object's reference count is at its
-    // ceiling). A released line leaves the chain, so a re-claim is a new binding and binds
+    // One-way and once only: 0, -KOS_EBUSY (this line already signals something),
+    // -KOS_EBADF, -KOS_EACCES (a missing right), -KOS_EPERM (the notification already carries
+    // a line claimed on another core), -KOS_EAGAIN (a holding task's notification budget) or
+    // -KOS_EOVERFLOW (the object's reference count is at its ceiling). A released line leaves the chain, so a re-claim is a new binding and binds
     // afresh.
     int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap);
 
