@@ -1,18 +1,42 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
+import hashlib
 import os
 import re
 import subprocess
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
-from conan.tools.files import copy, get, replace_in_file, save
+from conan.tools.files import copy, get, replace_in_file, save, unzip
 
-# One entry per multilib a preset links. `flags` select the multilib and must match the
-# multilib's own spelling; `cflags` and `configure` reproduce the toolchain vendor's newlib
-# build, which the post-build newlib.h comparison checks.
+# `flags` select the multilib; the other options reproduce the toolchain vendor's newlib
+# configuration, which the post-build newlib.h comparison checks.
+ARM_SPEC = {
+    "triple": "arm-none-eabi", "bin_env": "KICKOS_ARM_TOOLCHAIN_BIN",
+    "cflags": "-g -O2 -ffunction-sections -fdata-sections",
+    "configure": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                  "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                  "--enable-newlib-register-fini", "--enable-newlib-mb"],
+    "machine": "ARM", "reent": "static",
+}
+
+
+def arm_spec(*flags):
+    return {**ARM_SPEC, "flags": list(flags) + ["-mthumb"]}
+
+
 MULTILIBS = {
+    "armv6m": arm_spec("-mcpu=cortex-m0", "-mfloat-abi=soft"),
+    "armv7m": arm_spec("-mcpu=cortex-m3", "-mfloat-abi=soft"),
+    "armv7em_fp_softfp": arm_spec("-mcpu=cortex-m4", "-mfpu=fpv4-sp-d16",
+                                  "-mfloat-abi=softfp"),
+    "armv7em_dp_softfp": arm_spec("-mcpu=cortex-m7", "-mfpu=fpv5-d16",
+                                  "-mfloat-abi=softfp"),
+    "armv8m_fp_softfp": arm_spec("-mcpu=cortex-m33", "-mfpu=fpv5-sp-d16",
+                                  "-mfloat-abi=softfp"),
+    "armv8m_fp_hard": arm_spec("-mcpu=cortex-m33", "-mfpu=fpv5-sp-d16",
+                                "-mfloat-abi=hard"),
     "aarch64": {
         "triple": "aarch64-none-elf",
         "bin_env": "KICKOS_AARCH64_TOOLCHAIN_BIN",
@@ -27,8 +51,18 @@ MULTILIBS = {
             "--enable-newlib-mb",
         ],
         "machine": "AArch64",
+        "reent": "dynamic",
+    },
+    "rv32imac_ilp32": {
+        "triple": "riscv32-none-elf", "bin_env": "KICKOS_RISCV_TOOLCHAIN_BIN",
+        "flags": ["-march=rv32imac_zicsr", "-mabi=ilp32"],
+        "cflags": "-g -Os -ftls-model=local-exec",
+        "configure": ["--enable-newlib-reent-check-verify", "--enable-newlib-io-long-long",
+                      "--enable-newlib-io-c99-formats", "--enable-newlib-atexit-dynamic-alloc"],
+        "machine": "RISC-V", "reent": "static",
     },
     "rv64imac_lp64": {
+        # The RISC-V toolchain's only prefix: it carries the rv64 multilib as well.
         "triple": "riscv32-none-elf",
         "bin_env": "KICKOS_RISCV_TOOLCHAIN_BIN",
         "flags": ["-march=rv64imac_zmmul_zaamo_zalrsc_zca", "-mabi=lp64"],
@@ -40,6 +74,26 @@ MULTILIBS = {
             "--enable-newlib-atexit-dynamic-alloc",
         ],
         "machine": "RISC-V",
+        "reent": "dynamic",
+    },
+    "rxv3_dfpu": {
+        "triple": "rx-elf", "bin_env": "KICKOS_RX_TOOLCHAIN_BIN",
+        "flags": ["-misa=v3", "-mdfpu"],
+        "cflags": "-g -O2",
+        "configure": [],
+        "machine": "Renesas RX", "reent": "static",
+    },
+    "xtensa_esp32": {
+        "triple": "xtensa-esp32-elf", "bin_env": "KICKOS_XTENSA_BIN",
+        "flags": [],
+        "cflags": "-g -O2",
+        "configure": ["--enable-newlib-atexit-dynamic-alloc", "--enable-newlib-iconv",
+                      "--enable-newlib-nano-malloc", "--enable-newlib-retargetable-locking",
+                      "--enable-newlib-reent-check-verify", "--enable-newlib-reent-small",
+                      "--enable-newlib-reent-binary-compat", "--enable-newlib-io-c99-formats",
+                      "--enable-newlib-io-long-long", "--enable-newlib-io-pos-args",
+                      "--disable-newlib-wide-orient"],
+        "machine": "Tensilica Xtensa", "reent": "dynamic",
     },
 }
 
@@ -53,8 +107,7 @@ DYNAMIC_REENT = """
 
 
 class KickOSNewlib(ConanFile):
-    """newlib for the KickOS cross boards, built so libc reaches its reentrant state through
-    __getreent() and defines no __getreent of its own.
+    """Pinned newlib for the KickOS cross boards, matching each target's reentrancy ABI.
 
     The newlib release is the one the cross toolchain bundles, because its libstdc++ was built
     against those headers; conandata.yml pins each release's tarball. The cross compiler comes
@@ -67,7 +120,7 @@ class KickOSNewlib(ConanFile):
     version = "1.0"
     license = "BSD-3-Clause AND others (newlib COPYING.NEWLIB)"
     url = "https://sourceware.org/newlib/"
-    description = "newlib with dynamic reentrancy for KickOS"
+    description = "Pinned newlib for KickOS cross targets"
     package_type = "static-library"
     exports = "conandata.yml"
 
@@ -147,11 +200,49 @@ class KickOSNewlib(ConanFile):
         spec = self._spec()
         gcc = self._gcc()
         src = os.path.join(self.build_folder, "src")
-        get(self, **self.conan_data["sources"][self._release()], destination=src, strip_root=True)
+        source = self.conan_data["sources"][self._release()]
+        archive = os.environ.get("KICKOS_NEWLIB_SOURCE_ARCHIVE", "")
+        if archive:
+            with open(archive, "rb") as f:
+                digest = hashlib.file_digest(f, "sha256").hexdigest()
+            if digest != source["sha256"]:
+                raise ConanInvalidConfiguration(
+                    f"{archive} has sha256 {digest}, expected {source['sha256']}.")
+            unzip(self, archive, destination=src, strip_root=True)
+        else:
+            get(self, **source, destination=src, strip_root=True)
         bin_dir = os.path.dirname(gcc)
         prefix = f"{spec['triple']}-"
         config_h = os.path.join(src, "newlib", "libc", "include", "sys", "config.h")
-        replace_in_file(self, config_h, "\n#endif /* __SYS_CONFIG_H__ */", DYNAMIC_REENT)
+        if spec["reent"] == "dynamic":
+            replace_in_file(self, config_h, "\n#endif /* __SYS_CONFIG_H__ */", DYNAMIC_REENT)
+        features = os.path.join(src, "newlib", "libc", "include", "sys", "features.h")
+        if self._release().startswith("4.6") and spec["triple"] in (
+                "arm-none-eabi", "aarch64-none-elf", "xtensa-esp32-elf"):
+            # Arm 15.3 and Espressif 16.1 ship the C23 visibility correction.
+            replace_in_file(self, features, "__ISO_C_VISIBLE >= 2020",
+                            "__ISO_C_VISIBLE >= 2023")
+            replace_in_file(self, features, "#define __ISO_C_VISIBLE\t\t2020",
+                            "#define __ISO_C_VISIBLE\t\t2023")
+        if str(self.options.multilib) == "xtensa_esp32":
+            # Espressif built libstdc++ against these POSIX feature declarations. Its
+            # gthr-default.h uses pthread prototypes from the newlib headers at compile time.
+            replace_in_file(self, config_h, "/* This block should be kept in sync",
+                            "#define __BUFSIZ__ 128\n#define _REENT_SMALL\n\n"
+                            "/* This block should be kept in sync")
+            replace_in_file(self, features, "\n#endif /* __CYGWIN__ */\n\n#ifdef __cplusplus", """
+#endif /* __CYGWIN__ */
+
+/* Espressif toolchain C++ headers require these feature declarations. */
+#define _POSIX_THREADS                          1
+#define _POSIX_TIMEOUTS                         1
+#define _POSIX_TIMERS                           1
+#define _POSIX_MONOTONIC_CLOCK                  200112L
+#define _POSIX_CLOCK_SELECTION                  200112L
+#define _UNIX98_THREAD_MUTEX_ATTRIBUTES         1
+#define _POSIX_READER_WRITER_LOCKS              200112L
+
+#ifdef __cplusplus""")
 
         env = dict(os.environ)
         env["CC_FOR_TARGET"] = " ".join([gcc] + spec["flags"])
@@ -159,7 +250,9 @@ class KickOSNewlib(ConanFile):
             env[f"{tool}_FOR_TARGET"] = os.path.join(bin_dir, prefix + tool.lower())
         # GETREENT_PROVIDED: libc carries no fallback __getreent, so an image whose runtime
         # does not answer the hook fails its link.
-        env["CFLAGS_FOR_TARGET"] = spec["cflags"] + " -DGETREENT_PROVIDED"
+        env["CFLAGS_FOR_TARGET"] = spec["cflags"]
+        if spec["reent"] == "dynamic":
+            env["CFLAGS_FOR_TARGET"] += " -DGETREENT_PROVIDED"
 
         build_dir = os.path.join(self.build_folder, "obj")
         os.makedirs(build_dir, exist_ok=True)
@@ -193,15 +286,26 @@ class KickOSNewlib(ConanFile):
             raise ConanInvalidConfiguration(
                 "this build's newlib.h disagrees with the toolchain's, so struct layouts its "
                 f"libstdc++ was built against may differ:\n  ours : {ours}\n  stock: {stock}")
+        if str(self.options.multilib) == "xtensa_esp32":
+            header = os.path.join("include", "sys", "config.h")
+            ours_config = self._defines(os.path.join(root, header))
+            stock_config = self._defines(os.path.join(self._toolchain_include(), "sys", "config.h"))
+            if ours_config != stock_config:
+                raise ConanInvalidConfiguration(
+                    f"Xtensa sys/config.h differs from Espressif's:\n  ours : {ours_config}"
+                    f"\n  stock: {stock_config}")
         libc = os.path.join(root, "lib", "libc.a")
         nm = self._run(os.path.join(bin_dir, f"{spec['triple']}-nm"), "-A", libc)
         callers = [line for line in nm.splitlines() if line.endswith(" U __getreent")]
         defines = [line for line in nm.splitlines()
                    if re.search(r" [TtWw] __getreent$", line)]
-        if not callers or defines:
+        if spec["reent"] == "dynamic" and (not callers or defines):
             raise ConanInvalidConfiguration(
                 f"{libc} is not dynamic-reent: {len(callers)} member(s) call __getreent and "
                 f"{len(defines)} define it.")
+        if spec["reent"] == "static" and callers:
+            raise ConanInvalidConfiguration(
+                f"{libc} unexpectedly calls __getreent in {len(callers)} member(s).")
         header = self._run(os.path.join(bin_dir, f"{spec['triple']}-readelf"), "-h",
                            os.path.join(root, "lib", "libm.a"))
         if spec["machine"] not in header:
@@ -220,7 +324,7 @@ class KickOSNewlib(ConanFile):
                         f"triple={spec['triple']}",
                         "flags=" + " ".join(spec["flags"]),
                         f"newlib={self._release()}",
-                        "reent=dynamic",
+                        f"reent={spec['reent']}",
                         ""]))
 
     def package_info(self):

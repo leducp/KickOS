@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# The dynamic-reent newlib an armv8a or rv64imac board links, via Conan (conan/newlib, consumed
-# through conan/board). Run AFTER the toolchain action whose compiler builds it: the recipe
+# The pinned newlib each cross board links, via Conan (conan/newlib, consumed through
+# conan/board). Run AFTER the toolchain action whose compiler builds it: the recipe
 # takes that compiler from the toolchain variable and never from PATH.
 # Call it ONCE per job with every multilib the job needs: each cache entry carries Conan's
 # package database, so a second restore into the same store replaces the first one's.
-name: Provision the dynamic-reent newlib via Conan
+name: Provision pinned newlib via Conan
 description: Build (cached) kickos-newlib for each listed multilib and export the variables their toolchain files read.
 
 inputs:
   multilibs:
-    description: Space-separated conan/board multilib options, from aarch64 and rv64imac_lp64.
+    description: Space-separated conan/board multilib options.
     required: true
   toolchain-bins:
     description: Space-separated cross toolchain bin/ directories the multilibs build with; part of the cache key.

@@ -22,10 +22,15 @@ set(KICKOS_ARCH_FAMILY "${KICKOS_ARCH_FAMILY}" CACHE STRING "KickOS ISA family (
 
 kickos_toolchain_cross_programs(rx-elf KICKOS_RX_TOOLCHAIN_BIN)
 
+include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
+kickos_require_newlib("rx" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
+  KICKOS_NEWLIB_RXV3_DFPU static ${_kos_cpu})
+
 # RX instructions are always little-endian; only *data* endianness is selectable and GNU RX
 # defaults to little-endian, matching the MDE option word the linker script emits (spike
 # sec.1, sec.6).
 string(JOIN " " _kos_common ${_kos_cpu} -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
+kickos_toolchain_newlib_flags()
 
 kickos_toolchain_bare_metal_rules()

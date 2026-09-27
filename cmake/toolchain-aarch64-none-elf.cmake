@@ -32,8 +32,8 @@ kickos_require_usable_cross_cxx("arm64" "${CMAKE_CXX_COMPILER}"
   ${_kos_cpu})
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_dynreent_newlib("arm64" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  KICKOS_NEWLIB_AARCH64 ${_kos_cpu})
+kickos_require_newlib("arm64" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
+  KICKOS_NEWLIB_AARCH64 dynamic ${_kos_cpu})
 
 # The same ${_kos_cpu} on compile AND link picks the matching multilib (libgcc/newlib/
 # libstdc++).

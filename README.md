@@ -182,18 +182,17 @@ and otherwise search `PATH`:
 The x86-64 UEFI build uses host GCC and GNU binutils with the `i386pep` linker emulation.
 See [CI toolchain setup](.github/actions/) for the versions and packages used in CI.
 
-An ARM64 or RV64IMAC image also needs the dynamic-reent newlib, provisioned once per multilib
-through Conan:
+Every cross-built image needs its pinned newlib, provisioned once per multilib through Conan.
+For example, after setting `KICKOS_AARCH64_TOOLCHAIN_BIN`:
 
 ```sh
 conan export conan/newlib
-conan install conan/board -o "&:multilib=aarch64" --build=missing --output-folder=/tmp/kn-aarch64
-source /tmp/kn-aarch64/kickos-newlib-aarch64.sh
+conan install conan/board -o "&:multilib=aarch64" --build=missing --output-folder=kickos-conan/newlib
+source kickos-conan/newlib/kickos-newlib-aarch64.sh
 ```
 
-Use `multilib=rv64imac_lp64` for RV64IMAC. The generated script exports `KICKOS_NEWLIB_AARCH64` or
-`KICKOS_NEWLIB_RV64IMAC_LP64`, which the corresponding cross toolchain file reads; see the
-[board reference](docs/reference/boards.md) for the full variable table.
+Choose the multilib for the board. The generated script exports the package path its cross
+toolchain file reads; see the [board reference](docs/reference/boards.md) for the full table.
 
 ## CI coverage
 
@@ -237,8 +236,8 @@ CeCILL-C V1.0. See [LICENSE](LICENSE). Source files carry
 `SPDX-License-Identifier: CECILL-C` headers. The
 [architecture reference](docs/reference/architecture.md) describes the clean-room policy.
 
-A cross-built image also embeds newlib (BSD-family notices; the dynamic-reent package above ships
-its own copy as `licenses/COPYING.NEWLIB`, and every other cross toolchain bundles its own) and the
+A cross-built image also embeds newlib (BSD-family notices; each package ships
+`licenses/COPYING.NEWLIB`) and the
 GCC runtime libraries it links against (GPL-3 with the GCC Runtime Library Exception). Whoever
 distributes such an image carries those notices with it. This states facts about what an image
 embeds; it is not legal advice.

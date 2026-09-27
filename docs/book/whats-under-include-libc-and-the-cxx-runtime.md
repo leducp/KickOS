@@ -105,19 +105,20 @@ already owns these symbols.
 
 ## Why "newlib" is the through-line of the cross-compiled fleet
 
-A board that cross-compiles its userspace against a **pinned vendor toolchain** takes that
-toolchain's libc with it, and those toolchains are newlib ones: Arm GNU Toolchain (ARM),
-RISCStar (RISC-V), GNURX (RX), one per family, each pinned in exactly one place
+A board that cross-compiles its userspace against a **pinned vendor toolchain** needs a libc
+compatible with that toolchain's C++ runtime. These toolchains use newlib: Arm GNU Toolchain
+(ARM), RISCStar (RISC-V), GNURX (RX) and Espressif (Xtensa), each pinned in exactly one place
 ([`../reference/porting.md`](../reference/porting.md)). That is not a coincidence to shrug
 at: it is what keeps the seam *singular* across that set. Because every one of those
-toolchains' libc is newlib, the bottom edge above is the **same set of symbols on every one
+toolchains use newlib, the bottom edge above is the **same set of symbols on every one
 of those arches**, so a single `newlib_stubs.cc` serves them with no per-toolchain libc
-variant to maintain. And each toolchain ships *its own* newlib-built `libstdc++`, so the
-C++ runtime always rides the libc it was compiled against (the point of the NuttX
-section below). One seam, many chips: the uniform-fleet thesis applied to the libc.
+variant to maintain. KickOS builds newlib from pinned source for each target multilib and
+checks its configuration headers against the toolchain's copy, so its `libstdc++` sees the
+types and declarations it was built against (the point of the NuttX section below). One
+seam, many chips: the uniform-fleet thesis applied to the libc.
 
-**The through-line is the toolchain's property and not the design's, so read the claim at
-that width.** Two postures sit outside it, and each is a different answer to the same
+**The through-line depends on the toolchains using newlib, so read the claim at that
+width.** Two postures sit outside it, and each is a different answer to the same
 question rather than an exception to be patched. The hosted **sim** links the host's own
 libc, which already owns every symbol in the table above, so the porting seam is not
 compiled there at all. And a board whose toolchain builds a freestanding image against **no
@@ -197,7 +198,7 @@ libc (KickOS has one, for the freestanding default) and then link the *toolchain
 `libstdc++` on top of it -- one libc to maintain, full C++ for free. It does not work,
 and the reason is instructive.
 
-The toolchain's `libstdc++` was **compiled against the toolchain's own libc** (newlib).
+The toolchain's `libstdc++` was **compiled against the toolchain's newlib headers and ABI**.
 Its headers and the libc's headers agree on subtle shared types and declarations --
 `div_t`/`ldiv_t`, what `std::abs` in `<cmath>` resolves to, the locale facets, the
 `_impure_ptr` reent that `vterminate` reaches for. Host that pre-built `libstdc++` over
@@ -210,9 +211,9 @@ documented. (This is the "Toolchain-libc lesson from NuttX" in
 `../reference/architecture.md`.)
 
 **KickOS's rule: never put toolchain C++ on our own libc.** A full-C++ app links
-`libstdc++`/`libsupc++` over the **libc they were built against** -- newlib, the same
-newlib on every arch. Zero cross-libc shim, zero ABI mismatch, because the runtime rides
-its native libc. Our own freestanding libc is kept newlib-*family*-compatible for a
+`libstdc++`/`libsupc++` over a **compatible newlib**, rebuilt for the board's multilib from
+pinned source and checked against the toolchain's headers. That keeps the C++ and C layouts
+aligned without a cross-libc shim. Our own freestanding libc is kept newlib-*family*-compatible for a
 different reason -- so the sim can ride host `libstdc++` cleanly -- but it never hosts
 the toolchain C++ runtime.
 

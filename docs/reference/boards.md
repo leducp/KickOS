@@ -918,16 +918,26 @@ the official tarball URL. Previously this surfaced dozens of build steps later a
 `fatal error: exception: No such file or directory`. RX and Xtensa skip the check: neither has a
 same-name C-only twin on `PATH` to fall through to.
 
-### The dynamic-reent newlib (ARMv8-A and RV64IMAC)
+### Pinned newlib for cross boards
 
-An armv8a or rv64imac image links KickOS's own newlib in place of the toolchain's, its
-`__getreent()` answered per thread rather than through one shared `_impure_ptr`. `cross_newlib.cmake`
-reads the package location from an environment variable, one per multilib:
+Every cross image links KickOS's pinned newlib in place of the toolchain's. AArch64, RV64 and
+Xtensa use `__getreent()`; Cortex-M, RV32 and RX use `_impure_ptr`. The package must
+match the toolchain's headers and the board's multilib. `cross_newlib.cmake` checks both and reads
+the package location from an environment variable, one per multilib:
 
 | Multilib | Variable | Prerequisite toolchain variable |
 |---|---|---|
+| `armv6m` | `KICKOS_NEWLIB_ARMV6M` | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| `armv7m` | `KICKOS_NEWLIB_ARMV7M` | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| `armv7em_fp_softfp` | `KICKOS_NEWLIB_ARMV7EM_FP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| `armv7em_dp_softfp` | `KICKOS_NEWLIB_ARMV7EM_DP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| `armv8m_fp_softfp` | `KICKOS_NEWLIB_ARMV8M_FP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
+| `armv8m_fp_hard` | `KICKOS_NEWLIB_ARMV8M_FP_HARD` | `KICKOS_ARM_TOOLCHAIN_BIN` |
 | `aarch64` | `KICKOS_NEWLIB_AARCH64` | `KICKOS_AARCH64_TOOLCHAIN_BIN` |
+| `rv32imac_ilp32` | `KICKOS_NEWLIB_RV32IMAC_ILP32` | `KICKOS_RISCV_TOOLCHAIN_BIN` |
 | `rv64imac_lp64` | `KICKOS_NEWLIB_RV64IMAC_LP64` | `KICKOS_RISCV_TOOLCHAIN_BIN` |
+| `rxv3_dfpu` | `KICKOS_NEWLIB_RXV3_DFPU` | `KICKOS_RX_TOOLCHAIN_BIN` |
+| `xtensa_esp32` | `KICKOS_NEWLIB_XTENSA_ESP32` | `KICKOS_XTENSA_BIN` |
 
 Provision it with Conan, once per multilib, after the toolchain whose compiler builds the package
 is on `PATH` or hinted by its variable above:
@@ -938,7 +948,7 @@ conan install conan/board -o "&:multilib=<m>" --build=missing --output-folder=<d
 source <dir>/kickos-newlib-<m>.sh
 ```
 
-`<m>` is `aarch64` or `rv64imac_lp64`; `<dir>` is any output folder, one per multilib. The third
+`<m>` is a multilib from the table; `<dir>` is any output folder. The third
 command exports the matching variable above from the folder Conan built or restored. Configure
 after sourcing it, as with the cross toolchain variables. `.github/actions/newlib/action.yml` runs
 the same three steps in CI, cached by the multilib and the toolchain bin directory.

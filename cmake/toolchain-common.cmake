@@ -106,13 +106,12 @@ endmacro()
 
 # kickos_toolchain_newlib_flags()
 #
-# After kickos_toolchain_flags_init, with kickos_require_dynreent_newlib's results in scope.
+# After kickos_toolchain_flags_init, with kickos_require_newlib's results in scope.
 macro(kickos_toolchain_newlib_flags)
   # *_FLAGS_INIT only seats an entry the cache does not hold yet. An older build
   # directory, or a -D of one of these on the first configure, keeps stock libc
-  # headers and the stock -lc search path; the SMP errno test then runs against the
-  # wrong libc. Refuse that state rather than printing "dynamic-reent newlib" for an
-  # image that lacks it.
+  # headers and the stock -lc search path; the image then runs against the wrong
+  # libc. Refuse that state.
   foreach(_kos_cached IN ITEMS CMAKE_C_FLAGS CMAKE_ASM_FLAGS CMAKE_CXX_FLAGS
                                CMAKE_EXE_LINKER_FLAGS)
     if(DEFINED CACHE{${_kos_cached}})
@@ -125,9 +124,9 @@ macro(kickos_toolchain_newlib_flags)
       endif()
       string(FIND "$CACHE{${_kos_cached}}" "${_kos_required}" _kos_at)
       if(_kos_at EQUAL -1)
-        message(FATAL_ERROR "KickOS: ${_kos_cached} lacks the selected dynamic-reent "
-          "newlib flags: the build directory predates them, or a -D${_kos_cached} "
-          "replaced them. Configure a fresh build directory without that -D.")
+        message(FATAL_ERROR "KickOS: ${_kos_cached} lacks the selected pinned newlib "
+          "flags: the build directory predates them, or a -D${_kos_cached} replaced "
+          "them. Configure a fresh build directory without that -D.")
       endif()
     endif()
   endforeach()
