@@ -16,10 +16,10 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.5 HAVE MERGED AND M9.6 IS DECIDED ON ITS BRANCH.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED AND M9.7 IS DECIDED ON ITS BRANCH.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned; M9.7 and later remain assigned. The M9.0 section
+assigned; M9.8 and later remain assigned. The M9.0 section
 at the bottom of this file carries what the survey, the stack verdict and the entry envelope
 established, and what a reader of the numbers alone would get wrong.
 
@@ -3630,6 +3630,35 @@ peer transmits can cut the peer's line.
 **ONE SMP RING ORDERS ITS OWN KERNEL'S PRODUCERS ONLY.** The RV64 SMP image gates exercise the
 shared-kernel path, but do not force simultaneous console submissions on every core. A full
 ring can still drop a debug line; the contract protects the lines it accepts.
+
+## M9.7: the exit record and its limits
+
+**THE EXIT CAPTURE IS NOT AN M8.12-TO-M9 SPEEDUP TABLE.** M9.4 shortened every
+phase bracket and distribution sample. The six-preset, five-run M9.7 capture
+is reproducible with `tools/bench/exit_rows.py`, but none of its distribution
+row differences against M8.12 isolates kernel work. In both SMP images the
+armed line was handled locally: `e2e-cross` has zero samples despite 1,000
+completed E2E passes. The [exit record](docs/archive/M9.7_exit.md) carries the
+raw captures and this limit. The pinned twelve-core x86 KVM and two-core LX6
+silicon results from M9.5 remain the evidence for retaining one BKL and
+changing x86 arbitration only.
+
+**THE CALLER-HELD GATE HAS A COMPILER BOUNDARY.** The strict graph walk runs on
+x86_64, ARM64 and RV64, each at one and multiple cores, plus ARMv6-M,
+ARMv7-M, RV32IMAC and RXv3: ten presets. It refuses an unbound indirect site
+and a mutation that removes a real caller's `IrqLock`. The Xtensa GCC 16.1
+callgraph emits many indirect edges with no source position, including kernel
+ones. The gate does not run on LX6, because treating those sites as proved
+would make an unknown caller look safe. LX6 retains its existing stack,
+static and image gates; this graph result is not an LX6 proof. The sim has no
+compiler callgraph corpus in this gate either.
+
+**THE MAP PREFLIGHT NUMBER IS EMULATION ONLY.** A temporary probe measured
+already-mapped one- and three-page ranges on the three translating backends.
+It separates the scan from the full map and lives only in the
+[measurement record](docs/archive/M9.7_map_preflight.md). QEMU cannot price
+this scan on silicon or justify weakening the reject-before-edit rule; no
+instrumentation remains in the shipped kernel.
 
 ## Where to go next
 

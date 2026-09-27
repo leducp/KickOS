@@ -1,0 +1,39 @@
+stamp: 9a6d5ae0
+== rebuild from the clean tree ==
+  built qemu-riscv-bench
+  built qemu-arm64-bench
+  built qemu-riscv64-bench
+  built qemu-x86_64-bench
+  built qemu-arm64-benchsmp
+  built qemu-riscv64-benchsmp
+qemu-riscv-bench run1: rc=0 banner=9a6d5ae0 load=2.81 1.43 1.24 6s verdict=complete
+qemu-riscv-bench run2: rc=0 banner=9a6d5ae0 load=2.84 1.49 1.26 5s verdict=complete
+qemu-riscv-bench run3: rc=0 banner=9a6d5ae0 load=2.86 1.51 1.27 6s verdict=complete
+qemu-riscv-bench run4: rc=0 banner=9a6d5ae0 load=2.71 1.50 1.27 5s verdict=complete
+qemu-riscv-bench run5: rc=0 banner=9a6d5ae0 load=2.57 1.49 1.27 6s verdict=complete
+qemu-arm64-bench run1: rc=0 banner=9a6d5ae0 load=2.44 1.49 1.27 7s verdict=complete
+qemu-arm64-bench run2: rc=0 banner=9a6d5ae0 load=2.41 1.49 1.27 7s verdict=complete
+qemu-arm64-bench run3: rc=0 banner=9a6d5ae0 load=2.42 1.53 1.29 7s verdict=complete
+qemu-arm64-bench run4: rc=0 banner=9a6d5ae0 load=2.55 1.57 1.30 7s verdict=complete
+qemu-arm64-bench run5: rc=0 banner=9a6d5ae0 load=2.31 1.55 1.30 7s verdict=complete
+qemu-riscv64-bench run1: rc=0 banner=9a6d5ae0 load=2.28 1.56 1.30 8s verdict=complete
+qemu-riscv64-bench run2: rc=0 banner=9a6d5ae0 load=2.25 1.57 1.31 7s verdict=complete
+qemu-riscv64-bench run3: rc=0 banner=9a6d5ae0 load=2.23 1.58 1.31 8s verdict=complete
+qemu-riscv64-bench run4: rc=0 banner=9a6d5ae0 load=2.13 1.57 1.31 7s verdict=complete
+qemu-riscv64-bench run5: rc=0 banner=9a6d5ae0 load=2.03 1.57 1.31 7s verdict=complete
+qemu-x86_64-bench run1: rc=0 banner=9a6d5ae0 load=2.11 1.59 1.32 4s verdict=complete
+qemu-x86_64-bench run2: rc=0 banner=9a6d5ae0 load=2.10 1.60 1.32 3s verdict=complete
+qemu-x86_64-bench run3: rc=0 banner=9a6d5ae0 load=2.09 1.61 1.33 3s verdict=complete
+qemu-x86_64-bench run4: rc=0 banner=9a6d5ae0 load=2.09 1.61 1.33 3s verdict=complete
+qemu-x86_64-bench run5: rc=0 banner=9a6d5ae0 load=2.00 1.60 1.33 4s verdict=complete
+qemu-arm64-benchsmp run1: rc=0 banner=9a6d5ae0 load=2.00 1.60 1.33 9s verdict=complete
+qemu-arm64-benchsmp run2: rc=0 banner=9a6d5ae0 load=2.00 1.62 1.34 9s verdict=complete
+qemu-arm64-benchsmp run3: rc=0 banner=9a6d5ae0 load=2.00 1.62 1.34 9s verdict=complete
+qemu-arm64-benchsmp run4: rc=0 banner=9a6d5ae0 load=1.93 1.62 1.34 10s verdict=complete
+qemu-arm64-benchsmp run5: rc=0 banner=9a6d5ae0 load=1.78 1.60 1.34 9s verdict=complete
+qemu-riscv64-benchsmp run1: rc=0 banner=9a6d5ae0 load=1.82 1.61 1.35 13s verdict=complete
+qemu-riscv64-benchsmp run2: rc=0 banner=9a6d5ae0 load=2.02 1.66 1.37 14s verdict=complete
+qemu-riscv64-benchsmp run3: rc=0 banner=9a6d5ae0 load=2.02 1.68 1.38 13s verdict=complete
+qemu-riscv64-benchsmp run4: rc=0 banner=9a6d5ae0 load=1.94 1.68 1.38 14s verdict=complete
+qemu-riscv64-benchsmp run5: rc=0 banner=9a6d5ae0 load=2.28 1.76 1.41 13s verdict=complete
+FAIL=0

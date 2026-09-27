@@ -1,0 +1,206 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover entry
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover handover if=1 paging=1 longmode=1 root=1 wp=1 nx=1 nxcap=1
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover if_after_cli=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover firmware=Debian distribution of EDK II
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover revision=0x0000000000020046
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover map descriptors=103 stride=48 version=1 conventional_pages=118109 arena=0x0000000001800000 arena_pages=107372
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover fp found em=0 ts=0 mp=1 osfxsr=1 osxmmexcpt=1 osxsave=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover fp trapped em=1 ts=1 mp=1 osfxsr=0 osxmmexcpt=0 osxsave=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover boot services left
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover if_after_exit=0
+
+KICKOS-X5 6b1e04c7 x86_64/q35 aspace arms
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace pool base=0x0000000001800000 frames=256 va=0x0000010000010000
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace model=0x0000000001280007 levels=4 tag_bits=0 tag_invalidate=0
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=granule_is_4k ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=levels_four_or_five ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=levels_match_control_register ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_granule_bore_out ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_physical_range_bore_out ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_identifier_matches_record ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_physical_bits_reported ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_one_granule_reported ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=model_identifier_width_is_the_record ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_normal ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_nocache ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_device ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_unknown_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace boot root=0x000000001f801000 kernel_slots=3 user_lo=0x0000010000000000 user_hi=0x0000800000000000
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_space_answered ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_space_is_the_installed_root ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_half_has_slots ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=user_half_measured ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_maps_this_image ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_maps_conventional_memory_identically ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_walk_handles_a_large_leaf ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=user_half_unmapped_in_boot ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_into_boot_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=unmap_from_boot_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=destroy_boot_is_a_no_op ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=destroy_null_is_a_no_op ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=create_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=create_costs_one_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=create_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=two_spaces_are_distinct ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_half_in_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_half_in_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=conventional_memory_in_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=user_half_empty_in_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=user_half_empty_in_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace window va=0xffffff8000000000 pages=512 first_child_entries=512
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=first_child_table_is_full ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_anchored ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_outside_the_user_half ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_at_the_window_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_starts_unmapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_unmapped_in_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_map ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_edit_seen_from_boot ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_edit_seen_from_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_edit_seen_from_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_reads_under_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_reads_under_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_remap_under_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_remap_reads_under_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_remap_reads_under_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_remap_seen_from_boot_walk ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_unmap ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_unmap_seen_from_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_unmap_seen_from_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_unmap_faults_under_boot ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_unmap_fault_was_a_translation_fault ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_unmap_fault_named_the_window ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_unmap_twice_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=switch_code_data_mapped_under_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=switch_code_data_mapped_under_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace roots boot=0x000000001f801000 a=0x0000000001804000 b=0x0000000001805000
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=activate_a_wrote_the_root ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=activate_b_wrote_the_root ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=activate_boot_restored_the_root ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=root_a_is_the_handle ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=root_b_is_the_handle ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=no_identifier_in_any_root ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=one_address_reads_a ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=one_address_reads_b ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=one_address_faults_under_boot ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_fault_was_a_translation_fault ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=boot_fault_named_the_address ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=one_address_reads_a_again ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=write_through_a_reached_the_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_null_space ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_misaligned_va ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_zero_pages ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_misaligned_pa ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_write_and_execute ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_no_read ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_unknown_right ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_unknown_memtype ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_kernel_half_address ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_pa_past_the_physical_width ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_pa_range_past_the_physical_width ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_window_map_past_the_physical_width_refused ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_range_past_the_user_half ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refuse_page_count_that_wraps ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=nothing_was_mapped_by_a_refusal ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_refuses_a_partially_mapped_range ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_partially_mapped_range_kept_its_leaf ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_admits_a_wholly_mapped_range ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_remap_of_a_wholly_mapped_range_landed ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_remapped_range_clears ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=unmap_refuses_a_partial_range ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_partial_range_is_still_mapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=unmap_refuses_an_unmapped_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=leaf_memtype_normal_is_write_back ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=leaf_memtype_nocache_is_uncached_minus ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=leaf_memtype_device_is_uncacheable ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace pat live=0x0007040600070406 power_up=0x0007040600070406
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_power_up_normal_selects_field_zero ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_power_up_nocache_selects_field_two ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_power_up_device_selects_field_three ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_permuted_normal_selects_field_four ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_permuted_nocache_selects_field_five ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_permuted_device_selects_field_six ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_takes_the_first_field_that_matches ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_refuses_a_table_with_no_write_back ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_answers_the_other_types_of_that_table ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_refuses_a_table_with_no_uncached_minus ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_refuses_a_table_with_no_uncacheable ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=memtype_decode_refuses_an_unknown_type ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=attribute_table_in_use_is_the_live_msr ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=leaf_bits_match_the_decode_on_the_live_table ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_map ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_first_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_page_at_the_table_boundary ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_last_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_page_before_is_unmapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_page_after_is_unmapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_unmap ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_first_page_gone ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=span_last_page_gone ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=cost_of_a_clean_map_measured ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_measuring_space_came_back ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace tables per span=4
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=out_of_frames_on_the_first_table ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=first_table_refusal_installed_nothing ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=space_still_maps_after_a_refusal ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=and_the_mapping_answers ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=cleanup_unmap ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=first_table_refusal_leaked_no_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=out_of_frames_partway ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=partway_refusal_left_no_partial_mapping ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=partway_refusal_leaked_no_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=a_live_page_before_the_refusal ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=out_of_frames_beside_a_live_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_live_page_survived_the_unwind ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_live_page_unmapped_before_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=refusal_beside_a_live_page_leaked_no_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_answers_the_frames_own_address ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_reads_the_frame ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_carries_the_offset ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_of_an_unmapped_page_is_null ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_of_a_null_space_is_null ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_floor_is_met ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=acquire_after_release_still_answers ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=frame_at_agrees_with_acquire ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=frame_at_drops_the_offset ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=frame_at_of_an_unmapped_page_is_zero ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=frame_at_of_a_null_space_is_zero ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=frame_at_separates_the_two_spaces ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=fresh_map_issues_one ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=replacing_a_live_page_issues_two ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=and_the_replacement_took ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=unmap_issues_one ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=a_space_nothing_has_run ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_into_a_space_nothing_has_run_elides ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=map_into_a_space_this_core_has_left_still_pays ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace tlbi issued=2032 elided=1102
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=borrowed_page_unmapped_before_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_lent_frame_survived_the_unmap ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=a_shared_slot_diverged_by_an_accessed_bit ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_diverged_slot_kept_its_table ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_half_survives_a_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_shared_window_survives_a_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_other_space_still_maps_its_own_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_other_space_still_reads_its_own_page ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=second_borrowed_page_unmapped_before_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=kernel_half_survives_the_second_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=the_window_survives_the_second_destroy ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=a_frame_for_the_space_to_own ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=mapped_and_left_mapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=destroy_reclaimed_the_frame_the_space_mapped ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace frames outstanding=4 baseline=4 allocations=43
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=every_frame_came_back ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace results ok=34 enomem=3 ecapacity=0 einval=19
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=every_result_class_but_capacity_was_reached ok=1
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=capacity_refusal_is_unproducible ok=1
+  map-probe: failures=0 pages=1 n=100 scan-ns=240/264/490 total-ns=1450/1521/5351
+  map-probe: failures=0 pages=3 n=100 scan-ns=350/363/510 total-ns=2500/2527/3121
+  KICKOS-X5 6b1e04c7 x86_64/q35 aspace arm=root_register_ends_on_the_boot_space ok=1
+KICKOS-X5 6b1e04c7 x86_64/q35 aspace PASS
+
+KICKOS-EXIT status 0

@@ -146,10 +146,17 @@ exempt_nul() { # <file>
 #       verbatim upstream CeCILL-C text. Lines 133 and 279 carry a trailing space; rewriting
 #       them makes the file no longer the licence as published. Restore it from cecill.info,
 #       never by hand.
+#
+#   docs/archive/M9.7_map_probe.patch
+#       the archived measurement probe, kept applicable. A unified diff prefixes every context
+#       line with a space, so a context line for an empty source line is a lone space.
 allowed_records() { # <file>
     case "$1" in
         LICENSE)
             printf '%s\n' '133: trailing whitespace' '279: trailing whitespace'
+            ;;
+        docs/archive/M9.7_map_probe.patch)
+            printf '%s: trailing whitespace\n' 14 16 52 63 65 101 112 150 160 166 185 198 201 207
             ;;
     esac
 }

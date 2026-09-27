@@ -1,0 +1,333 @@
+SPDX-License-Identifier: CECILL-C
+Copyright (c) 2026 Philippe Leduc
+
+diff --git a/arch/arm64/armv8a/aspace_armv8a.cc b/arch/arm64/armv8a/aspace_armv8a.cc
+index ad098a85..821d2592 100644
+--- a/arch/arm64/armv8a/aspace_armv8a.cc
++++ b/arch/arm64/armv8a/aspace_armv8a.cc
+@@ -9,6 +9,8 @@
+ #include <kickos/arch/aspace_residency.h>
+ #include <kickos/arch/aspace_table.h>
+ #include <kickos/extent.h>
++#define KICKOS_MAP_PROBE_IMPLEMENTATION
++#include <kickos/map_probe.h>
+ 
+ #include "sysops_armv8a.h"
+ 
+@@ -706,6 +708,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+                                         arch_phys_addr_t pa, size_t pages,
+                                         uint32_t rights, enum arch_map_memtype type)
+ {
++    uint64_t const map_start = arch_clock_now();
+     if (space == nullptr or not range_ok(va, pages))
+     {
+         return ARCH_ASPACE_EINVAL;
+@@ -722,6 +725,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+     // Reject partially mapped ranges: rollback would remove existing leaves.
+     // Wholly mapped ranges can be remapped without allocating tables.
+     size_t mapped = 0;
++    uint64_t const scan_start = arch_clock_now();
+     for (size_t i = 0; i < pages; i++)
+     {
+         if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
+@@ -729,6 +733,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+             mapped++;
+         }
+     }
++    uint64_t const scan_end = arch_clock_now();
+     if (mapped != 0 and mapped != pages)
+     {
+         return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
+@@ -772,6 +777,11 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+     {
+         instruction_side_rendezvous(peers);
+     }
++    if (rc == ARCH_ASPACE_OK && scan_end >= scan_start)
++    {
++        map_probe_record(pages, scan_end - scan_start, arch_clock_now() - map_start);
++        map_probe_drive(space, va, pa, pages, rights, type);
++    }
+     return rc;
+ }
+ 
+diff --git a/arch/riscv/rv64imac/aspace_rv64imac.cc b/arch/riscv/rv64imac/aspace_rv64imac.cc
+index 624b8c0e..21804177 100644
+--- a/arch/riscv/rv64imac/aspace_rv64imac.cc
++++ b/arch/riscv/rv64imac/aspace_rv64imac.cc
+@@ -13,6 +13,8 @@
+ #include <kickos/arch/aspace_table.h>
+ #include <kickos/arch/rv64_paging.h>
+ #include <kickos/extent.h>
++#define KICKOS_MAP_PROBE_IMPLEMENTATION
++#include <kickos/map_probe.h>
+ 
+ #include "sysops_rv64imac.h"
+ 
+@@ -821,6 +823,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+                                         arch_phys_addr_t pa, size_t pages,
+                                         uint32_t rights, enum arch_map_memtype type)
+ {
++    uint64_t const map_start = arch_clock_now();
+     if (space == nullptr or not range_ok(va, pages))
+     {
+         return ARCH_ASPACE_EINVAL;
+@@ -837,6 +840,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+     // Reject partially mapped ranges: rollback would remove existing leaves.
+     // Wholly mapped ranges can be remapped without allocating tables.
+     size_t mapped = 0;
++    uint64_t const scan_start = arch_clock_now();
+     for (size_t i = 0; i < pages; i++)
+     {
+         if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
+@@ -844,6 +848,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+             mapped++;
+         }
+     }
++    uint64_t const scan_end = arch_clock_now();
+     if (mapped != 0 and mapped != pages)
+     {
+         return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
+@@ -884,6 +889,11 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+     {
+         translation_rendezvous(peers);
+     }
++    if (rc == ARCH_ASPACE_OK && scan_end >= scan_start)
++    {
++        map_probe_record(pages, scan_end - scan_start, arch_clock_now() - map_start);
++        map_probe_drive(space, va, pa, pages, rights, type);
++    }
+     return rc;
+ }
+ 
+diff --git a/arch/x86/x86_64/aspace_x86_64.cc b/arch/x86/x86_64/aspace_x86_64.cc
+index 9d292df7..e55e8ba9 100644
+--- a/arch/x86/x86_64/aspace_x86_64.cc
++++ b/arch/x86/x86_64/aspace_x86_64.cc
+@@ -14,6 +14,8 @@
+ #include <kickos/arch/regs.h>
+ #include <kickos/chip_com1.h>
+ #include <kickos/extent.h>
++#define KICKOS_MAP_PROBE_IMPLEMENTATION
++#include <kickos/map_probe.h>
+ 
+ #include <stddef.h>
+ #include <stdint.h>
+@@ -1040,6 +1042,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+                                         arch_phys_addr_t pa, size_t pages, uint32_t rights,
+                                         enum arch_map_memtype type)
+ {
++    uint64_t const map_start = arch_clock_now();
+     if (space == nullptr or not range_ok(va, pages))
+     {
+         return ARCH_ASPACE_EINVAL;
+@@ -1062,6 +1065,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+     // Reject partially mapped ranges: rollback would remove existing leaves.
+     // Wholly mapped ranges can be remapped without allocating tables.
+     size_t mapped = 0;
++    uint64_t const scan_start = arch_clock_now();
+     for (size_t i = 0; i < pages; i++)
+     {
+         if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
+@@ -1069,6 +1073,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+             mapped++;
+         }
+     }
++    uint64_t const scan_end = arch_clock_now();
+     if (mapped != 0 and mapped != pages)
+     {
+         return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
+@@ -1099,6 +1104,11 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
+         invalidate_all();
+         arch_irq_restore(s);
+     }
++    if (rc == ARCH_ASPACE_OK && scan_end >= scan_start)
++    {
++        map_probe_record(pages, scan_end - scan_start, arch_clock_now() - map_start);
++        map_probe_drive(space, va, pa, pages, rights, type);
++    }
+     return rc;
+ }
+ 
+diff --git a/arch/x86/x86_64/probe5_x86_64.cc b/arch/x86/x86_64/probe5_x86_64.cc
+index 7ed42eca..5c45e7a4 100644
+--- a/arch/x86/x86_64/probe5_x86_64.cc
++++ b/arch/x86/x86_64/probe5_x86_64.cc
+@@ -13,6 +13,7 @@
+ #include <kickos/arch/regs.h>
+ #include <kickos/arch/trap.h>
+ #include <kickos/chip_q35.h>
++#include <kickos/map_probe.h>
+ 
+ #include <stddef.h>
+ #include <stdint.h>
+@@ -1246,6 +1247,23 @@ void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size)
+     arm_frames_returned(baseline);
+     arm_capacity_refusal();
+ 
++    MapProbeCell cells[16] = {};
++    unsigned const rows = arch_map_preflight_rows(cells, 16);
++    for (unsigned i = 0; i < rows; i++)
++    {
++        MapProbeCell const& c = cells[i];
++        put("  map-probe: failures="); put_dec(arch_map_preflight_failures());
++        put(" pages="); put_dec(c.pages);
++        put(" n="); put_dec(c.count);
++        put(" scan-ns="); put_dec(c.scan_min);
++        put("/"); put_dec(c.scan_sum / c.count);
++        put("/"); put_dec(c.scan_max);
++        put(" total-ns="); put_dec(c.total_min);
++        put("/"); put_dec(c.total_sum / c.count);
++        put("/"); put_dec(c.total_max);
++        put("\n");
++    }
++
+     arm("root_register_ends_on_the_boot_space", aspace_root_installed() == g_root_boot);
+ 
+     if (g_failed)
+diff --git a/kernel/bench/bench.cc b/kernel/bench/bench.cc
+index 47bb3450..6fc465df 100644
+--- a/kernel/bench/bench.cc
++++ b/kernel/bench/bench.cc
+@@ -17,12 +17,14 @@
+ #include <kickos/sched.h>
+ #include <kickos/thread.h>
+ #include <kickos/arch/arch.h>
++#include <kickos/map_probe.h>
+ #include <kickos/sys/atomic.h>
+ #include <kickos/sys/errno.h>
+ 
+ #include <stddef.h>
+ #include <stdint.h>
+ 
++
+ // The sim has no chip, so this header need not exist.
+ #if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
+ #include <kickos/chip_limits.h>
+@@ -1272,6 +1274,20 @@ namespace kickos
+ 
+     void bench_phase_print()
+     {
++        static MapProbeCell cells[16];
++        unsigned const count = arch_map_preflight_rows(cells, 16);
++        for (unsigned i = 0; i < count; i++)
++        {
++            MapProbeCell const& c = cells[i];
++            kprintf_paced("  map-probe: remaps=100x(1,3) failures=%u pages=%u n=%u scan-ns=%llu/%llu/%llu total-ns=%llu/%llu/%llu\n",
++                          arch_map_preflight_failures(), static_cast<unsigned>(c.pages), c.count,
++                          static_cast<unsigned long long>(c.scan_min),
++                          static_cast<unsigned long long>(c.scan_sum / c.count),
++                          static_cast<unsigned long long>(c.scan_max),
++                          static_cast<unsigned long long>(c.total_min),
++                          static_cast<unsigned long long>(c.total_sum / c.count),
++                          static_cast<unsigned long long>(c.total_max));
++        }
+         // Print the expected row count so truncated output can be detected.
+         kprintf_paced("  phase table (%u rows; cyc avg/max, min last and a floor; leaf -= NULL,"
+                       " composite -= NULL + k*(NEST-NULL)):\n",
+diff --git a/arch/include/kickos/map_probe.h b/arch/include/kickos/map_probe.h
+new file mode 100644
+index 00000000..b707fd6d
+--- /dev/null
++++ b/arch/include/kickos/map_probe.h
+@@ -0,0 +1,101 @@
++// Temporary M9.7 map experiment. This header lives only in the throwaway worktree.
++#pragma once
++
++#include <kickos/arch/arch.h>
++
++#include <stddef.h>
++#include <stdint.h>
++
++struct MapProbeCell
++    {
++        size_t pages;
++        uint64_t scan_sum;
++        uint64_t total_sum;
++        uint64_t scan_min;
++        uint64_t total_min;
++        uint64_t scan_max;
++        uint64_t total_max;
++        uint32_t count;
++    };
++extern "C" unsigned arch_map_preflight_rows(MapProbeCell* out, unsigned cap);
++extern "C" uint32_t arch_map_preflight_failures(void);
++
++#ifdef KICKOS_MAP_PROBE_IMPLEMENTATION
++namespace
++{
++    MapProbeCell g_map_probe[16] = {};
++    bool g_map_probe_running = false;
++    bool g_map_probe_done = false;
++    uint32_t g_map_probe_failures = 0;
++
++    void map_probe_record(size_t pages, uint64_t scan, uint64_t total)
++    {
++        if (!g_map_probe_running || scan == 0 || total == 0)
++        {
++            return;
++        }
++        for (auto& c : g_map_probe)
++        {
++            if (c.count != 0 && c.pages != pages)
++            {
++                continue;
++            }
++            if (c.count == 0)
++            {
++                c.pages = pages;
++                c.scan_min = scan;
++                c.total_min = total;
++            }
++            c.scan_sum += scan;
++            c.total_sum += total;
++            if (scan < c.scan_min) c.scan_min = scan;
++            if (total < c.total_min) c.total_min = total;
++            if (scan > c.scan_max) c.scan_max = scan;
++            if (total > c.total_max) c.total_max = total;
++            c.count++;
++            return;
++        }
++    }
++
++    void map_probe_drive(struct arch_aspace* space, uintptr_t va, arch_phys_addr_t pa,
++                         size_t pages, uint32_t rights, enum arch_map_memtype type)
++    {
++        if (g_map_probe_done || g_map_probe_running || pages < 3 || (rights & ARCH_MAP_X) != 0
++            || arch_clock_now() == 0)
++        {
++            return;
++        }
++        g_map_probe_done = true;
++        g_map_probe_running = true;
++        for (unsigned i = 0; i < 100; i++)
++        {
++            if (arch_aspace_map(space, va, pa, 1, rights, type) != ARCH_ASPACE_OK)
++            {
++                g_map_probe_failures++;
++            }
++            if (arch_aspace_map(space, va, pa, 3, rights, type) != ARCH_ASPACE_OK)
++            {
++                g_map_probe_failures++;
++            }
++        }
++        g_map_probe_running = false;
++    }
++}
++
++extern "C" unsigned arch_map_preflight_rows(MapProbeCell* out, unsigned cap)
++{
++    unsigned used = 0;
++    for (auto const& c : g_map_probe)
++    {
++        if (c.count != 0 && used < cap)
++        {
++            out[used++] = c;
++        }
++    }
++    return used;
++}
++extern "C" uint32_t arch_map_preflight_failures(void)
++{
++    return g_map_probe_failures;
++}
++#endif

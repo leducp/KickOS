@@ -17,6 +17,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
 | `tools/bench/board-rows.sh` | sourced: THE per-board table, the probe row that decides presence and the console row a capture opens |
+| `tools/bench/exit_rows.py` | READ ONLY: extract the M9.7 emulator exit rows from `docs/archive/M9.7_exit_captures/`, its row pattern also matching the M8.12 format quoted in `docs/archive/M8.12_meas.md` lines 238-239; require every named capture and sampled row |
 
 `bench.sh` never flashes. `bench-capture.sh` never builds and knows nothing about ssh.
 That split is what makes a remote pass honest: every refusal fires where the hardware is

@@ -220,6 +220,7 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         // Place READY t across cores and ask the core that takes it, without a local pass.
         // Required for each thread made ready that is not passed to the deferred reschedule.
+        // Caller holds the exclusion.
         void place_ready(Thread* t);
 #endif
 

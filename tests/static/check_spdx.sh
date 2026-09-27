@@ -49,6 +49,18 @@ classify() {
         # Tab-separated benchmark data: a header comment would become a data row.
         *.tsv)
             printf 'none\n' ;;
+        # A verbatim console capture whose SHA-256 is archived beside it: a header line would
+        # change the bytes the hash pins.
+        *.body)
+            printf 'none\n' ;;
+        # A `sha256sum` listing read back by `sha256sum -c`: a header is a line the tool never
+        # wrote, and not every implementation skips it.
+        *.sha256)
+            printf 'none\n' ;;
+        # A verbatim campaign log, archived as the run printed it: a header would be a line the
+        # run never printed.
+        *.log)
+            printf 'none\n' ;;
         # `//` or `/* */`.
         *.c|*.cc|*.cpp|*.h|*.hh|*.hpp|*.S|*.inc|*.ld|*.lds)
             printf 'need\n' ;;
@@ -153,6 +165,12 @@ arm none   CMakePresets.json
 arm refuse boards/x/presets.jsonc
 arm none   docs/archive/M9.4.1_x86_smp_yield.tsv
 arm refuse docs/archive/M9.4.1_x86_smp_yield.tsvx
+arm none   docs/archive/M9.7_exit_captures/qemu-arm64-bench-run1.body
+arm refuse docs/archive/M9.7_exit_captures/qemu-arm64-bench-run1.body.orig
+arm none   docs/archive/M9.7_exit_captures.sha256
+arm refuse docs/archive/M9.7_exit_captures.sha512
+arm none   docs/archive/M9.7_exit_campaign.log
+arm refuse docs/archive/M9.7_exit_campaign.log.1
 arm need   kernel/sched.cc
 arm need   arch/arm/armv7m/vectors.S
 arm need   docs/reference/style.md
@@ -192,12 +210,12 @@ while IFS="$TAB" read -r want path; do
         refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
     esac
 done < "$TMP/classify_controls"
-[ "$i" -eq 31 ] || fail "$i classify() control(s) ran, expected 31"
+[ "$i" -eq 37 ] || fail "$i classify() control(s) ran, expected 37"
 # All three verdicts, or a classify() collapsed onto one of them would satisfy every equality
 # above and still classify the whole tree wrong.
 [ "$C_NEED" -eq 14 ] || fail "classify() answered need for $C_NEED of 14 controls"
-[ "$C_NONE" -eq 6 ] || fail "classify() answered none for $C_NONE of 6 controls"
-[ "$C_REFUSE" -eq 11 ] || fail "classify() answered refuse for $C_REFUSE of 11 controls"
+[ "$C_NONE" -eq 9 ] || fail "classify() answered none for $C_NONE of 9 controls"
+[ "$C_REFUSE" -eq 14 ] || fail "classify() answered refuse for $C_REFUSE of 14 controls"
 
 # The header check. Each positive is one clause: no tag at all, a tag one line past the
 # window, a copyright line not beside the tag, the two words in PROSE, and a copyright line
