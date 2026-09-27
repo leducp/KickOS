@@ -3297,7 +3297,7 @@ namespace
         uint32_t initiated_after = 0;
         uint32_t peer_served = 0;
         uint32_t mine_served = 0;
-        unsigned silent_rows = 0;
+        [[maybe_unused]] unsigned silent_rows = 0;
         for (unsigned c = 0; c < width; c++)
         {
             uint64_t const w = kos_doorbell_probe(KOS_DOORBELL_OP_COUNTS, c);

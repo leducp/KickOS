@@ -23,4 +23,7 @@
  * constraint as the doorbell (avoid 3=msip, 7=mtip, 1=ssip). */
 #define KICKOS_RV_DEV_CPU_INT 30
 
+/* ESP32-C6 HP PMU signal carrying the LP node's AMP doorbell. */
+#define KICKOS_RV_AMP_DOORBELL_CPU_INT 29
+
 #endif /* KICKOS_ARCH_RV_TRAP_IDS_H */

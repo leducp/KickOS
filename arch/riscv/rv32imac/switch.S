@@ -180,6 +180,14 @@ trap_entry:
        are a thread's saved context and stay on the interrupted sp, so a privileged thread's
        syscall descends on its own stack; every other M-mode trap takes the trap stack. */
     csrr    t0, mcause
+#if KICKOS_RV32_LP
+    li      t1, 0x8000001e         /* LP's one interrupt can carry a deferred switch */
+    bne     t0, t1, 9f
+    la      t1, g_lp_switch_pending
+    lw      t1, 0(t1)
+    bnez    t1, .Ltrap_from_m_ctx
+9:
+#endif
     li      t1, KICKOS_RV_MCAUSE_MSIP
     beq     t0, t1, .Ltrap_from_m_ctx
     li      t1, 11                 /* ecall from M */
@@ -255,6 +263,10 @@ trap_entry:
     j       .Lfault
 .Lintr:
     andi    t0, t0, 0x1f            /* interrupt code */
+#if KICKOS_RV32_LP
+    li      t1, 30
+    beq     t0, t1, .Llp_irq
+#endif
     li      t1, 3
     beq     t0, t1, .Lswitch        /* machine software (msip) -> the switcher */
 #if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
@@ -273,8 +285,20 @@ trap_entry:
     beq     t0, t1, .Lext           /* the C6 external inject doorbell (rv_trap_ids.h) */
     li      t1, KICKOS_RV_DEV_CPU_INT
     beq     t0, t1, .Lextdev        /* a real device external IRQ (C6: UART0 TX ring) */
+#if KICKOS_AMP_OWN_IMAGE
+    li      t1, KICKOS_RV_AMP_DOORBELL_CPU_INT
+    beq     t0, t1, .Lextamp
+#endif
     /* spurious: just return */
     j       .Lrestore
+
+#if KICKOS_RV32_LP
+.Llp_irq:
+    la      t1, g_lp_switch_pending
+    lw      t1, 0(t1)
+    bnez    t1, .Lswitch
+    j       .Lextamp
+#endif
 
 /* --- Timer (mtip). kickos_isr_timer re-arms or disarms mtimecmp, which is what clears mtip,
    and may arch_switch, whose msip fires on mret. */
@@ -333,13 +357,34 @@ trap_entry:
     sw      t1, 0(t0)
     j       .Lrestore
 
+#if KICKOS_AMP_OWN_IMAGE
+.Lextamp:
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, 1
+    sw      t1, 0(t0)
+    call    kickos_c6_amp_doorbell_service
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, -1
+    sw      t1, 0(t0)
+    j       .Lrestore
+#endif
+
 /* --- The deferred switcher (msip), with MIE=0. g_arch_current is always valid here, the
    first switch going through arch_start. s0/s1 are free scratch, the outgoing thread's
    copies being already in its frame. */
 .Lswitch:
+#if KICKOS_RV32_LP
+    /* Leave the latched PMU bit set. After the switch, its next interrupt
+       drains any HP request that arrived beside the self-trigger. */
+    la      t0, g_lp_switch_pending
+    sw      zero, 0(t0)
+#else
     la      t0, g_clint_msip
     lw      t0, 0(t0)
     sw      zero, 0(t0)             /* clear msip (else it re-fires immediately) */
+#endif
     la      t0, g_arch_current
     lw      t1, 0(t0)               /* t1 = outgoing ctx* */
     sw      sp, 0(t1)               /* outgoing->sp = sp (frame just saved) */

@@ -15,6 +15,7 @@
 
 namespace kickos::esp32c6::reg::intmtx
 {
+    constexpr uintptr_t PMU_MAP = mmap::INTMTX_BASE + 0x34u;
     constexpr uintptr_t FROM_CPU_0_MAP = mmap::INTMTX_BASE + 0x58u; // [4:0]=target CPU int
     constexpr uintptr_t UART0_MAP = mmap::INTMTX_BASE + 0xACu;      // route UART0 -> CPU int
 }

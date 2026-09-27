@@ -236,7 +236,15 @@ MROW
 esac
 export EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS
 
-cmake --build "$BUILD" -j8 --target "$APP" > /dev/null || exit 1
+BUILD_TARGET="$APP"
+if [ "${AMP_PARTITION:-0}" = "1" ]; then
+  if [ "$BOARD" != "esp32c6-wroom" ] || [ "$APP" != "ampping_n0" ] || [ "$VARIANT" != "amp2-n0" ]; then
+    echo "REFUSING: AMP_PARTITION=1 requires esp32c6-wroom, APP=ampping_n0, VARIANT=amp2-n0" >&2
+    exit 1
+  fi
+  BUILD_TARGET=amp_partition
+fi
+cmake --build "$BUILD" -j8 --target "$BUILD_TARGET" > /dev/null || exit 1
 
 # THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
 # asked of git here. The two answer differently the moment the tree is touched between the
@@ -257,8 +265,12 @@ export EXPECT_COMMIT
 # blind spot.
 BASE=${APP%_p[0-9]}
 IMG=""
+if [ "${AMP_PARTITION:-0}" = "1" ]; then
+  IMG="$PWD/$BUILD/kickos-partition"
+fi
 for d in "$PWD/$BUILD/user/apps/$BOARD/$APP" "$PWD/$BUILD/user/apps/common/$APP" \
          "$PWD/$BUILD/user/apps/$BOARD/$BASE" "$PWD/$BUILD/user/apps/common/$BASE"; do
+  [ -n "$IMG" ] && break
   if [ -e "$d/$APP" ] || [ -e "$d/$APP.hex" ]; then
     IMG="$d/$APP"
     break
@@ -287,7 +299,11 @@ if [ -z "${BENCH_HOST:-}" ]; then
   # discovery: TREE may be a worktree, which has no .session/ to discover.
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
     CONSOLE_USB_CDC="$CONSOLE_USB_CDC" \
-    exec "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN"
+    "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN" || exit $?
+  if [ "${AMP_PARTITION:-0}" = "1" ]; then
+    python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
+  fi
+  exit 0
 fi
 
 # --- boards on the bench host --------------------------------------------------
@@ -355,7 +371,7 @@ rsync -a -s -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: cou
 # as for the mkdir above.
 ROUT=$(mktemp)
 RARGS=()
-for _ra in "$BOARD" "$APP" "$RRUN/$APP" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
+for _ra in "$BOARD" "$APP" "$RRUN/$(basename "$IMG")" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
            "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
            "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}"; do
   RARGS+=("$(printf '%q' "$_ra")")
@@ -424,3 +440,6 @@ fi
 [ -n "$RBYTES" ] || { echo "REFUSING: the remote capture reported no byte count" >&2; exit 1; }
 [ "$LBYTES" = "$RBYTES" ] || { echo "REFUSING: fetched $LBYTES bytes, the bench wrote $RBYTES" >&2; exit 1; }
 echo "log: $LOG  ($LBYTES bytes, fetched from $BENCH_HOST)"
+if [ "${AMP_PARTITION:-0}" = "1" ]; then
+  python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
+fi

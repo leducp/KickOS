@@ -1217,14 +1217,27 @@ it carrying initialised bytes into memory a peer may already be using; the loade
 PAIR of nodes disjoint; and every node's base distinct, two nodes linked at one base being the
 collapse N6c names and one that every arm on the node owning that base passes.
 
-**PEER CONSOLE LINES ARE GATED WHOLE, AND THE CLAIM, NOT TIMING, KEEPS THEM WHOLE.** One private
-TX ring per node cannot arbitrate one UART: a peer's announcement shreds under another node's
-banner about one run in ten. The shared UART therefore carries a bounded partition claim, held
-across the chunks of one line; a write whose claim cannot be acquired, or is lost, drops the
+**PEER CONSOLE LINES ARE GATED WHOLE, AND THE CLAIM, NOT TIMING, KEEPS THEM WHOLE.** This holds
+wherever own-image nodes share one UART, which is the RP2350 and QEMU ARM64 partitions. One
+private TX ring per node cannot arbitrate one UART: a peer's announcement shreds under another
+node's banner about one run in ten. The shared UART therefore carries a bounded partition claim,
+held across the chunks of one line; a write whose claim cannot be acquired, or is lost, drops the
 rest of its line. The partition gate checks each peer's complete app announcement, and still
 witnesses peer liveness through a counter the *other* node reads: a debug line may be dropped
 under a bounded wait even when the app ran. The app-alive sweep checks the app's causal order
 only.
+
+The ESP32-C6 pair shares no UART and takes no claim. The part has an LP UART, but this port
+wires none: HP owns UART0, and LP writes boot and served-call records to the shared window;
+HP reports those records. Its partition capture checks LP's
+vector in its HP SRAM slice, both app-alive records, far replies, and both doorbell counts.
+The LP's own console writes are a sink, so this gate does not claim to preserve LP debug text.
+One ROM flash carries both nodes' LOAD segments, while HP copies the LP reset stub into LP SRAM
+and wakes it. The [silicon record](archive/M9.9_amp.md) states the precise witness.
+The LP has no PMP or per-thread privilege split, but its REE2 bus master is
+confined by the APM to node 1's HP SRAM slice and the shared window. HP's
+private slice stays outside those grants. That protects HP from LP accesses;
+it does not isolate LP threads from one another or restrict the trusted HP core.
 
 **AND A GREEN RUN OF A TWO-KERNEL GATE WITNESSES LESS THAN A GREEN RUN OF A ONE-KERNEL GATE.**
 The interleaving, the order the two kernels reach their first publication, and which of them is

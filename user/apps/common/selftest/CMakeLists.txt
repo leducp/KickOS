@@ -35,14 +35,16 @@ set(_selftest_regions 4)
 # budget is a different one on each of them: 64 KiB of FLASH on the two STM32 parts, the
 # 128 KiB pow2 PMP code window (`_code_size` in arch/riscv/chip/esp32c6/esp32c6.ld) on an
 # enforcing ESP32-C6, whose next step up would take 128 KiB straight off the thread arena,
-# and the arena that follows .bss on nrf51. None of the three is a number the build can read
-# back from the board, so the count is stated here and nowhere else: the chip and
-# KICKOS_HAVE_MPU come from the board's own config, and every gate takes the image list and
-# each image's arm count off the targets below rather than restating either.
+# the 224 KiB node slice on the ESP32-C6's own-image AMP partition, and the arena that
+# follows .bss on nrf51. None of the four is a number the build can read back from the
+# board, so the count is stated here and nowhere else: the chip, KICKOS_HAVE_MPU and
+# KICKOS_AMP_OWN_IMAGE come from the board's own config, and every gate takes the image list
+# and each image's arm count off the targets below rather than restating either.
 set(_selftest_parts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
   set(_selftest_parts 4)
-elseif(KICKOS_CHIP STREQUAL "nrf51" OR (KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU))
+elseif(KICKOS_CHIP STREQUAL "nrf51" OR (KICKOS_CHIP STREQUAL "esp32c6" AND
+       (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE)))
   set(_selftest_parts 3)
 endif()
 if(_selftest_parts GREATER _selftest_regions)

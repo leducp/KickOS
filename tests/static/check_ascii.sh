@@ -150,6 +150,8 @@ exempt_nul() { # <file>
 #   docs/archive/M9.7_map_probe.patch
 #       the archived measurement probe, kept applicable. A unified diff prefixes every context
 #       line with a space, so a context line for an empty source line is a lone space.
+#   M9.9 LP probe captures
+#       raw serial bytes have CRLF on every line and their hashes are in M9.9_lp_boot.md.
 allowed_records() { # <file>
     case "$1" in
         LICENSE)
@@ -157,6 +159,12 @@ allowed_records() { # <file>
             ;;
         docs/archive/M9.7_map_probe.patch)
             printf '%s: trailing whitespace\n' 14 16 52 63 65 101 112 150 160 166 185 198 201 207
+            ;;
+        docs/archive/M9.9_lp_boot_capture.log)
+            awk 'BEGIN { for (i = 1; i <= 27; i++) print i ": carriage return at end of line" }'
+            ;;
+        docs/archive/M9.9_lp_doorbell_capture.log)
+            awk 'BEGIN { for (i = 1; i <= 31; i++) print i ": carriage return at end of line" }'
             ;;
     esac
 }

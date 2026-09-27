@@ -26,12 +26,18 @@
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
+#include <amp_partition.ld.h>
 
 ENTRY(_start)
 
 MEMORY
 {
+#if KICKOS_AMP_OWN_IMAGE
+    RAM (rwx) : ORIGIN = KICKOS_AMP_IMAGE_BASE, LENGTH = KICKOS_AMP_NODE_SHARE
+    SHARED (rw) : ORIGIN = KICKOS_AMP_SHARED_BASE, LENGTH = KICKOS_AMP_SHARED_SIZE
+#else
     RAM (rwx) : ORIGIN = 0x40800000, LENGTH = 512K   /* HP SRAM */
+#endif
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/handler stack: top of HP SRAM */
@@ -266,12 +272,49 @@ SECTIONS
     __kickos_rom_end = 0;
     __kickos_sram_start = ORIGIN(RAM);
 
+#if KICKOS_AMP_OWN_IMAGE
+    .amp_shared (NOLOAD) : ALIGN(64)
+    {
+        __kickos_amp_shared_start = .;
+        __kickos_amp_cells_start = .;
+        KEEP(*(.amp_shared.cells.request))
+        KEEP(*(.amp_shared.cells.answer))
+        KEEP(*(.amp_shared.cells.served))
+        KEEP(*(.amp_shared.affinity))
+        KEEP(*(.amp_shared.affinity_seated))
+        __kickos_amp_cells_end = .;
+        . = ALIGN(64);
+        __kickos_amp_window_start = .;
+        KEEP(*(.amp_shared.window))
+        __kickos_amp_window_end = .;
+        . = ALIGN(64);
+        __kickos_amp_counts_start = .;
+        KEEP(*(.amp_shared.counts))
+        __kickos_amp_counts_end = .;
+        KEEP(*(.amp_shared.chip))
+        KEEP(*(.amp_shared.diag))
+        __kickos_amp_shared_end = .;
+    } > SHARED
+#endif
+
     /DISCARD/ : { *(.comment) *(.riscv.attributes) }
 
     KICKOS_NONALLOC_SECTIONS
 }
 
 KICKOS_STATIC_RELOC_ASSERT()
+#if KICKOS_AMP_OWN_IMAGE
+ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
+       "KickOS: ESP32-C6 AMP shared region moved from the common partition address")
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
+       "KickOS: ESP32-C6 AMP shared objects overflow the reserved window")
+ASSERT(KICKOS_AMP_PARTITION_BASE == 0x40800000 && KICKOS_AMP_PARTITION_END <= 0x40880000,
+       "KickOS: ESP32-C6 AMP partition must fit its 512 KiB HP SRAM")
+ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start
+       && __kickos_amp_window_end > __kickos_amp_window_start
+       && __kickos_amp_counts_end > __kickos_amp_counts_start,
+       "KickOS: ESP32-C6 AMP ring objects did not land in shared SRAM")
+#endif
 KICKOS_TLS_ALIGN_ASSERT()
 KICKOS_TLS_FIT_ASSERT()
 

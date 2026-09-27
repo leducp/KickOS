@@ -1,0 +1,31 @@
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0xafb4
+SHA-256 comparison failed:
+Calculated: ce1ef64f3ef9800cc95487339a37cc7ecab37f1c524f68533202dd76c3e44366
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     off
+   sched   tickless
+   build   2026-09-27 16:21:04 +0200
+   app     Sep 27 2026 16:21:04 +0200
+   commit  10e0530a
+   heap    16 KiB available
+   kstack  1184 B x 17 = 20128 B
+
+c6lpprobe: payload IRQ 8000001e source 20 status 80000000 fault 0
+c6lpprobe: LP APM M1 0/0/0
+c6lpprobe: LP APM 0/0/0 HP APM 0/0/0
+c6lpprobe: HP PMU raw 20000000 LP raw 100000
+c6lpprobe: PASS bidirectional PMU doorbells

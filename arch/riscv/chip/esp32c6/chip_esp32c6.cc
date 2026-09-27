@@ -12,11 +12,25 @@
 // watchdogs ch.14/15; UART ch.27; INTMTX ch.10 + section 1.6). Hand-rolled, no
 // ESP-IDF/HAL sources.
 
+#if KICKOS_AMP_OWN_IMAGE
+#if KICKOS_AMP_NODE_ID == 1
+#define KICKOS_C6_LP_NODE 1
+#endif
+#endif
+#ifndef KICKOS_C6_LP_NODE
+#define KICKOS_C6_LP_NODE 0
+#endif
+
+#if !KICKOS_C6_LP_NODE
+
 #include <kickos/arch/arch.h>
+#include <kickos/arch/amp_shared.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
+#include <kickos/kernel.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/atomic.h>
 
 #include <stdint.h>
 
@@ -50,6 +64,15 @@ extern "C"
     extern volatile uint32_t* g_clint_msip;
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
+    // Defined by lp_probe_esp32c6.cc, which only c6lpprobe's link extracts.
+    void kickos_c6_lp_probe_boot(void) __attribute__((weak));
+#endif
+#if KICKOS_AMP_OWN_IMAGE
+    extern uint8_t kickos_c6_amp_lp_stub_start[];
+    extern uint8_t kickos_c6_amp_lp_stub_end[];
+    extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
+#endif
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -372,6 +395,19 @@ int arch_console_write(char const* buf, size_t n)
 {
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
+
+#if KICKOS_AMP_OWN_IMAGE
+int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
+{
+    // The LP node relays its report through the shared ring; only HP owns
+    // UART0, so this writer either queues the whole line or queues none.
+    if (cr_pending != nullptr)
+    {
+        *cr_pending = false;
+    }
+    return arch_console_write(buf, n);
+}
+#endif
 
 // Synchronous polled writer for the panic / fault / pre-arm path (console.cc picks it when
 // the ring is unarmed or in ISR/panic context); it replaces a fallback TU that would
@@ -848,6 +884,25 @@ void arch_init(void)
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
     c6_early_mark('G');  // inject doorbell wired
+
+#if KICKOS_AMP_OWN_IMAGE
+    // LP_TRIGGER_HP sets PMU_SW_INT. Route that level to an HP CPU vector
+    // separate from the UART and software-inject vectors.
+    r32(0x600B0164u) |= 1u << 29;
+    r32(reg::intmtx::PMU_MAP) = KICKOS_RV_AMP_DOORBELL_CPU_INT;
+    r32(reg::plic::MXINT_PRI_BASE + 4u * KICKOS_RV_AMP_DOORBELL_CPU_INT) = DOORBELL_PRIO;
+    r32(reg::plic::MXINT_TYPE) &= ~(1u << KICKOS_RV_AMP_DOORBELL_CPU_INT);
+    r32(reg::plic::MXINT_ENABLE) |= 1u << KICKOS_RV_AMP_DOORBELL_CPU_INT;
+    __asm volatile("fence iorw, iorw" ::: "memory");
+    __asm volatile("csrs mie, %0" : : "r"(1u << KICKOS_RV_AMP_DOORBELL_CPU_INT) : "memory");
+#endif
+
+#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
+    if (kickos_c6_lp_probe_boot != nullptr)
+    {
+        kickos_c6_lp_probe_boot();
+    }
+#endif
 }
 
 #if KICKOS_HAVE_MPU
@@ -908,6 +963,9 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
+#if KICKOS_AMP_OWN_IMAGE && KICKOS_AMP_NODE_ID == 0
+    arch_amp_shared_zero();
+#endif
     c6_early_mark('B'); // .data copied + .bss zeroed
 #if KICKOS_HAVE_MPU
     uint32_t* asrc = &_appdata_lma;
@@ -938,3 +996,89 @@ void Reset_Handler(void)
 }
 
 }
+
+#if KICKOS_AMP_OWN_IMAGE
+void arch_amp_release_peers(void)
+{
+    uintptr_t const stub_begin = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_start);
+    uintptr_t const stub_end = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_end);
+    uintptr_t const image_base = KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE;
+    uintptr_t const shared_base = KICKOS_AMP_PARTITION_BASE
+                                  + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE;
+    uintptr_t const stub_size = stub_end - stub_begin;
+    // The ESP32-C6 ROM placed both node LOAD segments from the one flashed
+    // partition image. Node 0 copies only the small reset vector into LP SRAM.
+    if (r32(image_base) == 0u or stub_size == 0u or stub_size > 1024u
+        or (stub_size & 3u) != 0u)
+    {
+        constexpr char msg[] = "KickOS: ESP32-C6 AMP LP segment absent or stub invalid\n";
+        arch_console_write_sync(msg, sizeof(msg) - 1u);
+        arch_shutdown(1);
+    }
+    // Measure the LP RTC clock against HP's 160 MHz CLINT before wake. Its
+    // silicon rate depends on the ROM's clock selection and oscillator trim.
+    constexpr uintptr_t rtc = 0x600B0C00u;
+    auto rtc_ticks = [rtc]() -> uint64_t {
+        r32(rtc + 0x10u) |= 1u << 28;
+        uint32_t const lo = r32(rtc + 0x14u);
+        uint32_t const hi = r32(rtc + 0x18u) & 0xFFFFu;
+        return (static_cast<uint64_t>(hi) << 32) | lo;
+    };
+    uint64_t const start_ticks = rtc_ticks();
+    uint64_t const start_ns = arch_clock_now();
+    while (arch_clock_now() - start_ns < 20000000ull)
+    {
+    }
+    uint64_t const end_ticks = rtc_ticks();
+    uint64_t const elapsed_ns = arch_clock_now() - start_ns;
+    uint32_t const rtc_hz = static_cast<uint32_t>(
+        ((end_ticks - start_ticks) * 1000000000ull) / elapsed_ns);
+    if (rtc_hz < 30000u or rtc_hz > 1000000u)
+    {
+        constexpr char msg[] = "KickOS: ESP32-C6 LP RTC rate invalid\n";
+        arch_console_write_sync(msg, sizeof(msg) - 1u);
+        arch_shutdown(1);
+    }
+    kickos_c6_amp_rtc_hz = rtc_hz;
+    kickos::kprintf("# c6amp: LP RTC %u Hz\n", static_cast<unsigned>(rtc_hz));
+    constexpr uintptr_t lp_mem = 0x50000000u;
+    constexpr uintptr_t lp_apm = 0x600B3800u;
+    for (uintptr_t i = 0; i < stub_size; i += 4u)
+    {
+        r32(lp_mem + i) = r32(stub_begin + i);
+    }
+    r32(lp_mem + 0x204u) = 0;
+    r32(lp_mem + 0x208u) = 0;
+    r32(lp_mem + 0x20Cu) = 0;
+    __asm volatile("fence iorw, iorw" ::: "memory");
+    // LP_APM has four regions and region 0 is the reset catch-all, so these three
+    // grants are every page the LP kernel may reach outside HP SRAM: the PMU page,
+    // the 1 KiB reset vector and the LP timer page. LP_CLKRST and eFuse stay out.
+    r32(lp_apm + 0x10u) = 0x600B0000u;
+    r32(lp_apm + 0x14u) = 0x600B03FFu;
+    r32(lp_apm + 0x18u) = 0x600u;
+    r32(lp_apm + 0x1Cu) = 0x70000000u;
+    r32(lp_apm + 0x20u) = 0x700003FFu;
+    r32(lp_apm + 0x24u) = 0x700u;
+    r32(lp_apm + 0x28u) = 0x600B0C00u;
+    r32(lp_apm + 0x2Cu) = 0x600B0FFFu;
+    r32(lp_apm + 0x30u) = 0x600u;
+    r32(lp_apm) |= 0xEu;
+    // The LP can fetch/write only its node slice and the shared ring in HP SRAM.
+    r32(reg::apm::region_addr_start(4u)) = image_base;
+    r32(reg::apm::region_addr_end(4u)) = image_base + KICKOS_AMP_NODE_SHARE - 1u;
+    r32(reg::apm::region_attr(4u)) = 0x700u;
+    r32(reg::apm::region_addr_start(5u)) = shared_base;
+    r32(reg::apm::region_addr_end(5u)) = shared_base + KICKOS_AMP_SHARED_SIZE - 1u;
+    r32(reg::apm::region_attr(5u)) = 0x600u;
+    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(4u) | reg::apm::region_en(5u);
+    r32(0x600B1048u) = (r32(0x600B1048u) & ~(1u << 31)) | (1u << 30);
+    r32(0x600B0174u) |= 1u << 31;
+    r32(0x600B017Cu) |= 3u << 30;
+    r32(0x600B0180u) |= 1u;
+    __asm volatile("fence iorw, iorw" ::: "memory");
+    r32(0x600B0184u) = 1u << 31;
+}
+#endif
+
+#endif // !KICKOS_C6_LP_NODE

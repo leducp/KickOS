@@ -6,6 +6,12 @@ if(NOT KICKOS_ARCH_FAMILY)
   set(KICKOS_ARCH_FAMILY "arm")
 endif()
 
+if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
+  add_compile_definitions(KICKOS_RV32_LP=1)
+else()
+  add_compile_definitions(KICKOS_RV32_LP=0)
+endif()
+
 # --- Seam fallbacks: the lone-TU rule ----------------------------------------
 # A seam whose backend is optional gets its fallback in a translation unit of its own,
 # <symbol>_default.cc, defining exactly one symbol: a second symbol drags the member in beside
