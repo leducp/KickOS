@@ -466,6 +466,15 @@ that declines it moves it there, and a core whose level falls asks the holder to
 peer is HANDED onto the ring from this core to that one, published where this core's lock span
 ends, and linked by the peer's own dispatch (`docs/design-m9.4-rings.md`).
 
+**Exclusion:** `IrqLock` masks the local core and, above one kernel core,
+holds one BKL across shared-kernel transactions. Per-core ready queues
+restrict who edits a list; they do not let two cores edit shared capability,
+IPC or timer state concurrently. The scheduler and timer entries marked
+"caller holds the exclusion" in `sched.h` and `time.h` rely on the incoming
+caller's bracket or a masked trap entry. The located compiler-callgraph gate
+in `tests/static/check_caller_held.py` checks that obligation on its declared
+presets; `STATE.md` names its Xtensa coverage limit.
+
 **Pluggable policy interface (RTEMS-style).** The core owns *mechanism* (run state, context
 switch, ready structure); the *policy* (which thread runs next) sits behind a small interface
 (`SchedPolicy`, `kernel/include/kickos/sched.h`): `pick_next()`, `on_ready(t)`, `on_remove(t)`,

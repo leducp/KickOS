@@ -577,6 +577,17 @@
 
 ## Scheduler & instance state
 
+- **`caller-held-scheduler-exclusion`** -- An entry declared caller-held in
+  `sched.h` or `time.h` runs with local interrupts masked and, in a shared
+  kernel above one core, with the one BKL held. A direct incoming edge either
+  has a live `IrqLock` or inherits that obligation until a named masked trap
+  entry. The graph gate refuses an unknown indirect edge in its supported
+  compiler corpus and a real lock-removal mutation turns it red. Its current
+  preset set and Xtensa limit are recorded in `STATE.md`.
+  - *applies:* scheduler and timer caller-held entries; shared-kernel arches
+  - *source:* kernel/include/kickos/sched.h, kernel/include/kickos/time.h;
+    tests/static/check_caller_held.py, tests/static/check_caller_held_witness.py
+
 - **`instance-scoped-state-no-arch-crossing`** -- All kernel runtime bookkeeping (ready lists, current/idle, sleepq, object pools, IRQ table, telemetry counters) lives in the single Kernel instance reached only via kernel(); the sim arch backend keeps its own parallel SimInstance and never crosses the arch seam. Multiple instances co-reside in one host process, so no cross-cutting global may leak scheduler/telemetry state across emulated MCUs.
   - *applies:* instance scoping, arch seam; kernel + sim
   - *source:* kernel/include/kickos/instance.h (struct Kernel, kernel()); arch/sim/sim.cc (SimContext, SimInstance, sim())

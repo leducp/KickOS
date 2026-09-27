@@ -2118,14 +2118,17 @@ other than its mask, nothing in it argues against the next.
 
 ---
 
-## 9. Deliberately NOT frozen
+## 9. Boundaries left open after M9
 
-- **Finer locking.** The spike's stage 2. Per-core ready queues are settled: M9.2 landed them
-  under the one kernel lock, and section 8 is their contract. What stays open is a lock
-  partition, which `roadmap.md`'s M9 section owns, named for the question itself rather than for
-  a lock/no-lock split: a measured verdict that the coarse lock survives is a successful outcome
-  of that milestone, not a failure of it. The entry metrics and the stop condition live there,
-  not here.
+- **Finer locking remains a future measurement question, not M9's shipped contract.** M9.2
+  placed per-core ready queues under one BKL and M9.4 gave cross-core scheduler work per-pair
+  rings. M9.5 then tested an owner-local IPC path at twelve pinned x86 cores and removed it:
+  its gain for local pairs did not pay for the mixed workload's second exclusion and lifetime
+  protocol. The whole-transaction audit found no small per-object replacement. One BKL still
+  excludes shared-kernel transactions, with CLH arbitration on x86_64 and ticket arbitration
+  elsewhere. The measurements and the stop ruling live in
+  `docs/design-m9.5-bkl-options.md`; section 8 owns the ready-queue contract. A later BKL
+  partition needs a complete object-lifetime rule and a workload that justifies its cost.
 - **The MCU dual-core parts' MODEL is settled and their port was never in question.** This entry
   used to ask whether they were "worth an AMP port at all", which was badly worded and invited
   the wrong reading: the only question was ever SMP versus AMP, and requirement 6 answers it.

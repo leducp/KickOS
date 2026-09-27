@@ -136,6 +136,11 @@ path. The detailed [BKL decision](../design-m9.5-bkl-options.md) records the
 workload evidence and the alternatives. The combination keeps a single
 lifetime rule while making scheduler ownership explicit.
 
+The M9 exit capture is recorded separately from the M9.5 lock experiment.
+Its benchmark instrumentation changed during M9, so the
+[exit record](../archive/M9.7_exit.md) does not treat an M8-to-M9 row
+difference as the cost or benefit of this lock choice.
+
 ## How the boundary appears in the code
 
 Each core's ready structure has priority-indexed FIFO lists and a bitmap.

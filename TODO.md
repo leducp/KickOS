@@ -5238,6 +5238,29 @@ renumbered: the five lock stages keep the numbers their evidence gates were writ
       prevents a dead AMP node from owning the UART forever, but cannot guarantee a complete
       line when a node stalls; `STATE.md` records that limit.
 
+- [x] **M9.7: ENFORCE CALLER-HELD EXCLUSION.** Take the de-locked scheduler and timer entry
+      points from their declared contracts, walk every incoming call edge, and require an
+      enclosing `IrqLock` or a named masked-context entry. The gate must refuse an unknown
+      indirect edge and prove it turns red when a lock is removed from a real caller. The
+      gate runs on ten compiler-callgraph presets and both mutations turn it red. Xtensa's
+      unlocated indirect edges prevent the same proof on LX6; `STATE.md` records the boundary.
+
+- [x] **M9.7: PRICE THE MAP PREFLIGHT ON EACH TRANSLATING BACKEND.** Drive the map path on
+      ARM64, RV64 and x86_64 with one-page and multi-page runs. Separate the preflight scan
+      from the whole map operation; record what QEMU or KVM can and cannot say about its cost
+      on silicon. `docs/archive/M9.7_map_preflight.md` keeps the 30 sampled rows, the
+      isolated instrument patch and the QEMU-only limit.
+
+- [x] **M9.7: FREEZE THE M9 EXIT MEASUREMENT AND CONTRACT.** Capture the rows named in M8.12
+      with `tools/bench/exit_rows.py` and the same headline statistic per preset. State which
+      spans changed and exclude their deltas. Also carry the M9.4 bench-row split: it made every
+      phase bracket and distribution sample cheaper, so no bench row is numerically comparable
+      across that instrument change, even when its span and name stayed the same. Include the
+      M9.5 pinned x86 width result and the LX6 silicon check without presenting emulator time
+      as kernel time. Reconcile the roadmap, architecture reference, invariants, teaching chapter
+      and state record against the shipped one-BKL design. The six-preset, 30-capture
+      record is `docs/archive/M9.7_exit.md`; the two SMP `e2e-cross` rows have no samples.
+
 **TWO LINES WENT BECAUSE THEY WERE STALE.** This section used to say the instrument constants M8.7
 owes this milestone and G-06 were actionable alongside M9.0. The five constants landed inside M8.7's
 own pass, folded into the spans it was already opening, and G-06 was decided at M8.4. Neither is

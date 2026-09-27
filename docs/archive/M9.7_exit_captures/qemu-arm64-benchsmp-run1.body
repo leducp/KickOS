@@ -1,0 +1,348 @@
+# smp: 4 core(s) online
+# doorbell: 4 core(s) answered, rounds 0x40, unmoved 0x3
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu-arm64
+   arch    armv8a
+   cpu     cortex-a53
+   mpu     off
+   sched   tickless
+   build   2026-09-27 15:20:19 +0200
+   app     Sep 27 2026 15:20:20 +0200
+   commit  9a6d5ae0
+   heap    64 KiB available
+   kstack  4096 B x 17 = 69632 B
+
+# smp sched: 4 core(s) in the scheduler
+microbenchmark: context-switch throughput (all arches) + per-switch cost
++ IRQ-entry latency where a cycle counter exists. Reporter woken by the
+workload, not a timer. Telemetry OFF for clean numbers.
+cycle counter: 0 Hz (0 = no rate converts a reading; cycles only)
+
+  lock-probe: hold+1 wait+1 core=0 depth=0  (three nested, one outermost)
+  call/reply: 8 B  26782 ns/round-trip  (37337 round-trips/s over 20000 calls / 535 ms)
+  call/reply: 16 B  26814 ns/round-trip  (37293 round-trips/s over 20000 calls / 536 ms)
+  call/reply: 32 B  26749 ns/round-trip  (37383 round-trips/s over 20000 calls / 534 ms)
+  call/reply: 64 B  26790 ns/round-trip  (37326 round-trips/s over 20000 calls / 535 ms)
+  call/reply: 128 B  26765 ns/round-trip  (37361 round-trips/s over 20000 calls / 535 ms)
+  call/reply: 256 B  27037 ns/round-trip  (36985 round-trips/s over 20000 calls / 540 ms)
+  call/reply: 8 B  28100 ns/round-trip  (35586 round-trips/s over 20000 calls / 562 ms) [generic path]
+  call/reply: 16 B  26962 ns/round-trip  (37089 round-trips/s over 20000 calls / 539 ms) [generic path]
+  call/reply: 32 B  26734 ns/round-trip  (37405 round-trips/s over 20000 calls / 534 ms) [generic path]
+  call/reply: 64 B  26765 ns/round-trip  (37361 round-trips/s over 20000 calls / 535 ms) [generic path]
+  call/reply: 128 B  26792 ns/round-trip  (37324 round-trips/s over 20000 calls / 535 ms) [generic path]
+  call/reply: 256 B  26635 ns/round-trip  (37544 round-trips/s over 20000 calls / 532 ms) [generic path]
+  call/reply: 32 B  27524 ns/round-trip  (36331 round-trips/s over 20000 calls / 550 ms) [caller outranks server, D1 donates]
+  phase table (44 rows; cyc avg/max, min last and a floor; leaf -= NULL, composite -= NULL + k*(NEST-NULL)):
+    NULL             129/6923  min=110  n=260000
+    NEST             431/36499  min=380  n=260000
+    NEST_LOCK        496/24487  min=450  n=260000
+    CALL_TOTAL       24923/1684032  min=23915  n=259986  SAT=7
+    CALL_VALIDATE    230/21520  min=190  n=260000
+    CALL_LOCKED      23299/1682119  min=22343  n=259986  SAT=7
+    CALL_RESOLVE     162/7314  min=150  n=260000
+    CALL_PEEK        154/13576  min=140  n=260000
+    CALL_PROBE       138/12714  min=120  n=259993
+    CALL_POP         143/24757  min=130  n=259993
+    CALL_COPY        766/44675  min=661  n=259993
+    CALL_MINT        1236/75462  min=1122  n=259993
+    CALL_MINT_CAP    255/45887  min=220  n=259993
+    CALL_MINT_INFO   466/17523  min=391  n=259993
+    CALL_DONATE      236/9618  min=220  n=19999
+    CALL_PARK        324/30397  min=280  n=259993
+    CALL_WAKE        17188/1675595  min=16331  n=259986  SAT=7
+    CALL_RESUME      157/7153  min=140  n=260000
+    CALL_SLOW_TOTAL  1182283/1269629  min=1136266  n=4  SAT=3
+    CALL_SLOW_LOCKED 1171918/1259429  min=1131598  n=4  SAT=3
+    CALL_SLOW_DONATE 0/0  min=0  n=0
+    CALL_SLOW_PARK   1147951/1205047  min=1120106  n=4  SAT=3
+    RECV_LOCKED      19622/1273977  min=18836  n=259990  SAT=3
+    RECV_RESOLVE     283/45546  min=251  n=260000
+    RECV_SCAN        141/17223  min=120  n=259993
+    RECV_PARK        18509/1268096  min=17754  n=259990  SAT=3
+    REPLY_TOTAL      129327/1277243  min=16391  n=13
+    REPLY_VALIDATE   5861/13596  min=2906  n=13
+    REPLY_LOCKED     2445/183266  min=2274  n=260000
+    REPLY_LOOKUP     279/95902  min=260  n=260000
+    REPLY_COPY       605/12394  min=501  n=260000
+    REPLY_FUNNEL     170/36709  min=140  n=260000
+    REPLY_WAKE       508/18845  min=440  n=260000
+    REPLY_RECV_TOTAL 23951/1346353  min=23013  n=259997  SAT=3
+    REPLY_RECV_TAIL  1141/55765  min=1052  n=259993
+    WAKE_UNPARK      193/18806  min=160  n=520019
+    PICK_NEXT        170/26370  min=130  n=520199
+    SWITCH_TO        30329/562099730  min=8496  n=520059  SAT=13
+    SWITCH_BOOK      150/64742  min=120  n=520098
+    MPU_APPLY        199/36358  min=170  n=520098
+    MPU_COMMIT       0/0  min=0  n=0
+    REENT_SEAT       109/21500  min=80  n=520098
+    KTIME_REARM      198/7374  min=180  n=520098
+    ARCH_SWITCH      28150/562008377  min=451  n=520059  SAT=13
+  per-core phase samples:
+    core 0  n=6160235
+    core 1  n=5300218
+    core 2  n=184
+    core 3  n=0
+  ns-probe: rate=0 (nothing converts, so no ns column is printed)
+  sat-probe: width=64 fits+1/0 wide+0/1 max=1000
+
+  throughput: 103461 ctx-sw/s  (9665 ns/sw avg over 40000 switches / 386 ms)
+  doorbell-probe: asked=0 on=0 ran=64 db+64 held=64
+  doorbell-probe: asked=1 on=1 ran=64 db+64 held=64
+  doorbell-probe: asked=2 on=2 ran=64 db+64 held=64
+  doorbell-probe: asked=3 on=3 ran=64 db+64 held=64
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    176/208/3376 cyc  (p50/p99/max, n=40007)
+    core 0: 160/176/3376 cyc  (min/avg/max, n=40002)
+    core 1: 281/370/451 cyc  (min/avg/max, n=3)
+    core 2: 541/841/1142 cyc  (min/avg/max, n=2)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  lock-hold: 2816/4608/1903597 cyc  (p50/p99/max, n=80697)
+    core 0: 631/3560/1903597 cyc  (min/avg/max, n=80147)
+    core 1: 1092/27717/1490176 cyc  (min/avg/max, n=63)
+    core 2: 641/29362/1369127 cyc  (min/avg/max, n=64)
+    core 3: 912/4518/1212050 cyc  (min/avg/max, n=423)
+  lock-wait: 176/256/171975 cyc  (p50/p99/max, n=121010)
+    core 0: 160/188/171975 cyc  (min/avg/max, n=120149)
+    core 1: 200/1182/33964 cyc  (min/avg/max, n=65)
+    core 2: 170/581/21039 cyc  (min/avg/max, n=66)
+    core 3: 230/270/4128 cyc  (min/avg/max, n=730)
+  draw-retry: 0/0/0  (p50/p99/max, n=121302)
+    core 0: 0/0/0  (min/avg/max, n=120149)
+    core 1: 0/0/0  (min/avg/max, n=65)
+    core 2: 0/0/0  (min/avg/max, n=66)
+    core 3: 0/0/0  (min/avg/max, n=1022)
+  draw-queue: 0/0/2  (p50/p99/max, n=121534)
+    core 0: 0/0/2  (min/avg/max, n=120149)
+    core 1: 0/0/1  (min/avg/max, n=65)
+    core 2: 0/0/2  (min/avg/max, n=66)
+    core 3: 0/0/0  (min/avg/max, n=1254)
+  resched-ask: 1/1/1  (p50/max/max, n=11)
+    core 0: 1/1/1  (min/avg/max, n=3)
+    core 1: 1/1/1  (min/avg/max, n=5)
+    core 2: 1/1/1  (min/avg/max, n=3)
+    core 3: 0/0/0  (min/avg/max, n=0)
+  resched-take: 1/1/1  (p50/max/max, n=9)
+    core 0: 1/1/1  (min/avg/max, n=3)
+    core 1: 1/1/1  (min/avg/max, n=2)
+    core 2: 1/1/1  (min/avg/max, n=3)
+    core 3: 1/1/1  (min/avg/max, n=1)
+  doorbell:  18432/152438/152438 cyc  (p50/max/max, n=256)
+    core 0: 14747/26646/152438 cyc  (min/avg/max, n=64)
+    core 1: 16801/21944/27312 cyc  (min/avg/max, n=64)
+    core 2: 14898/19815/24617 cyc  (min/avg/max, n=64)
+    core 3: 14187/17974/25188 cyc  (min/avg/max, n=64)
+  lock-site: core=0 site=0xffffff804000f75c max=1903597
+  lock-site: core=1 site=0xffffff804000f75c max=1490176
+  lock-site: core=2 site=0xffffff804000f75c max=1369127
+  lock-site: core=3 site=0xffffff804000f75c max=1212050
+  irq-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=19307
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=22112
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=16021
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=7774
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=18616
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  e2e-settle: settled=8/8
+  e2e-probe: line=201 closed=1000 dropped=0 tare=1040/1327 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 32768/81920/254416 ns  (p50/p99/max, n=1000)
+  e2e-cross: 0/0/0 ns  (p50/max/max, n=0)
+  throughput: 105873 ctx-sw/s  (9445 ns/sw avg over 40000 switches / 377 ms)
+  doorbell-probe: asked=0 on=0 ran=64 db+64 held=64
+  doorbell-probe: asked=1 on=1 ran=64 db+64 held=64
+  doorbell-probe: asked=2 on=2 ran=64 db+64 held=64
+  doorbell-probe: asked=3 on=3 ran=64 db+64 held=64
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    160/176/2244 cyc  (p50/p99/max, n=40006)
+    core 0: 151/169/2244 cyc  (min/avg/max, n=40003)
+    core 1: 1663/1813/1964 cyc  (min/avg/max, n=2)
+    core 2: 431/431/431 cyc  (min/avg/max, n=1)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  lock-hold: 2304/4608/2225655 cyc  (p50/p99/max, n=80698)
+    core 0: 581/3488/2225655 cyc  (min/avg/max, n=80148)
+    core 1: 1473/32759/1562853 cyc  (min/avg/max, n=64)
+    core 2: 622/24361/1338890 cyc  (min/avg/max, n=61)
+    core 3: 571/3846/1254751 cyc  (min/avg/max, n=425)
+  lock-wait: 176/208/35928 cyc  (p50/p99/max, n=121010)
+    core 0: 160/189/35928 cyc  (min/avg/max, n=120151)
+    core 1: 300/835/30678 cyc  (min/avg/max, n=65)
+    core 2: 160/228/1764 cyc  (min/avg/max, n=62)
+    core 3: 150/179/2906 cyc  (min/avg/max, n=732)
+  draw-retry: 0/0/0  (p50/p99/max, n=121298)
+    core 0: 0/0/0  (min/avg/max, n=120151)
+    core 1: 0/0/0  (min/avg/max, n=65)
+    core 2: 0/0/0  (min/avg/max, n=62)
+    core 3: 0/0/0  (min/avg/max, n=1020)
+  draw-queue: 0/0/1  (p50/p99/max, n=121530)
+    core 0: 0/0/1  (min/avg/max, n=120151)
+    core 1: 0/0/1  (min/avg/max, n=65)
+    core 2: 0/0/0  (min/avg/max, n=62)
+    core 3: 0/0/0  (min/avg/max, n=1252)
+  resched-ask: 1/1/1  (p50/max/max, n=8)
+    core 0: 1/1/1  (min/avg/max, n=3)
+    core 1: 1/1/1  (min/avg/max, n=3)
+    core 2: 1/1/1  (min/avg/max, n=2)
+    core 3: 0/0/0  (min/avg/max, n=0)
+  resched-take: 1/1/1  (p50/max/max, n=6)
+    core 0: 1/1/1  (min/avg/max, n=2)
+    core 1: 1/1/1  (min/avg/max, n=2)
+    core 2: 1/1/1  (min/avg/max, n=1)
+    core 3: 1/1/1  (min/avg/max, n=1)
+  doorbell:  20480/210117/210117 cyc  (p50/max/max, n=256)
+    core 0: 18665/32419/210117 cyc  (min/avg/max, n=64)
+    core 1: 16311/23384/77686 cyc  (min/avg/max, n=64)
+    core 2: 12754/19646/46027 cyc  (min/avg/max, n=64)
+    core 3: 13455/18746/23474 cyc  (min/avg/max, n=64)
+  lock-site: core=0 site=0xffffff804000f75c max=2225655
+  lock-site: core=1 site=0xffffff804000f75c max=1562853
+  lock-site: core=2 site=0xffffff804000f75c max=1338890
+  lock-site: core=3 site=0xffffff804000f75c max=1254751
+  irq-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=7684
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=9097
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=9778
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=11281
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=10690
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  e2e-settle: settled=8/8
+  e2e-probe: line=201 closed=1000 dropped=0 tare=1040/1327 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 36864/73728/115920 ns  (p50/p99/max, n=1000)
+  e2e-cross: 0/0/0 ns  (p50/max/max, n=0)
+  throughput: 104742 ctx-sw/s  (9547 ns/sw avg over 40000 switches / 381 ms)
+  doorbell-probe: asked=0 on=0 ran=64 db+64 held=64
+  doorbell-probe: asked=1 on=1 ran=64 db+64 held=64
+  doorbell-probe: asked=2 on=2 ran=64 db+64 held=64
+  doorbell-probe: asked=3 on=3 ran=64 db+64 held=64
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    160/240/1703 cyc  (p50/p99/max, n=40006)
+    core 0: 160/173/1062 cyc  (min/avg/max, n=40003)
+    core 1: 1503/1603/1703 cyc  (min/avg/max, n=2)
+    core 2: 691/691/691 cyc  (min/avg/max, n=1)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  lock-hold: 3072/5632/2912764 cyc  (p50/p99/max, n=80698)
+    core 0: 571/3532/2912764 cyc  (min/avg/max, n=80148)
+    core 1: 1423/33893/1726081 cyc  (min/avg/max, n=64)
+    core 2: 952/25825/1397171 cyc  (min/avg/max, n=61)
+    core 3: 581/3487/1067457 cyc  (min/avg/max, n=425)
+  lock-wait: 176/240/39816 cyc  (p50/p99/max, n=121010)
+    core 0: 160/191/39816 cyc  (min/avg/max, n=120151)
+    core 1: 300/738/24306 cyc  (min/avg/max, n=65)
+    core 2: 250/314/2214 cyc  (min/avg/max, n=62)
+    core 3: 150/180/1913 cyc  (min/avg/max, n=732)
+  draw-retry: 0/0/0  (p50/p99/max, n=121298)
+    core 0: 0/0/0  (min/avg/max, n=120151)
+    core 1: 0/0/0  (min/avg/max, n=65)
+    core 2: 0/0/0  (min/avg/max, n=62)
+    core 3: 0/0/0  (min/avg/max, n=1020)
+  draw-queue: 0/0/1  (p50/p99/max, n=121530)
+    core 0: 0/0/1  (min/avg/max, n=120151)
+    core 1: 0/0/1  (min/avg/max, n=65)
+    core 2: 0/0/0  (min/avg/max, n=62)
+    core 3: 0/0/0  (min/avg/max, n=1252)
+  resched-ask: 1/1/1  (p50/max/max, n=8)
+    core 0: 1/1/1  (min/avg/max, n=3)
+    core 1: 1/1/1  (min/avg/max, n=3)
+    core 2: 1/1/1  (min/avg/max, n=2)
+    core 3: 0/0/0  (min/avg/max, n=0)
+  resched-take: 1/1/1  (p50/max/max, n=6)
+    core 0: 1/1/1  (min/avg/max, n=2)
+    core 1: 1/1/1  (min/avg/max, n=2)
+    core 2: 1/1/1  (min/avg/max, n=1)
+    core 3: 1/1/1  (min/avg/max, n=1)
+  doorbell:  20480/250894/250894 cyc  (p50/max/max, n=256)
+    core 0: 19648/43071/250894 cyc  (min/avg/max, n=64)
+    core 1: 17633/25774/49343 cyc  (min/avg/max, n=64)
+    core 2: 16060/20767/50877 cyc  (min/avg/max, n=64)
+    core 3: 8085/14828/32722 cyc  (min/avg/max, n=64)
+  lock-site: core=0 site=0xffffff804000f75c max=2912764
+  lock-site: core=1 site=0xffffff804000f75c max=1726081
+  lock-site: core=2 site=0xffffff804000f75c max=1397171
+  lock-site: core=3 site=0xffffff804000f75c max=1067457
+  irq-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=8035
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=187114
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=9769
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=15068
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  wcase-probe: line=200 raise=inject on=3 raised=100 hcore=0 foreign=100 win=36128
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+    core 0: 0/0/0 cyc  (min/avg/max, n=0)
+    core 1: 0/0/0 cyc  (min/avg/max, n=0)
+    core 2: 0/0/0 cyc  (min/avg/max, n=0)
+    core 3: 0/0/0 cyc  (min/avg/max, n=0)
+  e2e-settle: settled=8/8
+  e2e-probe: line=201 closed=1000 dropped=0 tare=1040/1327 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 32768/57344/88112 ns  (p50/p99/max, n=1000)
+  e2e-cross: 0/0/0 ns  (p50/max/max, n=0)
+  w2: 40000 switches in 447962 us
+  w3: 10000 switches in 153348 us
+bench: done
