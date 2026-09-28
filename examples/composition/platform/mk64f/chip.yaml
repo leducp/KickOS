@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the chip half for the K64F, the part whose protection does NOT reach
+# its devices. Nothing reads it yet; its home once something does is platform/mk64f/.
+# Values are the ones the tree already uses (chip_mmap.h, irq.h, arch_reserved_blocks in
+# chip_mk64f.cc), from the K64 Sub-Family Reference Manual.
+
+version: 1
+chip: mk64f
+arch: armv7m
+
+# The SYSMPU sits on the bus-slave side and never sees the peripheral bridge, so it isolates
+# memory per thread and devices not at all. Devices are gated by the AIPS bridge instead: per
+# 4 KiB slot, per privilege, and once a slot is opened every unprivileged thread reaches it.
+# So a device grant here is a statement, not an enforcement, and admission must say so.
+protection:
+  unit: sysmpu
+  covers_devices: false
+  device_gate: { kind: aips_slot, size: 0x1000, per_thread: false }
+
+devices:
+  # Windows are what a driver uses; the gate the kernel opens is the whole slot around it.
+  uart0: { window: [0x4006A000, 0x20], lines: { rxtx: 31, err: 32 } }
+  dspi0: { window: [0x4002C000, 0x40] } # its service polls, so no line is taken
+
+  pit: { owner: kernel }    # the monotonic time base
+  sysmpu: { owner: kernel }
+  aips0: { owner: kernel }  # the slot gates themselves
+  aips1: { owner: kernel }
+  # Clock gates and pin mux: reached through kos_periph_enable and kos_pinmux_set only.
+  sim: { owner: kernel }
+  port: { owner: kernel }
+
+# Pins are PTxN. A function is the ALT number the pin's PCR selects.
+pins:
+  PTB16: { alt3: uart0.rx }
+  PTB17: { alt3: uart0.tx }
+  PTD1: { alt2: dspi0.sck }
+  PTD2: { alt2: dspi0.sout }
+  PTD3: { alt2: dspi0.sin }

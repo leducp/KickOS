@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the chip half of a board description, written for a SECOND part to
+# check the format is not shaped around the first. Nothing reads it yet; its home once
+# something does is platform/stm32f411/, shared by f411disco and blackpill. Values are
+# the ones the tree already uses (chip_mmap.h, irq.h, the f411spi app), from RM0383.
+#
+# Unlike the XMC's USIC, every device here has its own line: there is nothing shared to
+# model, and the format does not make this chip pay for the XMC's case.
+
+version: 1
+chip: stm32f411
+arch: armv7m
+protection: { unit: pmsav7, covers_devices: true }
+
+devices:
+  # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
+  # whole 1 KiB bus slot.
+  usart2: { window: [0x40004400, 0x20], lines: { global: 38 } }
+  spi1: { window: [0x40013000, 0x20], lines: { global: 35 } }
+
+  tim2: { owner: kernel } # the monotonic time base
+  rcc: { owner: kernel }
+  # Every GPIO port. A pin is muxed through kos_pinmux_set, never through a granted window.
+  gpio: { owner: kernel }
+
+# Pins are PORT PIN. A function is the alternate-function number the pin's AFR selects.
+pins:
+  PA2: { af7: usart2.tx }
+  PA3: { af7: usart2.rx }
+  PA5: { af5: spi1.sck }
+  PA6: { af5: spi1.miso }
+  PA7: { af5: spi1.mosi }

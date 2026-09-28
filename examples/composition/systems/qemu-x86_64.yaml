@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE -- the same app and health checker, on QEMU q35, to exercise what the x86
+# port adds: a device reached through PORTS rather than memory, granted with the same `devices`
+# field, the task's I/O permission bitmap opening its data port and the kernel seam writing its
+# index. Nothing reads this file yet. M10 is done on this board when it is admitted, builds, and
+# runs under a two-core preset.
+
+version: 1
+board: qemu-x86_64
+
+# COM1 stays the kernel's console on this board.
+stdout: kernel
+
+ends: never
+
+shared:
+  - name: /shm/history
+    size: 64
+    cache: cached # shared by tasks of this image only, on coherent memory
+
+tasks:
+  - name: sensor
+    entry: sensor_main
+    stack: 4096
+    priority: 9
+    core: 1
+    devices: [/dev/cmos_rtc]
+    serves: /svc/sensor
+    maps: { /shm/history: rw }
+    restart: { max: 3 }
+
+  - name: app
+    entry: app_main
+    stack: 8192
+    priority: 8
+    uses: [/svc/sensor]
+
+  - name: health
+    entry: health_main
+    stack: 4096
+    priority: 10
+    watches: [sensor]
+    maps: { /shm/history: ro }

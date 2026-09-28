@@ -16,12 +16,13 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED, AND M9.7 THROUGH M9.9 ARE DECIDED ON THEIR BRANCHES.** M9 asks what the big kernel lock actually
-costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
-than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned. The M9.0 section
-at the bottom of this file carries what the survey, the stack verdict and the entry envelope
-established, and what a reader of the numbers alone would get wrong.
+**M9 HAS MERGED THROUGH M9.9, AND M10 IS OPEN.** M9's answer is that the one big kernel lock
+stays, with per-core ready queues and per-pair rings under it and CLH arbitration on x86_64 alone.
+The M9 sections at the bottom of this file carry what its green runs do not say. M10 is static
+composition: a declared system, admitted on the host, and an init provider that stays resident.
+`roadmap.md`'s `### M10` section is the ledger and the only place its numbers are assigned. M10.0,
+the design, is decided; the M10.0 section at the bottom of this file says what a read-only stage
+does not establish.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -3744,6 +3745,28 @@ on the LPPERI page it never reads. It now gets the PMU and LP timer pages only; 
 device-I/O fences on the PMU doorbells and the probe's move out of every other C6 image are
 build-only. Several first-stage probe observations are unarchived bench observations, and the
 [boot witness](docs/archive/M9.9_lp_boot.md) says which.
+
+## M10.0: the design, and what a read-only stage does NOT say
+
+**THE DESIGN IS SETTLED AND NOTHING OF IT RUNS.** `docs/design-m10-composition.md` is the design,
+`examples/composition/` the acceptance test: three golden systems (the XMC4800 Relax Kit, QEMU
+`virt` with four A53 cores, QEMU q35) and fifteen chip and board files. Two external audit passes
+and the maintainer's review settled them. None of it builds: the example calls lookups, a
+self argument, a port write and an errno that do not exist until M10.1 and M10.3, and no gate
+builds it.
+
+**WHAT WAS CHECKED, AND HOW LITTLE.** `sample.h`'s shared-history sequence lock passed a
+single-threaded host test -- empty region, wraparound, a writer that died mid-append -- and nothing
+has exercised two threads on it. The example's YAML parses and its sources pass the tree's source
+gates. The chip and board values come from the tree's own headers, the vendor manuals on the
+development box, and, for the two QEMU `virt` machines, QEMU's own device tree dump; a value
+nothing in the tree uses yet is where a transcription error would sit.
+
+**THE KERNEL SHARE IS DESIGNED IN PROSE ONLY.** M10.1's six mechanisms -- death and first-receive
+reports, the non-receiving handout right with the errno split, the window list, kernel-chosen
+window addresses, the port grant with its byte-wide write, the task-creation authority and a
+wider authority word -- are each a paragraph, not a design. The cost each adds to the switch or the
+spawn path is unmeasured, and a mechanism that proves too dear at M10.1 re-cuts the stages after it.
 
 ## Where to go next
 

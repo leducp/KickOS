@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the chip half for the ESP32-C6, the part with two protection units in
+# series, routed interrupts, register banks coarser than a pin, and a second core with no
+# protection at all. Nothing reads it yet; its home once something does is
+# platform/esp32c6/. Values are the ones the tree already uses (chip_mmap.h, irq.h,
+# arch_reserved_blocks in chip_esp32c6.cc, c6blink), from the ESP32-C6 TRM.
+
+version: 1
+chip: esp32c6
+arch: rv32imac
+
+# No data cache sits over the SRAM: the part's cache serves external flash only, so memory
+# the two cores share is coherent by absence, and a region's cache attribute changes nothing.
+data_cache: false
+
+# Two cores, two postures. An own-image AMP node per core, so a composition is per node.
+cores:
+  hp:
+    # PMP is per thread and faults. APM behind it is per security mode, opened once at boot
+    # for the whole user mode, and a denial does not trap: a read returns 0, a write drops.
+    protection:
+      unit: pmp
+      covers_devices: true
+      bus_gate: { kind: apm, per_thread: false, traps: false }
+  lp:
+    # Machine mode only: no privilege split, so nothing a composition declares for a task on
+    # this node is enforced within it. APM on the HP side bounds what the node can reach.
+    protection: { unit: none, privilege: false }
+
+devices:
+  # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the
+  # kernel posts it on a logical line. The number kos_irq_claim takes is the logical line.
+  uart0: { window: [0x60000000, 0x1000], lines: { uart0: 16 } }
+
+  # The pin bank is one register block: its set/clear and direction registers are
+  # whole-port, so whoever holds it drives the latch of every pin in the port. The unit of
+  # isolation is the bank, not the pin, and two tasks cannot each hold one pin of it.
+  gpio: { window: [0x60091000, 0x40] }
+
+  intmtx: { owner: kernel }
+  pcr: { owner: kernel }    # clock and reset gates
+  hp_tee: { owner: kernel }
+  hp_apm: { owner: kernel }
+  io_mux: { owner: kernel } # pad functions, through kos_pinmux_set only
