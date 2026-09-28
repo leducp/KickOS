@@ -1,0 +1,33 @@
+ffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0xad44
+SHA-256 comparison failed:
+Calculated: c8101e2792a9b86461a74eebbebcf4ea88bb5a683e668ca8e2b8b89862756042
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     off
+   sched   tickless
+   build   2026-09-27 15:58:57 +0200
+   app     Sep 27 2026 15:58:58 +0200
+   commit  359a92fe-dirty
+   heap    16 KiB available
+   kstack  1184 B x 17 = 20128 B
+
+c6lpprobe: timeout marker 0 code 4c504337 pwr1 1 mux 10200000 pwr0 dff00000 local 0
+c6lpprobe: lp-apm 1/70001/70000080 hp-apm 0/0/0
+c6lpprobe: mcause 0 mepc 0 mtval 0
+c6lpprobe: pmuraw 18000000 lpraw 80100000 main 8100800 power 802000 apm 3/3

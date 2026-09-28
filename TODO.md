@@ -5196,7 +5196,7 @@ added rather than against anything the tail closed.
 verdict that the coarse lock survives is a successful outcome, not a failure. It is sized from
 M8.12, never from M8.7 or earlier.
 
-**M9.0 THROUGH M9.8 ARE DECIDED; M9.9 REMAINS ASSIGNED.** `roadmap.md`
+**M9.0 THROUGH M9.9 ARE DECIDED.** `roadmap.md`
 assigns M9.1 (the lock's own bound, per backend), M9.2 (ownership under the lock: a home derived
 from the mask, per-core ready queues, the wait-edge rule; M9.3 fused into it, under one lock the
 push needing no ring), M9.4 (the per-pair rings, landed under the lock inside stage 1's own
@@ -5268,6 +5268,13 @@ renumbered: the five lock stages keep the numbers their evidence gates were writ
       leaf explicit. Record the formatting differences and the scope of the evidence before
       closing the stage. The matched sizes and QEMU gates are in
       `docs/archive/M9.8_nano.md`; both micro:bit profiles pass the caller-held graph gate.
+
+- [x] **M9.9: UNATTENDED ESP32-C6 HP/LP AMP.** Boot two own-image kernels from one ROM flash,
+      keep their HP SRAM slices disjoint, and place the shared AMP window where both cores can
+      perform atomics. Wake the LP through PMU, route bidirectional PMU interrupts into the
+      common AMP protocol, and capture the two-node far-call app without touching the board.
+      Gate both node stack bounds and image agreement; repeat the clean silicon capture ten
+      times. The result and limits are in `docs/archive/M9.9_amp.md`.
 
 **TWO LINES WENT BECAUSE THEY WERE STALE.** This section used to say the instrument constants M8.7
 owes this milestone and G-06 were actionable alongside M9.0. The five constants landed inside M8.7's

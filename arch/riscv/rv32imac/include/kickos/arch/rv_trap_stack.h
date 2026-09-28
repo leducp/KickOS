@@ -18,8 +18,8 @@
 #ifndef KICKOS_ARCH_RV_TRAP_STACK_H
 #define KICKOS_ARCH_RV_TRAP_STACK_H
 
-/* KICKOS_BENCH selects figures below and has NO fallback #define: with -Wundef -Werror an image
-   that lost it fails to build, where a fallback would reserve the smaller figure. */
+/* KICKOS_BENCH and KICKOS_AMP_OWN_IMAGE select figures below and have no fallback #define:
+   with -Wundef -Werror an image that lost either fails instead of reserving a smaller figure. */
 
 /* trap_entry's save frame: `addi sp, sp, -128`, 30 word stores plus the F_SP slot. switch.S and
  * arch_rv32imac.cc assert against it. */
@@ -53,8 +53,9 @@
  *     -> task_for -> domain_for -> grant_region_admissible -> grant_hits_reserved[80]
  *   gcc inlines syscall_body into syscall_dispatch per board: esp32c6-wroom reads 608, the two
  *   flat presets 544.
- *   KICKOS_BENCH 1, 784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console. */
-#if KICKOS_BENCH
+ *   KICKOS_BENCH 1, 784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console.
+ *   C6 AMP node 0, 832 via the self-test diagnostic on exit; node 1 measures 624. */
+#if KICKOS_BENCH || KICKOS_AMP_OWN_IMAGE
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
 #else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 704
@@ -70,18 +71,24 @@
  * arch_rv32imac.cc asserts it equals KICKOS_RV_TRAP_FRAME. */
 #define KICKOS_RV_TRAP_NEST_EXIT 128
 
-/* The fault and slay stubs on the thread's own KERNEL BLOCK. 384 on both bench presets, 352 on
- * the others, the fault stub's print or the capability teardown into the switch. NEVER BINDS:
- * _SYS wins the block on every preset, so it is rounded like a thread-stack figure. */
+/* The fault and slay stubs on the thread's own KERNEL BLOCK. C6 AMP node 0 measures 640
+ * through its self-test diagnostic; the other non-bench nodes are smaller. _SYS still wins
+ * the block, so this class does not set its size. */
+#if KICKOS_AMP_OWN_IMAGE
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 640
+#else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
+#endif
 
-/* kickos_thread_return on a privileged thread's own stack. 352 on the non-bench presets, 384 on
- * the bench ones, where the IrqLock bracket and the phase marks cost three slots:
+/* kickos_thread_return on a privileged thread's own stack. C6 AMP node 0 measures 640
+ * through its self-test diagnostic; the bench presets measure 384:
  *   kickos_thread_return -> exit_current[80] -> cap_teardown -> teardown_entry
  *   -> obj_close_protocol -> mutex_force_unlock -> sched::wake -> pick_and_seat
  *   -> arch_ctx_redirect[32] -> arch_context_init[32]
  * KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV, not by this class. */
-#if KICKOS_BENCH
+#if KICKOS_AMP_OWN_IMAGE
+#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 640
+#elif KICKOS_BENCH
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 448
 #else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 384

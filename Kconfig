@@ -989,9 +989,9 @@ config KICKOS_MIN_STACK_SIZE
 	default 1024 if ARCH_RXV3
 	# An interrupt nests below the death path on the thread's own stack.
 	default 2816 if ARCH_ARMV8A
-	# Under KICKOS_BENCH alone, or every non-bench rv32imac board reserves for a
-	# console bracket it does not compile. rv_trap_stack.h.
-	default 1088 if ARCH_RV32IMAC && KICKOS_BENCH
+	# Bench and own-image AMP need the wider privileged syscall/return reservation.
+	# Other rv32imac boards keep their smaller measured floor. rv_trap_stack.h.
+	default 1088 if ARCH_RV32IMAC && (KICKOS_BENCH || KICKOS_AMP_POSTURE_OWN_IMAGE)
 	default 1024 if ARCH_RV32IMAC
 	# An interrupt nests below a privileged thread's return on its own stack.
 	default 2304 if ARCH_RV64IMAC

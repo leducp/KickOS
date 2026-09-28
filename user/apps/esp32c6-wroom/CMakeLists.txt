@@ -11,3 +11,7 @@
 if(KICKOS_HAVE_MPU)
   kickos_add_diagnostic_apps(c6blink c6intpri)
 endif()
+
+if(NOT KICKOS_AMP_OWN_IMAGE)
+  add_subdirectory(c6lpprobe)
+endif()

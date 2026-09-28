@@ -71,6 +71,36 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   add_custom_target(amp_partition DEPENDS "${_amp_artefact}")
   set_target_properties(ampping_n0 PROPERTIES KICKOS_AMP_ARTEFACT "${_amp_artefact}")
 
+  if(KICKOS_CHIP STREQUAL "esp32c6")
+    set(_c6_amp_flash "${CMAKE_BINARY_DIR}/kickos-partition.app.bin")
+    set(_c6_amp_base "${CMAKE_BINARY_DIR}/kickos-partition")
+    add_custom_command(OUTPUT "${_c6_amp_base}"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_amp_artefact}" "${_c6_amp_base}"
+      DEPENDS "${_amp_artefact}"
+      VERBATIM)
+    add_custom_target(c6_amp_partition_base DEPENDS "${_c6_amp_base}")
+    add_dependencies(amp_partition c6_amp_partition_base)
+    # Only the bench flash reads the ROM image, so a missing esptool skips it as it
+    # does every other C6 image's .app.bin.
+    find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
+    if(KICKOS_ESPTOOL)
+      add_custom_command(OUTPUT "${_c6_amp_flash}"
+        COMMAND "${KICKOS_ESPTOOL}" --chip esp32c6 elf2image
+                --ram-only-header --dont-append-digest --flash_mode dio
+                --output "${_c6_amp_flash}" "${_amp_artefact}"
+        DEPENDS "${_amp_artefact}"
+        COMMENT "packing both C6 AMP node LOAD segments into one ROM image"
+        VERBATIM)
+      add_custom_target(c6_amp_partition_image DEPENDS "${_c6_amp_flash}")
+      add_dependencies(amp_partition c6_amp_partition_image)
+    else()
+      message(STATUS "KickOS: esptool not found: kickos-partition.app.bin (bootable "
+        "esp32c6 AMP partition) not produced. Activate the esp-idf env, or run: "
+        "esptool --chip esp32c6 elf2image --ram-only-header --dont-append-digest "
+        "--flash_mode dio --output kickos-partition.app.bin kickos-partition.elf")
+    endif()
+  endif()
+
   # The second artefact: node 0 is the selftest and node 1 a peer that echoes, so the arms
   # needing a running peer have one. They are compiled on every posture and decide at runtime,
   # so this changes the ANSWER they get and not which of them exist.

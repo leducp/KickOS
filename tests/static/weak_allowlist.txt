@@ -35,6 +35,11 @@ _kickos_app_build_time
 __register_frame
 ___register_frame
 
+# ESP32-C6 LP silicon probe: only a c6lpprobe link extracts the chip member that
+# defines it, so every other flat C6 image leaves it absent and arch_init skips it.
+kickos_c6_lp_probe_boot
+_kickos_c6_lp_probe_boot
+
 # --- toolchain-owned, present only in the final image -------------------------
 # Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT.
 __aeabi_idiv0

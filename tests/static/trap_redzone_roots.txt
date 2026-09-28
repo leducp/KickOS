@@ -115,6 +115,8 @@ preset  rv32imac esp32c6-wroom
 preset  rv32imac esp32c6-wroom-st
 preset  rv32imac esp32c6-wroom-flat
 preset  rv32imac esp32c6-wroom-bench
+preset  rv32imac esp32c6-wroom-amp2-n0
+preset  rv32imac esp32c6-wroom-amp2-n1
 class   rv32imac TRAP   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
 class   rv32imac SYS    frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
 class   rv32imac SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV
@@ -131,6 +133,7 @@ root    rv32imac TRAP kickos_isr_timer
 root    rv32imac TRAP kickos_rv_dispatch_soft
 root    rv32imac TRAP kickos_rv_ext_dispatch
 root    rv32imac TRAP kickos_rv_ext_dispatch_dev
+root    rv32imac TRAP ?kickos_c6_amp_doorbell_service
 # Called from the prologue/epilogue itself, on the same stack, so charged to every class.
 root    rv32imac TRAP kickos_arch_mpu_commit
 root    rv32imac TRAP ?kickos_trace_switch_done
@@ -181,6 +184,7 @@ root    rv32imac NESTED kickos_isr_timer
 root    rv32imac NESTED kickos_rv_dispatch_soft
 root    rv32imac NESTED kickos_rv_ext_dispatch
 root    rv32imac NESTED kickos_rv_ext_dispatch_dev
+root    rv32imac NESTED ?kickos_c6_amp_doorbell_service
 root    rv32imac NESTED kickos_rv_fault_report
 root    rv32imac NESTED kickos_fault_stack_top
 root    rv32imac NESTED ?kickos_rv_nested_witness
@@ -202,6 +206,7 @@ unsized rv32imac __umoddi3 0 reason: measured from the ELF, frameless register-o
 unsized rv32imac __clzsi2  0 reason: measured from the ELF, frameless register-only leaf
 unsized rv32imac kickos_panic_stack_enter 0 reason: switch.S, three instructions that write no stack; jal leaves the return address in ra and the body never spills it
 unsized rv32imac __divdi3  0 reason: measured from libgcc.a for this multilib, frameless register-only leaf: its body touches sp nowhere and ends in a bare ret, exactly as the two above. It is in every board's graph and only a KICKOS_BENCH measurement REACHES it, that arm's print dividing signed 64-bit where nothing else in the trap path does.
+unsized rv32imac __moddi3  0 reason: measured from the rv32imac libgcc.a disassembly, register-only body with no sp access
 
 # gcc emits the complete-object destructor as a triangle node with no "bytes (static)" and an
 # edge to the base-object one, and the two are the same address, so 0 is its own frame and the

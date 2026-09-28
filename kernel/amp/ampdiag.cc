@@ -41,6 +41,10 @@ namespace kickos
                 uint64_t v = 0;
                 __asm volatile("mrs %0, vbar_el1" : "=r"(v));
                 return static_cast<uint32_t>(v);
+#elif defined(__riscv)
+                uintptr_t v = 0;
+                __asm volatile("csrr %0, mtvec" : "=r"(v));
+                return static_cast<uint32_t>(v);
 #else
                 return 0u;
 #endif

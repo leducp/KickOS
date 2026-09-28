@@ -17,3 +17,7 @@ set(KICKOS_ARCH_SOURCES
   riscv/rv32imac/arch_rv_inject_deliver_default.cc
   riscv/rv32imac/kickos_rv_ext_dispatch_dev_default.cc
   riscv/rv32imac/switch.S)
+
+if(KICKOS_AMP_NODE)
+  list(APPEND KICKOS_ARCH_SOURCES common/doorbell_protocol.cc)
+endif()

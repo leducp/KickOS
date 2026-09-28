@@ -17,6 +17,7 @@
 #include <kickos/sys.h>
 #include <kickos/sys/abi_probe.h>
 
+
 #define AMPPING_ROUNDS 4
 #define AMPPING_CALL_US (500u * 1000u)
 #define AMPPING_SETTLE_NS (20ull * 1000ull * 1000ull)
@@ -165,7 +166,9 @@ int main(int argc, char** argv)
     printf("ampping: node %u calls node %u port %u\n", (unsigned)KOS_AMP_SELF_NODE,
            (unsigned)peer, (unsigned)port);
 
+#if defined(KICKOS_ENABLE_SELFTEST)
     unsigned answered = 0;
+#endif
     int round;
     for (round = 1; round <= AMPPING_ROUNDS; round++)
     {
@@ -215,7 +218,9 @@ int main(int argc, char** argv)
                    (unsigned)(round + 1));
             return 1;
         }
+#if defined(KICKOS_ENABLE_SELFTEST)
         answered++;
+#endif
         // FOR A HUMAN READING A HANG. No gate counts these.
         printf("  ping %d -> pong %u from node %u (%ld byte(s))\n", round, (unsigned)msg[0],
                (unsigned)peer, (long)n);

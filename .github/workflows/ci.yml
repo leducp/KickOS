@@ -402,6 +402,13 @@ jobs:
           cmake --preset esp32c6-wroom-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom-bench
           ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
+          # Build both C6 AMP nodes and their one-flash partition; silicon capture stays on the bench.
+          cmake --preset esp32c6-wroom-amp2-n0 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition
+          ctest --test-dir build/esp32c6-wroom-amp2-n0 -L host -LE tree --no-tests=error --output-on-failure
+          cmake --preset esp32c6-wroom-amp2-n1 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset esp32c6-wroom-amp2-n1
+          ctest --test-dir build/esp32c6-wroom-amp2-n1 -L host -LE tree --no-tests=error --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
           ctest --test-dir build/qemu-riscv-bench -L host -LE tree --no-tests=error --output-on-failure

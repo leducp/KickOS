@@ -169,6 +169,9 @@ extern "C"
 
     // This hart's CLINT msip register; the chip's arch_init sets it.
     volatile uint32_t* g_clint_msip = nullptr;
+#if KICKOS_RV32_LP
+    uint32_t g_lp_switch_pending = 0;
+#endif
 
 #if KICKOS_BENCH
     // Null means `rdcycle`. A core whose `rdcycle` traps (the ESP32-C6 HP core has no Zicntr)
@@ -297,7 +300,16 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
 {
     (void)from; // the switcher saves g_arch_current
     g_arch_next = to;
+#if KICKOS_RV32_LP
+    g_lp_switch_pending = 1;
+    // The LP external-pending bit is read-only. Ring its PMU input so the
+    // switch runs after the current trap has returned to the thread frame.
+    // The pending word must be visible before the device store that raises it.
+    __asm volatile("fence iorw, iorw" ::: "memory");
+    *reinterpret_cast<volatile uint32_t*>(0x600B0184u) = 1u << 31;
+#else
     *g_clint_msip = 1; // pend machine software interrupt
+#endif
 }
 
 int arch_in_isr(void)
@@ -863,6 +875,9 @@ void kickos_rv32_init(void)
     // msip (bit 3, the deferred switch), mtip (bit 7, the tickless clock) and ssip (bit 1,
     // the injected-IRQ test channel). On an M/U-only core ssip is read-only-zero.
     uint32_t mie = (1u << 3) | (1u << 7) | (1u << 1);
+#if KICKOS_RV32_LP
+    mie = 1u << 30;
+#endif
     __asm volatile("csrw mie, %0" ::"r"(mie) : "memory");
 
     // mcounteren CY|TM|IR, so U-mode reads of cycle/time/instret do not trap. The write
@@ -880,8 +895,10 @@ void kickos_rv32_init(void)
     // not honor all-ones NAPOT as match-everything and U-mode still takes an
     // instruction-access fault, whereas TOR with pmpaddr0 = 0xFFFFFFFF covers every 32-bit
     // address on both it and QEMU virt. pmpcfg0 byte0 = TOR(0x08)|X(0x4)|W(0x2)|R(0x1).
+#if !KICKOS_RV32_LP
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
     __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
+#endif
 }
 
 }

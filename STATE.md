@@ -16,10 +16,10 @@ does NOT say.
 
 ## Where we are
 
-**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED, AND M9.7 AND M9.8 ARE DECIDED ON THEIR BRANCHES.** M9 asks what the big kernel lock actually
+**M8 HAS MERGED AND M9 IS OPEN; M9.0 THROUGH M9.6 HAVE MERGED, AND M9.7 THROUGH M9.9 ARE DECIDED ON THEIR BRANCHES.** M9 asks what the big kernel lock actually
 costs, and a measured verdict that the coarse lock survives is a successful outcome of it rather
 than a failure. `roadmap.md`'s `### M9` section is the ledger and the only place those numbers are
-assigned; M9.9 remains assigned. The M9.0 section
+assigned. The M9.0 section
 at the bottom of this file carries what the survey, the stack verdict and the entry envelope
 established, and what a reader of the numbers alone would get wrong.
 
@@ -3706,6 +3706,44 @@ permits a separate full-profile comparison. Pico still uses full newlib on the s
 micro:bit image passes the selected non-tree gates plus the separately polled `hello`
 and `reclaimwit_park` gates. The full profile without the override is refused at
 configure time; the override and Pico's full profile both configure.
+
+## M9.9: unattended ESP32-C6 HP/LP AMP
+
+One ESP32-C6 flash now starts separate HP and LP kernels. The LP reset stub occupies LP SRAM,
+but its full image runs from a disjoint HP SRAM slice; the shared AMP window is above both
+images in HP SRAM. HP grants the LP slice, window and needed peripheral pages before the
+PMU wake. The LP core has machine mode only and no PMP, so it cannot provide the per-thread
+privilege split of the HP node. Its REE2 bus accesses still pass through the APM: HP grants
+its node slice and shared window, while the default denies LP access to HP's private slice.
+APM protects that directional node boundary, not one LP thread from another, and a denied
+read returns zero rather than a CPU fault. This port wires no LP UART, although the part has one:
+HP reports the LP's boot and served-call records from shared memory. The LP RTC rate must be measured against HP's clock before wake,
+since the assumed nominal rate caused far-call timeouts on this board. Its external pending bit is
+read-only, so a deferred switch rings the LP PMU input and leaves that interrupt latched until
+the new context can drain a concurrent HP request.
+
+The [ten-run silicon record](docs/archive/M9.9_amp.md) proves one-flash deployment, both
+node app records, four far replies per run and bidirectional PMU doorbells at the clean commit
+"Run ESP32-C6 HP and LP as AMP nodes". Both RV32 AMP trap-redzone gates and peer ELF agreement
+pass. It does not price throughput, directly test a denied LP access to HP's private slice in the
+final image, show per-thread isolation within LP, or establish behavior on another silicon revision.
+
+**EVERY RUN RETRIES ROUNDS 2 AND 4 ONCE, AND WHY IS OPEN.** Rounds 1 and 3 are answered on the
+first attempt in all ten captures; the attempt line prints above its own round's ping line, which
+reads as rounds 1 and 3 at a glance, and the capture check now reports the attempt count per round.
+Round 1 needs no retry because the app-alive sweep already waits for the LP app. Node 0's doorbell
+count shows each failed attempt was answered without reaching the LP server rather than lost. The
+record's hypothesis, unconfirmed: a call issued right after a first-attempt answer reaches the LP
+before its server is parked again, since it replies and re-enters its receive as two separate
+calls, and is refused on the spot.
+
+**THE CAPTURES RAN WITH A WIDER LP PERIPHERAL GRANT, AND THE TREE HAS SINCE NARROWED IT.** At
+"Run ESP32-C6 HP and LP as AMP nodes" the LP was granted read/write on the whole
+`0x600B0000`-`0x600B0FFF` block, which also covers LP_CLKRST and the eFuse controller, plus read
+on the LPPERI page it never reads. It now gets the PMU and LP timer pages only; that grant, the
+device-I/O fences on the PMU doorbells and the probe's move out of every other C6 image are
+build-only. Several first-stage probe observations are unarchived bench observations, and the
+[boot witness](docs/archive/M9.9_lp_boot.md) says which.
 
 ## Where to go next
 
