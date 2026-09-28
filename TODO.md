@@ -443,7 +443,9 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       puppet tasks and empties
       any pool with no delegation at all. The reserve bounds ONE TASK, which `invariants.md`
       now states outright rather than implying a bound on an adversary. Whether that denial is
-      a guarantee the project wants at all is the item below.
+      a guarantee the project wants at all is the item below. **ASSIGNED TO M10.1
+      (2026-09-28)**: task creation gains a separate authority, so an unprivileged caller
+      without it can no longer mint the puppet tasks.
       **TWO OF THE ARMS WERE MISSING AND THREE KIND LITERALS SURVIVED THE WHOLE SUITE.**
       Found by the M8.5.1 review, closed in M8.5.1: nothing anywhere witnessed the IRQ ceiling
       REFUSING, and the only grant-list arm was built entirely from `CAP_SEM` grants, so the
@@ -4148,8 +4150,12 @@ item below rather than kept as SM-2's fix, which is a correctness fix landing in
       space calls it, so the MCU arm cannot be specified from the driver case alone.
       **ASSIGNED TO THE DRIVER ERA AT M8.13.** That milestone owns the driver model and the
       worked example above is one of its own, so the MCU arm gets specified beside a real
-      second consumer rather than from the driver case alone. The direction above stands as
-      the target shape.
+      second consumer rather than from the driver case alone.
+      **SUPERSEDED AT M10.0 (2026-09-28).** A device window is granted by the composition and
+      looked up by name, `kos_grant_mmio`, and never mapped at run time, which removes the MCU
+      arm's problem: nothing reserves address space on a region board. Runtime mapping stays
+      for runtime objects through `kos_ram_alloc`, `kos_mem_self_grant` and `kos_frame_map`,
+      and this pair is not added beside them. `TODO.md`'s M10 section carries the ruling.
 
 - [x] **P1: ASID/PCID IS A DESIGN ITEM, NOT A BUG FIX -- THE LEVER IS PROBED BUT NEVER
       WRITTEN, AND IT NOW OWES A PEER-TLB IPI TOO.** ASID support is probed at boot but never
@@ -5448,6 +5454,461 @@ owed.
       a reschedule raise owes no rendezvous answer and the primary core may then serve none.
 
 
+## M10 -- static composition, and an init provider that stays
+
+`roadmap.md`'s M10 section owns the shape and the ledger: one composition file, one host tool,
+one emitted table, one init, written test-first against
+[`examples/composition/`](examples/composition/). The design those add up to is
+[`docs/design-m10-composition.md`](docs/design-m10-composition.md), which also lists what is still
+open. KISS there means the simple solution, not the
+one closest to what exists: the scattered mechanisms below are replaced and deleted, never
+wrapped. The kernel may change where the work needs it, a wrong errno for instance, but changing
+it is not the point.
+
+**WHAT M10 DELETES, SO THAT ONE WAY IS LEFT.** The per-board `kos_service_list` arrays and the
+`kos_service_cfg` kinds they carry. The per-board pin-map tables. The `KICKOS_SERVICE_LIST` and
+`KICKOS_BOARD_PINMAP` Kconfig selections. `KICKOS_APP_AUTHORITY` and
+`system/init/common/app_authority_default.cc`. The bring-up choreography apps re-roll by hand, of
+which `user/apps/f411disco/f411spi/main.cc` and `user/apps/xmc4800-relax/xmcssc/main.cc` are the
+worked examples. Line numbers claimed by number in packaged drivers. M10.0 confirms the list; the
+milestone does not close while any of them still composes a system.
+
+- [x] **M10.0: SETTLE THE GOLDEN EXAMPLE FIRST.** `examples/composition/` holds one user app
+      (`app.cc`, `health.cc`, a sensor per board), a composition per board under `systems/`, and
+      chip and board descriptions under `platform/`, one folder per chip holding its `chip.yaml` and
+      its boards. It runs on three boards: the XMC4800 Relax Kit, where the sensor is a client of
+      the SPI bus service; QEMU `virt` with four A53 cores, where the sensor owns a page-sized
+      device window in its own address space and the tasks sit on different cores; and QEMU q35,
+      where the sensor owns a port device. The other descriptions are format witnesses chosen for
+      being unlike those three: the F411 (a CPU-side MPU, nothing shared), the K64F (no per-thread
+      device protection), the C6 (two units in series, routed interrupts, a bank coarser than a
+      pin, an unprotected second core), RV64 `virt` (another MMU and interrupt controller) and the
+      i.MX 8M Plus (two architectures on one die). The maintainer reviews it as the design, and a
+      disagreement is settled by editing it. It is the acceptance test: the three systems admitted
+      in M10.2 and running in M10.3.
+
+- [x] **M10.0: CHECKED AGAINST A PRODUCTION PARTITIONING KERNEL'S DRIVER FLOW, WHICH THE MAINTAINER
+      KNOWS FROM USE.** There a driver reads a typed memory-map entry by name from a static
+      configuration, reserves an address range, maps the device into it, is granted the line by
+      name, attaches itself and waits with a timeout; helpers beside that translate a virtual
+      address to physical for DMA and clean the data cache over a range. Its i.MX 8M Plus map is
+      one flat list of everything on the part, with access granted per partition elsewhere,
+      which is the chip-file-against-composition split M10 already has. The flow matches M10's
+      on names, typed lookups, a read-only table and attach-then-wait. It raised these:
+        - **Bus masters.** Nothing in the M10 formats knew a device can write memory by physical
+          address. Chip files now mark `bus_master`, and granting one is refused unless accepted
+          (roadmap M10). DMA stays deferred to the driver era.
+        - **Two answers for one mapping, now one.** Ruled by the maintainer on 2026-09-28. What
+          the composition declares is looked up by name and never mapped by hand:
+          `kos_grant_mmio` for a device window and `kos_grant_mem` for a declared shared region,
+          each answering a handle to the address the init mapped at spawn and the size, the same source on
+          both classes, and every such grant checkable offline. Runtime mapping is for objects
+          that do not exist at build time -- a buffer allocated at run time, a frame received
+          over IPC, a DMA buffer made on the fly -- through the calls that already exist,
+          `kos_ram_alloc`, `kos_mem_self_grant` and `kos_frame_map`, and it stays the exception,
+          costing MPU regions on a region board and escaping admission. A device is never mapped
+          at run time. M11's `kos_vmem_alloc` then `kos_memmap` is dropped as new API: if those
+          names read better, the existing calls are renamed rather than given siblings.
+        - **Size and offset.** The window's size comes from the description, never from the
+          driver, so the lookup answers it beside the address; and the address includes the
+          device's offset within its page (virtio slots, XMC channels at 0x200).
+        - **Named shared memory is missing from the composition.** The same code base shares
+          page-rounded memory between partitions by name, mapped by each user. A composition
+          declares a shared region by name, size and cache attribute, and which tasks map it
+          read-write or read-only; on a translating board it is a frame run mapped into each
+          space, on a region board a grant each task holds.
+        - **Memory windows are not devices.** Its i.MX 8M Plus map names on-chip RAM, a flash
+          window and a PCIe aperture beside the register files; the chip file now carries them
+          under `memory`, with a per-cluster address where the clusters' maps differ.
+        - **The clock controller.** Its drivers map the clock controller and write their own
+          gates and dividers. Here gates stay behind `kos_periph_enable`, keyed on the window a
+          task holds, and a rate change is the clock-tree service `roadmap.md` keeps in `Later`;
+          a chip file marks the controller kernel-owned.
+        - **What DMA will need, named now so the API has room for it**: a declared DMA buffer
+          (physically contiguous, and its cache attribute), its physical address, and cache
+          clean and invalidate over a range. `arch_dcache_flush` and `arch_dcache_invalidate`
+          exist as a seam with an armv8a backend and no caller; on ARMv7-M the cache controls are
+          privileged, so a user call is a syscall there. The i.MX RT1062 already runs its data
+          cache on.
+
+- [x] **M10.0: A PLAIN APP USES THE DEFAULT COMPOSITION THE KERNEL EXPORT SHIPS.** Ruled by the
+      maintainer on 2026-09-28: no default is generated at build time. Each board carries a real
+      composition file, `boards/<board>/composition.yaml`, from which the kernel package builds
+      and exports a system target, `KickOS::system_default`.
+      **The user's CMake stays plain** (maintainer, same day, replacing a `kickos_compose(<target>
+      DEFAULT)` line): `add_executable` and `target_link_libraries(app KickOS::kernel <system>)`,
+      so an integrator hands a user a preconfigured kernel and system target and nothing more.
+      Which system target is linked IS the choice of composition. The integrator builds one with
+      `kickos_compose(<system> <composition.yaml>)`, which admits it and produces the table, the
+      init, the packaged drivers it names and the link settings. The composition's entry names
+      are the contract between the two: an entry the app does not define is a link error naming
+      it. Linking no system target is a link error too -- the kernel references a symbol whose
+      name is the message, since weak linkage is barred here -- and linking two is a duplicate
+      symbol, so no system boots by accident. Admission checks that need the linked image, stacks
+      and carves against the arena, become linker-script `ASSERT`s the system target brings,
+      because a post-build step cannot ride a usage requirement. The file runs `main` through a packaged entry it names
+      explicitly, `entry: kickos_main`, which calls `main(argc, argv)`, and declares `ends:` on
+      that task, so `main` returning still ends the system. It is **minimal**: the kernel console
+      and `main`, so one file fits every preset of its board, with a userspace console only where
+      it fits all of them. It is the file a user copies to start composing, and it replaces the
+      per-board service lists and pin maps M10 deletes, in the one format. Its task gets today's
+      default authority plus task creation once M10.1 lands. `main` runs in its own task; whether
+      the extra thread and stack fit the smallest boards (the micro:bit, the F302R8) is measured
+      in M10.4 before anything special-cases it.
+
+- [x] **M10.0: PORT I/O IS A GRANT M10 ADDS.** Ruled by the maintainer on 2026-09-28: legacy, but
+      still how a PC reaches its CMOS clock (`0x70`, `0x71`), its legacy serial ports, often its
+      ACPI power-management registers and, beside the memory-mapped form, PCI configuration, so a
+      general-purpose x86 system needs it and it is cheaper before the ABI freeze than after. On
+      x86 every device the tree knows but the local APIC sits in port space, which no grant names
+      today: a ring-3 access needs the task's I/O permission bitmap, which the kernel does not
+      program. The kernel change, part of M10.1's kernel share: a per-task bitmap
+      covering only up to the task's highest granted port, loaded into the core's task-state
+      segment on each switch. A composition grants a port device with the same `device:` field
+      as a memory one, the chip file already stating `ports`; admission holds port ranges to one
+      holder and refuses kernel-owned ones (PIC, PIT, ACPI power management, COM1 while it is the
+      kernel console). **The CMOS index port** also sets the NMI mask in its top bit, so it is a
+      privileged register inside the range, as the XMC's are (ruled the same day): the task's
+      bitmap opens the data port alone, and index writes go through `kos_port_reg_write` with
+      that bit withheld. **The consumer** is a third golden system on QEMU q35, the same app and
+      health checker with a sensor reading the CMOS seconds through the port grant.
+
+- [x] **M10.0: THE DESIGN, WRITTEN SO IT IS EASY TO EXPLAIN.** One document: the three schemas
+      (composition, chip, board), each with a version field and refusal of any unknown field; the
+      emitted table's layout; the init's file-order scan and pending-task rescans; restart and
+      shutdown semantics, including what a client holding a capability into a restarted task
+      observes (the golden example assumes the endpoint outlives its server, held by the init)
+      and what bounds the retries; the default composition a plain app gets without writing a
+      file, ruled below. If a part
+      cannot be explained in a paragraph, it is redesigned rather than documented at length.
+
+- [x] **M10.0: RESTART IS A COUNTER AND A CONTRACT.** Ruled by the maintainer on 2026-09-28, from
+      the scenario of the golden example's sensor dying:
+        - **A restart** starts a dead task again from its entry with the same declared grants, at
+          most `max` times in the system's life. No `restart` means never restarted. Its stack is
+          fresh and its globals are not, every app task sharing the image's data section; most
+          safety-critical tasks cannot restart without doing something first anyway, and that
+          something is the user's.
+        - **When the count is spent the task stays dead and the system carries on, degraded.**
+          Ending the system is one user choice among others, made by a task that watches.
+        - **A caller is never left parked, and the code says what happened to its request.** It
+          is what lets the caller act -- lose the SPI of a motor controller and a GPIO engages
+          the brakes. Three answers, ruled on 2026-09-28:
+            - `-KOS_EPIPE`: the server had the request and died mid-exchange, so it may have
+              acted on it. Today's meaning for that case, unchanged.
+            - `-KOS_EAGAIN`: nothing is receiving yet, but a restart may bring it back; the
+              request was not taken. The code's existing meaning, "retry may succeed".
+            - `-KOS_ECONNREFUSED`, NEW (111): nothing is receiving and nothing will come,
+              the count being spent or no restart declared; the request was not taken.
+          This changes what a call answers today: a call on an endpoint with no receiver, and a
+          caller queued when its server dies, both answer `-KOS_EPIPE` now and move to the
+          second or third code. A kernel change, cheapest before the ABI freeze, landing with
+          the kernel share in M10.1 along with every caller that tests for `-KOS_EPIPE`.
+        - **The init learns of a death on a notification bit**, the same shape as a line. That
+          is the one kernel change restart needs: a task's death raised on a notification.
+        - **A user task may watch too.** `watches` in the composition gives it a notification
+          raised once per death, after the init applied the counter, and lets it ask the init a
+          watched task's state: alive, deaths, restarts left. No kernel change: the init keeps a
+          badged copy of the watcher's notification per watched task, which `kos_notify_badge`
+          already provides.
+      **What the kernel needs for the second and third codes.** A caller parks today whenever
+      anyone holds the receive right, so an init keeping it for the next instance would park
+      callers through the gap. The init instead holds a right that lets it hand out receiving
+      without itself counting as a receiver. That same right is what tells the two "nothing
+      receiving" codes apart without the kernel knowing any restart policy: while the init
+      holds it a call answers `-KOS_EAGAIN`, and once the init drops it, the count spent, a
+      call answers `-KOS_ECONNREFUSED`. The right is built in M10.1, the kernel share (maintainer,
+      2026-09-28), with the other kernel mechanisms the init needs.
+
+- [x] **M10.0: CLASSIFY EVERY KCONFIG KNOB AS KERNEL, USERSPACE OR BOARD.** APPROVED, in
+      `docs/design-m10-composition.md`'s Kconfig split: three knobs are userspace and move or go,
+      and the root and default stacks stay kernel after all, for the reasons given there. Kconfig configures the
+      kernel and the composition configures userspace (maintainer, 2026-09-28). Userspace facts in
+      kernel clothing today: `KICKOS_SERVICE_LIST`, `KICKOS_BOARD_PINMAP`,
+      `KICKOS_USER_HEAP_SIZE` (the heap the linker carves) and the `KICKOS_INIT_PROVIDER` CMake
+      cache entry. `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE`, first read as
+      userspace, stay kernel: the first is the stack a runtime spawn defaults to, the second the
+      init's own.
+      `KICKOS_AMP_PORTS` stays the partition's, both kernels sizing its rings; the composition
+      names which task uses a port. The `KICKOS_TASK_*_BUDGET` ceilings stay kernel, and a
+      composition may narrow them per task, never widen them.
+
+- [x] **M10.0: THE CHIP FILE IS THE SOURCE AND THE KERNEL'S HEADERS ARE GENERATED.** Ruled by the
+      maintainer on 2026-09-28: YAML is the more readable, so `chip_mmap.h`, `irq.h`,
+      `arch_reserved_blocks` and what the chip's `mpu.cmake` declares are generated from the chip
+      file and never hand-edited. Each entry carries the manual reference the header carries
+      today, so the clean-room citation survives. The generator is in the build graph, so an edit
+      to the YAML rebuilds what reads it. What is policy rather than fact, such as which channel
+      may write which bits of the XMC's privileged registers, stays in C.
+
+- [x] **M10.0: THE PARTITION'S DEVICE ASSIGNMENT IS DERIVED, NOT WRITTEN.** On an AMP part with a
+      partition gate (the i.MX 8M Plus's RDC, the ESP32-C6's APM), which devices and memory
+      belong to which node is programmed once, by one node, for the whole partition -- the M7's
+      composition grants SAI5 to its audio task, and the A53, which owns the RDC, must set SAI5
+      to the M7's domain though its own composition never names it. Ruled by the maintainer on
+      2026-09-28: the host tool builds the partition's node compositions together, in the
+      partition build own-image AMP already has, derives each device's node from which
+      composition grants it, refuses a device two nodes grant, and emits the gate's table into
+      the owning node's image. No file states the assignment, so it cannot disagree with the
+      compositions. If that proves too complicated, the fallback is a partition file both
+      compositions are checked against, and M10.0 says so rather than drifting into it.
+
+- [x] **M10.0: THE EXPORT.** APPROVED, in `docs/design-m10-composition.md`'s export
+      manifest, with the emitted table's layout and the `accepts` names beside it. What the installed package carries so a composition is checked
+      without the kernel's source tree: a machine-readable manifest of the kernel's configuration,
+      including the protection unit's window encoding and region budget; the chip and board
+      descriptions; and on a region board the archives and a link recipe, kernel and userspace
+      still meeting in one link there. Several compositions against one kernel build is the case
+      it is designed for.
+
+- [x] **M10.0: AN UNENFORCEABLE GRANT IS REFUSED UNLESS THE COMPOSITION ACCEPTS IT.** Ruled by the
+      maintainer on 2026-09-28. On a bus-side unit (K64F), behind a gate coarser than the window,
+      with no unit or no privilege split (nRF51, STM32F103, F302R8, LX6, the C6's LP core), a
+      declared grant or authority is not enforced as written. The chip file names each such
+      limitation, the refusal quotes that name, and the composition lists it under `accepts`.
+      M10.0 fixes the names and whether an acceptance is system-wide or per task.
+
+- [x] **M10.0: A SERVER IS READY AT ITS FIRST RECEIVE, AND ITS CLIENTS START THEN.** The external
+      audit's main reservation: file order makes a server exist before its clients but not able
+      to answer, and a client treating a failed first call as fatal spends its own restart count
+      on its server's. A serving task is ready the first time it waits to receive on its endpoint;
+      a packaged driver after its descriptor's barrier and, for a console, its handover; a task
+      serving nothing once spawned. The kernel reports a first receive on the creating
+      task's notification beside deaths, a small kernel change. The init starts a task only once every
+      endpoint it `uses` is ready, and **skips past one that must wait** (maintainer, 2026-09-28,
+      after systemd's job engine): pending tasks are rescanned in file order on each ready event,
+      so a stuck server holds back only its own clients and never the watcher reporting it. A
+      ready event is a hint tied to one instance: deaths are handled first, and a ready from an
+      instance that has since died is discarded against the task's generation. A client whose
+      server's count is spent before it was ever ready is reported by `kos_task_status` as not
+      started with a dependency down, and its watchers are told.
+      `docs/design-m10-composition.md`'s Readiness section carries the detail.
+
+- [x] **M10.0: A SHARED REGION'S LIFE, AND WHAT ITS USERS OWE EACH OTHER.** The init zeroes a
+      declared shared region once, at system start, and never again, so it outlives a restart of
+      any task that maps it and a restarted writer finds its predecessor's state, possibly
+      half-written. How tasks share it safely is theirs, as any format between user tasks is; the
+      golden example's single-writer sequence lock is one answer, added after the external audit
+      found plain slot writes racing a reader. M10.0 states the zero-once rule in the schema.
+
+- [x] **M10.0: HOW CODE NAMES WHAT IT WAS GIVEN.** Ruled by the maintainer on 2026-09-28, one
+      mechanism for every task: a task looks a resource up by the name its composition entry
+      gives it, and a resource its entry does not rename is called by its path. So user code
+      names paths directly, as the golden example does, and a packaged driver -- whose source
+      cannot know any board's paths -- has its entry rename what it needs to the role names its
+      exported metadata declares (`lines: { irq: /dev/usic0/sr1 }`, and the driver asks for
+      `irq`). A user who wants a portable driver of their own renames the same way. This
+      replaces today's positions: a window base passed as the thread argument from the service
+      list, a line number hard-coded in the driver's descriptor, and capabilities read from
+      fixed slots such as `KOS_SPI_CAP_LINE`.
+      **A line lookup also answers the line's index within its device** (ruled the same day).
+      On USIC the driver selects which module line its channel raises by writing that index
+      (SR1 is 1) into INPR, and a capability for line 85 does not say 1. The chip file lists a
+      device's lines in order, so the emitted table carries the index and no driver subtracts a
+      base it would have to hard-code.
+      **And a lookup answers an opaque handle, not out-parameters** (maintainer, same day), so a
+      field can be added later without touching a call. A capability already is an opaque
+      handle, so `kos_grant_endpoint` and `kos_grant_notify` answer `kos_cap_t`; a window and a
+      line carry more, so `kos_grant_mmio` and `kos_grant_mem` answer a `kos_window_t` read
+      through `kos_window_addr` and `kos_window_size`, and `kos_grant_irq` a `kos_line_t` read
+      through its capability and index accessors. A handle names this task's entry in the
+      emitted table, so nothing is allocated and a name the task was not given answers the
+      invalid handle, whose accessors answer null, zero or `KOS_CAP_NONE`.
+
+- [x] **M10.0: THE SCHEMAS REFUSE AMBIGUOUS SCALARS.** Booleans are `true` and `false` only;
+      `yes`, `no`, `on` and `off` are refused rather than read as YAML 1.1 would read them.
+
+- [x] **M10.0: EVERY ENTRY RECEIVES ITS OWN TASK AS ITS FIRST ARGUMENT.** Ruled by the maintainer
+      on 2026-09-28: the init passes the task's own table entry, `kos_self_t const* self`, through
+      the argument every thread entry already has, and every lookup takes it, as a program's
+      first argument names the program. One entry can then run as several tasks, two instances
+      of one UART driver among them, and no kernel change is needed.
+
+- [x] **M10.0: ON A TRANSLATING BOARD THE KERNEL CHOOSES WHERE A WINDOW SITS.** Ruled by the
+      maintainer on 2026-09-28. Each task is a process with its own address space, and a static
+      one-to-one mapping was refused as easier to attack (a network stack with known device and
+      buffer addresses) and as breaking that notion. The kernel picks the address when it maps;
+      `kos_window_addr` asks it, and on a region board the same call answers the physical base.
+      The constant table carries no translating address. Randomizing the choice is a later
+      policy for translating boards only, worth having, that pays fully only with
+      position-independent task images. A shared region sits at a different address in each task
+      that maps it, so tasks exchange offsets there; `kos_ram_alloc`'s comment, which says
+      delegation preserves a reservation's address, describes today's behaviour rather than an
+      invariant and changes with it. `docs/design-m10-composition.md` carries the detail.
+
+- [ ] **M10.0 AND EVERY STAGE AFTER IT: GENERAL-PURPOSE USE STAYS POSSIBLE.** Ruled by the
+      maintainer on 2026-09-28: M10 may not block KickOS growing into a general-purpose system,
+      a desktop of its own included. The shape is a nested init -- a task of the boot composition
+      that is itself an init for a dynamic subsystem, launching programs at run time with the
+      capabilities it holds. Each stage is checked against four rules: tasks with the required
+      rights can still create tasks and map memory at run time, with no new "is the init" test
+      (the right to create tasks becomes a separate authority in M10.1); death and readiness reports
+      go to whoever created the task, not to the boot init by name; runtime objects are mapped
+      at run time; and table indices represent the supported configured system size without a
+      fixed system-wide ABI ceiling. Pool limits stay configurable, while per-operation bounds
+      such as the spawn grant count may stay small. `roadmap.md` and
+      `docs/design-m10-composition.md` carry it.
+
+- [ ] **M10.1: THE KERNEL SHARE -- EVERY M10 CHANGE TO THE KERNEL ABI, AS ONE STAGE.** Re-cut on
+      2026-09-28 (maintainer): the kernel mechanisms the init needs are independent of the
+      composition, so they land first, each with its own self-test arms and no composition, and
+      reviewable together as the one ABI change M10 makes before the freeze. They are:
+        - deaths and first receives raised on the creating task's notification, with the
+          generation the readiness rule checks (the M10.0 readiness and restart items);
+        - the right to hand out an endpoint's receiving without being a receiver, the errno
+          split it enables (`-KOS_EAGAIN` while a restart may come, a new `-KOS_ECONNREFUSED`
+          once none will, `-KOS_EPIPE` unchanged for a server that died holding the request),
+          and every caller that tests for `-KOS_EPIPE` updated;
+        - a window list in spawn (the item below);
+        - on a translating board, the kernel choosing where a window sits and recording it, and
+          `kos_window_addr` asking it (the M10.0 item);
+        - the x86 port grant -- a per-task I/O permission bitmap loaded into the core's
+          task-state segment on each switch -- and **`kos_port_reg_write(base, offset, value)`**,
+          a byte-wide write beside `kos_periph_reg_write`, whose store is one aligned 32-bit word
+          in a memory window and cannot serve a one-byte port (found by the external audit). Its
+          possession check is the port counterpart of the memory one: a port grant covering
+          `base + offset`, and the register on the kernel's allowlist with the value inside its
+          mask, the CMOS index's withholding bit 7, the NMI mask;
+        - the separate task-creation authority (the item below), and **the authority word
+          widened**: it is eight bits in `kos_thread_params`, the new bit leaves one free, and a
+          small fixed ceiling in the ABI is what the general-purpose rule forbids.
+      M10.2 runs alongside it; M10.3 needs both.
+
+- [ ] **M10.1: A TASK HOLDS SEVERAL DEVICE WINDOWS.** Ruled by the maintainer on 2026-09-28: the
+      one-window limit goes, since it stops a task driving a DMA engine and its peripheral, or a
+      few devices directly without a server. Today a spawn carries one window and the kernel
+      records one per thread (`Thread::dev_base`, `dev_size`), read by the one-holder check and by
+      the `kos_periph_enable` and `kos_periph_reg_write` gate. The spawn carries a window list,
+      the thread keeps a small array bounded by the protection unit's region budget, the
+      one-holder check runs per window, and the peripheral seams accept any window the caller
+      holds. `docs/design-m10-composition.md` carries the detail.
+
+- [ ] **M10.1: A SEPARATE TASK-CREATION AUTHORITY.** Ruled by the maintainer on
+      2026-09-28, reversing the draft's "a later decision", and placed in the kernel share with every other M10
+      ABI change: M10 cannot close without it, because an
+      authority added after the ABI freeze breaks the ABI, and M11 and M12 build on the finished
+      shape. Today task creation is ungated by authority and gated by creatorship alone
+      (`KOS_SYS_TASK_CREATE`), so a task is free to mint tasks, the hole the object-budget item
+      above has recorded since M8.5: one unprivileged caller seats a thread in every task slot
+      and empties the pools. Creating a task requires an authority the composition grants; the
+      boot init holds it and hands it to a nested init. Settle whether it is a bit in the
+      authority word, which has two free, or a capability; whether it also covers placing a
+      thread in another task, one of the deferred questions; and what a task's own threads
+      need, a task's concurrency being bounded by its budgets already.
+
+- [ ] **M10.2: THE PLATFORM FILES MOVE TO A TOP-LEVEL `platform/`.** Ruled by the maintainer on
+      2026-09-28: `platform/<chip>/chip.yaml` and `platform/<chip>/<board>.yaml`, beside `arch/`
+      and `kernel/`, so every consumer in the tree reads one source -- the header generator, the
+      host tool, tooling. A top-level tree rather than homes under `arch/` because a chip file is
+      independent of architecture, which the i.MX 8M Plus's A53 cluster and M7 need. `boards/`
+      keeps a board's build configuration and its default composition. Until then the files are
+      the M10.0 draft in `examples/composition/platform/`, already grouped the same way.
+
+- [ ] **M10.2: THE HOST TOOL.** Read the three files under their schemas, check the composition
+      against the manifest and the descriptions, and emit one table or refuse. A refusal names
+      its rule, and a size refusal names the kernel knob that would have to grow. Each rule gets
+      an arm and a mutation proving the arm reddens. Rules to start from:
+        - pool and budget counts against the manifest;
+        - every window encodable by the protection unit, and each task's windows inside its
+          region budget;
+        - one holder per window AND per gate around it (a K64F slot, a C6 GPIO bank, an XMC
+          USIC module's lines), and none overlapping a kernel-owned block;
+        - the four apps in the M4.5.2 item (`xmcspi`, `xmccshold`, `pvprobe`, `inprstorm`)
+          refused at build time for a window a live service holds;
+        - every line a task takes declared explicitly, by path; a packaged driver's line and
+          window roles come from metadata the package exports, and a role left unbound is
+          refused (the external audit found the XMC composition could not show which USIC
+          channel owned which module line, the SPI driver hard-coding SR1);
+        - a packaged driver's metadata also declares what it consumes beyond its entry: its
+          threads and their priority offsets, endpoints, notifications and stacks. `xmcuartirq`
+          spawns a second thread one priority above its service, which the composition does not
+          show, and the golden XMC system uses 7 of that board's 8 thread slots, so admission can
+          only count pools and the console-priority rule from that metadata;
+        - a line's claimer declared on exactly one core (M9.2), a declared pin inside the task's
+          grant and no pin required;
+        - **a CI gate admits every board's default composition** against that board's
+          manifest, so a change to a chip file, a driver descriptor or a pool that breaks a
+          default is caught where it is made, and the tool has a fleet-wide corpus from its first
+          day;
+        - a task's declared `authority` within what the init holds, the spawn's authority word
+          only narrowing (the external audit found the first schema had no way to declare it);
+        - every entry of a task's `devices` list checked on its own, a register window or a port
+          range, its privileged registers left out of the task's direct reach;
+        - a task's capability-bearing grants, all delegated at its spawn, within
+          `KICKOS_MAX_SPAWN_GRANTS`, the refusal naming that knob;
+        - a reference only to something declared earlier in the file;
+        - on a translating board, a device window a whole number of pages and never rounded,
+          and more than one device in a page refused unless accepted; a shared region rounds
+          up to the unit's granule instead, the rest of the page belonging to nobody else;
+        - a declared `core` present in the kernel build;
+        - every stdout writer at or below the console's priority, the console rendezvous having
+          no priority inheritance, and declared after the task `stdout` names, since only a task
+          spawned after the console's publish finds its standard output on it;
+        - a shared region's required `cache` against who shares it: `cached` refused where a
+          bus master reaches it or where nodes the chip file does not declare coherent share it,
+          unless accepted, and `uncached` refused where the unit cannot express a memory type
+          over data-cached memory (the external audit found the schema had no cache field).
+      The kernel build starts exporting its manifest and descriptions here, and the golden
+      example is admitted.
+
+- [ ] **M10.3: THE INIT AND THE NAME LOOKUP.** Scan the table in file order, leave tasks whose
+      `uses` are not ready pending, and rescan them on readiness events. Start each eligible task
+      with exactly what it declares, delegating each capability-bearing grant in order (a window
+      or region is a mapping and takes no capability slot). A packaged driver runs its exported
+      descriptor's sequence, and a console driver's endpoint is published before its line is
+      claimed, the kernel's own handler holding that line until then, then spawned up to its
+      readiness barrier and handed over; the external audit found the first draft claimed first,
+      which the XMC example's console would refuse. Lookups find what was delegated under the
+      path it was declared by; `kos_grant_endpoint` (and its device and line siblings) only finds what was delegated.
+      `kos_grant_mmio` and `kos_grant_mem` answer a handle whose address is where a declared
+      window or shared region is mapped in the calling task, and whose size is the declared
+      one; for a device that address is
+      the physical one on an MPU board and wherever the task's space put it on a translating one;
+      the A53 system is the first time any translating board grants a userspace driver a window.
+      Stay resident when the composition says so, end the system on the declared condition, which
+      answers the reaper init below without a kernel classification, and apply the declared
+      restart; `kos_service_bringup` (or what M10.0 replaces it with) gains the stop hook a restart
+      needs. The three golden systems run: the Relax Kit, the A53 board at four cores, and q35.
+
+- [ ] **M10.4: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
+      maintainer on 2026-09-28, so a user's CMake is plain on every board. Today x86 is the one
+      exception: firmware loads a PE32+ UEFI application, the compiler driver has no PE32+
+      output, so `kickos_add_app_target` makes the app an OBJECT library and
+      `kickos_emit_image` links the `.efi` with a custom command calling `ld -m i386pep`
+      (`cmake/x86_64_image.cmake`), after the global-offset-table guard
+      (`tools/check-x86_64-no-got.sh`). The tree's comment that CMake "cannot drive" that linker
+      is a choice, not a limit: the installed x86 toolchain file can set the executable link
+      rule to a wrapper that runs the guard and then `ld -m i386pep` with the section script and
+      flags, with `.efi` as the executable suffix, and the boot and kernel-landing objects ride
+      the kernel target's usage requirements. The snag to solve is the kernel target's link
+      options, written for the compiler driver (`-Wl,`), which `LINKER:` flags can carry to a
+      direct linker. Proven in CI on both binutils versions the tree already distinguishes (the
+      `-b elf64-x86-64` workaround for 2.42). **If the rule cannot be made to hold**,
+      `kickos_add_app_target` stays as the one documented exception, and says why.
+
+- [ ] **M10.4: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
+      eight the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`,
+      `irq.h`, `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board
+      its minimal default composition, and link
+      `KickOS::system_default` in the out-of-tree examples CI builds (`examples/oot-app`,
+      `examples/oot-mcu-app`), which link only `kickos` today. Move every board and
+      app onto compositions, packaged drivers taking
+      their lines from the composition rather than by number, and delete the mechanisms listed
+      above. The four apps whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`,
+      `rootfault`) declare their ending explicitly. Run the fleet sweep and the silicon witnesses
+      against the result.
+
+- [ ] **M10.5: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
+      `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
+      runs do not say.
+
+**DEFERRED UNTIL A CONSUMER NEEDS ONE, AND NOT WORK OF THIS MILESTONE.** The seal, a
+create-suspended spawn, and an authority for placing a thread of another task, a dynamic mint and
+starting a core. None may be answered with "root" when it comes, nor in a way that suits only the
+boot init: a nested init is the consumer most likely to reach them first. The temporal half is out
+by ruling and sits in `roadmap.md`'s `Later`.
+
+
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
 
 - [ ] **ELEVEN OF THE TWELVE DAMAGING COLLISIONS LAND ON A VALUE, WHERE NO GATE-SIDE TOLERANCE
@@ -6116,6 +6577,9 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       available either.
       **The rest of M4.7.8 does not depend on it**: `kos_wait_last()` is app-callable and correct
       as built, and only the app knows which live threads are its own work.
+      **ASSIGNED TO M10.3 (2026-09-28), AND LIKELY ANSWERED WITHOUT THE KERNEL.** A composition
+      that declares what ends the system lets the resident init end it itself, so the mark below
+      may never be needed; M10.0 rules.
       **The way forward, and it is core-path work needing its own number and an explicit go:**
       classify a thread as app or infrastructure, with ONE privileged call from the init
       immediately after `kickos_service_list_run` returns, marking everything then live as

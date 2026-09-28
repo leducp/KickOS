@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE -- the end goal, written before the code that reads it. Nothing reads
+# this file yet. M10 is done when this system is admitted on the host, builds, and runs on
+# an XMC4800 Relax Kit with no jumper and no external part.
+#
+# The system: a fake sensor whose "measurement" is a counter echoed through the SPI bus
+# service's internal loopback, and an app that polls it and notices when it freezes. Every
+# task below runs unprivileged, and the two user tasks hold no authority at all: everything
+# privileged happens in the init, from these declarations.
+#
+# Rules this file is checked against (M10.2), each refused with a message naming it:
+#   * a field the schema does not know is refused;
+#   * a path in `uses` names an endpoint served by a task declared ABOVE it, and `watches`
+#     names tasks declared above it, so references point backward and nothing is solved;
+#     ready tasks start in file order, and one waiting on a server is skipped and revisited;
+#   * a device window or interrupt line is held by one task at most;
+#   * a grant the platform cannot enforce is refused unless the limitation the chip file
+#     names is listed under `accepts` (none is needed on the XMC4800);
+#   * every task writing stdout runs at or below the console's priority (the console
+#     rendezvous has no priority inheritance);
+#   * counts and sizes fit what the kernel build exports, or the refusal names the Kconfig
+#     knob that would have to grow.
+
+version: 1
+board: xmc4800-relax
+
+# Where every task's stdout goes. Explicit, so no task is special because of its position.
+stdout: /svc/console
+
+# What ends the system. `never`: it runs until reset, and the init stays resident.
+ends: never
+
+# Shared memory, declared once and mapped by the init into each task that lists it under
+# `maps`. Never mapped by hand: user code looks it up by name. The size is checked against
+# what the protection unit can grant -- a power of two of at least 32 bytes on this MPU, a
+# whole page on a translating board.
+shared:
+  - name: /shm/history
+    size: 64
+    cache: cached # shared by tasks of this image only, on coherent memory
+
+# Restart is a counter and nothing more. `restart: { max: N }` starts a dead task again from
+# its entry with the same grants, at most N times in the system's life; without it a task is
+# never restarted. Once the count is spent the task stays dead and the system carries on:
+# whether to stop is the user's call, made by a task that watches it. A restarted task's
+# stack is fresh and its globals are not, every app task sharing the image's data section.
+
+tasks:
+  # A driver shipped with the kernel package. `devices` grants the channel's register window.
+  # `lines` binds each line role the driver's exported metadata declares -- one, `irq`, for
+  # both drivers here -- to the line it takes. Explicit because the chip lets either USIC0
+  # channel raise either module line: nothing else could say which is whose, and admission
+  # refuses an unbound role and a line two tasks take.
+  - name: console
+    driver: xmcuartirq
+    devices: [/dev/usic0/ch0]
+    lines: { irq: /dev/usic0/sr0 }
+    serves: /svc/console
+    priority: 12
+
+  - name: spi0
+    driver: xmcssc
+    devices: [/dev/usic0/ch1]
+    lines: { irq: /dev/usic0/sr1 }
+    serves: /svc/spi0
+    priority: 11
+    restart: { max: 3 }
+
+  # User code from here on. `entry` is a symbol in this project's sources.
+  - name: sensor
+    entry: sensor_main
+    stack: 2048
+    priority: 9
+    uses: [/svc/spi0]
+    serves: /svc/sensor
+    maps: { /shm/history: rw }
+    restart: { max: 3 }
+
+  - name: app
+    entry: app_main
+    stack: 4096
+    priority: 8
+    uses: [/svc/sensor]
+
+  # A user task told of every death among the tasks it watches, after the init has applied
+  # their restart counters, and allowed to ask how many restarts each has left.
+  - name: health
+    entry: health_main
+    stack: 2048
+    priority: 10
+    watches: [spi0, sensor]
+    maps: { /shm/history: ro }

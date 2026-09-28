@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the board half for the STM32F411E-DISCO. Nothing reads it yet; its
+# home once something does is platform/stm32f411/f411disco.yaml. Chip facts live in chip.yaml beside it.
+
+version: 1
+board: f411disco
+chip: stm32f411
+
+console:
+  device: /dev/usart2
+  pins: { tx: PA2, rx: PA3 }
+
+leds:
+  ld4: { pin: PD12, active: high, owner: kernel } # green, the kernel's diagnostic LED
+
+# Soldered on, wired to a chip device. A composition grants the bus and names the part, and
+# the board says which chip select reaches it. The part is an L3GD20 or an I3G4250D
+# depending on the board revision; both answer on the same wiring.
+parts:
+  gyro:
+    bus: /dev/spi1
+    chip_select: PE3
+    pins: [PA5, PA6, PA7]

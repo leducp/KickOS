@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the board half for QEMU q35. Nothing reads it yet; its home once
+# something does is boards/qemu-x86_64/.
+
+version: 1
+board: qemu-x86_64
+chip: q35
+
+console:
+  device: /dev/com1

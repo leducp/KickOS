@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# M10 GOLDEN EXAMPLE: the chip half for QEMU's `virt` machine with Cortex-A53 cores. Nothing
+# reads it yet; its home once something does is platform/virt_arm64/. Values are the
+# ones the tree uses (chip_virt_arm64.cc, chip_limits.h) and, for devices the tree does not
+# drive yet, the ones QEMU itself publishes: `-M virt,gic-version=3 -machine dumpdtb=`.
+#
+# No port parses a device tree, here or on silicon, so this file is the description.
+
+version: 1
+chip: virt_arm64
+arch: armv8a
+
+# A translating unit: a task has its own address space and a device window is a mapping in
+# it. Two consequences the MCU files never meet. The smallest window is one 4 KiB page, so
+# two devices sharing a page cannot be isolated from each other. And the address a window is
+# granted by is physical, while the task reaches it wherever its space maps it, so user code
+# asks for the mapped address by name rather than using the physical one.
+protection: { unit: mmu, page: 0x1000, covers_devices: true }
+
+cores: { count: [1, 4], smp: true } # the presets run one or four
+
+devices:
+  # GIC interrupt IDs: 0-15 are software-generated and 16-31 private to each core, both
+  # banked per core; 32 and up are shared. A line here is its ID as the kernel takes it.
+  uart0: { window: [0x09000000, 0x1000], lines: { global: 33 } } # PL011, the kernel console
+  rtc: { window: [0x09010000, 0x1000], lines: { alarm: 34 } }    # PL031, a seconds counter
+  gpio: { window: [0x09030000, 0x1000], lines: { global: 39 } }  # PL061
+  # 32 virtio-mmio slots, /dev/virtio/0 to /dev/virtio/31: slot k is at the base plus
+  # k * stride and raises the line plus k. Eight share each page, so granting one grants
+  # its seven neighbours, which admission refuses unless the composition accepts it. And a
+  # virtio device is a bus master: it reads and writes its queues in RAM by physical address,
+  # which no MMU sees. Granting one hands its holder every byte of memory, so admission
+  # refuses that too unless accepted, and the driver would need what DMA needs besides.
+  virtio:
+    window: [0x0A000000, 0x200]
+    count: 32
+    stride: 0x200
+    lines: { irq: 48 }
+    bus_master: true
+
+  gicd: { owner: kernel }
+  # Every core's redistributor frame, not only one's: a peer's banked interrupt state lives
+  # in the frames a grant of this window would hand over.
+  gicr: { owner: kernel }
+  timer: { owner: kernel, lines: { el1_phys: 30 } } # the generic timer; ID 30 is per core
