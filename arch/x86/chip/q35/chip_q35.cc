@@ -311,6 +311,20 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return 1;
 }
 
+// The device page a user window may name: the HPET, which the kernel does not drive. The I/O
+// APIC and the local APIC next to it steer interrupts, and the rest of the space is firmware or
+// PCI, so none of them is here.
+size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
+{
+    if (max == 0)
+    {
+        return 0;
+    }
+    out[0].base = 0xFED00000u;
+    out[0].size = 0x1000u;
+    return 1;
+}
+
 // --- Termination ------------------------------------------------------------
 // tests/lib/gate.sh READS THE CONSOLE LINE below: `isa-debug-exit` reports (status << 1) | 1
 // into an 8-bit process exit code, so a status of 128 or more loses its top bit.

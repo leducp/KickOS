@@ -654,6 +654,25 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     return n;
 }
 
+// The device pages a user window may name: the PL011 and the PL031 RTC. fw_cfg, right above,
+// stays out: its DMA interface writes guest RAM.
+size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const apertures[] = {
+        {0x09000000u, 0x20000u},
+    };
+    size_t n = sizeof(apertures) / sizeof(apertures[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = apertures[i];
+    }
+    return n;
+}
+
 #if KICKOS_AMP_OWN_IMAGE
 int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
 {

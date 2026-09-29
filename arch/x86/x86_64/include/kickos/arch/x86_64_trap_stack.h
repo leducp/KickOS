@@ -50,19 +50,20 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 568
 
-/* The ring 3 syscall on the block. 1720 on qemu-x86_64-bench under g++ 13 and 1624 under
- * g++ 16, a spawn seeding the new task's space:
- *   syscall_dispatch[112] -> thread_create_call[32] -> spawn_masked[384] -> thread_create[128]
+/* The ring 3 syscall on the block. 1800 on qemu-x86_64-bench under g++ 13, a spawn seeding the
+ * new task's space:
+ *   syscall_dispatch[112] -> thread_create_call[32] -> spawn_masked[464] -> thread_create[128]
  *   -> task_for[32] -> domain_for[64] -> claim_slot[32] -> aspace_image_seed[112]
  *   -> arch_aspace_map[96] -> map_into[112] x5 -> kickos_frame_alloc[16] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1720
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1800
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1720 on
- * qemu-x86_64-bench down SYSK's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1728
+/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1800 on
+ * qemu-x86_64-bench under g++ 13, down SYSK's chain. */
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1856
 
-/* The same dispatch through the switch: 1720 on qemu-x86_64-bench, down SYSK's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1728
+/* The same dispatch through the switch: 1800 on qemu-x86_64-bench under g++ 13, down SYSPRIV's
+ * chain. */
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1856
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 376
  * down IRQ's chain, which bounds the reporter those vectors actually take. */
@@ -95,7 +96,7 @@
 
 /* The SMP doorbell, lock wait and route service lengthen reachable call chains. These bounds
  * cover qemu-x86_64-smp12's callgraph after every reachable indirect site was bound, the
- * deepest of the four SMP presets: SYSK's spawn 2216 under g++ 13 and 2088 under g++ 16, IRQ
+ * deepest of the four SMP presets: SYSK's spawn 2296 under g++ 13, IRQ
  * and IST 592 and PANIC 536 under g++ 13, EXITK's teardown 1080 and RET 1064 under both. */
 #if KICKOS_KERNEL_CORES > 1
 #undef KICKOS_X86_64_TRAP_DEPTH_IRQ
@@ -103,11 +104,12 @@
 #undef KICKOS_X86_64_TRAP_NEST
 #define KICKOS_X86_64_TRAP_NEST 824
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2216
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2296
+/* SYSK, SYSPRIV and SYSPRIVSW: 2296 on qemu-x86_64-smp12 under g++ 13, spawn_masked[480]. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2240
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2304
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2240
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2304
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 640
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK

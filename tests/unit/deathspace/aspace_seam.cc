@@ -118,6 +118,14 @@ namespace kickos
         (void)bytes;
     }
 
+    // No thread in these tests holds a window, so the exit path's unmap has nothing to take.
+    VirtualRanges* domain_ranges_mut(Domain*)
+    {
+        return nullptr;
+    }
+
+    void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
+
     struct arch_aspace* aspace_activate_for(Thread const* t)
     {
         if (t == nullptr)

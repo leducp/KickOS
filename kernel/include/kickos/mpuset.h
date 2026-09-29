@@ -27,6 +27,7 @@ namespace kickos
     static_assert(KICKOS_MPU_MAX_REGIONS <= ARCH_MPU_ENCODED_SLOTS,
                   "the encoded image carries fewer descriptor slots than the kernel hands it");
 #endif
+    static_assert(KICKOS_MPU_MAX_REGIONS <= 8, "MpuSet::windows_ holds one bit per region");
     static_assert(KICKOS_MPU_MAX_REGIONS < 32,
                   "the seating bitmask is a uint32_t, and the no-MPU encode shifts by a count "
                   "that reaches the maximum, so 32 is already the undefined shift");
@@ -48,7 +49,27 @@ namespace kickos
         void clear()
         {
             count_ = 0;
+            windows_ = 0;
             encode();
+        }
+
+        // add(), for a spawn window: the set remembers which of its regions are windows, a
+        // grant, the stack or the task's data being none, and kos_window_addr asks it.
+        [[nodiscard]] bool add_window(uintptr_t base, size_t size, uint32_t attr)
+        {
+            uint8_t const at = count_;
+            if (not add(base, size, attr))
+            {
+                return false;
+            }
+            windows_ = static_cast<uint8_t>(windows_ | (1u << at));
+            return true;
+        }
+
+        // Whether the region `r`, one of this set's, is a spawn window.
+        bool is_window(arch_mpu_region const& r) const
+        {
+            return ((windows_ >> (&r - regions_)) & 1u) != 0;
         }
 
         // Appends one region, or answers false and changes nothing because the set is full.
@@ -139,15 +160,18 @@ namespace kickos
         void drop_devices()
         {
             uint8_t kept = 0;
+            uint8_t windows = 0;
             for (uint8_t i = 0; i < count_; i++)
             {
                 if ((regions_[i].attr & ARCH_MPU_DEV) == 0)
                 {
+                    windows = static_cast<uint8_t>(windows | (((windows_ >> i) & 1u) << kept));
                     regions_[kept] = regions_[i];
                     kept++;
                 }
             }
             count_ = kept;
+            windows_ = windows;
             encode();
         }
 
@@ -200,6 +224,7 @@ namespace kickos
 
         arch_mpu_region regions_[KICKOS_MPU_MAX_REGIONS] = {};
         uint8_t count_ = 0;
+        uint8_t windows_ = 0; // bit i: regions_[i] is a spawn window
 #if KICKOS_HAVE_MPU
         arch_mpu_encoded image_ = {};
 #endif

@@ -69,6 +69,28 @@ namespace kickos
         return false;
     }
 
+#if KICKOS_HAVE_ASPACE
+    bool grant_window_aperture_ok(uintptr_t base, size_t size)
+    {
+        size_t const g = arch_aspace_granule();
+        uintptr_t const last = base + size - 1u;
+        if (size == 0 or last < base or (base % g) != 0 or (size % g) != 0)
+        {
+            return false;
+        }
+        struct arch_reserved_block apertures[KICKOS_MAX_RESERVED];
+        std::span const all{apertures, arch_window_apertures(apertures, KICKOS_MAX_RESERVED)};
+        for (struct arch_reserved_block const& a : all)
+        {
+            if (base >= a.base and last <= a.base + a.size - 1u)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+#endif
+
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized)
     {

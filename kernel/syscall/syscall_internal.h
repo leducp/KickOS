@@ -73,6 +73,10 @@ namespace kickos
     // arm answers -KOS_EINVAL for those).
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset);
 
+    // KOS_SYS_WINDOW_ADDR: writes to `out` where the caller reaches the window it holds at
+    // `base`, the base its spawn list named. 0, or -KOS_EPERM / -KOS_EINVAL / -KOS_EFAULT.
+    int window_addr_call(uintptr_t base, uintptr_t out);
+
     // --- The owner of a user end -----------------------------------------------
     // Every access below names the address space each user end belongs to, and a NULL
     // space means the address is directly kernel-dereferenceable: kernel storage, and

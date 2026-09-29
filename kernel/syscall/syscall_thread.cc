@@ -45,6 +45,10 @@ namespace kickos
         {
 #if KICKOS_HAVE_ASPACE
             (void)k;
+            // The windows went in after the stack, and go back before the task as it does.
+            aspace_window_unmap_holder(domain_space(task_domain(tk)),
+                                       domain_ranges_mut(task_domain(tk)),
+                                       static_cast<uint16_t>(slot + 1));
             if (attr.kstack_owned)
             {
                 ustack_free(task_domain(tk),
@@ -84,14 +88,56 @@ namespace kickos
             return &k.threads.slots[index];
         }
 
+#if KICKOS_HAVE_ASPACE
+        // Maps the admitted windows into tk's space where the kernel chooses, held by `slot`: a
+        // device at its own frames, a memory window at the frames of the spawner's reservation,
+        // whose domain it holds until unmapped. spawn_unwind takes back a partial list.
+        int spawn_map_windows(Task* tk, kos_window const* list, uint16_t n, int slot)
+        {
+            Domain* const into = task_domain(tk);
+            Domain* const own = task_domain(sched::current()->task);
+            for (uint16_t i = 0; i < n; i++)
+            {
+                kos_window const& w = list[i];
+                arch_phys_addr_t pa = w.base;
+                uint32_t rights = ARCH_MAP_R | ARCH_MAP_W;
+                enum arch_map_memtype type = ARCH_MAP_DEVICE;
+                Domain* donor = nullptr;
+                if (w.kind == KOS_WINDOW_MEMORY)
+                {
+                    pa = aspace_frame_of(w.base);
+                    type = ARCH_MAP_NORMAL;
+                    donor = own;
+                    if ((w.flags & KOS_WINDOW_RO) != 0)
+                    {
+                        rights = ARCH_MAP_R;
+                    }
+                    if ((w.flags & KOS_WINDOW_UNCACHED) != 0)
+                    {
+                        type = ARCH_MAP_NOCACHE;
+                    }
+                }
+                int const rc = aspace_window_map(domain_space(into), domain_ranges_mut(into), pa,
+                                                 w.size, rights, type,
+                                                 static_cast<uint16_t>(slot + 1), donor);
+                if (rc != 0)
+                {
+                    return rc;
+                }
+            }
+            return 0;
+        }
+#endif
+
         // Admits entry i of a staged window list, the entries before it already admitted, or
         // answers why not. A privileged child carries the whole-arena region and the
         // background map, so its windows get no descriptor to admit. Caller holds IrqLock.
         // noinline, as spawn_unwind: its locals would otherwise sit in the armv7m SVC chain's
         // widest frame.
         __attribute__((noinline)) int window_admit(kos_window const* list, uint16_t i,
-                                                   bool privileged)
+                                                   kos_thread_params const* p)
         {
+            bool const privileged = (p->privileged != 0);
             kos_window const& w = list[i];
             Thread* const c = sched::current();
             if (w.size == 0 or w.base + w.size < w.base)
@@ -108,10 +154,48 @@ namespace kickos
                 {
                     return -KOS_EINVAL;
                 }
+                // One window per source base, so kos_window_addr names exactly one mapping.
+                for (uint16_t j = 0; j < i; j++)
+                {
+                    if (list[j].kind == KOS_WINDOW_MEMORY and list[j].base == w.base)
+                    {
+                        return -KOS_EINVAL;
+                    }
+                }
 #if KICKOS_HAVE_ASPACE
-                (void)privileged;
-                (void)c;
-                return -KOS_ENOTSUP; // a translating board maps no window yet
+                // One reservation of the spawner's own, named whole, which the child's space
+                // maps again where the kernel chooses; a handed-off one is another space's. The
+                // spawn's own task data is checked where the window is mapped, after it.
+                if (privileged)
+                {
+                    return 0;
+                }
+                size_t const g = arch_aspace_granule();
+                VirtualRanges const* const own = domain_ranges(task_domain(c->task));
+                VirtualRange const* e = nullptr;
+                if (own != nullptr)
+                {
+                    e = own->at_base(w.base);
+                }
+                if (e == nullptr or not vr_caller_nameable(e) or (e->flags & VR_BORROWED) != 0
+                    or e->pages != (w.size + g - 1u) / g)
+                {
+                    return -KOS_EPERM;
+                }
+                uint8_t type = ARCH_MAP_NORMAL;
+                if ((w.flags & KOS_WINDOW_UNCACHED) != 0)
+                {
+                    if (not arch_aspace_memtype_support(ARCH_MAP_NOCACHE))
+                    {
+                        return -KOS_ENOTSUP;
+                    }
+                    type = ARCH_MAP_NOCACHE;
+                }
+                if (not aspace_frames_type_ok(aspace_frame_of(w.base), e->pages, type, nullptr))
+                {
+                    return -KOS_EBUSY; // mapped elsewhere with another memory type
+                }
+                return 0;
 #elif KICKOS_MEMORY_ENFORCED
                 // The self-grant's admission, on the extent the descriptor will cover.
                 uint32_t const attr = window_memory_attr(w.flags);
@@ -131,6 +215,32 @@ namespace kickos
                 {
                     return -KOS_EPERM;
                 }
+                // The data region the child's task will have is no thread's region yet when this
+                // spawn builds it: the one this spawn builds from mem_base, the named task's, or
+                // the spawner's.
+                arch_mpu_region data = {};
+                Domain const* dom = task_domain(c->task);
+                if (p->task != KOS_TASK_NONE)
+                {
+                    dom = task_domain(task_resolve(p->task));
+                }
+                if (p->task == KOS_TASK_NONE and p->mem_base != nullptr and p->mem_size != 0)
+                {
+                    data.base = reinterpret_cast<uintptr_t>(p->mem_base);
+                    data.size = arch_ram_region_size(p->mem_size);
+                    data.attr = ARCH_MPU_R | ARCH_MPU_W;
+                }
+                else if (dom != domain_kernel() and domain_region_count(dom) > 0)
+                {
+                    data = *domain_region_at(dom, 0);
+                }
+                if (not memory_type_free(w.base, rsz, attr, nullptr)
+                    or (data.size != 0 and ((data.attr ^ attr) & ARCH_MPU_NOCACHE) != 0
+                        and grant_ranges_overlap(w.base, w.base + rsz - 1u, data.base,
+                                                 data.base + data.size - 1u)))
+                {
+                    return -KOS_EBUSY; // held elsewhere with another memory type
+                }
                 return 0;
 #else
                 (void)privileged;
@@ -146,6 +256,23 @@ namespace kickos
             {
                 return -KOS_EPERM;
             }
+#if KICKOS_HAVE_ASPACE
+            // Whole granules inside an aperture the chip states, which holds no RAM: a window
+            // over RAM would hand the task whatever frames sit there.
+            if (not grant_window_aperture_ok(w.base, w.size))
+            {
+                return -KOS_EINVAL;
+            }
+            if (privileged)
+            {
+                return 0;
+            }
+            if (grant_hits_reserved(w.base, w.size)
+                or not arch_aspace_memtype_support(ARCH_MAP_DEVICE))
+            {
+                return -KOS_EPERM; // the kernel's own device
+            }
+#else
             if (not arch_mpu_region_encodable(w.base, w.size))
             {
                 return -KOS_EINVAL;
@@ -159,6 +286,7 @@ namespace kickos
             {
                 return -KOS_EPERM; // reserved block / bit-band alias
             }
+#endif
             if (not dev_window_free(w.base, w.size))
             {
                 return -KOS_EBUSY; // already held: no stealing
@@ -361,7 +489,7 @@ namespace kickos
             }
             for (uint16_t i = 0; i < nwin; i++)
             {
-                int const wrc = window_admit(wbuf, i, p->privileged != 0);
+                int const wrc = window_admit(wbuf, i, p);
                 if (wrc != 0)
                 {
                     return wrc;
@@ -695,6 +823,17 @@ namespace kickos
             attr.kstack_owned = true;
 #endif
         }
+#if KICKOS_HAVE_ASPACE
+        if (p->privileged == 0)
+        {
+            int const wrc = spawn_map_windows(tk, kernel().window_stage, p->window_count, i);
+            if (wrc != 0)
+            {
+                spawn_unwind(k, attr, tk, stack, stack_size, i);
+                return wrc;
+            }
+        }
+#endif
         // Where the thread pointer is SP masked down to KICKOS_TLS_STRIDE, a caller-supplied
         // block that is not strided, or that spans more than one stride, would hand this thread
         // a pointer into a neighbour's thread_local storage.

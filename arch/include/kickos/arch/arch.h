@@ -632,6 +632,11 @@ struct arch_aspace* arch_aspace_boot(void);
 // is kernel half). Fixed from the first space's creation on.
 uintptr_t arch_aspace_user_offset(void);
 
+// The part of the user half the kernel places spawn windows in, clear of the app window and of
+// every address a frame the kernel hands a task can take. Page-aligned; fixed once the first
+// space exists.
+void arch_aspace_window_area(uintptr_t* base, size_t* size);
+
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Map-maintenance counters since boot:
 // bits 63..32: issued page invalidations
@@ -669,6 +674,12 @@ struct arch_reserved_block
 // this function; there is no fallback.
 #define KICKOS_RESERVED_NONE 0u
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
+
+// Fill at most max physical apertures a user DEVICE window may lie in on a translating backend,
+// and return the count: device space holding no RAM and no firmware, arch_reserved_blocks still
+// carving the kernel's own devices out of it. Zero admits no window. Each chip of a translating
+// arch must define this function; there is no fallback.
+size_t arch_window_apertures(struct arch_reserved_block* out, size_t max);
 
 // Whether Cortex-M bit-band aliases exist. If set, device grants must reject
 // both alias windows. The default returns zero; chips with aliases return one.

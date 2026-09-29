@@ -86,6 +86,20 @@ namespace kickos
 
     void ustack_free(Domain*, uintptr_t, size_t) {}
 
+    // No thread in these tests holds a window.
+    VirtualRanges* domain_ranges_mut(Domain*)
+    {
+        return nullptr;
+    }
+
+    void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
+
+    uintptr_t aspace_window_addr(struct arch_aspace*, VirtualRanges const*, uint16_t,
+                                 arch_phys_addr_t)
+    {
+        return 0;
+    }
+
     struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
 
     bool aspace_seated_for(Thread const*)
@@ -114,6 +128,11 @@ extern "C"
     size_t arch_aspace_granule(void)
     {
         return 4096u;
+    }
+
+    uintptr_t arch_aspace_user_offset(void)
+    {
+        return 0;
     }
 
     // Tests validate ranges without dereferencing them; acquisition must fail.

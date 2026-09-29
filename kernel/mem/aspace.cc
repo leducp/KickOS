@@ -7,6 +7,7 @@
 
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
+#include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/klink.h>
 #include <kickos/kruntime.h>
@@ -405,6 +406,43 @@ namespace kickos
         return va;
     }
 
+    bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
+                               VirtualRange const* self)
+    {
+        size_t const g = arch_aspace_granule();
+        arch_phys_addr_t const end = pa + static_cast<arch_phys_addr_t>(pages) * g;
+        for (int d = 0; d < KICKOS_MAX_DOMAINS; d++)
+        {
+            Domain const* const dom = &kernel().domains[d];
+            struct arch_aspace* const space = domain_space(dom);
+            VirtualRanges const* const ranges = domain_ranges(dom);
+            for (size_t i = 0; space != nullptr and ranges != nullptr
+                               and i < VirtualRanges::capacity();
+                 i++)
+            {
+                VirtualRange const* const e = ranges->at(i);
+                if (e == nullptr or e == self or e->state != VirtualState::Granted
+                    or (e->flags & VR_IMAGE) != 0 or e->memtype == memtype)
+                {
+                    continue;
+                }
+                // A window or a capability run sits where the kernel chose; everything else a
+                // space maps sits at its frames' own address.
+                arch_phys_addr_t lo = aspace_frame_of(e->base);
+                if ((e->flags & (VR_WINDOW | VR_FRAMECAP)) != 0)
+                {
+                    lo = arch_aspace_frame_at(space, e->base);
+                }
+                arch_phys_addr_t const hi = lo + static_cast<arch_phys_addr_t>(e->pages) * g;
+                if (lo < end and pa < hi)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
                           size_t size, uint32_t rights, enum arch_map_memtype type)
     {
@@ -431,6 +469,11 @@ namespace kickos
         }
         uintptr_t const b = e->base;
         size_t const pages = e->pages;
+        // A window, a handoff or the donor mapping these frames with another type keeps them.
+        if (not aspace_frames_type_ok(aspace_frame_of(b), pages, memtype, e))
+        {
+            return -KOS_EBUSY;
+        }
         if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
             != ARCH_ASPACE_OK)
         {
@@ -527,6 +570,93 @@ namespace kickos
         return 0;
     }
 
+    int aspace_window_map(struct arch_aspace* space, VirtualRanges* ranges, arch_phys_addr_t pa,
+                          size_t bytes, uint32_t rights, enum arch_map_memtype type,
+                          uint16_t holder, Domain* donor)
+    {
+        size_t const g = arch_aspace_granule();
+        if (space == nullptr or ranges == nullptr or bytes == 0 or (pa % g) != 0)
+        {
+            return -KOS_EINVAL;
+        }
+        size_t const pages = (bytes + g - 1u) / g;
+        uintptr_t area = 0;
+        size_t area_bytes = 0;
+        arch_aspace_window_area(&area, &area_bytes);
+        // Asked again here and not only at admission: the spawn's own task data is handed off
+        // after its windows were admitted and before they are mapped.
+        if (donor != nullptr and not aspace_frames_type_ok(pa, pages, static_cast<uint8_t>(type),
+                                                           nullptr))
+        {
+            return -KOS_EBUSY;
+        }
+        uintptr_t const va = ranges->place(area, area_bytes / g, pages);
+        uint16_t donor_tag = 0;
+        if (donor != nullptr)
+        {
+            donor_tag = static_cast<uint16_t>((domain_handle(donor) & 0xFFFF) + 1);
+        }
+        if (va == 0
+            or not ranges->reserve(va, pages, VR_BORROWED | VR_WINDOW, VR_RUN_NONE, holder,
+                                   donor_tag))
+        {
+            return -KOS_ENOMEM;
+        }
+        if (arch_aspace_map(space, va, pa, pages, rights, type) != ARCH_ASPACE_OK)
+        {
+            ranges->release(va);
+            return -KOS_ENOMEM;
+        }
+        if (not ranges->grant(va, pages, rights, static_cast<uint8_t>(type)))
+        {
+            (void)arch_aspace_unmap(space, va, pages);
+            ranges->release(va);
+            return -KOS_ENOMEM;
+        }
+        if (donor != nullptr)
+        {
+            domain_ref(donor);
+        }
+        return 0;
+    }
+
+    void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
+                                    uint16_t holder)
+    {
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e == nullptr or (e->flags & VR_WINDOW) == 0 or e->holder != holder)
+            {
+                continue;
+            }
+            uint16_t const donor = e->donor;
+            (void)arch_aspace_unmap(space, e->base, e->pages);
+            ranges->release(e->base);
+            if (donor != 0)
+            {
+                domain_release(&kernel().domains[donor - 1u]);
+            }
+        }
+    }
+
+    uintptr_t aspace_window_addr(struct arch_aspace* space, VirtualRanges const* ranges,
+                                 uint16_t holder, arch_phys_addr_t pa)
+    {
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder
+                and arch_aspace_frame_at(space, e->base) == pa)
+            {
+                return e->base;
+            }
+        }
+        return 0;
+    }
+
     int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type)
@@ -555,6 +685,13 @@ namespace kickos
         uintptr_t const b = e->base;
         size_t const pages = e->pages;
         uint32_t const rights = ARCH_MAP_R | ARCH_MAP_W;
+        // The donor, a window or another handoff mapping these frames with another type keeps
+        // them.
+        if (not aspace_frames_type_ok(aspace_frame_of(b), pages, static_cast<uint8_t>(type),
+                                      nullptr))
+        {
+            return -KOS_EBUSY;
+        }
         // The borrower takes the donor's address; reserve refuses an overlap.
         if (not ranges->reserve(b, pages, VR_BORROWED))
         {
@@ -628,6 +765,8 @@ namespace kickos
             if ((e->flags & VR_BORROWED) != 0)
             {
                 // Another space's frames: unmapped here, freed by their owner.
+                // A window's donor reference is not dropped here: its holder's exit unmapped it
+                // already, and releasing from the teardown would recurse into this function.
                 (void)arch_aspace_unmap(space, e->base, e->pages);
                 if ((e->flags & VR_FRAMECAP) != 0)
                 {

@@ -277,6 +277,12 @@ int kos_task_state(kos_task_t task)
                                          0));
 }
 
+int kos_window_addr(uintptr_t base, void** out)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_WINDOW_ADDR, base,
+                                         reinterpret_cast<uintptr_t>(out), 0, 0));
+}
+
 int kos_task_slay(kos_task_t task, uint32_t timeout_us)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY,

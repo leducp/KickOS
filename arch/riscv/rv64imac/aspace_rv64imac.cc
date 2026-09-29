@@ -938,6 +938,14 @@ uintptr_t arch_aspace_user_offset(void)
     return 0;
 }
 
+// Spawn windows sit halfway up the user half, far above every frame's identity address and the
+// app window, and 1 GiB of it is theirs.
+void arch_aspace_window_area(uintptr_t* base, size_t* size)
+{
+    *base = LOW_HALF_END / 2u;
+    *size = static_cast<size_t>(1) << 30;
+}
+
 struct arch_aspace* arch_aspace_boot(void)
 {
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);

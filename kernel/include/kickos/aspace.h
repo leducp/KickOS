@@ -16,6 +16,7 @@
 namespace kickos
 {
     struct Thread;
+    struct Domain;
 
     // Copy through each owning space's acquire interface, one granule at a time.
     // Failure can leave a copied prefix. Return an error rather than panic;
@@ -63,9 +64,15 @@ namespace kickos
     // address is the frames' own, which is what makes a reservation a globally unique name.
     uintptr_t aspace_reserve(VirtualRanges* ranges, size_t bytes);
 
+    // Whether every live mapping of [pa, pa + pages granules) in any space, `self` aside, carries
+    // `memtype`: one block mapped cacheable in one place and not in another is incoherent.
+    bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
+                               VirtualRange const* self);
+
     // The self-grant: map a range the caller reserved, at the address it reserved.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;
-    // 0 when the range is already mapped with these attributes.
+    // -KOS_EBUSY when another mapping of its frames carries another memory type; 0 when the
+    // range is already mapped with these attributes.
     int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
                           size_t size, uint32_t rights, enum arch_map_memtype type);
 
@@ -88,6 +95,23 @@ namespace kickos
     // unless both the mapping kind and run_obj match; VR_BORROWED alone is insufficient.
     int aspace_cap_unmap(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                          int run_obj);
+
+    // Map a spawn window's `bytes` at `pa` where the backend's window area has room, recorded as
+    // a VR_WINDOW range held by `holder` (a thread slot index plus one). A memory window names
+    // the `donor` domain whose reservation it maps and holds a reference on it until unmapped;
+    // a device window names none. -KOS_ENOMEM when the area, the list or the tables are full.
+    int aspace_window_map(struct arch_aspace* space, VirtualRanges* ranges, arch_phys_addr_t pa,
+                          size_t bytes, uint32_t rights, enum arch_map_memtype type,
+                          uint16_t holder, Domain* donor);
+
+    // Unmap every window `holder` holds, completing the backend's shootdown, and release their
+    // donors. A holder with none is a no-op.
+    void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
+                                    uint16_t holder);
+
+    // Where `holder` reaches the window it holds at physical frame `pa`, or 0.
+    uintptr_t aspace_window_addr(struct arch_aspace* space, VirtualRanges const* ranges,
+                                 uint16_t holder, arch_phys_addr_t pa);
 
     // Map the donor's complete reservation at the same VA without taking ownership.
     // Require its exact base and rounded page count. Return -KOS_EPERM for a

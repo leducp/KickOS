@@ -195,9 +195,14 @@ endif()
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS fvic kvic)
+  # window_addr's sibling, reading the window its holder took with it at exit.
+  if(KICKOS_CHIP STREQUAL "virt_arm64" OR KICKOS_CHIP STREQUAL "virt_rv64"
+     OR KICKOS_CHIP STREQUAL "q35")
+    list(APPEND KICKOS_EXPECT_FAULTS was)
+  endif()
 endif()
 # window_memory_ro's child, writing through its read-only window.
-if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS wro)
 endif()
 
