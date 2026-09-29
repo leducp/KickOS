@@ -1,0 +1,145 @@
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu-arm64
+   arch    armv8a
+   cpu     cortex-a53
+   mpu     off
+   sched   tickless
+   build   2026-09-29 07:39:58 +0200
+   app     Sep 29 2026 07:39:59 +0200
+   commit  15947db7-dirty
+   heap    64 KiB available
+   kstack  4096 B x 17 = 69632 B
+
+microbenchmark: context-switch throughput (all arches) + per-switch cost
++ IRQ-entry latency where a cycle counter exists. Reporter woken by the
+workload, not a timer. Telemetry OFF for clean numbers.
+cycle counter: 0 Hz (0 = no rate converts a reading; cycles only)
+
+  lock-probe: hold+1 core=0 depth=0  (three nested, one outermost)
+  call/reply: 8 B  19522 ns/round-trip  (51223 round-trips/s over 20000 calls / 390 ms)
+  call/reply: 16 B  19530 ns/round-trip  (51202 round-trips/s over 20000 calls / 390 ms)
+  call/reply: 32 B  19613 ns/round-trip  (50986 round-trips/s over 20000 calls / 392 ms)
+  call/reply: 64 B  18989 ns/round-trip  (52660 round-trips/s over 20000 calls / 379 ms)
+  call/reply: 128 B  19235 ns/round-trip  (51986 round-trips/s over 20000 calls / 384 ms)
+  call/reply: 256 B  19191 ns/round-trip  (52105 round-trips/s over 20000 calls / 383 ms)
+  call/reply: 8 B  18809 ns/round-trip  (53163 round-trips/s over 20000 calls / 376 ms) [generic path]
+  call/reply: 16 B  18981 ns/round-trip  (52681 round-trips/s over 20000 calls / 379 ms) [generic path]
+  call/reply: 32 B  19083 ns/round-trip  (52401 round-trips/s over 20000 calls / 381 ms) [generic path]
+  call/reply: 64 B  19068 ns/round-trip  (52443 round-trips/s over 20000 calls / 381 ms) [generic path]
+  call/reply: 128 B  19274 ns/round-trip  (51882 round-trips/s over 20000 calls / 385 ms) [generic path]
+  call/reply: 256 B  19153 ns/round-trip  (52210 round-trips/s over 20000 calls / 383 ms) [generic path]
+  call/reply: 32 B  19879 ns/round-trip  (50303 round-trips/s over 20000 calls / 397 ms) [caller outranks server, D1 donates]
+  phase table (44 rows; cyc avg/max, min last and a floor; leaf -= NULL, composite -= NULL + k*(NEST-NULL)):
+    NULL             115/16211  min=100  n=260000
+    NEST             330/450730  min=300  n=260000
+    NEST_LOCK        232/74301  min=210  n=260000
+    CALL_TOTAL       17604/1670881  min=16751  n=259999
+    CALL_VALIDATE    159/202713  min=140  n=260000
+    CALL_LOCKED      16822/1629493  min=16010  n=259999
+    CALL_RESOLVE     226/16701  min=190  n=260000
+    CALL_PEEK        178/54001  min=140  n=260000
+    CALL_PROBE       137/66896  min=110  n=259999
+    CALL_POP         168/32461  min=150  n=259999
+    CALL_COPY        620/72506  min=531  n=259999
+    CALL_MINT        1146/75703  min=1042  n=259999
+    CALL_MINT_CAP    277/74240  min=230  n=259999
+    CALL_MINT_INFO   455/56186  min=401  n=259999
+    CALL_DONATE      180/9728  min=160  n=19999
+    CALL_PARK        280/156515  min=250  n=259999
+    CALL_WAKE        11823/1320078  min=11221  n=259999
+    CALL_RESUME      155/49343  min=140  n=260000
+    CALL_SLOW_TOTAL  231276/231276  min=231276  n=1
+    CALL_SLOW_LOCKED 224283/224283  min=224283  n=1
+    CALL_SLOW_DONATE 0/0  min=0  n=0
+    CALL_SLOW_PARK   165271/165271  min=165271  n=1
+    RECV_LOCKED      14075/833631  min=13415  n=259999
+    RECV_RESOLVE     288/187112  min=250  n=260000
+    RECV_SCAN        197/425462  min=180  n=259999
+    RECV_PARK        13133/746197  min=12463  n=259999
+    REPLY_TOTAL      45591/371700  min=8336  n=13
+    REPLY_VALIDATE   5514/14317  min=2825  n=13
+    REPLY_LOCKED     2032/535961  min=1864  n=260000
+    REPLY_LOOKUP     363/301889  min=320  n=260000
+    REPLY_COPY       532/83527  min=460  n=260000
+    REPLY_FUNNEL     171/85501  min=140  n=260000
+    REPLY_WAKE       388/52850  min=320  n=260000
+    REPLY_RECV_TOTAL 17380/1033319  min=16552  n=260000
+    REPLY_RECV_TAIL  435/138441  min=390  n=259999
+    WAKE_UNPARK      137/60905  min=90  n=520012
+    PICK_NEXT        103/66616  min=70  n=520064
+    SWITCH_TO        21432/397909335  min=10500  n=520013
+    SWITCH_BOOK      135/80061  min=90  n=520039
+    MPU_APPLY        171/29165  min=130  n=520039
+    MPU_COMMIT       0/0  min=0  n=0
+    REENT_SEAT       111/53020  min=80  n=520039
+    KTIME_REARM      109/83929  min=90  n=520039
+    ARCH_SWITCH      20227/397902252  min=9328  n=520013
+  ns-probe: rate=0 (nothing converts, so no ns column is printed)
+  sat-probe: width=64 fits+1/0 wide+0/1 max=1000
+
+  throughput: 166898 ctx-sw/s  (5991 ns/sw avg over 40000 switches / 239 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    160/240/14607 cyc  (p50/p99/max, n=40002)
+  lock-hold: 2560/3072/181182 cyc  (p50/p99/max, n=80236)
+  lock-site: core=0 site=0xffffff80400191dc max=181182
+  irq-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=201 closed=1000 dropped=0 tare=944/1220 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 8192/11264/246976 ns  (p50/p99/max, n=1000)
+  throughput: 169695 ctx-sw/s  (5892 ns/sw avg over 40000 switches / 235 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    160/208/3557 cyc  (p50/p99/max, n=40002)
+  lock-hold: 1280/2560/55755 cyc  (p50/p99/max, n=80238)
+  lock-site: core=0 site=0xffffff8040006f20 max=55755
+  irq-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=201 closed=1000 dropped=0 tare=944/1220 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 8192/12288/44144 ns  (p50/p99/max, n=1000)
+  throughput: 171454 ctx-sw/s  (5832 ns/sw avg over 40000 switches / 233 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    160/160/16361 cyc  (p50/p99/max, n=40002)
+  lock-hold: 960/2560/47429 cyc  (p50/p99/max, n=80239)
+  lock-site: core=0 site=0xffffff8040006f20 max=47429
+  irq-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  (p50/max/max, n=0)
+  wcase-probe: line=200 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=201 closed=1000 dropped=0 tare=944/1220 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 8192/8192/42752 ns  (p50/p99/max, n=1000)
+  xtask ping-pong: 13324 ns/switch  (40000 switches / 532 ms)
+  xtask call/reply: 16 B  40060 ns/round-trip  (24962 round-trips/s over 20000 calls / 801 ms)
+  spawn/exit: thread 26024 ns  (200 reps / 5 ms)
+  spawn/exit: task 109113 ns  (200 reps / 21 ms)
+bench: done
+POLL_OK=1 POLL_MS=8000
