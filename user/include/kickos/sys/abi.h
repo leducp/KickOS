@@ -623,7 +623,7 @@ enum kos_cap_rights
 // widens.
 enum kos_cap_authority
 {
-    KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, the spawn-time MMIO grant, kos_mem_self_grant
+    KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, a spawn's device window, kos_mem_self_grant
     KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
     KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
@@ -645,6 +645,35 @@ struct kos_cap_grant
     uint8_t rights_mask;  // subset of the source cap's rights (kos_cap_rights bits)
 };
 
+// What one window of a spawn's list reaches.
+enum kos_window_kind
+{
+    // Device registers, R|W and never executable, with one holder: overlapping a window a
+    // live thread holds, or another device entry of the same list, is -KOS_EBUSY. Needs
+    // KOS_AUTH_MEMORY, takes no flag, and is what kos_periph_enable and
+    // kos_periph_reg_write accept.
+    KOS_WINDOW_DEVICE = 0,
+    // A block the spawner's task reserved with kos_ram_alloc, shared at the same address.
+    KOS_WINDOW_MEMORY = 1,
+    // An x86 port range; -KOS_ENOTSUP until a board grants ports.
+    KOS_WINDOW_PORTS = 2
+};
+
+// A memory window's flags; a device window takes none (-KOS_EINVAL).
+enum kos_window_flags
+{
+    KOS_WINDOW_RO = 1 << 0,      // reads only: a write faults the thread
+    KOS_WINDOW_UNCACHED = 1 << 1 // as KOS_MEM_NOCACHE; -KOS_ENOTSUP where the chip cannot
+};
+
+struct kos_window
+{
+    uintptr_t base;
+    uint32_t size;
+    uint8_t kind;  // enum kos_window_kind
+    uint8_t flags; // enum kos_window_flags
+};
+
 // Thread-creation parameters (kernel allocates TCB + stack from a static pool).
 struct kos_thread_params
 {
@@ -663,10 +692,10 @@ struct kos_thread_params
                          // kos_ram_alloc handed the CALLER, a sibling task's block included;
                          // the child's task reaches it at the same address.
     uint32_t mem_size;   // size of that region (bytes)
-    void* mmio_base;     // device/MMIO region granted to the thread (0 => none); attr implied R|W|DEV
-                         // EXCLUSIVE for an unprivileged child: overlapping a window a live
-                         // thread holds -> -KOS_EBUSY
-    uint32_t mmio_size;  // size of that region (bytes)
+    // The windows this thread holds, each its own and none its task's (0 => none), read
+    // once at the spawn. More than KICKOS_MAX_THREAD_WINDOWS entries: -KOS_ENOMEM.
+    struct kos_window const* windows;
+    uint16_t window_count;
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE).
                          // Must be a block the CALLER'S TASK reserved with kos_ram_alloc, a
                          // sibling task's included. Under translation it must ALSO be
@@ -698,7 +727,7 @@ struct kos_thread_params
     // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE to make the child a
     // thread of the spawner's task (KOS_TASK_NONE above). Only the task's creator may seat a
     // member. A member shares the task's data region, so it may bring NO mem_base of its own
-    // (-KOS_EINVAL) and may not be privileged (-KOS_EINVAL); mmio_base is per-thread and is
+    // (-KOS_EINVAL) and may not be privileged (-KOS_EINVAL); its windows are per-thread and
     // still its own. A named task is the only way to put a thread in a group of its own, and
     // a fault ends the whole task.
     kos_task_t task;

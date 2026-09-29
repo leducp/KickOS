@@ -84,6 +84,98 @@ namespace kickos
             return &k.threads.slots[index];
         }
 
+        // Admits entry i of a staged window list, the entries before it already admitted, or
+        // answers why not. A privileged child carries the whole-arena region and the
+        // background map, so its windows get no descriptor to admit. Caller holds IrqLock.
+        // noinline, as spawn_unwind: its locals would otherwise sit in the armv7m SVC chain's
+        // widest frame.
+        __attribute__((noinline)) int window_admit(kos_window const* list, uint16_t i,
+                                                   bool privileged)
+        {
+            kos_window const& w = list[i];
+            Thread* const c = sched::current();
+            if (w.size == 0 or w.base + w.size < w.base)
+            {
+                return -KOS_EINVAL;
+            }
+            if (w.kind == KOS_WINDOW_PORTS)
+            {
+                return -KOS_ENOTSUP;
+            }
+            if (w.kind == KOS_WINDOW_MEMORY)
+            {
+                if ((w.flags & ~(KOS_WINDOW_RO | KOS_WINDOW_UNCACHED)) != 0)
+                {
+                    return -KOS_EINVAL;
+                }
+#if KICKOS_HAVE_ASPACE
+                (void)privileged;
+                (void)c;
+                return -KOS_ENOTSUP; // a translating board maps no window yet
+#elif KICKOS_MEMORY_ENFORCED
+                // The self-grant's admission, on the extent the descriptor will cover.
+                uint32_t const attr = window_memory_attr(w.flags);
+                size_t const rsz = arch_ram_region_size(w.size);
+                if (rsz == 0 or not arch_ram_region_admissible(w.base, rsz))
+                {
+                    return -KOS_EINVAL;
+                }
+                if (not grant_nocache_admissible(attr))
+                {
+                    return -KOS_ENOTSUP;
+                }
+                if (not privileged
+                    and (not grant_region_admissible(w.base, rsz, attr,
+                                                     cap_check_authority(c, AUTH_MEMORY))
+                         or not ram_owner_nameable(c->task, w.base, w.size)))
+                {
+                    return -KOS_EPERM;
+                }
+                return 0;
+#else
+                (void)privileged;
+                (void)c;
+                return 0;
+#endif
+            }
+            if (w.kind != KOS_WINDOW_DEVICE or w.flags != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            if (not cap_check_authority(c, AUTH_MEMORY))
+            {
+                return -KOS_EPERM;
+            }
+            if (not arch_mpu_region_encodable(w.base, w.size))
+            {
+                return -KOS_EINVAL;
+            }
+            if (privileged)
+            {
+                return 0;
+            }
+            if (not grant_region_admissible(w.base, w.size,
+                                            ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV, true))
+            {
+                return -KOS_EPERM; // reserved block / bit-band alias
+            }
+            if (not dev_window_free(w.base, w.size))
+            {
+                return -KOS_EBUSY; // already held: no stealing
+            }
+            uintptr_t const last = w.base + w.size - 1u;
+            for (uint16_t j = 0; j < i; j++)
+            {
+                if (list[j].kind == KOS_WINDOW_DEVICE
+                    and grant_ranges_overlap(w.base, last, list[j].base,
+                                             list[j].base + list[j].size - 1u))
+                {
+                    return -KOS_EBUSY; // one holder within one list too
+                }
+            }
+            return 0;
+        }
+
         // kill_tag_of never answers KILL_TAG_NONE, so an orphan (a child whose spawner's slot
         // changed hands) matches nobody. Caller holds IrqLock.
         bool caller_spawned(Thread const* t, Thread const* c)
@@ -242,37 +334,37 @@ namespace kickos
             }
 #endif
         }
-        // A dev window is the thread's own region, carried by no task or domain. This admission
-        // and the commit in thread_create both run inside this IrqLock, so the pair is atomic.
-        if (p->mmio_base != nullptr)
+        // A window is the thread's own region, carried by no task or domain. This admission and
+        // the commit in thread_create both run inside this IrqLock, so the pair is atomic.
+        // Snapshotted in one pass and admitted from the copy, as the grant list is below.
+        if (p->window_count > 0)
         {
-            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
+            uint16_t const nwin = p->window_count;
+            kos_window* const wbuf = kernel().window_stage;
+            if (nwin > KICKOS_MAX_THREAD_WINDOWS)
             {
-                return -KOS_EPERM;
+                return -KOS_ENOMEM;
             }
-            uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
-            if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
+            uintptr_t const wu = reinterpret_cast<uintptr_t>(p->windows);
+            if (p->windows == nullptr or (wu & (alignof(kos_window) - 1)) != 0)
             {
                 return -KOS_EINVAL;
             }
-            if (not arch_mpu_region_encodable(mbase, p->mmio_size))
+            if (not user_readable_ok(wu, sizeof(kos_window) * nwin))
             {
-                return -KOS_EINVAL;
+                return -KOS_EFAULT;
             }
-            // A privileged child carries the whole-arena region and the background map, so it
-            // gets no window descriptor to admit.
-            if (p->privileged == 0)
+            if (not kaccess_from_user(wbuf, user_space_of(sched::current()), wu,
+                                      sizeof(kos_window) * nwin))
             {
-                if (not grant_region_admissible(mbase, p->mmio_size,
-                                                ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
-                                                cap_check_authority(sched::current(),
-                                                                    AUTH_MEMORY)))
+                return -KOS_EFAULT;
+            }
+            for (uint16_t i = 0; i < nwin; i++)
+            {
+                int const wrc = window_admit(wbuf, i, p->privileged != 0);
+                if (wrc != 0)
                 {
-                    return -KOS_EPERM; // reserved block / bit-band alias / unauthorized DEV
-                }
-                if (not dev_window_free(mbase, p->mmio_size))
-                {
-                    return -KOS_EBUSY; // already held: no stealing
+                    return wrc;
                 }
             }
         }
@@ -554,8 +646,8 @@ namespace kickos
         attr.privileged = (p->privileged != 0);
         attr.mem_base = p->mem_base;
         attr.mem_size = p->mem_size;
-        attr.mmio_base = p->mmio_base;
-        attr.mmio_size = p->mmio_size;
+        attr.windows = kernel().window_stage;
+        attr.window_count = p->window_count;
         attr.task = tk;
         attr.spawner_tag = k.threads.kill_tag_of(spawner);
 #if KICKOS_KERNEL_CORES > 1

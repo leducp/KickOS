@@ -474,27 +474,35 @@ shared region can reach a task only as its data region, `mem_base`, always read-
   `mmio_size` and gains `windows` and a 16-bit `window_count`. `mem_base` stays: it is the task's
   own data region, whose presence is what builds an implicit task.
 - **The bound is the kernel's, not the ABI's.** A thread keeps at most
-  a Kconfig knob's worth of entries, whose default is what the protection unit
-  has left after the regions every thread takes; the M10.2 manifest exports it and admission
-  checks it offline. A longer list is refused `-KOS_ENOMEM`, the code for descriptor capacity.
+  `KICKOS_MAX_THREAD_WINDOWS` entries, whose default is what the protection unit
+  has left after the regions every thread takes: four of `KICKOS_MPU_MAX_REGIONS`' eight go to
+  code, static data, the task's data region and the stack, so the default and the ceiling are
+  four; the M10.2 manifest exports it and admission checks it offline. A longer list is refused
+  `-KOS_ENOMEM`, the code for descriptor capacity.
 - **Possession is per thread**, as the ruling states and as a region board enforces it. On a
   translating board the mapping is in the task's space, so a sibling thread reaches a window
   while its holder lives without being its holder; the kernel's checks -- one holder, the
-  peripheral seams -- still ask the thread.
+  peripheral seams -- still ask the thread. The record is the thread's own region list
+  (`Thread::mpu`), whose device entries are exactly its device windows, a self-grant never
+  carrying the device type, so `Thread::dev_base` and `dev_size` go and no array is added.
 - **A window outlives no holder.** Its mapping is made when its holder is created and removed
   when that thread exits, not when the task dies, and on a multicore board the unmap completes
   its shootdown before the thread's record releases the window. The one-holder check counts a
   window until that release: today `dev_window_free` skips a thread already marked dying, which
   would let a second task be granted a device the dying holder, or its surviving siblings through
   the task's mapping, can still reach. So a window is granted again only once no space maps it
-  and no thread holds it.
-- **The checks.** A device window stays exclusive, per entry and within one list; a memory
-  window must lie in a block the spawner reserved, as `mem_base` must today, and the read-only flag
-  encodes it read-only; the peripheral seams accept any device window the caller holds. The
-  ports kind is refused `-KOS_ENOTSUP` until section 7 lands it, so that part adds no second ABI
-  change.
-- **The list is staged on the spawner's stack** like the grant list, bounded by the knob, and
-  the trap red zone is re-measured with it.
+  and no thread holds it. The release is `exit_current` dropping the holder's device regions
+  where the dying mark used to be, before its teardown can wake a supervisor; section 6's unmap
+  goes in front of it.
+- **The checks.** A device window stays exclusive, per entry and within one list, and takes no
+  flag; a memory window must lie in a block the spawner reserved, as `mem_base` must today, under
+  the self-grant's admission, and the read-only flag encodes it read-only; the peripheral seams
+  accept any device window the caller holds. The ports kind is refused `-KOS_ENOTSUP` until
+  section 7 lands it, so that part adds no second ABI change, and a translating board refuses a
+  memory window the same way until section 6 chooses where it sits.
+- **The list is staged in the kernel instance**, `Kernel::window_stage`, and not on the spawner's
+  stack as the grant list is: the stack copy moved the armv7m SVC and rv32 privileged-syscall
+  reservations a whole step, and the spawn holds the kernel lock from the copy to the commit.
 
 **Arms.** Two windows, both reachable and both accepted by the peripheral seams; overlap with
 another thread's window and within one list; a list over the knob; a read-only region that reads
@@ -503,9 +511,34 @@ exactly one window today (`arch_mpu_region_encodable` in `arch/sim/sim.cc`) and 
 
 **Backends and cost.** Portable kernel, every region backend's encoding (armv6m, armv7m, armv8m,
 the rv32 PMP, rxv3), the sim, and every spawn caller under `system/init/` and in
-`user/include/kickos/kos.h`. The window array in every thread control block is the part's main
-cost, and the one most likely to be too dear on the smallest boards: it is measured there before
-the part merges.
+`user/include/kickos/kos.h`. A window array in every thread control block was to be the part's
+main cost, and the one most likely to be too dear on the smallest boards; it was not needed.
+
+**What the part taught.** The array never came: the region list already was the record, so a
+thread control block is 8 bytes smaller on a 32-bit target (272 on armv7m) and 16 on a 64-bit one,
+and the instance carries the staged list instead, 48 bytes on a 32-bit target. The trap red zones
+are unchanged, `window_admit` and the window loop of `thread_create` being out of line so their
+locals stay off the SVC chain's widest frames. Only PMSAv7 ignored the write bit, every data
+descriptor having been read-write until now, so armv6m and armv7m gained the read-only encoding
+(`MPU_RASR_AP_URO`); PMSAv8, the rv32 PMP, rxv3 and the K64 SYSMPU already honoured it. The sim
+admits either half of its register span. The arms are `mmio_grant`, which adds the list's own
+refusals; `dev_window_exclusive`, which adds a list naming one window twice and a two-window
+holder whose second entry is then held; `window_list` on the sim, the seam through both windows
+and a respawn from the death wake of a server holding one; and `window_memory_ro`, where a child
+in a task of its own reads through a read-only window and dies on its write, a read-write window
+reading back what that write left. A thread may also hold one block through a read-write and a
+read-only window, and the kernel's pointer checks answered from the read-write one, so a
+syscall wrote what the thread could not (review): `user_range_ok` and
+`user_readable_and_writable_ok` now take no write from the region set wherever a read-only region
+overlaps it, whichever region a region backend obeys, and the same arm has such a child name the
+block as a reply buffer (`tests/unit/rangecheck` pins the rule on both checks). A translating
+backend's rights are its mapping's, which section 6 gives each window. Removing the check within a list, the read-only encoding or the
+seam's walk past the first window turns them red. Removing the release does not: on a single-core
+board the woken supervisor runs only once the holder has exited, so the release is load-bearing
+where it runs on another core during the teardown, and no QEMU preset is a multicore region board.
+The ESP32-C6 AMP node image had 176 bytes left and this part is about 1 KiB of code, so the
+partition's shared window went from 64 to 32 KiB and each node slice from 224 to 240 KiB, as the
+RP2350's already are; the images use about 10 KiB of that window.
 
 ## 6. The kernel chooses where a window sits (M10.1.7)
 

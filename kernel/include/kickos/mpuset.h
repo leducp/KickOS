@@ -133,6 +133,24 @@ namespace kickos
         }
 #endif
 
+        // Drops every device region, which is what releases the thread's device windows: the
+        // one-holder check reads them here. For a thread past its last return to user code,
+        // whose registers stay reachable only while their holder can run.
+        void drop_devices()
+        {
+            uint8_t kept = 0;
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                if ((regions_[i].attr & ARCH_MPU_DEV) == 0)
+                {
+                    regions_[kept] = regions_[i];
+                    kept++;
+                }
+            }
+            count_ = kept;
+            encode();
+        }
+
         // Appends the arch's app-wide static regions (code and static data). They come from
         // the linker script, so they are encodable by construction and there are never more
         // of them than a fresh set holds.

@@ -35,7 +35,7 @@ set(_selftest_regions 4)
 # budget is a different one on each of them: 64 KiB of FLASH on the two STM32 parts, the
 # 128 KiB pow2 PMP code window (`_code_size` in arch/riscv/chip/esp32c6/esp32c6.ld) on an
 # enforcing ESP32-C6, whose next step up would take 128 KiB straight off the thread arena,
-# the 224 KiB node slice on the ESP32-C6's own-image AMP partition, and the arena that
+# the 240 KiB node slice on the ESP32-C6's own-image AMP partition, and the arena that
 # follows .bss on nrf51. None of the four is a number the build can read back from the
 # board, so the count is stated here and nowhere else: the chip, KICKOS_HAVE_MPU and
 # KICKOS_AMP_OWN_IMAGE come from the board's own config, and every gate takes the image list
@@ -223,11 +223,14 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # caller_stack_arena
 endif()
+if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # window_memory_ro
+endif()
 if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # region_mode
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
-  math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
+  math(EXPR _tap_arms "${_tap_arms} + 2") # periph_reg_write_mask, window_list
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 47") # frame_run_slot_recycle, call_reply_undisclosed, cap_objects, cap_map, recv_buf_unmapped, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, app_pointers_relocated, process_data_template
@@ -271,7 +274,7 @@ if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 1") # endpoint_bound
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
-  math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 1") # periph_reg_write_mask
+  math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 2") # periph_reg_write_mask, window_list
 endif()
 
 set(_tap_arms_r4 19) # region 4, unconditional, task_handles through mem_self_grant, incl. task_member_refusals, task_creator_gate, task_group_kill, task_watch_reports, 3 x thread_slay_*, 2 x task_slay_*, notify_no_line, notify_bind_busy, caller_stack, mem_self_grant_nonpow2, domain_share, mmio_grant, ipc_one_buffer_both_ends, confused_deputy
@@ -290,6 +293,9 @@ if(KICKOS_MEMORY_ENFORCED)
 endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # caller_stack_arena
+endif()
+if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # window_memory_ro
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # region_mode

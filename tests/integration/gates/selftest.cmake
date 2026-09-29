@@ -196,6 +196,10 @@ set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS fvic kvic)
 endif()
+# window_memory_ro's child, writing through its read-only window.
+if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+  list(APPEND KICKOS_EXPECT_FAULTS wro)
+endif()
 
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
 # deref would split the value into further bogus environment entries.

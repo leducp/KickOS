@@ -88,12 +88,13 @@ int main(int, char**)
 {
     kos::print("[conreclaim] scramble-then-panic console-reclaim test\n");
 
+    kos_window const win = {U0C0_BASE, U0C0_WINDOW, KOS_WINDOW_DEVICE, 0};
     auto const s = kos::thread::create(
         scrambler, reinterpret_cast<void*>(U0C0_BASE), "scrambler",
         SCRAMBLER_PRIO, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
         /*stack=*/nullptr, /*stack_size=*/0,
-        /*mmio=*/reinterpret_cast<void*>(U0C0_BASE), U0C0_WINDOW);
+        /*windows=*/&win, 1);
     if (not s.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C0.

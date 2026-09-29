@@ -476,7 +476,8 @@ namespace kos::thread
     // caller; the new thread runs after it blocks or yields.
     // mem/mem_size grants domain data; stack/stack_size optionally supplies a
     // caller-owned stack, otherwise KICKOS_USER_STACK_SIZE is used.
-    // mmio/mmio_size grants a device window to this thread and requires AUTH_MEMORY.
+    // windows/window_count is this thread's window list (kos_window); a device window
+    // requires AUTH_MEMORY.
     // By default the thread joins the caller's task. Supply a separate task for
     // independent fault containment: a fault terminates the whole task.
     inline Handle create(void (*entry)(void*), void* arg, char const* name,
@@ -484,7 +485,7 @@ namespace kos::thread
                         uint32_t quantum_ns = 0, bool privileged = false,
                         void* mem = nullptr, uint32_t mem_size = 0,
                         void* stack = nullptr, uint32_t stack_size = 0,
-                        void* mmio = nullptr, uint32_t mmio_size = 0,
+                        kos_window const* windows = nullptr, uint16_t window_count = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
                         uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
                         kos_task_t task = KOS_TASK_NONE, uint32_t core_mask = 0)
@@ -499,8 +500,8 @@ namespace kos::thread
         p.privileged = static_cast<uint8_t>(privileged);
         p.mem_base = mem;
         p.mem_size = mem_size;
-        p.mmio_base = mmio;
-        p.mmio_size = mmio_size;
+        p.windows = windows;
+        p.window_count = window_count;
         p.stack_base = stack;
         p.stack_size = stack_size;
         p.caps = caps;

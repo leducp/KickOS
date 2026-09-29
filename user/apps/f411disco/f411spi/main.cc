@@ -254,12 +254,13 @@ int main(int, char**)
     }
     else
     {
+        kos_window const win = {SPI1_BASE, SPI1_WINDOW, KOS_WINDOW_DEVICE, 0};
         auto drv = kos::thread::create(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
                                        "f411spi", 10, KOS_POLICY_FIFO, 0,
                                        /*privileged=*/false,
                                        /*mem=*/nullptr, /*mem_size=*/0,
                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
+                                       /*windows=*/&win, 1,
                                        caps, 2, /*authority=*/0, /*cap_dest=*/nullptr, victim);
         if (not drv.valid())
         {

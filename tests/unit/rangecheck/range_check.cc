@@ -177,11 +177,26 @@ namespace kickos
             // a range the caller can genuinely read and write.
             TEST_F(RangeCheck, the_two_halves_may_come_from_different_regions)
             {
-                grant(BASE, SPAN, ARCH_MPU_R);
+                grant(BASE, 64, ARCH_MPU_R | ARCH_MPU_W);
                 grant(BASE, SPAN, ARCH_MPU_W);
-                EXPECT_TRUE(separately(BASE, 64, 64));
-                EXPECT_TRUE(user_readable_and_writable_ok(BASE, 64, 64));
+                EXPECT_TRUE(separately(BASE, 64, SPAN));
+                EXPECT_TRUE(user_readable_and_writable_ok(BASE, 64, SPAN));
             }
+
+#if not KICKOS_HAVE_ASPACE
+            // A region without W over a writable one, as a read-only window over a block the
+            // thread also holds writable. Whichever the backend obeys, the set answers no
+            // write there, so neither check hands the kernel the write the thread may lack.
+            TEST_F(RangeCheck, a_read_only_region_over_a_writable_one_refuses_the_write)
+            {
+                grant(BASE, SPAN, ARCH_MPU_R | ARCH_MPU_W);
+                grant(BASE, SPAN, ARCH_MPU_R);
+                EXPECT_TRUE(user_readable_ok(BASE, 64));
+                EXPECT_FALSE(user_writable_ok(BASE, 64));
+                EXPECT_FALSE(user_readable_and_writable_ok(BASE, 64, 64));
+                expect_agrees(BASE, 64, 64);
+            }
+#endif
 
             // THE ONE-LENGTH MUTATION. The write half is longer than the region, and only a
             // check that measures each half on its own length refuses it.

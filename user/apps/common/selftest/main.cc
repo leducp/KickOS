@@ -2768,6 +2768,101 @@ namespace
     }
 #endif
 
+    // A one-entry device window list, alive until the end of the spawn expression naming it.
+    struct DeviceWindow
+    {
+        kos_window w;
+        DeviceWindow(uintptr_t base, uint32_t size) : w{base, size, KOS_WINDOW_DEVICE, 0} {}
+        kos_window const* list() const
+        {
+            return &w;
+        }
+    };
+
+#if KICKOS_MEMORY_ENFORCED && not KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION
+    // --- A read-only memory window ------------------------------------------------------
+    // Children name root's block as a memory window, root itself never reaching it. The first
+    // writes a byte through a read-write window; the second, in a task of its own, reads it
+    // through a read-only one and faults on its write, which ends that task and nothing else;
+    // the third holds it both ways and has the kernel refuse a write into it; the last reads
+    // back through a read-write window what the faulted and the refused writes left.
+    constexpr unsigned char WRO_BYTE = 0x5A;
+    constexpr uint32_t WRO_JOIN_US = 500000;
+    Atomic<int32_t, Order::RELAXED> g_wro_put{-1}; // what the child writes, or -1 for none
+    Atomic<int32_t, Order::RELAXED> g_wro_read{-1};
+    Atomic<int32_t, Order::RELAXED> g_wro_wrote{0};
+    void wro_child(void* arg)
+    {
+        volatile unsigned char* const b = static_cast<volatile unsigned char*>(arg);
+        g_wro_read = *b;
+        if (g_wro_put >= 0)
+        {
+            *b = static_cast<unsigned char>(g_wro_put.load());
+            g_wro_wrote = 1;
+        }
+        kos_exit(0);
+    }
+    // Holds the block twice, read-write and then read-only, and names it as a call's reply
+    // buffer, which the kernel checks for writing before it looks at the capability: the
+    // read-only window must win there too. It never touches the block itself.
+    void wro_sys_child(void* arg)
+    {
+        g_wro_read = kos_call_timed(1, arg, 0, sizeof(uint32_t), 1000);
+        kos_exit(0);
+    }
+    // One child through one window: 0 when it joined, and what it read in *read.
+    int wro_run(void* blk, uint32_t size, uint8_t flags, int32_t put, kos_task_t task,
+                int32_t* read)
+    {
+        g_wro_put = put;
+        g_wro_read = -1;
+        g_wro_wrote = 0;
+        kos_window const w = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, flags};
+        auto const c = kos::thread::create(wro_child, blk, "wro", 10, KOS_POLICY_FIFO, 0, false,
+                                           nullptr, 0, nullptr, 0, &w, 1, nullptr, 0, 0,
+                                           nullptr, task);
+        int rc = c.error();
+        if (rc == 0)
+        {
+            rc = c.join(WRO_JOIN_US);
+        }
+        *read = g_wro_read;
+        return rc;
+    }
+    void t_window_memory_ro()
+    {
+        size_t const g = discover_granule();
+        void* blk = nullptr;
+        if (g != 0)
+        {
+            blk = kos_ram_alloc(g);
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        if (blk == nullptr or kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            tap::skip("arena or task pool too small");
+            return;
+        }
+        uint32_t const size = static_cast<uint32_t>(g);
+        int32_t read = -1;
+        TAP_CHECK(wro_run(blk, size, 0, WRO_BYTE, KOS_TASK_NONE, &read) == 0);
+        TAP_CHECK(g_wro_wrote == 1);
+        TAP_CHECK(wro_run(blk, size, KOS_WINDOW_RO, 0, t, &read) == 0);
+        TAP_CHECK(read == WRO_BYTE and g_wro_wrote == 0);
+        (void)kos_task_kill(t);
+        kos_window const twice[] = {
+            {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, 0},
+            {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, KOS_WINDOW_RO}};
+        g_wro_read = -1;
+        auto const sys = kos::thread::create(wro_sys_child, blk, "wros", 10, KOS_POLICY_FIFO, 0,
+                                             false, nullptr, 0, nullptr, 0, twice, 2);
+        TAP_CHECK(sys.valid() and sys.join(WRO_JOIN_US) == 0);
+        TAP_CHECK(g_wro_read == -KOS_EFAULT);
+        TAP_CHECK(wro_run(blk, size, 0, -1, KOS_TASK_NONE, &read) == 0);
+        TAP_CHECK(read == WRO_BYTE);
+    }
+#endif
+
     // --- MMIO grant boundary: privileged-only + encodable-only -------------------
     // The positive grant is HW-only, so this arm pins the two refusals: a window one MPU
     // descriptor cannot cover exactly, and any grant attempted by an UNPRIVILEGED caller.
@@ -2782,7 +2877,7 @@ namespace
         g_mmio_unpriv_rc = kos::thread::create(mmio_noop, nullptr, "mmiochild", 10,
                                                KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                                nullptr, 0,
-                                               reinterpret_cast<void*>(0x1000u), 4096)
+                                               DeviceWindow(0x1000u, 4096).list(), 1)
                                .error();
         kos_sem_post(CH_DONE); // g_mmio_done
     }
@@ -2792,16 +2887,43 @@ namespace
         // Geometry is checked ahead of the privilege gate, so the code holds in any posture.
         TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmiobad", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
-                                      reinterpret_cast<void*>(0x1001u), 1).error() == -KOS_EINVAL);
+                                      DeviceWindow(0x1001u, 1).list(), 1).error() == -KOS_EINVAL);
         // A non-null base with size 0 is rejected at the boundary (before domain_for).
         TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmio0", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
-                                      reinterpret_cast<void*>(0x2000u), 0).error() == -KOS_EINVAL);
+                                      DeviceWindow(0x2000u, 0).list(), 1).error() == -KOS_EINVAL);
         // A window whose base+size wraps the address space is rejected -KOS_EINVAL (32-bit
         // MCU; on the 64-bit sim the fail-closed encoder rejects it first, either way EINVAL).
         TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "mmioW2", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
-                                      reinterpret_cast<void*>(0xFFFFFFF0u), 0x20).error() == -KOS_EINVAL);
+                                      DeviceWindow(0xFFFFFFF0u, 0x20).list(), 1).error() == -KOS_EINVAL);
+        // The list's own refusals, ahead of any entry's geometry: a count past the bound, a
+        // count with no list, the ports kind no board grants yet, an unknown kind, and a flag
+        // on a device window.
+        kos_window const over[1] = {};
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winover", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0, over, UINT16_MAX).error()
+                  == -KOS_ENOMEM);
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winnull", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0, nullptr, 1).error()
+                  == -KOS_EINVAL);
+        kos_window const odd[] = {{0x1000u, 8u, KOS_WINDOW_PORTS, 0},
+                                  {0x1000u, 0x1000u, 3u, 0},
+                                  {0x1000u, 0x1000u, KOS_WINDOW_DEVICE, KOS_WINDOW_RO}};
+        int const odd_rc[] = {-KOS_ENOTSUP, -KOS_EINVAL, -KOS_EINVAL};
+        for (int i = 0; i < 3; i++)
+        {
+            TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winodd", 10, KOS_POLICY_FIFO, 0,
+                                          false, nullptr, 0, nullptr, 0, &odd[i], 1).error()
+                      == odd_rc[i]);
+        }
+#if KICKOS_HAVE_ASPACE
+        // A translating board maps no memory window until it chooses where one sits.
+        kos_window const mem = {0x1000u, 0x1000u, KOS_WINDOW_MEMORY, 0};
+        TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winmem", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0, &mem, 1).error()
+                  == -KOS_ENOTSUP);
+#endif
         kos_sem_create(0, &g_mmio_done);
         g_mmio_unpriv_rc = -2;
         kos_cap_grant caps[] = {{g_mmio_done, CH_FULL}};
@@ -2972,8 +3094,7 @@ namespace
         // End-to-end: a privileged spawn granting the reserved MMIO window is refused.
         auto const rc = kos::thread::create(grant_noop, nullptr, "rsvd", 10, KOS_POLICY_FIFO,
                                             0, false, nullptr, 0, nullptr, 0,
-                                            reinterpret_cast<void*>(rb),
-                                            static_cast<uint32_t>(rs));
+                                            DeviceWindow(rb, static_cast<uint32_t>(rs)).list(), 1);
         TAP_CHECK(not rc.valid()); // reserved-block MMIO grant refused (domain_for, or non-encodable at the boundary)
     }
 
@@ -3016,7 +3137,7 @@ namespace
             any_admissible = true;
             holder = kos::thread::create(devexcl_hold, nullptr, "devheld", 10, KOS_POLICY_FIFO,
                                          0, /*privileged=*/false, nullptr, 0, nullptr, 0,
-                                         reinterpret_cast<void*>(b), WIN, hcaps, 2);
+                                         DeviceWindow(b, WIN).list(), 1, hcaps, 2);
             if (holder.valid())
             {
                 live++;
@@ -3037,7 +3158,7 @@ namespace
             // that stopped running (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
             TAP_CHECK(not kos::thread::create(devexcl_hold, nullptr, "devnone", 10,
                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
-                                              reinterpret_cast<void*>(0x40000000u), WIN,
+                                              DeviceWindow(0x40000000u, WIN).list(), 1,
                                               hcaps, 2)
                               .valid());
             tap::partial("board mints no DEV window; exclusivity runs on enforcing boards "
@@ -3067,23 +3188,31 @@ namespace
                       holder.error());
             return;
         }
+        // 0. One list naming the free neighbour twice: nothing else holds it, so only the
+        //    check within the list can refuse it.
+        kos_window const twice[] = {DeviceWindow(win + WIN, WIN).w,
+                                    DeviceWindow(win + WIN, WIN).w};
+        TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devtwice", 10, KOS_POLICY_FIFO,
+                                      0, false, nullptr, 0, nullptr, 0, twice, 2, hcaps, 2)
+                      .error()
+                  == -KOS_EBUSY);
         // 1. Exact duplicate of the live holder's window: refused, and specifically
         //    EBUSY, not EPERM (the window is admissible) and not ENOMEM (the pool has
         //    room; the refusal lands before a slot is claimed).
         TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devdup", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
-                                      reinterpret_cast<void*>(win), WIN, hcaps, 2).error() == -KOS_EBUSY);
+                                      DeviceWindow(win, WIN).list(), 1, hcaps, 2).error() == -KOS_EBUSY);
         // 2. Partial overlap: the upper half of the held window. Its own base/size are
         //    independently admissible, so only the overlap scan can refuse it.
         TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devpart", 10, KOS_POLICY_FIFO,
                                       0, false, nullptr, 0, nullptr, 0,
-                                      reinterpret_cast<void*>(win + WIN / 2u), WIN / 2u, hcaps, 2).error()
+                                      DeviceWindow(win + WIN / 2u, WIN / 2u).list(), 1, hcaps, 2).error()
                   == -KOS_EBUSY);
         // 3. Adjacent but disjoint (base == held last + 1): admitted. This is the mk64f PIT
         //    CH2 shape: a grant flush against a block, which must not be read as overlapping.
         auto const adj = kos::thread::create(devexcl_hold, nullptr, "devadj", 10, KOS_POLICY_FIFO,
                                              0, false, nullptr, 0, nullptr, 0,
-                                             reinterpret_cast<void*>(win + WIN), WIN, hcaps, 2);
+                                             DeviceWindow(win + WIN, WIN).list(), 1, hcaps, 2);
         TAP_CHECK(adj.valid());
         if (adj.valid())
         {
@@ -3096,14 +3225,15 @@ namespace
         }
         wait_n(live);
         // The SAME grant refused above must now succeed, so the refusal tracked live holders
-        // and not the address. CH_DONE is posted before the holder returns, so retry rather
-        // than assume the domain is already released.
+        // and not the address, and it succeeds as one list with its neighbour, whose second
+        // entry is then held as the first is. CH_DONE is posted before the holder returns, so
+        // retry rather than assume the domain is already released.
+        kos_window const both[] = {DeviceWindow(win, WIN).w, DeviceWindow(win + WIN, WIN).w};
         int again = -KOS_EBUSY;
         for (int i = 0; i < 100 and again == -KOS_EBUSY; i++)
         {
             again = kos::thread::create(devexcl_hold, nullptr, "devagain", 10, KOS_POLICY_FIFO,
-                                        0, false, nullptr, 0, nullptr, 0,
-                                        reinterpret_cast<void*>(win), WIN, hcaps, 2)
+                                        0, false, nullptr, 0, nullptr, 0, both, 2, hcaps, 2)
                         .error();
             if (again == -KOS_EBUSY)
             {
@@ -3113,6 +3243,11 @@ namespace
         TAP_CHECK(again == 0);
         if (again == 0)
         {
+            TAP_CHECK(kos::thread::create(devexcl_hold, nullptr, "devsecond", 10,
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
+                                          DeviceWindow(win + WIN, WIN).list(), 1, hcaps, 2)
+                          .error()
+                      == -KOS_EBUSY);
             kos_sem_post(hold); // drain it too, so later tests get the slot back
             wait_n(1);
         }
@@ -7720,7 +7855,7 @@ namespace
                                          reinterpret_cast<void*>(b), "prwH", 10,
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                          nullptr, 0, nullptr, 0,
-                                         reinterpret_cast<void*>(b), PRW_WIN,
+                                         DeviceWindow(b, PRW_WIN).list(), 1,
                                          caps, 1, KOS_AUTH_MEMORY);
             if (holder.valid())
             {
@@ -7837,7 +7972,7 @@ namespace
         {
             w = kos::thread::create(pvs_worker, reinterpret_cast<void*>(b), "pvsW", 10,
                                     KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
-                                    nullptr, 0, reinterpret_cast<void*>(b), PVS_WIN,
+                                    nullptr, 0, DeviceWindow(b, PVS_WIN).list(), 1,
                                     caps, 1, KOS_AUTH_MEMORY);
             if (w.valid())
             {
@@ -7869,6 +8004,137 @@ namespace
         TAP_CHECK((pvs & PVS_OFF_NOTRIM) != 0);
         TAP_CHECK((pvs & PVS_UNLISTED_OK) != 0);
         TAP_CHECK((pvs & PVS_BEYOND_OK) != 0);
+    }
+
+    // --- Two device windows in one list, on the host ------------------------------------
+    // The sim grants either half of its register span, so one list names both. A list naming
+    // a half twice is refused though nothing holds it; the holder of both reaches the seam
+    // through each, the chip layer answering the second as the base it does not table; and
+    // while it lives the second half alone is refused.
+    constexpr unsigned WL_FIRST_OK = 1u << 0;
+    constexpr unsigned WL_SECOND_OK = 1u << 1;
+    Atomic<unsigned char, Order::RELAXED> g_wl{0};
+    void wl_holder(void* arg) // caps: done@1, hold@2
+    {
+        uintptr_t const pv = reinterpret_cast<uintptr_t>(arg);
+        unsigned seen = 0;
+        if (kos_periph_reg_write(pv, PVS_REG, PVS_IN) == 0)
+        {
+            seen |= WL_FIRST_OK;
+        }
+        if (kos_periph_reg_write(pv + PVS_WIN, PVS_REG, PVS_IN) == -KOS_EINVAL)
+        {
+            seen |= WL_SECOND_OK;
+        }
+        g_wl = static_cast<unsigned char>(seen);
+        kos_sem_wait(CH_DEVHOLD);
+        kos_sem_post(CH_DONE);
+    }
+    // The respawn from a death wake: the server holding the window takes the call and exits
+    // holding it, and its teardown wakes the caller, which outranks it and so runs while that
+    // teardown is still under way. The window must already be free for the caller's respawn.
+    constexpr uint32_t WL_CALL_US = 1000000; // bounds the arm if the server never took the call
+    Atomic<int32_t, Order::RELAXED> g_wl_call{-99};
+    Atomic<int32_t, Order::RELAXED> g_wl_respawn{-99};
+    void wl_noop(void*) {}
+    void wl_server(void*) // caps: done@1, E(WAIT)@2
+    {
+        char b[4];
+        struct kos_reply_recv_opts o;
+        memset(&o, 0, sizeof(o));
+        o.ep = 2;
+        o.timeout_us = WL_CALL_US;
+        (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
+        kos_exit(0); // holding the call, whose caller the teardown answers -KOS_EPIPE
+    }
+    void wl_caller(void* arg) // caps: done@1, E(SIGNAL)@2
+    {
+        uintptr_t const pv = reinterpret_cast<uintptr_t>(arg);
+        char b[4] = {};
+        g_wl_call = kos_call_timed(2, b, sizeof(b), sizeof(b), WL_CALL_US);
+        auto const again = kos::thread::create(wl_noop, nullptr, "wlN", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0,
+                                               DeviceWindow(pv, PVS_WIN).list(), 1);
+        g_wl_respawn = again.error();
+        if (again.valid())
+        {
+            (void)again.join();
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_window_list()
+    {
+        kos_cap_t hold = KOS_CAP_NONE;
+        if (kos_sem_create(0, &hold) != 0)
+        {
+            tap::fail("no semaphore for the holder gate");
+            return;
+        }
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {hold, CH_FULL}};
+        g_wl = 0;
+        uintptr_t pv = 0;
+        int twice = 0;
+        for (uintptr_t b : PVS_BASES)
+        {
+            kos_window const dup[] = {DeviceWindow(b, PVS_WIN).w, DeviceWindow(b, PVS_WIN).w};
+            twice = kos::thread::create(wl_holder, nullptr, "wltwice", 10, KOS_POLICY_FIFO, 0,
+                                        false, nullptr, 0, nullptr, 0, dup, 2, caps, 2,
+                                        KOS_AUTH_MEMORY)
+                        .error();
+            if (twice != -KOS_EINVAL)
+            {
+                pv = b; // the mapped candidate: every other one is unencodable
+                break;
+            }
+        }
+        TAP_CHECK(twice == -KOS_EBUSY);
+        kos_window const both[] = {DeviceWindow(pv, PVS_WIN).w,
+                                   DeviceWindow(pv + PVS_WIN, PVS_WIN).w};
+        auto const h = kos::thread::create(wl_holder, reinterpret_cast<void*>(pv), "wlboth", 10,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
+                                           both, 2, caps, 2, KOS_AUTH_MEMORY);
+        TAP_CHECK(h.valid());
+        if (not h.valid())
+        {
+            kos_sem_destroy(hold);
+            return;
+        }
+        TAP_CHECK(kos::thread::create(wl_holder, nullptr, "wlsecond", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0,
+                                      DeviceWindow(pv + PVS_WIN, PVS_WIN).list(), 1, caps, 2,
+                                      KOS_AUTH_MEMORY)
+                      .error()
+                  == -KOS_EBUSY);
+        kos_sem_post(hold);
+        wait_n(1);
+        (void)h.join(); // its windows are free once it is gone, which the respawn below needs
+        kos_sem_destroy(hold);
+        unsigned char const wl = g_wl;
+        TAP_CHECK((wl & WL_FIRST_OK) != 0);
+        TAP_CHECK((wl & WL_SECOND_OK) != 0);
+
+        kos_cap_t ep = KOS_CAP_NONE;
+        TAP_CHECK(kos_endpoint_create(&ep) == 0);
+        g_wl_call = -99;
+        g_wl_respawn = -99;
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {ep, EP_WAIT_ONLY}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {ep, EP_SIGNAL_ONLY}};
+        auto const sv = kos::thread::create(wl_server, nullptr, "wlS", 10, KOS_POLICY_FIFO, 0,
+                                            false, nullptr, 0, nullptr, 0,
+                                            DeviceWindow(pv, PVS_WIN).list(), 1, scaps, 2,
+                                            KOS_AUTH_MEMORY);
+        auto const cl = kos::thread::create(wl_caller, reinterpret_cast<void*>(pv), "wlC", 12,
+                                            KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
+                                            nullptr, 0, ccaps, 2, KOS_AUTH_MEMORY);
+        TAP_CHECK(sv.valid() and cl.valid());
+        if (cl.valid())
+        {
+            wait_n(1);
+        }
+        (void)sv.join();
+        (void)kos_handle_close(ep);
+        TAP_CHECK(g_wl_call == -KOS_EPIPE);
+        TAP_CHECK(g_wl_respawn == 0);
     }
 #endif // KICKOS_ARCH_SIM
 
@@ -9059,6 +9325,7 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_unheld", t_periph_reg_write_unheld);
 #if KICKOS_ARCH_SIM
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask);
+    TAP_ADD("window_list", t_window_list);
 #endif
     TAP_ADD("privileged_spawn_refused", t_privileged_spawn_refused);
     TAP_ADD("thread_join", t_thread_join);
@@ -9121,6 +9388,9 @@ int main(int, char**)
     TAP_ADD("cross_task_block", t_cross_task_block);
 #endif
     TAP_ADD("mmio_grant", t_mmio_grant);
+#if KICKOS_MEMORY_ENFORCED && not KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION
+    TAP_ADD("window_memory_ro", t_window_memory_ro);
+#endif
 #if KICKOS_HAVE_MPU
     TAP_ADD("stackbase_arena", t_stackbase_arena);
 #if defined(KICKOS_ENABLE_SELFTEST)

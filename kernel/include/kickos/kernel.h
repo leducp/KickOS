@@ -66,9 +66,13 @@ namespace kickos
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
 
     // True iff NO live thread holds a DEV region overlapping [base, base+size). The admission
-    // test behind the one-holder-per-window rule, and the console reclaim's precondition. A DYING
-    // thread is not a holder. Callers pass a non-wrapping window.
+    // test behind the one-holder-per-window rule, and the console reclaim's precondition. A
+    // dying thread holds its windows until its exit releases them. Callers pass a non-wrapping
+    // window.
     bool dev_window_free(uintptr_t base, size_t size);
+
+    // The region attributes a memory window's kos_window_flags ask for.
+    uint32_t window_memory_attr(uint8_t flags);
 
     // Break `t` out of whatever it is parked on and hand it `result`, without granting it
     // whatever it was waiting for. Every WaitKind is covered, so a park is never a place a
