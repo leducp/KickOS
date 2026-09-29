@@ -314,13 +314,26 @@ task slot and empties the pools. And the authority word is eight bits wide in
 
 **Arms.** A task create without the bit is refused `-KOS_EPERM` and succeeds with it; an implicit
 task without the bit is refused, and a plain spawn into the caller's task still succeeds; the
-first undefined bit, now bit 7, is refused at spawn and by `kos_cap_narrow`, which
-`t_authority_cap` asserts of bit 6 today; a narrow of the full 32-bit word; and the M8.5 adversary,
-an unprivileged thread minting tasks, refused at the first.
+first undefined bit, now bit 7, and the word's top bit are refused at spawn, which seats the word
+as given; a narrow by the full 32-bit word keeps every held bit, since `kos_cap_narrow` intersects
+and cannot grant, so an undefined bit in its mask is accepted and changes nothing; and the M8.5
+adversary, an unprivileged thread minting tasks, refused at the first.
 
 **Backends and cost.** Portable kernel, the ABI header, the init library and every app that
-declares an authority. Nothing on the switch path; `Thread::authority` widens into padding or
-moves `KICKOS_THREAD_EXPECTED_SIZE`, which is measured rather than assumed.
+declares an authority. Nothing on the switch path. `Thread::authority` moves beside
+`spawner_tag`: on a 64-bit target it takes the padding before `task` and costs nothing; a
+32-bit TCB has no hole a word wide, so it costs the word and the tail back to `uint64_t`'s
+alignment, 272 to 280 bytes on armv7m, and on an AMP node it shares that step with
+`far_hold`. Measured across 23 presets, and stated in `thread_scalar_bytes`.
+
+**What the part taught.** Seven arms had a worker create a task without the authority --
+`prio_ceiling_narrow_only`'s member, rootgone's survivor, the donor of
+`task_handoff_donor_exits`, the members of `grant_wider_refused` and
+`grant_inherited_by_child_task`, and those of `spawn_refusal_frees_task` and
+`spawn_refusal_frees_donor`, whose spawns must still be refused further down -- and now hand it
+the bit; and
+trapnest holds it so its deep spawn is still refused in `grant_region_admissible` rather than at
+the new gate before it, which would have shortened the syscall descent it measures.
 
 ## 3. Handing out receiving, and the errno split (M10.1.4)
 

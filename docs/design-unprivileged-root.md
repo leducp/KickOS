@@ -132,6 +132,7 @@ the same reason.
 | `AUTH_IRQ` | `irq_attach`, `irq_unmask` | drivers with lines |
 | `AUTH_SYSTEM` | `shutdown`, `reboot` | root / init |
 | `AUTH_CONSOLE` | `console_publish` | root, during service bring-up |
+| `AUTH_TASKS` | `task_create`, a spawn that builds a task of its own (M10.1.3) | root, an init |
 
 - **The console driver does not hold `AUTH_CONSOLE`, and that is not a future correction to make.**
   Root publishes inside the service list's `start()` body and the unprivileged child only *receives*,

@@ -1193,7 +1193,7 @@ uint64_t syscall_body(uintptr_t nr,
             IrqLock lock;
             return static_cast<uint64_t>(
                 cap_narrow_authority(sched::current(), static_cast<uint32_t>(a0),
-                                     static_cast<uint8_t>(a1)));
+                                     static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_PANIC:
         {

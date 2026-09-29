@@ -193,10 +193,11 @@ enum kos_syscall_nr
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
-                               //   or -KOS_E*: EPERM (inadmissible shared grant, a range the
-                               //   caller never reserved, a memory type this chip cannot
-                               //   honour, or a caller no member could name), EINVAL (the
-                               //   window wraps, or an undefined flag bit), ENOMEM (task or
+                               //   or -KOS_E*: EPERM (no KOS_AUTH_TASKS, an inadmissible
+                               //   shared grant, a range the caller never reserved, a
+                               //   memory type this chip cannot honour, or a caller no
+                               //   member could name), EINVAL (the window wraps, or an
+                               //   undefined flag bit), ENOMEM (task or
                                //   domain pool full, or the new space cannot take the range at
                                //   the caller's address), EFAULT (bad out-pointer). The task
                                //   is EMPTY: kos_thread_params::task is what seats members.
@@ -602,7 +603,8 @@ enum kos_cap_authority
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
     KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
     KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
-    KOS_AUTH_CONSOLE = 1 << 5  // kos_console_publish
+    KOS_AUTH_CONSOLE = 1 << 5, // kos_console_publish
+    KOS_AUTH_TASKS = 1 << 6    // kos_task_create, and a spawn that builds a task of its own
 };
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the parent cap
@@ -660,14 +662,14 @@ struct kos_thread_params
     // an explicit bit. No machine core returns EINVAL; no granted core returns EPERM.
     // Ignored by single-core kernels.
     uint32_t core_mask;
+    // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority word;
+    // 0 => none. Only a thread that already holds each bit may pass it: narrows, never
+    // widens, like a cap_grant mask. A bit no authority names: -KOS_EINVAL.
+    uint32_t authority;
     uint8_t cap_count;   // number of entries in caps[]; under default placement they land
                          // at child indices 1..cap_count.
                          // Above KICKOS_MAX_SPAWN_GRANTS: -KOS_EINVAL. That bound is the
                          // spawn stager's, NOT the child table's ceiling.
-    // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority word;
-    // 0 => none. Only a thread that already holds each bit may pass it: narrows, never
-    // widens, like a cap_grant mask. This 8-bit field bounds the authority word to 8 bits.
-    uint8_t authority;
     // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE to make the child a
     // thread of the spawner's task (KOS_TASK_NONE above). Only the task's creator may seat a
     // member. A member shares the task's data region, so it may bring NO mem_base of its own
@@ -679,26 +681,30 @@ struct kos_thread_params
 
 // sizeof is NOT assertable here: three pointers make it width-dependent (64 B on armv7m,
 // 112 B on a 64-bit host). What is width-independent is the TAIL PACKING, and that is the
-// part a new field would move silently: core_mask is the 32-bit word the placement syscalls
-// carry, and cap_count and authority sit immediately behind it with no padding between.
+// part a new field would move silently: core_mask and authority are the two 32-bit words, and
+// cap_count sits immediately behind them with no padding between.
 #ifdef __cplusplus
 static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
               "the core mask is a 32-bit word at every ABI that carries one");
-static_assert(offsetof(struct kos_thread_params, cap_count)
-                  == offsetof(struct kos_thread_params, core_mask) + 4,
-              "cap_count must sit immediately behind core_mask (ABI)");
+static_assert(sizeof(((struct kos_thread_params*)0)->authority) == 4,
+              "the authority word is 32 bits at every ABI");
 static_assert(offsetof(struct kos_thread_params, authority)
-                  == offsetof(struct kos_thread_params, cap_count) + 1,
-              "authority must sit immediately behind cap_count (ABI)");
+                  == offsetof(struct kos_thread_params, core_mask) + 4,
+              "authority must sit immediately behind core_mask (ABI)");
+static_assert(offsetof(struct kos_thread_params, cap_count)
+                  == offsetof(struct kos_thread_params, authority) + 4,
+              "cap_count must sit immediately behind authority (ABI)");
 #else
 _Static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
                "the core mask is a 32-bit word at every ABI that carries one");
-_Static_assert(offsetof(struct kos_thread_params, cap_count)
-                   == offsetof(struct kos_thread_params, core_mask) + 4,
-               "cap_count must sit immediately behind core_mask (ABI)");
+_Static_assert(sizeof(((struct kos_thread_params*)0)->authority) == 4,
+               "the authority word is 32 bits at every ABI");
 _Static_assert(offsetof(struct kos_thread_params, authority)
-                   == offsetof(struct kos_thread_params, cap_count) + 1,
-               "authority must sit immediately behind cap_count (ABI)");
+                   == offsetof(struct kos_thread_params, core_mask) + 4,
+               "authority must sit immediately behind core_mask (ABI)");
+_Static_assert(offsetof(struct kos_thread_params, cap_count)
+                   == offsetof(struct kos_thread_params, authority) + 4,
+               "cap_count must sit immediately behind authority (ABI)");
 #endif
 
 #endif

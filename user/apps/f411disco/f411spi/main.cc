@@ -211,7 +211,7 @@ namespace
 
 // KOS_AUTH_PINMUX for the four mux_pin calls; KOS_AUTH_IRQ because the line mint is
 // namespace-wide, so root claims the cap and delegates it. main never returns.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_IRQ);
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {

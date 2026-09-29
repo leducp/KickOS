@@ -153,6 +153,7 @@ of gates in the syscall surface, each guarding an act with fleet-wide consequenc
 | `AUTH_IRQ` | binding an interrupt line's dispatch, and arming a controller line |
 | `AUTH_SYSTEM` | ending the system: shutdown and reboot |
 | `AUTH_CONSOLE` | taking over the console from the kernel |
+| `AUTH_TASKS` | creating a task, explicitly or by a spawn that builds one of its own |
 
 Where the cut falls between those rows is a design decision and not a listing
 order. Two of them look mergeable and are not. Retuning the clock and ending the
@@ -317,12 +318,15 @@ confinement, once entered, is not exitable.
 
 The mechanism for axis 3, concretely.
 
-**A byte on the thread, in padding that already existed.** The authority word is one
-`uint8_t` on the TCB, sited in alignment padding the struct was carrying anyway. It
-costs zero bytes per thread and zero capability-table slots. That arithmetic matters
-more than it sounds at the bottom of the fleet, where a whole per-task table is seven
-handles: spending one of them on authority would be spending it on every board, in
-every thread, for the life of the system, to hold eight bits -- and the parts that can
+**A word on the thread, and no table slot.** The authority word is one `uint32_t` on the
+TCB. It was a byte in padding the struct already carried until M10.1.3 added a seventh
+bit and left the ABI one bit from full; a word is what a general-purpose kernel's ABI
+should not have to widen again. It costs nothing on a 64-bit target, where it sits in
+padding before the task pointer, and eight bytes on a 32-bit one, the word and the
+tail back to the struct's alignment. It costs zero capability-table slots either way.
+That arithmetic matters more than it sounds at the bottom of the fleet, where a whole
+per-task table is seven handles: spending one of them on authority would be spending it
+on every board, in every thread, for the life of the system -- and the parts that can
 least afford it are exactly the ones a bring-up task runs on.
 
 **Why not a capability, with the capability machinery right there.** A capability
@@ -332,9 +336,9 @@ those fields exist to answer one question: is the thing this entry names still t
 thing it named when you were given it? Authority asks no such question. It names no
 object, so there is no handle. Nothing can free it out from under its holder, so there
 is no refcount and no generation to bump. Delete the fields that do not apply and what
-is left is a rights byte with nothing behind it -- eight bits in an eight-byte costume,
-paying a well-known index on every board to hold what a spare byte on the thread holds
-for nothing.
+is left is a rights word with nothing behind it -- a word in an eight-byte costume,
+paying a well-known index on every board to hold what a word on the thread holds for
+less.
 
 And the fields that do not apply are not merely idle, which is the sharper half of the
 argument. A structure carries its own hazards, and delegation is where they bite:

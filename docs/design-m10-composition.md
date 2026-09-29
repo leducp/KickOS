@@ -139,8 +139,8 @@ authority word, which can only narrow what the init itself holds, so admission r
 declaring more than the init has. A nested init is the task that declares `tasks`, and the
 board's default composition declares `memory`, `system` and `tasks` for `main`, today's fallback
 plus task creation. A packaged driver's threads take the authority its descriptor states. The
-word is eight bits today and seven would be spent, so M10.1 widens it with the rest of the
-kernel share rather than leave the ABI one bit from full. A packaged driver's `stack`, extra threads and objects come from its
+word was eight bits with seven to be spent, so M10.1.3 widened it to 32 rather than leave the
+ABI one bit from full. A packaged driver's `stack`, extra threads and objects come from its
 exported metadata rather than from the composition.
 
 `accepts` names limitations the host tool **derives** from facts the chip file states -- the chip

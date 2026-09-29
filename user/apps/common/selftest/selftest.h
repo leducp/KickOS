@@ -119,7 +119,7 @@ namespace selftest
                                          uint8_t policy = KOS_POLICY_FIFO,
                                          uint32_t quantum_ns = 0, bool privileged = false,
                                          void* mem = nullptr, uint32_t mem_size = 0,
-                                         uint8_t authority = 0,
+                                         uint32_t authority = 0,
                                          uint16_t const* cap_dest = nullptr)
     {
         return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum_ns,

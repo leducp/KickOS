@@ -20,8 +20,9 @@
 
 using kickos::emit;
 
-// IRQ claiming requires AUTH_IRQ, which the fallback authority mask lacks.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
+// IRQ claiming requires AUTH_IRQ, which the fallback authority mask lacks. AUTH_TASKS keeps the
+// deep spawn's refusal in grant_region_admissible rather than at the task gate before it.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 namespace
 {
