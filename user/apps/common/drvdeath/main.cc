@@ -15,7 +15,7 @@
 //   1. emit() -> the published route, served by the driver, reaches the wire.
 //   2. the driver exits; its cap_teardown takes the endpoint's recv_holders to 0, which
 //      notes the console death, and exit_current then runs the reclaim.
-//   3. a second emit() must fail -KOS_EPIPE. That is what PROVES the driver is gone
+//   3. a second emit() must fail -KOS_ECONNREFUSED. That is what PROVES the driver is gone
 //      rather than merely slow, with no timing assumption.
 //   4. the SAME kos_print now has to reach the wire. Steps 0 and 4 together are the
 //      whole assertion.
@@ -150,7 +150,7 @@ int main(int, char**)
     // The driver runs above root and has exited by now, so recv_holders is 0 and the
     // dead-endpoint check refuses this send outright.
     int const rc = kos_send(KOS_CAP_STDOUT, "x", 1);
-    if (rc != -KOS_EPIPE)
+    if (rc != -KOS_ECONNREFUSED)
     {
         // A live receiver means nothing below tests the reclaim. Reported through BOTH
         // routes: which one works is exactly what is in doubt here.

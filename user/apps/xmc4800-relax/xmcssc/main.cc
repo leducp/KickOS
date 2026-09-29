@@ -266,8 +266,8 @@ int main(int, char**)
         }
         else
         {
-            // Drop root's own cap so the driver is the sole recv holder: its death then
-            // EPIPE-wakes the client instead of leaving it parked.
+            // Drop root's own cap, its handout right with it, so the driver is the sole recv
+            // holder: its death then wakes the client refused instead of leaving it parked.
             kos_handle_close(ep);
         }
     }

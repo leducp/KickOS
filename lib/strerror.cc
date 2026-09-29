@@ -25,13 +25,14 @@
     X(KOS_EBUSY,      "resource held or in use",                                      "EBUSY")    \
     X(KOS_EINVAL,     "malformed argument",                                           "EINVAL")   \
     X(KOS_EMFILE,     "the capability table has no free slot",                        "EMFILE")   \
-    X(KOS_EPIPE,      "endpoint has no receiver",                                     "EPIPE")    \
+    X(KOS_EPIPE,      "the server died holding the request",                          "EPIPE")    \
     X(KOS_EDEADLK,    "self, recursive, or cycle-closing lock",                       "EDEADLK")  \
     X(KOS_ENOSYS,     "not implemented on this chip",                                 "ENOSYS")   \
     X(KOS_ENOTIFY,    "an interrupt notification ended the wait, no message",         "ENOTIFY")  \
     X(KOS_EOVERFLOW,  "a count is at its maximum and cannot take one more",           "EOVERFLOW")\
     X(KOS_ENOTSUP,    "well formed, but this backend cannot express it",             "ENOTSUP")  \
     X(KOS_ETIMEDOUT,  "the deadline passed and nothing happened",                     "ETIMEDOUT")\
+    X(KOS_ECONNREFUSED, "no receiver, and nothing left that could hand one out",      "ECONNREFUSED")\
     X(KOS_EALREADY,   "already in that state, so the call changed nothing",           "EALREADY") \
     X(KOS_ECANCELED,  "this thread was cancelled and is expected to exit",            "ECANCELED")\
     X(KOS_EOWNERDEAD, "mutex ACQUIRED but the prior owner died holding it",           "EOWNERDEAD")

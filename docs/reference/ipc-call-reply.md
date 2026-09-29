@@ -103,7 +103,9 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EBADF` | bad endpoint cap |
 | `-KOS_EACCES` | missing `CAP_SIGNAL` |
 | `-KOS_EPERM` | no caller context |
-| `-KOS_EPIPE` | dead endpoint (`recv_holders == 0`), or the server died mid-transaction |
+| `-KOS_EAGAIN` | no receiver (`recv_holders == 0`) while a holder of `KOS_CAP_HANDOUT` remains, so a retry may meet one |
+| `-KOS_ECONNREFUSED` | no receiver and no holder of `KOS_CAP_HANDOUT`: nothing can serve the endpoint again |
+| `-KOS_EPIPE` | the server died holding the request, mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOTSUP` | the receiver took an info-less recv and cannot host a call |
 
@@ -906,7 +908,7 @@ The cap is consumed exactly once per unpark:
 | second `kos_reply` / bad handle | resolve fails at lookup | unaffected |
 | server `handle_close`s the reply cap | `CAP_REPLY` close arm: EPIPE-wake caller, consume | woken, `-KOS_EPIPE` |
 | server dies mid-transaction (fault -> exit) | `cap_teardown` hits the same close arm | woken, `-KOS_EPIPE` |
-| server dies while caller still in `CALL_SEND_WAIT` | `recv_holders` -> 0 drains `send_waiters` | woken, `-KOS_EPIPE` |
+| server dies while caller still in `CALL_SEND_WAIT` | `recv_holders` -> 0 drains `send_waiters` | woken, `-KOS_EAGAIN` while a handout holder remains, else `-KOS_ECONNREFUSED` |
 | endpoint destroyed while a reply is outstanding | nothing -- the cap names the CALLER, not the endpoint | server can still reply; woken normally |
 | mint fails, fastpath | fail the call `-KOS_EMFILE` BEFORE any side effect | error return, no state change |
 | mint fails, slowpath (pop at recv) | wake the popped caller `-KOS_EMFILE`, recv retries | woken, `-KOS_EMFILE` |

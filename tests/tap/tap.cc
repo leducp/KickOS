@@ -62,8 +62,9 @@ namespace tap
         // The one writer for the whole stream, and the third copy of a policy libc's
         // _write (user/src/newlib_stubs.cc) and <kickos/sys/emit.h> also carry: keep them in
         // step. Try this thread's stdout cap at index 0, fall back to the kernel debug
-        // console for the remainder when index 0 is empty (-KOS_EBADF) or the driver died
-        // (-KOS_EPIPE). kos_print alone is not enough, because console_emit drops every byte
+        // console for the remainder when index 0 is empty (-KOS_EBADF) or the driver has no
+        // receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). kos_print alone is not enough, because
+        // console_emit drops every byte
         // handed to the kernel console once a service list publishes it
         // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
@@ -81,9 +82,10 @@ namespace tap
                 // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
                 if (r <= 0)
                 {
-                    // Close on EPIPE only, and emit.h states why: the peer closing does
-                    // not free this side, and -KOS_EBADF is pre-publish with nothing to close.
-                    if (r == -KOS_EPIPE)
+                    // Close on ECONNREFUSED only, and emit.h states why: the peer closing
+                    // does not free this side, -KOS_EAGAIN may be served again, and
+                    // -KOS_EBADF is pre-publish with nothing to close.
+                    if (r == -KOS_ECONNREFUSED)
                     {
                         (void)kos_handle_close(KOS_CAP_STDOUT);
                     }

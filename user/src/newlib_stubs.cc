@@ -40,9 +40,10 @@ int _write(int fd, char const* buf, int len)
         // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
         if (r <= 0)
         {
-            // Close on EPIPE only, and emit.h states why: the peer closing does not free
-            // this side, and -KOS_EBADF is pre-publish with nothing to close.
-            if (r == -KOS_EPIPE)
+            // Close on ECONNREFUSED only, and emit.h states why: the peer closing does not
+            // free this side, -KOS_EAGAIN may be served again, and -KOS_EBADF is pre-publish
+            // with nothing to close.
+            if (r == -KOS_ECONNREFUSED)
             {
                 (void)kos_handle_close(KOS_CAP_STDOUT);
             }

@@ -172,7 +172,7 @@ in step 2 (before `sched::wake`) and read by the woken thread after it resumes. 
 values are **one fleet-wide namespace**, not a namespace per object type: a non-negative
 value is a success payload (a byte count, or plain `0`), and a failure is the negation
 of a code from the single error enum every syscall in the system shares. The mutex's
-owner-died status is `-KOS_EOWNERDEAD`, the endpoint's dead-peer status is `-KOS_EPIPE`,
+owner-died status is `-KOS_EOWNERDEAD`, the endpoint's no-receiver status `-KOS_ECONNREFUSED`,
 and they cannot collide because they are two entries in one enum. A semaphore wait
 returns `void`, so it never reads the field.
 

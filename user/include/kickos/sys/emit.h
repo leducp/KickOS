@@ -5,7 +5,8 @@
 //
 // Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
 // console for the unsent remainder when index 0 is empty (-KOS_EBADF) or the driver
-// died (-KOS_EPIPE). kos_print alone is not enough: console_emit drops every byte
+// has no receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). kos_print alone is not enough:
+// console_emit drops every byte
 // handed to the kernel console once the UART is USER_OWNED (kernel/init/console.cc).
 //
 // The same policy exists in tests/tap/tap.cc emit() and libc's _write
@@ -172,11 +173,12 @@ inline void emit(char const* s)
         // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
         if (r <= 0)
         {
-            // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_EPIPE means the driver died and
-            // this cap is now the only thing pinning its endpoint slot, so close it or the
-            // slot is stranded for this task's whole life. -KOS_EBADF is pre-publish: index 0
-            // is empty and there is nothing to close.
-            if (r == -KOS_EPIPE)
+            // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_ECONNREFUSED means the driver
+            // died and nothing may restart it, and this cap is now the only thing pinning its
+            // endpoint slot, so close it or the slot is stranded for this task's whole life.
+            // -KOS_EAGAIN keeps the cap: a restarted driver serves it again. -KOS_EBADF is
+            // pre-publish: index 0 is empty and there is nothing to close.
+            if (r == -KOS_ECONNREFUSED)
             {
                 (void)kos_handle_close(KOS_CAP_STDOUT);
             }

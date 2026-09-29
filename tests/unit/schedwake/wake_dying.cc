@@ -430,7 +430,7 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     EXPECT_STREQ(trace(), "switch1>2 reclaim") << "the sweep is preempted BEFORE it finishes";
     EXPECT_EQ(g_switches, 1u) << "the preemption is the only switch";
     EXPECT_EQ(sender->state, ThreadState::RUNNING) << "the EPIPEd sender got the CPU";
-    EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "and it was woken with EPIPE";
+    EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "and it was woken with EPIPE";
     EXPECT_EQ(c->state, ThreadState::EXITED) << "the dying thread still finished its exit";
     EXPECT_EQ(ep->server, nullptr) << "the endpoint's server pointer was cleared";
     EXPECT_FALSE(cap_teardown_active()) << "the sweep still balanced its depth";
@@ -497,7 +497,7 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     EXPECT_EQ(m->owner, waiter) << "the cap past the chunk boundary was released too";
     EXPECT_EQ(c->held_list, nullptr) << "the sweep completed its held list";
     EXPECT_EQ(ep->server, nullptr) << "and the cap before the boundary was released";
-    EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the first chunk's sender was EPIPEd";
+    EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the first chunk's sender was EPIPEd";
     EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD) << "the last chunk's waiter was woken";
     EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth across the boundary";
 }
@@ -571,8 +571,8 @@ TEST_F(SchedWake, the_drain_epipes_every_parked_sender_not_just_the_first)
 
     run_exit(0);
 
-    EXPECT_EQ(hi->wait_result, -KOS_EPIPE) << "the highest sender was EPIPEd";
-    EXPECT_EQ(lo->wait_result, -KOS_EPIPE) << "and so was the one behind it";
+    EXPECT_EQ(hi->wait_result, -KOS_ECONNREFUSED) << "the highest sender was EPIPEd";
+    EXPECT_EQ(lo->wait_result, -KOS_ECONNREFUSED) << "and so was the one behind it";
     EXPECT_TRUE(ep->send_waiters.empty()) << "the drain emptied the queue";
 }
 

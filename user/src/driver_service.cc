@@ -37,7 +37,7 @@ int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task)
     {
         return 0;
     }
-    if (rc != -KOS_EPIPE)
+    if (rc != -KOS_ECONNREFUSED)
     {
         return rc;
     }

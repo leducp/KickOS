@@ -371,13 +371,20 @@ namespace kickos
                     return -KOS_EACCES;
                 }
                 uint8_t const mask = g.rights_mask;
-                if ((mask & se->rights) != mask)
+                // Narrow-only, with one exception: an endpoint cap carrying the handout right
+                // may seat CAP_WAIT in the child without holding it.
+                uint8_t grantable = se->rights;
+                if (static_cast<CapType>(se->type) == CapType::CAP_ENDPOINT
+                    and (se->rights & CAP_HANDOUT) != 0)
+                {
+                    grantable = static_cast<uint8_t>(grantable | CAP_WAIT);
+                }
+                if ((mask & grantable) != mask)
                 {
                     return -KOS_EACCES;
                 }
                 deleg_obj[ci] = se->obj;
-                deleg_kind[ci] =
-                    kcap_grant_pack(se->type, static_cast<uint8_t>(se->rights & mask));
+                deleg_kind[ci] = kcap_grant_pack(se->type, mask);
                 deleg_badge[ci] = cap_badge(*se);
                 // An absent array, or a 0 entry, means default placement. 0 is free as a
                 // sentinel: index 0 is the kernel's stdout slot, which cap_install_at refuses.

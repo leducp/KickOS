@@ -19,7 +19,8 @@ bounded payload between the two domains; the driver runs the transaction under i
 MMIO grant and `kos_reply`s the result. There are TWO status channels, and they are
 distinct:
 
-- **`kos_call`'s return** -- the kernel-level outcome (delivery, `EPIPE`, `ENOMEM`, ...),
+- **`kos_call`'s return** -- the kernel-level outcome (delivery, `EAGAIN`, `ECONNREFUSED`,
+  `EPIPE`, `ENOMEM`, ...),
   per `ipc-call-reply.md`.
 - **`kos_bus_rsp.status`** -- the SERVICE-level outcome (the driver's own result), only
   meaningful once `kos_call` returned `>= 0`.
@@ -237,8 +238,8 @@ template: `kickos::spi::serve_loop(bus)` blocks on the delegated WAIT recv cap
 routes `req.device` to its slot, calls the class, and builds the `kos_bus_rsp` reply OVER the
 request in the loop's one buffer, ALWAYS answering a length (the invariant above: an arm
 answering zero would leak the reply capability). The LOOP completes the call, on the
-`KOS_SYS_REPLY_RECV` that takes the next request, and returns when the endpoint dies
-(`n < 0` -> `EPIPE`) so the driver thread can exit and let root respawn. **The wire is
+`KOS_SYS_REPLY_RECV` that takes the next request, and returns when its receive fails
+(`n < 0`) so the driver thread can exit and let root respawn. **The wire is
 unchanged**: the same `kos_bus_rsp` and the same payload, composed in a different buffer. It owns the slot store (`kickos::spi::SlotTable`, a `serve_loop`
 local, so per-slot state costs driver STACK and no `.bss`) and nothing else.
 

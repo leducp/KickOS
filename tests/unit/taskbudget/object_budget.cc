@@ -875,7 +875,7 @@ namespace kickos
                         ASSERT_EQ(cap_install(client, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL,
                                               &client_caps[i]), 0);
                     }
-                    // Dropping the last WAIT capability makes the endpoint return -KOS_EPIPE.
+                    // Dropping the last WAIT capability leaves the endpoint refusing callers.
                     kernel().current[kickos_kernel_core()] = server;
                     ASSERT_EQ(handle_close(server, served), 0);
                     ASSERT_EQ(ep->recv_holders, 0) << "fixture: the endpoint must be DEAD";
@@ -987,7 +987,7 @@ namespace kickos
             }
 
             // A receiver with no buffer returns zero on a live endpoint.
-            // Only -KOS_EPIPE should trigger the console client's close path.
+            // Only -KOS_ECONNREFUSED should trigger the console client's close path.
             TEST_F(TaskBudget, closing_a_live_endpoint_loses_the_client_its_route_for_good)
             {
                 Thread* const server = creator_in_task(SLOT_FIRST, 0);

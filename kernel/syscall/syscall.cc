@@ -1192,8 +1192,8 @@ uint64_t syscall_body(uintptr_t nr,
             // UNGATED: a gate would be a bit a thread must keep in order to drop the others.
             IrqLock lock;
             return static_cast<uint64_t>(
-                cap_narrow_authority(sched::current(), static_cast<uint32_t>(a0),
-                                     static_cast<uint32_t>(a1)));
+                cap_narrow(sched::current(), static_cast<uint32_t>(a0),
+                           static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_PANIC:
         {

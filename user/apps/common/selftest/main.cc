@@ -3744,9 +3744,10 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // --- EPIPE: a parked sender is woken -KOS_EPIPE when the last WAIT holder drops it
-    // A SIGNAL-only delegation does NOT bump recv_holders, so main's cap is the sole
-    // WAIT holder: closing it takes recv_holders 1->0 and EPIPEs the parked sender.
+    // --- A parked sender is refused when the last WAIT holder drops it -------------------
+    // A SIGNAL-only delegation does NOT bump recv_holders, so main's cap is the sole WAIT
+    // holder: closing it takes recv_holders 1->0, and with the handout right gone with it the
+    // parked sender is woken -KOS_ECONNREFUSED.
     Atomic<int32_t, Order::RELAXED> g_ep_epipe_rc{-99};
     void ep_epipe_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
@@ -3762,20 +3763,20 @@ namespace
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w.valid());
         kos_sleep_ns(3000000ull);              // let the sender park (recv_holders == 1 == main)
-        TAP_CHECK(kos_handle_close(g_ep) == 0); // last WAIT cap -> EPIPE the parked sender
+        TAP_CHECK(kos_handle_close(g_ep) == 0); // last WAIT cap: the parked sender is refused
         wait_n(1);
         int32_t const ep_epipe_rc = g_ep_epipe_rc;
-        TAP_CHECK(ep_epipe_rc == -KOS_EPIPE);
+        TAP_CHECK(ep_epipe_rc == -KOS_ECONNREFUSED);
     }
 
-    // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> -KOS_EPIPE
-    // Distinct from the parked-then-EPIPE case: dead is checked before the park, not after.
+    // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> refused -----
+    // Distinct from the parked case: no receiver is checked before the park, not after.
     Atomic<int32_t, Order::RELAXED> g_ep_dead_rc{-99};
     kos_cap_t g_ep_go = KOS_CAP_NONE;
     void ep_dead_worker(void*) // caps: done@1, E(SIGNAL)@2, go@3
     {
         kos_sem_wait(3);                                     // go: main has dropped its WAIT cap
-        g_ep_dead_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // recv_holders == 0 -> -KOS_EPIPE now
+        g_ep_dead_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // recv_holders == 0: refused now
         kos_sem_post(CH_DONE);
     }
     void t_endpoint_dead()
@@ -3793,8 +3794,105 @@ namespace
         kos_sem_post(g_ep_go); // now the worker sends into the dead endpoint
         wait_n(1);
         int32_t const ep_dead_rc = g_ep_dead_rc;
-        TAP_CHECK(ep_dead_rc == -KOS_EPIPE); // dead endpoint rejected immediately, never parked
+        TAP_CHECK(ep_dead_rc == -KOS_ECONNREFUSED); // no receiver: rejected at once, never parked
         kos_sem_destroy(g_ep_go);
+    }
+
+    // --- The handout right: an endpoint with no receiver answers by whether one may come --
+    // Main narrows its creator cap to SIGNAL, TRANSFER and HANDOUT. No receiver remains, so a
+    // send answers -KOS_EAGAIN at once instead of parking, and main cannot receive through it.
+    // It still seats a receiver, granting WAIT it does not hold, and that worker takes the
+    // next send. With the worker gone a send answers -KOS_EAGAIN again; with the handout
+    // right dropped, -KOS_ECONNREFUSED, and a WAIT grant from the cap is refused.
+    constexpr uint8_t EP_HANDOUT_ONLY = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
+    Atomic<int32_t, Order::RELAXED> g_ho_rn{-99};
+    void ho_receiver(void*) // caps: done@1, E(WAIT)@2
+    {
+        char buf[sizeof(EP_MSG)];
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, 2, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        g_ho_rn = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o);
+        kos_sem_post(CH_DONE);
+    }
+    int32_t ho_seat(kos::thread::Handle* out)
+    {
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}, {g_ep, KOS_CAP_WAIT}};
+        *out = kos::thread::create_caps(ho_receiver, nullptr, "hoR", 12, caps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        return out->error();
+    }
+    void t_endpoint_handout()
+    {
+        if (kos_endpoint_create(&g_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        int32_t const mlen = static_cast<int32_t>(strlen(EP_MSG));
+        int32_t const narrowed = kos_cap_narrow(g_ep, EP_HANDOUT_ONLY);
+        int32_t const unserved = kos_send(g_ep, EP_MSG, strlen(EP_MSG));
+        char buf[sizeof(EP_MSG)];
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, g_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        int32_t const not_receiver =
+            kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o);
+        g_ho_rn = -99;
+        kos::thread::Handle w;
+        int32_t const seat_rc = ho_seat(&w);
+        int32_t served = -99;
+        if (seat_rc == 0)
+        {
+            served = kos_send(g_ep, EP_MSG, strlen(EP_MSG));
+            wait_n(1);
+            (void)w.join();
+        }
+        int32_t const again = kos_send(g_ep, EP_MSG, strlen(EP_MSG));
+        int32_t const dropped = kos_cap_narrow(g_ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER);
+        int32_t const refused = kos_send(g_ep, EP_MSG, strlen(EP_MSG));
+        kos::thread::Handle b;
+        int32_t const bad_seat = ho_seat(&b);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        int32_t const ho_rn = g_ho_rn;
+        tap::diag("narrowed %d, unserved %d, recv %d, seat %d, served %d, again %d, refused %d, "
+                  "seat without the right %d",
+                  static_cast<int>(narrowed), static_cast<int>(unserved),
+                  static_cast<int>(not_receiver), static_cast<int>(seat_rc),
+                  static_cast<int>(served), static_cast<int>(again), static_cast<int>(refused),
+                  static_cast<int>(bad_seat));
+        TAP_CHECK(narrowed == 0 and unserved == -KOS_EAGAIN and not_receiver == -KOS_EACCES);
+        TAP_CHECK(seat_rc == 0 and served == mlen and ho_rn == mlen);
+        TAP_CHECK(again == -KOS_EAGAIN and dropped == 0 and refused == -KOS_ECONNREFUSED);
+        TAP_CHECK(bad_seat == -KOS_EACCES);
+    }
+
+    // --- A parked sender woken by the last receiver leaving, the handout right kept ----------
+    // Main's creator cap is the only receiver; a worker parks sending, and main narrows WAIT
+    // away while keeping the handout right. The narrow drops the last receiver as a close
+    // would, and the parked sender is answered what a new caller would be: -KOS_EAGAIN.
+    Atomic<int32_t, Order::RELAXED> g_hp_rc{-99};
+    void hp_sender(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        g_hp_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // parks: a receiver exists, none waits
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_handout_parked()
+    {
+        if (kos_endpoint_create(&g_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        g_hp_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto w = kos::thread::create_caps(hp_sender, nullptr, "hpS", 12, caps, 2,
+                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w.valid());
+        kos_sleep_ns(3000000ull); // let the sender park behind main's WAIT
+        TAP_CHECK(kos_cap_narrow(g_ep, EP_HANDOUT_ONLY) == 0);
+        wait_n(1);
+        int32_t const hp_rc = g_hp_rc;
+        TAP_CHECK(hp_rc == -KOS_EAGAIN);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
     // --- Timed send: the deadline expires with a live endpoint and nobody in recv ------
@@ -5641,15 +5739,15 @@ namespace
         TAP_CHECK(sd_callrc == -KOS_EPIPE);
     }
 
-    // --- Call/reply: server dies pre-pop -> caller EPIPE (recv_holders -> 0) ------
+    // --- Call/reply: server dies pre-pop -> caller refused (recv_holders -> 0) ---
     // The caller parks in SEND_WAIT (no receiver has popped it yet). MAIN holds the sole
-    // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and EPIPEs
+    // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and refuses
     // the parked call: the pre-pop counterpart to the mid-transaction teardown above.
     Atomic<int32_t, Order::RELAXED> g_pp_callrc{-99};
     void pp_caller(void*) // caps: done@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
-        g_pp_callrc = kos_call(2, buf, 4, sizeof(buf)); // parks SEND_WAIT; woken -KOS_EPIPE
+        g_pp_callrc = kos_call(2, buf, 4, sizeof(buf)); // parks SEND_WAIT; woken refused
         kos_sem_post(CH_DONE);
     }
     void t_call_prepop_death()
@@ -5661,10 +5759,10 @@ namespace
         auto cl = kos::thread::create_caps(pp_caller, nullptr, "ppC", 12, ccaps, 2);
         TAP_CHECK(cl.valid()); // spawn failure would hang the drain below
         kos_sleep_ns(3000000ull);               // let the caller park in SEND_WAIT
-        TAP_CHECK(kos_handle_close(g_ep) == 0);  // last WAIT cap -> recv_holders 0 -> EPIPE the call
+        TAP_CHECK(kos_handle_close(g_ep) == 0);  // last WAIT cap -> recv_holders 0 -> refuse the call
         wait_n(1);
         int32_t const pp_callrc = g_pp_callrc;
-        TAP_CHECK(pp_callrc == -KOS_EPIPE);
+        TAP_CHECK(pp_callrc == -KOS_ECONNREFUSED);
     }
 
     // --- Call/reply: donation ordering (positive) --------------------------------
@@ -7281,7 +7379,7 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_auth_badbits{-99};   // a bit that is no authority at all
     Atomic<int32_t, Order::RELAXED> g_auth_highbit{-99};   // the word's top bit, refused and not truncated
     Atomic<int32_t, Order::RELAXED> g_auth_capsarr{-99};   // the grant ARRAY read, reached past the early refusals
-    Atomic<int32_t, Order::RELAXED> g_auth_narrowbad{-99}; // kos_cap_narrow on a cap that is not the authority
+    Atomic<int32_t, Order::RELAXED> g_auth_narrowobj{-99}; // kos_cap_narrow on an object cap narrows its rights
     Atomic<int32_t, Order::RELAXED> g_auth_narrowall{-99}; // a mask of the whole 32-bit word keeps every held bit
     Atomic<int32_t, Order::RELAXED> g_auth_kept{-99};      // so the held bit's gate still answers for itself
     Atomic<int32_t, Order::RELAXED> g_auth_narrowup{-99};  // a mask naming an unheld bit intersects, never grants
@@ -7340,10 +7438,9 @@ namespace
         g_auth_two[0] = {0x7fffffff, CH_FULL};
         kid.authority = 0;
         g_auth_capsarr = kos_thread_create(&kid, &kidh);
-        // Giving up an authority. Narrowing an object cap is refused, so the sem cap at
-        // CH_DONE is the negative arm, and it must run BEFORE the drop, since it is the last
-        // thing here that still needs a live authority cap to be meaningful.
-        g_auth_narrowbad = kos_cap_narrow(CH_DONE, 0);
+        // An object cap narrows too: the sem cap at CH_DONE keeps SIGNAL, which the post at
+        // the end of this worker still needs, and gives up the rest.
+        g_auth_narrowobj = kos_cap_narrow(CH_DONE, KOS_CAP_SIGNAL);
         // Every bit of the word in the mask: narrowing by it gives nothing up.
         g_auth_narrowall = kos_cap_narrow(KOS_CAP_AUTHORITY, 0xFFFFFFFFu);
         g_auth_kept = kos_pinmux_set(99u, 0u, 0x10u);
@@ -7387,10 +7484,10 @@ namespace
         int32_t const auth_narrowall = g_auth_narrowall;
         int32_t const auth_kept = g_auth_kept;
         TAP_CHECK(auth_narrowall == 0 and auth_kept != -KOS_EPERM and auth_kept < 0);
-        int32_t const auth_narrowbad = g_auth_narrowbad;
+        int32_t const auth_narrowobj = g_auth_narrowobj;
         int32_t const auth_narrow = g_auth_narrow;
         int32_t const auth_dropped = g_auth_dropped;
-        TAP_CHECK(auth_narrowbad == -KOS_EINVAL and auth_narrow == 0
+        TAP_CHECK(auth_narrowobj == 0 and auth_narrow == 0
                   and auth_dropped == -KOS_EPERM);
         int32_t const auth_narrowup = g_auth_narrowup;
         int32_t const auth_notgained = g_auth_notgained;
@@ -8762,6 +8859,8 @@ int main(int, char**)
     TAP_ADD("endpoint_rights", t_endpoint_rights);
     TAP_ADD("endpoint_epipe", t_endpoint_epipe);
     TAP_ADD("endpoint_dead", t_endpoint_dead);
+    TAP_ADD("endpoint_handout", t_endpoint_handout);
+    TAP_ADD("endpoint_handout_parked", t_endpoint_handout_parked);
     TAP_ADD("endpoint_send_timeout", t_endpoint_send_timeout);
 #undef TAP_ADD
 // Region 2.

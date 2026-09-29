@@ -90,9 +90,11 @@ int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
 // Wait indefinitely for a receiver. Returns bytes transferred or -KOS_E*:
 // EINVAL for len > KOS_EP_MSG_MAX, EFAULT for an invalid buffer, EBADF/EACCES
-// for an invalid capability or missing SIGNAL right, EPIPE for a dead endpoint
-// or loss of its last receiver, EAGAIN for a far endpoint whose peer ring is full
-// (nothing sent; try again). A zero-length message is valid.
+// for an invalid capability or missing SIGNAL right, EAGAIN for an endpoint with no
+// receiver while a holder of KOS_CAP_HANDOUT remains, or for a far endpoint whose peer
+// ring is full, ECONNREFUSED for an endpoint with no receiver and nothing left that could
+// seat one. Both no-receiver answers arrive at once, or on waking when the last receiver
+// leaves a parked sender; nothing was sent. A zero-length message is valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
 // Both parties receive EFAULT; any bytes already copied remain changed.
@@ -103,10 +105,11 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
 // Synchronous call/reply. Delivers `send_len` request bytes and blocks until the server
 // replies into the SAME buffer, in place, up to `recv_cap`; a one-shot reply cap is minted
 // in the server's recv info. -> reply bytes (>= 0), or a negative -KOS_E*: EINVAL (request >
-// KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EACCES (bad cap / no SIGNAL), EPIPE (dead
-// endpoint or server died mid-call), EMFILE (the SERVER's cap table is full, so the reply cap
-// cannot be minted), ENOTSUP (server took an info-less recv, so it hosts no calls), EAGAIN (a
-// far endpoint's peer ring is full: nothing sent, try again).
+// KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EACCES (bad cap / no SIGNAL), EAGAIN (no
+// receiver while a holder of KOS_CAP_HANDOUT remains, or a far endpoint's peer ring is full:
+// nothing sent, try again), ECONNREFUSED (no receiver and nothing left that could seat one),
+// EPIPE (the server died holding the request), EMFILE (the SERVER's cap table is full, so the
+// reply cap cannot be minted), ENOTSUP (server took an info-less recv, so it hosts no calls).
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // The same call, always through the buffer-carrying KOS_SYS_CALL trap: identical arguments,
 // identical result, identical in-place reply. It is the arm kos_call itself falls through to.
@@ -414,10 +417,12 @@ int kos_periph_enable(uintptr_t base);
 // or -KOS_ENOSYS without a backend.
 int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 
-// Irreversibly intersect caller authority with mask. cap must be the
-// KOS_CAP_AUTHORITY pseudo-handle. Zero drops all authority; absent bits
-// cannot be added. Only a spawning parent can set initial authority.
-// Returns 0, -KOS_EBADF if no authority remains, or -KOS_EINVAL for another cap.
+// Irreversibly intersect with mask: the caller's authority word where cap is the
+// KOS_CAP_AUTHORITY pseudo-handle, the rights of the capability cap names otherwise. Zero
+// drops everything; absent bits cannot be added. Only a spawning parent can set initial
+// authority. Dropping KOS_CAP_WAIT from an endpoint cap stops the caller being a receiver,
+// which is how a creator keeps KOS_CAP_HANDOUT alone.
+// Returns 0, or -KOS_EBADF if no authority remains or cap names nothing.
 int kos_cap_narrow(kos_cap_t cap, uint32_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw

@@ -91,7 +91,7 @@ enum kos_drv_ep
     KOS_DRV_EP_HANDOVER = 0,
     // No publish; root keeps a full-rights cap for the app to narrow per client. Root
     // therefore holds a WAIT-bearing cap forever, so recv_holders never reaches 0 and the
-    // last-receiver-gone EPIPE wake never fires: NO failure path in a driver thread under
+    // last-receiver-gone wake never fires: NO failure path in a driver thread under
     // this posture may exit(), it must panic.
     KOS_DRV_EP_RETAIN = 1
 };
@@ -616,9 +616,10 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 // then probe with a zero-length rendezvous on cap 0. Returns 0, or the probe's negative rc.
 //
 // THE ORDER MATTERS: closing first leaves the driver the SOLE receiver, so its death takes
-// recv_holders to 0, which both EPIPEs the probe and reclaims the console. On any refusal but
-// -KOS_EPIPE the service thread is still alive and still holds the console, and nothing here
-// recovers.
+// recv_holders to 0, which both refuses the probe -KOS_ECONNREFUSED, the init's own cap and its
+// handout right being gone with the close, and reclaims the console. On any refusal but
+// -KOS_ECONNREFUSED the service thread is still alive and still holds the console, and nothing
+// here recovers.
 int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task);
 
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms

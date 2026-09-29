@@ -271,7 +271,7 @@ namespace kickos
 #endif
     }
 
-    // Rollback both endpoint_refs (all capabilities) and recv_holders (WAIT capabilities).
+    // Rollback endpoint_refs (all capabilities) and both holder counts (WAIT and HANDOUT).
     int endpoint_create(uint32_t* out_cap)
     {
         IrqLock lock;
@@ -291,11 +291,13 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        ep->recv_holders = 1; // creator holds a WAIT-bearing cap
+        // The creator's cap carries every right, so it counts both as a receiver and as a
+        // holder that may hand the receiving out; kos_cap_narrow drops either.
+        ep->recv_holders = 1;
+        ep->handout_holders = 1;
         kernel().endpoint_refs[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
-        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT,
-                                   CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_RIGHTS_ALL, out_cap);
         if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
@@ -408,7 +410,7 @@ namespace kickos
 #endif
             if (e->recv_holders == 0)
             {
-                return -KOS_EPIPE;
+                return endpoint_unserved(e, 0);
             }
             Thread* w = wq_pop_highest(e->recv_waiters);
             if (w != nullptr)
@@ -440,7 +442,8 @@ namespace kickos
             wq_block(e->send_waiters, WAIT_EP_SEND, e);
         }
         wq_confirm_resume(c, epoch);
-        // n (>= 0), -KOS_EPIPE (last receiver left), -KOS_ETIMEDOUT (ktime_on_timer), or
+        // n (>= 0), -KOS_EAGAIN or -KOS_ECONNREFUSED (the last receiver left, as
+        // endpoint_unserved answers), -KOS_ETIMEDOUT (ktime_on_timer), or
         // -KOS_ECANCELED (this parked caller was cancelled)
         return static_cast<int32_t>(c->wait_result);
     }
@@ -714,7 +717,7 @@ namespace kickos
             bool const far = endpoint_is_far(e);
             if (not far and e->recv_holders == 0)
             {
-                return -KOS_EPIPE;
+                return endpoint_unserved(e, 0);
             }
             KICKOS_BENCH_MARK(bm_peek);
             Thread* w = wq_peek_highest(e->recv_waiters);
@@ -762,8 +765,10 @@ namespace kickos
                 if (w->dying)
                 {
                     // Do not mint into a table being destroyed. Its cleanup may already have
-                    // passed the slot, and cleanup releases IrqLock between chunks.
-                    return -KOS_EPIPE;
+                    // passed the slot, and cleanup releases IrqLock between chunks. The
+                    // request was never taken, so this is the no-receiver answer, the dying
+                    // receiver counted as gone.
+                    return endpoint_unserved(e, 1);
                 }
                 KICKOS_BENCH_MARK(bm_probe);
                 if (not cap_can_take_reply(w))

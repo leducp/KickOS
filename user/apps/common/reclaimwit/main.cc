@@ -181,19 +181,19 @@ int main(int, char**)
     // recv_holders is 0, so this either refuses at once or parks and is released by the
     // sweep with the same code.
     char const dead = 'x';
-    int32_t const epipe_rc = kos_send(KOS_CAP_STDOUT, &dead, 1);
+    int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1);
 
     kos::print("[reclaimwit] LIVE kernel console after the driver died\n");
     print_rc("handle_close", close_rc);
     print_rc("driver serve bytes", serve_rc);
     print_rc("slay", slay_rc);
-    print_rc("post-death send (want -KOS_EPIPE)", epipe_rc);
+    print_rc("post-death send (want -KOS_ECONNREFUSED)", refused_rc);
 
     bool const ok = (close_rc == 0 and serve_rc == static_cast<int32_t>(sizeof(served) - 1u)
-                     and slay_rc == 0 and epipe_rc == -KOS_EPIPE);
+                     and slay_rc == 0 and refused_rc == -KOS_ECONNREFUSED);
     if (ok)
     {
-        kos::print("[reclaimwit] PASS reclaim fired: driver slain, endpoint EPIPE, wire back\n");
+        kos::print("[reclaimwit] PASS reclaim fired: driver slain, endpoint refused, wire back\n");
     }
     else
     {

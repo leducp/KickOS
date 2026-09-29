@@ -297,7 +297,10 @@ task slot and empties the pools. And the authority word is eight bits wide in
   `user/include/kickos/sys/abi.h`, the mask `kos_cap_narrow(KOS_CAP_AUTHORITY, mask)` takes, and
   `kickos_app_authority()` with `KICKOS_APP_AUTHORITY` in `system/include/kickos/sys/init.h`.
   In `kos_thread_params` it moves beside `core_mask`, the other 32-bit word, and `cap_count`
-  follows both, so the tail stays packed and its offset asserts change with it.
+  moves into the byte behind `privileged`, so the struct keeps its size. Left behind the two
+  words, `cap_count` cost three bytes of padding, which the spawn stager's copy of the struct
+  turned into eight bytes of syscall frame: 452 bytes against the Due's 448-byte SVC reservation
+  in CI, fixed in M10.1.4.
 - **The tasks authority is bit 6** (section 8 lists every proposed name). It gates both ways a
   task is born:
   `KOS_SYS_TASK_CREATE`, and the implicit task `task_for` builds inside `thread_create_call`
@@ -379,6 +382,14 @@ still `-KOS_EPIPE`; the same refusals through the register call path.
 
 **Backends and cost.** Portable IPC code only; no arch assembly reads `recv_holders`. The extra
 test sits on the refusal branch, and `static_assert`s hold `CapEntry` and `Endpoint` at their size.
+
+**What the part taught.** The console clients (`emit.h`, `tap.cc`, `newlib_stubs.cc`) close
+their capability on `-KOS_ECONNREFUSED` only: a driver an init may restart answers
+`-KOS_EAGAIN`, and closing on it would throw away a route that comes back. The handover probe
+expects `-KOS_ECONNREFUSED`, the init's own capability and its handout right going in the same
+close. The arms are `endpoint_handout`, which walks the whole restart shape on one endpoint, and
+`endpoint_handout_parked`, a parked sender released by a narrow; removing the delegation
+exception, the narrow's accounting, or the `-KOS_EAGAIN` answer each turns one red.
 
 ## 4. Deaths and first receives, reported to the creator (M10.1.5)
 

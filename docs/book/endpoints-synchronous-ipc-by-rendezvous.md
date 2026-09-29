@@ -150,7 +150,7 @@ send(cap, buf, len, timeout_us):                     // timeout_us may be "no de
         IrqLock lock
         e = cap_resolve(current, cap, CAP_ENDPOINT, CAP_SIGNAL)   // need the send right
         if e == nullptr:            return -EBADF / -EPERM
-        if e->recv_holders == 0:    return -EPIPE     // dead endpoint (below)
+        if e->recv_holders == 0:    return unserved(e) // no receiver (below)
         w = wq_pop_highest(e->recv_waiters)
         if w != nullptr:                             // a receiver is parked -> deliver now
             n = min(len, w->ipc.len)
@@ -163,7 +163,7 @@ send(cap, buf, len, timeout_us):                     // timeout_us may be "no de
         sample epoch; wq_block(e->send_waiters, WAIT_EP_SEND, e)
     }
     wq_confirm_resume(current, epoch)                // Chapter 2.2 barrier
-    return current->wait_result                       // n (>= 0), -EPIPE, or -ETIMEDOUT
+    return current->wait_result                       // n (>= 0), unserved(e), or -ETIMEDOUT
 ```
 
 Two details in that sketch carry more weight than they look. The deadline is armed only on
@@ -182,45 +182,56 @@ would be a privileged-write oracle; the check is what closes it. (This is the
 syscall-argument validation floor -- Chapter 7.1 and the Reference's "Syscall-argument
 validation".)
 
-## Two counts, two jobs: refs and recv_holders
+## Three counts, three jobs: refs, recv_holders and handout_holders
 
 An endpoint follows the additive object recipe (Chapter 8.2), so it has the usual
 `endpoint_refs[]` refcount that governs *object lifetime* -- how many capabilities name
-it, freed at zero. But it *also* carries `recv_holders`, and conflating the two is the
-mistake to avoid.
+it, freed at zero. But it *also* carries two holder counts, and conflating any of the three
+is the mistake to avoid.
 
 `recv_holders` counts only the live capabilities that carry the **receive right**
 (`CAP_WAIT`). It answers a different question than the refcount: not "does anything
-still name this endpoint?" but "can a receiver ever appear?" It drives two behaviors a
-plain refcount cannot:
+still name this endpoint?" but "is there a receiver?" `handout_holders` counts the ones
+carrying the **handout right** (`CAP_HANDOUT`), the one right a delegation may turn into
+another: its holder can seat a receiver by granting `CAP_WAIT` it does not itself hold. It
+answers "can a receiver still appear?" -- which is what an init restarting a server needs,
+holding the endpoint open across the restart without being counted as its receiver.
+Together they drive two behaviours a plain refcount cannot:
 
-- **The dead-endpoint gate.** When a sender arrives, if `recv_holders == 0` there is no
-  receiver and -- because rights are only ever narrowed on delegation, never widened
-  (Chapter 8.1) -- no new receive capability can ever be minted. So the send fails
-  immediately with `-EPIPE` rather than parking forever. A send-only client closing its own
-  capability drops `endpoint_refs` but not `recv_holders`, so it must *not* trigger
-  this; that is exactly why the two counts are separate.
-- **Broken pipe (EPIPE).** When the *last* receive-holder goes away -- closes its
-  capability or exits -- any senders already parked would otherwise wait forever. So
-  the close protocol (Chapter 8.2) for an endpoint, on dropping `recv_holders` to zero,
-  wakes every parked sender with `wait_result = -EPIPE`:
+- **The no-receiver answer.** When a sender arrives and `recv_holders == 0`, it does not
+  park, since nothing would ever release it. It is told which case it is in: `-EAGAIN`
+  while a handout holder remains, because a receiver may yet be seated and a retry may meet
+  it, and `-ECONNREFUSED` once none does, because rights only narrow on delegation apart
+  from that one exception and no receive capability can ever be minted again. A send-only
+  client closing its own capability drops `endpoint_refs` but neither holder count, so it
+  must *not* trigger this; that is exactly why the counts are separate.
+- **The parked senders.** When the *last* receive-holder goes away -- closes its
+  capability, narrows `CAP_WAIT` away, or exits -- any senders already parked would
+  otherwise wait forever. So the close protocol (Chapter 8.2) for an endpoint, on dropping
+  `recv_holders` to zero, wakes every parked sender with the same answer a new sender would
+  get:
 
 ```
-case CAP_ENDPOINT:   // obj_close_protocol arm; runs on voluntary close AND teardown
+case CAP_ENDPOINT:   // obj_close_protocol arm; runs on close, narrow AND teardown
     ep = resolve(e.obj)
-    if ep != nullptr and (e.rights & CAP_WAIT) != 0 and ep->recv_holders > 0:
+    if dropped has CAP_HANDOUT:  ep->handout_holders--
+    if dropped has CAP_WAIT and ep->recv_holders > 0:
         ep->recv_holders--
         if ep->recv_holders == 0:
+            answer = ep->handout_holders > 0 ? -EAGAIN : -ECONNREFUSED
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr):
-                s->wait_result = -EPIPE    // broken pipe
+                s->wait_result = answer
                 sched::wake(s)
     return 0     // an endpoint NEVER refuses a close (unlike the mutex)
 ```
 
-The dead-endpoint gate and the EPIPE wake are gap-free with respect to each other
+`-EPIPE` keeps one meaning: the server died holding the request, which the reply
+capability's own close arm answers (`reference/ipc-call-reply.md`).
+
+The no-receiver answer and the parked senders' wake are gap-free with respect to each other
 precisely because both run under the one `IrqLock`: a sender either parks while
-`recv_holders >= 1` (and is later EPIPE-woken by the last close) or observes
-`recv_holders == 0` and fails at once. There is no window in between.
+`recv_holders >= 1` (and is later woken by the last close) or observes `recv_holders == 0`
+and is answered at once. There is no window in between.
 
 Note the rights contrast with the mutex. For a mutex, possession *is* the authority --
 there is no meaningful send/receive split (Chapter 2.3). For an endpoint the split is

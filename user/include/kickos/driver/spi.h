@@ -185,8 +185,9 @@ extern "C"
 
     // BLOCKING, WITH NO DEADLINE ANY ARGUMENT HERE CAN EXPRESS. A caller parked in kos_call
     // has no timeout, so a proxy transfer against a service that stopped replying blocks that
-    // thread forever. What saves it is the endpoint dying: when the last receiver goes, the
-    // parked caller wakes with -KOS_EPIPE. An image that keeps a receive-bearing cap alive
+    // thread forever. What saves it is the endpoint losing its last receiver: the parked
+    // caller wakes with -KOS_EAGAIN while a holder of the handout right may restart the
+    // service, -KOS_ECONNREFUSED once none may. An image that keeps a receive-bearing cap alive
     // outside the service thread defeats that.
 
 #ifdef __cplusplus

@@ -65,7 +65,7 @@ void serve_loop(Shared* sh)
             {
                 continue;
             }
-            break; // endpoint dead (EPIPE) or a bad cap: let the bring-up respawn us
+            break; // a receive that failed, or a bad cap: let the bring-up respawn us
         }
         // This service requires a call with a reply capability.
         if (opts.info.reply_cap == KOS_CAP_NONE)

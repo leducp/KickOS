@@ -414,17 +414,18 @@ console between the two. `kos_console_publish` returning has already flipped the
 `USER_OWNED` and pointed `g_stdout_target` at the endpoint, so a driver spawn that FAILS after
 it leaves the target naming an endpoint with no receiver. Every task spawned afterwards then
 parks on its first `printf` probe forever: the `kos_send` blocks with no receiver to rendezvous
-with, and no EPIPE fires while the publisher's own reference still holds, so the `_write`
+with, and no refusal fires while the publisher's own reference still holds, so the `_write`
 fallback never gets the `-1` it needs to route around the dead console. The kernel cannot
 cheaply tell "published" from "published and served", so the publisher must not spawn
 console-dependent tasks when the driver spawn did not succeed.
 
 **The publisher MUST drop its own WAIT-bearing capability immediately after the spawn.** The
-dead-endpoint gate is keyed on `recv_holders` reaching **0**, and nothing else fires it.
+no-receiver answer is keyed on `recv_holders` reaching **0**, and nothing else fires it; with the
+publisher's handout right gone in the same close, it is `-KOS_ECONNREFUSED`.
 `kos_endpoint_create` sets `recv_holders = 1` for the creator, and delegating a `CAP_WAIT` copy
 to the driver at spawn bumps it to **2**, so at that instant the endpoint has two receiver
 holders. If the publisher keeps its copy, the driver's death drops the count to 1, not 0: no
-EPIPE is delivered, parked senders are never woken, and every client hangs for the life of the
+refusal is delivered, parked senders are never woken, and every client hangs for the life of the
 system. That is strictly WORSE than a dark console, which is why the drop is a hard rule and
 not a tidiness convention. Dropping it does not tear the endpoint down, because the kernel holds
 its own `g_stdout_target` reference. A re-publish after a driver death therefore uses a FRESH
