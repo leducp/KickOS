@@ -60,9 +60,10 @@ namespace kickos
     }
 
     // --- MMIO possession (syscall_mem.cc) --------------------------------------
-    // The current thread's own DEV window has base exactly `base`. The whole authorisation for
-    // arch_periph_enable; no authority bit gates it. Exact base, so a sub-block window cannot
-    // reach a whole-block table entry, and the answer comes from the possession record.
+    // One of the current thread's DEV windows has base exactly `base`. The whole
+    // authorisation for arch_periph_enable; no authority bit gates it. Exact base, so a
+    // sub-block window cannot reach a whole-block table entry, and the answer comes from the
+    // possession record.
     bool caller_holds_mmio_block(uintptr_t base);
 
     // The write seam's stronger twin: the region matched by the exact base must also

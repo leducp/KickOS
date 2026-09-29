@@ -135,11 +135,12 @@ namespace
         kos::thread::Handle t;
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
+            kos_window const win = {b, SIMCON_WIN, KOS_WINDOW_DEVICE, 0};
             t = kos::thread::create(
                 entry, nullptr, name, prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
                 /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
                 /*stack=*/nullptr, /*stack_size=*/0,
-                /*mmio=*/reinterpret_cast<void*>(b), SIMCON_WIN, win_caps, 1,
+                /*windows=*/&win, 1, win_caps, 1,
                 /*authority=*/0, /*cap_dest=*/nullptr, task);
             if (t.valid())
             {

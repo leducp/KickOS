@@ -717,6 +717,17 @@ config KICKOS_MAX_SPAWN_GRANTS
 	  this plus one plus the reply peak, and a width inside the reserved index
 	  range leaves a child no slot of its own, which configure refuses.
 
+config KICKOS_MAX_THREAD_WINDOWS
+	int "Windows one thread may hold"
+	range 1 4
+	default 4
+	help
+	  What a thread's region set has left after the regions every thread takes:
+	  code, static data, its task's data region and its stack, four of
+	  KICKOS_MPU_MAX_REGIONS. A longer spawn list answers -KOS_ENOMEM. Costs
+	  .bss, not caller stack: thread_create_call stages the list in
+	  Kernel::window_stage, one entry per window.
+
 config KICKOS_CAP_TABLE_SUPPLY
 	int "Capability slots this board's RAM can back"
 	range 7 64

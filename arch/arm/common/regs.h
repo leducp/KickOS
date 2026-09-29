@@ -92,6 +92,7 @@ namespace kickos
         constexpr uint32_t MPU_RASR_XN = 1u << 28;
         constexpr uint32_t MPU_RASR_AP_RW = 0x3u << 24; // priv RW, unpriv RW
         constexpr uint32_t MPU_RASR_AP_RO = 0x6u << 24; // priv RO, unpriv RO
+        constexpr uint32_t MPU_RASR_AP_URO = 0x2u << 24; // priv RW, unpriv RO
         constexpr uint32_t MPU_RASR_MEM_NORMAL = (1u << 17) | (1u << 16); // C=1,B=1
         constexpr uint32_t MPU_RASR_MEM_DEVICE = (1u << 18) | (1u << 16); // S=1,B=1 (shared device)
         // TEX=0b001, C=0, B=0, S=1 (DDI0403E Table B3-13): Normal, outer AND inner

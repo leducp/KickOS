@@ -177,11 +177,12 @@ int main(int, char**)
            static_cast<unsigned>(PORT), static_cast<unsigned>(PIN));
     fflush(stdout);
 
+    kos_window const win = {WINDOW_BASE, WINDOW_SIZE, KOS_WINDOW_DEVICE, 0};
     auto const w = kos::thread::create(
         worker, reinterpret_cast<void*>(WINDOW_BASE), "gpioblink", 10,
         KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
         /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
-        /*mmio=*/reinterpret_cast<void*>(WINDOW_BASE), WINDOW_SIZE);
+        /*windows=*/&win, 1);
     if (not w.valid())
     {
         printf("[gpioblink] ERROR: worker spawn failed rc %d\n", w.error());

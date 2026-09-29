@@ -49,6 +49,32 @@ namespace kickos
     }
 #endif
 
+    namespace
+    {
+        // Whether a region of c's set without W overlaps [ptr, end), so the set answers no
+        // write there: a region backend obeys one of the overlapping regions, PMSAv7 the last,
+        // the PMP the first and PMSAv8 none, so a read-only window over a writable block is
+        // never a way to have the kernel write it. A translating backend's rights are its
+        // mapping's, which the range list carries.
+        bool read_only_overlaps(Thread const* c, uintptr_t ptr, uintptr_t end)
+        {
+#if KICKOS_HAVE_ASPACE
+            (void)c;
+            (void)ptr;
+            (void)end;
+#else
+            for (arch_mpu_region const& r : c->mpu)
+            {
+                if ((r.attr & ARCH_MPU_W) == 0 and ptr < r.base + r.size and end > r.base)
+                {
+                    return true;
+                }
+            }
+#endif
+            return false;
+        }
+    }
+
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
     {
         Thread* c = sched::current();
@@ -68,6 +94,10 @@ namespace kickos
         if (end < ptr)
         {
             return false; // address-space wrap
+        }
+        if ((need & ARCH_MPU_W) != 0 and read_only_overlaps(c, ptr, end))
+        {
+            return false;
         }
         for (arch_mpu_region const& r : c->mpu)
         {
@@ -141,15 +171,18 @@ namespace kickos
 
     namespace
     {
-        // Require the exact device base from the thread's ownership record.
-        // A sub-block grant must not resolve to the enclosing block.
+        // Require the exact base of a device window the thread holds, its device regions being
+        // the ownership record. A sub-block grant must not resolve to the enclosing block.
         size_t mmio_block_of(Thread const* c, uintptr_t base)
         {
-            if (c->dev_size == 0 or c->dev_base != base)
+            for (arch_mpu_region const& r : c->mpu)
             {
-                return 0;
+                if ((r.attr & ARCH_MPU_DEV) != 0 and r.base == base)
+                {
+                    return r.size;
+                }
             }
-            return c->dev_size;
+            return 0;
         }
     }
 
@@ -229,6 +262,10 @@ namespace kickos
             // A wrapping extent asks the set nothing and is still offered to the arch hook.
             bool read_asks = (not read_seen and ptr + read_len >= ptr);
             bool write_asks = (not write_seen and ptr + write_len >= ptr);
+            if (write_asks and read_only_overlaps(c, ptr, ptr + write_len))
+            {
+                write_asks = false; // the set answers no write here, as user_range_ok says
+            }
             for (arch_mpu_region const& r : c->mpu)
             {
                 if (not read_asks and not write_asks)

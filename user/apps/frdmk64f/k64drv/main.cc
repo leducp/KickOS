@@ -125,11 +125,12 @@ int main(int, char**)
     }
     kos_cap_grant const caps[2] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
 
+    kos_window const win = {PIT_CH2, PIT_CH2_WINDOW, KOS_WINDOW_DEVICE, 0};
     auto drv = kos::thread::create(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
                                    KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                    /*mem=*/nullptr, /*mem_size=*/0,
                                    /*stack=*/nullptr, /*stack_size=*/0,
-                                   /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
+                                   /*windows=*/&win, 1,
                                    caps, 2);
     if (not drv.valid())
     {

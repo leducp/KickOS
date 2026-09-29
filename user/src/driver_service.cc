@@ -143,12 +143,11 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
         arg = reinterpret_cast<void*>(cfg->mmio_base);
     }
 
-    void* win = nullptr;
-    uint32_t win_size = 0;
+    kos_window const win = {cfg->mmio_base, cfg->mmio_window, KOS_WINDOW_DEVICE, 0};
+    uint16_t win_count = 0;
     if (t.window_grant)
     {
-        win = reinterpret_cast<void*>(cfg->mmio_base);
-        win_size = cfg->mmio_window;
+        win_count = 1;
     }
 
     char const* name = t.name;
@@ -180,7 +179,7 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
                                  KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                 win, win_size, grants, t.cap_count,
+                                 &win, win_count, grants, t.cap_count,
                                  /*authority=*/0, /*cap_dest=*/nullptr, task, core_mask);
     // The child holds its own copies now, so this spawn's sources go back.
     drop_minted(minted);

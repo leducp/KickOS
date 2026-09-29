@@ -226,8 +226,8 @@ namespace
     // Withholds whole bytes at both ends of the word, so no off-mask value can be
     // confused with an in-mask one: widening the column shows up as a store that lands.
     constexpr uint32_t PVREG_MASKED_GRANT = 0x0000C3FFu;
-    // Reachable only by a holder of a window wider than SIM_PVREG_WINDOW, which this
-    // backend never admits.
+    // Written through the seam only by a holder of a window wider than SIM_PVREG_WINDOW,
+    // which this backend never admits.
     constexpr uint32_t PVREG_BEYOND_GRANT = 0x00000001u;
 
     constexpr SimPrivWriteReg SIM_PRIV_WRITE_REGS[] = {
@@ -1337,9 +1337,11 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     {
         return false;
     }
-    // Exact window, never a sub-range: the allowlist entry at SIM_PVREG_WINDOW is
-    // refused by containment only while no wider window is grantable.
-    if (base != reinterpret_cast<uintptr_t>(sim().pvreg) or size != SIM_PVREG_WINDOW)
+    // Either half of the span, exactly, never a sub-range nor both at once: the allowlist
+    // entry at SIM_PVREG_WINDOW is refused by containment only while no wider window is
+    // grantable. The second half is what a two-window list names.
+    uintptr_t const pv = reinterpret_cast<uintptr_t>(sim().pvreg);
+    if ((base != pv and base != pv + SIM_PVREG_WINDOW) or size != SIM_PVREG_WINDOW)
     {
         return false;
     }

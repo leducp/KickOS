@@ -226,13 +226,13 @@ int main(int, char**)
         kos_panic("[pvprobe] no task slot for the probe");
     }
 
+    kos_window const win = {U0C1_BASE, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
     auto const p = kos::thread::create(probe, reinterpret_cast<void*>(U0C1_BASE),
                                        "pvprobe", 10, KOS_POLICY_FIFO, 0,
                                        /*privileged=*/false,
                                        /*mem=*/nullptr, /*mem_size=*/0,
                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
-                                       U0C1_WINDOW,
+                                       /*windows=*/&win, 1,
                                        /*caps=*/nullptr, /*cap_count=*/0,
                                        /*authority=*/0, /*cap_dest=*/nullptr, victim);
     if (not p.valid())

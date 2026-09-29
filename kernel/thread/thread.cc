@@ -114,9 +114,9 @@ namespace kickos
 
     // One holder per device window, matched on RANGES and not on region slots, so equal,
     // containing and straddling requests all refuse while an adjacent window stays
-    // admissible. The dying arm is what keeps a respawn issued from the teardown's EPIPE wake
-    // from being refused by the very thread whose death freed the device. Check and commit
-    // both sit inside thread_create_call's function-scope IrqLock.
+    // admissible. A holder counts until its exit drops its device regions, before the
+    // teardown can wake a supervisor into a respawn. Check and commit both sit inside
+    // thread_create_call's function-scope IrqLock.
     bool dev_window_free(uintptr_t base, size_t size)
     {
         uintptr_t const last = base + size - 1u;
@@ -124,18 +124,65 @@ namespace kickos
         for (int i = 0; i < k.threads.next; i++)
         {
             Thread const& t = k.threads.slots[i];
-            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
-                or t.dying or t.dev_size == 0)
+            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE)
             {
                 continue;
             }
-            if (grant_ranges_overlap(base, last, t.dev_base, t.dev_base + t.dev_size - 1u))
+            for (arch_mpu_region const& r : t.mpu)
             {
-                return false;
+                if ((r.attr & ARCH_MPU_DEV) != 0
+                    and grant_ranges_overlap(base, last, r.base, r.base + r.size - 1u))
+                {
+                    return false;
+                }
             }
         }
         return true;
     }
+
+    uint32_t window_memory_attr(uint8_t flags)
+    {
+        uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
+        if ((flags & KOS_WINDOW_RO) != 0)
+        {
+            attr = ARCH_MPU_R;
+        }
+        if ((flags & KOS_WINDOW_UNCACHED) != 0)
+        {
+            attr = attr | ARCH_MPU_NOCACHE;
+        }
+        return attr;
+    }
+
+    namespace
+    {
+        // Adds the spawn's windows to t's region set. noinline: the loop's locals would
+        // otherwise widen thread_create's frame, which sits on the armv7m SVC chain.
+        __attribute__((noinline)) bool seat_windows(Thread* t, ThreadAttr const& attr)
+        {
+            bool fitted = true;
+            for (uint16_t i = 0; i < attr.window_count; i++)
+            {
+                kos_window const& w = attr.windows[i];
+                // A device window is exact, NEVER rounded: rounding would over-grant the
+                // neighbouring registers. A memory window takes the extent kos_ram_alloc
+                // reserved.
+                size_t size = w.size;
+                uint32_t rights = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
+                if (w.kind == KOS_WINDOW_MEMORY)
+                {
+                    size = arch_ram_region_size(w.size);
+                    rights = window_memory_attr(w.flags);
+                }
+                fitted = t->mpu.add(w.base, size, rights) and fitted;
+            }
+            return fitted;
+        }
+    }
+
+    // Code, static data, the task's data region and the stack come first.
+    static_assert(KICKOS_MAX_THREAD_WINDOWS + 4 <= KICKOS_MPU_MAX_REGIONS,
+                  "a thread's full window list would not fit its region set");
 
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
@@ -220,7 +267,7 @@ namespace kickos
 #endif
 
         // An unprivileged thread has no background region, so its set is assembled
-        // explicitly: app code and static data, its task's domain regions, its own DEV window
+        // explicitly: app code and static data, its task's domain regions, its own windows
         // and its own stack. Sizes round to what this MPU can describe (arch_mpu_region_pow2).
         //
         // Portable code may rely only on the floor, that a thread-scoped grant reaches its
@@ -232,15 +279,6 @@ namespace kickos
         }
         bool const wants_stack =
             (not attr.privileged and stack_base != nullptr and stack_size != 0);
-        bool const wants_window =
-            (not attr.privileged and attr.mmio_base != nullptr and attr.mmio_size != 0);
-        // The possession record, seated before the composition that maps the window:
-        // authority and reach are the same bytes only on an MPU.
-        if (wants_window)
-        {
-            t->dev_base = reinterpret_cast<uintptr_t>(attr.mmio_base);
-            t->dev_size = attr.mmio_size;
-        }
         // The whole set MUST fit: a truncated set that drops the thread's own stack would
         // fault it on its own memory.
         bool fitted = true;
@@ -254,13 +292,9 @@ namespace kickos
                 fitted = t->mpu.add(dr->base, dr->size, dr->attr) and fitted;
             }
         }
-        if (wants_window)
+        if (not attr.privileged)
         {
-            // The exact window, NEVER rounded: rounding would over-grant the neighbouring
-            // registers. Reach only; the periph seam is gated on t->dev_base above.
-            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(attr.mmio_base), attr.mmio_size,
-                                ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV)
-                and fitted;
+            fitted = seat_windows(t, attr) and fitted;
         }
         if (wants_stack)
         {

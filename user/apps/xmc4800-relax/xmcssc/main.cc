@@ -232,10 +232,11 @@ int main(int, char**)
             { .source_cap = irq, .rights_mask = KOS_CAP_WAIT },
             { .source_cap = note, .rights_mask = KOS_CAP_WAIT },
         };
+        kos_window const win = {U0C1_BASE, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
         auto const c = kos::thread::create(
             spi_client, reinterpret_cast<void*>(U0C1_BASE), "xmcssc-cli", 9, KOS_POLICY_FIFO,
             /*quantum_ns=*/0, /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
-            /*stack=*/nullptr, /*stack_size=*/0, reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
+            /*stack=*/nullptr, /*stack_size=*/0, /*windows=*/&win, 1,
             caps, /*cap_count=*/2);
         if (not c.valid())
         {

@@ -987,7 +987,9 @@ namespace kickos
                 aspace_install_boot();
 #endif
 #endif
-                // Release device-window ownership before teardown can wake a supervisor.
+                // Release the device windows before teardown can wake a supervisor into a
+                // respawn that asks for them. No return to user code follows.
+                c->mpu.drop_devices();
                 // Capture task identity before retiring membership.
                 left_task = c->task;
                 left_gen = task_gen(c->task);

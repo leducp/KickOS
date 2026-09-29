@@ -50,6 +50,10 @@
 #ifndef KICKOS_MAX_SPAWN_GRANTS
 #define KICKOS_MAX_SPAWN_GRANTS 6
 #endif
+// Windows one thread may hold, staged on the spawner's stack like the grant list.
+#ifndef KICKOS_MAX_THREAD_WINDOWS
+#define KICKOS_MAX_THREAD_WINDOWS 4
+#endif
 // Virtual-range records per address space, independent of MPU descriptors.
 // Image and reservation records persist; capability mappings release their
 // records on unmap, and thread stacks release theirs at exit.

@@ -44,10 +44,10 @@ def main() -> None:
     require(len(sys.argv) == 2, "usage: check_c6_amp_capture.py <capture.log>")
     log = Path(sys.argv[1]).read_text().replace("\r", "")
     one(r"^load:0x40800000,len:0x[0-9a-f]+$", log)
-    one(r"^load:0x40838000,len:0x[0-9a-f]+$", log)
+    one(r"^load:0x4083c000,len:0x[0-9a-f]+$", log)
     one(r"^# c6amp: LP RTC ([0-9]+) Hz$", log)
     vector = int(one(r"^# ampdiag: peer node=1 vectors=0x([0-9a-f]+) tag=0 clk=20000000 self clk=160000000$", log)[0], 16)
-    require(0x40838000 <= (vector & ~3) < 0x40870000 and (vector & 3) == 1,
+    require(0x4083c000 <= (vector & ~3) < 0x40878000 and (vector & 3) == 1,
             f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
     one(r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)
     one(r"^ampping: node 0 calls node 1 port 3$", log)

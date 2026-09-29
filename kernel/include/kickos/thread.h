@@ -204,12 +204,6 @@ namespace kickos
 
         void* stack_base = nullptr;
         size_t stack_size = 0;
-        // The dev window this thread holds, and the whole of the periph seam's possession gate.
-        // Seated once at create from the spawn's grant; dev_size 0 means none, and a window at
-        // base 0 is not expressible. This is authority and not the mapping: a translating backend
-        // maps task-wide.
-        uintptr_t dev_base = 0;
-        size_t dev_size = 0;
         // stack_base was demand-allocated by the kernel and must be harvested onto the free
         // list when this slot is reclaimed. A caller-owned stack is never harvested.
         bool kstack_owned = false;
@@ -476,9 +470,7 @@ namespace kickos
 #endif
             bytes = bytes + (words + alignof(uint64_t) - 1) / alignof(uint64_t) * alignof(uint64_t);
         }
-        // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
-        // stack_base/stack_size, so neither adds padding on any target.
-        return bytes + sizeof(uintptr_t) + sizeof(size_t);
+        return bytes;
     }
 
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
@@ -592,11 +584,11 @@ namespace kickos
         // Threads sharing one region share a memory domain; base==0 => none.
         void* mem_base = nullptr;
         size_t mem_size = 0;
-        // Optional device/MMIO region granted to an unprivileged thread (R|W|DEV, never
-        // executable). AUTH_MEMORY-only at the spawn boundary, and per-thread: it lands in this
-        // thread's own region set and never in its task's domain. base==0 => none.
-        void* mmio_base = nullptr;
-        size_t mmio_size = 0;
+        // The spawn's window list, already staged and admitted by thread_create_call. Each
+        // lands in this thread's own region set and never in its task's domain, and a device
+        // window's region is the whole of its holder's possession record.
+        kos_window const* windows = nullptr;
+        uint16_t window_count = 0;
         // Pre-resolved task: thread_create_call sets it so a task- or domain-pool exhaustion fails
         // the spawn before anything is built. null => thread_create resolves from privileged +
         // mem_base, which only idle and root do.

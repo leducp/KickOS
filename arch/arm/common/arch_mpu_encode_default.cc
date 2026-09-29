@@ -24,7 +24,8 @@ namespace
 {
     // One region as an MPU_RASR value. attr is the UNPRIVILEGED access (supervisor comes
     // from the PRIVDEFENA background region): a code region is R+X (RO, executable); data
-    // / stack / device is RW + execute-never. Device memory gets the ordered device type.
+    // / stack / device is RW + execute-never, and data without W is read-only to it. Device
+    // memory gets the ordered device type.
     // `size` is a power of two >= 32 with a naturally aligned base, which is what
     // arch_mpu_region_encodable admits.
     uint32_t mpu_rasr(size_t size, uint32_t attr)
@@ -47,6 +48,10 @@ namespace
         else
         {
             rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack
+        }
+        if ((attr & (ARCH_MPU_X | ARCH_MPU_W)) == 0)
+        {
+            rasr = (rasr & ~MPU_RASR_AP_RW) | MPU_RASR_AP_URO; // a read-only window
         }
         return rasr;
     }
