@@ -579,15 +579,15 @@ TEST_F(DrvBringup, the_publish_fails)
 // This arm and the next differ only in their SIDE EFFECTS: both return a negative code.
 TEST_F(DrvBringup, the_handover_probe_reports_a_dead_driver)
 {
-    g_seam.send_timed_rc = -KOS_EPIPE;
+    g_seam.send_timed_rc = -KOS_ECONNREFUSED;
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
-    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_EPIPE)
-        << "an EPIPE probe returns EPIPE unchanged";
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_ECONNREFUSED)
+        << "a refused probe returns its refusal unchanged";
     EXPECT_STREQ(kos_seam_trace(),
                  "alloc grant taskmem90 ep10 pub10 claim11 claim12"
                  " note13 badge0 bind close14 badge1 bind close15 spawn50 spawn51"
                  " close11 close12 close13 close10 probe tkill90 print print")
-        << "an EPIPE probe ends the whole group, after the close and after the probe";
+        << "a refused probe ends the whole group, after the close and after the probe";
     EXPECT_PRED2(says, kos_seam_msg(), "died during bring-up")
         << "the diagnostic names the dead thread";
 }

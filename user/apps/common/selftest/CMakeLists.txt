@@ -204,7 +204,7 @@ message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h,
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
 # expectation from OUTSIDE the image can see it. The conditions mirror the #if guards around the
 # registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 96) # unconditional, incl. task_authority, notify_no_line, notify_bind_busy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms 98) # unconditional, incl. task_authority, endpoint_handout, endpoint_handout_parked, notify_no_line, notify_bind_busy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 16") # bus_device_slots, uart_service, reboot_priv, 13 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 4") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout (region 2)
@@ -256,7 +256,7 @@ endif()
 # These MUST stay independent expressions, never derived from _tap_arms above: the equality
 # asserted below is only a check while both sides are stated separately, and a new arm has to
 # move a clause on each side.
-set(_tap_arms_r1 32) # region 1, unconditional, svc_roundtrip through endpoint_send_timeout: 16 scheduler/sync/time/console arms, 10 x mutex_*, 6 x endpoint_*
+set(_tap_arms_r1 34) # region 1, unconditional, svc_roundtrip through endpoint_send_timeout: 16 scheduler/sync/time/console arms, 10 x mutex_*, 8 x endpoint_*
 
 set(_tap_arms_r2 21) # region 2, unconditional, recv_timeout through call_prepop_death, incl. timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, call_infoless_revert, call_close_reply, call_happy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, call_from_root, call_truncation, call_double_reply, call_server_death
 if(KICKOS_ENABLE_SELFTEST)

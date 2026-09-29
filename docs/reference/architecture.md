@@ -565,6 +565,7 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   `resolve()` in `kernel/include/kickos/slotpool.h`, and `ThreadPool::INDEX_BITS`. The code set
   mirrors POSIX magnitudes AND meanings -- `EPERM` `ESRCH` `EIO` `EBADF` `EAGAIN` `ENOMEM` `EACCES`
   `EFAULT` `EBUSY` `EINVAL` `EMFILE` `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ENOTSUP` `ETIMEDOUT`
+  `ECONNREFUSED`
   `ECANCELED`: `EAGAIN` means a later try may succeed (I2C arbitration loss can follow partial
   transfer), `EBUSY` a resource held
   until something is done about it, `EACCES` a capability missing a right and `EPERM` missing

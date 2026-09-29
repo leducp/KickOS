@@ -265,6 +265,73 @@ namespace kickos
             }
         }
 
+        // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow.
+        // Dropping the LAST WAIT-bearing cap leaves the endpoint with no receiver, so every
+        // parked sender is answered what a new caller would be: -KOS_EAGAIN while a holder of
+        // the handout right remains, -KOS_ECONNREFUSED once none does. Fired exactly once
+        // (recv_holders -> 0), on a voluntary close, an exit teardown and a narrow alike.
+        void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown)
+        {
+            Endpoint* ep = kernel().endpoints.resolve(obj);
+            if (ep == nullptr)
+            {
+                return;
+            }
+            if ((dropped & CAP_HANDOUT) != 0 and ep->handout_holders > 0)
+            {
+                ep->handout_holders--;
+            }
+            if ((dropped & CAP_WAIT) == 0)
+            {
+                return;
+            }
+            // This closer was the conventional server: drop the dangling pointer (else a
+            // later D2 boost writes a reused TCB) and kill any lingering D2 donation. A dying
+            // closer is never rescheduled, so it skips its own recompute (mirrors
+            // mutex_force_unlock).
+            if (ep->server == closer)
+            {
+                endpoint_server_clear(ep);
+                // A live closer self-lowers: give up the CPU if a higher thread is now the
+                // top runnable, mirroring mutex_unlock's no-waiter path.
+                if (not teardown)
+                {
+                    uint8_t const np = thread_effective_prio(closer);
+                    if (np != closer->prio)
+                    {
+                        sched::set_prio(closer, np);
+                        sched::reschedule();
+                    }
+                }
+            }
+            if (ep->recv_holders == 0)
+            {
+                return;
+            }
+            ep->recv_holders--;
+            if (ep->recv_holders != 0)
+            {
+                return;
+            }
+            // Mark console-driver loss before waking the parked senders: inline switching can
+            // run them immediately. Keep the marker if reclaim is deferred while an IRQ thread
+            // still owns the register window. exit_current retries after thread death
+            // releases that window.
+            if (obj == stdout_target())
+            {
+                console_note_driver_death();
+                console_on_driver_death();
+            }
+            int32_t const answer = endpoint_unserved(ep, 0);
+            Thread* s;
+            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
+            {
+                // A SEND_WAIT caller returns via kos_call's call_state clear.
+                s->wait_result = answer;
+                sched::wake(s);
+            }
+        }
+
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
         // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
@@ -293,56 +360,7 @@ namespace kickos
             }
             case CapType::CAP_ENDPOINT:
             {
-                // Dropping the LAST WAIT-bearing cap makes the endpoint dead (no
-                // receiver can ever exist), so EPIPE every parked sender. Fired exactly
-                // once (recv_holders -> 0), on BOTH voluntary close and exit teardown.
-                Endpoint* ep = kernel().endpoints.resolve(e.obj);
-                if (ep != nullptr and (e.rights & CAP_WAIT) != 0)
-                {
-                    // This closer was the conventional server: drop the dangling
-                    // pointer (else a later D2 boost writes a reused TCB) and kill any
-                    // lingering D2 donation. A dying closer is never rescheduled, so it
-                    // skips its own recompute (mirrors mutex_force_unlock).
-                    if (ep->server == closer)
-                    {
-                        endpoint_server_clear(ep);
-                        // A live closer self-lowers: give up the CPU if a higher thread is
-                        // now the top runnable, mirroring mutex_unlock's no-waiter path.
-                        if (not teardown)
-                        {
-                            uint8_t const np = thread_effective_prio(closer);
-                            if (np != closer->prio)
-                            {
-                                sched::set_prio(closer, np);
-                                sched::reschedule();
-                            }
-                        }
-                    }
-                    if (ep->recv_holders > 0)
-                    {
-                        ep->recv_holders--;
-                        if (ep->recv_holders == 0)
-                        {
-                            // Mark console-driver loss before waking EPIPE waiters: inline switching
-                            // can run them immediately. Keep the marker if reclaim is deferred while
-                            // an IRQ thread still owns the register window. exit_current retries after
-                            // thread death releases that window.
-                            if (e.obj == stdout_target())
-                            {
-                                console_note_driver_death();
-                                console_on_driver_death();
-                            }
-                            Thread* s;
-                            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
-                            {
-                                // last receiver gone: EPIPE the parked sender. A SEND_WAIT
-                                // caller returns via kos_call's call_state clear.
-                                s->wait_result = -KOS_EPIPE;
-                                sched::wake(s);
-                            }
-                        }
-                    }
-                }
+                endpoint_rights_dropped(closer, e.obj, e.rights, teardown);
                 return 0; // endpoints NEVER refuse a close, unlike a mutex its owner holds
             }
 #if KICKOS_HAVE_ASPACE
@@ -429,15 +447,17 @@ namespace kickos
     namespace
     {
         // Locate every counter one cap naming `obj_handle` moves: the object-side refcount,
-        // plus recv_holders for a WAIT-bearing endpoint cap. False = nothing to move (a
-        // poolless type, or a handle that no longer resolves). ONE locator serves both
-        // directions, so obj_ref_inc and obj_ref_undo cannot drift apart and cannot move one
-        // endpoint counter without the other.
+        // plus recv_holders for a WAIT-bearing endpoint cap and handout_holders for one
+        // carrying the handout right. False = nothing to move (a poolless type, or a handle
+        // that no longer resolves). ONE locator serves both directions, so obj_ref_inc and
+        // obj_ref_undo cannot drift apart and cannot move one endpoint counter without the
+        // others.
         bool ref_counters(CapType type, int obj_handle, uint8_t rights,
-                          uint8_t** refs, uint8_t** holders)
+                          uint8_t** refs, uint8_t** holders, uint8_t** handouts)
         {
             *refs = nullptr;
             *holders = nullptr;
+            *handouts = nullptr;
             switch (type)
             {
             case CapType::CAP_SEM:
@@ -469,10 +489,15 @@ namespace kickos
                     return false;
                 }
                 *refs = &kernel().endpoint_refs[idx];
-                // A cap COPY carrying CAP_WAIT adds a receiver holder.
+                // A cap COPY carrying CAP_WAIT adds a receiver holder, and one carrying the
+                // handout right a holder that may seat one.
                 if ((rights & CAP_WAIT) != 0)
                 {
                     *holders = &ep->recv_holders;
+                }
+                if ((rights & CAP_HANDOUT) != 0)
+                {
+                    *handouts = &ep->handout_holders;
                 }
                 return true;
             }
@@ -616,14 +641,16 @@ namespace kickos
 #endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
-        if (not ref_counters(type, obj_handle, rights, &refs, &holders))
+        uint8_t* handouts = nullptr;
+        if (not ref_counters(type, obj_handle, rights, &refs, &holders, &handouts))
         {
             return true; // nothing to bump: not a refusal
         }
-        // BOTH ceilings are tested before EITHER counter moves: an endpoint left with
-        // endpoint_refs bumped and recv_holders not (or the reverse) would leak a
-        // receiver into the dead-endpoint gate that no close could ever take back.
-        if (*refs == UINT8_MAX or (holders != nullptr and *holders == UINT8_MAX))
+        // EVERY ceiling is tested before ANY counter moves: an endpoint left with
+        // endpoint_refs bumped and a holder count not (or the reverse) would leak a
+        // holder into the no-receiver answer that no close could ever take back.
+        if (*refs == UINT8_MAX or (holders != nullptr and *holders == UINT8_MAX)
+            or (handouts != nullptr and *handouts == UINT8_MAX))
         {
             return false;
         }
@@ -631,6 +658,10 @@ namespace kickos
         if (holders != nullptr)
         {
             (*holders)++;
+        }
+        if (handouts != nullptr)
+        {
+            (*handouts)++;
         }
         return true;
     }
@@ -646,7 +677,8 @@ namespace kickos
 #endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
-        if (not ref_counters(type, obj_handle, rights, &refs, &holders))
+        uint8_t* handouts = nullptr;
+        if (not ref_counters(type, obj_handle, rights, &refs, &holders, &handouts))
         {
             return;
         }
@@ -661,6 +693,10 @@ namespace kickos
         if (holders != nullptr and *holders > 0)
         {
             (*holders)--;
+        }
+        if (handouts != nullptr and *handouts > 0)
+        {
+            (*handouts)--;
         }
     }
 
@@ -991,6 +1027,15 @@ namespace kickos
         return cap_resolve_e(c, cap_handle, want, need, &err);
     }
 
+    constexpr bool rights_mirror(CapRights kernel, kos_cap_rights abi)
+    {
+        return static_cast<uint32_t>(kernel) == static_cast<uint32_t>(abi);
+    }
+    static_assert(rights_mirror(CAP_WAIT, KOS_CAP_WAIT)
+                      and rights_mirror(CAP_SIGNAL, KOS_CAP_SIGNAL)
+                      and rights_mirror(CAP_TRANSFER, KOS_CAP_TRANSFER)
+                      and rights_mirror(CAP_HANDOUT, KOS_CAP_HANDOUT),
+                  "CapRights and the ABI's kos_cap_rights must number every bit alike");
     constexpr bool auth_mirrors(CapAuthority kernel, kos_cap_authority abi)
     {
         return static_cast<uint32_t>(kernel) == static_cast<uint32_t>(abi);
@@ -1023,21 +1068,33 @@ namespace kickos
         t->authority = auth & CAP_AUTH_ALL;
     }
 
-    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint32_t mask)
+    int cap_narrow(Thread* c, uint32_t cap_handle, uint32_t mask)
     {
-        if (cap_handle != KOS_CAP_AUTHORITY)
+        if (cap_handle == KOS_CAP_AUTHORITY)
         {
-            // Object caps are out of scope: dropping CAP_WAIT from an endpoint cap would
-            // have to run the recv_holders accounting obj_close_protocol does.
-            return -KOS_EINVAL;
+            if (c->authority == 0)
+            {
+                // Nothing to give up. A privileged thread lands here too: its permission
+                // does not come from this word, so narrowing it would be a lie.
+                return -KOS_EBADF;
+            }
+            c->authority = c->authority & mask;
+            return 0;
         }
-        if (c->authority == 0)
+        CapEntry* const e = cap_lookup(c, cap_handle);
+        if (e == nullptr)
         {
-            // Nothing to give up. A privileged thread lands here too: its permission does
-            // not come from this word, so narrowing it would be a lie.
             return -KOS_EBADF;
         }
-        c->authority = c->authority & mask;
+        uint8_t const kept = static_cast<uint8_t>(e->rights & mask);
+        uint8_t const dropped = static_cast<uint8_t>(e->rights & ~kept);
+        e->rights = kept;
+        // An endpoint counts its receivers and its handout holders by right, so a right
+        // given up here leaves them as a close of a cap carrying it would.
+        if (static_cast<CapType>(e->type) == CapType::CAP_ENDPOINT and dropped != 0)
+        {
+            endpoint_rights_dropped(c, e->obj, dropped, /*teardown=*/false);
+        }
         return 0;
     }
 

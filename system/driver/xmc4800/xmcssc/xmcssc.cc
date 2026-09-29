@@ -45,9 +45,9 @@ namespace
     // here, so the kernel chip path drops every byte.
     //
     // NO FAILURE PATH MAY exit: root KEEPS a WAIT-bearing cap on E under KOS_DRV_EP_RETAIN, so
-    // recv_holders never reaches 0 when this thread dies, the last-receiver-gone -KOS_EPIPE
-    // wake never fires, and a client parked in kos_call would block forever. A bring-up refusal
-    // panics instead. serve_loop returns only after an EPIPE, which means no client is parked.
+    // recv_holders never reaches 0 when this thread dies, the last-receiver-gone wake never
+    // fires, and a client parked in kos_call would block forever. A bring-up refusal panics
+    // instead. serve_loop returns only once its receive fails, which means no client is parked.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering

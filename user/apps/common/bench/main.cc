@@ -637,7 +637,7 @@ namespace
         if (not sv.valid() or not cl.valid())
         {
             // A lone peer holds its slot for the whole run unless drained HERE: the server
-            // needs the sentinel, and the caller wakes -KOS_EPIPE only once recv_holders
+            // needs the sentinel, and the caller is woken refused only once recv_holders
             // reaches 0, which is this close.
             unsigned char stop = 0;
             if (sv.valid())

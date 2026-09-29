@@ -23,20 +23,23 @@ enum kos_errno
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
     KOS_EIO = 5,         // device transfer failed, e.g. I2C NACK or a peripheral error
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
-    KOS_EAGAIN = 11,     // retry may succeed; I2C arbitration loss can follow partial transfer
+    KOS_EAGAIN = 11,     // retry may succeed: an endpoint with no receiver yet, which a holder
+                         // of KOS_CAP_HANDOUT may still serve; I2C arbitration loss can follow
+                         // a partial transfer
     KOS_ENOMEM = 12,     // allocation or MPU descriptor capacity exhausted
     KOS_EACCES = 13,     // the capability lacks a right the operation needs
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
     KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
     KOS_EMFILE = 24,     // capability table full; kos_call refers to the server's table
-    KOS_EPIPE = 32,      // endpoint has no receiver (dead), or the last one left while parked
+    KOS_EPIPE = 32,      // the server died holding the request, or a far node could not take it
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall or architecture backend unavailable
     KOS_ENOTIFY = 42,    // IRQ notification without a message; service the notified lines
     KOS_EOVERFLOW = 75,  // a count would exceed its field: a refcount or semaphore at its maximum
     KOS_ENOTSUP = 95,    // valid request unsupported by the device, e.g. frame format or rate
     KOS_ETIMEDOUT = 110, // deadline expired before completion; effects depend on the operation
+    KOS_ECONNREFUSED = 111, // endpoint has no receiver and nothing left that could hand one out
     KOS_EALREADY = 114,  // requested state already present, e.g. an IRQ notification is pending
     KOS_ECANCELED = 125, // wait cancelled; the thread is expected to exit
     KOS_EOWNERDEAD = 130 // mutex acquired after owner death; protected state may be inconsistent

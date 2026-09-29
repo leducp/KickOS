@@ -242,8 +242,8 @@ namespace kickos
             EXPECT_STREQ(trace(), "gap1 gap2 nest-in nest-out outer-live gap3 gap4")
                 << "the inner sweep runs between chunks and the outer one opens another";
             EXPECT_EQ(g_switches, 0u) << "no woken peer outranked either sweeper";
-            EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the outer sweep's first chunk drained";
-            EXPECT_EQ(inner_sender->wait_result, -KOS_EPIPE) << "and the inner sweep did its own";
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the outer sweep's first chunk drained";
+            EXPECT_EQ(inner_sender->wait_result, -KOS_ECONNREFUSED) << "and the inner sweep did its own";
             EXPECT_EQ(m->owner, waiter) << "the cap past the boundary was released after the nest";
             EXPECT_EQ(outer->held_list, nullptr) << "the outer sweep completed its held list";
             EXPECT_FALSE(cap_teardown_active()) << "both sweeps balanced their depth";
@@ -272,7 +272,7 @@ namespace kickos
 
             EXPECT_STREQ(trace(), "gap1 gap2 claim gap3 gap4")
                 << "the claim lands between chunks, with the line cap still to be swept";
-            EXPECT_EQ(sender->wait_result, -KOS_EPIPE)
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED)
                 << "and it is a peer THIS sweep released, not an unrelated thread";
             EXPECT_EQ(g_claim_rc, 0) << "the line was already detached when the peer asked";
             EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth";
@@ -325,7 +325,7 @@ namespace kickos
 
             EXPECT_STREQ(trace(), "gap1 note reclaim gap2 gap3 gap4")
                 << "note and reclaim both land inside the chunk that EPIPEd the sender";
-            EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the sender was released by that arm";
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the sender was released by that arm";
             EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
             EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
         }
@@ -342,7 +342,7 @@ namespace kickos
 
             cap_teardown(outer);
 
-            EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the endpoint arm still ran";
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the endpoint arm still ran";
             EXPECT_EQ(g_console_noted, 0u) << "nothing was published, so nothing was noted";
             EXPECT_EQ(g_console_reclaimed, 0u) << "and nothing was reclaimed";
         }
@@ -415,7 +415,7 @@ namespace kickos
 
             EXPECT_STREQ(trace(), "close note reclaim switch1>3")
                 << "the console is decided before the sender the same call releases can run";
-            EXPECT_EQ(sender->wait_result, -KOS_EPIPE)
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED)
                 << "and it is a sender THIS close released, not an unrelated thread";
             EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
             EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";

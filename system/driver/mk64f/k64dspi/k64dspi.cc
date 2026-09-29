@@ -54,7 +54,7 @@ namespace
             kickos::emit("[k64dspi] ERROR: bus bring-up refused, DSPI0 unreachable\n");
             // NO exit HERE: root keeps a WAIT-bearing cap on the endpoint under
             // KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies, the
-            // last-receiver-gone -KOS_EPIPE wake never fires, and a client parked in kos_call
+            // last-receiver-gone wake never fires, and a client parked in kos_call
             // would block forever.
             kos_panic("[k64dspi] bus bring-up refused (see the ERROR line above)");
         }

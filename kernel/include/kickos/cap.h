@@ -78,7 +78,7 @@ namespace kickos
     // truncate the thread generation.
     static constexpr int KCAP_REPLY_SEQ_BITS = 8;
     static constexpr int KCAP_REPLY_SEQ_LO_BITS = 4; // spare beside CapType's 4
-    static constexpr int KCAP_REPLY_SEQ_HI_BITS = 4; // spare beside CapRights' 3
+    static constexpr int KCAP_REPLY_SEQ_HI_BITS = 4; // spare beside CapRights' 4
     static_assert(KCAP_REPLY_SEQ_LO_BITS + KCAP_REPLY_SEQ_HI_BITS == KCAP_REPLY_SEQ_BITS,
                   "the two halves of the packed call sequence must exhaust it");
     // What a LOCAL arm may ask cap_reply_thread to compare, which is narrower than the whole
@@ -87,7 +87,9 @@ namespace kickos
     static constexpr uint32_t KCAP_REPLY_SEQ_MASK = (1u << KCAP_REPLY_SEQ_BITS) - 1u;
 
     static constexpr int KCAP_TYPE_BITS = 4;
-    static constexpr int KCAP_RIGHTS_BITS = 3;
+    static constexpr int KCAP_RIGHTS_BITS = 4;
+    static_assert(KCAP_RIGHTS_BITS + KCAP_REPLY_SEQ_HI_BITS == 8,
+                  "the rights and the high half of the call sequence must fill exactly one byte");
     static_assert(KCAP_TYPE_BITS + KCAP_REPLY_SEQ_LO_BITS == 8,
                   "type plus its share of the call sequence must fill exactly one byte");
 
@@ -129,11 +131,14 @@ namespace kickos
     {
         CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait; endpoint recv
         CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
-        CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
+        CAP_TRANSFER = 1 << 2, // may be delegated into a child table (section 6)
+        // Endpoint only: a delegation may seat CAP_WAIT from this cap without it holding
+        // CAP_WAIT, so the holder keeps an endpoint served-to-be without being a receiver.
+        CAP_HANDOUT = 1 << 3
     };
     // The only place the full set is written. A bitmask has no sentinel, so a right left out
     // of this mask is one the assert below cannot see.
-    static constexpr uint8_t CAP_RIGHTS_ALL = CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER;
+    static constexpr uint8_t CAP_RIGHTS_ALL = CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT;
     static_assert(CAP_RIGHTS_ALL < (1u << KCAP_RIGHTS_BITS),
                   "a rights bit no longer fits the entry's rights field: the call sequence "
                   "packed beside it would be overwritten");
@@ -798,11 +803,12 @@ namespace kickos
     // writer. auth == 0 clears it. Caller holds IrqLock.
     void cap_seat_authority(Thread* t, uint32_t auth);
 
-    // Narrow thread c's authority word in place: auth &= mask, never widening (the same
-    // rule a cap_grant mask and kos_thread_params::authority obey). `cap_handle` must be
-    // KOS_CAP_AUTHORITY. Returns 0, -KOS_EBADF (c holds no authority), or -KOS_EINVAL
-    // (the handle names something else). Caller holds IrqLock.
-    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint32_t mask);
+    // Narrow in place, never widening (the rule a cap_grant mask and
+    // kos_thread_params::authority obey): thread c's authority word where `cap_handle` is
+    // KOS_CAP_AUTHORITY, the rights of the cap it names otherwise. Dropping CAP_WAIT or
+    // CAP_HANDOUT from an endpoint cap moves its holder counts as a close would. Returns 0 or
+    // -KOS_EBADF (c holds no authority, or the handle names no cap). Caller holds IrqLock.
+    int cap_narrow(Thread* c, uint32_t cap_handle, uint32_t mask);
 
 #if KICKOS_AMP_NODE
     // Mint the one-shot reply capability for a caller in ANOTHER kernel. `record` names an AMP

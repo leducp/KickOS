@@ -9,6 +9,7 @@
 #include <kickos/arch/arch.h> // KICKOS_AMP_NODE
 #include <kickos/config.h> // KICKOS_MAX_ENDPOINTS bounds the served-chain ref below
 #include <kickos/list.h>
+#include <kickos/sys/errno.h> // KOS_EAGAIN, KOS_ECONNREFUSED
 
 namespace kickos
 {
@@ -65,6 +66,10 @@ namespace kickos
         // dead-endpoint check and fires EPIPE at 0. Shares endpoint_refs' uint8_t ceiling
         // and refusal, because obj_ref_inc tests both before moving either.
         uint8_t recv_holders = 0;
+        // Live caps carrying CAP_HANDOUT: holders that may seat a receiver without being one.
+        // With no receiver, a caller answers -KOS_EAGAIN while this is nonzero and
+        // -KOS_ECONNREFUSED once it is not. Rides the padding byte before next_served.
+        uint8_t handout_holders = 0;
         // Intrusive link in `server`'s served-endpoint chain, or EP_SERVED_NONE.
         // Non-sentinel exactly while `server` is non-null.
         uint16_t next_served = EP_SERVED_NONE;
@@ -161,10 +166,22 @@ namespace kickos
 
 #endif
 
+    // What a caller no receiver will take is answered: -KOS_EAGAIN while a receiver beyond
+    // the `leaving` ones already on their way out, or a holder of the handout right, remains,
+    // since a retry can meet it; -KOS_ECONNREFUSED once neither does.
+    inline int32_t endpoint_unserved(Endpoint const* e, unsigned leaving)
+    {
+        if (e->recv_holders > leaving or e->handout_holders > 0)
+        {
+            return -KOS_EAGAIN;
+        }
+        return -KOS_ECONNREFUSED;
+    }
+
 #if KICKOS_AMP_NODE
-    constexpr unsigned EP_NARROW_BYTES = 5; // recv_holders, next_served, far_node, far_port
+    constexpr unsigned EP_NARROW_BYTES = 6; // the two holder counts, next_served, far_node, far_port
 #else
-    constexpr unsigned EP_NARROW_BYTES = 3; // recv_holders, next_served
+    constexpr unsigned EP_NARROW_BYTES = 4; // the two holder counts, next_served
 #endif
 
     // ONE guard over BOTH arms: a field added under the AMP guard costs its size in .bss on

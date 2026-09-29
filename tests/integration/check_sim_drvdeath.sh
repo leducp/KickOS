@@ -18,7 +18,7 @@
 # The assertion is a PAIR from the SAME kos_print call site:
 #   BEFORE the death: absent  (dropped; proves the handover really happened)
 #   AFTER  the death: present (the reclaimed polled route carries it)
-# Either half alone is passable by a regression. The app also requires -KOS_EPIPE from a
+# Either half alone is passable by a regression. The app also requires -KOS_ECONNREFUSED from a
 # send, so no timing assumption stands in for proof the driver is gone.
 #
 # What this witnesses is the OWNERSHIP STATE MACHINE. The sim's "device" is host fd 1, with
@@ -91,7 +91,7 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 
 # ---------------------------------------------------------------------------------
 # Case 2: the driver dies BEFORE it ever receives, i.e. bring-up fails. The probe notices
-# because a rendezvous on a receiver-less endpoint is -KOS_EPIPE, the death gives the console
+# because a rendezvous on a receiver-less endpoint is refused, the death gives the console
 # back so the service can REPORT it, and init returns nonzero so no app runs on a dark
 # console. Without the probe the service returns 0 and the app runs against a console nothing
 # is serving.

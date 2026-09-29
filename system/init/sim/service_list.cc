@@ -302,9 +302,10 @@ extern "C"
     //
     // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver
     // parked in kos_recv when the last SIGNAL holder goes (only the mirror case exists,
-    // recv_holders -> 0 EPIPEing parked SENDERS), so this loop parks forever unless
-    // KICKOS_SIMCON_EXIT_AFTER bounds it. kos_cap_narrow cannot express "keep the endpoint
-    // cap but drop WAIT" either, so root's WAIT-bearing cap keeps the mirror wake away too.
+    // recv_holders -> 0 answering parked SENDERS -KOS_EAGAIN or -KOS_ECONNREFUSED), so this
+    // loop parks forever unless KICKOS_SIMCON_EXIT_AFTER bounds it. Root keeps its
+    // WAIT-bearing cap, which keeps the mirror wake away too; kos_cap_narrow could drop WAIT
+    // and keep KOS_CAP_HANDOUT, and this service does not.
     void simconsole_driver(void*)
     {
         kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");
@@ -312,7 +313,7 @@ extern "C"
 
 #if defined(KICKOS_SIMCON_DIE_AT_BRINGUP) && KICKOS_SIMCON_DIE_AT_BRINGUP
         // A driver whose bring-up fails on a real chip: die BEFORE ever receiving. The
-        // service's handover probe must then see -KOS_EPIPE and report it, which is only
+        // service's handover probe must then see -KOS_ECONNREFUSED and report it, which is only
         // possible because the death reclaimed the console.
         wire_puts("[simcon] driver dying during bring-up\n");
         kos_exit(1);
