@@ -833,6 +833,12 @@ void kickos_armv8a_ttbr0_to_boot(void)
     arch_irq_restore(s);
 }
 
+// TTBR0 holds the whole user half, so a frame is reached at its physical address.
+uintptr_t arch_aspace_user_offset(void)
+{
+    return 0;
+}
+
 struct arch_aspace* arch_aspace_boot(void)
 {
     arch_irq_state_t const s = arch_irq_save();

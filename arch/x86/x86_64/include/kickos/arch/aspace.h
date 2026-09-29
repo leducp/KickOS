@@ -65,6 +65,16 @@ namespace kickos::x86_64
     // only.
     uint64_t aspace_leaf_desc(struct arch_aspace* space, uintptr_t va);
 
+    // Relocate the app window a second time, for the user offset: every absolute word stored in
+    // it and aimed into it gains arch_aspace_user_offset. Once, from the kernel's landing,
+    // after aspace_init and before the first space is seeded; refuses the boot on a record it
+    // cannot place (apprel_x86_64.cc).
+    void app_relocate(void);
+    // Where a task reaches memory, minus the kernel's view of it: the user offset once
+    // app_relocate has run in the kernel image, zero in a bring-up image, whose ring-3 probes
+    // run where the loader put them and whose stacks are the kernel's view itself.
+    uintptr_t user_alias_offset(void);
+
     // The identifier the machine offers, in bits, and whether it offers the instruction that
     // invalidates by one. A machine can expose the second without the first.
     unsigned aspace_tag_bits(void);

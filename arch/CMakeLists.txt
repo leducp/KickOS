@@ -50,6 +50,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_irq_route_default.cc
   common/arch_fault_is_user_thread_default.cc
   common/arch_fault_redirect_to_exit_default.cc
+  common/arch_frame_pool_bounds_default.cc
   common/arch_periph_clock_hz_default.cc
   common/arch_periph_enable_default.cc
   common/arch_periph_reg_write_default.cc
@@ -57,7 +58,8 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/kfault_terminate_default.cc)
 # arch_reboot must be absent from a production image, fallback included.
 if(KICKOS_ENABLE_SELFTEST)
-  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
+  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc
+    common/arch_cpu_block_addr_default.cc)
 endif()
 if(KICKOS_FAULT_ISOLATION)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON

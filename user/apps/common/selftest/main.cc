@@ -8854,6 +8854,7 @@ int main(int, char**)
     TAP_ADD("aspace_acquire_balance", t_aspace_acquire_balance);
     TAP_ADD("map_tlbi_elided", t_map_tlbi_elided);
     TAP_ADD("aspace_active_cores", t_aspace_active_cores);
+    TAP_ADD("app_pointers_relocated", t_app_pointers_relocated);
     TAP_ADD("recv_buf_unmapped", t_recv_buf_unmapped);
     TAP_ADD("frame_run_slot_recycle", t_frame_run_slot_recycle);
     TAP_ADD("call_reply_undisclosed", t_call_reply_undisclosed);
@@ -8898,6 +8899,7 @@ int main(int, char**)
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task);
+    TAP_ADD("kernel_state_unreachable", t_kernel_state_unreachable);
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
     TAP_ADD("amp_window", t_amp_window);

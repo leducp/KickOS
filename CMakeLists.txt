@@ -67,6 +67,12 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     endif()
     unset(_kcfg_type)
     get_property(_kcfg_type CACHE "${_kcfg_v}" PROPERTY TYPE)
+    # INTERNAL entries are the build's own derived state, never a request. Offering them put
+    # a previous configure's value, a $<TARGET_OBJECTS:> of a target since deleted among
+    # them, on the defconfig target's command line before the build had rewritten it.
+    if(_kcfg_type STREQUAL "INTERNAL")
+      continue()
+    endif()
     set(_kcfg_shape "offer")
     if(NOT DEFINED _kcfg_type)
       set(_kcfg_val "${${_kcfg_v}}")

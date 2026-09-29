@@ -20,6 +20,8 @@
 # Refused before each link: an unrelaxed global-offset-table load is a CLEAN link and a fault
 # much later (see the script's own header).
 set(KICKOS_NO_GOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-no-got.sh")
+# The relocation copy an application image carries for the boot (tools/x86_64-krel.sh).
+set(KICKOS_X86_64_KREL "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-krel.sh")
 
 set(KICKOS_X86_64_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64")
 set(KICKOS_Q35_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/chip/q35")
@@ -346,15 +348,25 @@ add_custom_target(x3-run
 # The guard's own positive control, registered here because the guard is this board's alone.
 # AR is not in the toolchain file's find_program set, CMake resolving it itself.
 if(KICKOS_BUILD_TESTS)
-  # THE ADDRESS-SPACE WITNESS AS A CTEST CASE, and it is the only arm this board has over its
-  # own map editor. The chip selects no HAS_ASPACE, so an application image compiles no caller
-  # of arch_aspace_map and links kickos_frame_alloc from nopool_x86_64.cc, which panics: the
-  # map path, its out-of-frames unwind and the two whole-table helpers that unwind reaches are
-  # in every image and reachable from nothing in it. X5 carries a frame pool of its own and an
-  # allocation-failure injector, so its refusal arms are what drive them.
-  #
-  # Without this registration, mutating either helper to a no-op changes nothing this board's
-  # suite reports.
+  # The app window's link rules over every application image this tree links: no app
+  # relocation into the kernel's half, one DIR64 record per absolute word in the image, a kernel
+  # reference to an app symbol only where the allowlist says what the site does with it, and
+  # no script symbol re-based by a dropped section (docs/design-m10-kernel-share.md 1.3).
+  add_test(NAME x86_64_app_split
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
+            --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}" --nm "${CMAKE_NM}"
+            --allowlist "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/x86_64_apphalf_allowlist.txt"
+            --tree "${PROJECT_BINARY_DIR}/user")
+  kickos_host_gate(x86_64_app_split TIMEOUT 120)
+  add_test(NAME x86_64_app_split_controls
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
+            --controls)
+  kickos_host_gate(x86_64_app_split_controls)
+
+  # THE ADDRESS-SPACE WITNESS AS A CTEST CASE, beside the family's own arms the selftest image
+  # runs on this board. X5 carries a frame pool of its own and an allocation-failure injector,
+  # so its refusal arms reach the map path's out-of-frames unwind and the two whole-table
+  # helpers it calls, which no application image drives on demand.
   add_test(NAME x86_64_x5_aspace
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
             "${KICKOS_X5_IMAGE}" "${PROJECT_BINARY_DIR}/x5run-ctest")
@@ -456,19 +468,8 @@ target_include_directories(kickos_x86_64_landed_kernel PRIVATE ${KICKOS_X86_64_I
   "${CMAKE_CURRENT_SOURCE_DIR}/kernel/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/system/include")
 
-# The frame-pool decline, on the application-image link line and nowhere else. The chip's
-# arch_init adopts the live translation regime, so the map editor is in every link carrying
-# the chip archive, while kernel/mem/frame_pool.cc is compiled only under KICKOS_HAVE_ASPACE.
-# Conditional, because a chip that later selects HAS_ASPACE gets the kernel's real definitions
-# and a second pair here would be a duplicate symbol.
-set(_kos_x86_64_app_objects "")
-if(NOT KICKOS_HAVE_ASPACE)
-  add_library(kickos_x86_64_nopool OBJECT "${KICKOS_X86_64_DIR}/nopool_x86_64.cc")
-  kickos_apply_freestanding(kickos_x86_64_nopool)
-  target_include_directories(kickos_x86_64_nopool PRIVATE ${KICKOS_X86_64_INCLUDES})
-  list(APPEND _kos_x86_64_app_objects "$<TARGET_OBJECTS:kickos_x86_64_nopool>")
-endif()
-set(KICKOS_X86_64_APP_OBJECTS "${_kos_x86_64_app_objects}" CACHE INTERNAL
+# No extra objects: the frame pool is the kernel's (kernel/mem/frame_pool.cc), q35 translating.
+set(KICKOS_X86_64_APP_OBJECTS "" CACHE INTERNAL
     "Extra objects every x86_64 application image links, beside the app's own")
 
 # The link group, captured at include time and comma-split into a real list: $<LINK_GROUP:>
@@ -484,22 +485,12 @@ set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
 # built out of tree links these three exactly as an in-tree one does. install(TARGETS OBJECTS)
 # puts them in KickOSTargets as IMPORTED_OBJECTS, which is what makes $<TARGET_OBJECTS:> above
 # resolve in a consumer.
-#
-# RAW OBJECTS AND NOT AN ARCHIVE. An archive ahead of the group is scanned before the group is,
-# so kickos_x86_64_nopool's frame-pool decline would not yet be undefined and no member would
-# be extracted; the link then fails undefined at the end. The archive form is right for the
-# arch and chip halves, where a fallback TU sits beside the chip's own definition and member
-# order resolves it, and wrong here.
-set(_kos_x86_64_install_objects kickos_x86_64_boot kickos_x86_64_boot_ap
-  kickos_x86_64_landed_kernel)
-if(TARGET kickos_x86_64_nopool)
-  list(APPEND _kos_x86_64_install_objects kickos_x86_64_nopool)
-endif()
-install(TARGETS ${_kos_x86_64_install_objects} EXPORT KickOSTargets
+install(TARGETS kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_kernel
+        EXPORT KickOSTargets
         OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
 
 # Beside the module that names them: it reads both list-dir-relative out of a package.
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake"
               "${KICKOS_X86_64_PE_SCRIPT}"
         DESTINATION "${KICKOS_CMAKE_DIR}")
-install(PROGRAMS "${KICKOS_NO_GOT}" DESTINATION "${KICKOS_CMAKE_DIR}")
+install(PROGRAMS "${KICKOS_NO_GOT}" "${KICKOS_X86_64_KREL}" DESTINATION "${KICKOS_CMAKE_DIR}")

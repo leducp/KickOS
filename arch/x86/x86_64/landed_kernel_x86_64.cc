@@ -9,6 +9,7 @@
 #include <kickos/chip_q35.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/aspace.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -38,6 +39,8 @@ namespace
 extern "C" [[noreturn]] void kickos_x86_64_kernel_main(void)
 {
     arch_init();
+    // After aspace_init has measured the user offset, and before kmain seeds the first space.
+    kickos::x86_64::app_relocate();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
 }

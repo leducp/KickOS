@@ -626,6 +626,12 @@ uint64_t arch_aspace_model(void);
 // process space so the translation register cannot point at a freed root.
 struct arch_aspace* arch_aspace_boot(void);
 
+// The user offset: a task reaches a frame the kernel hands it, and the app window, at the
+// physical address plus this constant. Zero where the user half can hold physical addresses;
+// nonzero where the kernel's own mapping occupies them (x86_64, whose firmware identity map
+// is kernel half). Fixed from the first space's creation on.
+uintptr_t arch_aspace_user_offset(void);
+
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Map-maintenance counters since boot:
 // bits 63..32: issued page invalidations
@@ -637,6 +643,10 @@ uint64_t arch_aspace_tlbi_counts(void);
 // Bit c is set when core c uses this root. Return zero for null. Backends
 // without per-core roots use bit zero for the active space.
 uint32_t arch_aspace_active_cores(struct arch_aspace* space);
+
+// The calling core's kernel-private per-core block, which the trap entry reaches before any
+// kernel stack is loaded. Zero where the arch keeps none apart from the kernel's own data.
+uintptr_t arch_cpu_block_addr(void);
 #endif
 
 // Cache maintenance for noncoherent observers over [addr, addr + bytes).
@@ -874,6 +884,11 @@ uint32_t kickos_amp_node_core(uint32_t node);
 // frame pools. Available with KICKOS_HAVE_ASPACE.
 arch_phys_addr_t kickos_frame_alloc(void);
 void kickos_frame_free(arch_phys_addr_t frame);
+
+// The frame pool's kernel addresses, [*base, *top). The default reads the chip linker
+// script's carve (__kickos_frame_pool_start/_end); a chip whose pool is known only at boot
+// answers it itself. Read once, by frame_pool_init.
+void arch_frame_pool_bounds(uintptr_t* base, uintptr_t* top);
 
 // Try fault isolation before printing. True means the handler must return
 // through the redirected frame to kickos_thread_fault_exit; false means panic.

@@ -84,6 +84,10 @@ namespace kickos
 
     // Whether an arming is still waiting for its attempt.
     bool frame_pool_fail_armed();
+
+    // The physical frames the pool describes, [*lo, *hi), bitmap included: what a probe that
+    // maps an output it must not own keeps clear of.
+    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi);
 #endif
 }
 

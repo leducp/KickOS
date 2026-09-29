@@ -96,12 +96,19 @@ namespace kickos
         unsigned char* const volatile g_app_load_delta = __kickos_app_load_delta;
         unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
 
-        // The frame the loader placed an app virtual address in.
+        // The frame the loader placed an app virtual address in. The linker states the
+        // window where the loader puts it; a task reaches it at that address plus the user
+        // offset.
         arch_phys_addr_t app_pa(uintptr_t va)
         {
-            return static_cast<arch_phys_addr_t>(va)
+            return aspace_frame_of(va)
                    + static_cast<arch_phys_addr_t>(
                        reinterpret_cast<uintptr_t>(g_app_load_delta));
+        }
+
+        uintptr_t app_va(unsigned char const* linked)
+        {
+            return reinterpret_cast<uintptr_t>(linked) + arch_aspace_user_offset();
         }
 
         uintptr_t page_down(uintptr_t a, size_t g)
@@ -122,8 +129,8 @@ namespace kickos
 
         Extent extent_of(unsigned char const* lo, unsigned char const* hi, size_t g)
         {
-            uintptr_t const a = reinterpret_cast<uintptr_t>(lo);
-            uintptr_t const b = reinterpret_cast<uintptr_t>(hi);
+            uintptr_t const a = app_va(lo);
+            uintptr_t const b = app_va(hi);
             if (b <= a)
             {
                 return Extent{0, 0};
@@ -146,14 +153,14 @@ namespace kickos
         // Equal bounds indicate an absent window.
         bool in_app_image(uintptr_t p)
         {
-            uintptr_t const rom_lo = reinterpret_cast<uintptr_t>(g_app_rom_lo);
-            uintptr_t const rom_hi = reinterpret_cast<uintptr_t>(g_app_rom_hi);
+            uintptr_t const rom_lo = app_va(g_app_rom_lo);
+            uintptr_t const rom_hi = app_va(g_app_rom_hi);
             if (p >= rom_lo and p < rom_hi)
             {
                 return true;
             }
-            uintptr_t const sram_lo = reinterpret_cast<uintptr_t>(g_app_sram_lo);
-            uintptr_t const sram_hi = reinterpret_cast<uintptr_t>(g_app_sram_hi);
+            uintptr_t const sram_lo = app_va(g_app_sram_lo);
+            uintptr_t const sram_hi = app_va(g_app_sram_hi);
             return p >= sram_lo and p < sram_hi;
         }
 
@@ -389,7 +396,7 @@ namespace kickos
         {
             return 0;
         }
-        uintptr_t const va = static_cast<uintptr_t>(run);
+        uintptr_t const va = aspace_user_va(run);
         if (not ranges->reserve(va, pages, 0))
         {
             frame_pool_free_run(run, pages, g);
@@ -424,7 +431,7 @@ namespace kickos
         }
         uintptr_t const b = e->base;
         size_t const pages = e->pages;
-        if (arch_aspace_map(space, b, static_cast<arch_phys_addr_t>(b), pages, rights, type)
+        if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
             != ARCH_ASPACE_OK)
         {
             return -KOS_ENOMEM;
@@ -553,7 +560,7 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        if (arch_aspace_map(space, b, static_cast<arch_phys_addr_t>(b), pages, rights, type)
+        if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
             != ARCH_ASPACE_OK)
         {
             (void)ranges->release(b);
@@ -634,7 +641,7 @@ namespace kickos
             {
                 // No leaf points at these, so the destroy walk cannot see them; the image is
                 // excluded, its pages not being the pool's to take back.
-                frame_pool_free_run(static_cast<arch_phys_addr_t>(e->base), e->pages, g);
+                frame_pool_free_run(aspace_frame_of(e->base), e->pages, g);
             }
         }
         arch_aspace_destroy(space);

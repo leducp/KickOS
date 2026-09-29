@@ -14,9 +14,7 @@
 
 extern "C"
 {
-    // Defined by the chip linker script; a HAS_ASPACE chip that carves no pool fails the link.
-    extern unsigned char __kickos_frame_pool_start[];
-    extern unsigned char __kickos_frame_pool_end[];
+    // Defined by the chip linker script; a HAS_ASPACE chip that states none fails the link.
     extern unsigned char __kickos_frame_pool_delta[];
 }
 
@@ -26,6 +24,10 @@ namespace kickos
     {
         FrameAllocator g_frames;
         size_t g_refused = 0;
+#if defined(KICKOS_ENABLE_SELFTEST)
+        uintptr_t g_base = 0;
+        uintptr_t g_top = 0;
+#endif
 
         // volatile keeps this a relocated word; a plain constant folds back into each caller.
         unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
@@ -53,8 +55,13 @@ namespace kickos
 
     bool frame_pool_init()
     {
-        uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_frame_pool_start);
-        uintptr_t const top = reinterpret_cast<uintptr_t>(__kickos_frame_pool_end);
+        uintptr_t base = 0;
+        uintptr_t top = 0;
+        arch_frame_pool_bounds(&base, &top);
+#if defined(KICKOS_ENABLE_SELFTEST)
+        g_base = base;
+        g_top = top;
+#endif
         if (top <= base)
         {
             return false;
@@ -84,6 +91,12 @@ namespace kickos
     {
         IrqLock lock;
         g_fail_in = nth;
+    }
+
+    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi)
+    {
+        *lo = static_cast<arch_phys_addr_t>(g_base - pool_delta());
+        *hi = static_cast<arch_phys_addr_t>(g_top - pool_delta());
     }
 
     bool frame_pool_fail_armed()

@@ -36,7 +36,12 @@ int kickos_app_main(int argc, char** argv);
 //
 // The banner prints these bytes as they stand, so the layout is C's own spelling:
 // "Mmm dd yyyy HH:MM:SS", with the zone appended when the build supplies one.
-extern char const kickos_app_build_time[] __attribute__((weak));
+//
+// Only the DEFINITION below is weak. The kernel's reference states its own linkage
+// (KICKOS_LINK_OPTIONAL), and a weak one here would override it: ld -m i386pep emits no base
+// relocation for a weak reference to a weak definition, which leaves the kernel's pointer at
+// the link address whenever firmware loads the image elsewhere.
+extern char const kickos_app_build_time[];
 
 // The two languages spell a PUBLIC const definition differently: `extern` on a definition with an
 // initialiser is a C diagnostic under -Wextra, and without `extern` a const at namespace scope is

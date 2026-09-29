@@ -129,7 +129,11 @@ enum kos_aspace_op
     KOS_ASPACE_OP_RELEASE_RUNS = 51,
     // () -> threads that have not finished exiting, idle excepted. A thread returns its stack
     // frames and, as its task's last member, its space before it leaves this count.
-    KOS_ASPACE_OP_THREADS_LIVE = 52
+    KOS_ASPACE_OP_THREADS_LIVE = 52,
+    // (which) -> the kernel address of a structure ring 3 must not reach: 0 is the caller's
+    // own translation root, 1 the calling core's per-core block. Zero where the arch keeps no
+    // such structure.
+    KOS_ASPACE_OP_KERNEL_STATE = 53
 };
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect

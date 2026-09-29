@@ -102,6 +102,10 @@ win_sym() { # <symfile> <name-ere> -> the one hex address on stdout, non-zero if
                            print last }' "$1"
 }
 
+# An input is an archive member, `lib.a(member)`, or a plain object where a board links its
+# kernel-side boot code unarchived (x86_64's entry and landing objects); a plain object is named
+# by its own basename.
+#
 # Field shape in the memory-map region, both forms ld emits:
 #   " .data.SystemCoreClock            0x1fff0038  0x4 arch/libkickos_chip_mk64f.a(x.obj)"
 #   " .data._ZN...longname\n                       0x1fff0000 0x20 kernel/libkickos_kernel.a(y.obj)"
@@ -138,7 +142,7 @@ BEGIN {
 !inmap && $0 ~ heading { inmap = 1; next }
 !inmap { next }
 NF == 1 && $1 ~ /^([.*]|COMMON$)/ { sec = $1; next }
-NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && $NF ~ /\.a\(/ {
+NF >= 3 && $(NF - 2) ~ /^0x/ && $(NF - 1) ~ /^0x/ && ($NF ~ /\.a\(/ || $NF ~ /\.o(bj)?$/) {
     if (NF >= 4) { sec = $1 }
     member = $NF
     split(member, p, "(")
@@ -176,7 +180,7 @@ END {
 # only, and every expected count is exact.
 CTL_LO=0x2000
 CTL_HI=0x3000
-CTL_NAMES=' libkickos_kernel.a libkickos_arch_ctl.a'
+CTL_NAMES=' libkickos_kernel.a libkickos_arch_ctl.a landed.cc.obj'
 CTL_HEADING='Linker script and memory map'
 
 ctl_scan() { # <map> [heading] [nonalloc] [attr] [placed]
@@ -216,6 +220,7 @@ COMMON
                 0x00002fff        0x1 kernel/libkickos_kernel.a(edge.cc.obj)
  .apptrap.veneer 0x00002600       0x8 kernel/libkickos_kernel.a(trap.cc.obj)
  .text.apptrap  0x00002610        0x8 kernel/libkickos_kernel.a(trap.cc.obj)
+ .data.boot_object 0x00002800      0x10 CMakeFiles/boot.dir/landed.cc.obj
 EOF
 
 # Every line here is the same-line shape, so the per-control loop below can read one at a
@@ -232,6 +237,7 @@ cat > "$TMP/ctl.neg.map" <<'EOF'
  .data.below_window 0x00000100     0x10 kernel/libkickos_kernel.a(edge.cc.obj)
  .data.empty_inside 0x00002500      0x0 kernel/libkickos_kernel.a(edge.cc.obj)
  .apptrap       0x00002700        0x8 kernel/libkickos_arch_ctl.a(switch.S.obj)
+ .data.app_object 0x00002810       0x10 CMakeFiles/app.dir/main.cc.obj
 EOF
 
 # ctl.neg.map carries no heading, so that the per-control loop below reads records only. A
@@ -240,7 +246,7 @@ printf '%s\n' "$CTL_HEADING" > "$TMP/ctl.neg.full.map"
 cat "$TMP/ctl.neg.map" >> "$TMP/ctl.neg.full.map"
 
 POS="$(ctl_leaks "$TMP/ctl.pos.map")"
-[ "$POS" -eq 8 ] || fail "the map scan found $POS of 8 planted leaks; it would miss a real one"
+[ "$POS" -eq 9 ] || fail "the map scan found $POS of 9 planted leaks; it would miss a real one"
 
 # The SECTION NAME of each leak, not just the count. A scan that stopped reading the bare
 # name line above a wrapped placement still reports the leak, carrying the PREVIOUS record's
@@ -250,6 +256,7 @@ cat > "$TMP/ctl.secs.want" <<'EOF'
 .apptrap.veneer
 .bss._ZN6kickos7wrappedE
 .bss.g_attributes
+.data.boot_object
 .data.ends_past_lo
 .data.same_line
 .data.starts_below_hi
@@ -279,7 +286,7 @@ while IFS= read -r line; do
     n="$(ctl_leaks "$TMP/ctl.one.map" | tr -d ' ')"
     [ "$n" -eq 0 ] || fail "negative control $i reports a leak: $line"
 done < "$TMP/ctl.neg.map"
-[ "$i" -eq 11 ] || fail "$i negative control(s) ran, expected 11"
+[ "$i" -eq 12 ] || fail "$i negative control(s) ran, expected 12"
 
 # The exempted placement must be COUNTED as exempt and not merely absent from the leaks: a
 # clause that dropped the record before the tally would read the same way here.
@@ -298,16 +305,16 @@ mutate() { # <what> <expect> <map> [heading] [nonalloc] [attr] [placed]
       $_got leak(s) of $1, expected $_want; the controls for it are not near misses and prove nothing"
 }
 # A heading matching every line puts the scan inside the map region from line 1, so the
-# pre-heading record joins the eight.
-mutate "heading"  9 "$TMP/ctl.pos.map" '^'
+# pre-heading record joins the nine.
+mutate "heading"  10 "$TMP/ctl.pos.map" '^'
 mutate "nonalloc" 2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NEVER"
 mutate "attr"     2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NONALLOC_ERE" "$NEVER"
 mutate "placed"   1 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NONALLOC_ERE" "$ATTR_ERE" "$NEVER"
 # With the attributes test UNANCHORED the planted .bss.g_attributes leak is exempted, so the
 # count drops instead of rising.
-mutate "attr-anchor" 7 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" 'attributes$'
+mutate "attr-anchor" 8 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" 'attributes$'
 # With the placed test UNANCHORED both near misses are exempted with it.
-mutate "placed-anchor" 6 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" "$ATTR_ERE" 'apptrap'
+mutate "placed-anchor" 7 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" "$ATTR_ERE" 'apptrap'
 
 # The tallies the verdict is read off, and the two refusals that keep an unusable window or
 # an unmatched archive from reading clean.
@@ -316,7 +323,9 @@ printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_kernel.a 8 6' \
     || fail "the placement tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^SEEN ')"
 printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_arch_ctl.a 0 0' \
     || fail "an archive with no placement did not report a zero tally, so a basename mismatch would read clean"
-printf '%s\n' "$CTL_V" | grep -qxF 'TOTAL 8 8 0' \
+printf '%s\n' "$CTL_V" | grep -qxF 'SEEN landed.cc.obj 1 1' \
+    || fail "a plain object's placement was not tallied under its basename: $(printf '%s\n' "$CTL_V" | grep '^SEEN ')"
+printf '%s\n' "$CTL_V" | grep -qxF 'TOTAL 9 9 0' \
     || fail "the grand tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^TOTAL ')"
 map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0x3000 0x2000 "$MAP_HEADING" "$NONALLOC_ERE" \
     "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" | grep -q '^BADWIN ' \

@@ -5,6 +5,7 @@
 
 #if KICKOS_HAVE_ASPACE
 
+#include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/vrange.h>
@@ -47,11 +48,11 @@ namespace kickos
         // The low frame of the run is the guard and is never mapped. The stack starts one
         // granule above it, so the first store below the stack's base has no translation.
         arch_phys_addr_t const stack = run + static_cast<arch_phys_addr_t>(g);
-        uintptr_t const va = static_cast<uintptr_t>(stack);
+        uintptr_t const va = aspace_user_va(stack);
         // BEFORE THE MAP, and over the guard as well as the stack: the record is what refuses
         // a later reservation here, and reserving after mapping would leave a mapping standing
         // on a refusal. Keyed on the RUN's base, which is the guard page.
-        if (not ranges->reserve(static_cast<uintptr_t>(run), run_pages(pages), VR_USTACK))
+        if (not ranges->reserve(aspace_user_va(run), run_pages(pages), VR_USTACK))
         {
             frame_pool_free_run(run, run_pages(pages), g);
             return out;
@@ -59,7 +60,7 @@ namespace kickos
         if (arch_aspace_map(space, va, stack, pages, ARCH_MAP_R | ARCH_MAP_W,
                             ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
-            (void)ranges->release(static_cast<uintptr_t>(run));
+            (void)ranges->release(aspace_user_va(run));
             frame_pool_free_run(run, run_pages(pages), g);
             return out;
         }
@@ -84,7 +85,7 @@ namespace kickos
         enum arch_aspace_result const rc = arch_aspace_unmap(space, base, pages);
         // The guard frame is never mapped, so no space will ever free it and it comes back
         // here whatever the unmap did.
-        kickos_frame_free(static_cast<arch_phys_addr_t>(base) - g);
+        kickos_frame_free(aspace_frame_of(base) - g);
         if (rc != ARCH_ASPACE_OK)
         {
             // The unmap is total-or-fail, so a refusal left every entry standing: the space
@@ -97,18 +98,18 @@ namespace kickos
         {
             (void)ranges->release(base - g);
         }
-        frame_pool_free_run(static_cast<arch_phys_addr_t>(base), pages, g);
+        frame_pool_free_run(aspace_frame_of(base), pages, g);
     }
 
-    // ustack_alloc maps the run at va == its own physical base, which is what lets a
-    // stack address be handed to the pool as a frame here and in ustack_free.
+    // ustack_alloc maps the run at its own physical base plus the user offset, which is what
+    // lets a stack address name its frame here and in ustack_free.
     void* ustack_kptr(uintptr_t base)
     {
         if (base == 0)
         {
             return nullptr;
         }
-        return frame_pool_ptr(static_cast<arch_phys_addr_t>(base));
+        return frame_pool_ptr(aspace_frame_of(base));
     }
 }
 

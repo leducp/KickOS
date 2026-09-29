@@ -37,6 +37,17 @@ namespace kickos
 
 #if KICKOS_HAVE_ASPACE
 
+    // A task reaches a frame the kernel hands it at the frame's physical address plus the
+    // arch's user offset (arch_aspace_user_offset): one rule on every translating backend.
+    inline uintptr_t aspace_user_va(arch_phys_addr_t frame)
+    {
+        return static_cast<uintptr_t>(frame) + arch_aspace_user_offset();
+    }
+    inline arch_phys_addr_t aspace_frame_of(uintptr_t va)
+    {
+        return static_cast<arch_phys_addr_t>(va - arch_aspace_user_offset());
+    }
+
     // Seed shared RX text, private RW data and matching validation ranges.
     // The first space uses the image data; later spaces copy the live root or
     // its saved snapshot. Fail if neither source exists. On failure, release

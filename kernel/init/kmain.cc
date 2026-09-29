@@ -384,7 +384,14 @@ namespace kickos
         Thread* const root_tcb = &kernel().threads.slots[root_slot];
         // The entry must be app-half text: root is unprivileged from its first instruction,
         // and the kernel's half grants EL0 nothing (<kickos/sys/init.h>).
-        thread_create(root_tcb, kickos_root_entry, nullptr,
+        void (*root_entry)(void*) = kickos_root_entry;
+#if KICKOS_HAVE_ASPACE
+        // Where the linker states the app window where the loader put it, root reaches it at
+        // that address plus the user offset.
+        root_entry = reinterpret_cast<void (*)(void*)>(
+            reinterpret_cast<uintptr_t>(kickos_root_entry) + arch_aspace_user_offset());
+#endif
+        thread_create(root_tcb, root_entry, nullptr,
                       root_stack, root_stack_size, root_attr);
         // Root's unkillability rests entirely on this default, which nothing above states.
         KICKOS_ASSERT(root_tcb->spawner_tag == ThreadPool::KILL_TAG_NONE);

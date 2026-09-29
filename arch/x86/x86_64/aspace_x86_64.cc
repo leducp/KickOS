@@ -23,6 +23,9 @@ extern "C"
     arch_phys_addr_t kickos_frame_alloc(void);
     void kickos_frame_free(arch_phys_addr_t frame);
     void kfault_terminate(void) __attribute__((noreturn));
+    // The app window, where the loader put it (arch/x86/x86_64/pe_image.ld).
+    extern unsigned char __kickos_app_rom_start[];
+    extern unsigned char __kickos_app_sram_end[];
 #if KICKOS_KERNEL_CORES > 1
     uint32_t kickos_x86_64_online_cores(void);
 #endif
@@ -268,10 +271,18 @@ namespace
 #endif
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // The root each core last installed, for the self-test's active-core census.
+    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
+#endif
+
     // Keep the root register and residency record in sync.
     void install_root(uint64_t cr3)
     {
         write_cr3(cr3);
+#if defined(KICKOS_ENABLE_SELFTEST)
+        g_installed_root[arch_cpu_id()] = cr3 & PTE_ADDR_MASK;
+#endif
         g_residency.note(cr3 & PTE_ADDR_MASK, arch_cpu_id());
     }
 
@@ -298,17 +309,10 @@ namespace
         return g_residency.cores(root_key(space)) != 0;
     }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Current root, for self-tests only.
-    bool installed_here(struct arch_aspace* space)
-    {
-        return (read_cr3() & PTE_ADDR_MASK) == (phys_of(root_of(space)) & PTE_ADDR_MASK);
-    }
-#endif
-
+    // No core has ever installed a space it is not resident on, so none can hold a
+    // translation of it: an edit there needs no invalidation at any core count.
     void invalidate_page_if(uintptr_t va, bool resident)
     {
-#if KICKOS_NUM_CORES == 1
         if (not resident)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -316,9 +320,6 @@ namespace
 #endif
             return;
         }
-#else
-        (void)resident;
-#endif
         invalidate_page(va);
     }
 
@@ -601,6 +602,19 @@ namespace
         }
         return true;
     }
+
+    // Whether [pa, pa + bytes) moved up by the user offset lies wholly in user slots.
+    bool alias_fits(uintptr_t pa, size_t bytes)
+    {
+        uintptr_t const lo = pa & ~static_cast<uintptr_t>(GRANULE - 1);
+        uintptr_t end = 0;
+        if (bytes == 0 or not kickos::extent_end(pa, bytes, 1, &end))
+        {
+            return bytes == 0;
+        }
+        size_t const pages = static_cast<size_t>((end - lo + GRANULE - 1) / GRANULE);
+        return lo + g_user_lo >= lo and range_ok(lo + g_user_lo, pages);
+    }
 }
 
 namespace kickos::x86_64
@@ -774,6 +788,19 @@ namespace kickos::x86_64
         if (g_user_hi == 0)
         {
             refuse("the adopted root leaves no top-level slot for a space to map");
+        }
+        // A task reaches every frame of the arena, and the app window, at the physical address
+        // plus the first user slot's base (arch_aspace_user_offset), so both have to land in
+        // slots the firmware left absent.
+        if (not alias_fits(ram_base, ram_size))
+        {
+            refuse("the arena moved up by the user offset leaves the slots a space may map");
+        }
+        uintptr_t const app_lo = reinterpret_cast<uintptr_t>(__kickos_app_rom_start);
+        uintptr_t const app_hi = reinterpret_cast<uintptr_t>(__kickos_app_sram_end);
+        if (app_hi > app_lo and not alias_fits(app_lo, app_hi - app_lo))
+        {
+            refuse("the app window moved up by the user offset leaves the slots a space may map");
         }
         invalidate_all();
     }
@@ -1145,6 +1172,13 @@ void arch_aspace_activate(struct arch_aspace* space)
     arch_irq_restore(s);
 }
 
+// The firmware identity map is kernel half, so a frame is reached one whole user slot above
+// its physical address: the first slot the adopted root leaves empty.
+uintptr_t arch_aspace_user_offset(void)
+{
+    return g_user_lo;
+}
+
 struct arch_aspace* arch_aspace_boot(void)
 {
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
@@ -1218,11 +1252,16 @@ uint32_t arch_aspace_active_cores(struct arch_aspace* space)
     {
         return 0;
     }
-    if (not installed_here(space))
+    uint64_t const key = root_key(space);
+    uint32_t set = 0;
+    for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
     {
-        return 0;
+        if (g_installed_root[c] == key)
+        {
+            set |= 1u << c;
+        }
     }
-    return 1u << arch_cpu_id();
+    return set;
 }
 #endif
 

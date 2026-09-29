@@ -13,6 +13,7 @@ extern "C" __attribute__((visibility("hidden"))) void kickos_thread_fault_exit(v
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
+#include <kickos/arch/aspace.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
@@ -257,9 +258,18 @@ void arch_context_init(struct arch_context* ctx,
         frame_top = ctx->kernel_sp;
         code_selector = kickos::x86_64::sel_user_code;
         stack_selector = kickos::x86_64::sel_user_data;
-        returns_to = reinterpret_cast<uint64_t>(&kickos_user_thread_return);
+        // App text, which the thread reaches at its alias.
+        returns_to = reinterpret_cast<uint64_t>(&kickos_user_thread_return)
+                     + kickos::x86_64::user_alias_offset();
     }
-    *reinterpret_cast<uint64_t*>(return_slot) = returns_to;
+    // An unprivileged thread's stack is where ITS space maps it, not the space running this; the
+    // kernel writes the slot through its own view of the same frame.
+    uintptr_t slot_view = return_slot;
+    if (privileged == 0)
+    {
+        slot_view = return_slot - kickos::x86_64::user_alias_offset();
+    }
+    *reinterpret_cast<uint64_t*>(slot_view) = returns_to;
 
     uintptr_t const base = frame_top - X86_64_FRAME_SIZE;
     trap_frame* const f = reinterpret_cast<trap_frame*>(base);
@@ -423,11 +433,12 @@ int arch_bitband_present(void)
     return 0;
 }
 
-// Zero because of the KNOB: the chip selects neither region descriptors nor an address space,
-// so KICKOS_MEMORY_ENFORCED is 0 and the isolation self-test this feeds is not registered.
+// A word of the kernel's half, which no space maps for ring 3: what the isolation arms read
+// and self-grant and must be refused.
 uintptr_t arch_mpu_probe_addr(void)
 {
-    return 0;
+    static volatile uint32_t guard_word = 0;
+    return reinterpret_cast<uintptr_t>(&guard_word);
 }
 
 // The permissions come from the PE32+ SECTION TABLE, walked at runtime from the base the image

@@ -34,10 +34,10 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     parked_frame_hostile)
 endif()
 
-# The twelve-core bench image provisions enough thread slots for its crowded
-# placement checks. The refusal arm caps its parked children at 24, so that
-# image can legitimately reach the cap before exhausting the larger pool.
-if(KICKOS_CONFIG_VARIANT STREQUAL "benchsmp12")
+# The refusal arm caps its parked children at 24 (LR_PARK_CAP, selftest_aspace.cc), so a
+# thread pool wider than that can reach the cap before the refusal it measures. DERIVED and not
+# a posture list: qemu-arm64's benchsmp12 image and qemu-x86_64's bench and SMP images carry one.
+if(KICKOS_MAX_THREADS GREATER 24)
   list(APPEND KICKOS_EXPECT_SKIPS spawn_refusal_frees_task)
 endif()
 
@@ -194,7 +194,7 @@ endif()
 # set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
-  list(APPEND KICKOS_EXPECT_FAULTS fvic)
+  list(APPEND KICKOS_EXPECT_FAULTS fvic kvic)
 endif()
 
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
@@ -270,6 +270,15 @@ if(NOT KICKOS_BOARD STREQUAL "microbit")
   if(TEST ${_tag}_selftest)
     set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
   endif()
+endif()
+get_target_property(_selftest_rebased selftest KICKOS_REBASED_IMAGE_FILE)
+if(_selftest_rebased AND TEST ${_tag}_selftest)
+  kickos_qemu_machine("${KICKOS_BOARD}" _rb_env _rb_machine)
+  add_test(NAME ${_tag}_selftest_rebased
+    COMMAND "${CMAKE_COMMAND}" -E env ${_rb_env} QEMU_MACHINE=${_rb_machine} ${_selftest_env}
+            "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh"
+            "${_selftest_rebased}" ${_selftest_arms})
+  set_tests_properties(${_tag}_selftest_rebased PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
 endif()
 
 if(KICKOS_BOARD STREQUAL "microbit")
@@ -549,20 +558,35 @@ endif()
 
 # Split-image boards separate writable app data and user executable code.
 # Keep kernel, arch, and chip archives outside both; libkickos_lib is app code.
-# Exclude x86-64: its PE linker script defines empty app windows, so this
-# gate cannot check placement there.
-if(KICKOS_HAVE_ASPACE AND NOT KICKOS_ARCH STREQUAL "x86_64")
+# x86_64 links a PE32+ image with ld directly: the image and its map are the .efi pair, and
+# the boot and landing objects are the kernel's too, linked as objects rather than archived.
+if(KICKOS_HAVE_ASPACE)
+  set(_appdata_image "$<TARGET_FILE:selftest>")
+  set(_appdata_map "${_selftest_map}")
+  set(_appdata_kernel_objects "")
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    get_target_property(_appdata_image selftest KICKOS_IMAGE_FILE)
+    set(_appdata_map "${_appdata_image}.map")
+    set(_appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>)
+    if(KICKOS_KERNEL_CORES GREATER 1)
+      list(APPEND _appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_boot_ap>)
+    else()
+      list(APPEND _appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_boot>)
+    endif()
+  endif()
   add_test(
     NAME    appdata_no_kernel
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"
             "${CMAKE_NM}"
-            "$<TARGET_FILE:selftest>"
-            "${_selftest_map}"
+            "${_appdata_image}"
+            "${_appdata_map}"
             "__kickos_app_sram_start:__kickos_app_sram_end"
             "__kickos_app_rom_start:__kickos_app_rom_end"
             "--"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+            ${_appdata_kernel_objects}
+    COMMAND_EXPAND_LISTS)
   kickos_host_gate(appdata_no_kernel TIMEOUT 60)
 endif()

@@ -5,18 +5,15 @@
 // pair's registers.
 //
 // On this firmware every entry along the walk to the image, to its data and to conventional
-// memory carries the user bit CLEAR, and the permission ANDs down the walk, so it has to be
-// granted at every entry from the root to the leaf. This file grants it over two ranges and
-// leaves every other entry as firmware left it.
+// memory carries the user bit CLEAR, and the permission ANDs down the walk. The kernel leaves
+// it that way: the firmware's map is the kernel half, supervisor-only, and a task reaches only
+// what its own space maps in the user half (docs/design-m10-kernel-share.md section 1).
 //
-// THE GRANT IS BROAD, the unit the hardware grants being a LEAF and the image one flat link:
-// an unprivileged thread can read and write kernel memory here, including a live translation
-// table and the per-core block the syscall entry loads through IA32_GS_BASE. What stays out of
-// reach is the device clause, and ring 3 can neither execute a privileged instruction, touch a
-// port, raise its own level, nor write IA32_KERNEL_GS_BASE.
-//
-// The census in this file runs BEFORE aspace_init and covers only the tables the grant walked;
-// probe4_x86_64.cc is what walks the whole hierarchy.
+// ring3_grant_range is for the bring-up images alone, which run ring-3 code with no space at
+// all. It sets the bit on every entry from the root to the leaf over a range, and its unit is
+// a LEAF, so a large leaf covering the end of a range exposes every byte to that leaf's end.
+// The census covers only the tables the grant walked; probe4_x86_64.cc is what walks the
+// whole hierarchy.
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
@@ -270,17 +267,17 @@ namespace kickos::x86_64
         write_msr(msr_efer, read_msr(msr_efer) | efer_sce);
     }
 
-    void ring3_init(uintptr_t ram_base, size_t ram_size)
+    void ring3_init(void)
     {
         uint64_t const cr4 = read_cr4();
         g_control = cr4;
 
-        // Both are refused: supervisor-mode execution prevention would stop ring 0 fetching
-        // from the pages granted below, which on a flat image is the kernel's own text, and
-        // supervisor-mode access prevention would stop it reading a user buffer.
+        // Both are refused until each has its own arm: supervisor-mode execution prevention
+        // would stop a bring-up image fetching the probe pages ring3_grant_range opens, and
+        // access prevention has no path here that lifts it.
         if ((cr4 & cr4_smep) != 0)
         {
-            refuse("supervisor-mode execution prevention is on and this image is one flat link");
+            refuse("supervisor-mode execution prevention is on and no arm here enables it");
         }
         if ((cr4 & cr4_smap) != 0)
         {
@@ -300,10 +297,19 @@ namespace kickos::x86_64
         }
 
         read_own_headers();
+        g_control0 = read_cr0();
 
+        // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
+        // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
+        // the base it is holding but never the one the entry gets.
+        ring3_cpu_init();
+    }
+
+    void ring3_grant_range(uintptr_t lo, uintptr_t hi)
+    {
         // The level count is read from the control register, 4 or 5.
         unsigned levels = 4;
-        if ((cr4 & cr4_la57) != 0)
+        if ((read_cr4() & cr4_la57) != 0)
         {
             levels = 5;
         }
@@ -311,16 +317,11 @@ namespace kickos::x86_64
         // mapped read-only and CR0.WP is set, so an edit without this takes a write page fault
         // at ring 0 on the root itself. WP is cleared for the edits and put back.
         uint64_t const cr0 = read_cr0();
-        g_control0 = cr0;
         if ((cr0 & cr0_wp) != 0)
         {
             write_cr0(cr0 & ~cr0_wp);
         }
-        grant_range(g_image_base, g_image_base + g_image_size, levels);
-        if (ram_size != 0)
-        {
-            grant_range(ram_base, ram_base + ram_size, levels);
-        }
+        grant_range(lo, hi, levels);
         if ((cr0 & cr0_wp) != 0)
         {
             write_cr0(cr0);
@@ -332,6 +333,7 @@ namespace kickos::x86_64
         {
             refuse("more translation tables were walked than the exposure census records");
         }
+        g_tables_exposed = 0;
         for (unsigned i = 0; i < g_tables_walked; i++)
         {
             if (user_reachable(g_tables[i], levels))
@@ -339,11 +341,6 @@ namespace kickos::x86_64
                 g_tables_exposed++;
             }
         }
-
-        // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
-        // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
-        // the base it is holding but never the one the entry gets.
-        ring3_cpu_init();
     }
 
     void cpu_set_kernel_sp(uint64_t top)
@@ -452,3 +449,10 @@ namespace kickos::x86_64
         return g_control0;
     }
 }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+extern "C" uintptr_t arch_cpu_block_addr(void)
+{
+    return reinterpret_cast<uintptr_t>(&kickos::x86_64::local_cpu());
+}
+#endif
