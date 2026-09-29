@@ -4,8 +4,12 @@
 #include <kickos/task.h>
 
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
+#include <kickos/cap.h>
 #include <kickos/domain.h>
+#include <kickos/endpoint.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
+#include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
@@ -36,8 +40,29 @@ namespace kickos
 
         // The slot and its domain go back, and the generation bump is what stops a handle
         // still naming this task from resolving onto its successor.
+        // Disarm the watch. Caller holds IrqLock.
+        void watch_clear(Task* t)
+        {
+            t->watch_notify = 0;
+            t->watch_ep = 0;
+            t->watch_bit = 0;
+            t->watch_ready = 0;
+        }
+
+        // The watch's notification, if the object still resolves: the handle is generational,
+        // so a freed slot seated again is never raised into.
+        Notification* watch_target(Task const* t)
+        {
+            if (t->watch_notify == 0)
+            {
+                return nullptr;
+            }
+            return kernel().notifies.resolve(notify_bound_handle(t->watch_notify));
+        }
+
         void free_task(Task* t)
         {
+            watch_clear(t);
             domain_release(t->domain);
             // Nulling makes the debris FAIL-CLOSED: task_domain answers null, which every
             // reader already handles, rather than a Domain* the pool may have re-handed.
@@ -210,6 +235,116 @@ namespace kickos
             return false;
         }
         return t->creator_tag == static_cast<uint8_t>(tag);
+    }
+
+    int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep)
+    {
+        IrqLock lock;
+        Thread* const c = sched::current();
+        Task* const t = task_resolve(task);
+        if (t == nullptr)
+        {
+            return -KOS_EBADF;
+        }
+        if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
+        {
+            return -KOS_EPERM;
+        }
+        if (notify_cap == KOS_CAP_NONE)
+        {
+            watch_clear(t);
+            return 0;
+        }
+        // Everything is resolved before the old watch goes, so a refused re-arm keeps it.
+        int err = 0;
+        if (cap_resolve_e(c, notify_cap, CapType::CAP_NOTIFY, CAP_SIGNAL, &err) == nullptr)
+        {
+            return -err;
+        }
+        CapEntry const* const ne = cap_lookup(c, notify_cap);
+        int32_t ep_stored = 0;
+        if (ready_ep != KOS_CAP_NONE)
+        {
+            if (cap_resolve_e(c, ready_ep, CapType::CAP_ENDPOINT, 0, &err) == nullptr)
+            {
+                return -err;
+            }
+            ep_stored = notify_bound_store(cap_lookup(c, ready_ep)->obj);
+        }
+        // No reference: whoever can receive the report holds a capability or a binding, and
+        // either keeps the object alive; a report nobody can receive has nowhere to go.
+        watch_clear(t);
+        t->watch_notify = notify_bound_store(ne->obj);
+        t->watch_bit = static_cast<uint8_t>(notify_cap_bit(*ne));
+        t->watch_ep = ep_stored;
+        return 0;
+    }
+
+    int task_state_call(kos_task_t task)
+    {
+        IrqLock lock;
+        Task* const t = task_resolve(task);
+        if (t == nullptr)
+        {
+            return -KOS_EBADF;
+        }
+        if (not task_created_by(t, kernel().threads.kill_tag_of(sched::current())))
+        {
+            return -KOS_EPERM;
+        }
+        int state = 0;
+        if (t->refcount != 0)
+        {
+            state |= KOS_TASK_LIVE;
+        }
+        if (t->watch_ready != 0)
+        {
+            state |= KOS_TASK_READY;
+        }
+        return state;
+    }
+
+    uint16_t task_gen(Task const* t)
+    {
+        if (t == nullptr)
+        {
+            return 0;
+        }
+        return t->gen;
+    }
+
+    void task_report_death(Task* t, uint16_t gen)
+    {
+        // A slot freed during the teardown and seated again is another instance's.
+        if (t == nullptr or t->gen != gen or t->refcount != 0)
+        {
+            return;
+        }
+        t->watch_ready = 0;
+        Notification* const n = watch_target(t);
+        if (n != nullptr)
+        {
+            (void)notify_raise(n, 1u << t->watch_bit);
+        }
+    }
+
+    Thread* task_note_receive(Task* t, int ep_obj)
+    {
+        if (t == nullptr or t->watch_ep == 0 or t->watch_ready != 0)
+        {
+            return nullptr;
+        }
+        if (t->watch_ep != notify_bound_store(ep_obj))
+        {
+            return nullptr;
+        }
+        t->watch_ready = 1;
+        Notification* const n = watch_target(t);
+        if (n == nullptr)
+        {
+            return nullptr;
+        }
+        return notify_raise_deferred(n, 1u << t->watch_bit);
     }
 
     void task_orphan_created_by(uint16_t tag)

@@ -81,6 +81,7 @@ SYSCALL_NAME = {
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "sched_probe",
     66: "amp_probe", 67: "doorbell_probe", 68: "reply_recv",
     69: "notify_badge", 70: "irq_bind_notify", 71: "thread_self",
+    72: "task_watch", 73: "task_state",
 }
 
 TRACE_MAGIC = 0x4B545243

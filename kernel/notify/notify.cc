@@ -131,37 +131,68 @@ namespace kickos
         return 0;
     }
 
+    uint32_t notify_cap_bit(CapEntry const& e)
+    {
+        return badge_bit_of(e);
+    }
+
+    namespace
+    {
+        // Latch `bit` and detach the waiter it wakes, answering that waiter, or nullptr when
+        // the bit stays pending. The caller holds the IrqLock and wakes the waiter itself.
+        Thread* raise_take(Notification* n, uint32_t bit, bool* changed)
+        {
+            *changed = (n->pending & bit) == 0u;
+            n->pending = n->pending | bit;
+            Thread* const t = n->bound;
+            if (t == nullptr)
+            {
+                return nullptr; // latched for whatever server binds next
+            }
+            if ((n->accept & bit) == 0u)
+            {
+                return nullptr; // no wait open on this bit: it stays pending
+            }
+            if (t->wait_notify() == n)
+            {
+                // Normal delivery preserves wait_result; only an early wake changes it.
+                t->clear_wait_edge();
+                return t;
+            }
+            // Wake an accepting fused receive with -KOS_ENOTIFY; its opts carry the taken bits.
+            if (t->state == ThreadState::BLOCKED and t->wait_kind == WAIT_EP_RECV)
+            {
+                t->wait_queue->unlink(&t->link);
+                t->clear_wait_edge();
+                t->wait_result = -KOS_ENOTIFY;
+                return t;
+            }
+            return nullptr;
+        }
+    }
+
     bool notify_raise(Notification* n, uint32_t bit)
     {
         IrqLock lock;
-        bool const changed = (n->pending & bit) == 0u;
-        n->pending = n->pending | bit;
-        Thread* const t = n->bound;
-        if (t == nullptr)
+        bool changed = false;
+        Thread* const t = raise_take(n, bit, &changed);
+        if (t != nullptr)
         {
-            return changed; // latched for whatever server binds next
-        }
-        if ((n->accept & bit) == 0u)
-        {
-            return changed; // no wait open on this bit: it stays pending
-        }
-        if (t->wait_notify() == n)
-        {
-            // Normal delivery preserves wait_result; only an early wake changes it.
-            t->clear_wait_edge();
             sched::wake(t);
-            return changed;
-        }
-        // Wake an accepting fused receive with -KOS_ENOTIFY; its opts carry the taken bits.
-        if (t->state == ThreadState::BLOCKED and t->wait_kind == WAIT_EP_RECV)
-        {
-            t->wait_queue->unlink(&t->link);
-            t->clear_wait_edge();
-            t->wait_result = -KOS_ENOTIFY;
-            sched::wake(t);
-            return changed;
         }
         return changed;
+    }
+
+    Thread* notify_raise_deferred(Notification* n, uint32_t bit)
+    {
+        IrqLock lock;
+        bool changed = false;
+        Thread* const t = raise_take(n, bit, &changed);
+        if (t != nullptr and sched::wake_no_resched(t))
+        {
+            return t;
+        }
+        return nullptr;
     }
 
     int notify_signal(Thread* c, uint32_t cap_handle)

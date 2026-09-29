@@ -511,6 +511,14 @@ namespace kickos
             return -err; // EBADF (bad cap) or EPERM (no WAIT right)
         }
         endpoint_server_set(e, c);
+        // A creator watching for this task's readiness is told the first time a member waits
+        // on the endpoint it named, through the deferred wake: switching to it here would
+        // leave wq_block parking the creator instead of this receiver.
+        Thread* const creator = task_note_receive(c->task, cap_lookup(c, cap)->obj);
+        if (creator != nullptr)
+        {
+            dw->offer(creator);
+        }
         // Defer rescheduling: changing current() here would make wq_block park the
         // woken caller instead of this receiver.
         KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
