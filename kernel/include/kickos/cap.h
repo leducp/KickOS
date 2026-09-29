@@ -158,14 +158,15 @@ namespace kickos
     // The thread's authority word, held in Thread::authority: its own field, sharing no
     // numbering with CapRights. Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*; the two
     // must move together.
-    enum CapAuthority : uint8_t
+    enum CapAuthority : uint32_t
     {
         AUTH_MEMORY = 1 << 0,  // ram_alloc, the spawn-time MMIO window grant, mem_self_grant
         AUTH_PINMUX = 1 << 1,  // pinmux_set
         AUTH_PSTATE = 1 << 2,  // cpu_clock_set
         AUTH_IRQ = 1 << 3,     // irq_claim (the tier-1 mint), irq_attach, irq_unmask
         AUTH_SYSTEM = 1 << 4,  // shutdown, reboot
-        AUTH_CONSOLE = 1 << 5  // console_publish
+        AUTH_CONSOLE = 1 << 5, // console_publish
+        AUTH_TASKS = 1 << 6    // task_create, and a spawn that builds a task of its own
     };
 
     // One bit per distinct holder: a bit merging two holders grants each the other's power.
@@ -174,8 +175,8 @@ namespace kickos
     // the caller holding a live ARCH_MPU_DEV region whose base matches the block exactly
     // (caller_holds_mmio_block, syscall_mem.cc).
 
-    static constexpr uint8_t CAP_AUTH_ALL = static_cast<uint8_t>(
-        AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ | AUTH_SYSTEM | AUTH_CONSOLE);
+    static constexpr uint32_t CAP_AUTH_ALL = AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ
+                                             | AUTH_SYSTEM | AUTH_CONSOLE | AUTH_TASKS;
 
     // Carries the object pool's handle codec verbatim (no re-encoding). gen is bumped on
     // close: the per-thread use-after-close ABA guard.
@@ -790,18 +791,18 @@ namespace kickos
     // AUTH_* bits)? True if it is privileged, or if its authority word carries every requested
     // bit. nullptr is false. The ONE cap.h entry point that does NOT require IrqLock: it reads
     // `c`'s own TCB word, written only by that thread or by its parent before it first runs.
-    bool cap_check_authority(Thread* c, uint8_t need);
+    bool cap_check_authority(Thread* c, uint32_t need);
 
     // Seat (or re-seat) thread t's authority word. Non-delegable: it is TCB state, not a
     // capability, so there is no entry a cap_grant could copy. The kernel is its only
     // writer. auth == 0 clears it. Caller holds IrqLock.
-    void cap_seat_authority(Thread* t, uint8_t auth);
+    void cap_seat_authority(Thread* t, uint32_t auth);
 
     // Narrow thread c's authority word in place: auth &= mask, never widening (the same
     // rule a cap_grant mask and kos_thread_params::authority obey). `cap_handle` must be
     // KOS_CAP_AUTHORITY. Returns 0, -KOS_EBADF (c holds no authority), or -KOS_EINVAL
     // (the handle names something else). Caller holds IrqLock.
-    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint8_t mask);
+    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint32_t mask);
 
 #if KICKOS_AMP_NODE
     // Mint the one-shot reply capability for a caller in ANOTHER kernel. `record` names an AMP

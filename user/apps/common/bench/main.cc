@@ -1239,7 +1239,7 @@ namespace
 // KOS_AUTH_IRQ for the end-to-end span's line mint, KOS_AUTH_MEMORY for the device window
 // root reserves and grants, and KOS_AUTH_SYSTEM because main returns and root's exit is a
 // shutdown.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {

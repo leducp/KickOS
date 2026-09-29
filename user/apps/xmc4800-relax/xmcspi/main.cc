@@ -203,7 +203,7 @@ namespace
 
 // KOS_AUTH_IRQ: the line mint is namespace-wide, so root claims the line and hands the
 // driver a cap. The driver itself runs at authority 0.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {

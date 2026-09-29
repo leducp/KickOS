@@ -418,7 +418,7 @@ int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // KOS_CAP_AUTHORITY pseudo-handle. Zero drops all authority; absent bits
 // cannot be added. Only a spawning parent can set initial authority.
 // Returns 0, -KOS_EBADF if no authority remains, or -KOS_EINVAL for another cap.
-int kos_cap_narrow(kos_cap_t cap, uint8_t mask);
+int kos_cap_narrow(kos_cap_t cap, uint32_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
 // chip function code `func` (the PC/PCR encoding, opaque here). Needs AUTH_PINMUX.

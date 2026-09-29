@@ -11,7 +11,7 @@
 #include <kickos/sys/abi.h> // KOS_AUTH_*
 #include <kickos/sys/init.h>
 
-extern "C" uint8_t kickos_app_authority(void)
+extern "C" uint32_t kickos_app_authority(void)
 {
-    return static_cast<uint8_t>(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM);
+    return KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_TASKS;
 }

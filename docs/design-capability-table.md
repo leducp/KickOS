@@ -33,8 +33,9 @@ Four concerns, deliberately not in the same place.
 - `gen` -- **the per-slot epoch**, so a stale handle cannot resolve.
 
 The fourth concern is `Thread::authority`, and it is **not in the table** because it names no
-object. It is six bits, not four: `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_PSTATE`, `AUTH_IRQ`,
-`AUTH_SYSTEM`, `AUTH_CONSOLE` (`kernel/include/kickos/cap.h`, `CapAuthority`). That split is the one
+object. It is seven bits of a 32-bit word: `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_PSTATE`,
+`AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE` and, since M10.1.3, `AUTH_TASKS`
+(`kernel/include/kickos/cap.h`, `CapAuthority`). That split is the one
 non-obvious thing in the current design and it is correct: permission over a specific object is a
 table entry, permission to do something object-less is a word on the TCB. `AUTH_CONSOLE` is what
 carries the console handover discussed below, and it is its own bit precisely because the thread
