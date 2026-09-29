@@ -199,6 +199,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_process_ipc_same_addr();
     KICKOS_SELFTEST_LOCAL void t_process_call_reply();
     KICKOS_SELFTEST_LOCAL void t_fault_kills_task();
+    KICKOS_SELFTEST_LOCAL void t_kernel_state_unreachable();
     KICKOS_SELFTEST_LOCAL void t_grant_kernel_word_refused();
     KICKOS_SELFTEST_LOCAL void t_self_grant_retype();
     KICKOS_SELFTEST_LOCAL void t_recv_buf_unmapped();
@@ -209,6 +210,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_aspace_acquire_balance();
     KICKOS_SELFTEST_LOCAL void t_map_tlbi_elided();
     KICKOS_SELFTEST_LOCAL void t_aspace_active_cores();
+    KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE

@@ -10,7 +10,7 @@ cannot tell whether a document describes the current system, a plan, or a road n
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
-**Coverage is total: 49 documents = 31 LANDED + 9 ACTIVE + 9 EXPLORATORY + 0 SUPERSEDED.** Every
+**Coverage is total: 51 documents = 31 LANDED + 11 ACTIVE + 9 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
@@ -98,6 +98,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-m7-state-inventory.md`](../design-m7-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
 | [`design-multicore.md`](../design-multicore.md) | The multicore design contract: the hardware predicate that decides which parts get a shared kernel at all, AMP for the parts that fail it, what it FREEZES, and the step plan with the expected result of each step. It names no milestone on purpose, `../../roadmap.md` owning the schedule |
 | [`design-m10-composition.md`](../design-m10-composition.md) | M10's static composition: the chip, board and composition files and who owns each, the names a task looks resources up by, what the host tool refuses, the one emitted table, the lookups and the init's walk, written against the golden example in `examples/composition/`, with the questions still open |
+| [`design-m10-kernel-share.md`](../design-m10-kernel-share.md) | M10.1's kernel share, one section per part: x86_64 address spaces on q35 so far, the ABI changes to follow |
 | [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | M9's four entry metrics recomputed against the frozen M8.12 measurement: the locked fraction and the Amdahl bound re-derived with every input named, the inputs M8.12 does not carry, five of the fourteen first claimed absent having not survived checking, the terms that have moved the way `MPU_APPLY` did, and what the evidence supports per stage. It approves nothing |
 
 ## EXPLORATORY

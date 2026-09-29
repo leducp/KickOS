@@ -670,12 +670,11 @@ The whole point of this file. A green fleet pass says none of the following.
   no data cache, so what the flags-match leg asserts is that both mappings carry the same memory
   type, not that either is actually uncached. The type reaching the descriptor at all is unwitnessed
   on this bench, and the first bus master is where that stops being true.
-- **The x86_64 board IS in this tree, and what it does not witness is the aspace family.**
-  `boards/qemu-x86_64/` is tracked and M6.4 sits ON M6.3, so there is ONE seam measurement rather
-  than two to be unioned. What the board does not run is the family itself: the chip selects no
-  memory family, ships no map editor and declares no frame pool, so its `arch_aspace_*` claims all
-  come from X5's ad-hoc link, which is a `ninja` target and not a registered arm. A green `ctest
-  --preset qemu-x86_64` says nothing about them.
+- **The x86_64 board runs the aspace family since M10.1.1.** q35 selects `HAS_ASPACE`, its frame
+  pool is the UEFI arena's remainder, and the self-test's family arms run on `qemu-x86_64` and
+  its two-core preset. X5 stays, as the registered `x86_64_x5_aspace`, for the out-of-frames
+  unwind no application image drives on demand. What the board's green runs do not say is in
+  the M10.1.1 section at the bottom of this file.
 - **THE RV64 MODEL LINE READS `32 PA bits` SINCE THE 2026-08-29 RE-REVIEW, NOT 56, AND NO COUNT
   MOVED WITH IT.** The 56 was the PTE's PPN field, which is the architecture's output width for
   every RV64 mode; the physical extent is a PLATFORM figure and RISC-V publishes no register for it,
@@ -3767,6 +3766,49 @@ reports, the non-receiving handout right with the errno split, the window list, 
 window addresses, the port grant with its byte-wide write, the task-creation authority and a
 wider authority word -- are each a paragraph, not a design. The cost each adds to the switch or the
 spawn path is unmeasured, and a mechanism that proves too dear at M10.1 re-cuts the stages after it.
+
+## M10.1.1: q35 tasks get address spaces, and what these green runs do NOT say
+
+**THE KERNEL HALF IS SUPERVISOR-ONLY BY DELETION, AND THE APP IS REACHED AT AN ALIAS.**
+`ring3_init` grants nothing; a task reaches the app window and its own frames at the physical
+address plus the user offset U, the first user slot, 1 TiB on this box; the app's stored
+pointers gain U once at boot from a retained copy of the base-relocation directory. The design
+is `docs/design-m10-kernel-share.md` section 1, updated to what was built.
+
+**THE PRICE IS MEASURED IN ONE SESSION, BECAUSE TWO SESSIONS DO NOT COMPARE.**
+`docs/archive/M10.1.1_bench.md`, twenty boots alternating before and after: a switch between
+spaces costs about 3.6 times what it did and a task spawn/exit 2.9, the CR3 flush section 1.7
+names; a thread spawn/exit 1.4, matching the stack mapping every spawn gains; nothing that stays in
+one space moved. An earlier pair of sessions hours apart read a 74 percent same-task rise that the
+paired run shows none of: on unchanged code the same-task call/reply moves by a third between
+sessions, on armv8a as on x86. The global kernel half and PCIDs are the levers for the cross-space
+rows.
+
+**FIRMWARE'S RELOCATION PASS HAD NEVER RUN, AND IT HID A DEFECT.** OVMF honours the preferred
+0x400000, so every image booted with firmware relocating nothing. The first image linked where
+firmware could not place it (`selftest_rebased.efi`, 1 TiB) faulted in the banner: `ld -m
+i386pep` writes no base relocation for a WEAK reference to a weak definition, and `app.h`'s
+declaration had made the kernel's reference to the build stamp weak over `KICKOS_LINK_OPTIONAL`.
+`x86_64_app_split` now matches every absolute word in the image against its record, the kernel's
+half included, and found that word alone in each of the 21 images. The rebased witness is ONE
+image at ONE base; every other image runs at the preferred base only.
+
+**WHAT THE ARMS READ, AND WHAT THEY DO NOT.**
+- `kernel_state_unreachable` reads root's OWN translation root and the per-core block of the
+  core root runs on, from a second task. It does not read another task's tables, and on armv8a
+  and rv64 it reads the root alone, `arch_cpu_block_addr` answering zero there.
+- `app_pointers_relocated` holds three app words, a constructor, a data pointer and a text
+  pointer; `app_words=3` in the boot line says the image carries no others.
+- Supervisor-mode execution and access prevention stay refused, OVMF enabling neither, so no
+  run here has the processor enforce the half the page tables do.
+
+**THE MUTATIONS WERE RUN BY HAND ON THE ONE-CORE TREE**, each caught by a gate, and none is a
+registered case: restoring the image grant, U at zero, the app words unmoved, the whole pass
+skipped, `arch_syscall` in kernel text and U dropped at `arch_context_init`. The design's section
+1.8 says which gate each reddens.
+
+**MULTICORE RAN ON TWO CORES.** `qemu-x86_64-smp2` passed; the 4, 8 and 12-core presets have
+their static floors re-measured and no run.
 
 ## Where to go next
 

@@ -56,9 +56,12 @@ namespace kickos::x86_64
     // completes, arch_cpu_id reads cpu_block::core_id with one GS-relative load.
     uint32_t boot_apic_id(void);
 
-    // Make ring 3 reachable and arm the fast syscall pair. Call AFTER desc_init. The range
-    // is the conventional memory user stacks are carved out of.
-    void ring3_init(uintptr_t ram_base, size_t ram_size);
+    // Arm the fast syscall pair and the per-core block. Call AFTER desc_init. Opens nothing to
+    // ring 3: a task reaches only what its own space maps.
+    void ring3_init(void);
+    // Set the user bit over [lo, hi) in the live regime. The bring-up images alone call it, to
+    // run ring-3 code with no space; the kernel never does.
+    void ring3_grant_range(uintptr_t lo, uintptr_t hi);
     // APs inherit the BSP's shared page tables but need their own GS base and syscall MSRs.
     void ring3_cpu_init(void);
 
@@ -74,7 +77,7 @@ namespace kickos::x86_64
     size_t image_size(void);
     unsigned image_sections(void);
 
-    // What ring3_init found and did, for the boot report. `granted` counts the leaf entries
+    // What ring3_grant_range did, for the boot report. `granted` counts the leaf entries
     // that gained the user bit; `already` counts those that carried it on arrival.
     unsigned user_leaves_granted(void);
     unsigned user_leaves_already(void);

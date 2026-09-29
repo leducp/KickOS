@@ -68,6 +68,9 @@ namespace
     uintptr_t g_ram_base = 0;
     size_t g_ram_size = 0;
     uintptr_t g_ram_next = 0;
+    // Set once the frame pool has taken the arena's remainder: arch_ram_alloc refuses from then
+    // on, so the kernel's bump carve and the frame pool never own the same byte.
+    bool g_ram_sealed = false;
 
 #if KICKOS_KERNEL_CORES > 1
     constexpr size_t ap_stack_bytes = 16384;
@@ -174,8 +177,8 @@ uint32_t kickos_x86_ref_spin(uint32_t want)
 void arch_init(void)
 {
     com1_init();
-    // A zero arena is a failed handover: ring3_init and aspace_init are each handed it as a
-    // range to grant, and every arm above them reports ok against an empty one.
+    // A zero arena is a failed handover: aspace_init checks the frame pool's alias against it,
+    // and every arm above that reports ok against an empty one.
     if (g_ram_size == 0)
     {
         com1_puts("\nx86_64 q35: the handover published no usable conventional memory\n");
@@ -187,8 +190,7 @@ void arch_init(void)
     desc_init();
     // AFTER desc_init, which loads a null gs selector and would zero the base this seats, and
     // BEFORE any interrupt source is armed: it programs the fast syscall entry's flag mask.
-    ring3_init(arch_ram_base(), arch_ram_size());
-    // AFTER ring3_init, which restores the write protection its own table edits lift, and
+    ring3_init();
     // BEFORE any interrupt source is armed: adopting the live regime writes one entry into a
     // table the firmware owns.
     aspace_init(arch_ram_base(), arch_ram_size());
@@ -256,7 +258,7 @@ size_t arch_ram_size(void)
 
 void* arch_ram_alloc(size_t size)
 {
-    if (size == 0 or g_ram_size == 0)
+    if (size == 0 or g_ram_size == 0 or g_ram_sealed)
     {
         return nullptr;
     }
@@ -274,6 +276,24 @@ void* arch_ram_alloc(size_t size)
     }
     arch_irq_restore(state);
     return out;
+}
+
+// The frame pool is whatever the kernel has not taken from the UEFI arena when frame_pool_init
+// asks, in the kernel's view of it, which is the loader's identity map.
+void arch_frame_pool_bounds(uintptr_t* base, uintptr_t* top)
+{
+    constexpr uintptr_t granule = 4096;
+    arch_irq_state_t const state = arch_irq_save();
+    uintptr_t const lo = (g_ram_next + (granule - 1)) & ~(granule - 1);
+    uintptr_t const hi = (g_ram_base + g_ram_size) & ~(granule - 1);
+    g_ram_sealed = true;
+    arch_irq_restore(state);
+    *base = lo;
+    *top = hi;
+    if (hi < lo)
+    {
+        *top = lo;
+    }
 }
 
 // Rule 7 (arch.h). Only the local APIC window, and only on the xAPIC path: in x2APIC mode the

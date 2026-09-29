@@ -26,10 +26,45 @@ namespace kickos
 {
     namespace
     {
+        // A user-half address the probes below map: a low constant plus the arch's user offset,
+        // which moves the user half above the kernel's on x86_64 and is zero elsewhere. Read
+        // each time, the offset being measured at boot after this file's statics exist.
+        uintptr_t user_half(uintptr_t low)
+        {
+            return arch_aspace_user_offset() + low;
+        }
         // Two low-half pages, far from DRAM's output addresses and from each other, so
         // neither could be answered by an identity map of the frame under test.
-        constexpr uintptr_t VA_A = 0x10000000;
-        constexpr uintptr_t VA_B = 0x11000000;
+        uintptr_t va_a()
+        {
+            return user_half(0x10000000);
+        }
+        uintptr_t va_b()
+        {
+            return user_half(0x11000000);
+        }
+        // Two more, for the duplicate-acquire probe.
+        uintptr_t dup_va_a()
+        {
+            return user_half(0x12000000);
+        }
+        uintptr_t dup_va_b()
+        {
+            return user_half(0x13000000);
+        }
+        // A low-half address, far from DRAM and never a physical base out of the frame pool:
+        // ustack_alloc maps every thread stack in this window, so an address inside it is one
+        // a CHILD's stack may take even where nothing in this space names it yet.
+        uintptr_t va_seed()
+        {
+            return user_half(0x14000000);
+        }
+        // A low-half range a fresh space maps nowhere, and the page the caller's own space is
+        // edited at.
+        uintptr_t va_u()
+        {
+            return user_half(0x20000000);
+        }
         constexpr uint32_t PATTERN_A = 0xA5A50F0Fu;
         constexpr uint32_t PATTERN_B = 0x5A5AF0F0u;
 
@@ -75,12 +110,12 @@ namespace kickos
             bool mapped = false;
             arch_phys_addr_t const frame = kickos_frame_alloc();
             if (frame != 0 and
-                arch_aspace_map(space, VA_A, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+                arch_aspace_map(space, va_a(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) == ARCH_ASPACE_OK)
             {
                 trip = KOS_ASPACE_TRIP_MAPPED;
                 mapped = true;
-                void* const p = arch_aspace_acquire(space, VA_A);
+                void* const p = arch_aspace_acquire(space, va_a());
                 if (p != nullptr)
                 {
                     *word_at(p) = PATTERN_A;
@@ -88,14 +123,14 @@ namespace kickos
                     {
                         trip = KOS_ASPACE_TRIP_READBACK;
                     }
-                    arch_aspace_release(space, VA_A);
+                    arch_aspace_release(space, va_a());
                 }
                 if (trip == KOS_ASPACE_TRIP_READBACK and
-                    arch_aspace_unmap(space, VA_A, 1) == ARCH_ASPACE_OK)
+                    arch_aspace_unmap(space, va_a(), 1) == ARCH_ASPACE_OK)
                 {
                     trip = KOS_ASPACE_TRIP_UNMAPPED;
                     mapped = false;
-                    if (not acquire_answers(space, VA_A))
+                    if (not acquire_answers(space, va_a()))
                     {
                         trip = KOS_ASPACE_TRIP_GONE;
                     }
@@ -122,20 +157,20 @@ namespace kickos
             arch_phys_addr_t const frame = kickos_frame_alloc();
             void* const own = frame_pool_ptr(frame);
             if (frame != 0 and own != nullptr and
-                arch_aspace_map(space, VA_A, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+                arch_aspace_map(space, va_a(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
-                arch_aspace_map(space, VA_B, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+                arch_aspace_map(space, va_b(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) == ARCH_ASPACE_OK)
             {
-                void* const a = arch_aspace_acquire(space, VA_A);
-                void* const b = arch_aspace_acquire(space, VA_B);
+                void* const a = arch_aspace_acquire(space, va_a());
+                void* const b = arch_aspace_acquire(space, va_b());
                 // Compares the frame behind each page: a windowed backend can hand back
                 // two unequal slot addresses for one frame.
-                bool const same_frame = arch_aspace_frame_at(space, VA_A) == frame
-                                        and arch_aspace_frame_at(space, VA_B) == frame;
-                bool const translated = VA_A != VA_B and
-                                        reinterpret_cast<uintptr_t>(a) != VA_A and
-                                        static_cast<uintptr_t>(frame) != VA_A;
+                bool const same_frame = arch_aspace_frame_at(space, va_a()) == frame
+                                        and arch_aspace_frame_at(space, va_b()) == frame;
+                bool const translated = va_a() != va_b() and
+                                        reinterpret_cast<uintptr_t>(a) != va_a() and
+                                        static_cast<uintptr_t>(frame) != va_a();
                 if (a != nullptr and b != nullptr and same_frame and translated)
                 {
                     *word_at(a) = PATTERN_A;
@@ -146,15 +181,15 @@ namespace kickos
                 }
                 if (a != nullptr)
                 {
-                    arch_aspace_release(space, VA_A);
+                    arch_aspace_release(space, va_a());
                 }
                 if (b != nullptr)
                 {
-                    arch_aspace_release(space, VA_B);
+                    arch_aspace_release(space, va_b());
                 }
                 // One leaf is unmapped before destroy: both name the same frame, and
                 // destroy frees per leaf it maps.
-                (void)arch_aspace_unmap(space, VA_B, 1);
+                (void)arch_aspace_unmap(space, va_b(), 1);
             }
             arch_aspace_destroy(space);
             return ok;
@@ -183,26 +218,26 @@ namespace kickos
             {
                 bits |= KOS_ASPACE_REFUSE_HIGH_HALF;
             }
-            if (arch_aspace_map(space, VA_A + 1, frame, 1, rw, ARCH_MAP_NORMAL) !=
+            if (arch_aspace_map(space, va_a() + 1, frame, 1, rw, ARCH_MAP_NORMAL) !=
                 ARCH_ASPACE_OK)
             {
                 bits |= KOS_ASPACE_REFUSE_UNALIGNED;
             }
-            if (arch_aspace_map(space, VA_A, frame, 0, rw, ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
+            if (arch_aspace_map(space, va_a(), frame, 0, rw, ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
             {
                 bits |= KOS_ASPACE_REFUSE_EMPTY;
             }
-            if (arch_aspace_map(space, VA_A, frame, 1, ARCH_MAP_W, ARCH_MAP_NORMAL) !=
+            if (arch_aspace_map(space, va_a(), frame, 1, ARCH_MAP_W, ARCH_MAP_NORMAL) !=
                 ARCH_ASPACE_OK)
             {
                 bits |= KOS_ASPACE_REFUSE_NO_READ;
             }
-            if (arch_aspace_map(space, VA_A, frame, 1, rw | 0x80u, ARCH_MAP_NORMAL) !=
+            if (arch_aspace_map(space, va_a(), frame, 1, rw | 0x80u, ARCH_MAP_NORMAL) !=
                 ARCH_ASPACE_OK)
             {
                 bits |= KOS_ASPACE_REFUSE_UNKNOWN_RIGHT;
             }
-            if (arch_aspace_map(space, VA_A, frame, 1, rw | ARCH_MAP_X, ARCH_MAP_NORMAL) !=
+            if (arch_aspace_map(space, va_a(), frame, 1, rw | ARCH_MAP_X, ARCH_MAP_NORMAL) !=
                 ARCH_ASPACE_OK)
             {
                 bits |= KOS_ASPACE_REFUSE_WRITE_EXEC;
@@ -217,10 +252,10 @@ namespace kickos
                 arch_phys_addr_t const top = (static_cast<arch_phys_addr_t>(1) << pa_bits)
                                              - static_cast<arch_phys_addr_t>(g);
                 enum arch_aspace_result const rc =
-                    arch_aspace_map(space, VA_B, top, 2, rw, ARCH_MAP_NORMAL);
-                if (rc != ARCH_ASPACE_OK and arch_aspace_frame_at(space, VA_B) == 0
-                    and arch_aspace_frame_at(space, VA_B + g) == 0
-                    and not acquire_answers(space, VA_B))
+                    arch_aspace_map(space, va_b(), top, 2, rw, ARCH_MAP_NORMAL);
+                if (rc != ARCH_ASPACE_OK and arch_aspace_frame_at(space, va_b()) == 0
+                    and arch_aspace_frame_at(space, va_b() + g) == 0
+                    and not acquire_answers(space, va_b()))
                 {
                     bits |= KOS_ASPACE_REFUSE_PHYS_EXTENT;
                 }
@@ -228,21 +263,21 @@ namespace kickos
                 {
                     // Unmapped before destroy: these frames were never handed out by the pool,
                     // and destroy would otherwise offer them back to it.
-                    (void)arch_aspace_unmap(space, VA_B, 2);
+                    (void)arch_aspace_unmap(space, va_b(), 2);
                 }
             }
             // Both editors must reject a partially mapped range without changing its leaf.
-            if (arch_aspace_map(space, VA_A, frame, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK)
+            if (arch_aspace_map(space, va_a(), frame, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK)
             {
-                if (arch_aspace_map(space, VA_A, frame, 2, rw, ARCH_MAP_NORMAL)
+                if (arch_aspace_map(space, va_a(), frame, 2, rw, ARCH_MAP_NORMAL)
                         != ARCH_ASPACE_OK
-                    and acquire_answers(space, VA_A)
-                    and arch_aspace_frame_at(space, VA_A + g) == 0)
+                    and acquire_answers(space, va_a())
+                    and arch_aspace_frame_at(space, va_a() + g) == 0)
                 {
                     bits |= KOS_ASPACE_REFUSE_PART_MAP;
                 }
-                if (arch_aspace_unmap(space, VA_A, 2) != ARCH_ASPACE_OK and
-                    acquire_answers(space, VA_A))
+                if (arch_aspace_unmap(space, va_a(), 2) != ARCH_ASPACE_OK and
+                    acquire_answers(space, va_a()))
                 {
                     bits |= KOS_ASPACE_REFUSE_PART_UNMAP;
                 }
@@ -380,10 +415,6 @@ namespace kickos
             return bits;
         }
 
-        // A low-half address, far from DRAM and never a physical base out of the frame pool:
-        // ustack_alloc maps every thread stack in this window, so an address inside it is one
-        // a CHILD's stack may take even where nothing in this space names it yet.
-        constexpr uintptr_t VA_SEED = 0x14000000;
         // A holder adds offsets to pick an address of its own and must stay inside the
         // window this checked.
         constexpr size_t VA_SEED_PAGES = 16u;
@@ -480,13 +511,13 @@ namespace kickos
             VirtualRanges const* const r = domain_ranges(task_domain(c->task));
             if (r == nullptr)
             {
-                return static_cast<uint64_t>(VA_SEED);
+                return static_cast<uint64_t>(va_seed());
             }
             // Stacks and guards are recorded, so the list can identify unmapped addresses.
             for (unsigned i = 0; i < 8u; i++)
             {
                 uintptr_t const va =
-                    VA_SEED + static_cast<uintptr_t>(i) * static_cast<uintptr_t>(VA_SEED_PAGES * g);
+                    va_seed() + static_cast<uintptr_t>(i) * static_cast<uintptr_t>(VA_SEED_PAGES * g);
                 if (not r->overlaps(va, VA_SEED_PAGES))
                 {
                     return static_cast<uint64_t>(va);
@@ -517,12 +548,12 @@ namespace kickos
                     arch_aspace_destroy(space);
                     return before;
                 }
-                (void)arch_aspace_map(space, VA_A, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+                (void)arch_aspace_map(space, va_a(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                       ARCH_MAP_NORMAL);
-                (void)arch_aspace_map(space, VA_B, frame, 1, ARCH_MAP_R,
+                (void)arch_aspace_map(space, va_b(), frame, 1, ARCH_MAP_R,
                                       ARCH_MAP_NORMAL);
-                (void)arch_aspace_unmap(space, VA_B, 1);
-                // The leaf still mapped at VA_A is the space's to reclaim: destroy, not
+                (void)arch_aspace_unmap(space, va_b(), 1);
+                // The leaf still mapped at va_a() is the space's to reclaim: destroy, not
                 // unmap, owns a frame's life.
                 arch_aspace_destroy(space);
             }
@@ -540,13 +571,31 @@ namespace kickos
             return before - after;
         }
 
+        // A physical output `pages` long that no pool frame is part of, for a probe that maps
+        // it as a device and never dereferences it: 0x08000000, below every translating
+        // board's DRAM but q35's, or where the pool covers that the first 2 MiB step above it.
+        arch_phys_addr_t unowned_output(size_t pages)
+        {
+            constexpr arch_phys_addr_t FIRST = 0x08000000;
+            constexpr arch_phys_addr_t STEP = 0x200000;
+            arch_phys_addr_t lo = 0;
+            arch_phys_addr_t hi = 0;
+            frame_pool_phys_bounds(&lo, &hi);
+            arch_phys_addr_t const end =
+                FIRST + static_cast<arch_phys_addr_t>(pages * arch_aspace_granule());
+            if (end <= lo or FIRST >= hi)
+            {
+                return FIRST;
+            }
+            return (hi + STEP - 1u) & ~(STEP - 1u);
+        }
+
         // Entries are at least four bytes, so a table covers at most granule/4 pages; the
         // span below crosses two such tables without assuming their geometry further.
         // Uses device outputs so no leaf owns a pool frame.
         uint64_t op_span()
         {
-            constexpr arch_phys_addr_t SPAN_PA = 0x08000000;
-            constexpr uintptr_t SPAN_NEAR = 0x20000000; // a low-half range a fresh space maps nowhere
+            arch_phys_addr_t const SPAN_PA = unowned_output(arch_aspace_granule() / 4 + 88);
             struct arch_aspace* const space = arch_aspace_create();
             if (space == nullptr)
             {
@@ -555,7 +604,7 @@ namespace kickos
             size_t const g = arch_aspace_granule();
             size_t const per_table = g / 4;
             uintptr_t const table_span = static_cast<uintptr_t>(per_table) * g;
-            uintptr_t const span_va = (SPAN_NEAR & ~(table_span - 1)) + table_span - g;
+            uintptr_t const span_va = (va_u() & ~(table_span - 1)) + table_span - g;
             size_t const span_pages = per_table + 88; // one, then a whole table, then 87
             uint64_t ok = 0;
             if (arch_aspace_map(space, span_va, SPAN_PA, span_pages, ARCH_MAP_R, ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
@@ -610,9 +659,7 @@ namespace kickos
         // temporary slots; do not dereference these pointers.
         uint64_t op_acquire_dup()
         {
-            constexpr arch_phys_addr_t DUP_PA = 0x08000000;
-            constexpr uintptr_t DUP_VA_A = 0x12000000;
-            constexpr uintptr_t DUP_VA_B = 0x13000000;
+            arch_phys_addr_t const DUP_PA = unowned_output(2);
             struct arch_aspace* const space = arch_aspace_create();
             if (space == nullptr)
             {
@@ -620,13 +667,13 @@ namespace kickos
             }
             size_t const g = arch_aspace_granule();
             uint64_t bits = 0;
-            if (arch_aspace_map(space, DUP_VA_A, DUP_PA, 1, ARCH_MAP_R, ARCH_MAP_DEVICE) ==
+            if (arch_aspace_map(space, dup_va_a(), DUP_PA, 1, ARCH_MAP_R, ARCH_MAP_DEVICE) ==
                     ARCH_ASPACE_OK and
-                arch_aspace_map(space, DUP_VA_B, DUP_PA + static_cast<arch_phys_addr_t>(g), 1,
+                arch_aspace_map(space, dup_va_b(), DUP_PA + static_cast<arch_phys_addr_t>(g), 1,
                                 ARCH_MAP_R, ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
-                void* const a = arch_aspace_acquire(space, DUP_VA_A);
-                void* const b = arch_aspace_acquire(space, DUP_VA_A);
+                void* const a = arch_aspace_acquire(space, dup_va_a());
+                void* const b = arch_aspace_acquire(space, dup_va_a());
                 if (a != nullptr and b != nullptr and a == b)
                 {
                     bits |= KOS_ASPACE_DUP_STABLE;
@@ -635,29 +682,29 @@ namespace kickos
                 // acquired must not be answered with the address that hold names.
                 if (b != nullptr)
                 {
-                    arch_aspace_release(space, DUP_VA_A);
+                    arch_aspace_release(space, dup_va_a());
                 }
-                void* const c = arch_aspace_acquire(space, DUP_VA_B);
+                void* const c = arch_aspace_acquire(space, dup_va_b());
                 if (c != nullptr and a != nullptr and c != a)
                 {
                     bits |= KOS_ASPACE_DUP_DISTINCT;
                 }
                 if (c != nullptr)
                 {
-                    arch_aspace_release(space, DUP_VA_B);
+                    arch_aspace_release(space, dup_va_b());
                 }
                 if (a != nullptr)
                 {
-                    arch_aspace_release(space, DUP_VA_A);
+                    arch_aspace_release(space, dup_va_a());
                 }
-                if (acquire_answers(space, DUP_VA_A))
+                if (acquire_answers(space, dup_va_a()))
                 {
                     bits |= KOS_ASPACE_DUP_REUSABLE;
                 }
                 // Unmapped before destroy: their outputs are device addresses the pool never
                 // handed out, and destroy frees per leaf it maps.
-                (void)arch_aspace_unmap(space, DUP_VA_A, 1);
-                (void)arch_aspace_unmap(space, DUP_VA_B, 1);
+                (void)arch_aspace_unmap(space, dup_va_a(), 1);
+                (void)arch_aspace_unmap(space, dup_va_b(), 1);
             }
             arch_aspace_destroy(space);
             return bits;
@@ -682,20 +729,20 @@ namespace kickos
                 // The same two virtual pages in both spaces: the copy below is a pair of
                 // equal numbers naming different memory.
                 bool const built =
-                    arch_aspace_map(sa, VA_A, ra, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
-                    arch_aspace_map(sa, VA_A + g, ra + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
+                    arch_aspace_map(sa, va_a(), ra, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
+                    arch_aspace_map(sa, va_a() + g, ra + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
                         ARCH_ASPACE_OK and
-                    arch_aspace_map(sb, VA_A, rb, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
-                    arch_aspace_map(sb, VA_A + g, rb + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
+                    arch_aspace_map(sb, va_a(), rb, 1, rw, ARCH_MAP_NORMAL) == ARCH_ASPACE_OK and
+                    arch_aspace_map(sb, va_a() + g, rb + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
                         ARCH_ASPACE_OK;
                 unsigned char* const alo =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sa, VA_A));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a()));
                 unsigned char* const ahi =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sa, VA_A + g));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a() + g));
                 unsigned char* const blo =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a()));
                 unsigned char* const bhi =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sb, VA_A + g));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a() + g));
                 // Reached by the pool's own route: never mapped in either space, so an
                 // access that lands there did not split.
                 unsigned char* const spill =
@@ -703,7 +750,7 @@ namespace kickos
                 if (built and alo != nullptr and ahi != nullptr and blo != nullptr and
                     bhi != nullptr and spill != nullptr)
                 {
-                    uintptr_t const cross = VA_A + g - HALF;
+                    uintptr_t const cross = va_a() + g - HALF;
                     if (ahi != alo + g and bhi != blo + g)
                     {
                         bits |= KOS_ASPACE_SPLIT_NONADJACENT;
@@ -777,32 +824,32 @@ namespace kickos
                 // else is holding: the count is of calls (arch.h, arch_aspace_acquire).
                 if (alo != nullptr)
                 {
-                    arch_aspace_release(sa, VA_A);
+                    arch_aspace_release(sa, va_a());
                 }
                 if (ahi != nullptr)
                 {
-                    arch_aspace_release(sa, VA_A + g);
+                    arch_aspace_release(sa, va_a() + g);
                 }
                 if (blo != nullptr)
                 {
-                    arch_aspace_release(sb, VA_A);
+                    arch_aspace_release(sb, va_a());
                 }
                 if (bhi != nullptr)
                 {
-                    arch_aspace_release(sb, VA_A + g);
+                    arch_aspace_release(sb, va_a() + g);
                 }
             }
             // Unmapped and freed here: a map that failed leaves its frame unmapped, so the
             // space cannot be the one owner of all six.
             if (sa != nullptr)
             {
-                (void)arch_aspace_unmap(sa, VA_A, 1);
-                (void)arch_aspace_unmap(sa, VA_A + g, 1);
+                (void)arch_aspace_unmap(sa, va_a(), 1);
+                (void)arch_aspace_unmap(sa, va_a() + g, 1);
             }
             if (sb != nullptr)
             {
-                (void)arch_aspace_unmap(sb, VA_A, 1);
-                (void)arch_aspace_unmap(sb, VA_A + g, 1);
+                (void)arch_aspace_unmap(sb, va_a(), 1);
+                (void)arch_aspace_unmap(sb, va_a() + g, 1);
             }
             for (size_t i = 0; i < 3; i++)
             {
@@ -837,26 +884,26 @@ namespace kickos
             }
             arch_phys_addr_t const frame = kickos_frame_alloc();
             if (frame == 0 or
-                arch_aspace_map(space, VA_A, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+                arch_aspace_map(space, va_a(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
             {
                 arch_aspace_destroy(space);
                 return 0;
             }
-            void* const seed = arch_aspace_acquire(space, VA_A);
+            void* const seed = arch_aspace_acquire(space, va_a());
             if (seed == nullptr)
             {
                 arch_aspace_destroy(space);
                 return 0;
             }
             *word_at(seed) = PATTERN_B;
-            arch_aspace_release(space, VA_A);
+            arch_aspace_release(space, va_a());
 
             // Announced before the switch, because this space maps no console: the gate
             // compares this address against the FAR the dump reports, asserting which page
             // faulted.
             kprintf("[aspace] unmapped 0x%lx, expecting a translation fault\n",
-                    static_cast<unsigned long>(VA_A));
+                    static_cast<unsigned long>(va_a()));
 
             // Masked throughout: the console and the interrupt controller are low addresses
             // on this chip, and this space maps neither, so an ISR taken here would run
@@ -866,9 +913,9 @@ namespace kickos
             // back, so the cache is dropped here.
             aspace_forget_current();
             arch_aspace_activate(space);
-            uint32_t const seen = *word_at(reinterpret_cast<void*>(VA_A));
-            (void)arch_aspace_unmap(space, VA_A, 1);
-            uint32_t const after = *word_at(reinterpret_cast<void*>(VA_A));
+            uint32_t const seen = *word_at(reinterpret_cast<void*>(va_a()));
+            (void)arch_aspace_unmap(space, va_a(), 1);
+            uint32_t const after = *word_at(reinterpret_cast<void*>(va_a()));
             // Reached only where the load above did not fault: a backend whose unmap left the
             // translation standing answers a value here instead of a dump.
             aspace_activate_for(sched::current());
@@ -884,7 +931,6 @@ namespace kickos
         // Edits the caller's space and lets userspace perform the loads: RV64 without SUM
         // cannot test user pages through supervisor loads. Release only after the caller
         // confirms the seeded word.
-        constexpr uintptr_t VA_U = 0x20000000;
         arch_phys_addr_t g_here_frame = 0;
 
         struct arch_aspace* caller_space()
@@ -904,7 +950,7 @@ namespace kickos
             {
                 return 0;
             }
-            if (arch_aspace_frame_at(space, VA_U) != 0)
+            if (arch_aspace_frame_at(space, va_u()) != 0)
             {
                 return 0; // the caller already maps it, so the read below would prove nothing
             }
@@ -913,23 +959,23 @@ namespace kickos
             {
                 return 0;
             }
-            if (arch_aspace_map(space, VA_U, frame, 1, ARCH_MAP_R | ARCH_MAP_W,
+            if (arch_aspace_map(space, va_u(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
             {
                 kickos_frame_free(frame);
                 return 0;
             }
-            void* const seed = arch_aspace_acquire(space, VA_U);
+            void* const seed = arch_aspace_acquire(space, va_u());
             if (seed == nullptr)
             {
-                (void)arch_aspace_unmap(space, VA_U, 1);
+                (void)arch_aspace_unmap(space, va_u(), 1);
                 kickos_frame_free(frame);
                 return 0;
             }
             *word_at(seed) = PATTERN_B;
-            arch_aspace_release(space, VA_U);
+            arch_aspace_release(space, va_u());
             g_here_frame = frame;
-            return VA_U;
+            return va_u();
         }
 
         uint64_t op_unmap_here(uintptr_t seen)
@@ -946,8 +992,8 @@ namespace kickos
             // Announced before the unmap: the gate compares this address against the one the
             // fault report names, asserting which page faulted.
             kprintf("[aspace] unmapped 0x%lx, expecting a translation fault\n",
-                    static_cast<unsigned long>(VA_U));
-            if (arch_aspace_unmap(space, VA_U, 1) != ARCH_ASPACE_OK)
+                    static_cast<unsigned long>(va_u()));
+            if (arch_aspace_unmap(space, va_u(), 1) != ARCH_ASPACE_OK)
             {
                 return 0;
             }
@@ -1260,10 +1306,12 @@ namespace kickos
                 {
                     out |= 1u;
                 }
+#if KICKOS_LIBC_REENT
                 if (reent_unseated_writes() != 0)
                 {
                     out |= 2u;
                 }
+#endif
                 return out;
             }
             case KOS_ASPACE_OP_DATA_HOME_FORGET:
@@ -1300,6 +1348,19 @@ namespace kickos
                 return (static_cast<uint64_t>(KICKOS_KERNEL_CORES) << 16)
                        | (static_cast<uint64_t>(popcount32(held)) << 8)
                        | static_cast<uint64_t>(popcount32(mine));
+            }
+            case KOS_ASPACE_OP_KERNEL_STATE:
+            {
+                if (a1 == 1)
+                {
+                    return arch_cpu_block_addr();
+                }
+                Thread const* const c = sched::current();
+                if (a1 != 0 or c == nullptr)
+                {
+                    return 0;
+                }
+                return reinterpret_cast<uintptr_t>(domain_space(task_domain(c->task)));
             }
             case KOS_ASPACE_OP_SPACE_ID:
             {

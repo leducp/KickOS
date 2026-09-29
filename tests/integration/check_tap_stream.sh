@@ -195,7 +195,9 @@ if faults_reconcile "$_planted$FAULT_HEAD thread 'shared$FAULT_TAIL, system cont
   second thread is never named and the expected-fault set cannot see it"
 fi
 
-_faulted="$(echo "$out" | fault_names)"
+# Space-joined: the trim test below matches a name between spaces, and a newline-separated
+# list only matched while a single name had faulted.
+_faulted="$(echo "$out" | fault_names | tr '\n' ' ')"
 if ! faults_reconcile "$out"; then
     printf '%s\n' "$out" | grep -F -e "$FAULT_HEAD" -e "$FAULT_TAIL"
     fail "the stream carries $KOS_FAULT_HEADS thread-fault banner(s) and $KOS_FAULT_TAILS kill

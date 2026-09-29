@@ -931,6 +931,13 @@ void arch_aspace_activate(struct arch_aspace* space)
     arch_irq_restore(s);
 }
 
+// The boot root leaves the low slots to user spaces, so a frame is reached at its physical
+// address.
+uintptr_t arch_aspace_user_offset(void)
+{
+    return 0;
+}
+
 struct arch_aspace* arch_aspace_boot(void)
 {
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);

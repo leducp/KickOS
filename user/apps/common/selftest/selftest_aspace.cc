@@ -2356,6 +2356,73 @@ namespace selftest
         TAP_CHECK(frames_after == frames_before);
         TAP_CHECK(kos_handle_close(park) == 0);
     }
+
+    // Reads a kernel structure ring 3 must not reach; the read ends this thread's whole task.
+    void kernel_state_reader(void* arg)
+    {
+        (void)*static_cast<unsigned char const volatile*>(arg);
+        kos_exit(1);
+    }
+
+    // A space's own translation root and a core's per-core block are kernel memory the trap
+    // path uses on every entry. A ring-3 read of either must end the reading task, and only
+    // task-wide death releases its parked sibling, so a read that returned fails the join.
+    void t_kernel_state_unreachable()
+    {
+        unsigned probed = 0;
+        for (uint32_t which = 0; which < 2; ++which)
+        {
+            uint64_t const addr = kos_aspace_probe(KOS_ASPACE_OP_KERNEL_STATE, which);
+            if (addr == 0)
+            {
+                continue; // the arch keeps no such structure apart from the kernel's data
+            }
+            settle_exits();
+            kos_cap_t park = KOS_CAP_NONE;
+            if (kos_sem_create(0, &park) != 0)
+            {
+                tap::skip("no semaphore slot");
+                return;
+            }
+            kos_task_t task = KOS_TASK_NONE;
+            if (kos_task_create(nullptr, 0, 0, &task) != 0)
+            {
+                (void)kos_handle_close(park);
+                tap::skip("no task slot");
+                return;
+            }
+            kos_cap_grant const caps[1] = {{park, KOS_CAP_WAIT}};
+            auto const sibling = kos::thread::create(fault_sibling, nullptr, "ksib", 10,
+                                                    KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                    nullptr, 0, nullptr, 0, nullptr, 0, caps, 1,
+                                                    /*authority=*/0, /*cap_dest=*/nullptr, task);
+            void* const target = reinterpret_cast<void*>(static_cast<uintptr_t>(addr));
+            auto const victim = kos::thread::create(kernel_state_reader, target, "kvic", 10,
+                                                   KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                   nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
+                                                   0, /*authority=*/0, /*cap_dest=*/nullptr,
+                                                   task);
+            if (not sibling.valid() or not victim.valid())
+            {
+                (void)kos_task_kill(task);
+                (void)kos_handle_close(park);
+                tap::skip("pool too small for the reader and its sibling");
+                return;
+            }
+            char const* what = "translation root";
+            if (which == 1)
+            {
+                what = "per-core block";
+            }
+            tap::diag("%s at 0x%lx, read from ring 3", what, static_cast<unsigned long>(addr));
+            TAP_CHECK(victim.join(FAULT_JOIN_US) == 0);
+            TAP_CHECK(sibling.join(FAULT_JOIN_US) == 0);
+            TAP_CHECK(kos_task_kill(task) == 0);
+            TAP_CHECK(kos_handle_close(park) == 0);
+            ++probed;
+        }
+        TAP_CHECK(probed > 0);
+    }
 #endif
 
     // Root has memory authority but must not grant an unreserved kernel address. Do not reject
@@ -3048,6 +3115,45 @@ namespace selftest
                   cores_after);
         TAP_CHECK(cores_after == static_cast<unsigned>(KICKOS_KERNEL_CORES));
         TAP_CHECK(accounted_after == cores_after);
+    }
+
+    // Absolute words the link stores in the app's own data. Volatile, so each is read from
+    // memory and not folded from its initializer.
+    uint32_t g_reloc_target = 0x5eedu;
+    uint32_t* volatile g_reloc_data_ptr = &g_reloc_target;
+    __attribute__((noinline)) uint32_t reloc_text_target()
+    {
+        return g_reloc_target + 1u;
+    }
+    uint32_t (*volatile g_reloc_text_ptr)() = &reloc_text_target;
+    uint32_t volatile g_ctor_ran = 0;
+    struct CtorWitness
+    {
+        CtorWitness()
+        {
+            g_ctor_ran = 1;
+        }
+    };
+    CtorWitness g_ctor_witness;
+
+    // The app's initialized pointers and constructor table hold link-time addresses the load
+    // relocated. Each must equal the address the running code computes for the same object,
+    // which on x86_64 is the app window's alias and not the kernel's view of it.
+    void t_app_pointers_relocated()
+    {
+        uint32_t* const data = g_reloc_data_ptr;
+        uint32_t (*const text)() = g_reloc_text_ptr;
+        tap::diag("data word 0x%lx, text word 0x%lx",
+                  static_cast<unsigned long>(reinterpret_cast<uintptr_t>(data)),
+                  static_cast<unsigned long>(reinterpret_cast<uintptr_t>(text)));
+        TAP_CHECK(g_ctor_ran == 1u);
+        TAP_CHECK(data == &g_reloc_target);
+        TAP_CHECK(text == &reloc_text_target);
+        if (data == &g_reloc_target and text == &reloc_text_target)
+        {
+            TAP_CHECK(*data == 0x5eedu);
+            TAP_CHECK(text() == 0x5eeeu);
+        }
     }
 #endif
 }

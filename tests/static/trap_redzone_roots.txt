@@ -693,6 +693,12 @@ exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,SYSPRIV,EXITK,RET rea
 unsized x86_64 kickos_x86_64_switch_now 192 calls=?kickos_bench_switch_done reason: 8 + 8 + 176 read off switch.S; the incoming frame's resume is a jmp and runs no C
 unsized x86_64 kickos_panic_stack_enter 8 reason: panic_stack.S, the call's return address on the stack it leaves, then a cli, a mov and a jmp; the pushq $0 lands on the reporter's array and is KICKOS_X86_64_PANIC_FRAME
 
+# The map editor's three walks, one activation per paging level from the running root down:
+# aspace_init adopts four or five levels, LEVEL_MAX bounding it at five.
+recurse x86_64 aspace_x86_64.cc:free_subtree 5 reason: one activation per level, a leaf recursing no further
+recurse x86_64 aspace_x86_64.cc:prune_empty 5 reason: one activation per level, the leaf level returning before its loop
+recurse x86_64 aspace_x86_64.cc:map_into 5 reason: one activation per level, the leaf level storing descriptors instead
+
 # --- the corpus floor ----------------------------------------------------------
 # SECONDARY, and exactly one record per arch. Which units a run measures is settled against
 # the build's own compile database; what is left for a count to catch is a tree whose compile
@@ -707,7 +713,7 @@ floor   rv32imac files=75 nodes=700 reason: all 7 declared rv32imac presets swep
 floor   rxv3     files=75 nodes=650 reason: all 4 declared rxv3 presets swept, the first three 2026-09-12 and rx72m-bench 2026-09-20; smallest 99 files/852 nodes on rx72m-flat, largest 127 files/1101 nodes on rx72m-bench
 floor   armv8a   files=90 nodes=700 reason: all 16 declared armv8a presets swept 2026-09-26; smallest 134 files/1174 nodes on qemu-arm64, largest 142 files and 1360 nodes on qemu-arm64-benchsmp12
 floor   rv64imac files=90 nodes=700 reason: all 6 declared rv64imac presets swept 2026-09-25; smallest 133 files/1206 nodes on qemu-riscv64 and -sv48, largest 137 files on -benchsmp and -benchsmp2 and 1372 nodes on -benchsmp
-floor   x86_64   files=85 nodes=700 reason: both declared x86_64 presets swept 2026-09-25, counted after the units no application map LOADs; 108 files/1022 nodes on qemu-x86_64, 110 files/1063 nodes on qemu-x86_64-bench
+floor   x86_64   files=85 nodes=700 reason: all 6 declared x86_64 presets swept 2026-09-28, counted after the units no application map LOADs; smallest 116 files/1224 nodes on qemu-x86_64, largest 121 files on the four SMP presets and 1393 nodes on -smp4, -smp8 and -smp12
 floor   lx6      files=75 nodes=650 reason: all 5 declared lx6 presets swept, the first three 2026-09-12, esp32-wroom-bench 2026-09-13 and esp32-wroom-benchsmp 2026-09-22; smallest 103 files/909 nodes on esp32-wroom, largest 127 files/1182 nodes on esp32-wroom-benchsmp
 class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
 class   lx6 PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic

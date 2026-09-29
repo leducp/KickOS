@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The app symbols x86_64 kernel code may name, each with what the site does with the address
+# (tests/static/check_x86_64_app_split.py, docs/design-m10-kernel-share.md section 1.3). The
+# linker answers an app symbol at the kernel's view of it, the loader address, while a task
+# reaches it at that address plus the user offset. So a site that HANDS the address to a thread
+# adds the offset, and every other site uses the kernel's view on purpose.
+#
+# One record per line: <symbol> <what the kernel does with it>. An entry no image references is
+# refused as stale.
+
+kickos_root_entry         handed to thread_create as root's entry: kmain adds the user offset
+kickos_user_thread_return seated as an unprivileged thread's return address: arch_context_init adds user_alias_offset
+_kickos_heap_start        kmain prints the heap's size, subtracting the two bounds
+_kickos_heap_limit        the other end of the same subtraction
+__kickos_app_rom_start    the window's bounds: aspace.cc adds the user offset for task mappings, and alias_fits and app_relocate read the kernel's view
+__kickos_app_rom_end      the same bounds
+__kickos_app_sram_start   the same bounds
+__kickos_app_sram_end     the same bounds
+kickos_init_args          kmain writes root's arguments through the kernel's view of the image's own data pages, which root's space maps
+kickos_app_build_time     kmain prints the app's build stamp through the kernel's view

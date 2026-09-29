@@ -158,8 +158,9 @@ kickos_x86_64_thread_exit:
  * They cannot be interrupted either: IA32_FMASK clears the interrupt flag, and the two
  * classes the flag does not hold off have interrupt-stack-table slots of their own (desc.h).
  *
- * The caller is always at ring 3 here, arranged and not checked: arch_syscall below calls the
- * dispatch directly when already privileged, which is what lets the swapgs be unconditional.
+ * The caller is always at ring 3 here, arranged and not checked: a privileged caller takes
+ * karch_syscall below, which calls the dispatch directly, and that is what lets the swapgs be
+ * unconditional.
  * The kernel block is empty on arrival, a thread reaching ring 3 only through the resume
  * epilogue, so the entry may stand at its top.
  */
@@ -215,21 +216,29 @@ kickos_x86_64_syscall_entry:
     movq    %rax, KOS_F_RAX(%rsp)
     jmp     kickos_x86_64_resume
 
-/* arch_syscall(nr, a0, a1, a2, a3), and arch_syscall64 is the same entry.
- *
- * The privilege test is here because SYSCALL records no privilege level; cs is readable at
- * either level and cannot be forged. A privileged caller reaches the dispatch directly.
+/* arch_syscall(nr, a0, a1, a2, a3), and arch_syscall64 is the same entry: the trap an
+ * UNPRIVILEGED thread takes. .apptrap because a task fetches it and pe_image.ld claims this
+ * archive's .text for the kernel's half. No privileged thread runs app code where the board
+ * translates (docs/design-m6-mmu.md), so it carries no privileged branch.
  */
+    .pushsection .apptrap, "ax"
     .balign 16
     .globl arch_syscall
     .globl arch_syscall64
 arch_syscall:
 arch_syscall64:
-    movw    %cs, %ax
-    testb   $3, %al
-    je      .Lsyscall_privileged
     movq    %rcx, %r10
     syscall
     ret
-.Lsyscall_privileged:
+    .popsection
+
+/* karch_syscall(nr, a0, a1, a2, a3), and karch_syscall64: the kernel-text trap a privileged
+ * caller takes. SYSCALL records no privilege level to branch on, and a privileged caller
+ * reaches the dispatch directly, its arguments already in the psABI registers.
+ */
+    .balign 16
+    .globl karch_syscall
+    .globl karch_syscall64
+karch_syscall:
+karch_syscall64:
     jmp     syscall_dispatch

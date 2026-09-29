@@ -5790,8 +5790,8 @@ is the false statement, and the app leaving the kernel's half is what retires it
 `aspace_x86_64.cc` reaches the linker in every image carrying the chip archive, while
 `kernel/mem/frame_pool.cc` is compiled only under `KICKOS_HAVE_ASPACE`. The kernel-free images
 declined `kickos_frame_alloc` and `kickos_frame_free` themselves; an image with the KERNEL and no
-pool takes them from `arch/x86/x86_64/nopool_x86_64.cc`, on the application-image link line in one
-place so a new app cannot forget it. Both bodies REFUSE on the wire and end through
+pool took them from `nopool_x86_64.cc`, on the application-image link line in one place so a
+new app could not forget it; M10.1.1 deleted it when q35 began to translate. Both bodies REFUSE on the wire and end through
 `kfault_terminate` rather than answering 0: 0 is what arch.h calls exhaustion, so a build with no
 pool at all would read to every caller as a full one that happened to be empty.
 

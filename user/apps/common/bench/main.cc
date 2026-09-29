@@ -483,15 +483,16 @@ namespace
     // a 3-slot pool that spawn is -KOS_ENOMEM.
     constexpr uint8_t CR_PRIO = 4;
 
-    // Written by measure_callreply BEFORE it spawns either peer, so neither peer races it.
-    Atomic<uint32_t, Order::RELAXED> g_cr_len{16};
-
-    // Same write discipline as g_cr_len.
-    Atomic<uint32_t, Order::RELAXED> g_cr_donating{0};
-
-    // Non-zero puts the caller on kos_call_generic, which issues KOS_SYS_CALL without
-    // attempting the register form. Same write discipline as g_cr_len.
-    Atomic<uint32_t, Order::RELAXED> g_cr_generic{0};
+    // The caller's parameters travel in its thread argument, by value: a caller in another
+    // task runs on its own copy of the app's data where the board translates, taken when that
+    // task was created, so a global written afterwards never reaches it.
+    constexpr uintptr_t CR_LEN_MASK = 0x1FFu; // KOS_EP_MSG_MAX fits
+    // kos_call_generic, which issues KOS_SYS_CALL without attempting the register form.
+    constexpr uintptr_t CR_GENERIC = 1u << 9;
+    constexpr uintptr_t CR_DONATING = 1u << 10;
+    // A row name tools/bench/exit_rows.py does not read as the same-task row.
+    constexpr uintptr_t CR_XTASK = 1u << 11;
+    static_assert(KOS_EP_MSG_MAX <= CR_LEN_MASK, "a message length must fit its field");
 
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
@@ -523,16 +524,17 @@ namespace
         }
         kos_sem_post(2);
     }
-    void callreply_caller(void*) // caps: E(SIGNAL)@1, done@2
+    void callreply_caller(void* arg) // caps: E(SIGNAL)@1, done@2
     {
+        uintptr_t const params = reinterpret_cast<uintptr_t>(arg);
         unsigned char buf[KOS_EP_MSG_MAX];
-        size_t const len = static_cast<size_t>(g_cr_len);
+        size_t const len = static_cast<size_t>(params & CR_LEN_MASK);
         for (unsigned i = 0; i < sizeof(buf); i++)
         {
             buf[i] = static_cast<unsigned char>(i);
         }
         // Selected OUTSIDE the timed loop, so neither arm carries the other's branch.
-        bool const generic = (g_cr_generic != 0);
+        bool const generic = (params & CR_GENERIC) != 0;
         uint64_t t0 = kos::clock_now();
         uint32_t reps = 0;
         if (generic)
@@ -570,8 +572,13 @@ namespace
                     static_cast<uint64_t>(CALLREPLY_REPS) * 1000000000ull / d_ns);
                 ns_per_rt = static_cast<uint32_t>(d_ns / CALLREPLY_REPS);
             }
+            char const* row_name = "call/reply";
+            if ((params & CR_XTASK) != 0)
+            {
+                row_name = "xtask call/reply";
+            }
             char const* shape = "";
-            if (g_cr_donating != 0)
+            if ((params & CR_DONATING) != 0)
             {
                 shape = " [caller outranks server, D1 donates]";
             }
@@ -583,8 +590,8 @@ namespace
             char s[256];
             ksnprintf(
                 s, sizeof(s),
-                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s%s\n",
-                static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
+                "  %s: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s%s\n",
+                row_name, static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
                 static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
                 static_cast<unsigned>(d_ns / 1000000ull), path, shape);
             kickos::emit(s);
@@ -595,16 +602,22 @@ namespace
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
     // Both must stay above root (see CR_PRIO).
     void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio,
-                           uint32_t generic)
+                           uint32_t generic, kos_task_t server_task = KOS_TASK_NONE,
+                           kos_task_t caller_task = KOS_TASK_NONE)
     {
-        g_cr_len = len;
-        uint32_t donating = 0;
+        uintptr_t params = len & CR_LEN_MASK;
         if (caller_prio > server_prio)
         {
-            donating = 1;
+            params |= CR_DONATING;
         }
-        g_cr_donating = donating;
-        g_cr_generic = generic;
+        if (generic != 0)
+        {
+            params |= CR_GENERIC;
+        }
+        if (caller_task != KOS_TASK_NONE)
+        {
+            params |= CR_XTASK;
+        }
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -614,8 +627,13 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
-        auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2);
-        auto cl = kos::thread::create_caps(callreply_caller, nullptr, "cr_cl", caller_prio, ccaps, 2);
+        auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           server_task);
+        auto cl = kos::thread::create_caps(callreply_caller, reinterpret_cast<void*>(params),
+                                           "cr_cl", caller_prio, ccaps, 2,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           caller_task);
         if (not sv.valid() or not cl.valid())
         {
             // A lone peer holds its slot for the whole run unless drained HERE: the server
@@ -647,17 +665,193 @@ namespace
     // One size only: the D1 cost does not scale with the message.
     constexpr uint32_t CR_DONATE_SPAN = 32;
 
+    // Every switch the cross-task rows drive goes from one task to another, which on a
+    // translating board is a change of address space; every row above stays in root's task.
+    constexpr uint32_t XT_SPAN = 16;
+    constexpr uint32_t XT_ROUNDS = 20000;
+    // A spawn costs orders of magnitude more than a switch, so fewer reps carry it.
+    constexpr uint32_t SPAWN_REPS = 200;
+
     // A distribution bucket counts in uint32_t (kernel/include/kickos/bench_hist.h), so 2^32
     // samples to one slot wrap silently. Each call/reply rep and each ping-pong round drives two
     // switches, each posting one sample to every switch-path slot, so this is the busiest slot to
     // an order of magnitude; the margin below carries the rest.
     constexpr uint64_t BENCH_BUSIEST_SLOT =
         2ull * (static_cast<uint64_t>(CALLREPLY_REPS)
-                    * (2ull * (sizeof(CR_SPANS) / sizeof(CR_SPANS[0])) + 1ull)
-                + static_cast<uint64_t>(THROUGHPUT_REPORTS) * ROUNDS_PER_REPORT);
+                    * (2ull * (sizeof(CR_SPANS) / sizeof(CR_SPANS[0])) + 2ull)
+                + static_cast<uint64_t>(THROUGHPUT_REPORTS) * ROUNDS_PER_REPORT + XT_ROUNDS);
     static_assert(BENCH_BUSIEST_SLOT < (1ull << 31),
                   "these rep counts drive a distribution slot towards a 32-bit wrap; the "
                   "percentiles under it would be wrong and no row would say so");
+}
+
+namespace
+{
+    void row(char const* s)
+    {
+        kickos::emit(s);
+    }
+
+    // caps: own@1, peer@2, done@3. The leader posts first and times the whole run.
+    void xt_player(void* leads)
+    {
+        uint64_t const t0 = kos::clock_now();
+        uint32_t r = 0;
+        for (; r < XT_ROUNDS; r++)
+        {
+            if (leads != nullptr)
+            {
+                if (kos_sem_post(2) != 0 or kos_sem_wait(1) != 0)
+                {
+                    break;
+                }
+            }
+            else if (kos_sem_wait(1) != 0 or kos_sem_post(2) != 0)
+            {
+                break;
+            }
+        }
+        uint64_t const d_ns = kos::clock_now() - t0;
+        if (leads != nullptr and r == XT_ROUNDS)
+        {
+            char s[160];
+            ksnprintf(s, sizeof(s), "  xtask ping-pong: %u ns/switch  (%u switches / %u ms)\n",
+                      static_cast<unsigned>(d_ns / (2ull * XT_ROUNDS)),
+                      static_cast<unsigned>(2u * XT_ROUNDS),
+                      static_cast<unsigned>(d_ns / 1000000ull));
+            row(s);
+        }
+        kos_sem_post(3);
+    }
+
+    bool xt_task_pair(kos_task_t* a, kos_task_t* b)
+    {
+        *a = KOS_TASK_NONE;
+        *b = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, a) != 0)
+        {
+            return false;
+        }
+        if (kos_task_create(nullptr, 0, 0, b) != 0)
+        {
+            (void)kos_task_slay(*a, KOS_TIMEOUT_NONE);
+            *a = KOS_TASK_NONE;
+            return false;
+        }
+        return true;
+    }
+
+    void xt_task_drop(kos_task_t t)
+    {
+        if (t != KOS_TASK_NONE)
+        {
+            (void)kos_task_slay(t, KOS_TIMEOUT_NONE);
+        }
+    }
+
+    void xt_pingpong()
+    {
+        kos_task_t ta = KOS_TASK_NONE;
+        kos_task_t tb = KOS_TASK_NONE;
+        if (not xt_task_pair(&ta, &tb))
+        {
+            row("  xtask ping-pong: SKIP (task pool too small)\n");
+            return;
+        }
+        kos::Semaphore x(0), y(0), done(0);
+        kos_cap_grant acaps[] = {{x.id(), CH_FULL}, {y.id(), CH_FULL}, {done.id(), CH_FULL}};
+        kos_cap_grant bcaps[] = {{y.id(), CH_FULL}, {x.id(), CH_FULL}, {done.id(), CH_FULL}};
+        auto pa = kos::thread::create_caps(xt_player, &x, "xt_a", CR_PRIO, acaps, 3,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, ta,
+                                           nullptr, 0, PLAYER_CORES);
+        auto pb = kos::thread::create_caps(xt_player, nullptr, "xt_b", CR_PRIO, bcaps, 3,
+                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, tb,
+                                           nullptr, 0, PLAYER_CORES);
+        if (pa.valid() and pb.valid())
+        {
+            done.wait();
+            done.wait();
+        }
+        else
+        {
+            row("  xtask ping-pong: SKIP (thread pool too small)\n");
+        }
+        xt_task_drop(ta);
+        xt_task_drop(tb);
+    }
+
+    void xt_callreply()
+    {
+        kos_task_t ts = KOS_TASK_NONE;
+        kos_task_t tc = KOS_TASK_NONE;
+        if (not xt_task_pair(&ts, &tc))
+        {
+            row("  xtask call/reply: SKIP (task pool too small)\n");
+            return;
+        }
+        measure_callreply(XT_SPAN, CR_PRIO, CR_PRIO, 0, ts, tc);
+        xt_task_drop(ts);
+        xt_task_drop(tc);
+    }
+
+    void spawn_child(void*)
+    {
+    }
+
+    void spawn_line(char const* what, uint32_t reps, uint64_t d_ns)
+    {
+        char s[160];
+        if (reps != SPAWN_REPS)
+        {
+            ksnprintf(s, sizeof(s), "  spawn/exit: %s SKIP (refused after %u reps)\n", what,
+                      static_cast<unsigned>(reps));
+        }
+        else
+        {
+            ksnprintf(s, sizeof(s), "  spawn/exit: %s %u ns  (%u reps / %u ms)\n", what,
+                      static_cast<unsigned>(d_ns / SPAWN_REPS), static_cast<unsigned>(reps),
+                      static_cast<unsigned>(d_ns / 1000000ull));
+        }
+        row(s);
+    }
+
+    // A spawn joined before the next, the child outranking root so it runs and exits at once:
+    // the round trip is create, first entry, exit and join. The task row adds the task's
+    // creation and its release, which on a translating board is a whole address space.
+    void spawn_exit()
+    {
+        uint64_t t0 = kos::clock_now();
+        uint32_t n = 0;
+        for (; n < SPAWN_REPS; n++)
+        {
+            auto h = kos::thread::create_caps(spawn_child, nullptr, "sp_t", CR_PRIO, nullptr, 0);
+            if (not h.valid() or h.join(KOS_TIMEOUT_NONE) != 0)
+            {
+                break;
+            }
+        }
+        spawn_line("thread", n, kos::clock_now() - t0);
+
+        t0 = kos::clock_now();
+        n = 0;
+        for (; n < SPAWN_REPS; n++)
+        {
+            kos_task_t t = KOS_TASK_NONE;
+            if (kos_task_create(nullptr, 0, 0, &t) != 0)
+            {
+                break;
+            }
+            auto h = kos::thread::create_caps(spawn_child, nullptr, "sp_k", CR_PRIO, nullptr, 0,
+                                              KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                              t);
+            bool const ran = h.valid() and h.join(KOS_TIMEOUT_NONE) == 0;
+            if (kos_task_slay(t, KOS_TIMEOUT_NONE) != 0 or not ran)
+            {
+                break;
+            }
+        }
+        spawn_line("task", n, kos::clock_now() - t0);
+    }
 }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -1127,6 +1321,9 @@ int main(int, char**)
     w4_push();
     w4_reseat();
 #endif
+    xt_pingpong();
+    xt_callreply();
+    spawn_exit();
     kickos::emit("bench: done\n");
     return 0;
 }

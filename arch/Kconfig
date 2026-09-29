@@ -240,12 +240,13 @@ config CHIP_VIRT_RV64
 	select ARCH_RV64IMAC
 	select HAS_ASPACE
 
-# The QEMU `q35` machine (ICH9). HAS_ASPACE is absent deliberately: selecting it declares
-# memory ENFORCED, while this port's image is one flat link whose leaves carry kernel text
-# and every thread's stack alike.
+# The QEMU `q35` machine (ICH9). Translating: the firmware's identity map is the kernel half,
+# supervisor-only, and a task reaches its frames and the app window one user slot above their
+# physical address (docs/design-m10-kernel-share.md section 1).
 config CHIP_Q35
 	bool
 	select ARCH_X86_64
+	select HAS_ASPACE
 
 config CHIP_RX72M
 	bool

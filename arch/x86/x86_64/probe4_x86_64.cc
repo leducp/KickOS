@@ -1538,11 +1538,18 @@ void kickos_thread_fault_exit(void)
 void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size)
 {
     kickos::q35::ram_publish(ram_base, static_cast<size_t>(ram_size));
-    // BEFORE arch_init, which is where the grant runs.
     census_before_grant();
     arch_init();
+    // The kernel's bring-up opens nothing to ring 3; this image has no space to run its probes
+    // in, so it grants the image and the arena itself.
+    bool const kernel_granted_nothing = kickos::x86_64::user_leaves_granted() == 0;
+    kickos::x86_64::ring3_grant_range(kickos::x86_64::image_base(),
+                                      kickos::x86_64::image_base()
+                                          + kickos::x86_64::image_size());
+    kickos::x86_64::ring3_grant_range(arch_ram_base(), arch_ram_base() + arch_ram_size());
 
     put("\n" KICKOS_X4_TOKEN " arms\n");
+    arm("kernel_grants_nothing", kernel_granted_nothing);
     arm_registers();
     census_report();
     arm_oracles();
@@ -1553,10 +1560,10 @@ void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size)
     run_user_fault(fault_class_outb, "port_write");
     arm_sysret();
 
-    // The privileged leaf's own branch: a ring 0 caller reaches the dispatch by a plain call,
-    // SYSCALL recording no privilege level for the entry to branch on.
+    // The kernel-text trap: a ring 0 caller reaches the dispatch by a plain call, SYSCALL
+    // recording no privilege level for the entry to branch on.
     uint64_t const before = g_sys_calls;
-    uintptr_t const r = arch_syscall(nr_ring0, 0, 0, 0, 0);
+    uintptr_t const r = karch_syscall(nr_ring0, 0, 0, 0, 0);
     arm("ring0_syscall_result", r == static_cast<uintptr_t>(ring0_result));
     arm("ring0_syscall_dispatched", g_sys_calls == before + 1);
     arm("ring0_syscall_on_caller_stack", not in_block(g_sys_rsp, g_kblock_a));

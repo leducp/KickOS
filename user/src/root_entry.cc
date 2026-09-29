@@ -21,10 +21,10 @@ extern "C"
     extern void (*__kickos_app_init_array_start[])();
     extern void (*__kickos_app_init_array_end[])();
 
-#if KICKOS_HAVE_ASPACE
+#if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
     // DWARF EH unwind tables and libgcc's registrar for them, app-side where the image is split.
     // Weak: null in a freestanding image, and on a target whose unwinder finds the tables another
-    // way.
+    // way. A PE32+ image links no libgcc and cannot resolve a weak undefined reference.
     extern unsigned char __eh_frame_start[];
     // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
     // and optional by libgcc's own contract, so no linker script can state it.
@@ -34,7 +34,7 @@ extern "C"
 
 extern "C" void kickos_root_entry(void*)
 {
-#if KICKOS_HAVE_ASPACE
+#if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
     // Before the ctors below, one of which may throw.
     if (__register_frame != nullptr)
     {

@@ -94,7 +94,7 @@ need "no dispatch line" \
      "^  $TOK dispatch rsp=0x[0-9a-f]\{16\} flags=0x[0-9a-f]\{16\} cs=0x[0-9a-f]\{16\}\$"
 
 listed=0
-for a in efer_sce_set fmask_clears_if fmask_clears_iopl \
+for a in kernel_grants_nothing efer_sce_set fmask_clears_if fmask_clears_iopl \
          star_syscall_cs star_sysret_base lstar_in_image \
          smep_smap_clear user_leaves_granted \
          walked_tables_census_nonempty walked_tables_not_user_reachable \
