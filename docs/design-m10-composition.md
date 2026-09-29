@@ -443,8 +443,8 @@ a restarted server is ready again at its first receive, and in the gap its calle
 3. If the composition keeps it resident, wait on the init's notification. Handle deaths first;
    then, for each ready event whose server is still the instance that became ready, start the
    pending tasks, in file order, whose dependencies are now all ready. On a death, let the
-   kernel's teardown finish, raise the watchers' bits, and restart the task with the same
-   grants while its count lasts -- a packaged driver by running its descriptor's sequence again,
+   kernel's teardown finish, raise the watchers' bits, release the hold on the dead task so its
+   slot and domain are free, and restart the task with the same grants while its count lasts -- a packaged driver by running its descriptor's sequence again,
    which for a console repeats the publish, the kernel having taken the console back when its
    only receiver died. Once the count is spent, drop the right to hand out its endpoint's
    receiving, so its callers answer `-KOS_ECONNREFUSED` from then on, and report each task still

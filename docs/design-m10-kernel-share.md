@@ -2,9 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # M10.1 -- the kernel share
 
-> **Status: ACTIVE -- written one section per part, each reviewed before its code.** This
-> revision carries section 1 only, the x86 address spaces M10.1.1 lands. The sections for the
-> ABI changes, and the table listing every header they touch, come with M10.1.2.
+> **Status: ACTIVE -- written one section per part, each reviewed before its code.** Section 1,
+> the x86 address spaces, is what M10.1.1 built. Sections 2 to 7 are the ABI changes of M10.1.3 to
+> M10.1.8, section 8 lists every header they touch so the ABI is reviewed as one, and section 9
+> is the baseline each part is measured against. Each part corrects its own section if its code
+> teaches otherwise.
 > `roadmap.md`'s M10 section assigns the numbers and carries the rulings;
 > [`design-m10-composition.md`](design-m10-composition.md) is the userspace design these
 > mechanisms serve.
@@ -281,3 +283,325 @@ port grant (M10.1.8); device windows at kernel-chosen addresses (M10.1.7).
   put it, so it is proposed.
 - **Whether the bring-up images X1 to X6 stay.** The proposal keeps all six, changing only the
   one that asserted the broad grant.
+
+## 2. The task-creation authority and a 32-bit authority word (M10.1.3)
+
+**Creating a task becomes an authority, and the word that carries authorities stops being a
+byte.** Today `KOS_SYS_TASK_CREATE` is gated by nothing: any thread mints tasks, the hole the
+object-budget item has recorded since M8.5, where one unprivileged caller seats a thread in every
+task slot and empties the pools. And the authority word is eight bits wide in
+`kos_thread_params::authority`, `Thread::authority` and `kickos::CapAuthority`, with six spent.
+
+- **The word is 32 bits wherever it appears**: `kos_thread_params::authority`,
+  `Thread::authority`, `CapAuthority` and its mirror `kos_cap_authority` in
+  `user/include/kickos/sys/abi.h`, the mask `kos_cap_narrow(KOS_CAP_AUTHORITY, mask)` takes, and
+  `kickos_app_authority()` with `KICKOS_APP_AUTHORITY` in `system/include/kickos/sys/init.h`.
+  In `kos_thread_params` it moves beside `core_mask`, the other 32-bit word, and `cap_count`
+  follows both, so the tail stays packed and its offset asserts change with it.
+- **The tasks authority is bit 6** (section 8 lists every proposed name). It gates both ways a
+  task is born:
+  `KOS_SYS_TASK_CREATE`, and the implicit task `task_for` builds inside `thread_create_call`
+  (`kernel/syscall/syscall_thread.cc`) when a spawn brings its own `mem_base` or changes
+  privilege. Gating the explicit call alone would leave the M8.5 hole open through the spawn.
+- **What stays ungated.** A thread spawned into the caller's own task needs no authority: the
+  task's budgets already bound it. Seating a thread in a task the caller created stays gated by
+  creatorship, as today, since only a holder of the bit can have created one.
+- **Root holds `CAP_AUTH_ALL`**, which gains the bit, and the fallback app authority gains it
+  too, matching the default composition's `memory`, `system` and `tasks` for `main`.
+- **A bit and not a capability**, which the TODO item asked to settle: every other system power
+  is a bit of this word, seated at spawn and narrowed by `kos_cap_narrow`, and a capability
+  would need an object kind and a table slot to say the same thing.
+
+**Arms.** A task create without the bit is refused `-KOS_EPERM` and succeeds with it; an implicit
+task without the bit is refused, and a plain spawn into the caller's task still succeeds; the
+first undefined bit, now bit 7, is refused at spawn and by `kos_cap_narrow`, which
+`t_authority_cap` asserts of bit 6 today; a narrow of the full 32-bit word; and the M8.5 adversary,
+an unprivileged thread minting tasks, refused at the first.
+
+**Backends and cost.** Portable kernel, the ABI header, the init library and every app that
+declares an authority. Nothing on the switch path; `Thread::authority` widens into padding or
+moves `KICKOS_THREAD_EXPECTED_SIZE`, which is measured rather than assumed.
+
+## 3. Handing out receiving, and the errno split (M10.1.4)
+
+**An endpoint whose server is being restarted answers "try again", and one that will never be
+served again answers "refused".** Today one number says both. `Endpoint::recv_holders` counts
+the WAIT-bearing capabilities, and when it is zero a send or call answers `-KOS_EPIPE` at the
+early-outs in `endpoint_send` and `endpoint_call` (`kernel/syscall/syscall_ipc.cc`), and parked
+senders are woken with it when the last WAIT holder closes (`kernel/syscall/cap.cc`).
+`endpoint_create` gives its creator a WAIT-bearing capability counted as a receiver, and
+`kos_cap_narrow` narrows the authority pseudo-handle only, so an init that created an endpoint
+cannot keep it open without being counted as its server.
+
+- **A fourth right, the handout right**: its holder may delegate WAIT without holding WAIT
+  itself. It is the only right a delegation may turn into another, and only into WAIT. It fits
+  the entry: three rights bits plus the four of the call sequence's high half leave one spare bit
+  in `CapEntry`'s byte, and the staged grant byte packs four type bits beside four rights bits.
+- **`Endpoint::handout_holders`** counts the capabilities carrying it, a byte beside
+  `recv_holders` in the padding ahead of `server` that `EP_NARROW_BYTES` counts: three bytes
+  become four, five on an AMP node become six, and each stays inside one pointer alignment step,
+  so no `Endpoint` grows. `endpoint_create` gives the creator all four rights, counted in both.
+- **`kos_cap_narrow` narrows any capability**, not only the authority word; that is how an init
+  drops WAIT and keeps HANDOUT, and a narrow that drops the last WAIT runs the same wake a close
+  does.
+- **The split.** With no local receiver, a send or call answers `-KOS_EAGAIN` while a handout
+  holder exists and `-KOS_ECONNREFUSED`, 111 and new, once none does, and parks in neither case.
+  A sender parked when the last receiver leaves is woken with the same choice. `-KOS_EPIPE` keeps
+  exactly one meaning, the server died holding the request, from the reply arm in `cap.cc`. The
+  call path's refusal of a dying receiver before it took the request is the no-receiver case and
+  joins the split. The fast path (`kernel/syscall/syscall_ipc_fast.cc`) answers no refusal of
+  its own and falls through to `endpoint_call`, so it changes by nothing.
+- **Every caller testing for `-KOS_EPIPE`** moves with it: `tests/tap/tap.cc`,
+  `user/src/newlib_stubs.cc`, `user/src/driver_service.cc`, `user/include/kickos/sys/emit.h` and
+  `driver_service.h`, the SPI and I2C driver headers, the `xmcssc` and `k64dspi` drivers,
+  `system/init/sim/service_list.cc`, `lib/strerror.cc`, the apps and unit tests that assert it,
+  and `tests/integration/check_sim_drvdeath.sh`. Far AMP endpoints keep today's codes: the wire
+  carries no errno and a far node has no local receiver to count.
+
+**Arms.** No receiver and no holder answering `-KOS_ECONNREFUSED`, the existing endpoint-death
+arms updated to it; a holder present answering `-KOS_EAGAIN`, then WAIT delegated at a spawn and
+a call that succeeds; a holder that cannot receive and is not counted as a receiver; a caller
+parked when the last receiver dies, with and without a holder; the server dying with the request,
+still `-KOS_EPIPE`; the same refusals through the register call path.
+
+**Backends and cost.** Portable IPC code only; no arch assembly reads `recv_holders`. The extra
+test sits on the refusal branch, and `static_assert`s hold `CapEntry` and `Endpoint` at their size.
+
+## 4. Deaths and first receives, reported to the creator (M10.1.5)
+
+**A creator learns, on a notification it names, when a task it created has died and when it has
+become ready.** Today `sched::exit_current` wakes joiners, task slayers and `kos_wait_last`, and
+raises no notification; `notify_raise` has two callers, `notify_signal` and `irq_event_isr`; and
+nothing records a thread's first receive. The kernel does not know which endpoint a task serves,
+so the ready report has to be told.
+
+- **`kos_task_watch(task, notify_cap, ready_ep)`**, a new call, arms both reports on a task the
+  caller created (`-KOS_EPERM` otherwise, through `task_created_by`). A capability handle means
+  something only in its holder's table, so the task records the OBJECTS: the notification by
+  generational object handle, with the capability's badge as the bits to raise, and the
+  endpoint whose first receive means ready, or none for a task that serves nothing.
+- **The watch holds the notification.** Arming takes a reference on the object in
+  `kernel().notify_refs`, as `notify_bind` does, so the creator closing its capability does not
+  free what the watch raises into: the report is still raised, and whoever holds another name
+  for the object still receives it. The reference is dropped when the watch ends -- the watched
+  task's slot freed, or the watch re-armed or disarmed by the creator passing no notification --
+  and arming at the object's reference ceiling is refused `-KOS_EOVERFLOW`, as `notify_badge` is.
+  The endpoint takes no reference: it is only compared, by generational handle, so an endpoint
+  freed and its slot reused never matches.
+- **Death** raises the bits once, when the task's last member has exited and `cap_teardown` has
+  run, which is the point `WAIT_TASK_EMPTY` wakes a slayer. By then everything its threads held
+  is free -- their stacks, their windows (section 5 makes a window outlive no holder), their
+  capabilities and the lines they claimed. The task itself is not: an explicit task is reserved
+  by its creator until the creator releases it, which is what lets `kos_task_state` still answer
+  for that instance and keeps its handle from being reused under the creator.
+- **A restart releases the dead instance first.** The init reads the empty state, releases its
+  hold with `kos_task_kill`, which on an empty task cancels nothing and frees the slot and its
+  domain, and only then creates the new task. The kernel lifecycle does not change; the step is
+  the init's, in `design-m10-composition.md`'s walk.
+- **Ready** raises the bits once, in `endpoint_recv_locked`, the first time a member waits on the
+  armed endpoint. Every receive reaches it, the fast path serving calls only.
+- **`kos_task_state(task)`**, a new creator-only call, answers whether that instance has members
+  and whether it has become ready, and `-KOS_EBADF` once its slot is freed. A notification's bits
+  merge a death and a ready into one wake, so the init reads the state of each task the badge
+  names, deaths first, as `design-m10-composition.md` requires.
+- **The generation is the task handle's.** A restart is a new kernel task and a new handle, whose
+  generation (`Task::gen`) differs from the dead one's, so the instance a ready event belongs to
+  is the handle the init holds, and no counter is added.
+- **Nothing names the init.** The report goes to whoever armed it, which only the creator can,
+  so a nested init's children report to it.
+
+**Arms.** Death of a task that exits and of one that faults; a respawn from the death wake,
+after the hold is released, taking the same window and the freed slot back; the creator closing
+its notification capability before the death, the report still raised through a second name; ready raised once, and only for the armed endpoint; a stale handle
+answering `-KOS_EBADF` after a restart while the new one waits for its own first receive; arming
+a task one did not create refused; a second-level creator receiving its own children's reports.
+
+**Backends and cost.** Portable kernel. Two handles and a badge on `Task` for each of
+`KICKOS_MAX_TASKS`, and one notification reference per armed watch; one compare on the receive
+slow path and one test on the last exit.
+
+## 5. A window list in spawn (M10.1.6)
+
+**A spawn carries a list of windows: device registers, shared memory read-only or read-write,
+and port ranges.** Today it carries one device window, `mmio_base` and `mmio_size`, recorded as
+`Thread::dev_base` and `dev_size`, checked for a single holder by `dev_window_free`
+(`kernel/thread/thread.cc`) and read by `caller_holds_mmio_block` and `caller_holds_mmio_reg`
+(`kernel/syscall/syscall_mem.cc`), which gate `kos_periph_enable` and `kos_periph_reg_write`. A
+shared region can reach a task only as its data region, `mem_base`, always read-write.
+
+- **The entry**: `struct kos_window { uintptr_t base; uint32_t size; uint8_t kind; uint8_t
+  flags; }`, the kind a device, memory or port window, the flags read-only and uncached.
+  `kos_thread_params` loses `mmio_base` and
+  `mmio_size` and gains `windows` and a 16-bit `window_count`. `mem_base` stays: it is the task's
+  own data region, whose presence is what builds an implicit task.
+- **The bound is the kernel's, not the ABI's.** A thread keeps at most
+  a Kconfig knob's worth of entries, whose default is what the protection unit
+  has left after the regions every thread takes; the M10.2 manifest exports it and admission
+  checks it offline. A longer list is refused `-KOS_ENOMEM`, the code for descriptor capacity.
+- **Possession is per thread**, as the ruling states and as a region board enforces it. On a
+  translating board the mapping is in the task's space, so a sibling thread reaches a window
+  while its holder lives without being its holder; the kernel's checks -- one holder, the
+  peripheral seams -- still ask the thread.
+- **A window outlives no holder.** Its mapping is made when its holder is created and removed
+  when that thread exits, not when the task dies, and on a multicore board the unmap completes
+  its shootdown before the thread's record releases the window. The one-holder check counts a
+  window until that release: today `dev_window_free` skips a thread already marked dying, which
+  would let a second task be granted a device the dying holder, or its surviving siblings through
+  the task's mapping, can still reach. So a window is granted again only once no space maps it
+  and no thread holds it.
+- **The checks.** A device window stays exclusive, per entry and within one list; a memory
+  window must lie in a block the spawner reserved, as `mem_base` must today, and the read-only flag
+  encodes it read-only; the peripheral seams accept any device window the caller holds. The
+  ports kind is refused `-KOS_ENOTSUP` until section 7 lands it, so that part adds no second ABI
+  change.
+- **The list is staged on the spawner's stack** like the grant list, bounded by the knob, and
+  the trap red zone is re-measured with it.
+
+**Arms.** Two windows, both reachable and both accepted by the peripheral seams; overlap with
+another thread's window and within one list; a list over the knob; a read-only region that reads
+and faults on a write; `dev_window_exclusive` and `mmio_grant` moved onto the list. The sim grants
+exactly one window today (`arch_mpu_region_encodable` in `arch/sim/sim.cc`) and gains a second.
+
+**Backends and cost.** Portable kernel, every region backend's encoding (armv6m, armv7m, armv8m,
+the rv32 PMP, rxv3), the sim, and every spawn caller under `system/init/` and in
+`user/include/kickos/kos.h`. The window array in every thread control block is the part's main
+cost, and the one most likely to be too dear on the smallest boards: it is measured there before
+the part merges.
+
+## 6. The kernel chooses where a window sits (M10.1.7)
+
+**On a translating board the kernel maps each device and memory window at an address it chooses
+in the task's space, and `kos_window_addr` asks it.** Today no translating board maps a device
+window at all: `arch_mpu_region_encodable` answers false in `arch/arm64/armv8a/arch_armv8a.cc`,
+`arch/riscv/rv64imac/arch_rv64imac.cc` and `arch/x86/x86_64/arch_x86_64.cc`, so a spawn carrying
+a window there is refused. This part is the first device mapping in a user address space, not
+a move of one.
+
+- **Where.** Each translating backend states a window area in its user half, clear of the
+  addresses its RAM and app window occupy, and `kernel/mem/vrange.cc`'s `VirtualRanges` places
+  each window first-fit in it. Randomising the choice is the later policy the composition design
+  separates from choosing.
+- **How.** Device windows map with `ARCH_MAP_DEVICE`, which the armv8a and x86 map editors
+  honour; rv64 has no memory type in its page tables and maps them as it maps any page. A
+  holder's exit unmaps its windows, section 5's rule, and on a multicore preset the editor's
+  existing shootdown invalidates the cores holding the space before the window is released.
+- **What stays.** `mem_base`, `stack_base` and blocks from `kos_ram_alloc` keep today's
+  placement; the `kos_ram_alloc` comment in `user/include/kickos/sys.h` stops promising that a
+  delegated block keeps its address, which the ruling says was never an invariant.
+- **`kos_window_addr`** calls a new window-address syscall with a physical base, which answers
+  the caller's task
+  address for the window it holds at that physical base, and `-KOS_EPERM` for one it does not.
+  On a region board and on the sim it answers the physical base, the only address there is.
+
+**Arms.** On each translating preset, the address answered differs from the physical one and the
+device reads through it (the PL031 on `virt`); a window the caller does not hold is refused; the
+mapping is gone when its holder exits while a sibling survives, the sibling faulting on it, and
+a second task is refused the device until then; the mapping is made again for the next instance; a region board answers the
+physical base.
+
+**Backends and cost.** Portable kernel, armv8a, rv64 and x86_64. A page map per window at spawn,
+an unmap and an invalidation at the holder's exit, and a mapping record per window in the task's
+ranges.
+
+## 7. The x86 port grant and `kos_port_reg_write` (M10.1.8)
+
+**A task on q35 reaches exactly the ports it was granted, and writes a privileged port only
+through the kernel.** Today `build_tss` (`arch/x86/x86_64/desc_x86_64.cc`) sets `iomap_base` to
+`sizeof(tss64)`, meaning no bitmap, and IOPL is 0, so ring 3 reaches no port. Section 1 makes the
+task-state segment unreachable from ring 3, which is what lets a bitmap in it be a boundary.
+
+- **The bitmap.** Each core's task-state segment carries the full 8 KiB bitmap and its terminator
+  byte, with no ceiling on the port number. A switch compares the incoming thread's port set with
+  the one loaded and, only when they differ, closes the outgoing ranges and opens the incoming
+  ones, a few bytes for a device such as the CMOS clock. The comparison sits beside
+  `publish_current` in `arch_switch`.
+- **Kernel-owned ports.** q35 states the ports the kernel keeps, as `arch_reserved_blocks` states
+  memory: the interrupt controllers, the timer, the ACPI power control, PCI configuration, the
+  debug exit, and COM1 while it is the console. A port window overlapping one is refused, and a
+  second holder is refused as for a device window.
+- **`kos_port_reg_write(base, offset, value)`** writes one byte to `base + offset` if the caller
+  holds a port window covering it and the port is on the chip's allowlist with the value inside
+  its mask. The CMOS index is the first entry: its mask withholds bit 7, the NMI mask. An
+  allowlisted port is never opened in a bitmap. Off x86 the call answers `-KOS_ENOSYS`.
+- **The ports kind** of section 5 stops being refused on this board.
+
+**Arms.** A granted data port reads; a port outside the grant faults the task, as
+`kickos_x86_64_probe_outb` does in the bring-up probes; a direct write to the CMOS index faults,
+the kernel write succeeds, and a value with bit 7 is refused; a second holder and a kernel-owned
+range are refused; two tasks alternating on one core each reach only their own ports; the same
+after a migration on the two-core preset.
+
+**Backends and cost.** x86_64 and q35, and a portable seam answering `-KOS_ENOSYS` elsewhere. One
+compare per switch, a few bytes written when the port set changes, 8 KiB per core. M10.1's exit
+record lands with this part.
+
+## 8. Every header the ABI changes touch
+
+The proposed names, by part. They are a listing and not the tree: each part may rename what its
+code teaches it to.
+
+```c
+/* user/include/kickos/sys/abi.h */
+KOS_AUTH_TASKS = 1 << 6,                 /* 2: kos_cap_authority, mirrored by AUTH_TASKS */
+uint32_t authority;                      /* 2: kos_thread_params, beside core_mask */
+KOS_CAP_HANDOUT = 1 << 3,                /* 3: kos_cap_rights */
+KOS_SYS_TASK_WATCH,                      /* 4: (task, notify_cap, ready_ep) -> 0, or -KOS_E* */
+KOS_SYS_TASK_STATE,                      /* 4: (task) -> KOS_TASK_LIVE | KOS_TASK_READY, or -KOS_EBADF */
+struct kos_window {                      /* 5 */
+    uintptr_t base; uint32_t size;
+    uint8_t kind;                        /* KOS_WINDOW_DEVICE, KOS_WINDOW_MEMORY, KOS_WINDOW_PORTS */
+    uint8_t flags;                       /* KOS_WINDOW_RO, KOS_WINDOW_UNCACHED */
+};
+struct kos_window const* windows;        /* 5: kos_thread_params, replacing mmio_base, mmio_size */
+uint16_t window_count;
+KOS_SYS_WINDOW_ADDR,                     /* 6: (base) -> the caller's address for it, or -KOS_EPERM */
+KOS_SYS_PORT_REG_WRITE,                  /* 7: (base, offset, value) -> 0, or -KOS_E* */
+
+/* system/include/kickos/sys/errno.h */
+KOS_ECONNREFUSED = 111,                  /* 3 */
+
+/* Kconfig */
+KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the region budget */
+```
+
+| header | part | change |
+| --- | --- | --- |
+| `user/include/kickos/sys/abi.h` | 2 | `kos_thread_params::authority` 32 bits and beside `core_mask`; the tasks bit; `kos_cap_authority` widened |
+| | 3 | the handout right; `KOS_SYS_CAP_NARROW` narrows any capability |
+| | 4 | the watch and state syscalls and the state bits |
+| | 5 | `struct kos_window`, its kinds and flags; `windows` and `window_count` replace `mmio_base` and `mmio_size` |
+| | 6 | the window-address syscall |
+| | 7 | the port-write syscall |
+| `system/include/kickos/sys/errno.h` | 3 | the refused errno, 111; `KOS_EPIPE` and `KOS_EAGAIN` reworded |
+| `user/include/kickos/sys.h` | 3 to 7 | the wrappers `kos_task_watch`, `kos_task_state`, `kos_window_addr`, `kos_port_reg_write`; the `kos_ram_alloc` comment |
+| `user/include/kickos/kos.h` | 2, 5 | `kos::create`'s authority and window arguments |
+| `system/include/kickos/sys/init.h` | 2 | `kickos_app_authority` and `KICKOS_APP_AUTHORITY` 32 bits |
+| `user/include/kickos/sys/driver_service.h`, `emit.h`, `driver/spi.h`, `driver/i2c.h` | 3 | the no-receiver answers |
+| `user/include/kickos/sys/abi_probe.h` | 3 to 7 | probe selectors the new arms need, selftest only |
+
+`arch/include/kickos/arch/arch.h` changes too -- the window area of section 6, the port seams of
+section 7 -- and is the kernel's internal interface, not the ABI.
+
+## 9. The baseline
+
+M10.1.1's bench rows -- a cross-task ping-pong, a cross-task call/reply and a spawn/exit round trip
+for a thread and for a task -- are the instrument. The baseline is every QEMU bench preset on the
+tree M10.1.2 closes on, archived with its captures in `docs/archive/M10.1.2_baseline.md`, and each
+part re-measures the presets its backends run, beside the static figures it can move:
+`KICKOS_THREAD_EXPECTED_SIZE`, `sizeof(Task)`, the trap red-zone reservations, and `hello`'s
+`.text` and `.bss` on the smallest boards. The x86 figures count emulated work, as section 1.7
+says, and silicon figures come from `tools/bench/bench.sh` on the boards `bench-present.sh`
+answers present.
+
+## 10. For review
+
+- **Per-thread windows on a translating board.** The ruling keeps possession per thread, and the
+  mapping is in the task's space, so a sibling reaches what it does not hold while the holder
+  lives. Recording windows per task instead would match the translating boards and bound the
+  array by `KICKOS_MAX_TASKS` rather than by threads, but a region board programs its unit per
+  thread.
+- **One call for the reports, or two.** `kos_task_watch` arms death and ready together because
+  the init always wants both; a watcher that wants deaths only passes no endpoint.
+- **`mem_base` outside the list.** It stays because it is what builds an implicit task; folding
+  it in would make one kind of memory window mean "this is my task's data" and need a flag to say
+  so.
