@@ -1,60 +1,36 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
-# Design records -- index by status
+# Design documents by status
 
-The `design-*.md` documents are per-topic design records: the reasoning behind a decision, the
-option space that was considered, and the evidence a claim rests on. Without an index a reader
-cannot tell whether a document describes the current system, a plan, or a road not taken.
-
-**The files live in the parent directory (`../design-*.md`), not here.** Relocating them is a
-separate call for the maintainer to make; this index exists so they can be found by status without
-moving anything.
+The `../design-*.md` files state shipped designs, active work and exploratory proposals.
+Dated measurements, step logs and superseded reasoning belong in `../archive/` where a
+short design page links them. For code-synced behavior, use `../reference/` and the code.
 
 **Coverage is total: 51 documents = 31 LANDED + 11 ACTIVE + 9 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
 `ls ../design-*.md | wc -l` is the check; run it before trusting the number.
 
-The 2026-07-29 footprint capture the R2/R3/R4 rulings rest on is
-[`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md): a dated measurement record,
-not a current footprint, and never in the re-grounding path.
-
 ## The markers
 
-Every `design-*.md` carries a status line in its header. Most open with one of the four markers
-below; the newest M5/M6 records state their status in prose on that line instead, and this index
-files each of those under the marker that fits it:
+Every `design-*.md` carries a status line. This index groups them as follows:
 
 | Marker | Means | How to read the document |
 |---|---|---|
-| **LANDED** | The work shipped. | History plus rationale -- *not* a contract. For the current contract go to `../reference/`. Where a LANDED record still contains "pending" or "deferred" prose, its marker says what has since closed. |
+| **LANDED** | The work shipped. | The design explains its rules; `../reference/` and code settle current behavior. Dated implementation records are archived. |
 | **ACTIVE** | Work in flight. | Live. Expect it to change under you. |
 | **SUPERSEDED** | A later document or decision replaced it. | Read the successor first; kept only for the argument it lost. |
 | **EXPLORATORY** | A spike. No commitment, usually no code. | Nothing here licenses a change. Useful for the option space and the constraints it found. |
 
-Two things follow from this that are easy to get wrong:
-
-- **A LANDED record is not the contract.** It says what was decided and why, frozen at decision
-  time. The code-synced contract is `../reference/`, and where the two disagree the Reference
-  wins (and the code wins over that).
-- **Milestone numbers inside older documents may predate a renumbering.** The wave has been
-  renumbered three times, and the LAST one SWAPPED TWO NUMBERS rather than shifting them. The driver
-  era holds **M4** and **M5**; the **MMU is M6** and **multicore is M7** (they were the other way
-  round until 2026-08-21); IPC and IRQ optimisation is **M8**, kernel concurrency and the cost of
-  the big kernel lock is **M9**, static composition is **M10**, the driver era returns at **M11**,
-  and KickCAT closes at **M12**.
-  The first of those decisions is recorded in `../design-driver-era-scope.md` section 4 and the
-  swap in `../../roadmap.md`, which is authoritative. So a document written before the swap may say
-  "M6 = SMP" or "M7 = MMU" and mean the opposite of what it now reads as -- `../design-m7-smp.md`
-  and `../design-mmu-era-exploration.md` were both in that state and have been RENAMED to the
-  numbers they now carry, so a reference to either under its old `m6-` name is a stale link rather
-  than a milestone claim.
+`../../roadmap.md` owns milestone numbering. M4 and M5 are the driver era, M6 the MMU, M7
+multicore, M8 IPC/IRQ optimization and M9 kernel concurrency. Earlier drafts used
+different numbers; the current filenames use this order.
 
 ## LANDED
 
 | Document | Subject |
 |---|---|
-| [`design-m9-lock-bound.md`](../design-m9-lock-bound.md) | M9.1's ticket lock: one algorithm over three backends, the worst wait derived per backend or recorded as underivable, the interrupt mask evaluated and refused, and the first shared-kernel silicon measurement this project has taken |
-| [`design-m9.4-rings.md`](../design-m9.4-rings.md) | M9.4's per-pair rings: every cross-core hand-over and re-seat travels on a ring the target drains, under the one lock (stage 1, landed), and the switch half leaving the lock was refused by the numeric stop condition (stage 2) |
+| [`design-m9-lock-bound.md`](../design-m9-lock-bound.md) | M9.1's ticket-lock wait model and backend limits; derivation and measurements archived |
+| [`design-m9.4-rings.md`](../design-m9.4-rings.md) | Per-pair scheduler rings under one lock; the proposed unlocked switch stage was refused |
 | [`design-m9.5-bkl-options.md`](../design-m9.5-bkl-options.md) | M9.5's decision: one big kernel lock for every shared-kernel transaction, CLH arbitration on x86_64 and ticket arbitration elsewhere, with the x86, ARM64 and LX6 measurements behind it |
 | [`design-task9-mmio-driver.md`](../design-task9-mmio-driver.md) | The MMIO grant-at-spawn mechanism + the `arch_mpu_region_encodable` seam -- what makes an unprivileged userspace driver possible |
 | [`design-mpu-commit-deferred.md`](../design-mpu-commit-deferred.md) | The enforcement-soundness seam: stash the region set at the switch decision, program it from the switch epilogue |
@@ -70,20 +46,20 @@ Two things follow from this that are easy to get wrong:
 | [`design-rp2350-mpu-armv8m.md`](../design-rp2350-mpu-armv8m.md) | The ARMv8-M PMSAv8 MPU backend (`base`+`limit` + MAIR) behind the same seam |
 | [`design-teensy-rt1062.md`](../design-teensy-rt1062.md) | Teensy 4.1 / i.MX RT1062 bring-up (first M7) |
 | [`design-teensy-mpu-hang.md`](../design-teensy-mpu-hang.md) | Why an M7 stalled forever with no fault under enforcement, and the fixed-region wrap that fixed it |
-| [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work. All five stages merged (`dde73ca`) |
-| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The adversarial review of the M4 design principles, with the verification outcomes. Doubles as the driver era's **risk register**: each finding that events have tested carries an OUTCOME line (5 and 12 MATERIALISED as real defects; 4 is CLOSED; 6, 8 and 10 are OPEN -- M4.6.1 closed neither 6 nor 8, so they wait on the first clock-tree or shared-IRQ demux service) |
+| [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root's unprivileged start and board limits; the five-stage record is archived |
+| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The live M4 risk constraints, with numbered findings and a link to the archived adversarial review |
 | [`design-flash-footprint.md`](../design-flash-footprint.md) | The footprint decision list: `-Os` rather than `-O1`/`-O2` (R2), the open 64-bit division helper (R3), the `.userheap` carve as policy rather than waste (R4), the `-Warray-bounds` pragma rather than `--param=min-pagesize=0`, and the standing LTO link defect. The numbers are a dated capture in [`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md) |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
-| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | The M4.6.1 design gate: an unprivileged driver owning an interrupt line -- the proposed IRQ capability, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
-| [`design-capability-table.md`](../design-capability-table.md) | The capability table re-derived from a clean sheet: what a capability is here, why possession and not an access list, the size-class mix and the per-spawn interface deleted, the codec decoupled from provisioning, and one reservation law fleet-wide -- segmented storage taken whole at spawn, no growth -- across a range from 16 KiB to 8 GB |
-| [`design-m4.8.2-host-unit-tests.md`](../design-m4.8.2-host-unit-tests.md) | The host unit-test layer: two seams, one at the syscall boundary and one at the arch boundary, and why the first needs no fixture. Section 7 item 7, the selftest-arm migration, is the residue |
-| [`design-m4.7.9-fault-isolation.md`](../design-m4.7.9-fault-isolation.md) | Fault isolation: a thread dies, the system does not -- the fault-kill path landed in four commits |
-| [`design-generic-driver-service.md`](../design-generic-driver-service.md) | One generic driver service, N chips: the descriptor ruling that M4.8.1 shipped |
-| [`design-task-layer.md`](../design-task-layer.md) | A task as a set of threads, with the address space on Domain rather than Task |
-| [`design-kill-and-slay.md`](../design-kill-and-slay.md) | The two-verb death ABI: kill stays cooperative, **slay** is forcible, and the victim runs its own teardown off a rebuilt context -- no reaper. Section 14 is what the design got WRONG; read it before section 3 |
-| [`design-m6-mmu.md`](../design-m6-mmu.md) | The M6 design contract: a unicore A53 on QEMU `virt`, with RV64 Sv39 as the litmus that falsifies the aspace seam and x86_64 falsifying the entry and boot paths, what it FREEZES (a high-half kernel, a domain becoming an address space so a task becomes a process, a 4 KiB granule, two backends before the seam is trusted), the seams below the arch boundary that are rewritten, and the step plan with the expected result of each step |
-| [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounded M4's scope |
-| [`design-m4.6.2-usb-cdc.md`](../design-m4.6.2-usb-cdc.md) | USB CDC console driver, shipped as M4.9.1. The number in the filename is the superseded one; `../../roadmap.md`'s ledger assigns M4.9.1 |
+| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | IRQ capability and userspace UART rules; the original ABI and per-chip analysis are archived |
+| [`design-capability-table.md`](../design-capability-table.md) | Task-relative handles, possession rights and segmented reservation; the derivation is archived |
+| [`design-m4.8.2-host-unit-tests.md`](../design-m4.8.2-host-unit-tests.md) | Host U and K seams; selftest-arm migration remains open |
+| [`design-m4.7.9-fault-isolation.md`](../design-m4.7.9-fault-isolation.md) | Fault-kill conditions, exit route and reporting limits |
+| [`design-generic-driver-service.md`](../design-generic-driver-service.md) | Descriptor-based driver bring-up over class-specific services |
+| [`design-task-layer.md`](../design-task-layer.md) | Task membership and lifetime, distinct from the Domain address space |
+| [`design-kill-and-slay.md`](../design-kill-and-slay.md) | Cooperative kill and forcible slay; original mechanism and landing corrections archived |
+| [`design-m6-mmu.md`](../design-m6-mmu.md) | M6 address-space contract; completed steps and the three-backend seam derivation are archived |
+| [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The M4 driver-coverage scope decision and a link to the dated per-board survey |
+| [`design-m4.6.2-usb-cdc.md`](../design-m4.6.2-usb-cdc.md) | USB CDC console constraints; originally numbered M4.6.2, shipped as M4.9.1 |
 
 ## ACTIVE
 
@@ -93,27 +69,27 @@ Two things follow from this that are easy to get wrong:
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. The K64F hardware path is still the plan; the tree links no KickCAT app, so the Stage A sim slave the body calls landed is not in `user/apps/` |
 | [`design-m5-driver-set.md`](../design-m5-driver-set.md) | What "complete the driver set" owes, enumerated from the build system rather than from the plan: the per-chip capability matrix and the gaps it names. Header status: surveyed, scope not yet approved |
 | [`design-m5-i2c-seam.md`](../design-m5-i2c-seam.md) | The I2C class contract, judged against three unrelated controllers and nine parts before an engine existed. The class header and the RX72M RIICa backend came out of it; the proxy and the service have not |
-| [`design-m5-ipc-fastpath.md`](../design-m5-ipc-fastpath.md) | Bounding the IPC critical section: the measured call/reply baseline, which section 1 fixes as a measurement, and the fastpath judged against it |
+| [`design-m5-ipc-fastpath.md`](../design-m5-ipc-fastpath.md) | Constraints on a proposed IPC fastpath; the measured baseline, corrected phase data and candidate analysis are archived |
 | [`design-m5-kickcat-reality-check.md`](../design-m5-kickcat-reality-check.md) | KickCAT brought back at the end of the driver era to JUDGE the driver APIs rather than consume them: the SPI-class collision, the ruling, and what writing the backend found. Header status: written and compiled, never linked, never run |
 | [`design-m7-state-inventory.md`](../design-m7-state-inventory.md) | Kernel state classified per-core versus genuinely global, and what the multi-instance sim corrected about that classification once part of it became executable. Read section 6 before the tables |
-| [`design-multicore.md`](../design-multicore.md) | The multicore design contract: the hardware predicate that decides which parts get a shared kernel at all, AMP for the parts that fail it, what it FREEZES, and the step plan with the expected result of each step. It names no milestone on purpose, `../../roadmap.md` owning the schedule |
-| [`design-m10-composition.md`](../design-m10-composition.md) | M10's static composition: the chip, board and composition files and who owns each, the names a task looks resources up by, what the host tool refuses, the one emitted table, the lookups and the init's walk, written against the golden example in `examples/composition/`, with the questions still open |
-| [`design-m10-kernel-share.md`](../design-m10-kernel-share.md) | M10.1's kernel share, one section per part: x86_64 address spaces on q35, then the six ABI changes, the header table and the baseline |
-| [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | M9's four entry metrics recomputed against the frozen M8.12 measurement: the locked fraction and the Amdahl bound re-derived with every input named, the inputs M8.12 does not carry, five of the fourteen first claimed absent having not survived checking, the terms that have moved the way `MPU_APPLY` did, and what the evidence supports per stage. It approves nothing |
+| [`design-multicore.md`](../design-multicore.md) | Shared-kernel and AMP predicate, rules, thread placement and open boundaries; completed stage record archived |
+| [`design-m10-composition.md`](../design-m10-composition.md) | M10's static composition contract: the chip, board and composition files, admission rules, emitted table, lookups and init lifecycle |
+| [`design-m10-kernel-share.md`](../design-m10-kernel-share.md) | M10.1's kernel contracts: x86_64 address spaces on q35, six ABI changes and their header touchpoints |
+| [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | What the M8.12 entry metrics can support for M9; the full recomputation and capture audit are archived |
 
 ## EXPLORATORY
 
 | Document | Subject |
 |---|---|
-| [`design-m7-smp.md`](../design-m7-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
+| [`design-m7-smp.md`](../design-m7-smp.md) | Historical SMP candidate spike; the hardware analysis and staging are archived |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp. **ANSWERED AND REFUSED (2026-09-18)**: neither lever is built, the page carries the numbers and the four tests that would reopen it. It stays here because nothing was committed to code, not because the question is open |
 | [`design-m9.5-local-ipc.md`](../design-m9.5-local-ipc.md) | An owner-local IPC path on x86 beside the lock, measured on pinned KVM. **REMOVED**: the mixed workload did not pay for a second exclusion protocol, and the kernel keeps the single lock path |
 | [`design-m9.5-ipc-lock-feasibility.md`](../design-m9.5-ipc-lock-feasibility.md) | A source-level gate on locking whole IPC transactions per object: no small prototype is ready to benchmark, because a safe one needs a new lifetime and publication protocol across IPC, capabilities, deadlines, the scheduler and the switch |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces. PARTLY ABSORBED: `design-m6-mmu.md` is the contract that came out of it and picked a different first target, so what stays live here is the platform exploration (x86_64 as a PC target, i.MX8MP heterogeneous AMP) |
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose. Proposed, not built -- there is no `check_style.py` |
-| [`design-m9-reference-kernels.md`](../design-m9-reference-kernels.md) | The M9.0 reference-kernel survey: nineteen rows, each with its licence, covering lock domains, acquisition order, remote wake, migration, whether the lock is released inside the switch, the kernel stack model and what each project publishes about itself -- plus where KickOS already sits among them. Cited by path, copied from nowhere, and it does not rank |
-| [`design-stack-safety-research.md`](../design-stack-safety-research.md) | Stack-budget checks, tailored-stack and guard tests, reference-kernel mechanisms, the case for a shared kernel-stack experiment, and the dated M8.9-p4 audit findings. Section 8 is the M9.0 investigation, whose verdict is to keep the per-thread continuation |
+| [`design-m9-reference-kernels.md`](../design-m9-reference-kernels.md) | What the M9.0 kernel survey can and cannot justify for KickOS; the nineteen dated source rows are archived |
+| [`design-stack-safety-research.md`](../design-stack-safety-research.md) | M9.0 kept per-thread kernel continuations; research and audit evidence archived |
 
 ## SUPERSEDED
 

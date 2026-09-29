@@ -3031,7 +3031,14 @@ namespace
         kos_window const odd[] = {{0x1000u, 8u, KOS_WINDOW_PORTS, 0},
                                   {0x1000u, 0x1000u, 3u, 0},
                                   {0x1000u, 0x1000u, KOS_WINDOW_DEVICE, KOS_WINDOW_RO}};
+        // Ports are x86's alone, where 0x1000 is in no aperture q35 states. The sim runs on an
+        // x86 host but grants no ports.
+#if defined(__x86_64__) and not KICKOS_ARCH_SIM
+        int const odd_rc[] = {-KOS_EINVAL, -KOS_EINVAL, -KOS_EINVAL};
+#else
         int const odd_rc[] = {-KOS_ENOTSUP, -KOS_EINVAL, -KOS_EINVAL};
+        TAP_CHECK(kos_port_reg_write(0x70u, 0, 0) == -KOS_ENOSYS);
+#endif
         for (int i = 0; i < 3; i++)
         {
             TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winodd", 10, KOS_POLICY_FIFO, 0,
@@ -9623,6 +9630,9 @@ int main(int, char**)
     TAP_ADD("kernel_state_unreachable", t_kernel_state_unreachable);
 #if defined(KICKOS_SELFTEST_SPARE_DEV)
     TAP_ADD("window_addr", t_window_addr);
+#endif
+#if defined(__x86_64__)
+    TAP_ADD("port_window", t_port_window);
 #endif
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE

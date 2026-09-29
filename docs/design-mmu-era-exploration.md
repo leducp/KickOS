@@ -228,7 +228,7 @@ crit-section (CLI/STI or just IF via `arch_irq_save`), timer, syscall, console,
 IRQ triad, idle (HLT). GENUINELY new: GDT/IDT/TSS setup, long-mode boot, the
 `arch_aspace_*` translation family (shared with any MMU arch), `syscall`/`sysret`
 MSR plumbing, and per-CPU state via GS-base (the x86 analog of the per-core
-globals design-m7-smp.md calls out).
+globals archive/M7_smp_candidate_spike.md calls out).
 
 **Rough effort shape.** Medium-large but well-trodden. Order of magnitude: boot
 + long mode + GDT/IDT (small, copy-the-wiki), thin IRQ/timer/console/switch
@@ -448,6 +448,6 @@ PROPOSAL -- fold into arch.h prose / the Book when convenient, do not implement 
 - i.MX8MP heterogeneous AMP, RPMsg/OpenAMP, MU doorbell, shared SRAM: rt-rk RPMsg
   inter-core communication; NXP community i.MX8MP RPMsg / shared-memory threads;
   Embedded Artists heterogeneous multi-core; Kynetics AMP notes.
-- Internal: `docs/design-m7-smp.md`,
+- Internal: `docs/archive/M7_smp_candidate_spike.md`,
   `arch/include/kickos/arch/arch.h`, `kernel/domain/*`, `kernel/syscall/*`,
   `docs/book/handles-and-the-resolve-chokepoint.md`.

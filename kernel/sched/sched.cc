@@ -996,6 +996,10 @@ namespace kickos
                 // Release the device windows before teardown can wake a supervisor into a
                 // respawn that asks for them. No return to user code follows.
                 c->mpu.drop_devices();
+#if KICKOS_ARCH_HAS_PORTS
+                // Its ports too: the next switch on this core closes them.
+                c->ctx.port_count = 0;
+#endif
                 // Capture task identity before retiring membership.
                 left_task = c->task;
                 left_gen = task_gen(c->task);

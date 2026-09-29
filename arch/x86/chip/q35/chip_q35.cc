@@ -22,6 +22,8 @@
 
 #include <fatal_status.ld.h>
 
+#include <kickos/sys/errno.h>
+
 #include <stdint.h>
 
 namespace
@@ -133,6 +135,40 @@ namespace
         uint32_t const hi = inb(pit_channel0);
         return lo | (hi << 8);
     }
+}
+
+// The port ranges a user window may name: the CMOS pair, and COM2, which this machine leaves
+// unpopulated. Every other port is the chipset's or the kernel's: the DMA controllers write
+// memory, and the PICs, the PIT, the keyboard controller's reset, PCI configuration, the ACPI
+// block, the debug exit and COM1 are driven from here.
+size_t arch_port_apertures(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const apertures[] = {
+        {0x70u, 2u},
+        {0x2f8u, 8u},
+    };
+    size_t n = sizeof(apertures) / sizeof(apertures[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = apertures[i];
+    }
+    return n;
+}
+
+
+int arch_port_reg_write(uint16_t port, uint8_t value)
+{
+    uint8_t mask = 0;
+    if (not port_reg_mask(port, &mask) or (value & ~mask) != 0)
+    {
+        return -KOS_EINVAL;
+    }
+    outb(port, value);
+    return 0;
 }
 
 extern "C"

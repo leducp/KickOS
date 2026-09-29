@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/context.h> // arch_port_range
+
 namespace kickos::x86_64
 {
     // Selectors into the table desc_init builds. Byte offsets, and the low two bits are the
@@ -105,6 +107,16 @@ namespace kickos::x86_64
     // The hardware reads this for a ring 3 to ring 0 transition; the syscall entry has a copy
     // of its own (ring3.h). Both are written on every switch.
     void tss_set_rsp0(uint64_t top);
+
+    // Load `ports` into this core's I/O permission bitmap if they are not the set loaded: the
+    // loaded ranges close and these open, a port the chip allowlists for the kernel's write
+    // staying closed. One compare when the set is unchanged.
+    void tss_load_ports(struct arch_port_range const* ports, uint8_t count);
+
+    // Whether the platform keeps `port` for kos_port_reg_write, never opening it to a thread,
+    // and the bits that write may set.
+    bool port_allowlisted(uint16_t port);
+    bool port_reg_mask(uint16_t port, uint8_t* mask);
     uint64_t tss_ist(unsigned slot);
 }
 

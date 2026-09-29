@@ -42,14 +42,14 @@
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_RV64_TRAP_NEST 1152
 
-/* The U-mode ecall and the U-mode fault on the block. 1888 on qemu-riscv64-benchsmp and
- * -benchsmp2, a spawn seeding the child's tables:
- *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[464] -> thread_create[144]
+/* The U-mode ecall and the U-mode fault on the block. 1904 on qemu-riscv64-smp, a spawn seeding
+ * the child's tables:
+ *   syscall_dispatch[112] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[144]
  *   -> task_for[32] -> domain_for[64] -> claim_slot[48] -> aspace_image_seed[176]
  *   -> arch_aspace_map[80] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
  * 1664 on qemu-riscv64 and sv48. */
-#define KICKOS_RV64_TRAP_DEPTH_SYSK 1888
+#define KICKOS_RV64_TRAP_DEPTH_SYSK 1904
 
 /* The per-hart trap stack: an S-mode exception's reporter, and the U-mode entry that found no
  * block. 896 on qemu-riscv64-benchsmp and -benchsmp2, down IRQ's console tail from

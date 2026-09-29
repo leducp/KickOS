@@ -99,6 +99,10 @@ namespace kickos
             for (uint16_t i = 0; i < n; i++)
             {
                 kos_window const& w = list[i];
+                if (w.kind == KOS_WINDOW_PORTS)
+                {
+                    continue; // the switch loads a port window; nothing is mapped
+                }
                 arch_phys_addr_t pa = w.base;
                 uint32_t rights = ARCH_MAP_R | ARCH_MAP_W;
                 enum arch_map_memtype type = ARCH_MAP_DEVICE;
@@ -146,7 +150,42 @@ namespace kickos
             }
             if (w.kind == KOS_WINDOW_PORTS)
             {
+#if KICKOS_ARCH_HAS_PORTS
+                // Exclusive as a device window is, and inside an aperture the chip states, which
+                // holds none of the kernel's ports and nothing that writes memory.
+                if (w.flags != 0 or w.base + w.size > 0x10000u)
+                {
+                    return -KOS_EINVAL;
+                }
+                if (not cap_check_authority(c, AUTH_MEMORY))
+                {
+                    return -KOS_EPERM;
+                }
+                if (not port_aperture_ok(w.base, w.size))
+                {
+                    return -KOS_EINVAL;
+                }
+                if (privileged)
+                {
+                    return 0;
+                }
+                if (not port_window_free(w.base, w.size))
+                {
+                    return -KOS_EBUSY;
+                }
+                for (uint16_t j = 0; j < i; j++)
+                {
+                    if (list[j].kind == KOS_WINDOW_PORTS
+                        and grant_ranges_overlap(w.base, w.base + w.size - 1u, list[j].base,
+                                                 list[j].base + list[j].size - 1u))
+                    {
+                        return -KOS_EBUSY;
+                    }
+                }
+                return 0;
+#else
                 return -KOS_ENOTSUP;
+#endif
             }
             if (w.kind == KOS_WINDOW_MEMORY)
             {

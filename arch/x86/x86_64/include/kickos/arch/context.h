@@ -9,6 +9,18 @@
 
 #include <stdint.h>
 
+// This arch has I/O ports, which a spawn's port windows grant one range at a time, at most
+// KICKOS_ARCH_PORT_RANGES of them, the ceiling of KICKOS_MAX_THREAD_WINDOWS (thread.cc).
+#define KICKOS_ARCH_HAS_PORTS 1
+#define KICKOS_ARCH_PORT_RANGES 4
+
+// One port window: ports base through last, both included.
+struct arch_port_range
+{
+    uint16_t base;
+    uint16_t last;
+};
+
 struct arch_context
 {
     // Saved stack pointer: the base (lowest address) of the thread's current save frame.
@@ -25,6 +37,12 @@ struct arch_context
     // and preserved across arch_ctx_redirect. Zero for a TCB outside the pool. Every switch
     // publishes it into TSS.rsp0 and the per-core block.
     uintptr_t kernel_sp;
+
+    // The port windows this thread holds, seated at spawn and dropped at its exit, and the
+    // whole of its port possession record. A switch opens them in the core's I/O permission
+    // bitmap when they differ from the set loaded there.
+    struct arch_port_range ports[KICKOS_ARCH_PORT_RANGES];
+    uint8_t port_count;
 };
 
 #endif

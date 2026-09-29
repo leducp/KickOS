@@ -174,7 +174,7 @@ decides only WHETHER the fault is a thread's own, and `sched::exit_current` draw
 core half is `kernel/init/fault.cc`: a backend's fault handler calls
 `kickos_fault_kill_thread(frame)` BEFORE it starts its dump and simply RETURNS when that
 answers true, and the exception return then lands in `kickos_thread_fault_exit`. The
-reasoning is in `../design-m4.7.9-fault-isolation.md` (sections 3 and 4).
+reasoning is in `../archive/M4_fault_isolation_record.md` (sections 3 and 4).
 
 **The two seams**, both declared in `arch/include/kickos/arch/arch.h`, both optional. Their
 fallback bodies (`arch/common/arch_fault_is_user_thread_default.cc`,
@@ -267,7 +267,7 @@ believe before it reads them, and this is the part that is easy to get wrong.
   a cross-domain access to a LOWER address escalates to the panic dump instead of dying alone
   (`mpu_fault` on `rx72m`, `0x13200`, below `domainA`'s stack), while one to a higher address dies
   alone (`rxdrv`, `0x8c068`). A port on any instruction-cancelling ISA inherits this and should read
-  `../design-m4.7.9-fault-isolation.md` section 4.2 before reaching for a distance threshold instead:
+  `../archive/M4_fault_isolation_record.md` section 4.2 before reaching for a distance threshold instead:
   a threshold fails in the UNSAFE direction, because a frame larger than the threshold puts privileged
   code back on an exhausted stack.
 - Worth one line of history: an earlier implementation read the stacked IPSR field straight

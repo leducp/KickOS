@@ -200,6 +200,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
      OR KICKOS_CHIP STREQUAL "q35")
     list(APPEND KICKOS_EXPECT_FAULTS was)
   endif()
+  # port_window's COM2 holder reaching the CMOS data port, and its index writer.
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    list(APPEND KICKOS_EXPECT_FAULTS pwb pwi)
+  endif()
 endif()
 # window_memory_ro's child, writing through its read-only window.
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)

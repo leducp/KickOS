@@ -599,6 +599,11 @@ uint64_t syscall_body(uintptr_t nr,
             // UNGATED: possession of the window is the whole gate (syscall_mem.cc).
             return static_cast<uint64_t>(window_addr_call(a0, a1));
         }
+        case KOS_SYS_PORT_REG_WRITE:
+        {
+            // UNGATED: possession of the port window is the gate, the chip's list the bound.
+            return static_cast<uint64_t>(port_reg_write_call(a0, a1, a2));
+        }
         case KOS_SYS_TASK_KILL:
         {
             // UNGATED by authority, gated by creatorship inside (syscall_thread.cc).

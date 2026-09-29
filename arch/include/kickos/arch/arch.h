@@ -53,6 +53,11 @@
 // Per-arch `struct arch_context`, opaque to the kernel and sized by the arch.
 #include <kickos/arch/context.h>
 
+// An arch with I/O ports defines this in its context.h, beside the context's port set.
+#ifndef KICKOS_ARCH_HAS_PORTS
+#define KICKOS_ARCH_HAS_PORTS 0
+#endif
+
 // Architecture-specific MPU descriptors. Included only with KICKOS_HAVE_MPU;
 // otherwise the type stays incomplete and is used only through pointers.
 #if KICKOS_HAVE_MPU
@@ -680,6 +685,15 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 // carving the kernel's own devices out of it. Zero admits no window. Each chip of a translating
 // arch must define this function; there is no fallback.
 size_t arch_window_apertures(struct arch_reserved_block* out, size_t max);
+
+// Where the arch defines KICKOS_ARCH_HAS_PORTS: fill at most max I/O port ranges a user port
+// window may name, as base and count, and return how many; the chip's own ports are in none.
+size_t arch_port_apertures(struct arch_reserved_block* out, size_t max);
+
+// Where the arch defines KICKOS_ARCH_HAS_PORTS: write `value` to `port` if the chip keeps that
+// port for the kernel's write and the value is inside the port's mask. 0, or -KOS_EINVAL for a
+// port the chip does not list or a bit its mask withholds. The caller checks possession.
+int arch_port_reg_write(uint16_t port, uint8_t value);
 
 // Whether Cortex-M bit-band aliases exist. If set, device grants must reject
 // both alias windows. The default returns zero; chips with aliases return one.

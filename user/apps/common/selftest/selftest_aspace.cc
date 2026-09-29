@@ -2429,6 +2429,174 @@ namespace selftest
         TAP_CHECK(probed > 0);
     }
 
+#if defined(__x86_64__)
+    // --- The x86 port grant --------------------------------------------------------------
+    // A holder of the CMOS pair has the kernel write the index, which the chip keeps closed to
+    // it, and reads the data port itself; a value with the NMI-mask bit is refused, and so is a
+    // port it does not hold. A second holder, COM1 and the PIC are refused. A COM2 holder
+    // alternates with it on one core, each reading its own port, then reaches for the CMOS
+    // data port and faults; the CMOS holder moves to another core where there is one and reads
+    // again. A holder writing the CMOS index itself faults. Reports travel over an endpoint.
+    constexpr uint16_t PW_CMOS = 0x70u;
+    constexpr uint16_t PW_COM2 = 0x2f8u;
+    constexpr uint32_t PW_JOIN_US = 500000;
+    constexpr int PW_ROUNDS = 4;
+    uint8_t pw_inb(uint16_t port)
+    {
+        uint8_t v = 0;
+        __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port) : "memory");
+        return v;
+    }
+    void pw_outb(uint16_t port, uint8_t v)
+    {
+        __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port) : "memory");
+    }
+    struct PwSeen
+    {
+        int32_t index;
+        int32_t nmi;
+        int32_t unheld;
+        int32_t rounds;
+        int32_t moved; // this thread's own move to core 1, where there is one
+    };
+    void pw_cmos(void*) // caps: E(SIGNAL)@1, mine@2, theirs@3
+    {
+        PwSeen seen = {-99, -99, -99, 0, 0};
+        seen.index = kos_port_reg_write(PW_CMOS, 0, 0x0au);
+        seen.nmi = kos_port_reg_write(PW_CMOS, 0, 0x8au);
+        seen.unheld = kos_port_reg_write(PW_COM2, 0, 0);
+        for (int i = 0; i < PW_ROUNDS; i++)
+        {
+            kos_sem_wait(2);
+            (void)pw_inb(PW_CMOS + 1u);
+            seen.rounds++;
+            kos_sem_post(3);
+        }
+        kos_sem_wait(2);
+#if KICKOS_KERNEL_CORES > 1
+        seen.moved = kos::thread::pin(kos_thread_self(), 1);
+#endif
+        (void)pw_inb(PW_CMOS + 1u);
+        seen.rounds++;
+        (void)kos_send(1, &seen, sizeof(seen));
+        kos_exit(0);
+    }
+    void pw_com2(void*) // caps: E(SIGNAL)@1, mine@2, theirs@3
+    {
+        int32_t rounds = 0;
+        for (int i = 0; i < PW_ROUNDS; i++)
+        {
+            kos_sem_wait(2);
+            (void)pw_inb(PW_COM2);
+            rounds++;
+            if (i + 1 < PW_ROUNDS)
+            {
+                kos_sem_post(3);
+            }
+        }
+        (void)kos_send(1, &rounds, sizeof(rounds));
+        (void)pw_inb(PW_CMOS + 1u);
+        (void)kos_send(1, &rounds, sizeof(rounds)); // unreachable: that port is not its own
+        kos_exit(0);
+    }
+    void pw_index(void*) // caps: E(SIGNAL)@1
+    {
+        pw_outb(PW_CMOS, 0x0au);
+        char const x = 1;
+        (void)kos_send(1, &x, 1); // unreachable: the chip keeps the index closed
+        kos_exit(0);
+    }
+    void pw_noop(void*) {}
+    int32_t pw_recv(kos_cap_t ep, void* buf, size_t len, uint32_t timeout_us)
+    {
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, timeout_us);
+        return kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, len), &o);
+    }
+    void t_port_window()
+    {
+        settle_exits();
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_cap_t sa = KOS_CAP_NONE;
+        kos_cap_t sb = KOS_CAP_NONE;
+        kos_task_t tc = KOS_TASK_NONE;
+        kos_task_t tb = KOS_TASK_NONE;
+        kos_task_t ti = KOS_TASK_NONE;
+        if (kos_endpoint_create(&ep) != 0 or kos_sem_create(0, &sa) != 0
+            or kos_sem_create(0, &sb) != 0 or kos_task_create(nullptr, 0, 0, &tc) != 0
+            or kos_task_create(nullptr, 0, 0, &tb) != 0
+            or kos_task_create(nullptr, 0, 0, &ti) != 0)
+        {
+            tap::skip("endpoint, semaphore or task pool too small");
+            return;
+        }
+        kos_window const cmos = {PW_CMOS, 2u, KOS_WINDOW_PORTS, 0};
+        kos_window const com2 = {PW_COM2, 8u, KOS_WINDOW_PORTS, 0};
+        kos_window const com1 = {0x3f8u, 8u, KOS_WINDOW_PORTS, 0};
+        kos_window const pic = {0x20u, 2u, KOS_WINDOW_PORTS, 0};
+        kos_cap_grant const ccaps[] = {{ep, KOS_CAP_SIGNAL}, {sa, CH_FULL}, {sb, CH_FULL}};
+        kos_cap_grant const bcaps[] = {{ep, KOS_CAP_SIGNAL}, {sb, CH_FULL}, {sa, CH_FULL}};
+        auto const holder = kos::thread::create(pw_cmos, nullptr, "pwc", 10, KOS_POLICY_FIFO,
+                                                0, false, nullptr, 0, nullptr, 0, &cmos, 1,
+                                                ccaps, 3, 0, nullptr, tc, 1u);
+        TAP_CHECK(kos::thread::create(pw_noop, nullptr, "pwd", 10, KOS_POLICY_FIFO, 0, false,
+                                      nullptr, 0, nullptr, 0, &cmos, 1, nullptr, 0, 0, nullptr,
+                                      ti)
+                      .error()
+                  == -KOS_EBUSY);
+        TAP_CHECK(kos::thread::create(pw_noop, nullptr, "pwk", 10, KOS_POLICY_FIFO, 0, false,
+                                      nullptr, 0, nullptr, 0, &com1, 1, nullptr, 0, 0, nullptr,
+                                      ti)
+                      .error()
+                  == -KOS_EINVAL);
+        TAP_CHECK(kos::thread::create(pw_noop, nullptr, "pwp", 10, KOS_POLICY_FIFO, 0, false,
+                                      nullptr, 0, nullptr, 0, &pic, 1, nullptr, 0, 0, nullptr,
+                                      ti)
+                      .error()
+                  == -KOS_EINVAL);
+        auto const other = kos::thread::create(pw_com2, nullptr, "pwb", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &com2, 1, bcaps,
+                                               3, 0, nullptr, tb, 1u);
+        TAP_CHECK(holder.valid() and other.valid());
+        if (not holder.valid() or not other.valid())
+        {
+            return;
+        }
+        kos_sem_post(sa);
+        int32_t rounds = -1;
+        TAP_CHECK(pw_recv(ep, &rounds, sizeof(rounds), PW_JOIN_US)
+                  == static_cast<int32_t>(sizeof(rounds)));
+        TAP_CHECK(other.join(PW_JOIN_US) == 0);
+        TAP_CHECK(pw_recv(ep, &rounds, sizeof(rounds), 20000) == -KOS_ETIMEDOUT);
+        kos_sem_post(sa);
+        PwSeen seen = {-99, -99, -99, -1, -1};
+        TAP_CHECK(pw_recv(ep, &seen, sizeof(seen), PW_JOIN_US)
+                  == static_cast<int32_t>(sizeof(seen)));
+        TAP_CHECK(holder.join(PW_JOIN_US) == 0);
+        TAP_CHECK(rounds == PW_ROUNDS);
+        TAP_CHECK(seen.index == 0 and seen.nmi == -KOS_EINVAL and seen.unheld == -KOS_EPERM);
+        TAP_CHECK(seen.rounds == PW_ROUNDS + 1 and seen.moved == 0);
+        // The CMOS pair is free again, and its index stays closed to the next holder.
+        kos_cap_grant const icaps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto const writer = kos::thread::create(pw_index, nullptr, "pwi", 10, KOS_POLICY_FIFO,
+                                                0, false, nullptr, 0, nullptr, 0, &cmos, 1,
+                                                icaps, 1, 0, nullptr, ti);
+        TAP_CHECK(writer.valid());
+        if (writer.valid())
+        {
+            char x = 0;
+            TAP_CHECK(pw_recv(ep, &x, 1, 20000) == -KOS_ETIMEDOUT);
+            TAP_CHECK(writer.join(PW_JOIN_US) == 0);
+        }
+        (void)kos_task_kill(tc);
+        (void)kos_task_kill(tb);
+        (void)kos_task_kill(ti);
+        (void)kos_handle_close(sa);
+        (void)kos_handle_close(sb);
+        (void)kos_handle_close(ep);
+    }
+#endif
+
 #if defined(KICKOS_SELFTEST_SPARE_DEV)
     // --- A device window at the address the kernel chose -------------------------------
     // The holder, in a task of its own, reads a device the kernel never drives through the

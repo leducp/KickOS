@@ -2,37 +2,19 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Multicore: a shared kernel where the hardware earns it, AMP where it does not
 
-> **Status: ACTIVE** -- the design contract for multicore, written to be audited before code.
-> Section 1 is the hardware predicate that decides which parts get a shared kernel at all,
-> section 2 is what this contract FREEZES, section 6 is the step plan with the expected result
-> of each step. An auditor is invited to add steps, split them, reorder them and correct the
-> expected results; the step identifiers exist so a finding can name one.
->
-> **This document names no milestone, and that is deliberate.** `roadmap.md` owns the schedule
-> and is the sole entry point mapping a milestone to the documents it draws on and the steps it
-> adopts. A design that carries its own milestone number inverts that: the mechanism starts
-> depending on the plan, and every resequencing rots a document that describes something which
-> did not change. Step identifiers here are local to this file.
+> **Status: ACTIVE.** Section 1 sets the hardware predicate, section 2 the multicore rules,
+> section 8 thread placement, and section 9 the remaining decisions. The completed stage
+> record is in [the archive](archive/M7-M9_multicore_implementation_record.md).
 
-`docs/design-m7-smp.md` is the exploration and stays one: it carries the cross-core IPC transport,
-the atomics residue, the hardware mechanics of the RP parts and the corrected TLB bullet, and all of
-that is still the input.
-
-**What it does NOT decide is the target, and its candidate ranking is not this plan.** That ranking
-was written when multicore was expected to precede the MMU. It sorts RP2350 above RP2040 above the
-LX6, it never mentions an A53, and its gate is an MCU gate: exclusives, SIO spinlocks, the E2
-erratum, the windowed ABI. Translation landed first, so the machine multicore arrives on is the A53
-the MMU port already runs on, and every clause of that ranking is satisfied trivially by it. Read the
-spike for its transport design and its hardware mechanics; do not read its ranking as a plan.
-
-The silicon target is the quad-core i.MX8MP. `qemu-arm64` is the development vehicle, which is why
-section 2 freezes bring-up and interrupt decisions against that part rather than against the emulator.
+The [M7 candidate spike](archive/M7_smp_candidate_spike.md) records the earlier MCU ranking and
+hardware analysis. The shared-kernel A53 target is the quad-core i.MX8MP; `qemu-arm64` is its
+development vehicle. `roadmap.md` owns milestone scheduling.
 
 ---
 
 ## 1. When a shared kernel is reachable
 
-`docs/design-m7-smp.md` states the gate as two coupled facts, the inter-core atomic and switch-path
+`docs/archive/M7_smp_candidate_spike.md` states the gate as two coupled facts, the inter-core atomic and switch-path
 maturity. That is not enough: it names the primitive the lock needs and says nothing about the two
 properties whose absence turns a shared kernel into software standing in for missing hardware.
 
@@ -1337,87 +1319,34 @@ model that is the predicate's own answer for those parts.
 
 ---
 
-## 3. What the MMU work already cut, so this does not
+## 3. Seams inherited from M6
 
-The seams compile to nothing at one core. Stated so the plan is not re-made around work that exists.
+M6 provided the per-core identity, doorbell, translation-root cache and address-space
+family. The doorbell has both send and wait operations because a rendezvous needs an
+answer. A backend derives the active-core set from installed roots; the opaque
+`arch_aspace*` remains the root-table identity. Translation maintenance stays in each
+backend. The original audit and the alternatives it rejected are in
+[the implementation record](archive/M7-M9_multicore_implementation_record.md).
 
-- The per-core identity and the doorbell are declared, folded at one core, and frozen as records.
-  The doorbell is TWO calls from its first line because a fire-and-forget one cannot express a
-  rendezvous.
-- `struct armv8a_percpu` is arrayed by the core count with its first field's displacement asserted,
-  and `arch/arm64/armv8a/vectors.S` names the multi-core edit in its own comment.
-- The per-core translation-root cache is already keyed and already loops over every core.
-- The address-space family is frozen and coherence-complete, with no flush call to schedule and no
-  address-space identifier above the seam.
-- The active-core set is DECIDED and not built: never a parameter, because a parameter edits every
-  backend at once. T9 named the alternative a readable FIELD on the opaque space, and that form is
-  unimplementable: on all three translating backends the opaque `struct arch_aspace*` IS the root
-  page-table frame, cast, and four things depend on that identity -- the value written to the
-  translation base, the comparison that answers whether this core has the space installed, the
-  boot space's reconstruction from the register, and the subtree walks. A header word or a stolen
-  descriptor slot breaks one of them or hands the hardware walker a non-descriptor. **The set is
-  therefore DERIVED**, from what the backend last installed per core, which honours every reason
-  T9 gave -- opaque type, no signature fan-out, backend-local, free to add -- better than the
-  field would.
-- Cross-core maintenance is file-local bodies inside the armv8a backend. Nothing named a flush
-  crosses the seam, so what changes is those bodies and not a signature. *There are THREE, not the
-  two this said:* the by-address invalidate, the range sweep, and the root change, which open-codes
-  a sweep of its own instead of calling the range one. The third stays LOCAL when the other two go
-  broadcast, a root change concerning the PE whose register changed.
-- The data-cache clean and invalidate seam is landed with an armv8a backend and no caller.
+## 4. Lock and lifetime consequences
 
----
+The capability path requires one continuous lock from resolve through use. Its
+multicore audit found six cases, numbered here to retain the references in section 2.
+The full derivation is [archived](archive/M7-M9_multicore_implementation_record.md).
 
-## 4. What a lock substituted for the current primitive leaves open
-
-An audit of `docs/design-capability-table.md` section 8's catalogue against the tree found most of it
-ANSWERED, because `kernel/syscall/cap.cc` states the precondition the substitution needs: every entry
-point's caller holds the lock, and a resolved object pointer is used under the same continuous lock.
-The frame-mapping capability pair honours F4 as written.
-
-Six survive, and the first three are not span problems at all.
-
-1. **The register fastpath holds no lock object**, and says so in its own comment. It reproduces five
-   of the catalogue's hazards unguarded on a peer's thread control block, including the width bound
-   that keeps a slot lookup inside its own run. **It is unreachable on both targets of this work**:
-   the opt-in exists only for armv6m, armv7m, rv32imac and rxv3, and the symbol is in neither image.
-   So this contract RULES on it and does not fix it, and N10's refusal is what carries the ruling.
-2. **The interrupt entry takes no lock** and dereferences a binding a concurrent teardown is freeing.
-   The teardown's own claim to safety is a masked window, and a mask on one core is not exclusion on
-   another. N3 answers it by affinity.
-3. **The exited-slot reclaim window opens where the lock closes** -- and the answer is that the
-   lock no longer closes there. `kickos_switch_unlock` moved the release inside the swap, to the
-   point where the outgoing frame is parked and the core stands on the incoming one, so the
-   bracket that publishes EXITED does not release before the park and the window has zero width.
-   **No second mechanism, and deliberately none:** an epoch or a quiescence flag would be a second
-   answer to "is this thread off-CPU", and the release point is already that answer. What the gap
-   owed and now has is the invariant made checkable rather than argued across three files, which
-   `tests/unit/exitquiesce/` does at two cores over both halves of the swap. The reclaim key stays
-   exactly EXITED: widening it admits a thread still running its own teardown.
-4. **Cross-core translation invalidation** after unmap and release. The armv8a maintenance is
-   NON-BROADCAST as written: the barriers around it are already `dsb ish`, and what applies to
-   the executing PE alone is the TLBI, which carries no shareability component at all
-   (`tlbi vaae1`, not `vaae1is`). *Non-shareable* is the wrong word for it -- that is a named
-   architectural domain with its own `dsb nsh` form, and no code here is in it. The second half
-   of this entry, "there is no inter-core interrupt in the tree", was true when written and
-   stopped being true at S3.
-5. **A peer core's installed translation root** at release: every core's cell is cleared, the boot
-   root is reinstalled only locally, and the tables are freed regardless. The other half of the
-   same hole is the switch path, which returns without touching the translation base when the
-   incoming thread's task holds no space, so a core that ran a thread of some task and then took
-   the idle thread keeps that task's root while its tables go back to the pool.
-6. **The switch cells are file-scope scalars.** On armv8a the register switch is inline and under the
-   lock for a voluntary switch, so the catalogue's pending-backend hazard does not apply in the form
-   it was stated; what does apply is that two cores would share one cell naming the context on the
-   CPU. Both cells move into the per-core block.
-
-**Every one of these verdicts is conditional on the current thread pointer becoming per-core**, which
-is one global read without the lock at every syscall entry today. That is S1's first item.
-
-One entry was refuted and the refutation is worth keeping: the authority word is read without the
-lock and is safe, not because it is a single byte but because every one of its readers passes the
-CURRENT thread and no path reads a peer's. What it owes is a publication edge at spawn, which is a
-property of the lock this work writes rather than of that code.
+1. The register fastpath owns no lock. It is absent from shared-kernel images, and the
+   configure refusal prevents enabling it there.
+2. IRQ entry cannot rely on a local mask against teardown on another core. Device
+   interrupt affinity and routed line operations give the line one owner.
+3. An exited slot must remain unavailable until its old frame is off-CPU. Lock release
+   moved into the switch epilogue after the outgoing frame is parked; `EXITED` remains
+   the reclaim key. The two-core exit-quiescence gate checks both sides of the switch.
+4. An unmap must invalidate translations on peers holding that space. The A64 backend
+   uses broadcast maintenance where required.
+5. Releasing an address space must clear every installed-root record and return a core
+   without a user space to the boot root before its tables are reused.
+6. Switch cells naming the running context are per-core, as is the current-thread
+   pointer read at syscall entry.
 
 ---
 
@@ -1431,320 +1360,51 @@ property of the lock this work writes rather than of that code.
 
 ---
 
-## 6. The plan: steps and expected results
+## 6. Stage outcomes and remaining work
 
-Step identifiers are local to this document. `roadmap.md` maps them to milestones.
+The completed step-by-step plan, its expected results and the GIC register analysis are in
+[the implementation record](archive/M7-M9_multicore_implementation_record.md). `roadmap.md`
+owns milestone scheduling. The stage identifiers below identify the outcome, not a new plan.
 
-**S0 -- the contract and the instrument.** No runtime code. This document; the SMP seam differ, its
-baseline frozen at a tree with no SMP backend in it and its four members moved out of the entry
-family, `arch_cpu_id`, `arch_ipi_send`, `arch_ipi_wait` and `KICKOS_NUM_CORES`, so this work could
-never redden the entry-and-boot-path verdict the x86_64 port closed; the configure-time refusal of
-N10.
-*Landed:* the entry differ passed against the family those four left, the SMP differ passed against
-its own ten-record baseline, and the fleet was unmoved. **Neither differ is in the tree any more, so
-both verdicts are recorded results and neither is re-takeable.** What the SMP one reported at its
-last run is S5's own finding, and `roadmap.md` carries the figures.
+| Stage | Outcome |
+|---|---|
+| S0 | The multicore seam and configure refusal were specified and checked. The temporary differ tools are no longer in the tree. |
+| S1 | Current thread, fault record and switch cells became per-core before raising the core count. |
+| S2 | Secondary A53 cores boot and park; core identity and interrupt interfaces are per-core. |
+| S3 | The kernel lock and doorbell permit threads on multiple cores. IRQ affinity and routing keep one writer per device line. |
+| S4 | Cross-core address-space maintenance, installed-root tracking and instruction-side rendezvous landed. |
+| S5 | The RV64 lock, doorbell and hart bring-up exercised the same seam. |
+| S6/S6b | GICv3 and the i.MX8MP chip posture placed controller and topology facts at the chip boundary. |
+| S7 | AMP node and far-call mechanisms reached the emulator; the two-image and real heterogeneous cases have narrower evidence, described below. |
 
-**S1 -- per-core state, at one core.** Everything that must be keyed, landed while the count is one
-so it folds to nothing and every preset proves it: the current thread pointer, the fault record, and
-the two armv8a switch cells into the per-core block. Not the sleep queue and not the ready queues,
-which belong to per-core scheduling and stay global under one lock. *Expected:* fleet green;
-`microbit`'s arena base moves by the documented adjacency and a build catches it.
+A sender supplies a core mask to the doorbell seam. GICv2 and GICv3 lower that mask
+differently; the GICv2 target bit is discovered from the CPU interface rather than assumed
+to equal the processor ID. A group mismatch can silently drop a software interrupt, so send,
+acknowledge and end-of-interrupt use the same configured group. The archived stage record
+contains the per-controller derivation.
 
-**S2 -- the second core boots and idles.** The shape the unicore A53 port used: prove the axis with
-no shared-state work. PSCI on four cores from the start so that "the peer" never becomes a synonym
-for one core, secondary stack and exception level and vector base, the identity read from the
-hardware register, the per-core interrupt CPU interface, and the secondaries parked. *Expected:* four
-cores up, core zero runs the selftest unchanged. Measured baseline: raising the core count alone is
-inert today, so any change is ours.
+## 7. Evidence boundary
 
-**S3 -- the lock, the doorbell, and threads on every core.** N2 as one design; gaps 2 and 3 of
-section 4; threads scheduled on any core with cross-core wake through the doorbell. *Expected:* the
-selftest runs with threads distributed across four cores. This is the first step at which the lock
-witnesses anything.
+LX6 is the shared-kernel silicon witness: two cores entered one scheduler, completed the
+selftest arms and exercised the lock, doorbell, console driver and IRQ routing. This is a
+bench capture, not a CI gate. A53 and RV64 shared-kernel evidence is emulator-grade until
+silicon runs. LX6 core-release programming has a measured release half whose value is not
+stated in its manual; arrival is checked separately.
 
-Four facts the GIC architecture settles, so the send is written against the specification rather
-than against the emulator, and so a reader does not re-derive them:
+The IRQ gate and the level doorbell have ordering arguments that a normal run cannot force
+at their critical interleavings. The LX6 debug guard found a cross-core console-handover
+line touch; routing now sends it to the owner, and structural gates cover the service path.
+The selftest-only IRQ injection path remains a special case.
 
-- **The core-index mask is the right currency and it survives both controllers.** A subset of cores
-  is expressible on either, so `arch_ipi_send` is written once. What may NOT appear in a shared
-  interface is anything below it: a target list plus a filter is GICv2's register in disguise and a
-  GICv3 backend would have to synthesise affinity fields, while affinity plus a routing mode is
-  GICv3's and a GICv2 backend would have to invent an affinity space its hardware has no notion of.
-- **One call is not one register write.** GICv2 reaches any mask in one `GICD_SGIR` write, its
-  8-bit target list also capping that backend at eight cores architecturally. GICv3 needs one
-  `ICC_SGI1R_EL1` write per affinity group and range-selector window present in the mask, so the
-  send loops and how often is a property of the machine's topology.
-- **The GICv2 target bit is NOT the core identity, and treating them as equal is a bet.** A GICv2
-  target list names CPU INTERFACE numbers, and the architecture relates them to no processor
-  identity register at all -- the specification's only discovery is that a core reading its own
-  banked target register gets its own number back. So each core publishes its bit at bring-up. The
-  existing hard-target of interface zero is that same bet, made where one core made it safe.
-- **A group mismatch drops the interrupt silently on both**, which makes it the likeliest first-boot
-  failure: the send must be the group the target is configured for, and the acknowledge and
-  end-of-interrupt registers must be that group's too.
+The far call's token, rings and return wake are exercised end to end on the AMP emulator,
+but its far service body is not a scheduled thread in a second live kernel. A deferred
+publication is shown to arrive after a later notice; the actual peer-seating race and its
+store/load barrier pairing need a stronger memory-model or silicon witness. The masked copy
+cost of a far publish has no valid A53 cycle measurement here.
 
-**S4 -- translation across cores.** Gaps 4 and 5; the broadcast maintenance and the instruction-side
-poke that A64 genuinely owes, its instruction barrier not being broadcast; the active-core set built
-as it was decided. *Expected:* processes on multiple cores, the address-space arms green at four
-cores.
-
-*Landed:* the broadcast maintenance, gap 5's invariant, the active-core set in its DERIVED form
-with the elision it re-enables, and the instruction-side doorbell poke.
-
-Three things the work settled that the plan did not anticipate.
-- **The elision survives multiple cores.** It was compiled out above one core because a peer's
-  translation base is not readable; with the set derived, a space no core has installed elides its
-  whole seeding again, so the four-core image seeds a new space at zero maintenance exactly as the
-  one-core image does.
-- **An elided invalidate still owes a barrier.** The elision drops the DSBs with the TLBI, which is
-  sound only where no walker exists. One `dsb ishst` per CALL is what makes the descriptors
-  visible before any later activation reads them (DDI 0487 M.b, D8.17.1), and per call rather than
-  per page is what keeps the elision's measurement intact.
-- **The two removal paths gate the poke differently, and that is a ruling.** `arch_aspace_unmap`
-  reads the execute permission out of each leaf BEFORE clearing it, because the alternative is a
-  rendezvous on every data unmap and that would be the largest cost in the step. `arch_aspace_destroy`
-  does not read permissions at all and gates on the peer mask alone: a space a peer still holds is
-  losing its whole image, the cost is once per teardown rather than once per page, and the mask is
-  empty in every case gap 5's invariant permits. Reading permissions there would mean trusting a
-  walk of a tree already being dismantled, where missing one leaf silently loses the rendezvous.
-- **The single-core fold needed a constant-false predicate, not a dead branch.** The execute-permission
-  read has to disappear from a one-core image, and it does not do so on its own: the recursion in
-  `free_subtree` defeated an earlier shape that returned the flag up the tree, because proving a
-  recursive function's result constant is beyond what the compiler will do. The predicate itself is
-  what folds.
-- **The fault reporter needs nothing.** It puts the boot root back without telling the kernel's
-  per-core cache, and a cache that OVER-reports is NOT harmless: the switch path skips the
-  activate when the cell already names the incoming space, so a cell naming a space the register no
-  longer holds would run a thread against the boot root. It is unreachable rather than harmless --
-  that reporter never returns to a scheduler, so no switch reads the cell again. The backend's own
-  record needs no special case at all, being written where the register is.
-
-**S5 -- the RV64 backend and the SMP-seam verdict.** The hart park first, since with no firmware
-every hart currently enters the reset path. Then the lock, the doorbell over the machine software
-interrupt, and the genuine software rendezvous that A64 receives from hardware.
-*Landed:* the differ's verdict WAS the step's finding, exactly as the address-space seam's was, and
-it came back positive rather than empty. It exited 0: not one member of the seam frozen before
-either backend moved had changed, so a second backend whose identity is a published index rather
-than a register read, whose doorbell is a CLINT word lowered through a machine-mode trampoline, and
-whose lock is LR/SC was absorbed by the seam rather than reshaping it. **The differ is no longer in
-the tree, so that verdict is a recorded result and not re-takeable**; `roadmap.md` carries the
-corpus and the control figures.
-
-**S6 -- the GICv3 posture, matching the silicon target.** Off the critical path deliberately: the
-doorbell's semantics are settled at S3 against one lowering, and the banked-register question the
-mask triad carries is answered there too, so this step implements a settled contract rather than
-carrying an open one twice. *Expected:* a second interrupt posture on `qemu-arm64`, the way the
-RV64 board ships two translation postures.
-
-**S6b -- `imx8mp-evk` as a chip port.** A second arm64 part, and the first whose interrupt
-controller is a real one rather than an emulator option: the machine wires a GIC-500 and offers no
-`gic-version` choice, so this step cannot precede S6. What it is FOR is the predicate: GIC version,
-routing and cluster topology are properties of a part while `smp.cmake` declares them per arch, so
-a second part is what moves that declaration to where the facts live. *Expected:* the predicate
-declared per part with the arch keeping what is genuinely architectural, and a board that boots
-four cores under the GICv3 posture.
-
-**S7 -- AMP.** An AMP node is a single-core kernel per N6, so this step spends the doorbell and the
-shared window rather than the lock. It comes after S5 so the doorbell has two backends' witness
-before a second model is built on it, and after S6b only because that step settles what a part
-declares. *Expected:* a node whose kernel believes itself alone, reached over the same doorbell seam
-the shared kernel uses, with every index and length read from the shared window validated as another
-node's writing. NOT expected: the heterogeneous case, which has no emulated vehicle -- QEMU's
-`imx8mp-evk` models the A53 cluster alone and ships no Cortex-M7 companion.
-
-**The GICv2 code is already out of the chip file, and GICv3 lands beside it rather than inside it.**
-Everything that code holds except its base addresses and its timer identifier is architected rather
-than per part: the register displacements, the boundary below which a distributor register is the
-calling core's own bank, the acknowledge and end-of-interrupt protocol, and the identifier that
-means no interrupt is pending. The chip declares which controller it has and where, because that is
-where the GIC version, the routing and the cluster topology live: an ARCH may not certify them for a
-part it has never seen.
-
-**A shared interface with one consumer is shaped by that consumer, and this one is deliberately
-cheap to reshape.** It is internal to `arch/arm64`, so no backend outside the family satisfies it and
-nothing above the seam names it, which is what separates it from the frozen families F8 of
-`design-m6-mmu.md` reasons about: those are contracts every port must meet, and this is a file
-boundary. Whether the two controllers end up sharing one interface or keeping two is decided when
-the second one exists, by which shape carries less duplication.
-
----
-
-## 7. What this work will not witness
-
-- **No silicon, and the three shared-kernel backends do not share one standing.** The A53 is an
-  emulator only and the RV64 board has no part at all, so those two are emulator-grade until the
-  i.MX8MP arrives.
-- **THE LX6 IS STILL THE ONLY BACKEND HERE THAT NO MODEL RUNS, AND IT IS NOW THE ONLY ONE A
-  MACHINE HAS RUN.** Upstream QEMU models no ESP32, so this image is executed by nothing in CI and
-  by nothing on this bench without a board on the bus: the other two backends are witnessed by a
-  model of the architecture and this one by no model at all. What changed is the other side of it.
-  The bring-up check is no longer compiled into every build and executed by none of them: it has
-  been executed on silicon, answering all 0x40 rounds, on an ESP32-WROOM-32 module. **A green CI
-  run stands behind none of that** -- what stands behind it is a board, and a serial capture is
-  dated evidence rather than a standing fact.
-- **AND THE PART THAT CAN CARRY A SHARED-KERNEL SILICON WITNESS IS THAT SAME LX6, so the two
-  standings meet on one board. THAT WITNESS NOW EXISTS.** Its two open columns were measured on
-  silicon and both answer yes, so the part satisfies all six on evidence rather than four, and a
-  backend rests on them. It remains a BENCH OPERATION AND NOT A GATE: no run in this tree produces
-  it and no green run stands in for it. **What the shared kernel now has behind it is more than
-  the primitive**: two cores in one scheduler completing 125 selftest arms with a userspace UART
-  driver owning the console, the doorbell and the kernel lock answering their bring-up check on the
-  die, and a device line's gating routed to its owning core. What it does not have is a SECOND
-  die, or any of the specific non-witnesses below.
-- **The lock has no silicon witness specifically.** An AMP port on a real dual-core part would still
-  exercise the doorbell, the ring and the ordering claims; the shared kernel is what loses its
-  hardware witness.
-- **THE SECOND CPU'S RELEASE HAS A DOCUMENTED HALF AND AN INFERRED HALF, and the inferred half is
-  the one that makes it run.** Six writes start the LX6's second CPU. The manual states the value
-  that STALLS it, split across two RTC_CNTL fields, and states nowhere the value that releases it;
-  clearing both fields is taken from their reset value and from a probe that started the core. So
-  that half of the sequence rests on a measurement precisely where the page is silent, and a
-  reader looking for its authority will not find one. What the image adds beside it is a refusal
-  rather than a claim: the primary waits a bounded interval for the core to publish its own
-  arrival and terminates by name if it does not, because released is not arrived.
-- **AN UNROUTED LINE'S MASK ORDERING IS ARGUED AND NOT WITNESSED, and no run can witness it.**
-  N3 records that the pin covers a routed line only, that the gating cells are atomic, and that
-  the order between the ISR's mask and the waiter's unmask rests on the kernel lock's
-  `S32C1I`/`S32RI` chain. Two stores to one cell from two cores admit no primitive that orders
-  them, so what stands behind that order is the chain and the ISA's wording, not an arm. **The
-  archived boots exercise those cells through a real driver and through the widened park window,
-  which is evidence that the cells WORK and not evidence about the ordering**: the interleaving
-  that would expose it needs the ISR's mask to land after an unmask that is logically later, and
-  nothing in this tree can schedule that on purpose. Same standing as the lost-edge argument
-  above, and the same reason: a probabilistic soak here would read exactly like a broken one.
-
-- **THE DOORBELL'S LOST-EDGE ARGUMENT IS WRITTEN AND NOT EXERCISED.** No hardware clears an
-  inter-CPU trigger on this part, so a sender's set can be erased by a receiver's clear. What
-  bounds that at one spurious entry rather than a lost request is an ordering discipline on both
-  sides plus the input being LEVEL, so a set landing after a clear re-asserts and the receiver
-  enters again. No arm reaches that interleaving and none could be built from an honest sender, so
-  this is a proof about the mechanism and not an observation of it.
-- **THE SINGLE-LOCK RULING IS CHECKED IN A DEBUG BUILD, AND A DEBUG BUILD HAS NOW RUN IT.** N3 buys one
-  lock with interrupt affinity, and this backend makes the pin structural rather than
-  conventional: binding a device interrupt takes the core that will take it, with no default, so a
-  route cannot silently mean the primary. **The debug build ran, and the discipline did NOT hold**:
-  the guard fired on the first board, naming line 0x1e as routed to core 0 and touched from core 1,
-  and the caller was the kernel's own console handover inside `kos_console_publish`. That is what
-  the archive's boots 2, 3 and 9 through 12 record, and it is why the other direction is no longer
-  a caller's discipline at all: `kernel/irq/irq_route.cc` routes the touch to the owning core, its
-  per-line cells give each line a single writer, and two gates hold both
-  (`check_irq_line_op_sole.sh`, `check_route_service_order.sh`). N3 in section 2 carries the
-  server-versus-passer-by split that resulted.
-  **What no run still says** is whether that holds under a caller nobody has written yet: the
-  routing is a shape rather than a rule, but `arch_irq_inject` remains a cross-core writer of one
-  line's cell, gated to selftest and refused by name in a debug build rather than made impossible.
-  A release image still compiles the guard to nothing, which stays the deliberate half of the
-  trade.
-- **THIS BACKEND'S RENDEZVOUS COUNTER IS STRUCTURALLY ZERO AND IS NOT AN ABSENCE OF SENDS.** There
-  is no translation to invalidate and no cache over the memory both cores fetch from, so nothing
-  pairs a send with a wait here at all. The counter reads zero on a correct image, which means a
-  reader comparing it against a backend that does pair them is comparing two different questions.
-- **The fastpath ruling is unexercised.** Neither target links the fastpath, so N10's refusal is what
-  carries it and no run demonstrates it. **The locality guard N7 asserts now EXISTS in that file
-  and this bullet is unmoved by it**: the guard folds to nothing on every part that links the
-  fastpath, so what a green run there witnesses is that it compiles away, not that it fires.
-- **A FAR CALL IS WITNESSED END TO END, AND THE FAR SIDE IS NOT A KERNEL.** On `qemu-arm64-amp` a
-  call on a far endpoint crosses to node 1, is echoed by that node's service body carrying the
-  token it was handed, and comes back through node 0's own doorbell service to wake the parked
-  caller. That is a real witness of the token, the ring, the five validation clauses and the
-  wake. What it is NOT is a far side that is a receiving THREAD in another kernel: the peers here
-  run no scheduler, so the receiving half of N6d's shared service is still unwitnessed and needs
-  the two-image posture and a part that has one.
-- **THE FAR-ENDPOINT SYSCALL STILL HAS NO USER-SIDE CALLER, AND THAT IS NOW THE DESIGN RATHER
-  THAN A GAP.** `KOS_SYS_AMP_ENDPOINT_CREATE` is privileged per N8 and root is unprivileged from
-  its first instruction, so what a run witnesses of it is its REFUSAL and nothing else. What
-  changed under N6g is where a far endpoint comes from instead: the PARTITION states it and the
-  kernel seats it into root at init, so no user-side caller is owed and the probe scaffolding
-  that used to reach the mint body is gone. What is still unwitnessed is a PRIVILEGED caller
-  reaching it, there being none in the tree, and who SHOULD be able to mint one dynamically stays
-  section 9's open question. The forge that stands in for a peer's publication remains gated to
-  root's TASK, which is what a single-image run needs and not a path to a capability.
-- **THE MASKED WINDOW A FAR PUBLISH HOLDS IS UNMEASURED, AND THERE IS NO FIGURE TO REPORT.** A far
-  send copies TWICE with this core's interrupts masked: user memory into a `KOS_EP_MSG_MAX` kernel
-  stage on the syscall stack, and that stage into the peer's ring slot, so up to 512 bytes move
-  inside one `IrqLock`. What it costs is not known, and the reason is not that nobody looked.
-  `bench_cyccnt` has a source for RISC-V, RX, Xtensa and armv7m and returns 0 on every other arch,
-  so on the ONE board carrying this posture, `qemu-arm64-amp`, every phase accumulator and
-  `bench_irq_masked_once` alike read zero; a wall-clock figure taken around the syscall on a
-  host-scheduled vCPU would measure the emulator. An A64 source is arch work rather than an
-  instrumentation switch: `CNTVCT_EL0` counts system-counter ticks and not cycles, and
-  `PMCCNTR_EL0` needs a PMU no image here programs. The order is not negotiable either way:
-  instrument before replacing, because a reserve/commit API is safe only if a failed user copy
-  cannot leave the ring a half-written slot, and that is a harder contract than the copy it
-  removes. So this is a recorded debt with an explicit absence of a number, not an accepted cost.
-- **The rendezvous is A64-free on the DATA side ONLY, and the acknowledgement side is software on
-  every backend.** A64's coherency supplies the data half. What no interrupt controller supplies is
-  the other half: neither GIC version reports to a SENDER that a target has serviced a
-  software-generated interrupt. GICv2's per-source pending registers are banked to the ACCESSING
-  core, so an initiator cannot read a target's state at all; GICv3's are addressable in the target's
-  own redistributor frame but carry no source identity, and a cleared bit does not distinguish
-  serviced from never delivered. So `arch_ipi_wait` spins on per-core acknowledgement in shared
-  memory on BOTH postures, and no backend reads a controller register in it. This bullet previously
-  read that the blocking path is unexercised until S5, which conflated the two halves: what defers
-  is the first CALLER that needs a rendezvous rather than the mechanism, a cross-core wake needing
-  no wait at all.
-- **The instruction-side maintenance has a MECHANISM and a PARTIAL arm, and its architectural
-  effect has none.** This bullet used to say nothing in the tree changes an executable mapping
-  across cores, which had been false since S3: the app's text is mapped read-execute in every
-  space, it is unmapped when the space is released, and threads run on peer cores. What the tree
-  now carries is the doorbell service body's `ISB` and a send-and-wait from `arch_aspace_unmap`
-  and `arch_aspace_destroy` over the peers holding the space. Three claims, three standings.
-  - **That the poke is sent and answered by the right cores IS witnessed**, by a per-core count of
-    doorbell services and of rendezvous initiated, asserted across a task kill, and cross-checked
-    against QEMU's GIC acknowledge trace. For the poke's own arms that cross-check is
-    one-directional: a peer already spinning in the acquire loop answers by POLLING and
-    acknowledges nothing, so the trace can confirm an interrupt path that ran and never refute one
-    that did not. The bring-up check is the exception, and it is one by construction: its first
-    phase runs the peers with interrupts open while the initiator holds the lock, so the vector is
-    the only thing that can answer and an acknowledgement per peer per round IS asserted. Its
-    second phase asserts the other side, the peers observed spinning before the raise, where only
-    the poll can answer.
-  - **That the `ISB` precedes the answer IS witnessed, structurally**, by a disassembly gate over
-    the service body rather than by any run.
-  - **That the poke carries NO scheduling meaning is witnessed on both sides.** Structurally, by a
-    second disassembly gate: the send and the rendezvous branch to neither the reschedule
-    publisher nor the scheduler, the dispatch reaches the scheduler only behind the take that
-    consumes the cell, and the publisher has a caller that is not a backend body. Dynamically, by
-    the raise count QEMU's own GIC model reports over the bring-up check, whose sixty-four rounds
-    are rendezvous and nothing else: with the publish inside the send each of the thirty-two poll
-    rounds made every peer re-raise at itself, and the boot's `GICD_SGIR` writes fall from about
-    180 to about 84 once it moves out. That is a count of raises rather than of scheduler entries,
-    which is the honest reading: the emulator reports what the controller was asked to do, and a
-    peer answering by poll acknowledges nothing.
-  - **That the `ISB` has its architectural effect is NOT witnessed and cannot be here.** QEMU's TCG
-    models no prefetch queue and invalidates translated blocks on a flush, so an arm shaped "the
-    peer stopped executing the revoked text" passes on an image carrying no `ISB` at all. This
-    rests on the specification -- DDI 0487 M.b section B2.7.4.2 for the absence of any bound on
-    re-executing already-fetched instructions, the Glossary's "Context Synchronization event" for
-    the fact that every way of taking one is self-executed, and section B2.2.5 step 3 for the
-    requirement that each PE executing changed code run its own -- exactly as the data-cache
-    seam's non-witness does, and not on a green run.
-- **A DEFERRED PUBLICATION IS WITNESSED AS DELIVERED; THE BRING-UP WINDOW ITSELF IS NOT.** On the
-  merged two-image artefact node 0 publishes with its peer's seat forced unseated, so the raise
-  is skipped and counted, and then makes an ordinary call that carries the next notice. The
-  PEER'S OWN take counter, read out of the shared window, then stands at two: the publication
-  nobody announced, and the call. That is the clause N6f states and it had been cut twice for
-  want of a vehicle, because a partition whose peer drains ONCE after seating cannot re-enter the
-  window a probe reopens, and seating is monotonic. A live peer drains on every doorbell, which
-  is what makes the next notice something a test can cause.
-  **What is still unwitnessed is the REAL bring-up window**, between node 0 releasing its peer
-  and that peer seating: node 0's earliest userspace code races it, and closing that race needs
-  either test code in kernel init or a peer deliberately started late. The mechanism is the same
-  one either way; what the vehicle does not pin down is the timing.
-- **THE BRING-UP BARRIER PAIRING IS ARGUED AND NOT WITNESSED, and the instrument that would
-  witness it is on the bench in a form that cannot.** The store-then-load pairing the deferred
-  raise rests on is a store-buffer shape, which QEMU's TCG does not model: the arms stay green
-  with both barriers removed, so no run here distinguishes the pairing from its absence. What
-  would settle it is a memory-model checker or real hardware. `herd7` and `litmus7` ARE
-  installed on this bench and cannot answer: the packaging ships the binaries without the `.cat`
-  model library, so the checker evaluates no model at all, AArch64's or any other. The other
-  route is the one the fleet already names -- the i.MX8MP is a real ARMv8 part with a real
-  cluster, so this is reachable later rather than impossible, and it is recorded here as owed
-  rather than settled.
-- **The AMP column stays a ruling even though S7 builds AMP.** What S7 ports is an AMP node on
-  `qemu-arm64`, a part the predicate sends to the SHARED kernel. So the parts section 1 excludes
-  still get no port, and whether they are worth one is still section 9's open question.
+Address-space rendezvous targets and service ordering are tested, while QEMU cannot establish
+the architectural effect of a peer's instruction barrier on prefetched instructions. These
+limits remain obligations when a real i.MX8MP or another suitable partition is available.
 
 ---
 
@@ -1936,7 +1596,7 @@ re-seats it and takes the pass that sees its fall.
 
 A core takes nothing off another's structure and links nothing into one: a thread its holder, waker
 or creator sends to a peer is HANDED onto the ring from this core to that one, and the peer links it
-in the dispatch that enters its scheduler (`design-m9.4-rings.md`). A placement reads a peer's level
+in the dispatch that enters its scheduler (`archive/M9.4_rings_record.md`). A placement reads a peer's level
 from the cell that core publishes at every change of its bitmap, with every thread already on its
 way there counted, and never reads the peer's ready structure, running thread or seated record. A core that has not started is never a placement
 target, having no scheduler yet to act on the doorbell; its own start links and picks what was

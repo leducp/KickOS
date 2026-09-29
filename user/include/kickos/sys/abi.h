@@ -332,10 +332,15 @@ enum kos_syscall_nr
                                //   on ready_ep. KOS_CAP_NONE for notify_cap disarms.
     KOS_SYS_TASK_STATE = 73,   // (kos_task_t) -> KOS_TASK_LIVE | KOS_TASK_READY bits, or
                                //   -KOS_EBADF (stale task), -KOS_EPERM (not the creator).
-    KOS_SYS_WINDOW_ADDR = 74   // (base, void** out) -> 0 with *out the caller's address for the
+    KOS_SYS_WINDOW_ADDR = 74,  // (base, void** out) -> 0 with *out the caller's address for the
                                //   window it holds at `base` (the base its spawn list named),
                                //   or -KOS_EPERM (no such window), -KOS_EINVAL / -KOS_EFAULT
                                //   (out). Where nothing translates, *out is `base` itself.
+    KOS_SYS_PORT_REG_WRITE = 75 // (base, offset, value) -> 0, or -KOS_EPERM (no port window of
+                               //   the caller's covers base + offset), -KOS_EINVAL (a port the
+                               //   chip does not keep for this write, a value outside its mask,
+                               //   or past port 0xffff / a byte), -KOS_ENOSYS (an arch with no
+                               //   ports).
 };
 
 // What KOS_SYS_TASK_STATE answers for the instance a task handle names.
@@ -664,7 +669,9 @@ enum kos_window_kind
     // answers; a list names a block in one window at most (-KOS_EINVAL). The block keeps one
     // memory type wherever it is mapped: a window asking another is -KOS_EBUSY.
     KOS_WINDOW_MEMORY = 1,
-    // An x86 port range; -KOS_ENOTSUP until a board grants ports.
+    // An I/O port range, base the first port and size the count, on an arch with ports
+    // (-KOS_ENOTSUP elsewhere): inside an aperture the chip states (-KOS_EINVAL), one holder as
+    // for a device window, and reached by the holder's own in and out instructions.
     KOS_WINDOW_PORTS = 2
 };
 

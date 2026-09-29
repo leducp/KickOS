@@ -41,14 +41,14 @@
 /* The frame term where nothing interrupts: a class ending in the masked switch. */
 #define KICKOS_X86_64_TRAP_FRAME_NONE 0
 
-/* IRQ, IRQK and the frame term of every class an interrupt lands under. 376 on
+/* IRQ, IRQK and the frame term of every class an interrupt lands under. 408 on
  * qemu-x86_64-bench under g++ 13 and 344 under g++ 16, a timer expiry's wake re-arming the
- * slice through pick_and_seat. */
-#define KICKOS_X86_64_TRAP_DEPTH_IRQ 384
+ * slice through pick_and_seat, whose switch loads the incoming port set. */
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 448
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which
  * arch_x86_64.cc asserts. */
-#define KICKOS_X86_64_TRAP_NEST 568
+#define KICKOS_X86_64_TRAP_NEST 632
 
 /* The ring 3 syscall on the block. 1800 on qemu-x86_64-bench under g++ 13, a spawn seeding the
  * new task's space:
@@ -65,9 +65,9 @@
  * chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1856
 
-/* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 376
+/* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
  * down IRQ's chain, which bounds the reporter those vectors actually take. */
-#define KICKOS_X86_64_TRAP_DEPTH_IST 384
+#define KICKOS_X86_64_TRAP_DEPTH_IST 448
 
 /* The fault and slay stubs on the block with an interrupt nested below: 816 on both presets, a
  * dying task's teardown releasing its address space down the map editor's walks. */

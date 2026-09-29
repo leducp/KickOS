@@ -242,6 +242,12 @@ int kos_task_state(kos_task_t task);
 // Returns 0 with *out set, or -KOS_EPERM for a window the caller does not hold.
 int kos_window_addr(uintptr_t base, void** out);
 
+// Write `value` to I/O port base + offset through the kernel, for a port a port window of the
+// caller's covers but the chip keeps closed to it, such as the CMOS index, whose NMI-mask bit
+// the chip withholds. Returns 0, -KOS_EPERM (no window covers it), -KOS_EINVAL (a port the chip
+// does not keep, or a bit it withholds) or -KOS_ENOSYS (an arch with no ports).
+int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
+
 // Forcibly terminate every member of a task created by the caller, without
 // a cleanup window. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
 // forever; zero: request only). An empty task succeeds immediately.

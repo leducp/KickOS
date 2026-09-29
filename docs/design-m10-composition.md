@@ -2,11 +2,9 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Static composition -- the three files, the table and the init
 
-> **Status: ACTIVE -- settled at M10.0, built from M10.1 on.** Written against the golden example in
-> [`examples/composition/`](../examples/composition/), which is the acceptance test and wins
-> where the two disagree until this document is settled. `roadmap.md`'s M10 section carries the
-> rulings and `TODO.md`'s M10 section the open items; this document states the design they
-> add up to, and the questions still open are listed at its end.
+> **Status: ACTIVE.** This specifies static composition against the golden example in
+> [`examples/composition/`](../examples/composition/). `roadmap.md` assigns the M10 work;
+> `TODO.md` tracks its remaining implementation items.
 
 ## The whole design in one paragraph
 
@@ -27,8 +25,8 @@ by name. No parser runs on the target.
 | Kconfig | what the kernel IS: pools, budgets, capability supply, cores, partition | the kernel's integrator | the kernel build, exported |
 | composition | what RUNS: tasks, grants, endpoints, shared memory, restart | the user | the user's project |
 
-Hardware facts get a top-level tree of their own, `platform/`, one folder per chip holding its
-chip file and its boards (maintainer, 2026-09-28): independent of architecture, which the i.MX
+Hardware facts live under `platform/`, one folder per chip holding its
+chip file and boards: independent of architecture, which the i.MX
 8M Plus's two clusters need, and readable by the kernel build, the host tool and any tooling
 alike. `boards/<board>/` keeps what configures a build of that board -- its defconfigs, its
 `board.cmake` and its default composition -- and `arch/` and `kernel/` keep the code. Until M10.2
@@ -120,7 +118,7 @@ which a refusal quotes and a composition's `accepts` lists.
 | `stdout` | path, or `kernel` | yes | where every task's standard output goes |
 | `ends` | `never`, or a task's name | yes | what ends the system |
 | `accepts` | list of names | no | platform-wide limitations the composition runs with knowingly |
-| `heap` | integer | no | the libc heap the image carves, today's `KICKOS_USER_HEAP_SIZE` |
+| `heap` | integer | no | the libc heap the image carves |
 | `shared` | list | no | shared regions: `name` (a `/shm` path), `size` and `cache` |
 | `tasks` | list | yes | in declaration order; ready tasks start in that order |
 
@@ -137,10 +135,9 @@ limitations it runs with; and `restart: { max: N }`.
 is empty unless declared, since authority is never a default; the init passes it as the spawn's
 authority word, which can only narrow what the init itself holds, so admission refuses a task
 declaring more than the init has. A nested init is the task that declares `tasks`, and the
-board's default composition declares `memory`, `system` and `tasks` for `main`, today's fallback
-plus task creation. A packaged driver's threads take the authority its descriptor states. The
-word was eight bits with seven to be spent, so M10.1.3 widened it to 32 rather than leave the
-ABI one bit from full. A packaged driver's `stack`, extra threads and objects come from its
+  board's default composition declares `memory`, `system` and `tasks` for `main`.
+  A packaged driver's threads take the authority its descriptor states. Its
+  `stack`, extra threads and objects come from its
 exported metadata rather than from the composition.
 
 `accepts` names limitations the host tool **derives** from facts the chip file states -- the chip
@@ -162,7 +159,7 @@ Port I/O is not on the list: M10 adds a real grant for it rather than accepting 
 A shared region's `cache` is `cached` or `uncached`, and it is required, since whether a
 region may sit in a data cache is a decision about who touches it and never a default. It
 becomes the region's memory type in the table: `uncached` is `KOS_MEM_NOCACHE`, the one memory
-type the kernel knows today, and `cached` is ordinary memory. Admission checks it against what
+type the kernel knows, and `cached` is ordinary memory. Admission checks it against what
 the region is shared with. Among tasks of one image a `cached` region is sound: they run on
 one core, or on a shared kernel's cores, which the multicore contract admits only where memory
 is coherent. Where a bus master reaches a region, or where a region is shared across the nodes
@@ -175,11 +172,11 @@ over it, as the ESP32-C6's SRAM has none, both values are equivalent and both ad
 `ends: never` keeps the init resident until reset. `ends: <task>` ends the system when that
 task's entry returns, which is how a plain app's `main` returning shuts the system down.
 
-**A plain app uses a default composition that is a real file** (maintainer, 2026-09-28). Each
+**A plain app uses a default composition file.** Each
 board carries `boards/<board>/composition.yaml`, from which the kernel package builds and exports
 a system target, `KickOS::system_default`.
 
-**The user's CMake stays plain** (maintainer, 2026-09-28): `add_executable` and
+**The user's CMake stays plain:** `add_executable` and
 `target_link_libraries(app KickOS::kernel <system>)`. An integrator turns a composition into a
 system target with `kickos_compose(<system> <composition.yaml>)` -- the table, the init, the
 packaged drivers it names and the link settings -- and hands it over with the kernel; which system
@@ -195,8 +192,7 @@ composing. A CI gate admits every board's default against that board's manifest.
 
 ## What the tool refuses
 
-Each rule refuses with a message naming it, and each has an arm and a mutation proving the arm
-turns red. `TODO.md`'s M10.2 item keeps the list current; in outline:
+Each refusal names the rule it breaks:
 
 - **Form**: an unknown field, an ambiguous scalar, a missing required field, a version the tool
   does not know.
@@ -272,7 +268,7 @@ mapping the spawn makes, occupies no capability slot, and records none.
 **The table carries every device fact the init needs, so no kernel device catalogue is
 required.** A window grant states its physical base and size, a port grant its first port and
 count, and the kind says which: the init hands exactly those to the spawn, and the kernel checks
-them against its reserved blocks and one-holder rule as it does today. What the table never
+  them against its reserved blocks and one-holder rule. What the table never
 carries is the address a translating board maps a window at, which the kernel chooses and
 `kos_window_addr` reads back: see the next section. A physical base is a chip fact, public in the
 chip file, and granting nothing.
@@ -293,7 +289,7 @@ package's CMake files, where `kickos_compose` finds it.
 | `memory` | on a region board the user arena's base and size; the image's own carve |
 | `descriptions` | the chip and board files the kernel was built from |
 | `default` | the board's default composition file, and the `KickOS::system_default` target built from it |
-| `drivers` | the packaged driver catalogue: each driver's roles (window, lines and their triggers), threads with their priority offsets and stacks, the objects it creates, its ring block, its endpoint posture (handover or retain) and its readiness barrier -- today's `Descriptor`, exported |
+| `drivers` | the packaged driver catalogue: roles, threads, objects, ring block, endpoint posture and readiness barrier |
 
 Two things are known only once the user's image is linked -- its thread-local block and its data
 carve -- so admission runs twice: the composition against the manifest when the system target is
@@ -327,169 +323,82 @@ Each board's own `Kconfig` is classified by the same rule when its board moves i
 
 ## Where a window sits
 
-**On a translating board the kernel chooses, when it maps the window** (maintainer,
-2026-09-28), as the kernels of general-purpose systems do. Each task is a process: its address
-space is its own, and nothing ties a window's address in it to the physical address or to the
-address another task sees. A static one-to-one mapping was refused for being easier to attack --
-a network stack whose device and buffer addresses are known in advance hands an attacker who
-found a bug in it half the work -- and for breaking that notion of a process. So
-`kos_window_addr` asks the kernel, which answers from the mapping it made; on a region board the
-same call answers the physical base, a region board having no other address to give. One path,
-both classes.
+On a translating board the kernel chooses each window's address in the task's own space.
+`kos_window_addr` returns that address to the holder; on a region board it returns the
+physical base. Tasks cannot assume that a window has its physical address or the same
+address in another task. Randomized placement is a later policy, separate from kernel
+placement.
 
-**Choosing and randomizing are separate decisions.** M10 makes the kernel the one that chooses.
-Whether the choice is randomized is a later policy for translating boards only, and one worth
-having; it pays fully only once task code and stacks stop sitting at fixed link addresses, which
-is position-independent task images, a larger topic than M10. Region boards run one-to-one by
-nature and are out of its scope.
-
-**Shared memory is at a different address in each task that maps it.** A pointer stored in a
-shared region means nothing to another task, so what tasks exchange there is offsets.
-`kos_ram_alloc`'s comment says delegation preserves a reservation's address; that describes
-today's behaviour and is not an invariant (maintainer, 2026-09-28), so the comment changes with
-the translating arm.
+Shared memory can be mapped at different addresses in different tasks. Data exchanged
+through it therefore uses offsets, not stored pointers. Delegation does not promise to
+preserve a reservation's address.
 
 ## The lookups
 
-Every task entry receives its own entry in the table as its first argument, `kos_self_t const*
-self`, as a program's first argument names the program (maintainer, 2026-09-28), and every
-lookup takes it. So one entry function can run as several tasks -- two instances of one UART
-driver -- and each finds its own grants; a thread the task creates is handed `self` like any
-other argument. No kernel change is needed: the init passes it through the argument every
-thread entry already has.
+The init passes each task a `kos_self_t const* self` pointing to its table entry. Every
+lookup takes `self`, so one entry function can serve several task instances and find
+each instance's grants. A task passes `self` to threads it creates.
 
-`kos_grant_endpoint(self, name)` and `kos_grant_notify(self, name)` answer a `kos_cap_t`: a
-capability already is an opaque handle. `kos_grant_mmio(self, name)` and `kos_grant_mem(self,
-name)` answer a `kos_window_t`, read through `kos_window_addr` and `kos_window_size`, and
-`kos_grant_ports(self, name)` answers a `kos_window_t` too, whose address is the range's first
-port. A privileged register inside a port range, as the CMOS clock's index is, is left out of
-the task's I/O bitmap and written through `kos_port_reg_write(base, offset, value)`, a
-byte-wide write M10.1 adds beside `kos_periph_reg_write`, whose store is one aligned 32-bit word
-in a memory window and so cannot serve a one-byte port. Its possession check is the port
-counterpart of the memory one: the caller holds a port grant covering `base + offset`, and the
-register is on the kernel's allowlist with the value inside its mask -- the CMOS index's mask
-withholding bit 7, the NMI mask. `kos_grant_irq(self, name)` a `kos_line_t`, read through its capability and its index within its
-device. A task that `watches` others calls `kos_task_status(self, i, &status)` for the i-th of
-them: alive, deaths, restarts left, its name, and whether it was never started because a
-dependency is down. A handle names one of the task's grants, so nothing is allocated, and a name the task
-was not given answers the invalid handle, whose accessors answer null, zero or `KOS_CAP_NONE`.
-**Neither `self` nor the table enforces anything.** Both are readable, and a task that passes
-another task's entry, or reads the table directly, learns only names, sizes and slot numbers:
-what a task can actually reach is decided by the capabilities in its own kernel table and the
-mappings the kernel made for it, so a forged lookup finds a slot that holds something else or
-an address that faults. The lookup is a convenience over authority the kernel already holds.
-Because the address is read through an accessor, where a window sits in a task's address space
-can change without touching a line of user code.
+- `kos_grant_endpoint` and `kos_grant_notify` return `kos_cap_t`.
+- `kos_grant_mmio` and `kos_grant_mem` return `kos_window_t`; accessors provide the
+  window's address and size. `kos_grant_ports` returns a port-range window whose address
+  is its first port. Privileged ports remain outside the task's direct I/O grant and use
+  `kos_port_reg_write`, subject to possession, register allowlist and value mask.
+- `kos_grant_irq` returns `kos_line_t`, including its capability and index within the
+  device. `kos_task_status(self, i, &status)` reports the i-th watched task's name,
+  liveness, deaths, restarts left and dependency-down state.
+
+An absent grant returns an invalid handle whose accessors return null, zero or
+`KOS_CAP_NONE`. The table and `self` are readable conveniences, not authority: kernel
+capabilities and mappings determine what a task can use. A caller substituting another
+task's entry gains no access.
 
 ## Readiness
 
-**File order makes a server exist before its clients; readiness makes it able to answer.** A
-client started after its server's spawn never finds the endpoint unserved -- the server holds its
-receiving right from the spawn, so an early call parks until the server takes it. What file order
-does not give is a server that has finished its own bring-up, and a client that treats a failed
-first call as fatal would then spend its own restart count on its server's: `sensor_spi.cc`
-returns when its bus open fails, and a bus service dying during bring-up would cost the sensor a
-restart each time.
+A serving task becomes ready on its first wait to receive on the endpoint it serves,
+after any packaged-driver readiness barrier and console handover. A task that serves
+nothing becomes ready when spawned. The kernel reports the first receive to the
+creator's notification, alongside death reports.
 
-**A serving task is ready the first time it waits to receive on the endpoint it serves**, which
-is exactly when it can take a request, so no user call is needed and none can be forgotten. A
-packaged driver is ready at the same moment, after its descriptor's own readiness barrier and,
-for a console, the handover. A task that serves nothing is ready once spawned. The kernel reports
-a first receive on its creator's notification, beside deaths -- one event source, and a small kernel
-change of the same kind as the death report.
+The init starts a task only when every endpoint it `uses` is ready. It scans tasks in
+file order, skips blocked tasks and rescans them on readiness changes; file order
+breaks ties without letting one blocked service stop independent tasks. If a server
+exhausts its restart count before becoming ready, dependants remain unstarted with a
+dependency-down status, which their watchers can read.
 
-**The init starts a task only once every endpoint it `uses` is ready, and skips past one that
-must wait** (maintainer, 2026-09-28, after systemd's job engine). The dependencies are the ones
-the composition already declares and file order already puts first, so nothing is solved. The
-init walks the tasks in file order; one whose dependencies are not all ready stays pending and
-the walk goes on, and each ready event rescans the pending tasks in file order and starts those
-now satisfied. So file order is the tie-break, never a wall: a stuck `spi0` holds back the sensor
-that uses it and not the `health` task that is there to report it.
-**A task that can never start is reported, not left silent.** When a server's restart count is
-spent before it was ever ready, the tasks waiting on it cannot start; `kos_task_status` answers
-them as not started with a dependency down, and their watchers are told, as systemd marks a unit
-whose dependency failed.
-
-**A ready event belongs to one instance of the server, and it is a hint.** A server can reach its
-first receive and die before the init handles the event, and a notification's bits merge a death
-and a ready into one wake. So on each wake the init handles deaths before readiness, each task
-carries a generation the init increments on every start, and before starting a pending client
-the init confirms that the server's live instance -- the current generation -- is the one that
-became ready. A ready event from an instance that has since died is discarded (found by the
-external audit). The same rule holds after a restart:
-a restarted server is ready again at its first receive, and in the gap its callers answer
-`-KOS_EAGAIN`, whose contract is that retrying may succeed.
+A ready report is a hint about one server instance. The server may die before the init
+handles it, and notification bits can merge ready and death. The init therefore handles
+deaths first, increments its generation on each start and checks that a pending client's
+server is still the live instance that became ready. A restarted server becomes ready
+again at its own first receive; callers get `-KOS_EAGAIN` in the gap.
 
 ## The init's walk
 
 1. Zero each declared shared region once.
-2. For each task in file order: if an endpoint it `uses` is not ready, leave it pending and go
-   on to the next. Otherwise, a user task: create its kernel task; create the endpoint it
-   `serves`, keeping the right to hand out receiving without being a receiver; create the
-   notification for a task that `watches`, keeping one badged copy per watched task; claim its
-   lines; spawn its thread with its windows and regions mapped and its capability-bearing
-   grants delegated in order; start it.
-   A packaged driver runs the sequence its exported descriptor states -- the same `Descriptor`
-   `user/include/kickos/sys/driver_service.h` defines today -- with its window and lines taken
-   from the table instead of a service configuration: create its task and any ring block;
-   create its endpoint; **publish it first if the driver takes the console over**, because until
-   the publish the kernel's own console handler is attached to the UART's line and a claim of
-   that line is refused; claim its lines, pinned to the core they are claimed on; attach them to
-   its notification; spawn its threads, holding at the descriptor's barrier until the driver
-   latches ready; and for a console, finish the handover -- close the init's own receiving right
-   so the driver is the only receiver, then probe the console once. A task spawned after the
-   publish finds its standard output on the new console, which is why admission requires the
-   `stdout` task to be declared before every task that writes to it.
-3. If the composition keeps it resident, wait on the init's notification. Handle deaths first;
-   then, for each ready event whose server is still the instance that became ready, start the
-   pending tasks, in file order, whose dependencies are now all ready. On a death, let the
-   kernel's teardown finish, raise the watchers' bits, release the hold on the dead task so its
-   slot and domain are free, and restart the task with the same grants while its count lasts -- a packaged driver by running its descriptor's sequence again,
-   which for a console repeats the publish, the kernel having taken the console back when its
-   only receiver died. Once the count is spent, drop the right to hand out its endpoint's
-   receiving, so its callers answer `-KOS_ECONNREFUSED` from then on, and report each task still
-   pending on it as not started with a dependency down.
-4. When the declared ending condition is met, end the system.
+2. Scan tasks in file order. Leave a task pending while an endpoint it `uses` is unready.
+   For a ready user task, create its kernel task and served endpoint, retain HANDOUT without
+   WAIT, set up watched-task notifications, claim lines, and spawn with its windows, regions
+   and capability-bearing grants in declaration order.
+3. For a packaged driver, follow its exported `Descriptor`. Create its task, ring block and
+   endpoint. If it takes the console, publish it before claiming the UART line, then claim
+   and attach its lines, spawn its threads and wait at its readiness barrier. Complete console
+   handover by closing the init's receiving right and probing once. Admission requires the
+   `stdout` task before tasks that write to it.
+4. If resident, wait for notifications. Process deaths before readiness; start newly unblocked
+   tasks in file order only when the server instance is still live and ready. After teardown,
+   tell watchers, release the dead task's hold and restart it with the same grants while its
+   count remains. A console driver repeats handover. Once retries are spent, drop HANDOUT so
+   callers get `-KOS_ECONNREFUSED`, and mark its pending dependants as dependency-down.
+5. End the system when the declared ending condition occurs.
 
 ## Beyond boot: the nested init
 
-The composition describes the system at boot, not its whole life (maintainer, 2026-09-28:
-general-purpose use must stay possible, and M10 may not block it). A task the composition starts
-may itself be an init for a dynamic subsystem: a session manager that launches programs at run
-time -- loaded from storage, started with capabilities it holds and chooses to hand on -- the way
-a desktop is built on a static, capability-based base. So the boot init is not special in kind:
+A task with the required authority can create tasks and map memory at run time; the
+boot init is one user of those kernel calls. It may delegate task-creation authority to
+a nested init. A nested init receives readiness and death reports for the tasks it
+creates and can use the same restart rules. No kernel or provisioning path singles out
+the boot init.
 
-- M10 preserves the existing ability of a task with the required rights to create tasks and
-  map memory at run time. The boot init is their first user, not their only possible user; no
-  new path in the kernel or the provisioning library tests for "the init". Task creation is
-  creator-scoped today, while a memory grant requires memory authority. M10 closes with a
-  separate task-creation authority, built in M10.1 with the kernel share, which the composition grants: the boot
-  init holds it and hands it to a nested init, and a task without it cannot create tasks;
-- a nested init uses the same restart, readiness and death machinery for its own children, so
-  the death and readiness reports are raised to whoever created the task, not to the boot init
-  by name;
-- runtime objects are mapped at run time through the calls that already exist, as ruled above;
-- the table's indices represent the supported configured system size, and M10 adds no fixed
-  system-wide ABI ceiling. Pool limits remain configurable; a per-operation bound such as the
-  spawn grant count may stay small without limiting how many tasks a system can create.
-
-## Open questions
-
-- **More than one device window per task: M10 lifts the limit** (maintainer, 2026-09-28). A
-  spawn carries one window today (`mmio_base`, `mmio_size`), and the kernel records exactly one
-  per thread (`Thread::dev_base`, `dev_size`), which both the one-holder check and the gate on
-  `kos_periph_enable` and `kos_periph_reg_write` read. So a task cannot drive a DMA engine and
-  its peripheral, or a few devices directly without a server. The kernel change: the spawn
-  carries a window list, the thread keeps a small array bounded by the protection unit's region
-  budget, the one-holder check runs per window, and the peripheral seams accept any window the
-  caller holds. Admission checks the budget offline, as it already does for the region count.
-- **The kernel changes restart and readiness need**: a task's death and an endpoint's first
-  receive raised on the creating task's notification -- the boot init's for the tasks it starts,
-  a nested init's for its own -- and the right to hand out an endpoint's receiving
-  without counting as a receiver.
-- **Settled at M10.0's close**: the `accepts` names and their scope, the table layout, the export
-  manifest and the Kconfig split, approved by the maintainer.
-- **Settled since the draft**: a plain app uses the default composition file the export ships
-  for its board, below.
-- **Built in M10.1, the kernel share**: the kernel mechanisms listed above, and the port grant: a
-  per-task I/O permission bitmap loaded into the core's task-state segment on each switch.
+The table's 16-bit indices describe the configured system, while kernel pool limits
+remain configurable. A per-spawn grant bound limits one operation, not the lifetime
+number of tasks.

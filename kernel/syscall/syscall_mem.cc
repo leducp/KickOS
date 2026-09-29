@@ -260,6 +260,37 @@ namespace kickos
         return 0;
     }
 
+    int port_reg_write_call(uintptr_t base, uintptr_t offset, uintptr_t value)
+    {
+#if KICKOS_ARCH_HAS_PORTS
+        if (offset > 0xffffu or base > 0xffffu - offset or value > 0xffu)
+        {
+            return -KOS_EINVAL;
+        }
+        IrqLock lock;
+        Thread* const c = sched::current();
+        uintptr_t const port = base + offset;
+        bool held = c != nullptr and c->privileged;
+        for (uint8_t r = 0; c != nullptr and r < c->ctx.port_count; r++)
+        {
+            if (port >= c->ctx.ports[r].base and port <= c->ctx.ports[r].last)
+            {
+                held = true;
+            }
+        }
+        if (not held)
+        {
+            return -KOS_EPERM;
+        }
+        return arch_port_reg_write(static_cast<uint16_t>(port), static_cast<uint8_t>(value));
+#else
+        (void)base;
+        (void)offset;
+        (void)value;
+        return -KOS_ENOSYS;
+#endif
+    }
+
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset)
     {
         Thread* c = sched::current();

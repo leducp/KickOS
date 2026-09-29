@@ -172,6 +172,7 @@ namespace
     {
         local_state().ctx_current = to;
         kickos::x86_64::tss_set_rsp0(to->kernel_sp);
+        kickos::x86_64::tss_load_ports(to->ports, to->port_count);
         kickos::x86_64::cpu_set_kernel_sp(to->kernel_sp);
     }
 
