@@ -318,9 +318,24 @@ enum kos_syscall_nr
                                //   (a holding task's notification budget), EOVERFLOW (the
                                //   object's reference count is at its ceiling). ONE-WAY:
                                //   nothing detaches a live binding.
-    KOS_SYS_THREAD_SELF = 71   // () -> the caller's own kos_thread_t, zero-extended to 64 bits.
+    KOS_SYS_THREAD_SELF = 71,  // () -> the caller's own kos_thread_t, zero-extended to 64 bits.
                                //   Carried above one kernel core only; elsewhere the call is
                                //   unknown and refused -KOS_EINVAL.
+    KOS_SYS_TASK_WATCH = 72,   // (kos_task_t, notify_cap, ready_ep) -> 0, or -KOS_E*: EBADF
+                               //   (stale task, or a cap naming nothing of its kind), EPERM
+                               //   (not the creator), EACCES (notify cap lacks SIGNAL).
+                               //   Raises the notify cap's badge when the task empties, its
+                               //   members' teardown done, and the first time a member waits
+                               //   on ready_ep. KOS_CAP_NONE for notify_cap disarms.
+    KOS_SYS_TASK_STATE = 73    // (kos_task_t) -> KOS_TASK_LIVE | KOS_TASK_READY bits, or
+                               //   -KOS_EBADF (stale task), -KOS_EPERM (not the creator).
+};
+
+// What KOS_SYS_TASK_STATE answers for the instance a task handle names.
+enum kos_task_state
+{
+    KOS_TASK_LIVE = 1 << 0, // it has members
+    KOS_TASK_READY = 1 << 1 // a member has waited on the watched endpoint since it last emptied
 };
 
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized

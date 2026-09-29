@@ -55,18 +55,31 @@ namespace kickos
         // unprivileged thread take the top of the run queue, which is a starvation hole on a
         // one-core board too.
         uint8_t prio_ceiling = 0;
+        // The creator's watch (kos_task_watch): nonzero once the armed endpoint has been
+        // waited on since the task last emptied, which is what "ready" means.
+        uint8_t watch_ready = 0;
+        // The bit to raise, the arming capability's badge, as an index: one bit is all a
+        // capability ever raises.
+        uint8_t watch_bit = 0;
 #if KICKOS_KERNEL_CORES > 1
         uint32_t core_set = 0;
 #endif
+        // The notification a death or a first receive raises, by generational object handle
+        // biased by one (notify_bound_store), 0 for none. Compared and resolved, never held.
+        int32_t watch_notify = 0;
+        // The endpoint whose first receive means ready, biased the same way; compared only.
+        int32_t watch_ep = 0;
     };
 
-    // What the KICKOS_MAX_TASKS budget is priced against, 12 bytes on a 32-bit target at one
+    // What the KICKOS_MAX_TASKS budget is priced against, 20 bytes on a 32-bit target at one
     // kernel core and one core-set word more above it. MEASURE ON A 32-BIT TARGET if this
     // fires: a host build prices the tail differently, so a host measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
         size_t raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
-                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling);
+                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling) + sizeof(Task::watch_ready)
+                     + sizeof(Task::watch_bit) + sizeof(Task::watch_notify)
+                     + sizeof(Task::watch_ep);
 #if KICKOS_KERNEL_CORES > 1
         raw = raw + sizeof(Task::core_set);
 #endif
@@ -133,6 +146,23 @@ namespace kickos
     // Release the creator's hold: the group is no longer nameable, and the slot and its
     // domain go back as soon as the last member leaves (at once, if there is none).
     void task_drop_hold(Task* t);
+
+    // The creator's reports (kos_task_watch). Arm or replace the watch on `task`, or disarm
+    // it with KOS_CAP_NONE for `notify_cap`: 0, -KOS_EBADF (no such task, or a cap naming
+    // nothing of its kind), -KOS_EPERM (not the creator), -KOS_EACCES (the notification cap
+    // lacks SIGNAL).
+    int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep);
+    // KOS_TASK_LIVE | KOS_TASK_READY for the instance `task` names, or -KOS_EBADF / -KOS_EPERM.
+    int task_state_call(kos_task_t task);
+    // The task emptied and every member's teardown ran: raise the watch, once, if `t` is
+    // still the instance of generation `gen`. Caller holds IrqLock.
+    void task_report_death(Task* t, uint16_t gen);
+    uint16_t task_gen(Task const* t); // null-safe: 0
+    // A member of `t` is waiting to receive on the endpoint `ep_obj` names: raise the watch
+    // the first time that is the armed endpoint, without a reschedule, since the receive has
+    // not parked yet. Answers the creator woken to run first, for the receive's deferred wake,
+    // or null. Caller holds IrqLock.
+    Thread* task_note_receive(Task* t, int ep_obj);
 
     // Give back a task NOBODY HOLDS: the domain under it, the address space, every frame that
     // space still holds and the reference a handoff took on the donor. Null-safe, and a no-op on

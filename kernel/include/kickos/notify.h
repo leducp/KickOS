@@ -19,7 +19,8 @@
 
 namespace kickos
 {
-    struct Thread; // kickos/thread.h
+    struct Thread;   // kickos/thread.h
+    struct CapEntry; // kickos/cap.h
 
     // Every "none" sentinel below is zero: a footprint rule, not a style choice. The whole
     // of `struct Kernel` is one statically-allocated object, and a single non-zero default
@@ -132,6 +133,14 @@ namespace kickos
     // the bit was already set. ISR-safe: it resolves nothing, allocates nothing and walks no
     // chain. Takes IrqLock; the signal syscalls nest it.
     bool notify_raise(Notification* n, uint32_t bit);
+
+    // The same raise from a path that may not reschedule yet: the waiter is woken without a
+    // switch, and returned when it should run before the caller, for the caller's deferred
+    // wake to take. Null otherwise.
+    Thread* notify_raise_deferred(Notification* n, uint32_t bit);
+
+    // The bit INDEX a CAP_NOTIFY capability raises: its badge's, or 0 unbadged.
+    uint32_t notify_cap_bit(CapEntry const& e);
 
     // The fused receive's two halves, over whatever object `c` is bound to. enter() opens
     // `mask` (rearming the signallers it covers) and answers the bits the wait may take;

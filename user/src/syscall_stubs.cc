@@ -264,6 +264,19 @@ int kos_task_kill(kos_task_t task)
                                          static_cast<uintptr_t>(task), 0, 0, 0));
 }
 
+int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_WATCH, static_cast<uintptr_t>(task),
+                                         static_cast<uintptr_t>(notify_cap),
+                                         static_cast<uintptr_t>(ready_ep), 0));
+}
+
+int kos_task_state(kos_task_t task)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_STATE, static_cast<uintptr_t>(task), 0, 0,
+                                         0));
+}
+
 int kos_task_slay(kos_task_t task, uint32_t timeout_us)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY,

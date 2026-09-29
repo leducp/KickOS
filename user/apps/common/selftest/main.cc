@@ -8135,7 +8135,7 @@ namespace
     void task_stranger(void* arg) // caps: E@1
     {
         kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
-        unsigned char answer[2] = {0u, 0u};
+        unsigned char answer[3] = {0u, 0u, 0u};
         struct kos_thread_params p = {};
         p.entry = join_probe;
         p.name = "tsmb";
@@ -8149,6 +8149,12 @@ namespace
         if (kos_task_kill(t) == -KOS_EPERM)
         {
             answer[1] = 1u;
+        }
+        // Nor watch it or read its state: both reports are the creator's.
+        if (kos_task_watch(t, KOS_CAP_NONE, KOS_CAP_NONE) == -KOS_EPERM
+            and kos_task_state(t) == -KOS_EPERM)
+        {
+            answer[2] = 1u;
         }
         (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, answer, sizeof(answer));
         kos_exit(0);
@@ -8176,18 +8182,132 @@ namespace
             tap::skip("pool too small");
             return;
         }
-        unsigned char answer[2] = {0u, 0u};
+        unsigned char answer[3] = {0u, 0u, 0u};
         struct kos_reply_recv_opts opts;
         kos_reply_recv_opts_init(&opts, ep, 0, KOS_TIMEOUT_NONE);
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, answer, kos_call_lens_pack(0, sizeof(answer)),
                                  &opts)
-                  == 2);
+                  == 3);
         TAP_CHECK(answer[0] == 1u); // a stranger cannot seat a member
         TAP_CHECK(answer[1] == 1u); // nor end the group
+        TAP_CHECK(answer[2] == 1u); // nor watch it
         TAP_CHECK(stranger.join() == 0);
         // Still ours, so still killable: the refusals above cost the group nothing.
         TAP_CHECK(kos_task_kill(task) == 0);
         TAP_CHECK(kos_handle_close(ep) == 0);
+    }
+
+    // --- The creator's reports: a first receive, and a death ------------------------------
+    // A worker holding the task authority is the creator, so the reports go to whoever armed
+    // and never to root by name. It runs ABOVE its member: the ready report, raised by the
+    // member's first receive before that receive has parked, wakes a thread that outranks the
+    // receiver, and the creator must run only once the member is parked, or its own sends and
+    // waits below would never return. It arms the watch with a badged copy of a notification
+    // it binds, naming one of two endpoints, and closes the copy: the watch names the object,
+    // and the binding still receives through it. The member waits on the OTHER endpoint first,
+    // which reports nothing, then on the watched one, which reports ready; a second wait there
+    // reports nothing more; its exit reports the death. The state follows each step, and a
+    // released task answers -KOS_EBADF.
+    constexpr uint32_t TW_BIT = 5;
+    constexpr uint32_t TW_QUIET_US = 20000;
+    constexpr uint32_t TW_WAIT_US = 500000;
+    constexpr uint8_t TW_CREATOR_PRIO = 14;
+    constexpr uint8_t TW_MEMBER_PRIO = 11;
+    void tw_member(void*) // caps: watched E(WAIT)@1, other E(WAIT)@2
+    {
+        char b[4];
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, 2, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
+        for (int i = 0; i < 2; i++)
+        {
+            kos_reply_recv_opts_init(&o, 1, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
+        }
+        kos_exit(0);
+    }
+    struct TwRun
+    {
+        int setup, armed, closed, before, quiet, quiet_state, ready, ready_state, again, dead,
+            dead_state, killed, stale;
+        uint32_t ready_bits, dead_bits;
+    };
+    TwRun g_tw;
+    void tw_play(kos_task_t t, kos_cap_t n, kos_cap_t ep, kos_cap_t other, TwRun* r)
+    {
+        uint32_t const mask = 1u << TW_BIT;
+        uint32_t bits = 0;
+        kos_cap_t badged = KOS_CAP_NONE;
+        r->armed = kos_notify_badge(n, TW_BIT, &badged);
+        if (r->armed == 0)
+        {
+            r->armed = kos_task_watch(t, badged, ep);
+        }
+        r->closed = kos_handle_close(badged);
+        r->before = kos_task_state(t);
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_WAIT}, {other, KOS_CAP_WAIT}};
+        auto const m = kos::thread::create_caps(tw_member, nullptr, "twM", TW_MEMBER_PRIO, caps,
+                                                2, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                nullptr, 0, /*authority=*/0, nullptr, t);
+        if (not m.valid())
+        {
+            return;
+        }
+        r->quiet = kos_notify_wait(n, mask, TW_QUIET_US, &bits);
+        r->quiet_state = kos_task_state(t);
+        (void)kos_send(other, "x", 1);
+        r->ready = kos_notify_wait(n, mask, TW_WAIT_US, &r->ready_bits);
+        r->ready_state = kos_task_state(t);
+        (void)kos_send(ep, "x", 1);
+        r->again = kos_notify_wait(n, mask, TW_QUIET_US, &bits);
+        (void)kos_send(ep, "x", 1);
+        r->dead = kos_notify_wait(n, mask, TW_WAIT_US, &r->dead_bits);
+        r->dead_state = kos_task_state(t);
+        r->killed = kos_task_kill(t);
+        r->stale = kos_task_state(t);
+    }
+    void tw_creator(void*) // caps: done@1
+    {
+        kos_task_t t = KOS_TASK_NONE;
+        kos_cap_t n = KOS_CAP_NONE;
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_cap_t other = KOS_CAP_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) == 0 and kos_notify_create(&n) == 0
+            and kos_endpoint_create(&ep) == 0 and kos_endpoint_create(&other) == 0
+            and kos_notify_bind(n) == 0)
+        {
+            g_tw.setup = 0;
+            tw_play(t, n, ep, other, &g_tw);
+            (void)kos_notify_unbind(n);
+        }
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(n);
+        (void)kos_handle_close(ep);
+        (void)kos_handle_close(other);
+        kos_sem_post(CH_DONE);
+    }
+    void t_task_watch_reports()
+    {
+        g_tw = {-99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, -99, 0u, 0u};
+        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        auto w = kos::thread::create_caps(tw_creator, nullptr, "twC", TW_CREATOR_PRIO, caps, 1,
+                                          KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                                          KOS_AUTH_TASKS);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        TwRun const r = g_tw;
+        uint32_t const mask = 1u << TW_BIT;
+        TAP_CHECK(r.setup == 0 and r.armed == 0 and r.closed == 0 and r.before == 0);
+        TAP_CHECK(r.quiet == -KOS_ETIMEDOUT and r.quiet_state == KOS_TASK_LIVE);
+        TAP_CHECK(r.ready == 0 and r.ready_bits == mask
+                  and r.ready_state == (KOS_TASK_LIVE | KOS_TASK_READY));
+        TAP_CHECK(r.again == -KOS_ETIMEDOUT);
+        TAP_CHECK(r.dead == 0 and r.dead_bits == mask and r.dead_state == 0);
+        TAP_CHECK(r.killed == 0 and r.stale == -KOS_EBADF);
     }
 
     // A member's memory is its TASK's, so a member bringing its own data grant is refused
@@ -8955,6 +9075,7 @@ int main(int, char**)
     TAP_ADD("task_member_refusals", t_task_member_refusals);
     TAP_ADD("task_creator_gate", t_task_creator_gate);
     TAP_ADD("task_group_kill", t_task_group_kill);
+    TAP_ADD("task_watch_reports", t_task_watch_reports);
     TAP_ADD("thread_slay_window", t_thread_slay_window);
     TAP_ADD("thread_slay_gate", t_thread_slay_gate);
     TAP_ADD("thread_slay_timeout", t_thread_slay_timeout);

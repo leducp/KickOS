@@ -582,6 +582,18 @@ uint64_t syscall_body(uintptr_t nr,
                                   &h);
             return cap_out_deliver(a2, rc, h);
         }
+        case KOS_SYS_TASK_WATCH:
+        {
+            // UNGATED by authority, gated by creatorship inside (task.cc).
+            return static_cast<uint64_t>(task_watch_call(static_cast<kos_task_t>(a0),
+                                                         static_cast<uint32_t>(a1),
+                                                         static_cast<uint32_t>(a2)));
+        }
+        case KOS_SYS_TASK_STATE:
+        {
+            // UNGATED by authority, gated by creatorship inside (task.cc).
+            return static_cast<uint64_t>(task_state_call(static_cast<kos_task_t>(a0)));
+        }
         case KOS_SYS_TASK_KILL:
         {
             // UNGATED by authority, gated by creatorship inside (syscall_thread.cc).

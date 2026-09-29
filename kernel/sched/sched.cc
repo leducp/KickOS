@@ -951,6 +951,7 @@ namespace kickos
             // Save the task pointer across preemptible teardown. Identity remains valid
             // because task_resolve rejects slots without a creator.
             Task* left_task = nullptr;
+            uint16_t left_gen = 0;
             bool emptied_task = false;
             {
                 IrqLock lock;
@@ -989,6 +990,7 @@ namespace kickos
                 // Release device-window ownership before teardown can wake a supervisor.
                 // Capture task identity before retiring membership.
                 left_task = c->task;
+                left_gen = task_gen(c->task);
                 emptied_task = task_release(c->task);
                 // Clear the task pointer if this death empties the group, since its slot
                 // may be reused during teardown gaps. With surviving siblings, retain it
@@ -1050,7 +1052,7 @@ namespace kickos
                         continue;
                     }
                     // Only when this death emptied the group, compared by pointer as
-                    // membership is.
+                    // membership is. The creator's watch is raised once, below the loop.
                     if (emptied_task and w->wait_task_target() == left_task)
                     {
                         w->clear_wait_edge();
@@ -1065,6 +1067,12 @@ namespace kickos
                         w->clear_wait_edge();
                         wake(w);
                     }
+                }
+                // After the sweep, so a restart the report prompts finds everything this
+                // task's threads held already free.
+                if (emptied_task)
+                {
+                    task_report_death(left_task, left_gen);
                 }
                 if (k.live == 0)
                 {

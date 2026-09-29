@@ -223,6 +223,19 @@ int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
 // not create it). Any MEMBER's death also ends the group.
 int kos_task_kill(kos_task_t task);
 
+// Watch a task YOU created: `notify_cap`'s badge is raised when the task empties, every member's
+// teardown done, and the first time a member waits to receive on `ready_ep` (KOS_CAP_NONE: no
+// readiness). The watch names the notification object, not the capability: closing notify_cap
+// does not end it, and it reaches whoever still holds or is bound to the object. The task's
+// slot being freed ends it, as does re-arming, or disarming with KOS_CAP_NONE. A creator's hold
+// keeps an empty task's slot: release it with kos_task_kill before creating the next instance.
+// Returns 0, -KOS_EBADF, -KOS_EPERM (not the creator) or -KOS_EACCES (notify_cap lacks SIGNAL).
+int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep);
+
+// KOS_TASK_LIVE | KOS_TASK_READY for the instance `task` names, or -KOS_EBADF once its slot is
+// freed, -KOS_EPERM for a task you did not create.
+int kos_task_state(kos_task_t task);
+
 // Forcibly terminate every member of a task created by the caller, without
 // a cleanup window. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
 // forever; zero: request only). An empty task succeeds immediately.

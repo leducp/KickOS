@@ -404,14 +404,14 @@ so the ready report has to be told.
   something only in its holder's table, so the task records the OBJECTS: the notification by
   generational object handle, with the capability's badge as the bits to raise, and the
   endpoint whose first receive means ready, or none for a task that serves nothing.
-- **The watch holds the notification.** Arming takes a reference on the object in
-  `kernel().notify_refs`, as `notify_bind` does, so the creator closing its capability does not
-  free what the watch raises into: the report is still raised, and whoever holds another name
-  for the object still receives it. The reference is dropped when the watch ends -- the watched
-  task's slot freed, or the watch re-armed or disarmed by the creator passing no notification --
-  and arming at the object's reference ceiling is refused `-KOS_EOVERFLOW`, as `notify_badge` is.
-  The endpoint takes no reference: it is only compared, by generational handle, so an endpoint
-  freed and its slot reused never matches.
+- **The watch names the notification, and holds no reference.** It resolves the object by
+  generational handle at each raise, so a notification freed and its slot seated again is never
+  raised into. Whoever can receive the report holds a capability or a binding, and either keeps
+  the object alive, so the creator closing its own capability changes nothing for them; a
+  report nobody can receive goes nowhere. M10.1.5 built the reference first and removed it: no
+  arm could observe it, and it cost a refusal. The watch ends when the watched task's slot is
+  freed, or the creator re-arms it or disarms it by passing no notification. The endpoint is
+  held the same way, compared only.
 - **Death** raises the bits once, when the task's last member has exited and `cap_teardown` has
   run, which is the point `WAIT_TASK_EMPTY` wakes a slayer. By then everything its threads held
   is free -- their stacks, their windows (section 5 makes a window outlive no holder), their
@@ -423,7 +423,8 @@ so the ready report has to be told.
   domain, and only then creates the new task. The kernel lifecycle does not change; the step is
   the init's, in `design-m10-composition.md`'s walk.
 - **Ready** raises the bits once, in `endpoint_recv_locked`, the first time a member waits on the
-  armed endpoint. Every receive reaches it, the fast path serving calls only.
+  armed endpoint. Every receive reaches it, the fast path serving calls only. The receive has not
+  parked yet, so the creator's wake joins the receive's deferred wakes and runs once it has.
 - **`kos_task_state(task)`**, a new creator-only call, answers whether that instance has members
   and whether it has become ready, and `-KOS_EBADF` once its slot is freed. A notification's bits
   merge a death and a ready into one wake, so the init reads the state of each task the badge
@@ -436,13 +437,27 @@ so the ready report has to be told.
 
 **Arms.** Death of a task that exits and of one that faults; a respawn from the death wake,
 after the hold is released, taking the same window and the freed slot back; the creator closing
-its notification capability before the death, the report still raised through a second name; ready raised once, and only for the armed endpoint; a stale handle
+its notification capability before the death, the report still raised through a second name
+and a binding; ready raised once, and only for the armed endpoint; a stale handle
 answering `-KOS_EBADF` after a restart while the new one waits for its own first receive; arming
 a task one did not create refused; a second-level creator receiving its own children's reports.
 
-**Backends and cost.** Portable kernel. Two handles and a badge on `Task` for each of
-`KICKOS_MAX_TASKS`, and one notification reference per armed watch; one compare on the receive
-slow path and one test on the last exit.
+**Backends and cost.** Portable kernel. Two handles, the badge's bit index and a ready byte on
+`Task` for each of `KICKOS_MAX_TASKS`, 20 bytes a task on a 32-bit target where it was 12; one
+call and compare on the receive slow path and one test on the last exit. The bit is an index
+and not a mask because a mask cost four more bytes a task, which the ESP32-C6 AMP node, whose
+arena backs its default stacks almost to the byte, could not spare. That image runs its code
+from the SRAM its arena comes out of, and the pool is aligned to the 8 KiB TLS stride, so its
+`selftest_p3` had no byte to spare at M10.1.4 and has 176 at M10.1.5, the arms folded into one.
+
+**What the part taught.** The arm is `task_watch_reports`: a worker holding the task authority,
+above its member, walks one instance from arming to release -- a wait on another endpoint staying
+quiet, the ready report once, the death after the teardown, `-KOS_EBADF` once released;
+`task_creator_gate` adds the stranger's refusal of both calls. Removing the death report or the
+receive hook turns it red, and so does a ready report that wakes the creator at once: on armv7m
+the switch is deferred to PendSV, so the scheduler's current thread moves to the creator while
+the receiver is still parking, and the receive parks the creator instead. The two syscalls join the
+telemetry name tables (`tests/unit/telemetry/gen_idmap.cc`, `tools/kicktrace.py`).
 
 ## 5. A window list in spawn (M10.1.6)
 
