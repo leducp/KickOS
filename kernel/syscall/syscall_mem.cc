@@ -5,7 +5,10 @@
 // and identify the owning space for each user range.
 
 #include <kickos/arch/arch.h>
+#include <kickos/aspace.h>
 #include <kickos/domain.h>
+#include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
 #include <kickos/sched.h>
@@ -51,6 +54,18 @@ namespace kickos
 
     namespace
     {
+        // A device region on a translating backend records the window's PHYSICAL base, which is
+        // not where its holder reaches it: the range list answers for that address.
+        bool region_answers_pointers(arch_mpu_region const& r)
+        {
+#if KICKOS_HAVE_ASPACE
+            return (r.attr & ARCH_MPU_DEV) == 0;
+#else
+            (void)r;
+            return true;
+#endif
+        }
+
         // Whether a region of c's set without W overlaps [ptr, end), so the set answers no
         // write there: a region backend obeys one of the overlapping regions, PMSAv7 the last,
         // the PMP the first and PMSAv8 none, so a read-only window over a writable block is
@@ -101,7 +116,7 @@ namespace kickos
         }
         for (arch_mpu_region const& r : c->mpu)
         {
-            if ((r.attr & need) != need)
+            if ((r.attr & need) != need or not region_answers_pointers(r))
             {
                 continue;
             }
@@ -201,6 +216,50 @@ namespace kickos
         return mmio_block_of(c, base) != 0;
     }
 
+    int window_addr_call(uintptr_t base, uintptr_t out)
+    {
+        IrqLock lock;
+        Thread* const c = sched::current();
+        if (c == nullptr or out == 0 or (out & (alignof(uintptr_t) - 1u)) != 0)
+        {
+            return -KOS_EINVAL;
+        }
+        if (not user_writable_ok(out, sizeof(uintptr_t)))
+        {
+            return -KOS_EFAULT;
+        }
+        uintptr_t addr = 0;
+#if KICKOS_HAVE_ASPACE
+        // A device window names its own frames and a memory window the spawner's address of
+        // its reservation, whose frames are that address less the user offset.
+        Domain const* const d = task_domain(c->task);
+        uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
+        addr = aspace_window_addr(domain_space(d), domain_ranges(d), holder, base);
+        if (addr == 0 and base >= arch_aspace_user_offset())
+        {
+            addr = aspace_window_addr(domain_space(d), domain_ranges(d), holder,
+                                      aspace_frame_of(base));
+        }
+#else
+        for (arch_mpu_region const& r : c->mpu)
+        {
+            if (c->mpu.is_window(r) and r.base == base)
+            {
+                addr = base;
+            }
+        }
+#endif
+        if (addr == 0)
+        {
+            return -KOS_EPERM;
+        }
+        if (not kaccess_word_to_user(user_space_of(c), out, &addr))
+        {
+            return -KOS_EFAULT;
+        }
+        return 0;
+    }
+
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset)
     {
         Thread* c = sched::current();
@@ -273,7 +332,7 @@ namespace kickos
                     break;
                 }
                 uintptr_t const rend = r.base + r.size;
-                if (rend < r.base or ptr < r.base)
+                if (rend < r.base or ptr < r.base or not region_answers_pointers(r))
                 {
                     continue;
                 }

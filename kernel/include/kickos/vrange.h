@@ -49,13 +49,16 @@ namespace kickos
         // An unprivileged thread's stack and the unmapped guard page under it, recorded so
         // that reserve() refuses anything landing on either. NEITHER RELEASE ARM OF THE
         // TEARDOWN WALK MAY TOUCH IT: its frames are ustack_free's.
-        VR_USTACK = 1u << 3
+        VR_USTACK = 1u << 3,
+        // A spawn window, mapped where the kernel chose and held by ONE thread, named by the
+        // `holder` field; its frames are a device's or a donor space's, so it is borrowed too.
+        VR_WINDOW = 1u << 4
     };
 
-    // What the KERNEL placed rather than the caller: the process image, and every thread
-    // stack with its guard. THE ONE FLAG LIST a caller-controlled admission path filters on,
-    // so a further kernel-placed kind is added here and inherited everywhere.
-    constexpr uint8_t VR_KERNEL_PLACED = static_cast<uint8_t>(VR_IMAGE | VR_USTACK);
+    // What the KERNEL placed rather than the caller: the process image, every thread stack
+    // with its guard, and every window. THE ONE FLAG LIST a caller-controlled admission path
+    // filters on, so a further kernel-placed kind is added here and inherited everywhere.
+    constexpr uint8_t VR_KERNEL_PLACED = static_cast<uint8_t>(VR_IMAGE | VR_USTACK | VR_WINDOW);
 
     // The most pages one range may name, which reserve() refuses above. This ceiling is what
     // makes the width of VirtualRange::pages a bound.
@@ -81,6 +84,11 @@ namespace kickos
         uint8_t memtype = 0;
         uint8_t flags = 0; // VR_*
         VirtualState state = VirtualState::Free;
+        // A VR_WINDOW range's holder, as a thread slot index PLUS ONE, and the domain whose
+        // reservation a memory window maps, as a domain slot index PLUS ONE, which the
+        // mapping holds a reference on. Zero for none, as `run` is.
+        uint16_t holder = 0;
+        uint16_t donor = 0;
     };
 
     // Whether a CALLER may name this range in a syscall argument. Total: a null entry is an
@@ -153,7 +161,11 @@ namespace kickos
         // reserve that succeeds and a grant that fails still leaves the run named by the
         // entry the unwind releases.
         bool reserve(uintptr_t base, size_t pages, uint8_t flags = 0,
-                     uint32_t run = VR_RUN_NONE);
+                     uint32_t run = VR_RUN_NONE, uint16_t holder = 0, uint16_t donor = 0);
+
+        // The lowest page-aligned base in [area, area + area_pages * granule) where `pages`
+        // pages meet no live entry, or 0 when none is free.
+        uintptr_t place(uintptr_t area, size_t area_pages, size_t pages) const;
 
         // The range whose base is EXACTLY `base`, or null. Distinct from find(), which is
         // containment: a revoke must name a whole range and not a byte inside one.

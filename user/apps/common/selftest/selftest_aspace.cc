@@ -2428,6 +2428,129 @@ namespace selftest
         }
         TAP_CHECK(probed > 0);
     }
+
+#if defined(KICKOS_SELFTEST_SPARE_DEV)
+    // --- A device window at the address the kernel chose -------------------------------
+    // The holder, in a task of its own, reads a device the kernel never drives through the
+    // address kos_window_addr answers, which is not the physical one, and is refused one for a
+    // device it does not hold; it reports over an endpoint, its task's data being its own.
+    // While it lives a second task is refused the device; once it has exited, its sibling in
+    // the task faults on the address it left, and the next instance is granted the device and
+    // reaches it again.
+    constexpr uintptr_t WA_DEV = KICKOS_SELFTEST_SPARE_DEV;
+    constexpr uint32_t WA_SIZE = 0x1000u;
+    constexpr uint32_t WA_JOIN_US = 500000;
+    struct WaSeen
+    {
+        int32_t rc;
+        int32_t other;
+        uint32_t value;
+        uint32_t moved;
+    };
+    uintptr_t g_wa_addr = 0; // the holder's task's copy, which its sibling reads
+    void wa_holder(void*) // caps: E(SIGNAL)@1, hold@2
+    {
+        void* at = nullptr;
+        WaSeen seen = {-99, -99, 0, 0};
+        seen.rc = kos_window_addr(WA_DEV, &at);
+        g_wa_addr = reinterpret_cast<uintptr_t>(at);
+        if (seen.rc == 0)
+        {
+            if (g_wa_addr != WA_DEV)
+            {
+                seen.moved = 1u;
+            }
+            seen.value = *static_cast<volatile uint32_t*>(at);
+        }
+        void* other = nullptr;
+        seen.other = kos_window_addr(WA_DEV + WA_SIZE, &other);
+        (void)kos_send(1, &seen, sizeof(seen));
+        kos_sem_wait(2);
+        kos_exit(0);
+    }
+    void wa_sibling(void*) // caps: go@1, E(SIGNAL)@2
+    {
+        kos_sem_wait(1);
+        (void)*reinterpret_cast<volatile uint32_t*>(g_wa_addr);
+        (void)kos_send(2, "x", 1); // unreachable: the holder's exit took the mapping with it
+        kos_exit(0);
+    }
+    void wa_noop(void*) {}
+    // Spawns a holder of the device in `task` and receives its report.
+    kos::thread::Handle wa_spawn(kos_task_t task, kos_cap_t ep, kos_cap_t hold, WaSeen* seen)
+    {
+        kos_window const dev = {WA_DEV, WA_SIZE, KOS_WINDOW_DEVICE, 0};
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}, {hold, KOS_CAP_WAIT}};
+        *seen = {-99, -99, 0, 0};
+        auto h = kos::thread::create(wa_holder, nullptr, "wah", 10, KOS_POLICY_FIFO, 0, false,
+                                     nullptr, 0, nullptr, 0, &dev, 1, caps, 2, 0, nullptr, task);
+        if (h.valid())
+        {
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, WA_JOIN_US);
+            (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
+        }
+        return h;
+    }
+    void t_window_addr()
+    {
+        settle_exits();
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_cap_t hold = KOS_CAP_NONE;
+        kos_cap_t go = KOS_CAP_NONE;
+        kos_task_t t = KOS_TASK_NONE;
+        kos_task_t other = KOS_TASK_NONE;
+        if (kos_endpoint_create(&ep) != 0 or kos_sem_create(0, &hold) != 0
+            or kos_sem_create(0, &go) != 0 or kos_task_create(nullptr, 0, 0, &t) != 0
+            or kos_task_create(nullptr, 0, 0, &other) != 0)
+        {
+            tap::skip("endpoint, semaphore or task pool too small");
+            return;
+        }
+        WaSeen first = {-99, -99, 0, 0};
+        auto const holder = wa_spawn(t, ep, hold, &first);
+        kos_cap_grant const scaps[] = {{go, KOS_CAP_WAIT}, {ep, KOS_CAP_SIGNAL}};
+        auto const sibling = kos::thread::create(wa_sibling, nullptr, "was", 10,
+                                                 KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr,
+                                                 0, nullptr, 0, scaps, 2, 0, nullptr, t);
+        TAP_CHECK(holder.valid() and sibling.valid());
+        kos_window const dev = {WA_DEV, WA_SIZE, KOS_WINDOW_DEVICE, 0};
+        TAP_CHECK(kos::thread::create(wa_noop, nullptr, "wab", 10, KOS_POLICY_FIFO, 0, false,
+                                      nullptr, 0, nullptr, 0, &dev, 1, nullptr, 0, 0, nullptr,
+                                      other)
+                      .error()
+                  == -KOS_EBUSY);
+        // A megabyte past the spare device is outside every aperture this chip states.
+        kos_window const outside = {WA_DEV + 0x100000u, WA_SIZE, KOS_WINDOW_DEVICE, 0};
+        TAP_CHECK(kos::thread::create(wa_noop, nullptr, "wao", 10, KOS_POLICY_FIFO, 0, false,
+                                      nullptr, 0, nullptr, 0, &outside, 1, nullptr, 0, 0,
+                                      nullptr, other)
+                      .error()
+                  == -KOS_EINVAL);
+        kos_sem_post(hold);
+        TAP_CHECK(holder.join(WA_JOIN_US) == 0);
+        kos_sem_post(go);
+        TAP_CHECK(sibling.join(WA_JOIN_US) == 0);
+        char late = 0;
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, 20000);
+        TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, &late, kos_call_lens_pack(0, 1), &o)
+                  == -KOS_ETIMEDOUT);
+        (void)kos_task_kill(t);
+        TAP_CHECK(first.rc == 0 and first.moved == 1u and first.value != 0);
+        TAP_CHECK(first.other == -KOS_EPERM);
+        // The next instance, in the other task, maps the device again.
+        WaSeen again = {-99, -99, 0, 0};
+        kos_sem_post(hold);
+        auto const next = wa_spawn(other, ep, hold, &again);
+        TAP_CHECK(next.valid() and next.join(WA_JOIN_US) == 0);
+        TAP_CHECK(again.rc == 0 and again.value != 0);
+        (void)kos_task_kill(other);
+        (void)kos_handle_close(hold);
+        (void)kos_handle_close(go);
+        (void)kos_handle_close(ep);
+    }
+#endif
 #endif
 
     // Root has memory authority but must not grant an unreserved kernel address. Do not reject

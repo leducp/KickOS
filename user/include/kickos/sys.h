@@ -212,8 +212,9 @@ int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_ma
 // is a region granted read/write to each member, or 0/0 for no shared memory.
 // Apply the same memory checks as spawn. Only the creator may add members.
 // Members cannot be privileged or supply separate mem_base; MMIO is per thread.
-// mem_flags must match any existing self-grant for the block.
-// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/ENOTSUP/EFAULT with KOS_TASK_NONE.
+// mem_flags must match every other mapping of the block: a self-grant, a window, or another
+// task's data; one with another memory type answers -KOS_EBUSY.
+// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/ENOTSUP/EFAULT/EBUSY with KOS_TASK_NONE.
 int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                     kos_task_t* out_task);
 
@@ -235,6 +236,11 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep);
 // KOS_TASK_LIVE | KOS_TASK_READY for the instance `task` names, or -KOS_EBADF once its slot is
 // freed, -KOS_EPERM for a task you did not create.
 int kos_task_state(kos_task_t task);
+
+// Where the calling thread reaches the window it holds at `base`, the base its spawn's window
+// list named: on a translating board the kernel chose that address, elsewhere it is `base`.
+// Returns 0 with *out set, or -KOS_EPERM for a window the caller does not hold.
+int kos_window_addr(uintptr_t base, void** out);
 
 // Forcibly terminate every member of a task created by the caller, without
 // a cleanup window. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
@@ -461,7 +467,8 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Reservation alone grants no access. Pass it to spawn/task creation or
 // use kos_mem_self_grant. Other tasks cannot name this reservation directly.
 // On MMU systems the result is an unmapped task address; on MPU systems
-// it is an owned arena block. Delegation preserves its address.
+// it is an owned arena block. A memory window reaches it at the address
+// kos_window_addr answers, which a translating board chooses.
 // NULL can mean exhausted memory or reservation records. Records are bounded
 // and not freed: per address space on MMU, per image on MPU.
 void* kos_ram_alloc(size_t size);
@@ -477,6 +484,7 @@ void* kos_ram_alloc(size_t size);
 // Returns 0 or -KOS_E*:
 //   EPERM: missing authority, or an unowned/invalid range.
 //   ENOTSUP: a memory type this chip cannot honour.
+//   EBUSY: the range is mapped elsewhere, a window over it included, with another type.
 //   EINVAL: zero size, wraparound, unknown flags, or bad MPU region alignment.
 //   ENOMEM: descriptor budget exhausted.
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);

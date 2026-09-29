@@ -57,6 +57,7 @@ int main()
     KOS_SYS_THREAD_SELF,
     KOS_SYS_TASK_WATCH,
     KOS_SYS_TASK_STATE,
+    KOS_SYS_WINDOW_ADDR,
     };
     for (kos_syscall_nr s : calls)
     {

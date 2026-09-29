@@ -71,6 +71,11 @@ namespace kickos
     // window.
     bool dev_window_free(uintptr_t base, size_t size);
 
+    // Whether no held task domain and no live thread but `except` holds a data region over
+    // [base, base+size) whose memory type differs from `attr`'s: one block cacheable for one
+    // thread and not for another is incoherent. Caller holds IrqLock.
+    bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except);
+
     // The region attributes a memory window's kos_window_flags ask for.
     uint32_t window_memory_attr(uint8_t flags);
 

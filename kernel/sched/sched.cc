@@ -971,6 +971,12 @@ namespace kickos
                     task_cancel_group(c->task, CANCEL_KILL);
                 }
 #if KICKOS_HAVE_ASPACE
+                // Unmap this thread's windows, the shootdown included, before the release below
+                // frees a device for a second holder: a sibling keeps the space and must not
+                // keep the mapping.
+                aspace_window_unmap_holder(
+                    domain_space(task_domain(c->task)), domain_ranges_mut(task_domain(c->task)),
+                    static_cast<uint16_t>(kernel().threads.index_of(c) + 1));
                 // Release the user stack before task_release can destroy its space.
                 // Execution is on the kernel stack; no later code may touch the user stack.
                 if (c->kstack_owned)

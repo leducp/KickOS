@@ -151,8 +151,9 @@ enum kos_syscall_nr
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
     KOS_SYS_MEM_SELF_GRANT = 37, // (base, size, kos_mem_flags) -> 0, or -KOS_E*
-                              //   (EPERM/EINVAL/ENOMEM/ENOTSUP). ENOTSUP is a memory type
-                              //   this chip cannot honour; EINVAL an undefined flag bit.
+                              //   (EPERM/EINVAL/ENOMEM/ENOTSUP/EBUSY). ENOTSUP is a memory
+                              //   type this chip cannot honour; EINVAL an undefined flag bit;
+                              //   EBUSY the range mapped elsewhere with another type.
     KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
                               //   (self-test only: the dispatch arm is compiled out unless
                               //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
@@ -204,8 +205,10 @@ enum kos_syscall_nr
                                //   member could name), EINVAL (the window wraps, or an
                                //   undefined flag bit), ENOMEM (task or
                                //   domain pool full, or the new space cannot take the range at
-                               //   the caller's address), EFAULT (bad out-pointer). The task
-                               //   is EMPTY: kos_thread_params::task is what seats members.
+                               //   the caller's address), EFAULT (bad out-pointer), EBUSY (the
+                               //   range held elsewhere, another task's data or a window, with
+                               //   another memory type). The task is EMPTY:
+                               //   kos_thread_params::task is what seats members.
     KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
                                //   this handle / an implicit task, which is unnameable),
                                //   -KOS_EPERM (the caller did not create it). Cancels every
@@ -327,8 +330,12 @@ enum kos_syscall_nr
                                //   Raises the notify cap's badge when the task empties, its
                                //   members' teardown done, and the first time a member waits
                                //   on ready_ep. KOS_CAP_NONE for notify_cap disarms.
-    KOS_SYS_TASK_STATE = 73    // (kos_task_t) -> KOS_TASK_LIVE | KOS_TASK_READY bits, or
+    KOS_SYS_TASK_STATE = 73,   // (kos_task_t) -> KOS_TASK_LIVE | KOS_TASK_READY bits, or
                                //   -KOS_EBADF (stale task), -KOS_EPERM (not the creator).
+    KOS_SYS_WINDOW_ADDR = 74   // (base, void** out) -> 0 with *out the caller's address for the
+                               //   window it holds at `base` (the base its spawn list named),
+                               //   or -KOS_EPERM (no such window), -KOS_EINVAL / -KOS_EFAULT
+                               //   (out). Where nothing translates, *out is `base` itself.
 };
 
 // What KOS_SYS_TASK_STATE answers for the instance a task handle names.
@@ -653,7 +660,9 @@ enum kos_window_kind
     // KOS_AUTH_MEMORY, takes no flag, and is what kos_periph_enable and
     // kos_periph_reg_write accept.
     KOS_WINDOW_DEVICE = 0,
-    // A block the spawner's task reserved with kos_ram_alloc, shared at the same address.
+    // A block the spawner's task reserved with kos_ram_alloc, at the address kos_window_addr
+    // answers; a list names a block in one window at most (-KOS_EINVAL). The block keeps one
+    // memory type wherever it is mapped: a window asking another is -KOS_EBUSY.
     KOS_WINDOW_MEMORY = 1,
     // An x86 port range; -KOS_ENOTSUP until a board grants ports.
     KOS_WINDOW_PORTS = 2

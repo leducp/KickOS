@@ -49,7 +49,8 @@ namespace kickos
         return false;
     }
 
-    bool VirtualRanges::reserve(uintptr_t base, size_t pages, uint8_t flags, uint32_t run)
+    bool VirtualRanges::reserve(uintptr_t base, size_t pages, uint8_t flags, uint32_t run,
+                                uint16_t holder, uint16_t donor)
     {
         if (granule_ == 0 or pages == 0 or (base & (granule_ - 1u)) != 0)
         {
@@ -79,10 +80,45 @@ namespace kickos
                 ranges_[i].memtype = 0;
                 ranges_[i].flags = flags;
                 ranges_[i].state = VirtualState::Reserved;
+                ranges_[i].holder = holder;
+                ranges_[i].donor = donor;
                 return true;
             }
         }
         return false;
+    }
+
+    uintptr_t VirtualRanges::place(uintptr_t area, size_t area_pages, size_t pages) const
+    {
+        uintptr_t area_end = 0;
+        uintptr_t end = 0;
+        if (granule_ == 0 or pages == 0 or pages > area_pages or (area & (granule_ - 1u)) != 0
+            or not extent_end(area, area_pages, granule_, &area_end))
+        {
+            return 0;
+        }
+        uintptr_t base = area;
+        // Each step moves past one live entry, so the walk ends after as many steps as there
+        // are entries.
+        while (extent_end(base, pages, granule_, &end) and end <= area_end)
+        {
+            VirtualRange const* hit = nullptr;
+            for (size_t i = 0; i < KICKOS_ASPACE_RANGES and hit == nullptr; i++)
+            {
+                VirtualRange const& r = ranges_[i];
+                uintptr_t const hi = r.base + static_cast<uintptr_t>(r.pages) * granule_;
+                if (r.state != VirtualState::Free and base < hi and r.base < end)
+                {
+                    hit = &r;
+                }
+            }
+            if (hit == nullptr)
+            {
+                return base;
+            }
+            base = hit->base + static_cast<uintptr_t>(hit->pages) * granule_;
+        }
+        return 0;
     }
 
     bool VirtualRanges::grant(uintptr_t base, size_t pages, uint32_t rights, uint8_t memtype)

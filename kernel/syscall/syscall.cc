@@ -594,6 +594,11 @@ uint64_t syscall_body(uintptr_t nr,
             // UNGATED by authority, gated by creatorship inside (task.cc).
             return static_cast<uint64_t>(task_state_call(static_cast<kos_task_t>(a0)));
         }
+        case KOS_SYS_WINDOW_ADDR:
+        {
+            // UNGATED: possession of the window is the whole gate (syscall_mem.cc).
+            return static_cast<uint64_t>(window_addr_call(a0, a1));
+        }
         case KOS_SYS_TASK_KILL:
         {
             // UNGATED by authority, gated by creatorship inside (syscall_thread.cc).
@@ -1148,6 +1153,12 @@ uint64_t syscall_body(uintptr_t nr,
             if (not ram_owner_nameable(c->task, base, size))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            // Another thread holding the block with another memory type keeps it: a window
+            // over it, or a sibling's grant.
+            if (not memory_type_free(base, rsz, attr, c))
+            {
+                return static_cast<uint64_t>(-KOS_EBUSY);
             }
             // Retype an existing block in place to avoid conflicting overlapping descriptors.
             // Keep the temporary region in MpuSet to limit syscall stack use.

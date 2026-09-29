@@ -2779,54 +2779,84 @@ namespace
         }
     };
 
-#if KICKOS_MEMORY_ENFORCED && not KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION
+#if KICKOS_MEMORY_ENFORCED && KICKOS_FAULT_ISOLATION
     // --- A read-only memory window ------------------------------------------------------
-    // Children name root's block as a memory window, root itself never reaching it. The first
-    // writes a byte through a read-write window; the second, in a task of its own, reads it
-    // through a read-only one and faults on its write, which ends that task and nothing else;
-    // the third holds it both ways and has the kernel refuse a write into it; the last reads
-    // back through a read-write window what the faulted and the refused writes left.
+    // Children name root's block as a memory window, root itself never reaching it, each at
+    // the address kos_window_addr answers: the block's own on a region board, one the kernel
+    // chose on a translating one. The first writes a byte through a read-write window; the
+    // second, in a task of its own, reads it through a read-only one and faults on its write,
+    // which ends that task and nothing else; on a region board the third holds it both ways and
+    // has the kernel refuse a write into it; the last reads back through a read-write window
+    // what the faulted and the refused writes left.
     constexpr unsigned char WRO_BYTE = 0x5A;
     constexpr uint32_t WRO_JOIN_US = 500000;
-    Atomic<int32_t, Order::RELAXED> g_wro_put{-1}; // what the child writes, or -1 for none
-    Atomic<int32_t, Order::RELAXED> g_wro_read{-1};
-    Atomic<int32_t, Order::RELAXED> g_wro_wrote{0};
-    void wro_child(void* arg)
+    // What a child reports before it writes: a child in a task of its own holds its own copy of
+    // the app's data where a space is per task, so the report travels over an endpoint.
+    struct WroSeen
     {
-        volatile unsigned char* const b = static_cast<volatile unsigned char*>(arg);
-        g_wro_read = *b;
-        if (g_wro_put >= 0)
+        int32_t read;
+        int32_t moved; // the window's address differs from the block's
+    };
+    Atomic<int32_t, Order::RELAXED> g_wro_put{-1}; // what the child writes, or -1 for none
+    Atomic<int32_t, Order::RELAXED> g_wro_wrote{0}; // seen by root for a child of its own task
+    void wro_child(void* arg) // caps: E(SIGNAL)@1
+    {
+        void* at = nullptr;
+        WroSeen seen = {-1, -1};
+        if (kos_window_addr(reinterpret_cast<uintptr_t>(arg), &at) == 0)
         {
-            *b = static_cast<unsigned char>(g_wro_put.load());
+            seen.moved = 0;
+            if (at != arg)
+            {
+                seen.moved = 1;
+            }
+            seen.read = *static_cast<volatile unsigned char*>(at);
+        }
+        (void)kos_send(1, &seen, sizeof(seen));
+        if (seen.read >= 0 and g_wro_put >= 0)
+        {
+            *static_cast<volatile unsigned char*>(at) = static_cast<unsigned char>(g_wro_put.load());
             g_wro_wrote = 1;
         }
         kos_exit(0);
     }
-    // Holds the block twice, read-write and then read-only, and names it as a call's reply
-    // buffer, which the kernel checks for writing before it looks at the capability: the
-    // read-only window must win there too. It never touches the block itself.
-    void wro_sys_child(void* arg)
+    // Parks holding its window until root posts `hold`.
+    void wro_hold_child(void*) // caps: hold@1
     {
-        g_wro_read = kos_call_timed(1, arg, 0, sizeof(uint32_t), 1000);
+        kos_sem_wait(1);
         kos_exit(0);
     }
-    // One child through one window: 0 when it joined, and what it read in *read.
+#if not KICKOS_HAVE_ASPACE
+    // Holds the block as its own task's data region and through a read-only window, and names
+    // it as a call's reply buffer, which the kernel checks for writing before it looks at the
+    // capability: the read-only window must win there too. It never touches the block itself.
+    Atomic<int32_t, Order::RELAXED> g_wro_sys{-1};
+    void wro_sys_child(void* arg)
+    {
+        g_wro_sys = kos_call_timed(1, arg, 0, sizeof(uint32_t), 1000);
+        kos_exit(0);
+    }
+#endif
+    // One child through one window, reporting on `ep`: 0 when it joined, and its report.
     int wro_run(void* blk, uint32_t size, uint8_t flags, int32_t put, kos_task_t task,
-                int32_t* read)
+                kos_cap_t ep, WroSeen* seen)
     {
         g_wro_put = put;
-        g_wro_read = -1;
         g_wro_wrote = 0;
+        *seen = {-1, -1};
         kos_window const w = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, flags};
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
         auto const c = kos::thread::create(wro_child, blk, "wro", 10, KOS_POLICY_FIFO, 0, false,
-                                           nullptr, 0, nullptr, 0, &w, 1, nullptr, 0, 0,
-                                           nullptr, task);
+                                           nullptr, 0, nullptr, 0, &w, 1, caps, 1, 0, nullptr,
+                                           task);
         int rc = c.error();
         if (rc == 0)
         {
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, WRO_JOIN_US);
+            (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
             rc = c.join(WRO_JOIN_US);
         }
-        *read = g_wro_read;
         return rc;
     }
     void t_window_memory_ro()
@@ -2838,28 +2868,119 @@ namespace
             blk = kos_ram_alloc(g);
         }
         kos_task_t t = KOS_TASK_NONE;
-        if (blk == nullptr or kos_task_create(nullptr, 0, 0, &t) != 0)
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (blk == nullptr or kos_endpoint_create(&ep) != 0
+            or kos_task_create(nullptr, 0, 0, &t) != 0)
         {
-            tap::skip("arena or task pool too small");
+            tap::skip("arena, endpoint or task pool too small");
             return;
         }
         uint32_t const size = static_cast<uint32_t>(g);
-        int32_t read = -1;
-        TAP_CHECK(wro_run(blk, size, 0, WRO_BYTE, KOS_TASK_NONE, &read) == 0);
+        WroSeen seen = {-1, -1};
+        TAP_CHECK(wro_run(blk, size, 0, WRO_BYTE, KOS_TASK_NONE, ep, &seen) == 0);
         TAP_CHECK(g_wro_wrote == 1);
-        TAP_CHECK(wro_run(blk, size, KOS_WINDOW_RO, 0, t, &read) == 0);
-        TAP_CHECK(read == WRO_BYTE and g_wro_wrote == 0);
+        TAP_CHECK(seen.moved == KICKOS_HAVE_ASPACE);
+        TAP_CHECK(wro_run(blk, size, KOS_WINDOW_RO, 0, t, ep, &seen) == 0);
+        TAP_CHECK(seen.read == WRO_BYTE);
         (void)kos_task_kill(t);
+        // One list naming the block twice would give kos_window_addr two answers.
         kos_window const twice[] = {
             {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, 0},
             {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY, KOS_WINDOW_RO}};
-        g_wro_read = -1;
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wrod", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0, twice, 2).error()
+                  == -KOS_EINVAL);
+        // Held as the child's own data region and through no window, the block has no window
+        // address: kos_window_addr answers windows alone.
+        kos_cap_grant const dcaps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto const data = kos::thread::create(wro_child, blk, "wroa", 10, KOS_POLICY_FIFO, 0,
+                                              false, blk, size, nullptr, 0, nullptr, 0, dcaps, 1);
+        seen = {-2, -2};
+        if (data.valid())
+        {
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, WRO_JOIN_US);
+            (void)kos_reply_recv(KOS_CAP_NONE, &seen, kos_call_lens_pack(0, sizeof(seen)), &o);
+            (void)data.join(WRO_JOIN_US);
+        }
+        TAP_CHECK(data.valid() and seen.read == -1 and seen.moved == -1);
+#if not KICKOS_HAVE_ASPACE
+        kos_window const ro = {reinterpret_cast<uintptr_t>(blk), size, KOS_WINDOW_MEMORY,
+                               KOS_WINDOW_RO};
+        g_wro_sys = -1;
         auto const sys = kos::thread::create(wro_sys_child, blk, "wros", 10, KOS_POLICY_FIFO, 0,
-                                             false, nullptr, 0, nullptr, 0, twice, 2);
+                                             false, blk, size, nullptr, 0, &ro, 1);
         TAP_CHECK(sys.valid() and sys.join(WRO_JOIN_US) == 0);
-        TAP_CHECK(g_wro_read == -KOS_EFAULT);
-        TAP_CHECK(wro_run(blk, size, 0, -1, KOS_TASK_NONE, &read) == 0);
-        TAP_CHECK(read == WRO_BYTE);
+        TAP_CHECK(g_wro_sys == -KOS_EFAULT);
+#endif
+        TAP_CHECK(wro_run(blk, size, 0, -1, KOS_TASK_NONE, ep, &seen) == 0);
+        TAP_CHECK(seen.read == WRO_BYTE);
+        (void)kos_handle_close(ep);
+        // A block held uncached keeps that type: a cacheable window over it, and the owner's
+        // own cacheable grant, are both refused while the uncached window lives.
+        void* const other = kos_ram_alloc(g);
+        kos_cap_t hold = KOS_CAP_NONE;
+        if (other == nullptr or kos_sem_create(0, &hold) != 0)
+        {
+            tap::partial("type agreement not run (arena or semaphore pool)");
+            return;
+        }
+        kos_window const nc = {reinterpret_cast<uintptr_t>(other), size, KOS_WINDOW_MEMORY,
+                               KOS_WINDOW_UNCACHED};
+        kos_cap_grant const hcaps[] = {{hold, KOS_CAP_WAIT}};
+        auto const holder = kos::thread::create(wro_hold_child, nullptr, "wroh", 10,
+                                                KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr,
+                                                0, &nc, 1, hcaps, 1);
+        if (holder.error() == -KOS_ENOTSUP)
+        {
+            (void)kos_handle_close(hold);
+            tap::partial("type agreement not run (no uncached memory on this board)");
+            return;
+        }
+        TAP_CHECK(holder.valid());
+        kos_window const cached = {reinterpret_cast<uintptr_t>(other), size, KOS_WINDOW_MEMORY,
+                                   0};
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wroc", 10, KOS_POLICY_FIFO, 0,
+                                      false, nullptr, 0, nullptr, 0, &cached, 1).error()
+                  == -KOS_EBUSY);
+        TAP_CHECK(kos_mem_self_grant(other, g, 0) == -KOS_EBUSY);
+        // Nor may a new task take the block as its cacheable data.
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wrom", 10, KOS_POLICY_FIFO, 0,
+                                      false, other, size).error()
+                  == -KOS_EBUSY);
+        kos_sem_post(hold);
+        TAP_CHECK(not holder.valid() or holder.join(WRO_JOIN_US) == 0);
+        (void)kos_handle_close(hold);
+        // One spawn asking for a block as cacheable task data and through an uncached window
+        // is refused too, though neither mapping exists when its windows are admitted.
+        void* const both = kos_ram_alloc(g);
+        if (both == nullptr)
+        {
+            tap::partial("one-spawn type agreement not run (arena)");
+            return;
+        }
+        kos_window const nc_both = {reinterpret_cast<uintptr_t>(both), size, KOS_WINDOW_MEMORY,
+                                    KOS_WINDOW_UNCACHED};
+        TAP_CHECK(kos::thread::create(wro_hold_child, nullptr, "wrob", 10, KOS_POLICY_FIFO, 0,
+                                      false, both, size, nullptr, 0, &nc_both, 1).error()
+                  == -KOS_EBUSY);
+        // A task holds its data with no member yet: a second empty task taking the same block
+        // with another memory type is refused as a spawn would be.
+        void* const shared = kos_ram_alloc(g);
+        kos_task_t nc_task = KOS_TASK_NONE;
+        kos_task_t cached_task = KOS_TASK_NONE;
+        int nrc = -KOS_ENOMEM;
+        if (shared != nullptr)
+        {
+            nrc = kos_task_create(shared, size, KOS_MEM_NOCACHE, &nc_task);
+        }
+        if (nrc != 0)
+        {
+            tap::partial("empty-task type agreement not run (rc %d)", nrc);
+            return;
+        }
+        TAP_CHECK(kos_task_create(shared, size, 0, &cached_task) == -KOS_EBUSY);
+        (void)kos_task_kill(nc_task);
     }
 #endif
 
@@ -2918,11 +3039,11 @@ namespace
                       == odd_rc[i]);
         }
 #if KICKOS_HAVE_ASPACE
-        // A translating board maps no memory window until it chooses where one sits.
+        // A memory window must name one of the spawner's own reservations, whole.
         kos_window const mem = {0x1000u, 0x1000u, KOS_WINDOW_MEMORY, 0};
         TAP_CHECK(kos::thread::create(mmio_noop, nullptr, "winmem", 10, KOS_POLICY_FIFO, 0,
                                       false, nullptr, 0, nullptr, 0, &mem, 1).error()
-                  == -KOS_ENOTSUP);
+                  == -KOS_EPERM);
 #endif
         kos_sem_create(0, &g_mmio_done);
         g_mmio_unpriv_rc = -2;
@@ -8013,6 +8134,8 @@ namespace
     // while it lives the second half alone is refused.
     constexpr unsigned WL_FIRST_OK = 1u << 0;
     constexpr unsigned WL_SECOND_OK = 1u << 1;
+    constexpr unsigned WL_ADDR_OK = 1u << 2; // each window answers its own base, nothing else
+
     Atomic<unsigned char, Order::RELAXED> g_wl{0};
     void wl_holder(void* arg) // caps: done@1, hold@2
     {
@@ -8025,6 +8148,16 @@ namespace
         if (kos_periph_reg_write(pv + PVS_WIN, PVS_REG, PVS_IN) == -KOS_EINVAL)
         {
             seen |= WL_SECOND_OK;
+        }
+        void* first = nullptr;
+        void* second = nullptr;
+        void* none = nullptr;
+        if (kos_window_addr(pv, &first) == 0 and first == reinterpret_cast<void*>(pv)
+            and kos_window_addr(pv + PVS_WIN, &second) == 0
+            and second == reinterpret_cast<void*>(pv + PVS_WIN)
+            and kos_window_addr(pv + 2u * PVS_WIN, &none) == -KOS_EPERM)
+        {
+            seen |= WL_ADDR_OK;
         }
         g_wl = static_cast<unsigned char>(seen);
         kos_sem_wait(CH_DEVHOLD);
@@ -8112,6 +8245,7 @@ namespace
         unsigned char const wl = g_wl;
         TAP_CHECK((wl & WL_FIRST_OK) != 0);
         TAP_CHECK((wl & WL_SECOND_OK) != 0);
+        TAP_CHECK((wl & WL_ADDR_OK) != 0);
 
         kos_cap_t ep = KOS_CAP_NONE;
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
@@ -9388,7 +9522,7 @@ int main(int, char**)
     TAP_ADD("cross_task_block", t_cross_task_block);
 #endif
     TAP_ADD("mmio_grant", t_mmio_grant);
-#if KICKOS_MEMORY_ENFORCED && not KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION
+#if KICKOS_MEMORY_ENFORCED && KICKOS_FAULT_ISOLATION
     TAP_ADD("window_memory_ro", t_window_memory_ro);
 #endif
 #if KICKOS_HAVE_MPU
@@ -9487,6 +9621,9 @@ int main(int, char**)
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
     TAP_ADD("fault_kills_task", t_fault_kills_task);
     TAP_ADD("kernel_state_unreachable", t_kernel_state_unreachable);
+#if defined(KICKOS_SELFTEST_SPARE_DEV)
+    TAP_ADD("window_addr", t_window_addr);
+#endif
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
     TAP_ADD("amp_window", t_amp_window);

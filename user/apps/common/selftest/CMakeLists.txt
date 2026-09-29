@@ -24,6 +24,19 @@ if(KICKOS_BOARD STREQUAL "microbit")
   list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
 endif()
 
+# A device the kernel never drives on each translating machine, which window_addr maps at the
+# address the kernel chooses: the PL031 RTC, the goldfish RTC and the HPET.
+if(KICKOS_CHIP STREQUAL "virt_arm64")
+  set(_selftest_spare_dev 0x09010000)
+elseif(KICKOS_CHIP STREQUAL "virt_rv64")
+  set(_selftest_spare_dev 0x00101000)
+elseif(KICKOS_CHIP STREQUAL "q35")
+  set(_selftest_spare_dev 0xFED00000)
+endif()
+if(DEFINED _selftest_spare_dev)
+  list(APPEND _selftest_defs KICKOS_SELFTEST_SPARE_DEV=${_selftest_spare_dev})
+endif()
+
 # main.cc cuts the registration list into contiguous REGIONS. An image carries a contiguous
 # RUN of them and elides the rest, so the arms are partitioned between the images and still
 # run in the order one image would run them in. main.cc refuses a build whose count differs
@@ -223,7 +236,7 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # caller_stack_arena
 endif()
-if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 1") # window_memory_ro
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
@@ -237,6 +250,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 2") # fault_kills_task, kernel_state_unreachable
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND DEFINED _selftest_spare_dev)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # window_addr
 endif()
 # Mirrors the C guard, which is the AMP posture and not the core count: an own-image node drives
 # one core and registers these all the same.
@@ -294,7 +311,7 @@ endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # caller_stack_arena
 endif()
-if(KICKOS_MEMORY_ENFORCED AND NOT KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
+if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # window_memory_ro
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
@@ -305,6 +322,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 2") # fault_kills_task, kernel_state_unreachable
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND DEFINED _selftest_spare_dev)
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # window_addr
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery

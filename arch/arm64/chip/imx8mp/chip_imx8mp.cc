@@ -214,6 +214,14 @@ void arch_init(void)
 // gap rather than a judgement that granting them is safe: the CCM at 0x3038_0000 and the SRC
 // at 0x3039_0000 reach every peripheral on the die, and a domain handed either could stop the
 // core it does not own.
+// No device page is open to a user window on this board yet.
+size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
+{
+    (void)out;
+    (void)max;
+    return 0;
+}
+
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static constexpr struct arch_reserved_block blocks[] = {

@@ -74,6 +74,12 @@ namespace kickos
     // window fails closed (returns true).
     bool grant_hits_reserved(uintptr_t base, size_t size);
 
+#if KICKOS_HAVE_ASPACE
+    // True iff [base, base+size) is whole granules lying inside ONE aperture the chip states
+    // (arch_window_apertures): where a translating backend may map a user device window.
+    bool grant_window_aperture_ok(uintptr_t base, size_t size);
+#endif
+
     // Full admission policy for ONE prospective committed region (data or MMIO):
     //   size 0 / wrap                              -> refuse
     //   hits a reserved block (authorized too)     -> refuse   [Rule 7 core]

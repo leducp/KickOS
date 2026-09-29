@@ -140,6 +140,50 @@ namespace kickos
         return true;
     }
 
+    bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except)
+    {
+        uintptr_t const last = base + size - 1u;
+        Kernel& k = kernel();
+        // A task holds its data region with no member yet, so the held domains are asked too.
+        // The kernel's own spans the arena and maps nothing for a task.
+        for (int d = 0; d < KICKOS_MAX_DOMAINS; d++)
+        {
+            Domain const& dom = k.domains[d];
+            if (dom.privileged or (dom.refcount == 0 and not dom.immortal))
+            {
+                continue;
+            }
+            for (size_t i = 0; i < domain_region_count(&dom); i++)
+            {
+                arch_mpu_region const* const r = domain_region_at(&dom, i);
+                if (((r->attr ^ attr) & ARCH_MPU_NOCACHE) != 0
+                    and grant_ranges_overlap(base, last, r->base, r->base + r->size - 1u))
+                {
+                    return false;
+                }
+            }
+        }
+        for (int i = 0; i < k.threads.next; i++)
+        {
+            Thread const& t = k.threads.slots[i];
+            if (&t == except or t.state == ThreadState::EXITED
+                or t.state == ThreadState::INACTIVE)
+            {
+                continue;
+            }
+            for (arch_mpu_region const& r : t.mpu)
+            {
+                if ((r.attr & (ARCH_MPU_DEV | ARCH_MPU_X)) == 0
+                    and ((r.attr ^ attr) & ARCH_MPU_NOCACHE) != 0
+                    and grant_ranges_overlap(base, last, r.base, r.base + r.size - 1u))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     uint32_t window_memory_attr(uint8_t flags)
     {
         uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
@@ -164,6 +208,14 @@ namespace kickos
             for (uint16_t i = 0; i < attr.window_count; i++)
             {
                 kos_window const& w = attr.windows[i];
+#if KICKOS_HAVE_ASPACE
+                // A memory window's record is its mapping in the range list alone, the region
+                // set here being validation for addresses this thread reaches at their own base.
+                if (w.kind == KOS_WINDOW_MEMORY)
+                {
+                    continue;
+                }
+#endif
                 // A device window is exact, NEVER rounded: rounding would over-grant the
                 // neighbouring registers. A memory window takes the extent kos_ram_alloc
                 // reserved.
@@ -174,7 +226,7 @@ namespace kickos
                     size = arch_ram_region_size(w.size);
                     rights = window_memory_attr(w.flags);
                 }
-                fitted = t->mpu.add(w.base, size, rights) and fitted;
+                fitted = t->mpu.add_window(w.base, size, rights) and fitted;
             }
             return fitted;
         }

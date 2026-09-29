@@ -575,6 +575,38 @@ physical base.
 an unmap and an invalidation at the holder's exit, and a mapping record per window in the task's
 ranges.
 
+**What the part taught.** The record is a `VR_WINDOW` range naming its holder, a thread slot, and
+for a memory window the donor domain it holds a reference on; both fit the padding of
+`VirtualRange`, so neither the list nor the thread control block grows. The window area is 1 GiB
+halfway up each user half (`arch_aspace_window_area`), far above RAM's user alias. A memory
+window names one reservation of the spawner's own, whole, and its entry holds the spawner's
+domain so the frames outlive a spawner that dies first; a device window keeps its possession
+record in the region set, at its physical base, which the pointer checks now skip where a space
+translates. Admission needed a rule the section did not state: no translating chip declared the
+devices it owns beyond its interrupt controller, so a device window could have named RAM, the
+PLIC, an ECAM or the I/O APIC. Each translating chip now states the apertures a user window may
+lie in (`arch_window_apertures`) -- the PL011 and PL031 on arm64 `virt`, the goldfish RTC and
+the console UART on rv64 `virt`, the HPET on q35, none on the i.MX 8M Plus -- and the reserved
+blocks still carve the kernel's own out of them. The arms are `window_addr`, on each translating
+preset, a holder in a task of its own reading the spare device through the answered address,
+refused an address for a device it does not hold and a window outside every aperture, a second
+task refused the device while it lives, its sibling faulting on the address once it has exited,
+and the next instance mapping it again; `window_memory_ro` now runs on the translating presets
+too, its children reaching the block where `kos_window_addr` says and reporting over an endpoint,
+a task's data being its own there; and `window_list` on the sim, which answers the physical base.
+Removing the unmap at a holder's exit or answering the physical base turns them red. Review
+found three holes, now closed: a block mapped cacheable could be lent to a window uncached, so a
+memory window, a self-grant and a task's data handoff now take no memory type another live
+mapping of the same frames does not carry (`aspace_frames_type_ok`, `memory_type_free`,
+`-KOS_EBUSY`), a window asking again where it is mapped, after the spawn's own data, and a
+region board asking the held task domains beside the live threads, an empty task holding its data
+with no member; a list could name one
+block in two windows and `kos_window_addr` could answer only the first, so a list names a block
+once; and a region board answered for its stack or data region as for a window, so the region set
+marks its windows. `window_memory_ro` witnesses all three. The spawn
+chain's frame grew under g++ 13, so the x86 reservations rose to it, at one core and above: SYSK
+to 1800 and 2296, SYSPRIV and SYSPRIVSW to 1856 and 2304, and the spawn floor to 2432 and 3136.
+
 ## 7. The x86 port grant and `kos_port_reg_write` (M10.1.8)
 
 **A task on q35 reaches exactly the ports it was granted, and writes a privileged port only

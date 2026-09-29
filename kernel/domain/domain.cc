@@ -303,6 +303,13 @@ namespace kickos
             *err = KOS_EPERM; // out-of-arena / reserved block / unhonourable memory type
             return nullptr;
         }
+#if KICKOS_MEMORY_ENFORCED
+        if (not memory_type_free(base, rsz, attr, nullptr))
+        {
+            *err = KOS_EBUSY; // a thread holds the block with another memory type
+            return nullptr;
+        }
+#endif
 #endif
         Domain* d = claim_slot(err);
         if (d == nullptr)
