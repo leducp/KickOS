@@ -284,18 +284,6 @@ namespace kickos::x86_64
             refuse("supervisor-mode access prevention is on and no path here lifts it");
         }
 
-        uint32_t cpuid_a = 0;
-        uint32_t cpuid_b = 0;
-        uint32_t cpuid_c = 0;
-        uint32_t cpuid_d = 0;
-        __asm__ volatile("cpuid"
-                         : "=a"(cpuid_a), "=b"(cpuid_b), "=c"(cpuid_c), "=d"(cpuid_d)
-                         : "a"(0x80000001u), "c"(0u));
-        if ((cpuid_d & (1u << 11)) == 0)
-        {
-            refuse("this processor reports no SYSCALL/SYSRET");
-        }
-
         read_own_headers();
         g_control0 = read_cr0();
 

@@ -420,6 +420,13 @@ function(kickos_is_board board out)
   endif()
 endfunction()
 
+# The processor every x86_64 emulation runs, the application gates and the boot witnesses
+# alike: qemu64, which is below the floor, plus the features x86-64-v3 requires
+# (arch/x86/x86_64/floor_x86_64.cc). It reaches both runners as KICKOS_X86_64_CPU.
+set(KICKOS_X86_64_QEMU_CPU
+    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave"
+    CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
+
 # ---------------------------------------------------------------------------
 # kickos_qemu_machine(<board> <out_env> <out_machine>)
 #   This is the ONE board -> machine map, and the sole answer to "can this board be booted in
@@ -528,11 +535,14 @@ function(kickos_qemu_machine board out_env out_machine)
     # partition per run: the shipped OVMF variable store is root-owned, and an ESP has to be
     # made from the image under test or a stale BOOTX64.EFI boots and prints the same banner.
     # -smp is what makes the application processors exist, and q35 SMP refuses to start without
-    # x2APIC, which the default qemu64 model does not advertise.
+    # x2APIC, which qemu64 does not advertise.
     set(_env QEMU=qemu-system-x86_64 KICKOS_BOOT=uefi-pe)
+    set(_cpu "${KICKOS_X86_64_QEMU_CPU}")
     if(KICKOS_NUM_CORES GREATER 1)
-      list(APPEND _env "QEMU_EXTRA=-smp ${KICKOS_NUM_CORES} -cpu qemu64,+x2apic")
+      string(APPEND _cpu ",+x2apic")
+      list(APPEND _env "QEMU_EXTRA=-smp ${KICKOS_NUM_CORES}")
     endif()
+    list(APPEND _env "KICKOS_X86_64_CPU=${_cpu}")
     set(_machine q35)
   else()
     # No emulator for this board. NOT the caller's problem, so the answer is an empty machine

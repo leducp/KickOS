@@ -19,6 +19,7 @@ namespace kickos::uefi
 
     // UEFI 2.11 appendix D. The high bit set marks an error.
     constexpr status_t status_success = 0;
+    constexpr status_t status_unsupported = 0x8000000000000003ull;
     constexpr status_t status_buffer_too_small = 0x8000000000000005ull;
 
     // UEFI 2.11 section 7.2, EFI_MEMORY_TYPE.
@@ -93,6 +94,16 @@ namespace kickos::uefi
         exit_boot_services_fn exit_boot_services;
     };
 
+    // UEFI 2.11 section 12.4, truncated after the member this port calls.
+    struct simple_text_output;
+    using output_string_fn = status_t(KICKOS_EFIAPI*)(simple_text_output* self,
+                                                      char16_t const* text);
+    struct simple_text_output
+    {
+        void* reset;
+        output_string_fn output_string;
+    };
+
     // UEFI 2.11 section 4.3, truncated after the member this port reads.
     struct system_table
     {
@@ -102,7 +113,7 @@ namespace kickos::uefi
         handle_t console_in_handle;
         void* con_in;
         handle_t console_out_handle;
-        void* con_out;
+        simple_text_output* con_out;
         handle_t standard_error_handle;
         void* std_err;
         void* runtime_services;

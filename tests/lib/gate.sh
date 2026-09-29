@@ -544,6 +544,10 @@ boot_args() { # <image>
 -drive format=raw,file=$KOS_BOOT_DIR/esp.img \
 -drive if=pflash,format=raw,unit=0,readonly=on,file=$KOS_OVMF_CODE \
 -drive if=pflash,format=raw,unit=1,file=$KOS_BOOT_DIR/vars.fd"
+    # The processor model, which kickos_qemu_machine names (cmake/kickos.cmake).
+    if [ -n "${KICKOS_X86_64_CPU:-}" ]; then
+        KOS_BOOT_ARGS="-cpu $KICKOS_X86_64_CPU $KOS_BOOT_ARGS"
+    fi
 }
 
 # The status line an image prints for itself, as a sed BRE with the number in \1. Restated from

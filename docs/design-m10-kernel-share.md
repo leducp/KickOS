@@ -4,7 +4,7 @@
 
 > **Status: ACTIVE.** Sections 1 to 7 state the landed kernel contracts of M10.1.1 and
 > M10.1.3 to M10.1.8.
-> Section 8 lists the ABI headers.
+> Section 8 lists the ABI headers. Section 9 states the x86 floor of M10.1.9.
 > `roadmap.md` assigns the milestones and carries the rulings;
 > [`design-m10-composition.md`](design-m10-composition.md) is the userspace design these
 > mechanisms serve.
@@ -353,3 +353,28 @@ KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the
 
 `arch/include/kickos/arch/arch.h` changes too -- the window area of section 6, the port seams of
 section 7 -- and is the kernel's internal interface, not the ABI.
+
+## 9. The x86-64-v3 floor (M10.1.9)
+
+**x86 is compiled for x86-64-v3 and refuses a processor below it**, so that no older part is
+maintained. The level is the psABI's third, the Haswell and Excavator generation. The vector units
+stay off, `-mno-sse` keeping AVX out of the code as before, so what the level gives the kernel is
+the integer extensions, BMI1 and BMI2, LZCNT, MOVBE and POPCNT.
+
+- **The refusal.** `efi_main` first calls `kickos_x86_64_floor`
+  (`arch/x86/x86_64/floor_x86_64.cc`), which is compiled for the base level, because below the
+  floor the first instruction the level adds is an invalid-opcode fault nothing reports. It reads
+  the level's CPUID bits and, on a processor short of any, writes a line to firmware's console and
+  returns `EFI_UNSUPPORTED`, so the boot manager moves to its next option. The file refuses to
+  compile if the extension macros say it was built for the level.
+- **The emulated processor.** `qemu64` plus the level's features, stated once as
+  `KICKOS_X86_64_QEMU_CPU` in `cmake/kickos.cmake`. It reaches the application gates through
+  `tests/lib/gate.sh` and the boot witnesses through their runners as `KICKOS_X86_64_CPU`, which
+  the runners now require. The SMP presets add x2APIC, as before.
+- **The deletion.** SYSCALL is a base-level feature, so `ring3_init`'s probe for it goes. The probes
+  for the execute-disable bit, the local APIC, PAT, PCID, INVPCID and MAXPHYADDR stay: the level
+  does not name them, and an Excavator is v3 with no PCID.
+
+**Arms.** `x86_64_x1_floor` boots the handover image on plain `qemu64` and requires the refusal and
+no handover line. Deleting the call turns it red, and dropping the base-level option stops the
+build.

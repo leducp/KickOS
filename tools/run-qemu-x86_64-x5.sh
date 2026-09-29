@@ -7,7 +7,7 @@
 # Requires a self-test build for invalidation counters.
 # Environment: KICKOS_X5_TOKEN, KICKOS_X5_FIRMWARE (pflash or bios),
 # KICKOS_X5_MACHINE (q35), KICKOS_X5_TIMEOUT (120 seconds),
-# and KICKOS_X86_64_CPU (optional QEMU CPU model).
+# and KICKOS_X86_64_CPU (the QEMU CPU model, required).
 
 set -u
 
