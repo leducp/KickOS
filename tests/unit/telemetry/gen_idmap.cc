@@ -58,6 +58,7 @@ int main()
     KOS_SYS_TASK_WATCH,
     KOS_SYS_TASK_STATE,
     KOS_SYS_WINDOW_ADDR,
+    KOS_SYS_PORT_REG_WRITE,
     };
     for (kos_syscall_nr s : calls)
     {

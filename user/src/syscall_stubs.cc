@@ -283,6 +283,11 @@ int kos_window_addr(uintptr_t base, void** out)
                                          reinterpret_cast<uintptr_t>(out), 0, 0));
 }
 
+int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_PORT_REG_WRITE, base, offset, value, 0));
+}
+
 int kos_task_slay(kos_task_t task, uint32_t timeout_us)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY,

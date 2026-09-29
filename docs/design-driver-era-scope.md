@@ -134,11 +134,11 @@ power-manager service (G7, sections 3 and 6).
   `arch/rx/chip/rx72m/chip_rx72m.cc`), which is what the shipping `rxsci` driver dispatches
   through, and the GROUPBL0 group table it needed is in the chip
   (`arch/rx/chip/rx72m/irq.h`, `arch/rx/chip/rx72m/regs/icu.h`).
-  `design-m4.6-irq-driver.md` already recorded the replacement; this page did not.
+  `archive/M4_IRQ_driver_record.md` already recorded the replacement; this page did not.
   The reason the doc gate did not catch the dead name is worth keeping: its identifier oracle
   matches UPPERCASE-prefixed names only, so a lowercase function or seam name cited in prose is
   outside the checked corpus entirely. IRQ ownership by an unprivileged driver is designed in
-  `design-m4.6-irq-driver.md`.
+  `archive/M4_IRQ_driver_record.md`.
 - **m2-review-followups: OPEN (read).** Sweep `docs/m2-review-followups.md` for residual gaps before
   building drivers on top. Effort **S**, **NOW**.
 
@@ -419,7 +419,7 @@ toggle nowhere hot.
 - **Shared-IRQ demux and any userspace GPIO service.** Cold path only, landing with its first real
   IRQ-consuming consumer, orthogonal to the toggle path: a shared GPIO IRQ line hardware-forces a
   demux so IPC there is acceptable, whereas a CS toggle never is. Designed in
-  `design-m4.6-irq-driver.md`.
+  `archive/M4_IRQ_driver_record.md`.
 
 Cross-ref pinmux (3.1) and DMA (3.4): same shared-resource-vs-performance-vs-isolation tension,
 different hot/cold profile.
@@ -447,7 +447,7 @@ different hot/cold profile.
    (`design-m6-mmu.md` is the contract; `design-mmu-era-exploration.md` the exploration it came out
    of).
 3. **SMP (M7)**: one kernel image across cores, which reworks the foundation because `IrqLock`
-   ("IRQs off means exclusive") is single-core-only (`design-m7-smp.md`). The target is the A53
+   ("IRQs off means exclusive") is single-core-only (`archive/M7_smp_candidate_spike.md`). The target is the A53
    cluster M6 landed on, with the quad-core i.MX8MP as the silicon it aims at; the RP2040/RP2350
    pair this bullet used to name is an AMP question that document still lists as open. The
    i.MX8MP's Cortex-M7 companion stays MPU KickOS over cross-core IPC, and that core is not this
@@ -548,7 +548,7 @@ above where they differ.
   by it**: the clock-cascade quiesce-timeout (the deferred part 3 of the clock entry above) and the
   driver-death waiter wake (the entry below) each now stand on their own remaining work rather than
   on a missing primitive. Their status is otherwise unchanged. What is still absent is the wider
-  object `design-m4.6-irq-driver.md` section 7.5 names, receive-from-either-of-two-sources, which
+  object `archive/M4_IRQ_driver_record.md` section 7.5 names, receive-from-either-of-two-sources, which
   stays an M6 kernel object.
 - **Driver crash/restart plus resource reclaim: OPEN.** Pin caps, clock-gate refcounts, AIPS slots and
   endpoint holders all leak on driver death; only the panic-path console reclaim exists. `TODO.md`

@@ -76,6 +76,13 @@ namespace kickos
     // thread and not for another is incoherent. Caller holds IrqLock.
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except);
 
+#if KICKOS_ARCH_HAS_PORTS
+    // Whether ports [base, base+count) lie inside one aperture the chip states
+    // (arch_port_apertures), and whether no live thread holds any of them.
+    bool port_aperture_ok(uintptr_t base, size_t count);
+    bool port_window_free(uintptr_t base, size_t count);
+#endif
+
     // The region attributes a memory window's kos_window_flags ask for.
     uint32_t window_memory_attr(uint8_t flags);
 

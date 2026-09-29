@@ -255,6 +255,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND DEFINED _selftest_spare_dev)
   math(EXPR _tap_arms "${_tap_arms} + 1") # window_addr
 endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND KICKOS_ARCH STREQUAL "x86_64")
+  math(EXPR _tap_arms "${_tap_arms} + 1") # port_window
+endif()
 # Mirrors the C guard, which is the AMP posture and not the core count: an own-image node drives
 # one core and registers these all the same.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
@@ -326,6 +330,10 @@ endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND DEFINED _selftest_spare_dev)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # window_addr
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND KICKOS_ARCH STREQUAL "x86_64")
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # port_window
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery

@@ -184,6 +184,48 @@ namespace kickos
         return true;
     }
 
+#if KICKOS_ARCH_HAS_PORTS
+    static_assert(KICKOS_MAX_THREAD_WINDOWS <= KICKOS_ARCH_PORT_RANGES,
+                  "a thread's full window list would not fit its port set");
+
+    bool port_aperture_ok(uintptr_t base, size_t count)
+    {
+        struct arch_reserved_block apertures[KICKOS_MAX_RESERVED];
+        size_t const n = arch_port_apertures(apertures, KICKOS_MAX_RESERVED);
+        for (size_t i = 0; i < n; i++)
+        {
+            if (base >= apertures[i].base
+                and base + count <= apertures[i].base + apertures[i].size)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool port_window_free(uintptr_t base, size_t count)
+    {
+        uintptr_t const last = base + count - 1u;
+        Kernel& k = kernel();
+        for (int i = 0; i < k.threads.next; i++)
+        {
+            Thread const& t = k.threads.slots[i];
+            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE)
+            {
+                continue;
+            }
+            for (uint8_t r = 0; r < t.ctx.port_count; r++)
+            {
+                if (grant_ranges_overlap(base, last, t.ctx.ports[r].base, t.ctx.ports[r].last))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+#endif
+
     uint32_t window_memory_attr(uint8_t flags)
     {
         uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
@@ -208,6 +250,17 @@ namespace kickos
             for (uint16_t i = 0; i < attr.window_count; i++)
             {
                 kos_window const& w = attr.windows[i];
+#if KICKOS_ARCH_HAS_PORTS
+                // A port window's record is the context's port set, which the switch loads.
+                if (w.kind == KOS_WINDOW_PORTS)
+                {
+                    t->ctx.ports[t->ctx.port_count].base = static_cast<uint16_t>(w.base);
+                    t->ctx.ports[t->ctx.port_count].last =
+                        static_cast<uint16_t>(w.base + w.size - 1u);
+                    t->ctx.port_count++;
+                    continue;
+                }
+#endif
 #if KICKOS_HAVE_ASPACE
                 // A memory window's record is its mapping in the range list alone, the region
                 // set here being validation for addresses this thread reaches at their own base.

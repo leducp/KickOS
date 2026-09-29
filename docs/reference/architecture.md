@@ -464,7 +464,7 @@ started core in its mask runs strictly below it (a same-core handoff is had by p
 that declines it moves it there, and a core whose level falls asks the holder to push it
 (`docs/design-multicore.md` section 8). No core writes a peer's structure: a thread bound for a
 peer is HANDED onto the ring from this core to that one, published where this core's lock span
-ends, and linked by the peer's own dispatch (`docs/design-m9.4-rings.md`).
+ends, and linked by the peer's own dispatch (`docs/archive/M9.4_rings_record.md`).
 
 **Exclusion:** `IrqLock` masks the local core and, above one kernel core,
 holds one BKL across shared-kernel transactions. Per-core ready queues
@@ -542,7 +542,7 @@ holding a domain built from its own grant and `kos_thread_params::task` seats a 
 `KOS_SYS_TASK_KILL` ends the whole group from a supervisor, and a member's own death ends it too.
 The gate there is CREATORSHIP rather than possession, the address space stays on `Domain`, and 0
 means the request was ACCEPTED and never that the thread is gone -- a thread that never re-enters
-the kernel is unreachable without preemption. `docs/design-task-layer.md` is the record.
+the kernel is unreachable without preemption. `docs/archive/M4_task_layer_record.md` is the record.
 
 ---
 

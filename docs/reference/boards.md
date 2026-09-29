@@ -362,7 +362,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   - **The kernel window describes a full gigabyte of which the machine answers 128 MiB.** No
     unprivileged thread can reach any of it (`U` is clear on every leaf), but the kernel can write
     RAM outside its own 64 MiB share through the window, and 448 of the 512 leaves are over addresses
-    no RAM answers at all. `../design-m6-mmu.md` R2.3 carries the arithmetic and what would bound it.
+    no RAM answers at all. `../archive/M6_implementation_record.md` R2.3 carries the arithmetic and what would bound it.
   - **`sstatus.SUM` is never set, so a kernel dereference of an app-half pointer FAULTS.** Every
     kernel touch of process memory goes through the `kaccess` seam instead. That is stricter than
     `qemu-arm64`, and it means a kernel-side bug that would silently corrupt the running process on
@@ -402,7 +402,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     table and the per-core block ARE reachable and writable**: the kernel window's level-3 table and
     `g_cpu` are `.bss` statics of the flat link, so both sit inside the leaf the grant opens.
     Neither adds a power kernel-RAM write access does not already give. Narrowing that is R1.5's
-    work; the cost is stated in `../design-m6-mmu.md` M6.4 rather than hidden.
+    work; the cost is stated in `../archive/M6_implementation_record.md` M6.4 rather than hidden.
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -847,7 +847,7 @@ the board".
   separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
   `switch.S`'s `msr control` is discarded and **a thread the kernel marks unprivileged runs
   privileged here.** `picopi` is a Cortex-M0+ and does implement it; one arch backend spans both
-  cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
+  cores and nothing in the tree distinguishes them. See `archive/M4_unprivileged_root_record.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   It is deliberately NOT a BBC micro:bit v1: that part is EOL and nothing here flashes one, so the
   board takes the nRF51822's 32 KiB variant and QEMU is told the size with
@@ -1273,7 +1273,7 @@ syscall and touching the peripheral directly.
 Six boards, every enforcement backend in the fleet. `frdmk64f` is the only one witnessed on its
 **full** service list; the other five were captured console-only or on `kickos_services_none`. That
 is a property of the captures, not of the boards: no board is marked as unable to run an
-unprivileged root (`design-unprivileged-root.md` sections 4 and 10).
+unprivileged root (`archive/M4_unprivileged_root_record.md` sections 4 and 10).
 
 **Read the table as six dated historical records, not as a reproducible A/B.** On the date each row
 was taken its two `selftest` columns really were two buildable images off one tree, and that
@@ -1585,7 +1585,7 @@ control ran on the same tip and board, completed the write and printed
 **`f411spi` stays unwitnessed on this board.** It writes no MMIO from root -- `main` muxes `PE3` and
 `PA5`/`PA6`/`PA7` through `kos_pinmux_set`, and the unprivileged driver thread holding the 32 B SPI1
 grant calls `kos_periph_enable(win)` as its first act, then configures SPI1 inside that window
-(`design-spi-driver-stm32f411.md`; the seam's contract is `design-unprivileged-root.md` stage 3).
+(`design-spi-driver-stm32f411.md`; the seam's contract is `archive/M4_unprivileged_root_record.md` stage 3).
 What is open is bench time, not code: the app has not run on silicon in either posture since that
 rework, and its loopback arm additionally needs the PA7->PA6 jumper fitted. So the chip's
 peripheral-window proof remains open and the canonical PMSA peripheral proof stays `xmcspi`.
@@ -2215,7 +2215,7 @@ the console was `USER_OWNED`; this app runs under `kickos_services_none`, so not
 and the console was `KERNEL_OWNED` when the channel died. The gate is now `state != RECLAIMED`, and
 that widening is only safe because every chip reclaim body is idempotent absolute stores -- so this
 capture is simultaneously the witness for the fix and the reason that idempotence requirement is
-load-bearing rather than incidental. `design-unprivileged-root.md` section 8 carries the argument.
+load-bearing rather than incidental. `archive/M4_unprivileged_root_record.md` section 8 carries the argument.
 No CTest gate exists or can: the XMC has no QEMU model, and PASS is an operator reading a banner.
 
 **`frdmk64f` `selftest` on its FULL service list (`k64uart` + `k64dspi`)** -- 66 cases, 65 `ok`,
@@ -3039,4 +3039,4 @@ What is left on this board is narrower and different from what it was. Not the a
 suite are witnessed, and the pool was right-sized at `124b68c`), not the prober, and not the ring
 property. It WAS **the fault reporter emitting no dump here**, and that is CLOSED: `st-flash --connect-under-reset --reset write` left the core under halting debug with `DEMCR.VC_HARDERR` armed, so the `udf` reached HardFault and the core halted AT the handler instead of running it (`DFSR.VCATCH` set, `DHCSR.S_LOCKUP` clear). The firmware was always correct and `tools/flash-stlink.sh` no longer pairs the two flags. What is left is that the board still has no AUTOMATED gate of its own, so its chip code, clock tree
 and USART are covered by nothing but the `build-boards` link (see *CI coverage* above).
-`design-unprivileged-root.md` sections 9 and 10 carry the arms and the arithmetic.
+`archive/M4_unprivileged_root_record.md` sections 9 and 10 carry the arms and the arithmetic.

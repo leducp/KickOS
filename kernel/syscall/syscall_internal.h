@@ -77,6 +77,11 @@ namespace kickos
     // `base`, the base its spawn list named. 0, or -KOS_EPERM / -KOS_EINVAL / -KOS_EFAULT.
     int window_addr_call(uintptr_t base, uintptr_t out);
 
+    // KOS_SYS_PORT_REG_WRITE: one byte to port base + offset, which a port window of the
+    // caller's covers and the chip keeps for the kernel's write. 0, or -KOS_EPERM /
+    // -KOS_EINVAL, and -KOS_ENOSYS where the arch has no ports.
+    int port_reg_write_call(uintptr_t base, uintptr_t offset, uintptr_t value);
+
     // --- The owner of a user end -----------------------------------------------
     // Every access below names the address space each user end belongs to, and a NULL
     // space means the address is directly kernel-dereferenceable: kernel storage, and

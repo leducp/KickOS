@@ -524,7 +524,7 @@ Above one kernel core the bench prints one report per workload, each since the r
 it and labelled by a `tag`: 0 the call/reply sweep, 1 each throughput window, 2 one pinned
 ping-pong pair per core all at once, 3 an unpinned equal-priority pair beside round-robin
 spinners on wide masks, 4 the push probe, 5 the reseat probe. These are the workloads of
-`../design-m9.4-rings.md` section G; the last five slots of the table above print here and not
+`../archive/M9.4_rings_record.md` section G; the last five slots of the table above print here and not
 in the ordinary report.
 
 THE PUSH PROBE GIVES A HANDOFF UP AFTER 2 S AND SAYS WHICH. Its hog spins on each round's two

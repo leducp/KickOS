@@ -13,6 +13,7 @@
 #include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_com1.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace kickos::x86_64
@@ -75,7 +76,16 @@ namespace kickos::x86_64
             alignas(16) uint8_t mce_stack[nmi_stack_bytes];
             alignas(16) gdt_entry gdt[gdt_entries];
             alignas(16) tss64 tss;
+            // The I/O permission bitmap, one bit per port, set meaning refused, and the
+            // terminator byte the processor reads past a word-wide access at the top. Right
+            // behind the segment it belongs to, which is what iomap_base names.
+            uint8_t iomap[8192 + 1];
+            // The port set this core's bitmap has open.
+            arch_port_range loaded[KICKOS_ARCH_PORT_RANGES];
+            uint8_t loaded_count;
         };
+        static_assert(offsetof(CpuDesc, iomap) == offsetof(CpuDesc, tss) + sizeof(tss64),
+                      "the I/O permission bitmap must follow its segment");
 
         CpuDesc g_cpu[KICKOS_KERNEL_CORES];
         alignas(16) idt_gate g_idt[idt_vectors];
@@ -139,15 +149,35 @@ namespace kickos::x86_64
                 reinterpret_cast<uint64_t>(c.mce_stack) + nmi_stack_bytes;
             c.tss.reserved2 = 0;
             c.tss.reserved3 = 0;
-            // Past the end of the segment: no I/O permission bitmap, so port access from
-            // anything but ring 0 is refused.
+            // Every port closed until a thread holding a port window is switched in.
             c.tss.iomap_base = static_cast<uint16_t>(sizeof(tss64));
+            for (uint8_t& b : c.iomap)
+            {
+                b = 0xff;
+            }
+            c.loaded_count = 0;
+        }
+
+        void set_ports(CpuDesc& c, arch_port_range const& r, bool open)
+        {
+            for (uint32_t p = r.base; p <= r.last; p++)
+            {
+                uint8_t const bit = static_cast<uint8_t>(1u << (p & 7u));
+                if (open and not port_allowlisted(static_cast<uint16_t>(p)))
+                {
+                    c.iomap[p >> 3] = static_cast<uint8_t>(c.iomap[p >> 3] & ~bit);
+                }
+                else
+                {
+                    c.iomap[p >> 3] = static_cast<uint8_t>(c.iomap[p >> 3] | bit);
+                }
+            }
         }
 
         void build_tss_descriptor(CpuDesc& c)
         {
             uint64_t const base = reinterpret_cast<uint64_t>(&c.tss);
-            c.gdt[gdt_index_tss].limit_lo = static_cast<uint16_t>(sizeof(tss64) - 1);
+            c.gdt[gdt_index_tss].limit_lo = static_cast<uint16_t>(sizeof(tss64) + sizeof(c.iomap) - 1);
             c.gdt[gdt_index_tss].base_lo = static_cast<uint16_t>(base & 0xffff);
             c.gdt[gdt_index_tss].base_mid = static_cast<uint8_t>((base >> 16) & 0xff);
             c.gdt[gdt_index_tss].access = access_tss;
@@ -318,6 +348,30 @@ namespace kickos::x86_64
         local().tss.rsp0 = top;
     }
 
+    void tss_load_ports(arch_port_range const* ports, uint8_t count)
+    {
+        CpuDesc& c = local();
+        bool same = (count == c.loaded_count);
+        for (uint8_t i = 0; same and i < count; i++)
+        {
+            same = (ports[i].base == c.loaded[i].base and ports[i].last == c.loaded[i].last);
+        }
+        if (same)
+        {
+            return;
+        }
+        for (uint8_t i = 0; i < c.loaded_count; i++)
+        {
+            set_ports(c, c.loaded[i], false);
+        }
+        for (uint8_t i = 0; i < count; i++)
+        {
+            set_ports(c, ports[i], true);
+            c.loaded[i] = ports[i];
+        }
+        c.loaded_count = count;
+    }
+
     uint64_t tss_ist(unsigned slot)
     {
         if (slot < 1 or slot > 7)
@@ -373,5 +427,41 @@ namespace kickos::x86_64
         com1_puts(" ss=");
         com1_hex64(read_ss());
         com1_puts("\n");
+    }
+}
+
+namespace
+{
+    // The ports only kos_port_reg_write reaches, with the bits it may set: the CMOS index,
+    // whose bit 7 masks the NMI on every PC platform.
+    struct PortReg
+    {
+        uint16_t port;
+        uint8_t mask;
+    };
+    constexpr PortReg port_regs[] = {
+        {0x70u, 0x7fu},
+    };
+}
+
+namespace kickos::x86_64
+{
+    bool port_reg_mask(uint16_t port, uint8_t* mask)
+    {
+        for (PortReg const& r : port_regs)
+        {
+            if (r.port == port)
+            {
+                *mask = r.mask;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool port_allowlisted(uint16_t port)
+    {
+        uint8_t mask = 0;
+        return port_reg_mask(port, &mask);
     }
 }
