@@ -440,6 +440,12 @@ namespace kickos
         }
         else
         {
+            // This spawn builds a task of its own, which is creating a task: gating
+            // task_create_call alone would leave every slot to a spawn bringing a data grant.
+            if (not cap_check_authority(sched::current(), AUTH_TASKS))
+            {
+                return -KOS_EPERM;
+            }
             int derr = 0;
             // AUTH_MEMORY, not raw privilege, covers a spawn-time grant. Resolved here because
             // domain_for must not read sched::current().
@@ -883,6 +889,10 @@ namespace kickos
         IrqLock lock;
         *out_task = KOS_TASK_NONE; // seated before every early return
         Thread* const c = sched::current();
+        if (not cap_check_authority(c, AUTH_TASKS))
+        {
+            return -KOS_EPERM;
+        }
         if (mem_base != nullptr and mem_size != 0)
         {
             uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);

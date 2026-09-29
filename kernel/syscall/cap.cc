@@ -991,7 +991,20 @@ namespace kickos
         return cap_resolve_e(c, cap_handle, want, need, &err);
     }
 
-    bool cap_check_authority(Thread* c, uint8_t need)
+    constexpr bool auth_mirrors(CapAuthority kernel, kos_cap_authority abi)
+    {
+        return static_cast<uint32_t>(kernel) == static_cast<uint32_t>(abi);
+    }
+    static_assert(auth_mirrors(AUTH_MEMORY, KOS_AUTH_MEMORY)
+                      and auth_mirrors(AUTH_PINMUX, KOS_AUTH_PINMUX)
+                      and auth_mirrors(AUTH_PSTATE, KOS_AUTH_PSTATE)
+                      and auth_mirrors(AUTH_IRQ, KOS_AUTH_IRQ)
+                      and auth_mirrors(AUTH_SYSTEM, KOS_AUTH_SYSTEM)
+                      and auth_mirrors(AUTH_CONSOLE, KOS_AUTH_CONSOLE)
+                      and auth_mirrors(AUTH_TASKS, KOS_AUTH_TASKS),
+                  "CapAuthority and the ABI's kos_cap_authority must number every bit alike");
+
+    bool cap_check_authority(Thread* c, uint32_t need)
     {
         if (c == nullptr)
         {
@@ -1004,13 +1017,13 @@ namespace kickos
         return (c->authority & need) == need;
     }
 
-    void cap_seat_authority(Thread* t, uint8_t auth)
+    void cap_seat_authority(Thread* t, uint32_t auth)
     {
         // Mask to AUTH_* bits, so a caller cannot seat a bit no gate reads.
-        t->authority = static_cast<uint8_t>(auth & CAP_AUTH_ALL);
+        t->authority = auth & CAP_AUTH_ALL;
     }
 
-    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint8_t mask)
+    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint32_t mask)
     {
         if (cap_handle != KOS_CAP_AUTHORITY)
         {
@@ -1024,7 +1037,7 @@ namespace kickos
             // not come from this word, so narrowing it would be a lie.
             return -KOS_EBADF;
         }
-        c->authority = static_cast<uint8_t>(c->authority & mask);
+        c->authority = c->authority & mask;
         return 0;
     }
 

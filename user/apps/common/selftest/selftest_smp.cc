@@ -553,9 +553,10 @@ namespace selftest
         }
         int const granted = kos_task_sched_grant(t, 0, 0x1);
         kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        // The member creates a task of its own to grant, so it holds the task authority.
         auto m = kos::thread::create_caps(gw_worker, nullptr, "gwide", 11, caps, 1,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
-                                          t);
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_TASKS,
+                                          nullptr, t);
         bool const seated = m.valid();
         int32_t rep[GW_WORDS] = {0, 0, 0, 0};
         bool heard = false;
@@ -667,8 +668,10 @@ namespace selftest
         // TRANSFER as well as SIGNAL: the worker hands this endpoint on to the member it
         // seats into the nested task, and that member is what reports the inherited set.
         kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+        // The member creates the child task, so it holds the task authority.
         auto m = kos::thread::create_caps(gi_worker, nullptr, "ginhw", 11, caps, 1,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t);
+                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_TASKS,
+                                          nullptr, t);
         bool const seated = m.valid();
         int32_t rep[GI_WORDS] = {0, 0, -1};
         bool heard = false;

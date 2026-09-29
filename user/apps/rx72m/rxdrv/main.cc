@@ -186,7 +186,7 @@ namespace
 
 // Root muxes its own port pins, then grants the PORT window to a worker. main never
 // returns.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {

@@ -163,14 +163,9 @@ namespace kickos
         // between chunks. Gates the cross-thread reply mint and the wake-during-teardown switch
         // deferral, which is priority-conditional: sched::wake admits a strictly higher peer.
         bool dying = false;
-        // CapAuthority (AUTH_*) bits. Read by cap_check_authority without IrqLock, so it must
-        // stay a single byte no path writes concurrently: the parent seats it at spawn before
-        // the child runs, and only the thread itself narrows it. Ignored when `privileged`.
-        // Fits the padding before quantum_ns; moving it grows every TCB.
-        uint8_t authority = 0;
         // Count of CAP_IRQ entries in this thread's table; cap_teardown's pre-pass is the only
-        // reader and releases nothing at zero. Takes the last padding byte before quantum_ns;
-        // moving it grows every TCB.
+        // reader and releases nothing at zero. Fits the padding before quantum_ns; moving it
+        // grows every TCB.
         uint8_t cap_irq_live = 0;
 
 #if KICKOS_KERNEL_CORES > 1
@@ -229,6 +224,12 @@ namespace kickos
         // ThreadPool::alloc.
         uint16_t spawner_tag = 0;
         // These three fit the padding before `task`; moving them grows every TCB.
+        // CapAuthority (AUTH_*) bits. Read by cap_check_authority without IrqLock, so it must
+        // stay one aligned word no path writes concurrently: the parent seats it at spawn
+        // before the child runs, and only the thread itself narrows it. Ignored when
+        // `privileged`. On a 64-bit target it takes the padding before `task`; a 32-bit one
+        // pays its four bytes.
+        uint32_t authority = 0;
 
         // The task this thread belongs to, owner of the memory domain the group shares. That
         // domain's regions are copied into `mpu` below at create, plus this thread's own private
@@ -462,15 +463,19 @@ namespace kickos
             }
         }
 #endif
-#if KICKOS_AMP_NODE
-        // Thread::far_hold: free in the padding before wait_obj where a pointer is 8. On a
-        // 32-bit target the TCB is closed, so it costs its width plus the tail padding back to
-        // uint64_t's alignment: 8 on armv7m, measured.
+        // The words a 32-bit TCB gains past its last hole: Thread::authority, a word since
+        // M10.1.3, and on an AMP node Thread::far_hold. Where a pointer is 8 both sit in padding,
+        // authority before `task` and far_hold before wait_obj. A 32-bit TCB is closed, so
+        // together they cost their width rounded up to uint64_t's alignment: 272 -> 280 on
+        // armv7m for authority alone, and the same 8 for the two on an AMP node, measured.
         if (sizeof(void*) == 4)
         {
-            bytes = bytes + alignof(uint64_t);
-        }
+            size_t words = sizeof(uint32_t);
+#if KICKOS_AMP_NODE
+            words = words + sizeof(uint32_t);
 #endif
+            bytes = bytes + (words + alignof(uint64_t) - 1) / alignof(uint64_t) * alignof(uint64_t);
+        }
         // Thread::dev_base + Thread::dev_size, in the pointer-aligned run beside
         // stack_base/stack_size, so neither adds padding on any target.
         return bytes + sizeof(uintptr_t) + sizeof(size_t);

@@ -41,7 +41,7 @@ namespace
         std::vector<Probe> probes;
         std::vector<int32_t> probe_rc; // per call, in order; past the end = 0
         int narrow_rc;
-        uint8_t narrow_mask;
+        uint32_t narrow_mask;
         int narrow_calls;
         int main_calls;
         int main_rc;
@@ -58,7 +58,7 @@ namespace
 
 extern "C"
 {
-    int kos_cap_narrow(kos_cap_t, uint8_t mask)
+    int kos_cap_narrow(kos_cap_t, uint32_t mask)
     {
         g_seam.narrow_calls++;
         g_seam.narrow_mask = mask;
@@ -76,9 +76,9 @@ extern "C"
         return 0;
     }
 
-    uint8_t kickos_app_authority(void)
+    uint32_t kickos_app_authority(void)
     {
-        return KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM;
+        return KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_TASKS;
     }
 
     int kickos_app_main(int, char**)
@@ -166,6 +166,7 @@ namespace
         seam_reset();
         (void)kickos_default_init_run(0, nullptr);
         EXPECT_EQ(g_seam.narrow_calls, 1);
-        EXPECT_EQ(g_seam.narrow_mask, static_cast<uint8_t>(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM));
+        EXPECT_EQ(g_seam.narrow_mask,
+                  static_cast<uint32_t>(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_TASKS));
     }
 }

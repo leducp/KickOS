@@ -104,15 +104,16 @@ int main(int, char**)
     // die with it. A NAMED task is not the way to do it here, a member being allowed no
     // mem_base of its own (kos_task_create), and the region has to be the child's for
     // root's write into it to be a cross-domain one.
-    // The child outlives root and finishes the run, so it needs the two authorities root
-    // spends here: a task slot for the grandchild, and the shutdown.
+    // The child outlives root and finishes the run, so it needs what root would have spent:
+    // the task authority for the grandchild's task, and the shutdown.
     kos_cap_grant caps[] = {
         { ready, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
     };
     auto const child = kos::thread::create_caps(survivor, nullptr, "survivor", 10,
                                                 caps, 1, KOS_POLICY_FIFO, 0,
                                                 /*privileged=*/false, region, 4096,
-                                                KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM);
+                                                KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM
+                                                    | KOS_AUTH_TASKS);
     if (not child.valid())
     {
         emit("[rootgone] ERROR: child spawn refused\n");

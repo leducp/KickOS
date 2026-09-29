@@ -204,7 +204,7 @@ message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h,
 # RUNTIME registry, so plan and case count shrink together when an arm is deleted and only an
 # expectation from OUTSIDE the image can see it. The conditions mirror the #if guards around the
 # registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 95) # unconditional, incl. notify_no_line, notify_bind_busy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
+set(_tap_arms 96) # unconditional, incl. task_authority, notify_no_line, notify_bind_busy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 16") # bus_device_slots, uart_service, reboot_priv, 13 x irq_*
   math(EXPR _tap_arms "${_tap_arms} + 4") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout (region 2)
@@ -263,7 +263,7 @@ if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_r2 "${_tap_arms_r2} + 4") # reply_recv_notify_park, reply_recv_notify, irq_wait_timeout, call_reg_fastpath
 endif()
 
-set(_tap_arms_r3 24) # region 3, unconditional, call_donation through join_timeout, incl. 4 x call_donation*, endpoint_crossdomain, cap_index0, cap_chunk_span, cap_gen_reuse, cap_child_width, cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close, cap_reply_slot_reuse, console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen
+set(_tap_arms_r3 25) # region 3, unconditional, call_donation through join_timeout, incl. 4 x call_donation*, endpoint_crossdomain, cap_index0, cap_chunk_span, cap_gen_reuse, cap_child_width, cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close, cap_reply_slot_reuse, console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, task_authority, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 3") # bus_device_slots, uart_service, reboot_priv
 endif()

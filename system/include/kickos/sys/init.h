@@ -89,8 +89,8 @@ int kickos_pinmux_run(void);
 // (<kickos/sys/abi.h>). kickos_default_init_run narrows root's authority cap to this
 // before kickos_app_main. It can only CLEAR bits.
 //
-// The fallback is KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM. An app needing more declares it in
-// its OWN TU, at file scope next to main:
+// The fallback is KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_TASKS. An app needing another
+// set declares it in its OWN TU, at file scope next to main:
 //
 //     KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX);
 //
@@ -103,7 +103,7 @@ int kickos_pinmux_run(void);
 // (GCC carries it from declaration to definition in one TU) and leave link order deciding the
 // winner. An app's definition wins instead by keeping
 // system/init/common/app_authority_default.cc from being extracted at all.
-uint8_t kickos_app_authority(void);
+uint32_t kickos_app_authority(void);
 
 #ifdef __cplusplus
 }
@@ -112,13 +112,13 @@ uint8_t kickos_app_authority(void);
 // A bare definition in a C++ app TU would mangle and be silently ignored, leaving the
 // app on the fallback mask.
 #ifdef __cplusplus
-#define KICKOS_APP_AUTHORITY(mask)                 \
-    extern "C" uint8_t kickos_app_authority(void); \
-    extern "C" uint8_t kickos_app_authority(void) { return (uint8_t)(mask); }
+#define KICKOS_APP_AUTHORITY(mask)                  \
+    extern "C" uint32_t kickos_app_authority(void); \
+    extern "C" uint32_t kickos_app_authority(void) { return (uint32_t)(mask); }
 #else
-#define KICKOS_APP_AUTHORITY(mask)          \
-    uint8_t kickos_app_authority(void);     \
-    uint8_t kickos_app_authority(void) { return (uint8_t)(mask); }
+#define KICKOS_APP_AUTHORITY(mask)           \
+    uint32_t kickos_app_authority(void);     \
+    uint32_t kickos_app_authority(void) { return (uint32_t)(mask); }
 #endif
 
 #endif

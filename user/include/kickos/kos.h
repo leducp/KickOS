@@ -486,7 +486,7 @@ namespace kos::thread
                         void* stack = nullptr, uint32_t stack_size = 0,
                         void* mmio = nullptr, uint32_t mmio_size = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
-                        uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
+                        uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
                         kos_task_t task = KOS_TASK_NONE, uint32_t core_mask = 0)
     {
         kos_thread_params p{};
@@ -537,7 +537,7 @@ namespace kos::thread
                              kos_cap_grant const* caps, uint8_t cap_count,
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
                              bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
-                             uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
+                             uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
                              kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
                              uint32_t stack_size = 0, uint32_t core_mask = 0)
     {

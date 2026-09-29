@@ -3463,9 +3463,10 @@ namespace
         // ceiling admits it.
         int const widen = kos_task_sched_grant(t, PC_CEILING + 1, 0);
         kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
+        // The member creates a task of its own to narrow, so it holds the task authority.
         auto m = kos::thread::create_caps(pc_narrow_worker, nullptr, "pcnar", PC_CEILING,
                                           caps, 1, KOS_POLICY_FIFO, 0, false, nullptr, 0,
-                                          0, nullptr, t);
+                                          KOS_AUTH_TASKS, nullptr, t);
         bool const seated = m.valid();
         int32_t rep[PN_WORDS] = {0, 0, 0};
         bool heard = false;
@@ -7278,8 +7279,11 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_auth_regrant{-99};   // may not hand on a bit it does not hold
     Atomic<int32_t, Order::RELAXED> g_auth_toomany{-99};   // cap_count above the spawn-grant bound
     Atomic<int32_t, Order::RELAXED> g_auth_badbits{-99};   // a bit that is no authority at all
+    Atomic<int32_t, Order::RELAXED> g_auth_highbit{-99};   // the word's top bit, refused and not truncated
     Atomic<int32_t, Order::RELAXED> g_auth_capsarr{-99};   // the grant ARRAY read, reached past the early refusals
     Atomic<int32_t, Order::RELAXED> g_auth_narrowbad{-99}; // kos_cap_narrow on a cap that is not the authority
+    Atomic<int32_t, Order::RELAXED> g_auth_narrowall{-99}; // a mask of the whole 32-bit word keeps every held bit
+    Atomic<int32_t, Order::RELAXED> g_auth_kept{-99};      // so the held bit's gate still answers for itself
     Atomic<int32_t, Order::RELAXED> g_auth_narrowup{-99};  // a mask naming an unheld bit intersects, never grants
     Atomic<int32_t, Order::RELAXED> g_auth_notgained{-99}; // so the gate for that bit still refuses
     Atomic<int32_t, Order::RELAXED> g_auth_narrow{-99};    // giving up the held bit succeeds, needing no authority
@@ -7320,12 +7324,15 @@ namespace
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_toomany = kos_thread_create(&kid, &kidh);
         // A bit no gate reads is refused, not masked off. It has to come from ABOVE the
-        // six defined authorities: the authority word has its own numbering, separate
-        // from the shared rights byte, so bits 0..5 are all real authorities and an
-        // object right like KOS_CAP_WAIT is not a distinguishable wrong value here.
+        // seven defined authorities: the authority word has its own numbering, separate
+        // from the shared rights byte, so bits 0..6 are all real authorities and an
+        // object right like KOS_CAP_WAIT is not a distinguishable wrong value here. The
+        // top bit too: a word truncated to a byte on the way in would read it as none.
         kid.cap_count = 1;
-        kid.authority = 1u << 6;
+        kid.authority = 1u << 7;
         g_auth_badbits = kos_thread_create(&kid, &kidh);
+        kid.authority = 1u << 31;
+        g_auth_highbit = kos_thread_create(&kid, &kidh);
         // The three probes above are refused before the delegation loop, so none of them
         // reads g_auth_two. Covering the static grant ARRAY needs a probe that gets that
         // far: an unresolvable source_cap is refused -KOS_EBADF from inside the loop,
@@ -7337,6 +7344,9 @@ namespace
         // CH_DONE is the negative arm, and it must run BEFORE the drop, since it is the last
         // thing here that still needs a live authority cap to be meaningful.
         g_auth_narrowbad = kos_cap_narrow(CH_DONE, 0);
+        // Every bit of the word in the mask: narrowing by it gives nothing up.
+        g_auth_narrowall = kos_cap_narrow(KOS_CAP_AUTHORITY, 0xFFFFFFFFu);
+        g_auth_kept = kos_pinmux_set(99u, 0u, 0x10u);
         // A NONZERO mask naming a bit this worker does not hold. The mask is not the new
         // word: narrowing intersects, so asking for AUTH_SYSTEM here must not grant it.
         // A verbatim-seat bug (word = mask) passes a mask-0 test and fails this one.
@@ -7369,9 +7379,14 @@ namespace
         int32_t const auth_regrant = g_auth_regrant;
         int32_t const auth_toomany = g_auth_toomany;
         int32_t const auth_badbits = g_auth_badbits;
+        int32_t const auth_highbit = g_auth_highbit;
         int32_t const auth_capsarr = g_auth_capsarr;
         TAP_CHECK(auth_regrant == -KOS_EPERM and auth_toomany == -KOS_EINVAL
-                  and auth_badbits == -KOS_EINVAL and auth_capsarr == -KOS_EBADF);
+                  and auth_badbits == -KOS_EINVAL and auth_highbit == -KOS_EINVAL
+                  and auth_capsarr == -KOS_EBADF);
+        int32_t const auth_narrowall = g_auth_narrowall;
+        int32_t const auth_kept = g_auth_kept;
+        TAP_CHECK(auth_narrowall == 0 and auth_kept != -KOS_EPERM and auth_kept < 0);
         int32_t const auth_narrowbad = g_auth_narrowbad;
         int32_t const auth_narrow = g_auth_narrow;
         int32_t const auth_dropped = g_auth_dropped;
@@ -7380,6 +7395,87 @@ namespace
         int32_t const auth_narrowup = g_auth_narrowup;
         int32_t const auth_notgained = g_auth_notgained;
         TAP_CHECK(auth_narrowup == 0 and auth_notgained == -KOS_EPERM);
+    }
+
+    // --- Creating a task is an authority ------------------------------------------------
+    // A worker holding KOS_AUTH_MEMORY, then its twin holding KOS_AUTH_TASKS as well, each try
+    // both ways a task is born and a plain spawn. The tasks bit is the only difference between
+    // the two runs, so each refusal is that gate and nothing checked before it. The first run
+    // is the M8.5 adversary: an unprivileged thread minting tasks until the pools are empty.
+    struct TaskAuthRun
+    {
+        int32_t create;   // kos_task_create
+        int32_t implicit; // a spawn bringing its own data region, which builds a task
+        int32_t plain;    // a spawn into the worker's own task
+    };
+    TaskAuthRun g_ta[2];
+    constexpr uint32_t TA_BLOCK = 256;
+    constexpr uint32_t TA_JOIN_US = 60000;
+    void* g_ta_block = nullptr;
+    void ta_child(void*) {}
+    int32_t ta_spawn(void* mem, uint32_t mem_size)
+    {
+        kos_thread_params p{};
+        p.entry = ta_child;
+        p.name = "taC";
+        p.prio = 9;
+        p.mem_base = mem;
+        p.mem_size = mem_size;
+        kos_thread_t h = KOS_THREAD_NONE;
+        int32_t const rc = kos_thread_create(&p, &h);
+        if (rc == 0)
+        {
+            (void)kos_thread_join(h, TA_JOIN_US);
+        }
+        return rc;
+    }
+    void task_auth_worker(void* arg) // caps: done@1
+    {
+        TaskAuthRun& out = g_ta[reinterpret_cast<uintptr_t>(arg)];
+        kos_task_t t = KOS_TASK_NONE;
+        out.create = kos_task_create(nullptr, 0, 0, &t);
+        if (out.create == 0)
+        {
+            (void)kos_task_kill(t);
+        }
+        out.implicit = ta_spawn(g_ta_block, TA_BLOCK);
+        out.plain = ta_spawn(nullptr, 0);
+        kos_sem_post(CH_DONE);
+    }
+    void t_task_authority()
+    {
+        g_ta_block = kos_ram_alloc(TA_BLOCK);
+        if (g_ta_block == nullptr)
+        {
+            tap::skip("arena cannot spare the data region");
+            return;
+        }
+        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        for (uintptr_t run = 0; run < 2; ++run)
+        {
+            g_ta[run] = {-99, -99, -99};
+            uint32_t auth = KOS_AUTH_MEMORY;
+            if (run == 1)
+            {
+                auth |= KOS_AUTH_TASKS;
+            }
+            auto w = kos::thread::create_caps(task_auth_worker, reinterpret_cast<void*>(run),
+                                              "taW", 10, caps, 1, KOS_POLICY_FIFO, 0,
+                                              /*privileged=*/false, nullptr, 0, auth);
+            if (not w.valid())
+            {
+                tap::skip("thread pool too small");
+                return;
+            }
+            wait_n(1);
+        }
+        tap::diag("without the bit: create %d, implicit %d, plain %d; with it: %d, %d, %d",
+                  static_cast<int>(g_ta[0].create), static_cast<int>(g_ta[0].implicit),
+                  static_cast<int>(g_ta[0].plain), static_cast<int>(g_ta[1].create),
+                  static_cast<int>(g_ta[1].implicit), static_cast<int>(g_ta[1].plain));
+        TAP_CHECK(g_ta[0].create == -KOS_EPERM and g_ta[0].implicit == -KOS_EPERM
+                  and g_ta[0].plain == 0);
+        TAP_CHECK(g_ta[1].create == 0 and g_ta[1].implicit == 0 and g_ta[1].plain == 0);
     }
 
     // --- Peripheral enable: possession is the whole gate ------------------------
@@ -8608,11 +8704,11 @@ namespace
     }
 }
 
-// The suite drives the authority gates from root, so it keeps five of the six. Not
+// The suite drives the authority gates from root, so it keeps six of the seven. Not
 // KOS_AUTH_PSTATE: retuning the core clock from root would retime every deadline the
 // timing tests assert (see t_cpu_clock_set), so that arm runs in a worker instead.
 KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX
-                     | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE);
+                     | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {
@@ -8739,6 +8835,7 @@ int main(int, char**)
     TAP_ADD("writable_global", t_writable_global);
     TAP_ADD("readable_global", t_readable_global);
     TAP_ADD("authority_cap", t_authority_cap);
+    TAP_ADD("task_authority", t_task_authority);
     TAP_ADD("periph_enable_unheld", t_periph_enable_unheld);
     TAP_ADD("periph_reg_write_unheld", t_periph_reg_write_unheld);
 #if KICKOS_ARCH_SIM

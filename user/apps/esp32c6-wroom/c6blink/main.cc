@@ -175,7 +175,7 @@ namespace
 
 // Root muxes its own GPIO pin, then grants the GPIO window to a worker. main never
 // returns.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {

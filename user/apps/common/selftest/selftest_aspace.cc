@@ -1425,9 +1425,10 @@ namespace selftest
         // TRANSFER lets the donor delegate the endpoint to the borrower.
         kos_cap_grant dcaps[] = {{g_done, CH_FULL},
                                  {ep, static_cast<uint8_t>(KOS_CAP_WAIT | KOS_CAP_TRANSFER)}};
+        // The donor seats its borrower in a task of its own, which is the task authority.
         auto donor = kos::thread::create_caps(dx_donor, dblk, "dxD", 10, dcaps, 2,
                                               KOS_POLICY_FIFO, 0, false, nullptr, 0,
-                                              KOS_AUTH_MEMORY, nullptr, td);
+                                              KOS_AUTH_MEMORY | KOS_AUTH_TASKS, nullptr, td);
         if (not donor.valid())
         {
             (void)kos_task_kill(td);
@@ -1750,9 +1751,11 @@ namespace selftest
             return false;
         }
         kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}};
+        // The member's spawn builds a task, so it holds the task authority and is refused
+        // further down, where this arm looks.
         auto m = kos::thread::create_caps(lr_member, nullptr, "lrful", 10, caps, 1,
                                           KOS_POLICY_FIFO, 0, false, nullptr, 0,
-                                          KOS_AUTH_MEMORY, nullptr, t);
+                                          KOS_AUTH_MEMORY | KOS_AUTH_TASKS, nullptr, t);
         if (not m.valid())
         {
             (void)kos_task_kill(t);
@@ -1852,9 +1855,11 @@ namespace selftest
             return;
         }
         kos_cap_grant caps[] = {{ep, KOS_CAP_SIGNAL}, {g_done, CH_FULL}};
+        // The member's spawn builds a task, so it holds the task authority and is refused
+        // further down, where this arm looks.
         auto m = kos::thread::create_caps(ld_member, nullptr, "lddon", 10, caps, 2,
                                           KOS_POLICY_FIFO, 0, false, nullptr, 0,
-                                          KOS_AUTH_MEMORY, nullptr, t);
+                                          KOS_AUTH_MEMORY | KOS_AUTH_TASKS, nullptr, t);
         if (not m.valid())
         {
             (void)kos_task_kill(t);
