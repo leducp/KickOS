@@ -58,6 +58,7 @@ list(APPEND _kos_cpu -mfloat-abi=${KICKOS_MFLOAT_ABI})
 
 kickos_toolchain_export_baseline("${_kos_cpu}")
 
+kickos_toolchain_package(arm-none-eabi KICKOS_ARM_TOOLCHAIN_BIN)
 kickos_toolchain_cross_programs(arm-none-eabi KICKOS_ARM_TOOLCHAIN_BIN)
 
 # ${_kos_cpu} + -mthumb make the probe resolve THIS board's multilib, not the compiler's
@@ -92,8 +93,13 @@ if(KICKOS_BOARD STREQUAL "microbit")
   set(_kos_newlib_flavor FLAVOR ${_kos_microbit_flavor})
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_newlib("arm" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  ${_kos_newlib_var} static ${_kos_newlib_flavor} ${_kos_cpu} -mthumb)
+if(_kos_tc_packaged)
+  kickos_require_toolchain_newlib("arm" "${CMAKE_C_COMPILER}" static ${_kos_newlib_flavor}
+    ${_kos_cpu} -mthumb)
+else()
+  kickos_require_newlib("arm" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
+    ${_kos_newlib_var} static ${_kos_newlib_flavor} ${_kos_cpu} -mthumb)
+endif()
 if(KICKOS_BOARD STREQUAL "microbit")
   if(DEFINED KICKOS_MICROBIT_PACKAGE_NEWLIB
      AND NOT KICKOS_NEWLIB_FLAVOR STREQUAL KICKOS_MICROBIT_PACKAGE_NEWLIB)

@@ -29,7 +29,7 @@ Hardware facts live under `platform/`, one folder per chip holding its
 chip file and boards: independent of architecture, which the i.MX
 8M Plus's two clusters need, and readable by the kernel build, the host tool and any tooling
 alike. `boards/<board>/` keeps what configures a build of that board -- its defconfigs, its
-`board.cmake` and its default composition -- and `arch/` and `kernel/` keep the code. Until M10.2
+`board.cmake` and its default composition -- and `arch/` and `kernel/` keep the code. Until M10.3
 first reads them, the files are the M10.0 draft under `examples/composition/platform/`.
 
 No fact is stated in two of them. The chip file is the source of the kernel's chip headers,
@@ -319,7 +319,7 @@ userspace:
   version is a fact on silicon and a machine option on QEMU `virt`, so it stays a knob there.
 - **Derived, unchanged.** The knobs without a prompt, computed from the others.
 
-Each board's own `Kconfig` is classified by the same rule when its board moves in M10.4.
+Each board's own `Kconfig` is classified by the same rule when its board moves in M10.5.
 
 ## Where a window sits
 

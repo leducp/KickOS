@@ -1780,10 +1780,18 @@ authority being declared per task. `kos_service_bringup` has no stop hook, which
 | M10.1.8 | the x86 port grant and `kos_port_reg_write` |
 | M10.1.9 | x86-64-v3 as the x86 floor (maintainer, 2026-09-29), to stop maintaining older parts: compiled for it, refused below it at the UEFI handover, emulated at exactly it, and every probe and fallback it makes certain deleted |
 | M10.1.10 | the address-space range default sized to the selftest again, which the twelve-core x86 variant outgrew (maintainer, 2026-09-29); and M10.1's exit record, measuring what M10.1 ships (maintainer, 2026-09-29) |
-| M10.2 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
-| M10.3 | the target side, on M10.1 and M10.2: the init -- file-order scan, skip and rescan on readiness, restart, watchers, status, packaged drivers and the console handover through their descriptors -- the lookup library, `kickos_compose` producing system targets, `KickOS::system_default` and the link-time asserts; the three golden systems run, the Relax Kit, the A53 board at four cores and q35 |
-| M10.4 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
-| M10.5 | the exit record, and the reference documents reconciled against what shipped |
+| M10.2 | the KickOS toolchain (maintainer, 2026-09-30): binutils, GCC, newlib and libstdc++ built together from pinned sources, one GCC per target family including x86_64, by a Conan recipe on any host, with prebuilt packages for Linux x86_64 and macOS arm64; C and full C++ on every target, and the vendor pins, the per-multilib newlib variables and the newlib header swap deleted |
+| M10.2.1 | the design (`docs/design-m10-toolchain.md`): the pinned sources, the six families and their multilibs, the recipe, the one variable, what it deletes |
+| M10.2.2 | the recipe, the consumer recipe and the one variable, and the Cortex-M family, full and nano, with every Arm board and CI's Arm jobs on it |
+| M10.2.3 | AArch64 and RISC-V |
+| M10.2.4 | x86_64: the compiler with PE32+ binutils and the kernel's libgcc, then newlib, libstdc++ and user threads' vector state (maintainer, 2026-09-30) |
+| M10.2.5 | ESP32 from Espressif's sources and RX from Renesas's GNURX 14.2 sources (maintainer, 2026-09-30) |
+| M10.2.6 | the deletions and CI's prebuilt packages for Linux x86_64 and macOS arm64 |
+| M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured |
+| M10.3 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
+| M10.4 | the target side, on M10.1 and M10.3: the init -- file-order scan, skip and rescan on readiness, restart, watchers, status, packaged drivers and the console handover through their descriptors -- the lookup library, `kickos_compose` producing system targets, `KickOS::system_default` and the link-time asserts; the three golden systems run, the Relax Kit, the A53 board at four cores and q35 |
+| M10.5 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
+| M10.6 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,
 2026-09-30). C and full C++ on every target, x86_64 included, from one toolchain version the tree
@@ -1792,9 +1800,10 @@ boards' CPU flags name, with libstdc++ built against KickOS's newlib, so no vend
 release matters and `kickos_cxx` exists everywhere. The host is not locked. A Conan recipe builds
 it from source on Linux of any architecture, macOS and Windows and caches it per user, and CI
 publishes prebuilt packages for Linux x86_64 and macOS arm64. Xtensa builds from Espressif's
-sources with the ESP32 overlay, and x86_64's binutils writes PE32+ images. It is a milestone of its
-own after M10.1, and it deletes the vendor toolchain pins, the per-multilib newlib variables, the
-header swap in `cmake/cross_newlib.cmake` and the vendor-configuration checks in `conan/newlib`.
+sources with the ESP32 overlay, and x86_64's binutils writes PE32+ images. It is M10.2, taken
+ahead of the composition work as a debt, and it deletes the vendor toolchain pins, the
+per-multilib newlib variables, the header swap in `cmake/cross_newlib.cmake` and the
+vendor-configuration checks in `conan/newlib`.
 Pinning newlib alone across vendor toolchains was tried and dropped: RISCstar 16.1-r1 and Espressif
 esp-16.1 bundle 4.6.0 and GNURX 14.2 bundles 4.4.0, so full C++ would have been refused there.
 
@@ -1847,8 +1856,8 @@ the supported configured system size, and M10 adds no fixed system-wide ABI ceil
 remain configurable; a bound on one operation, such as the spawn grant count, may stay small.
 
 **SIMPLICITY IS JUDGED ON THE GOLDEN SYSTEMS BEFORE THE FLEET.** The external audit's verdict
-on M10.0 was to proceed, with one piece of method worth keeping: M10.1 to M10.3 build only what
-the golden systems need, and M10.4 starts from what they showed, trimming the design to it,
+on M10.0 was to proceed, with one piece of method worth keeping: M10.1, M10.3 and M10.4 build only
+what the golden systems need, and M10.5 starts from what they showed, trimming the design to it,
 rather than carrying every case the ten descriptions raise onto the whole fleet at once.
 
 **AND THE LADDER ADAPTS AS M9'S DID.** A stage that turns out to be two, or to be answered already

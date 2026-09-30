@@ -42,31 +42,33 @@
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_RV64_TRAP_NEST 1152
 
-/* The U-mode ecall and the U-mode fault on the block. 1904 on qemu-riscv64-smp, a spawn seeding
- * the child's tables:
- *   syscall_dispatch[112] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[144]
+/* The U-mode ecall and the U-mode fault on the block. 1936 on qemu-riscv64-benchsmp and
+ * -benchsmp2, a spawn seeding the child's tables:
+ *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[144]
  *   -> task_for[32] -> domain_for[64] -> claim_slot[48] -> aspace_image_seed[176]
  *   -> arch_aspace_map[80] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
- * 1664 on qemu-riscv64 and sv48. */
-#define KICKOS_RV64_TRAP_DEPTH_SYSK 1904
+ * 1712 on qemu-riscv64 and sv48. Reserved at 2048, above the measurement: frame size is no
+ * constraint on rv64 (maintainer, 2026-09-30). */
+#define KICKOS_RV64_TRAP_DEPTH_SYSK 2048
 
 /* The per-hart trap stack: an S-mode exception's reporter, and the U-mode entry that found no
  * block. 896 on qemu-riscv64-benchsmp and -benchsmp2, down IRQ's console tail from
  * kickos_rv64_fault_report[64]. */
 #define KICKOS_RV64_TRAP_NESTED_DEPTH 960
 
-/* The fault and slay stubs on the block with an interrupt nested below. 1120 on
+/* The fault and slay stubs on the block with an interrupt nested below. 1136 on
  * qemu-riscv64-benchsmp and -benchsmp2, the space release freeing the child's tables:
- *   kickos_thread_fault_exit[32] -> exit_current[112] -> cap_teardown[80] -> teardown_entry[64]
+ *   kickos_thread_fault_exit[32] -> exit_current[128] -> cap_teardown[80] -> teardown_entry[64]
  *   -> obj_ref_drop[48] -> domain_release[16] -> drop_space[32] -> aspace_release[96]
  *   -> arch_aspace_destroy[48] -> free_subtree[80]x4 -> kickos_frame_free[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
- * NEST + 1120 = 2272 is the block's deepest need. */
-#define KICKOS_RV64_TRAP_DEPTH_EXITK 1120
+ * Reserved at 2048, as SYSK is; NEST + 2048 = 3200 is the block's deepest need. */
+#define KICKOS_RV64_TRAP_DEPTH_EXITK 2048
 
-/* The same stubs through the switch: 1120 on the same two presets, down the same chain. */
-#define KICKOS_RV64_TRAP_DEPTH_EXITKSW 1120
+/* The same stubs through the switch: 1136 on the same two presets, down the same chain, and
+ * reserved at 2048. */
+#define KICKOS_RV64_TRAP_DEPTH_EXITKSW 2048
 
 /* kickos_thread_return on a privileged thread's own stack with an interrupt nested below. 1104
  * on qemu-riscv64-benchsmp and -benchsmp2, down EXITK's chain from kickos_thread_return[16].

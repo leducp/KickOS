@@ -925,6 +925,26 @@ the official tarball URL. Previously this surfaced dozens of build steps later a
 `fatal error: exception: No such file or directory`. RX and Xtensa skip the check: neither has a
 same-name C-only twin on `PATH` to fall through to.
 
+### The KickOS toolchain
+
+The Cortex-M boards build with KickOS's own toolchain (`../design-m10-toolchain.md`): GCC 16.2.0,
+binutils 2.47 and newlib 4.5.0 built together from pinned sources, full and nano, with libstdc++
+compiled against that newlib. Provision it once per machine, then configure in a shell that has
+sourced it:
+
+```sh
+tools/kickos-toolchain.sh <dir> arm-none-eabi
+. <dir>/kickos-toolchain.sh
+```
+
+The script builds the family on first use, about forty minutes on a 24-thread machine, and
+restores it from the Conan cache after that; `KICKOS_TOOLCHAIN_SOURCES` may name a folder holding
+the pinned archives. The script leaves `KICKOS_TOOLCHAIN` naming `<dir>`, whose
+`kickos-toolchain.cmake` points the Arm toolchain file at the package's compiler, and the newlib
+is the compiler's own, so no `KICKOS_NEWLIB_*` variable is needed. Without `KICKOS_TOOLCHAIN` the
+Arm boards take the vendor toolchain and the pinned newlib below, and every other family does so
+until its part of M10.2 lands.
+
 ### Pinned newlib for cross boards
 
 Every cross image links KickOS's pinned newlib in place of the toolchain's. AArch64, RV64 and

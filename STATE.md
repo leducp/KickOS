@@ -3751,7 +3751,7 @@ build-only. Several first-stage probe observations are unarchived bench observat
 `examples/composition/` the acceptance test: three golden systems (the XMC4800 Relax Kit, QEMU
 `virt` with four A53 cores, QEMU q35) and fifteen chip and board files. Two external audit passes
 and the maintainer's review settled them. None of it builds: the example calls lookups, a
-self argument, a port write and an errno that do not exist until M10.1 and M10.3, and no gate
+self argument, a port write and an errno that do not exist until M10.1 and M10.4, and no gate
 builds it.
 
 **WHAT WAS CHECKED, AND HOW LITTLE.** `sample.h`'s shared-history sequence lock passed a

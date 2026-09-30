@@ -5485,7 +5485,7 @@ milestone does not close while any of them still composes a system.
       pin, an unprotected second core), RV64 `virt` (another MMU and interrupt controller) and the
       i.MX 8M Plus (two architectures on one die). The maintainer reviews it as the design, and a
       disagreement is settled by editing it. It is the acceptance test: the three systems admitted
-      in M10.2 and running in M10.3.
+      in M10.3 and running in M10.4.
 
 - [x] **M10.0: CHECKED AGAINST A PRODUCTION PARTITIONING KERNEL'S DRIVER FLOW, WHICH THE MAINTAINER
       KNOWS FROM USE.** There a driver reads a typed memory-map entry by name from a static
@@ -5554,7 +5554,7 @@ milestone does not close while any of them still composes a system.
       per-board service lists and pin maps M10 deletes, in the one format. Its task gets today's
       default authority plus task creation once M10.1 lands. `main` runs in its own task; whether
       the extra thread and stack fit the smallest boards (the micro:bit, the F302R8) is measured
-      in M10.4 before anything special-cases it.
+      in M10.5 before anything special-cases it.
 
 - [x] **M10.0: PORT I/O IS A GRANT M10 ADDS.** Ruled by the maintainer on 2026-09-28: legacy, but
       still how a PC reaches its CMOS clock (`0x70`, `0x71`), its legacy serial ports, often its
@@ -5772,7 +5772,7 @@ milestone does not close while any of them still composes a system.
         - the separate task-creation authority (the item below), and **the authority word
           widened**: it is eight bits in `kos_thread_params`, the new bit leaves one free, and a
           small fixed ceiling in the ABI is what the general-purpose rule forbids.
-      M10.2 runs alongside it; M10.3 needs both.
+      M10.3 runs alongside it; M10.4 needs both.
 
 - [ ] **M10.1: A TASK HOLDS SEVERAL DEVICE WINDOWS.** Ruled by the maintainer on 2026-09-28: the
       one-window limit goes, since it stops a task driving a DMA engine and its peripheral, or a
@@ -5796,7 +5796,7 @@ milestone does not close while any of them still composes a system.
       thread in another task, one of the deferred questions; and what a task's own threads
       need, a task's concurrency being bounded by its budgets already.
 
-- [ ] **M10.2: THE PLATFORM FILES MOVE TO A TOP-LEVEL `platform/`.** Ruled by the maintainer on
+- [ ] **M10.3: THE PLATFORM FILES MOVE TO A TOP-LEVEL `platform/`.** Ruled by the maintainer on
       2026-09-28: `platform/<chip>/chip.yaml` and `platform/<chip>/<board>.yaml`, beside `arch/`
       and `kernel/`, so every consumer in the tree reads one source -- the header generator, the
       host tool, tooling. A top-level tree rather than homes under `arch/` because a chip file is
@@ -5804,7 +5804,7 @@ milestone does not close while any of them still composes a system.
       keeps a board's build configuration and its default composition. Until then the files are
       the M10.0 draft in `examples/composition/platform/`, already grouped the same way.
 
-- [ ] **M10.2: THE HOST TOOL.** Read the three files under their schemas, check the composition
+- [ ] **M10.3: THE HOST TOOL.** Read the three files under their schemas, check the composition
       against the manifest and the descriptions, and emit one table or refuse. A refusal names
       its rule, and a size refusal names the kernel knob that would have to grow. Each rule gets
       an arm and a mutation proving the arm reddens. Rules to start from:
@@ -5851,7 +5851,7 @@ milestone does not close while any of them still composes a system.
       The kernel build starts exporting its manifest and descriptions here, and the golden
       example is admitted.
 
-- [ ] **M10.3: THE INIT AND THE NAME LOOKUP.** Scan the table in file order, leave tasks whose
+- [ ] **M10.4: THE INIT AND THE NAME LOOKUP.** Scan the table in file order, leave tasks whose
       `uses` are not ready pending, and rescan them on readiness events. Start each eligible task
       with exactly what it declares, delegating each capability-bearing grant in order (a window
       or region is a mapping and takes no capability slot). A packaged driver runs its exported
@@ -5870,7 +5870,7 @@ milestone does not close while any of them still composes a system.
       restart; `kos_service_bringup` (or what M10.0 replaces it with) gains the stop hook a restart
       needs. The three golden systems run: the Relax Kit, the A53 board at four cores, and q35.
 
-- [ ] **M10.4: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
+- [ ] **M10.5: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
       maintainer on 2026-09-28, so a user's CMake is plain on every board. Today x86 is the one
       exception: firmware loads a PE32+ UEFI application, the compiler driver has no PE32+
       output, so `kickos_add_app_target` makes the app an OBJECT library and
@@ -5886,7 +5886,7 @@ milestone does not close while any of them still composes a system.
       `-b elf64-x86-64` workaround for 2.42). **If the rule cannot be made to hold**,
       `kickos_add_app_target` stays as the one documented exception, and says why.
 
-- [ ] **M10.4: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
+- [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
       eight the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`,
       `irq.h`, `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board
       its minimal default composition, and link
@@ -5898,7 +5898,7 @@ milestone does not close while any of them still composes a system.
       `rootfault`) declare their ending explicitly. Run the fleet sweep and the silicon witnesses
       against the result.
 
-- [ ] **M10.5: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
+- [ ] **M10.6: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
       runs do not say.
 
@@ -6577,7 +6577,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       available either.
       **The rest of M4.7.8 does not depend on it**: `kos_wait_last()` is app-callable and correct
       as built, and only the app knows which live threads are its own work.
-      **ASSIGNED TO M10.3 (2026-09-28), AND LIKELY ANSWERED WITHOUT THE KERNEL.** A composition
+      **ASSIGNED TO M10.4 (2026-09-28), AND LIKELY ANSWERED WITHOUT THE KERNEL.** A composition
       that declares what ends the system lets the resident init end it itself, so the mark below
       may never be needed; M10.0 rules.
       **The way forward, and it is core-path work needing its own number and an explicit go:**

@@ -182,8 +182,17 @@ and otherwise search `PATH`:
 The x86-64 UEFI build uses host GCC and GNU binutils with the `i386pep` linker emulation.
 See [CI toolchain setup](.github/actions/) for the versions and packages used in CI.
 
-Every cross-built image needs its pinned newlib, provisioned once per multilib through Conan.
-For example, after setting `KICKOS_AARCH64_TOOLCHAIN_BIN`:
+The Cortex-M boards build with KickOS's own toolchain, GCC, binutils, newlib and libstdc++ from
+pinned sources, provisioned once per machine; its newlib is its own:
+
+```sh
+tools/kickos-toolchain.sh kickos-toolchain arm-none-eabi
+. kickos-toolchain/kickos-toolchain.sh
+```
+
+The other families move to it one by one (`docs/design-m10-toolchain.md`). Until then every other
+cross-built image needs its pinned newlib, provisioned once per multilib through Conan. For
+example, after setting `KICKOS_AARCH64_TOOLCHAIN_BIN`:
 
 ```sh
 conan export conan/newlib

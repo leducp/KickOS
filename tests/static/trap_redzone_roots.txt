@@ -449,6 +449,7 @@ unsized armv6m kickos_panic_stack_enter 0 reason: switch.S, six instructions tha
 unsized armv6m __aeabi_ldivmod  96 reason: measured, 16-byte head plus __gnu_ldivmod_helper's 80
 unsized armv6m __aeabi_uldivmod 72 reason: measured, 16-byte head plus __udivmoddi4's 56
 unsized armv6m __aeabi_lmul     24 reason: measured, pushes {r4-r7,lr} then {lr}, calls nothing
+unsized armv6m __aeabi_idiv      8 reason: measured, an alias of __divsi3 at the same address, whose worst path is its 8-byte divide-by-zero tail
 unsized armv6m __aeabi_uidiv     8 reason: measured, an alias of __udivsi3 at the same address
 unsized armv6m __aeabi_uidivmod  8 reason: measured, tail-branches into __udivsi3, whose worst path is its 8-byte divide-by-zero tail
 unsized armv6m __clzsi2          0 reason: measured, frameless register-only leaf
