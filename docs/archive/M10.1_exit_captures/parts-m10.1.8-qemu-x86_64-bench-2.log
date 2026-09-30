@@ -1,0 +1,161 @@
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+BdsDxe: starting Boot0002 "UEFI QEMU HARDDISK QM00001 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x0,0xFFFF,0x0)
+
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover entry
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover handover if=1 paging=1 longmode=1 root=1 wp=1 nx=1 nxcap=1
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover if_after_cli=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover firmware=Debian distribution of EDK II
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover revision=0x0000000000020046
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover map descriptors=109 stride=48 version=1 conventional_pages=117659 arena=0x0000000001800000 arena_pages=107372
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover fp found em=0 ts=0 mp=1 osfxsr=1 osxmmexcpt=1 osxsave=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover fp trapped em=1 ts=1 mp=1 osfxsr=0 osxmmexcpt=0 osxsave=0
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover boot services left
+KICKOS-X1 8c41d7a2 x86_64/q35 uefi-handover if_after_exit=0
+x86_64 app relocation: base=0x0000000000400000 load_delta=0x0000000000000000 app_words=0
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu-x86_64
+   arch    x86_64
+   cpu     x86-64
+   mpu     off
+   sched   tickless
+   build   2026-09-30 10:52:07 +0200
+   app     Sep 30 2026 10:49:58 +0200
+   commit  0d899ff6
+   heap    none
+   kstack  4096 B x 33 = 135168 B
+
+microbenchmark: context-switch throughput (all arches) + per-switch cost
++ IRQ-entry latency where a cycle counter exists. Reporter woken by the
+workload, not a timer. Telemetry OFF for clean numbers.
+cycle counter: 1998203997 Hz (0 = no rate converts a reading; cycles only)
+
+  lock-probe: hold+1 core=0 depth=0  (three nested, one outermost)
+  call/reply: 8 B  9188 ns/round-trip  (108831 round-trips/s over 20000 calls / 183 ms)
+  call/reply: 16 B  9066 ns/round-trip  (110293 round-trips/s over 20000 calls / 181 ms)
+  call/reply: 32 B  9077 ns/round-trip  (110166 round-trips/s over 20000 calls / 181 ms)
+  call/reply: 64 B  9065 ns/round-trip  (110312 round-trips/s over 20000 calls / 181 ms)
+  call/reply: 128 B  9153 ns/round-trip  (109246 round-trips/s over 20000 calls / 183 ms)
+  call/reply: 256 B  9216 ns/round-trip  (108496 round-trips/s over 20000 calls / 184 ms)
+  call/reply: 8 B  9509 ns/round-trip  (105162 round-trips/s over 20000 calls / 190 ms) [generic path]
+  call/reply: 16 B  9177 ns/round-trip  (108961 round-trips/s over 20000 calls / 183 ms) [generic path]
+  call/reply: 32 B  9140 ns/round-trip  (109404 round-trips/s over 20000 calls / 182 ms) [generic path]
+  call/reply: 64 B  9188 ns/round-trip  (108826 round-trips/s over 20000 calls / 183 ms) [generic path]
+  call/reply: 128 B  9136 ns/round-trip  (109449 round-trips/s over 20000 calls / 182 ms) [generic path]
+  call/reply: 256 B  9194 ns/round-trip  (108762 round-trips/s over 20000 calls / 183 ms) [generic path]
+  call/reply: 32 B  9402 ns/round-trip  (106353 round-trips/s over 20000 calls / 188 ms) [caller outranks server, D1 donates]
+  phase table (44 rows; cyc avg/max, min last and a floor; leaf -= NULL, composite -= NULL + k*(NEST-NULL)):
+    NULL             15/5339  min=1  n=260000
+    NEST             130/25320  min=119  n=260000
+    NEST_LOCK        47/40820  min=40  n=260000
+    CALL_TOTAL       17467/2520500  min=16720  n=259999
+    CALL_VALIDATE    138/30680  min=120  n=260000
+    CALL_LOCKED      16979/2519840  min=16259  n=259999
+    CALL_RESOLVE     209/16100  min=180  n=260000
+    CALL_PEEK        83/21600  min=60  n=260000
+    CALL_PROBE       46/27540  min=20  n=259999
+    CALL_POP         169/44420  min=140  n=259999
+    CALL_COPY        2171/68800  min=2020  n=259999
+    CALL_MINT        1691/191360  min=1600  n=259999
+    CALL_MINT_CAP    317/97800  min=280  n=259999
+    CALL_MINT_INFO   1186/52640  min=1140  n=259999
+    CALL_DONATE      95/21980  min=80  n=19999
+    CALL_PARK        348/61620  min=320  n=259999
+    CALL_WAKE        11148/2514080  min=10660  n=259999
+    CALL_RESUME      45/14200  min=20  n=260000
+    CALL_SLOW_TOTAL  422880/422880  min=422880  n=1
+    CALL_SLOW_LOCKED 405840/405840  min=405840  n=1
+    CALL_SLOW_DONATE 0/0  min=0  n=0
+    CALL_SLOW_PARK   311280/311280  min=311280  n=1
+    RECV_LOCKED      11429/1339840  min=10860  n=259999
+    RECV_RESOLVE     495/117780  min=459  n=260000
+    RECV_SCAN        186/38240  min=160  n=259999
+    RECV_PARK        10502/1140320  min=9960  n=259999
+    REPLY_TOTAL      55653/355740  min=7580  n=13
+    REPLY_VALIDATE   6650/30720  min=560  n=13
+    REPLY_LOCKED     3344/407600  min=3120  n=260000
+    REPLY_LOOKUP     309/205480  min=280  n=260000
+    REPLY_COPY       2197/73100  min=2020  n=260000
+    REPLY_FUNNEL     132/62800  min=100  n=260000
+    REPLY_WAKE       285/29820  min=260  n=260000
+    REPLY_RECV_TOTAL 17036/1733140  min=16300  n=260000
+    REPLY_RECV_TAIL  256/100300  min=220  n=259999
+    WAKE_UNPARK      69/27140  min=40  n=520012
+    PICK_NEXT        89/14220  min=40  n=520064
+    SWITCH_TO        19567/380406760  min=9540  n=520013
+    SWITCH_BOOK      98/73500  min=59  n=520039
+    MPU_APPLY        106/12500  min=80  n=520039
+    MPU_COMMIT       0/0  min=0  n=0
+    REENT_SEAT       0/0  min=0  n=0
+    KTIME_REARM      116/40900  min=100  n=520039
+    ARCH_SWITCH      18929/380404260  min=9000  n=520013
+  ns-probe: cyc=4294967295 ns=2149413824 capped=0
+  sat-probe: width=64 fits+1/0 wide+0/1 max=1000
+
+  throughput: 491874 ctx-sw/s  (2033 ns/sw avg over 40000 switches / 81 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    60/80/180 cyc  30/40/90 ns  (p50/p99/max, n=40002)
+  lock-hold: 832/1792/41280 cyc  416/896/20658 ns  (p50/p99/max, n=80244)
+  lock-site: core=0 site=0x4182c8 max=41280
+  irq-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=7 closed=1000 dropped=0 tare=270/549 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 4096/4096/619086 ns  (p50/p99/max, n=1000)
+  throughput: 493124 ctx-sw/s  (2027 ns/sw avg over 40000 switches / 81 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    60/80/10000 cyc  30/40/5004 ns  (p50/p99/max, n=40002)
+  lock-hold: 832/1792/19920 cyc  416/896/9968 ns  (p50/p99/max, n=80251)
+  lock-site: core=0 site=0x4182c8 max=19920
+  irq-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=7 closed=1000 dropped=0 tare=270/549 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 4096/4096/27034 ns  (p50/p99/max, n=1000)
+  throughput: 483572 ctx-sw/s  (2067 ns/sw avg over 40000 switches / 82 ms)
+  switch-probe: fastpath-swaps=0  (swapped inside the trap, so not in the switch row)
+  switch:    60/80/420 cyc  30/40/210 ns  (p50/p99/max, n=40002)
+  lock-hold: 1152/1792/12420 cyc  576/896/6215 ns  (p50/p99/max, n=80248)
+  lock-site: core=0 site=0x4182c8 max=12420
+  irq-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  irq:       0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[0B]:    0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[64B]:   0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[256B]:  0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  wcase-probe: line=6 raise=inject on=0 raised=100 hcore=none foreign=0 win=0
+  wcase-irq[1024B]: 0/0/0 cyc  0/0/0 ns  (p50/max/max, n=0)
+  e2e-settle: settled=2/2
+  e2e-probe: line=7 closed=1000 dropped=0 tare=270/549 ns  (min/avg, n=64)
+  e2e-passes: asked=1000 raised=1000
+  e2e-local: 4096/5632/36023 ns  (p50/p99/max, n=1000)
+  xtask ping-pong: 7773 ns/switch  (40000 switches / 310 ms)
+  xtask call/reply: 16 B  25386 ns/round-trip  (39391 round-trips/s over 20000 calls / 507 ms)
+  spawn/exit: thread 42020 ns  (200 reps / 8 ms)
+  spawn/exit: task 89023 ns  (200 reps / 17 ms)
+bench: done
+
+KICKOS-EXIT status 0
+POLL_OK=1 POLL_MS=5000

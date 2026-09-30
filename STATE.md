@@ -3810,6 +3810,31 @@ skipped, `arch_syscall` in kernel text and U dropped at `arch_context_init`. The
 **MULTICORE RAN ON TWO CORES.** `qemu-x86_64-smp2` passed; the 4, 8 and 12-core presets have
 their static floors re-measured and no run.
 
+## M10.1: the kernel share, and what its exit record does NOT say
+
+**THE KERNEL SHARE LANDED IN PARTS ON M10.1.1'S q35 ADDRESS SPACES.** Task creation became an
+authority (M10.1.3); receiving could be handed out, with the errno split (M10.1.4); a creator hears
+of its task's death and first receive (M10.1.5); a spawn takes a window list (M10.1.6) whose
+addresses the kernel chooses on a translating board (M10.1.7); x86 grants I/O ports and the CMOS
+index write (M10.1.8); and x86-64-v3 is the x86 floor (M10.1.9).
+`docs/design-m10-kernel-share.md` states each as built.
+
+**ON SILICON IT COSTS A SPAWN 2 TO 4 PERCENT AND A CALL/REPLY 2 TO 3.**
+`docs/archive/M10.1_exit.md` benches the baseline tree and M10.1's in one session, both built with
+CI's toolchains; the three boards' baseline figures repeated M10.1.2's to the nanosecond. On QEMU,
+pinned to this host's fast cores, x86 pays most, a thread spawn 17 percent, shared between the
+authority and window parts, the port grant and the v3 floor. The last share was measured only
+under TCG and does not predict the cost on x86 hardware.
+
+**WHAT IT DOES NOT SAY.**
+- Nothing prices x86-64-v3 on hardware: there is no x86 silicon on this bench.
+- rv32's QEMU rows split in two even pinned, in both trees alike; its medians compare, its spread
+  is not the kernel's.
+- The static figures are CI's toolchains'. The baseline's recorded Blue Pill figures were built
+  with Arm 15.3.rel1 and its newlib 4.6.0, and do not compare with them.
+- The toolchain is out of M10.1. `roadmap.md` rules that KickOS builds its own from pinned sources
+  on any host, a milestone after this one; until then each target's newlib follows its toolchain.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).
