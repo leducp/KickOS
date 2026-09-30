@@ -40,14 +40,18 @@ set(KICKOS_X86_64_INCLUDES
   "${CMAKE_CURRENT_SOURCE_DIR}/arch/include")
 
 # The UEFI handover, shared by every image. Its tail is the kickos_x86_64_landed seam, which
-# each family defines differently.
-add_library(kickos_x86_64_boot OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc")
+# each family defines differently. The first check must run on a base-level processor.
+set_source_files_properties("${KICKOS_X86_64_DIR}/floor_x86_64.cc"
+  PROPERTIES COMPILE_OPTIONS -march=x86-64)
+add_library(kickos_x86_64_boot OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc"
+                                      "${KICKOS_X86_64_DIR}/floor_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_boot)
 target_include_directories(kickos_x86_64_boot PRIVATE ${KICKOS_X86_64_INCLUDES})
 
 # The SMP boot witness reserves its SIPI page before the final UEFI memory-map
 # read. Keep that behavior off the ordinary X1-X5 and application handover.
-add_library(kickos_x86_64_boot_ap OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc")
+add_library(kickos_x86_64_boot_ap OBJECT "${KICKOS_X86_64_DIR}/entry_x86_64.cc"
+                                         "${KICKOS_X86_64_DIR}/floor_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_boot_ap)
 target_include_directories(kickos_x86_64_boot_ap PRIVATE ${KICKOS_X86_64_INCLUDES})
 target_compile_definitions(kickos_x86_64_boot_ap PRIVATE KICKOS_X86_64_AP_BOOT=1)
@@ -303,11 +307,14 @@ add_custom_command(
 
 add_custom_target(kickos_x1_image ALL DEPENDS ${KICKOS_X86_64_IMAGES} "${KICKOS_X1_ESP}")
 
+# Every witness runs on the processor model cmake/kickos.cmake names.
+set(KICKOS_X86_64_QEMU_ENV "${CMAKE_COMMAND}" -E env "KICKOS_X86_64_CPU=${KICKOS_X86_64_QEMU_CPU}")
+
 # The five boot witnesses, each also a ctest case below. The targets stay: a `ninja x<n>-run`
 # leaves its serial log where a developer reads it, while the ctest case takes its own
 # workdir so a run under `ctest -j` does not share one.
 add_custom_target(x1-run
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
+  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
           "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1run"
   DEPENDS "${KICKOS_X1_IMAGE}"
   USES_TERMINAL
@@ -315,7 +322,8 @@ add_custom_target(x1-run
 
 set(_x2_cmds "")
 foreach(_cls IN LISTS KICKOS_X2_CLASSES)
-  list(APPEND _x2_cmds COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x2.sh"
+  list(APPEND _x2_cmds COMMAND ${KICKOS_X86_64_QEMU_ENV}
+       "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x2.sh"
        "${_cls}" "${KICKOS_X86_64_IMAGE_${_cls}}" "${PROJECT_BINARY_DIR}/x2run/${_cls}")
 endforeach()
 add_custom_target(x2-run
@@ -325,21 +333,21 @@ add_custom_target(x2-run
   COMMENT "x86_64: taking the X2 descriptor and fault-report witness, one boot per class")
 
 add_custom_target(x4-run
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
+  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
           "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run"
   DEPENDS "${KICKOS_X4_IMAGE}"
   USES_TERMINAL
   COMMENT "x86_64: taking the X4 ring-3 and syscall witness")
 
 add_custom_target(x5-run
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
+  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
           "${KICKOS_X5_IMAGE}" "${PROJECT_BINARY_DIR}/x5run"
   DEPENDS "${KICKOS_X5_IMAGE}"
   USES_TERMINAL
   COMMENT "x86_64: taking the X5 address-space witness")
 
 add_custom_target(x3-run
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
+  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
           "${KICKOS_X3_IMAGE}" "${PROJECT_BINARY_DIR}/x3run"
   DEPENDS "${KICKOS_X3_IMAGE}"
   USES_TERMINAL
@@ -368,7 +376,7 @@ if(KICKOS_BUILD_TESTS)
   # so its refusal arms reach the map path's out-of-frames unwind and the two whole-table
   # helpers it calls, which no application image drives on demand.
   add_test(NAME x86_64_x5_aspace
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
+    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
             "${KICKOS_X5_IMAGE}" "${PROJECT_BINARY_DIR}/x5run-ctest")
   # No `host` label: it boots the emulator, so it declines with every other image test.
   #
@@ -394,28 +402,34 @@ if(KICKOS_BUILD_TESTS)
   # image's entry against efi_main's address in the link map, which puts an arch-private symbol
   # name inside a gate whose whole discipline is that nothing in it names an arch.
   add_test(NAME x86_64_x1_handover
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
+    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64.sh"
             "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1run-ctest")
   set_tests_properties(x86_64_x1_handover PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
+  # The same image on qemu64, below the x86-64-v3 floor, refused before its first line.
+  add_test(NAME x86_64_x1_floor
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-floor.sh"
+            "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1floor-ctest")
+  set_tests_properties(x86_64_x1_floor PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 
   # One case per fault class rather than one over the ten: the report ends the image, so each
   # class is its own boot either way, and a failure then names the class. The `none` image is
   # the negative control and refuses a report.
   foreach(_cls IN LISTS KICKOS_X2_CLASSES)
     add_test(NAME x86_64_x2_${_cls}
-      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x2.sh"
+      COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x2.sh"
               "${_cls}" "${KICKOS_X86_64_IMAGE_${_cls}}"
               "${PROJECT_BINARY_DIR}/x2run-ctest/${_cls}")
     set_tests_properties(x86_64_x2_${_cls} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
   endforeach()
 
   add_test(NAME x86_64_x3_runtime
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
+    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
             "${KICKOS_X3_IMAGE}" "${PROJECT_BINARY_DIR}/x3run-ctest")
   set_tests_properties(x86_64_x3_runtime PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
 
   add_test(NAME x86_64_x4_ring3
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
+    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
             "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run-ctest")
   set_tests_properties(x86_64_x4_ring3 PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
 

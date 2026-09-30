@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // x86_64: the UEFI handover. Firmware calls efi_main in long mode with paging already enabled
-// and interrupts ENABLED (UEFI 2.11 section 2.3.4), so the first instruction here is `cli`.
-// kickos_x86_64_landed is the per-image tail and runs after ExitBootServices.
+// and interrupts ENABLED (UEFI 2.11 section 2.3.4). Check the processor floor and read the
+// handover flags before `cli`. kickos_x86_64_landed runs after ExitBootServices.
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/regs.h>
@@ -22,6 +22,9 @@ extern "C" __attribute__((visibility("hidden"))) void kickos_x86_64_early_trap(v
 extern "C" void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size);
 
 extern "C" void kickos_x86_64_fp_trap(void);
+
+extern "C" __attribute__((visibility("hidden"))) bool
+kickos_x86_64_floor(kickos::uefi::system_table* systab);
 
 #if defined(KICKOS_X86_64_AP_BOOT)
 extern "C" int kickos_x86_64_ap_reserve(kickos::uefi::boot_services* bs);
@@ -353,6 +356,10 @@ __asm__(".text\n"
 
 extern "C" KICKOS_EFIAPI status_t efi_main(handle_t image_handle, system_table* systab)
 {
+    if (not kickos_x86_64_floor(systab))
+    {
+        return status_unsupported;
+    }
     // Read BEFORE the cli, which is the last moment the flag firmware handed over is visible.
     // Two volatile asm statements cannot be reordered against each other.
     uint64_t rflags_in = 0;

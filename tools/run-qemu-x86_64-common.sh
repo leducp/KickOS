@@ -15,6 +15,7 @@
 #   KOS_END        halt: the image halts, so the emulator is killed once its last line lands.
 #                  exit: the image writes isa-debug-exit, so the emulator's own status is
 #                  waited for and carries the image's.
+#   KOS_END_RE     under halt, the BRE that marks the last line, default `halting\|FAIL`.
 #
 # kos_boot <application.efi> [workdir] then sets, for the arms that follow it:
 #   WORK     the resolved workdir
@@ -78,13 +79,10 @@ kos_boot() { # <application.efi> [workdir]
     KOS_QEMU="$(command -v qemu-system-x86_64)" || fail "qemu-system-x86_64 is not installed"
     command -v timeout >/dev/null 2>&1 || fail "timeout is not installed (Debian: coreutils)"
 
-    # KICKOS_X86_64_CPU names a -cpu model, and nothing is passed when it is unset. It is how
-    # a witness is taken on a processor model other than the emulator's default:
-    # `-cpu qemu64,nx=off` varies the execute-disable bit.
-    KOS_CPU_ARGS=""
-    if [ -n "${KICKOS_X86_64_CPU:-}" ]; then
-        KOS_CPU_ARGS="-cpu ${KICKOS_X86_64_CPU}"
-    fi
+    # Every witness needs the x86-64-v3 CPU model supplied by CMake.
+    [ -n "${KICKOS_X86_64_CPU:-}" ] \
+        || fail "KICKOS_X86_64_CPU is unset (cmake/kickos.cmake names the model)"
+    KOS_CPU_ARGS="-cpu ${KICKOS_X86_64_CPU}"
 
     # Before the ESP is built: a 48 MiB image is no use without firmware to boot it.
     case "$KOS_FIRMWARE" in
@@ -134,7 +132,7 @@ kos_boot() { # <application.efi> [workdir]
     if [ "$KOS_END" = halt ]; then
         kos_waited=0
         while [ "$kos_waited" -lt "$KOS_TIMEOUT" ]; do
-            if [ -s "$KOS_LOG" ] && grep -q "halting\|FAIL" "$KOS_LOG" 2>/dev/null; then
+            if [ -s "$KOS_LOG" ] && grep -q "${KOS_END_RE:-halting\|FAIL}" "$KOS_LOG" 2>/dev/null; then
                 break
             fi
             if ! kill -0 "$KOS_QEMU_PID" 2>/dev/null; then

@@ -18,6 +18,15 @@ kickos_toolchain_board_descriptor("x86_64")
 kickos_toolchain_cpu_baseline("x86_64" "x86")
 kickos_toolchain_export_baseline("${_kos_cpu}")
 
+# CMake keeps these flags from the first configure. Upgrade existing q35 build trees too.
+foreach(_kos_lang C CXX ASM)
+  if(CMAKE_${_kos_lang}_FLAGS MATCHES "(^| )-march=x86-64( |$)")
+    string(REGEX REPLACE "(^| )-march=x86-64( |$)" "\\1-march=x86-64-v3\\2"
+      _kos_flags "${CMAKE_${_kos_lang}_FLAGS}")
+    set(CMAKE_${_kos_lang}_FLAGS "${_kos_flags}" CACHE STRING "Compiler flags" FORCE)
+  endif()
+endforeach()
+
 set(KICKOS_ARCH_FAMILY "x86" CACHE STRING "KickOS ISA family (arm|rx|xtensa|riscv|arm64|x86)")
 
 # Host binutils, not a cross prefix: only the object format differs.

@@ -372,7 +372,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   no x86 silicon here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
   by `qemu-system-x86_64 -M q35` under **TCG** with OVMF (EDK II) firmware and by nothing else, and
   `/dev/kvm` on this box belongs to a group the invoking user is not in, so the
-  hardware-virtualisation path is closed as well. Four properties separate it from the rest of the fleet, and each
+  hardware-virtualisation path is closed as well. Five properties separate it from the rest of the fleet, and each
   one costs coverage somewhere:
   - **The image is not an ELF.** The toolchain links host `gcc` objects into a PE32+ UEFI
     application through `ld -m i386pep` (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
@@ -382,6 +382,12 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   - **It links no C library and no libstdc++.** An app that reports through `printf`, or that wants
     exceptions, RTTI or the STL, does not build for this board, which is why several fleet gates are
     absent rather than failing.
+  - **It needs an x86-64-v3 processor.** Everything is compiled for that level
+    (`../../arch/x86/chip/q35/cpu.cmake`) with the vector units still off, and `efi_main` first
+    runs a check compiled for the base level (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands
+    a processor below it back to firmware with a line on firmware's console. Every emulation runs
+    `qemu64` plus the level's features, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`,
+    and `x86_64_x1_floor` boots plain `qemu64` and requires the refusal.
   - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
     into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
     `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
