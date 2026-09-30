@@ -545,7 +545,7 @@ config KICKOS_MAX_ENDPOINTS
 config KICKOS_ASPACE_RANGES
 	int "Virtual ranges one address space can name"
 	range 8 256
-	default 40
+	default 64
 	help
 	  Slots in one address space's range list (vrange.h). THREE KINDS OF CLAIM SHARE
 	  THEM and they are spent differently, so a figure sized against one of them is
@@ -564,11 +564,10 @@ config KICKOS_ASPACE_RANGES
 	  without raising this fails the BUILD rather than a spawn.
 
 	  THE DEFAULT IS SIZED AGAINST AN APP AND THE FLOOR IS NOT, which is why they are
-	  different figures. 40 is what the fleet's own selftest needs: at 32 three of its
-	  arms cannot run, one saying outright that no reservation is left to name a page
-	  with and two failing to spawn a thread whose stack has nowhere to be recorded.
-	  Measured by bisection, 32 short and 40 and 48 clean. An app that reserves less can
-	  go lower, down to the floor.
+	  different figures. 64 is what the fleet's own selftest needs, with room: on
+	  qemu-x86_64's twelve-core variant its root holds 36 slots when two arms each spawn
+	  a crowd of thirteen threads, so the need there is 49, and at 40 those arms could
+	  not spawn. An app that reserves less can go lower, down to the floor.
 
 	  Only a translating board keeps a range list at all, so no region board pays for
 	  this.

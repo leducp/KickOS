@@ -1779,11 +1779,30 @@ authority being declared per task. `kos_service_bringup` has no stop hook, which
 | M10.1.7 | the kernel choosing a window's address on a translating board, and `kos_window_addr` asking it |
 | M10.1.8 | the x86 port grant and `kos_port_reg_write` |
 | M10.1.9 | x86-64-v3 as the x86 floor (maintainer, 2026-09-29), to stop maintaining older parts: compiled for it, refused below it at the UEFI handover, emulated at exactly it, and every probe and fallback it makes certain deleted |
-| M10.1.10 | one newlib release for every toolchain (maintainer, 2026-09-29): `conan/newlib` builds 4.5.0 whatever release the cross toolchain bundles, rather than following it, so a desk on another toolchain minor version builds the bits CI does (arm 15.3.rel1's 4.6.0 costs `struct _reent` 192 bytes a thread); `kickos_cxx`, the one consumer of the toolchain's compiled libstdc++, is refused at configure where the toolchain's bundled release is not the pinned one; and M10.1's exit record, measuring what M10.1 ships (maintainer, 2026-09-29) |
+| M10.1.10 | the address-space range default sized to the selftest again, which the twelve-core x86 variant outgrew (maintainer, 2026-09-29); and M10.1's exit record, measuring what M10.1 ships (maintainer, 2026-09-29) |
 | M10.2 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
 | M10.3 | the target side, on M10.1 and M10.2: the init -- file-order scan, skip and rescan on readiness, restart, watchers, status, packaged drivers and the console handover through their descriptors -- the lookup library, `kickos_compose` producing system targets, `KickOS::system_default` and the link-time asserts; the three golden systems run, the Relax Kit, the A53 board at four cores and q35 |
 | M10.4 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
 | M10.5 | the exit record, and the reference documents reconciled against what shipped |
+
+**THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,
+2026-09-30). C and full C++ on every target, x86_64 included, from one toolchain version the tree
+pins: binutils, GCC, newlib and libstdc++ built together per target family, for the multilibs the
+boards' CPU flags name, with libstdc++ built against KickOS's newlib, so no vendor's bundled
+release matters and `kickos_cxx` exists everywhere. The host is not locked. A Conan recipe builds
+it from source on Linux of any architecture, macOS and Windows and caches it per user, and CI
+publishes prebuilt packages for Linux x86_64 and macOS arm64. Xtensa builds from Espressif's
+sources with the ESP32 overlay, and x86_64's binutils writes PE32+ images. It is a milestone of its
+own after M10.1, and it deletes the vendor toolchain pins, the per-multilib newlib variables, the
+header swap in `cmake/cross_newlib.cmake` and the vendor-configuration checks in `conan/newlib`.
+Pinning newlib alone across vendor toolchains was tried and dropped: RISCstar 16.1-r1 and Espressif
+esp-16.1 bundle 4.6.0 and GNURX 14.2 bundles 4.4.0, so full C++ would have been refused there.
+
+**THE BOOT FORMAT IS A STEP OF ITS OWN** (maintainer, 2026-09-30, to be discussed further). x86
+stays a UEFI application, which GRUB and systemd-boot chainload unchanged. arm64 and rv64 gain the
+Linux image header, so U-Boot's `booti` loads them, and then the EFI stub, so every 64-bit board
+shares one UEFI boot contract. Still to discuss: the kernel-and-app payload decoupled from the
+wrapper that boots it, so a user chooses the boot method per system rather than per board.
 
 **NO SEPARATE PRIOR-ART SURVEY** (maintainer, 2026-09-28). The golden example, two external audits
 and the comparisons made along the way -- a production partitioning kernel's driver flow, systemd's
