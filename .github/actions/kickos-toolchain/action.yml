@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# One family of the KickOS toolchain (conan/toolchain), restored from the cache the `toolchain`
+# job fills, then indexed into ~/kickos-toolchain with every family this job restored before it,
+# and named by KICKOS_TOOLCHAIN. Each family is its own `conan cache save` archive: one Conan
+# store restored twice keeps only the second.
+name: KickOS toolchain family
+description: Restore (or, in the toolchain job, build) one KickOS toolchain family and index it.
+
+inputs:
+  family:
+    description: The family's triple, one of conan/toolchains FAMILIES.
+    required: true
+  build:
+    description: "true in the job that builds a family the cache lacks; every other job restores."
+    required: false
+    default: "false"
+  conan-version:
+    description: Conan 2 version to install.
+    required: false
+    default: "2.31.2"
+
+runs:
+  using: composite
+  steps:
+    - name: Conan venv, and the pinned client
+      shell: bash
+      env:
+        CONAN_VERSION: ${{ inputs.conan-version }}
+      run: |
+        [ -x ~/conan-venv/bin/conan ] || {
+          python3 -m venv ~/conan-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/conan-venv
+          }
+          ~/conan-venv/bin/pip install --disable-pip-version-check "conan==${CONAN_VERSION}"
+        }
+        echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
+
+    - name: Restore the family
+      if: inputs.build != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/kickos-toolchain-archive/${{ inputs.family }}.tgz
+        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**') }}
+        fail-on-cache-miss: true
+
+    - name: Restore or build the family
+      id: cache
+      if: inputs.build == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/kickos-toolchain-archive/${{ inputs.family }}.tgz
+        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**') }}
+
+    - name: Build the family
+      if: inputs.build == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        FAMILY: ${{ inputs.family }}
+      run: |
+        export CONAN_HOME="$(mktemp -d)"
+        ~/conan-venv/bin/conan profile detect --exist-ok
+        ~/conan-venv/bin/conan create conan/toolchain --name "kickos-toolchain-$FAMILY" --build=missing
+        mkdir -p ~/kickos-toolchain-archive
+        ~/conan-venv/bin/conan cache save "kickos-toolchain-$FAMILY/*:*" --no-source \
+          --file ~/kickos-toolchain-archive/"$FAMILY".tgz
+
+    - name: Index every family restored so far
+      shell: bash
+      env:
+        FAMILY: ${{ inputs.family }}
+      # A Conan store of its own: a job's other Conan steps cache ~/.conan2 whole, so a family
+      # restored there is saved into their cache and collides with the next restore.
+      run: |
+        export CONAN_HOME="$HOME/kickos-toolchain-conan"
+        ~/conan-venv/bin/conan profile detect --exist-ok
+        ~/conan-venv/bin/conan cache restore ~/kickos-toolchain-archive/"$FAMILY".tgz
+        families="${KICKOS_TOOLCHAIN_FAMILIES:+$KICKOS_TOOLCHAIN_FAMILIES,}$FAMILY"
+        tools/kickos-toolchain.sh "$HOME/kickos-toolchain" "$families"
+        echo "KICKOS_TOOLCHAIN_FAMILIES=$families" >> "$GITHUB_ENV"
+        echo "KICKOS_TOOLCHAIN=$HOME/kickos-toolchain" >> "$GITHUB_ENV"

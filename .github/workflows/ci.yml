@@ -19,6 +19,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One job per KickOS toolchain family (conan/toolchain): it builds the family when the cache,
+  # keyed on the recipe's files, lacks it, so the jobs below restore it rather than build it
+  # inside their own timeout. A job needs only the families it builds with.
+  toolchain-arm-none-eabi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: arm-none-eabi
+          build: "true"
+
   # Run source-only checks once. Other jobs exclude the tree label.
   code-quality:
     runs-on: ubuntu-latest
@@ -77,6 +93,7 @@ jobs:
       - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
   qemu-arm:
+    needs: toolchain-arm-none-eabi
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
@@ -92,12 +109,9 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/arm-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: armv6m armv7m armv7em_fp_softfp armv7em_dp_softfp armv8m_fp_softfp
-          nano-multilibs: armv6m
-          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
+          family: arm-none-eabi
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-arm >/dev/null 2>&1 \
@@ -106,7 +120,7 @@ jobs:
       # Each attempt still has its own timeout.
       - name: armv7m (mps2-an386)
         run: |
-          cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset qemu
           cmake --build --preset qemu
           ctest --preset qemu -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
@@ -116,7 +130,7 @@ jobs:
       # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
-          cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset qemu-m33
           cmake --build --preset qemu-m33
           ctest --preset qemu-m33 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" \
@@ -125,7 +139,7 @@ jobs:
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
-          cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset qemu-m7
           cmake --build --preset qemu-m7
           ctest --preset qemu-m7 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh "$POLLED" \
@@ -134,7 +148,7 @@ jobs:
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
-          cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset qemu-m3
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           # The soft-float M3 does not register fp_switch.
@@ -154,7 +168,7 @@ jobs:
             else
               flat_polled='hello|fp_switch|reclaimwit_park'
             fi
-            cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --preset "$b-flat"
             cmake --build --preset "$b-flat"
             ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
             tests/ci/ctest_named.sh "$flat_polled" \
@@ -166,7 +180,7 @@ jobs:
           done
       - name: armv6m (microbit)
         run: |
-          cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset microbit
           cmake --build --preset microbit
           ctest --preset microbit -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           # The Cortex-M0 has no FPU or MPU, so those tests are absent.
@@ -615,6 +629,7 @@ jobs:
 
   # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
+    needs: toolchain-arm-none-eabi
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -639,23 +654,10 @@ jobs:
         with:
           # qemu-telem needs the emulator for its image tests.
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/arm-toolchain
-      - name: Select this board's newlib multilib
-        run: |
-          case '${{ matrix.preset }}' in
-            picopi*) m=armv6m ;;
-            bluepill*|due) m=armv7m ;;
-            teensy41*) m=armv7em_dp_softfp ;;
-            pizero2350*) m=armv8m_fp_hard ;;
-            frdmk64f*|f411disco*|blackpill*|f302nucleo*|xmc4800*|qemu-telem) m=armv7em_fp_softfp ;;
-            *) echo 'No newlib multilib for ${{ matrix.preset }}' >&2; exit 1 ;;
-          esac
-          echo "KICKOS_NEWLIB_MULTILIB=$m" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: ${{ env.KICKOS_NEWLIB_MULTILIB }}
-          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
-      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          family: arm-none-eabi
+      - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       # Run host checks here; qemu-telem image tests are selected separately below.
       - run: ctest --test-dir build/${{ matrix.preset }} -L host -LE tree --no-tests=error --output-on-failure
@@ -663,7 +665,7 @@ jobs:
       - if: matrix.st
         name: the selftest provisioning of the same board
         run: |
-          cmake --preset ${{ matrix.st }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset ${{ matrix.st }}
           cmake --build --preset ${{ matrix.st }}
           ctest --test-dir build/${{ matrix.st }} -L host -LE tree --no-tests=error --output-on-failure
       # Run telemetry containment and PendSV-tail trace checks under QEMU.
@@ -684,6 +686,7 @@ jobs:
   # These apps have empty constructor sections: kernel_ctor_placement checks
   # that the section symbols exist, but not placement of actual constructors.
   build-boards-mpu:
+    needs: toolchain-arm-none-eabi
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -697,33 +700,21 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build curl xz-utils
-      - uses: ./.github/actions/arm-toolchain
-      - name: Select this board's newlib multilib
-        run: |
-          case '${{ matrix.preset }}' in
-            picopi*) m=armv6m ;;
-            bluepill*) m=armv7m ;;
-            teensy41*) m=armv7em_dp_softfp ;;
-            pizero2350*) m=armv8m_fp_hard ;;
-            frdmk64f*|f411disco*|blackpill*|xmc4800*) m=armv7em_fp_softfp ;;
-            *) echo 'No newlib multilib for ${{ matrix.preset }}' >&2; exit 1 ;;
-          esac
-          echo "KICKOS_NEWLIB_MULTILIB=$m" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: ${{ env.KICKOS_NEWLIB_MULTILIB }}
-          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
-      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          family: arm-none-eabi
+      - run: cmake --preset ${{ matrix.preset }}
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} -LE tree --no-tests=error --output-on-failure
       # Build each board's larger selftest image with the same memory protection layout.
-      - run: cmake --preset ${{ matrix.preset }}-st -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+      - run: cmake --preset ${{ matrix.preset }}-st
       - run: cmake --build --preset ${{ matrix.preset }}-st
       - run: ctest --test-dir build/${{ matrix.preset }}-st -LE tree --no-tests=error --output-on-failure
 
   # Build RP2350 shared-image and separate-image configurations, including
   # a production build without selftests.
   pizero2350-amp:
+    needs: toolchain-arm-none-eabi
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -732,16 +723,14 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build curl xz-utils
-      - uses: ./.github/actions/arm-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: armv8m_fp_hard
-          toolchain-bins: ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
+          family: arm-none-eabi
       - name: armv8-M shared-image AMP, the provisional scaffolding
         run: |
           # The shared image uses two cores but declares no AMP crossings, so amp-pin
           # does not apply. Separate-image nodes below each use one core.
-          cmake --preset pizero2350-amp -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset pizero2350-amp
           cmake --build --preset pizero2350-amp
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
           # Require the vector test, which depends on the two-core configuration.
@@ -750,7 +739,7 @@ jobs:
       - name: armv8-M own-image partition, both nodes, self-test on
         run: |
           for node in 0 1; do
-            cmake --preset pizero2350-amp2-n$node -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --preset pizero2350-amp2-n$node
             cmake --build --preset pizero2350-amp2-n$node
             ctest --test-dir build/pizero2350-amp2-n$node -L host -LE tree --no-tests=error --output-on-failure
           done
@@ -761,7 +750,6 @@ jobs:
           # preset-based gates would rebuild the standard variant instead.
           for node in 0 1; do
             cmake --preset pizero2350-amp2-n$node -B build/pizero2350-amp2-prod-n$node \
-              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN" \
               -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF
             cmake --build build/pizero2350-amp2-prod-n$node
           done
@@ -776,6 +764,7 @@ jobs:
   # sets its own limit. Four-core runs need sufficient host CPU time.
   # Adjust a gate's limit if needed rather than overriding all limits here.
   bench:
+    needs: toolchain-arm-none-eabi
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -786,11 +775,13 @@ jobs:
           packages: cmake ninja-build qemu-system-arm qemu-system-misc curl xz-utils
       - uses: ./.github/actions/aarch64-toolchain
       - uses: ./.github/actions/riscv-toolchain
-      - uses: ./.github/actions/arm-toolchain
       - uses: ./.github/actions/newlib
         with:
-          multilibs: aarch64 rv64imac_lp64 armv7em_fp_softfp
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }} ${{ env.KICKOS_ARM_TOOLCHAIN_BIN }}
+          multilibs: aarch64 rv64imac_lp64
+          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: arm-none-eabi
       - name: the emulators every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
@@ -829,10 +820,10 @@ jobs:
       - name: armv7m microbench, link surface only
         run: |
           # F411 uses percentile histograms. Run host checks only; timing needs hardware.
-          cmake --preset f411disco-bench -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset f411disco-bench
           cmake --build --preset f411disco-bench
           ctest --test-dir build/f411disco-bench -LE tree --no-tests=error --output-on-failure
           # XMC builds the min/avg/max variant without histograms.
-          cmake --preset xmc4800-relax-bench -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --preset xmc4800-relax-bench
           cmake --build --preset xmc4800-relax-bench
           ctest --test-dir build/xmc4800-relax-bench -LE tree --no-tests=error --output-on-failure

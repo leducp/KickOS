@@ -75,6 +75,7 @@ different numbers; the current filenames use this order.
 | [`design-multicore.md`](../design-multicore.md) | Shared-kernel and AMP predicate, rules, thread placement and open boundaries; completed stage record archived |
 | [`design-m10-composition.md`](../design-m10-composition.md) | M10's static composition contract: the chip, board and composition files, admission rules, emitted table, lookups and init lifecycle |
 | [`design-m10-kernel-share.md`](../design-m10-kernel-share.md) | M10.1's kernel contracts: x86_64 address spaces on q35, six ABI changes and their header touchpoints |
+| [`design-m10-toolchain.md`](../design-m10-toolchain.md) | M10.2's toolchain: the pinned sources, the six families and their multilibs, the Conan recipe and what it deletes |
 | [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | What the M8.12 entry metrics can support for M9; the full recomputation and capture audit are archived |
 
 ## EXPLORATORY

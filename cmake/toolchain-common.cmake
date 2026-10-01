@@ -80,6 +80,47 @@ endmacro()
 # entry.
 #
 # These finds prove a program by that NAME exists, nothing more.
+#
+# kickos_toolchain_package(<triple> <hint-cache-var>) comes first where a family is packaged:
+# when KICKOS_TOOLCHAIN names the KickOS toolchain (docs/design-m10-toolchain.md), its index
+# points the hint at that family's compiler and _kos_tc_packaged is TRUE. The environment seeds
+# the cache entry, as it seeds the hint.
+macro(kickos_toolchain_package _kos_tc_triple _kos_tc_hint)
+  set(KICKOS_TOOLCHAIN "$ENV{KICKOS_TOOLCHAIN}" CACHE PATH
+      "The KickOS toolchain folder, holding kickos-toolchain.cmake (empty => a vendor toolchain)")
+  set(ENV{KICKOS_TOOLCHAIN} "${KICKOS_TOOLCHAIN}")
+  set(_kos_tc_packaged FALSE)
+  if(NOT KICKOS_TOOLCHAIN STREQUAL "")
+    if(NOT EXISTS "${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
+      message(FATAL_ERROR "KickOS: KICKOS_TOOLCHAIN=${KICKOS_TOOLCHAIN} holds no "
+        "kickos-toolchain.cmake, so it is not a KickOS toolchain folder")
+    endif()
+    include("${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
+    if(NOT DEFINED KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple})
+      message(FATAL_ERROR "KickOS: the toolchain in ${KICKOS_TOOLCHAIN} carries no "
+        "${_kos_tc_triple} compiler")
+    endif()
+    # find_program leaves a cached compiler alone, so a build directory that resolved another
+    # one would keep it under the package's hint. CMake cannot change a tree's compiler.
+    file(REAL_PATH "${KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple}}" _kos_tc_bin)
+    foreach(_kos_tc_prog IN ITEMS CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_ASM_COMPILER)
+      if(NOT "$CACHE{${_kos_tc_prog}}" STREQUAL "")
+        get_filename_component(_kos_tc_dir "$CACHE{${_kos_tc_prog}}" DIRECTORY)
+        file(REAL_PATH "${_kos_tc_dir}" _kos_tc_dir)
+        if(NOT _kos_tc_dir STREQUAL _kos_tc_bin)
+          message(FATAL_ERROR "KickOS: this build directory's ${_kos_tc_prog} is "
+            "$CACHE{${_kos_tc_prog}}, not the ${_kos_tc_triple} compiler of the toolchain in "
+            "${KICKOS_TOOLCHAIN}. Configure a fresh build directory.")
+        endif()
+      endif()
+    endforeach()
+    set(${_kos_tc_hint} "${KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple}}" CACHE PATH
+        "Directory holding the ${_kos_tc_triple}-* programs" FORCE)
+    set(ENV{${_kos_tc_hint}} "${${_kos_tc_hint}}")
+    set(_kos_tc_packaged TRUE)
+  endif()
+endmacro()
+
 macro(kickos_toolchain_cross_programs _kos_tc_prefix _kos_tc_hint)
   set(${_kos_tc_hint} "$ENV{${_kos_tc_hint}}" CACHE PATH
       "Directory holding the ${_kos_tc_prefix}-* programs (empty => use PATH)")
@@ -127,6 +168,16 @@ macro(kickos_toolchain_newlib_flags)
         message(FATAL_ERROR "KickOS: ${_kos_cached} lacks the selected pinned newlib "
           "flags: the build directory predates them, or a -D${_kos_cached} replaced "
           "them. Configure a fresh build directory without that -D.")
+      endif()
+      # The other profile's flag, where the selected one requires none: full newlib's flags
+      # are empty, so a tree first configured nano would pass the check above.
+      if(_kos_newlib_refuse)
+        string(FIND "$CACHE{${_kos_cached}}" "${_kos_newlib_refuse}" _kos_at)
+        if(NOT _kos_at EQUAL -1)
+          message(FATAL_ERROR "KickOS: ${_kos_cached} carries ${_kos_newlib_refuse}, the "
+            "other newlib profile's flag, from an earlier configure of this build directory. "
+            "Configure a fresh build directory to change the profile.")
+        endif()
       endif()
     endif()
   endforeach()

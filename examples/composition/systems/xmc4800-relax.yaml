@@ -10,7 +10,7 @@
 # task below runs unprivileged, and the two user tasks hold no authority at all: everything
 # privileged happens in the init, from these declarations.
 #
-# Rules this file is checked against (M10.2), each refused with a message naming it:
+# Rules this file is checked against (M10.3), each refused with a message naming it:
 #   * a field the schema does not know is refused;
 #   * a path in `uses` names an endpoint served by a task declared ABOVE it, and `watches`
 #     names tasks declared above it, so references point backward and nothing is solved;

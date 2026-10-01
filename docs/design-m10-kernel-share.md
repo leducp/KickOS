@@ -175,7 +175,7 @@ whether spawn creates an implicit task.
 
 - **Capacity.** A thread holds at most `KICKOS_MAX_THREAD_WINDOWS` entries. Its default and
   ceiling are four: an eight-region MPU spends four on code, static data, task data and stack.
-  M10.2 exports the limit for offline admission. Excess entries return `-KOS_ENOMEM`.
+  M10.3 exports the limit for offline admission. Excess entries return `-KOS_ENOMEM`.
 - **Possession.** The holder is a thread. Its region list (`Thread::mpu`) records device
   windows. A sibling on a translating board may reach the task-space mapping, but exclusivity
   and peripheral syscalls check the holding thread. A self-grant cannot confer device type.
