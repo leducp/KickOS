@@ -24,7 +24,10 @@
       "displayName": "QEMU q35 / x86_64, two-core shared kernel",
       "inherits": "qemu-x86_64",
       "binaryDir": "${sourceDir}/build/qemu-x86_64-smp2",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp2" }
+      "cacheVariables": {
+        "KICKOS_CONFIG_VARIANT": "smp2",
+        "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-x86_64.yaml"
+      }
     },
     {
       "name": "qemu-x86_64-smp2root1",

@@ -11,7 +11,10 @@
 # rxsci.cc is the service composed on it. It sits at chip level so a second RX72M SCI
 # driver would compile the SAME backend, and an image gets exactly one definition of
 # that class.
-kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72m)
+kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72m
+                  THREADS rxsciirq:1:default:3 service:0:default:2 RECEIVER service
+                  WINDOWS regs LINES tx rx NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  POSTURE handover BARRIER 1 START rxsci_console_start CONSOLE)
 
 # A service-list provider needs the bring-up declaration, and it lives beside the
 # driver rather than in user/include: nothing outside a provider calls it.

@@ -19,8 +19,11 @@
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
-# List-dir-relative: cap_table.cmake must be installed beside this file.
+# List-dir-relative: cap_table.cmake, driver_geometry.cmake and driver_metadata.cmake must be
+# installed beside this file.
 include("${CMAKE_CURRENT_LIST_DIR}/cap_table.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/driver_geometry.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/driver_metadata.cmake")
 
 # In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
 # installed package ships kickos.cmake with no boards/ sibling.
@@ -376,16 +379,30 @@ function(kickos_add_app_target name)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>])
+# kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>]
+#                   [THREADS <role>:<priority offset>:<stack>:<capabilities>...] [RECEIVER <role>]
+#                   [WINDOWS <role>...] [LINES <role>...] [NOTIFY]
+#                   [BLOCK <bytes>|none] [POSTURE handover|retain]
+#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE])
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
 #   that links kickos_user, sees system/include, optionally sees a chip register dir (REGDIR,
 #   definitions only), optionally links a chip class leaf (CLASS), and is EXPORTED so an
 #   out-of-tree consumer links it on top of the OS. Its .data/.bss land in .appdata, the lib
 #   being outside the closed kernel set the chip .ld catch-all excludes. The target is
 #   kickos_<name>; SOURCES defaults to <name>.cc.
+#
+#   THREADS makes it a packaged driver, a composition's `driver:`, and requires BLOCK, POSTURE,
+#   BARRIER, START, the C function the init calls to bring it up, and RECEIVER, the thread that
+#   waits on its endpoint. A role is its thread's name, but the role `service`, whose thread takes
+#   its service-list entry's name; a stack is `default` only, bring_up spawning every thread on
+#   the kernel's default stack; and a thread's capabilities are what its spawn delegates. NOTIFY
+#   says it uses the notification the shared bring-up creates. Its catalogue entry joins the
+#   KICKOS_DRIVER_CATALOGUE global property for the manifest, and its descriptor reads the
+#   generated <kickos/driver/declared/<name>.h>, whose k_declared it static_asserts declared_as.
 function(kickos_add_driver name)
-  cmake_parse_arguments(DRV "" "CLASS;REGDIR" "SOURCES" ${ARGN})
-  if(NOT DRV_SOURCES)
+  cmake_parse_arguments(DRV "${KICKOS_DRIVER_OPTIONS}" "${KICKOS_DRIVER_SINGLE}" "${KICKOS_DRIVER_MULTI}" ${ARGN})
+  kickos_driver_metadata(${name} _packaged _json _header ${ARGN})
+  if(NOT DEFINED DRV_SOURCES)
     set(DRV_SOURCES "${name}.cc")
   endif()
   add_library(kickos_${name} STATIC ${DRV_SOURCES})
@@ -393,15 +410,23 @@ function(kickos_add_driver name)
   target_link_libraries(kickos_${name} PUBLIC kickos_user)
   target_include_directories(kickos_${name} PRIVATE
     "${PROJECT_SOURCE_DIR}/system/include")
-  if(DRV_REGDIR)
+  if(DEFINED DRV_REGDIR)
     target_include_directories(kickos_${name} PRIVATE
       "${PROJECT_SOURCE_DIR}/${DRV_REGDIR}")
   endif()
-  if(DRV_CLASS)
+  if(DEFINED DRV_CLASS)
     target_link_libraries(kickos_${name} PRIVATE ${DRV_CLASS})
   endif()
   install(TARGETS kickos_${name} EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  if(NOT _packaged)
+    return()
+  endif()
+  set_target_properties(kickos_${name} PROPERTIES KICKOS_DRIVER_CATALOGUE_ENTRY "${_json}")
+  set_property(GLOBAL APPEND PROPERTY KICKOS_DRIVER_CATALOGUE "${name}")
+  set(_declared_dir "${CMAKE_CURRENT_BINARY_DIR}/kickos_${name}_declared")
+  kickos_write_if_changed("${_declared_dir}/kickos/driver/declared/${name}.h" "${_header}")
+  target_include_directories(kickos_${name} PRIVATE "${_declared_dir}")
 endfunction()
 
 # ---------------------------------------------------------------------------

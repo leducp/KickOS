@@ -18,6 +18,7 @@
 #include <kickos/sys/bytes.h> // mem_copy
 #include <kickos/sys/console_ring.h>
 #include <kickos/sys/console_service.h>
+#include <kickos/sys/driver_geometry.h> // KICKOS_UART_BLOCK_SIZE (generated)
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
@@ -53,8 +54,11 @@ enum
 {
     KOS_UART_TX_SIZE = 512,
     KOS_UART_RX_SIZE = 256,
-    KOS_UART_BLOCK_SIZE = 1024
+    KOS_UART_BLOCK_SIZE = KICKOS_UART_BLOCK_SIZE
 };
+
+static_assert((KOS_UART_BLOCK_SIZE & (KOS_UART_BLOCK_SIZE - 1)) == 0,
+              "the UART shared block is one power-of-two grant");
 
 struct Shared
 {
@@ -75,7 +79,7 @@ struct Shared
 };
 
 static_assert(sizeof(struct Shared) <= KOS_UART_BLOCK_SIZE,
-              "the UART shared block must fit one 1 KiB power-of-two grant");
+              "the UART shared block must fit its power-of-two grant");
 
 // kos_byte_ring_init REFUSES a non-power-of-two or sub-2 size and leaves the ring reporting
 // empty-and-full forever, which a blocking (unbounded) console write would spin on.
@@ -94,7 +98,7 @@ struct Ctx
 };
 
 static_assert(sizeof(Ctx) <= KOS_UART_BLOCK_SIZE,
-              "the UART driver context must fit the 1 KiB shared grant");
+              "the UART driver context must fit the shared grant");
 
 // The offset a generic bring-up polls the readiness latch through, it being unable to name
 // Ctx. Never write the offset as a literal in a descriptor: the latch must be the atomic

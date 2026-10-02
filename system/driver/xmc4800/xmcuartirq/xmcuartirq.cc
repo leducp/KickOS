@@ -13,6 +13,7 @@
 
 #include <kickos/driver/xmcuartirq.h>
 
+#include <kickos/driver/declared/xmcuartirq.h>
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
@@ -45,4 +46,4 @@ namespace
 // EDGE, with no peripheral-side clear to pair with it: PSR.TBIF has no influence on interrupt
 // generation and does not need clearing (RM 18.2.2.3 p.18-17).
 KICKOS_UART_CONSOLE_SERVICE(xmcuartirq, k_uart, /*fallback_baud=*/0u, mmap::USIC0_CH0_BASE,
-                            kickos::xmc::irq::USIC0_SR0, KOS_IRQ_EDGE, "uartirq");
+                            kickos::xmc::irq::USIC0_SR0, KOS_IRQ_EDGE);

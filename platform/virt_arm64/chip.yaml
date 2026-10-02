@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's `virt` machine with Cortex-A53 cores. Values from the tree's chip_virt_arm64.cc,
+# chip_limits.h, arch/arm64/common/a53.h and arch_aspace_memtype_support in
+# arch/arm64/armv8a/aspace_armv8a.cc, and from the device tree QEMU publishes with
+# `-M virt,gic-version=3 -cpu cortex-a53 -machine dumpdtb=` (and gic-version=2 for gicc).
+#
+# No port parses the device tree, so nothing here is read from it at run time.
+
+version: 1
+chip: virt_arm64
+arch: armv8a
+
+# The smallest window is one 4 KiB page, so two devices sharing a page cannot be isolated
+# from each other. A window is granted by its physical address and mapped wherever the
+# task's space puts it, so user code asks for the mapped address by name.
+protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: true }
+
+cores: { count: [1, 4], smp: true }
+
+devices:
+  # GIC interrupt IDs: 0-15 are software-generated and 16-31 private to each core, both
+  # banked per core; 32 and up are shared. A line here is its ID as the kernel takes it.
+  uart0: { window: [0x09000000, 0x1000], lines: { global: 33 } } # PL011, the kernel console
+  rtc: { window: [0x09010000, 0x1000], lines: { alarm: 34 } }    # PL031, a seconds counter
+  gpio: { window: [0x09030000, 0x1000], lines: { global: 39 } }  # PL061
+  # 32 virtio-mmio slots, /dev/virtio/0 to /dev/virtio/31: slot k is at the base plus
+  # k * stride and raises the line plus k. Eight share each page, so granting one grants
+  # its seven neighbours, which admission refuses unless the composition accepts it. And a
+  # virtio device is a bus master: it reads and writes its queues in RAM by physical address,
+  # which no MMU sees. Granting one hands its holder every byte of memory, so admission
+  # refuses that too unless accepted, and the driver would need what DMA needs besides.
+  virtio:
+    window: [0x0A000000, 0x200]
+    count: 32
+    stride: 0x200
+    lines: { irq: 48 }
+    bus_master: true
+
+  # The GIC version is a QEMU machine option: gicr exists under gic-version=3, gicc under 2.
+  gicd: { window: [0x08000000, 0x10000], owner: kernel }
+  gicc: { window: [0x08010000, 0x10000], owner: kernel }
+  # The whole redistributor region, not one core's frames: a peer's banked interrupt state
+  # lives in the frames a grant of this window would hand over.
+  gicr: { window: [0x080A0000, 0xF60000], owner: kernel }
+  # The generic timer; ID 30 is private to each core.
+  timer: { owner: kernel, sysreg: true, lines: { el1_phys: 30 } }

@@ -3951,6 +3951,39 @@ capture whose N is not zero or whose row is missing. The decision trail is in
   taken entries only; a preemption or a first-run restore may move to 4 mod 8 with no row saying so.
 - The selftest carries no watch: the counter is in bench images alone.
 
+## M10.3: the composition's host side, and what these green runs do NOT say
+
+**ADMISSION MODELS AN INIT THAT DOES NOT EXIST YET.** The supply rules count what the design's
+"What one task costs" says the init spends, and nothing boots a table: M10.4's init must match
+that model, and three of its terms are rulings rather than readings of code. The init pins a
+line-taking task, a packaged driver included, to its declared core, where `driver_service.cc`
+claims on core 0 today; on a masked-SP build it gives every thread one whole stride and never
+hands a composition's figure over as a caller stack; and its peak holdings are modelled step by
+step through the walk. The arena replay starts at the chip's arena entry and ignores the static
+image below it, so the link-time `ASSERT`s M10.4 brings stay the authority on fit.
+
+**THE CHIP FILES AND THE KERNEL'S C STATE THE SAME FACTS TWICE UNTIL M10.5 GENERATES THE C.** The
+values were checked against the tree's C and the manuals; the ones nothing in the tree uses are
+where an error would sit (the virt lines and virtio set, XMC LED2, the i.MX 8M Plus GIC split and
+every M7 value, q35's ACPI PM base under OVMF). And the kernel's grant apertures are narrower than
+what the files call grantable: virt arm64 admits only the PL011 and PL031 and q35 keeps COM1 out
+of its port apertures, so admission passes a `gpio` or `virtio` grant on `virt`, and a COM1
+handover on q35, that today's spawn refuses.
+
+**ADMISSION IS STRICTER THAN THE KERNEL IN ONE PLACE ON PURPOSE.** `uncached` is refused on
+`virt_rv64`, whose page tables carry no memory type, while the kernel admits `KOS_MEM_NOCACHE`
+there without honouring it (the open item in `TODO.md`).
+
+**WHAT IT DOES NOT SAY.**
+- Only the seven boards with both descriptions have a default composition, and `kickos_main` does
+  not exist: each build admits its default, and nothing links or runs one.
+- The driver catalogue holds the seven packaged UART and SPI drivers; any other driver is absent,
+  and a composition naming it is refused.
+- The partition's rules, a device two nodes grant and a region cached across nodes, are not built.
+- The table compiles on every golden arch and round-trips on the host; nothing reads it on target.
+- The sweep ran the whole preset list on the scratch toolchain index, not the toolchain-1.0
+  release.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

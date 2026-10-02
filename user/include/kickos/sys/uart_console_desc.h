@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The two-thread buffered UART console service as one construct: the IRQ thunk, the block
-// initialiser, the descriptor, its two static_asserts, and the C entry point a board service
+// initialiser, the descriptor, its static_asserts, and the C entry point a board service
 // list calls.
 //
 // SPAWN ORDER IS LOAD-BEARING and is fixed here: the IRQ thread first leaves the TX ring
@@ -30,7 +30,9 @@
 #include <kickos/sys/service.h>
 #include <kickos/sys/uart_service.h>
 
-// `svc_name` is a bare token spelling the tag "[svc_name] " and the entry svc_name_console_start.
+// `svc_name` is a bare token spelling the tag "[svc_name] ", the entry svc_name_console_start
+// and the generated <kickos/driver/declared/svc_name.h>, which the including file includes
+// first: its kickos_add_driver declaration states the shape, the thread names among it.
 // It may NOT be called `name`: the preprocessor would then substitute the designated
 // initialiser `.name` below.
 //
@@ -40,10 +42,11 @@
 // `params` names a UartParams the caller defines, whose `prime` is not derivable from
 // `trigger` (<kickos/sys/uart_service.h> carries that rule). `fallback_baud` 0 asks to keep
 // the divisor the boot console left, not for 0 baud.
-#define KICKOS_UART_CONSOLE_SERVICE(svc_name, params, fallback_baud, base, line, trigger,   \
-                                    irq_thread_name)                                        \
+#define KICKOS_UART_CONSOLE_SERVICE(svc_name, params, fallback_baud, base, line, trigger)   \
     namespace                                                                               \
     {                                                                                       \
+        namespace shape = ::kickos::driver::declared::svc_name;                             \
+                                                                                            \
         void irq_entry(void* arg)                                                           \
         {                                                                                   \
             ::kickos::uart::irq_thread<struct kos_uart>(                                    \
@@ -59,26 +62,26 @@
         constexpr ::kickos::driver::Descriptor k_desc = {                                   \
             .tag = "[" #svc_name "] ",                                                      \
             .expected_base = base,                                                          \
-            .block_size = ::kickos::uart::KOS_UART_BLOCK_SIZE,                              \
+            .block_size = shape::k_declared.block_size,                                     \
             .block_flags = 0,                                                               \
             .ready_offset = ::kickos::uart::KOS_UART_READY_OFFSET,                          \
-            .ep_posture = ::kickos::driver::KOS_DRV_EP_HANDOVER,                            \
+            .ep_posture = shape::k_declared.ep_posture,                                     \
             .svc_kind = KOS_SVC_CONSOLE,                                                    \
-            .line_count = 1,                                                                \
-            .thread_count = 2,                                                              \
-            .barrier_after = 1,                                                             \
+            .line_count = shape::k_declared.line_count,                                     \
+            .thread_count = shape::k_declared.thread_count,                                 \
+            .barrier_after = shape::k_declared.barrier_after,                               \
             .lines = {{line, trigger}},                                                     \
             .threads = {{.entry = irq_entry,                                                \
-                         .name = irq_thread_name,                                           \
-                         .prio_delta = 1,                                                   \
+                         .name = shape::k_declared.thread_name[0],                          \
+                         .prio_delta = shape::k_declared.prio_delta[0],                     \
                          .arg = ::kickos::driver::KOS_DRV_ARG_BLOCK,                        \
                          .window_grant = true,                                              \
                          .cap_count = 2,                                                    \
                          .caps = {{::kickos::driver::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},   \
                                   {::kickos::driver::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},  \
                         {.entry = ::kickos::uart::console_thread,                           \
-                         .name = nullptr,                                                   \
-                         .prio_delta = 0,                                                   \
+                         .name = shape::k_declared.thread_name[1],                          \
+                         .prio_delta = shape::k_declared.prio_delta[1],                     \
                          .arg = ::kickos::driver::KOS_DRV_ARG_BLOCK,                        \
                          .window_grant = false,                                             \
                          .cap_count = 2,                                                    \
@@ -92,6 +95,8 @@
                       "the " #svc_name " descriptor is not a well-formed driver shape");    \
         static_assert(::kickos::uart::desc_ok(k_desc),                                      \
                       "the " #svc_name " cap positions do not match KOS_UART_CAP_*");       \
+        static_assert(::kickos::driver::declared_as(k_desc, shape::k_declared),             \
+                      "the " #svc_name " descriptor departs from its declared shape");      \
     }                                                                                       \
                                                                                             \
     extern "C" int svc_name##_console_start(struct kos_service_cfg const* cfg)              \

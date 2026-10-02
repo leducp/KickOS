@@ -1,0 +1,466 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The table an admitted composition is emitted as: one C source of designated initializers over
+# <kickos/sys/table.h> (docs/design-m10-composition.md, "The emitted table"), and the canonical
+# dump of the same model that tools/compose/tests/round_trip.py compares a compiled table with.
+
+import os
+
+from .composition import AUTHORITIES, Cache, admit_composition, read_composition, region_size
+from .manifest import read_manifest
+from .subset import File, Report
+
+# The most entries of one kind, whose last index is then 0xFFFE.
+COUNT_LIMIT = 0xFFFF
+# The largest value a 16-bit field that can hold KOS_TABLE_NONE (0xFFFF) carries.
+FIELD_LIMIT = 0xFFFE
+STRINGS_LIMIT = 0xFFFFFFFF
+EVENTS = "/init/events"
+CAPABILITY_KINDS = ("endpoint_serve", "endpoint_use", "notification", "line")
+# A privileged register's width is the kernel call that writes it: a port register one byte
+# through kos_port_reg_write, a memory register a 32-bit word through kos_periph_reg_write.
+WIDTHS = {"port": 1, "mem": 4}
+GRANT_FLAGS = {"ro": "KOS_WINDOW_RO", "uncached": "KOS_WINDOW_UNCACHED"}
+AUTHORITY_BITS = {name: "KOS_AUTH_%s" % name.upper() for name in AUTHORITIES}
+
+
+class Pool:
+    """The deduplicated strings, at the offset of their first use."""
+
+    def __init__(self):
+        self.offsets = {}
+        self.texts = []
+        self.size = 0
+
+    def add(self, text):
+        # Admission matched every name against an ASCII pattern, which encode() relies on.
+        if text not in self.offsets:
+            self.offsets[text] = self.size
+            self.texts.append(text)
+            self.size = self.size + len(text.encode("ascii")) + 1
+        return text
+
+
+class TaskEntry:
+    def __init__(self):
+        self.name = None
+        self.entry = None
+        self.driver = None
+        self.stack = 0
+        self.priority = 0
+        self.restart_max = 0
+        self.core_mask = 0
+        self.authority = []
+        self.first_grant = 0
+        self.grant_count = 0
+        self.cap_grant_count = 0
+        self.first_use = 0
+        self.use_count = 0
+        self.first_watch = 0
+        self.watch_count = 0
+
+
+class GrantEntry:
+    def __init__(self, kind, name, path):
+        self.kind = kind
+        self.flags = []
+        self.cap_slot = None
+        self.name = name
+        self.path = path
+        self.target = None
+        self.base = 0
+        self.size = 0
+        self.line_index = None
+        self.line = None
+        self.priv_first = 0
+        self.priv_count = 0
+
+
+class RegionEntry:
+    def __init__(self, name, size, uncached):
+        self.name = name
+        self.size = size
+        self.uncached = uncached
+
+
+class Table:
+    def __init__(self, version):
+        self.version = version
+        self.ends_task = None
+        self.tasks = []
+        self.grants = []
+        self.refs = []
+        self.privs = []
+        self.regions = []
+        self.strings = Pool()
+        # Each entry symbol once, as (symbol, "task" or "driver"), in first-use order.
+        self.externs = []
+
+
+def emit(path, manifest_path):
+    """(the Report, the emitted C source or None once refused)."""
+    report, table = table_of(path, manifest_path)
+    if table is None:
+        return report, None
+    return report, render(table, os.path.basename(path))
+
+
+def table_of(path, manifest_path):
+    """(the Report, the Table of the composition at `path` or None once refused)."""
+    report = Report()
+    manifest = read_manifest(manifest_path, report)
+    if not manifest:
+        return report, None
+    text = read_composition(path, report)
+    if text is None:
+        return report, None
+    admitted = admit_composition(path, text, None, report, Cache(), manifest)
+    if admitted is None or report.refusals:
+        return report, None
+    table = build(admitted)
+    if not check_table(File(path, report), admitted.root, table):
+        return report, None
+    return report, table
+
+
+def build(admitted):
+    manifest = admitted.manifest
+    catalogue = list(manifest.drivers)
+    table = Table(manifest.table)
+    pool = table.strings
+    served = {}
+    index = {}
+    for task in admitted.tasks:
+        index[task.name] = task.index
+        if task.serves is not None:
+            served[task.serves[0]] = task.index
+    regions = list(admitted.shared)
+    if admitted.ends.value != "never":
+        table.ends_task = index[admitted.ends.value]
+    runs = {}
+
+    for task in admitted.tasks:
+        entry = TaskEntry()
+        entry.name = pool.add(task.name)
+        symbol = (task.entry_name, "task")
+        if task.driver is not None:
+            entry.driver = catalogue.index(task.driver)
+            symbol = (task.catalogue.start, "driver")
+        entry.entry = symbol[0]
+        if symbol not in table.externs:
+            table.externs.append(symbol)
+        if task.driver is None:
+            entry.stack = task.stack
+            entry.authority = [name for name in AUTHORITIES if name in task.authority]
+        entry.priority = task.priority
+        entry.restart_max = task.restart_max
+        if task.core is not None:
+            entry.core_mask = 1 << task.core
+        entry.first_grant = len(table.grants)
+
+        def grant(kind, name, path):
+            made = GrantEntry(kind, pool.add(name), pool.add(path))
+            if kind in CAPABILITY_KINDS and task.driver is None:
+                made.cap_slot = entry.cap_grant_count
+                entry.cap_grant_count = entry.cap_grant_count + 1
+            table.grants.append(made)
+            return made
+
+        for field in task.nodes:
+            if field == "serves":
+                grant("endpoint_serve", task.serves[0], task.serves[0]).target = task.index
+            elif field == "uses":
+                for used, node in task.uses:
+                    grant("endpoint_use", used, used).target = served[used]
+            elif field == "watches" and task.watches:
+                grant("notification", EVENTS, EVENTS)
+            elif field == "devices":
+                for k, held in enumerate(task.grants):
+                    name = held.path
+                    if task.driver is not None:
+                        name = task.catalogue.windows[k]
+                    kind = "window"
+                    if held.space == "port":
+                        kind = "ports"
+                    made = grant(kind, name, held.path)
+                    made.base = held.base
+                    made.size = held.size
+                    device = held.device
+                    if device.name not in runs:
+                        runs[device.name] = (len(table.privs), len(device.registers))
+                        for offset in device.registers:
+                            table.privs.append((offset, WIDTHS[held.space]))
+                    if device.registers:
+                        made.priv_first, made.priv_count = runs[device.name]
+            elif field == "maps":
+                for mapped, node in task.maps:
+                    made = grant("region", mapped, mapped)
+                    made.target = regions.index(mapped)
+                    if task.modes[mapped] == "ro":
+                        made.flags.append("ro")
+                    if admitted.shared[mapped].cache == "uncached":
+                        made.flags.append("uncached")
+            elif field == "lines":
+                for line in task.lines:
+                    made = grant("line", line.name, line.path)
+                    made.line_index = line.index
+                    made.line = line.source
+
+        entry.grant_count = len(table.grants) - entry.first_grant
+        entry.first_use = len(table.refs)
+        table.refs.extend(served[used] for used, node in task.uses)
+        entry.use_count = len(task.uses)
+        entry.first_watch = len(table.refs)
+        table.refs.extend(index[name] for name, node in task.watches)
+        entry.watch_count = len(task.watches)
+        table.tasks.append(entry)
+
+    for path, region in admitted.shared.items():
+        size = region_size(region.size, admitted.chip, admitted.cluster, manifest)
+        table.regions.append(RegionEntry(pool.add(path), size, region.cache == "uncached"))
+    return table
+
+
+def check_table(f, root, table):
+    """Whether every count and every field that can hold KOS_TABLE_NONE fits the table."""
+    drivers = [task.driver for task in table.tasks if task.driver is not None]
+    lines = [grant.line_index for grant in table.grants if grant.line_index is not None]
+    rows = [
+        ("holds %d tasks", len(table.tasks), COUNT_LIMIT),
+        ("holds %d grants", len(table.grants), COUNT_LIMIT),
+        ("holds %d refs", len(table.refs), COUNT_LIMIT),
+        ("holds %d privileged registers", len(table.privs), COUNT_LIMIT),
+        ("holds %d regions", len(table.regions), COUNT_LIMIT),
+        ("holds %d bytes of strings", table.strings.size, STRINGS_LIMIT),
+        ("names catalogue driver %d", max(drivers + [0]), FIELD_LIMIT),
+        ("names line %d of a device", max(lines + [0]), FIELD_LIMIT),
+    ]
+    fits = True
+    for what, value, limit in rows:
+        if value > limit:
+            f.refuse(root, "encoding.table",
+                     "the composition's table %s, past the %d it carries" % (what % value, limit))
+            fits = False
+    return fits
+
+
+def printable(text):
+    """`text` as printable ASCII, every other character escaped."""
+    out = []
+    for character in text:
+        if " " <= character <= "~" and character != "\\":
+            out.append(character)
+        else:
+            out.append(character.encode("unicode_escape").decode("ascii"))
+    return "".join(out)
+
+
+def none_or(value):
+    if value is None:
+        return "KOS_TABLE_NONE"
+    return "%d" % value
+
+
+def bits(names, spelled):
+    if not names:
+        return "0"
+    return " | ".join(spelled[name] for name in names)
+
+
+
+def render(table, source):
+    pool = table.strings
+    out = [
+        "// SPDX-License-Identifier: CECILL-C",
+        "// Copyright (c) 2026 Philippe Leduc",
+        "//",
+        "// GENERATED by kickos_compose emit from %s; edits are overwritten by the next emit."
+        % printable(source),
+        "",
+        "#include <kickos/sys/abi.h>",
+        "#include <kickos/sys/table.h>",
+        "",
+        "#include <stddef.h>",
+        "",
+        "_Static_assert(KICKOS_TABLE_VERSION == %d, \"this table is emitted as layout %d, which "
+        "<kickos/sys/table.h> is not\");" % (table.version, table.version),
+        "",
+    ]
+    for symbol, kind in table.externs:
+        if kind == "driver":
+            out.append("extern int %s(struct kos_service_cfg const* cfg);" % symbol)
+        else:
+            out.append("extern void %s(kos_self_t const* self);" % symbol)
+    if table.externs:
+        out.append("")
+
+    arrays = [
+        ("task", "struct kos_table_task", len(table.tasks)),
+        ("grant", "struct kos_table_grant", len(table.grants)),
+        ("ref", "struct kos_table_ref", len(table.refs)),
+        ("priv", "struct kos_table_priv", len(table.privs)),
+        ("region", "struct kos_table_region", len(table.regions)),
+        ("strings", "char", pool.size),
+    ]
+    present = [array for array in arrays if array[2] > 0]
+    out.append("struct kickos_table_image")
+    out.append("{")
+    out.append("    struct kos_table_header header;")
+    for member, kind, count in present:
+        out.append("    %s %s[%d];" % (kind, member, count))
+    out.append("};")
+    out.append("")
+    end = "sizeof(struct kos_table_header)"
+    for member, kind, count in present:
+        out.append("_Static_assert(offsetof(struct kickos_table_image, %s) == %s," % (member, end))
+        out.append("               \"the table's arrays follow one another with no gap\");")
+        end = "offsetof(struct kickos_table_image, %s) + %d * sizeof(%s)" % (member, count, kind)
+    if present:
+        out.append("")
+    slots = [grant.cap_slot for grant in table.grants if grant.cap_slot is not None]
+    if slots:
+        out.append("_Static_assert(KOS_SPAWN_DELEGATED_CAP0 + %d < KOS_TABLE_NONE," % max(slots))
+        out.append("               \"a capability slot of this table reads as none\");")
+        out.append("")
+
+    flags = "0"
+    if table.ends_task is not None:
+        flags = "KOS_TABLE_ENDS_TASK"
+    out.append("static struct kickos_table_image const kickos_table_image = {")
+    out.append("    .header = {")
+    out.append("        .magic = KOS_TABLE_MAGIC,")
+    out.append("        .version = KICKOS_TABLE_VERSION,")
+    out.append("        .flags = %s," % flags)
+    out.append("        .ends_task = %s," % none_or(table.ends_task))
+    out.append("        .task_count = %d," % len(table.tasks))
+    out.append("        .grant_count = %d," % len(table.grants))
+    out.append("        .ref_count = %d," % len(table.refs))
+    out.append("        .priv_count = %d," % len(table.privs))
+    out.append("        .region_count = %d," % len(table.regions))
+    out.append("        .strings_size = %d," % pool.size)
+    out.append("    },")
+    if table.tasks:
+        out.append("    .task = {")
+        for n, task in enumerate(table.tasks):
+            entry = ".task = %s" % task.entry
+            if task.driver is not None:
+                entry = ".driver = %s" % task.entry
+            out.append("        [%d] = {" % n)
+            out.append("            .name = %d," % pool.offsets[task.name])
+            out.append("            .entry = { %s }," % entry)
+            out.append("            .driver = %s," % none_or(task.driver))
+            out.append("            .stack = %d," % task.stack)
+            out.append("            .priority = %d," % task.priority)
+            out.append("            .restart_max = %d," % task.restart_max)
+            out.append("            .core_mask = 0x%Xu," % task.core_mask)
+            out.append("            .authority = %s," % bits(task.authority, AUTHORITY_BITS))
+            out.append("            .first_grant = %d," % task.first_grant)
+            out.append("            .grant_count = %d," % task.grant_count)
+            out.append("            .cap_grant_count = %d," % task.cap_grant_count)
+            out.append("            .first_use = %d," % task.first_use)
+            out.append("            .use_count = %d," % task.use_count)
+            out.append("            .first_watch = %d," % task.first_watch)
+            out.append("            .watch_count = %d," % task.watch_count)
+            out.append("        },")
+        out.append("    },")
+    if table.grants:
+        out.append("    .grant = {")
+        for n, grant in enumerate(table.grants):
+            slot = "KOS_TABLE_NONE"
+            if grant.cap_slot is not None:
+                slot = "KOS_SPAWN_DELEGATED_CAP0 + %d" % grant.cap_slot
+            out.append("        [%d] = {" % n)
+            out.append("            .kind = KOS_GRANT_%s," % grant.kind.upper())
+            out.append("            .flags = %s," % bits(grant.flags, GRANT_FLAGS))
+            out.append("            .cap_slot = %s," % slot)
+            out.append("            .name = %d," % pool.offsets[grant.name])
+            out.append("            .path = %d," % pool.offsets[grant.path])
+            out.append("            .target = %s," % none_or(grant.target))
+            out.append("            .base = 0x%Xu," % grant.base)
+            out.append("            .size = 0x%Xu," % grant.size)
+            out.append("            .line_index = %s," % none_or(grant.line_index))
+            out.append("            .line = %s," % none_or(grant.line))
+            out.append("            .priv_first = %d," % grant.priv_first)
+            out.append("            .priv_count = %d," % grant.priv_count)
+            out.append("        },")
+        out.append("    },")
+    if table.refs:
+        out.append("    .ref = {")
+        for n, task in enumerate(table.refs):
+            out.append("        [%d] = { .task = %d }," % (n, task))
+        out.append("    },")
+    if table.privs:
+        out.append("    .priv = {")
+        for n, (offset, width) in enumerate(table.privs):
+            out.append("        [%d] = { .offset = 0x%Xu, .width = %d }," % (n, offset, width))
+        out.append("    },")
+    if table.regions:
+        out.append("    .region = {")
+        for n, region in enumerate(table.regions):
+            flags = "0"
+            if region.uncached:
+                flags = "KOS_MEM_NOCACHE"
+            out.append("        [%d] = { .name = %d, .size = 0x%Xu, .flags = %s },"
+                       % (n, pool.offsets[region.name], region.size, flags))
+        out.append("    },")
+    if pool.texts:
+        # The literal's own terminator is the last string's, so the array holds the pool exactly.
+        out.append("    .strings =")
+        for n, text in enumerate(pool.texts):
+            nul = "\\0"
+            if n == len(pool.texts) - 1:
+                nul = ""
+            out.append("        \"%s%s\"" % (text.replace("\\", "\\\\").replace("\"", "\\\""), nul))
+    out.append("};")
+    out.append("")
+    out.append("struct kos_table_header const* const kickos_table = &kickos_table_image.header;")
+    return "\n".join(out) + "\n"
+
+
+
+def names_or_dash(names):
+    if not names:
+        return "-"
+    return ",".join(names)
+
+
+def none_text(value, form="%d"):
+    if value is None:
+        return "none"
+    return form % value
+
+
+def dump(table):
+    """The canonical dump of the model, as tests/table_walker.c prints a compiled table."""
+    pool = table.strings
+    flags = []
+    if table.ends_task is not None:
+        flags.append("ends_task")
+    out = ["header magic=ok version=%d flags=%s ends_task=%s tasks=%d grants=%d refs=%d privs=%d regions=%d "
+           "strings=%d" % (table.version, names_or_dash(flags), none_text(table.ends_task), len(table.tasks),
+                           len(table.grants), len(table.refs), len(table.privs), len(table.regions), pool.size)]
+    for n, task in enumerate(table.tasks):
+        out.append("task %d name=%s entry=%s driver=%s stack=%d priority=%d restart_max=%d core_mask=0x%X "
+                   "authority=%s grants=%d+%d cap_grants=%d uses=%d+%d watches=%d+%d"
+                   % (n, task.name, task.entry, none_text(task.driver), task.stack, task.priority, task.restart_max,
+                      task.core_mask, names_or_dash(task.authority), task.first_grant, task.grant_count,
+                      task.cap_grant_count, task.first_use, task.use_count, task.first_watch, task.watch_count))
+    for n, grant in enumerate(table.grants):
+        out.append("grant %d kind=%s flags=%s cap_slot=%s name=%s path=%s target=%s base=0x%X size=0x%X "
+                   "line_index=%s line=%s privs=%d+%d"
+                   % (n, grant.kind, names_or_dash(grant.flags), none_text(grant.cap_slot, "cap0+%d"), grant.name,
+                      grant.path, none_text(grant.target), grant.base, grant.size, none_text(grant.line_index),
+                      none_text(grant.line), grant.priv_first, grant.priv_count))
+    for n, task in enumerate(table.refs):
+        out.append("ref %d task=%d" % (n, task))
+    for n, (offset, width) in enumerate(table.privs):
+        out.append("priv %d offset=0x%X width=%d" % (n, offset, width))
+    for n, region in enumerate(table.regions):
+        flags = "-"
+        if region.uncached:
+            flags = "uncached"
+        out.append("region %d name=%s size=0x%X flags=%s" % (n, region.name, region.size, flags))
+    for text in pool.texts:
+        out.append("string %d %s" % (pool.offsets[text], text))
+    return "\n".join(out) + "\n"

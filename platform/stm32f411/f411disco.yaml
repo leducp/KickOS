@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from UM1842 and the tree's boards/f411disco/include/kickos/board_wiring.h and the
+# f411spi app.
+
+version: 1
+board: f411disco
+chip: stm32f411
+
+console:
+  device: /dev/usart2
+  pins: { tx: PA2, rx: PA3 }
+
+leds:
+  ld4: { pin: PD12, active: high, owner: kernel } # green, the kernel's diagnostic LED
+
+# The gyro is an L3GD20 or an I3G4250D depending on the board revision; both answer on the
+# same wiring.
+parts:
+  gyro:
+    bus: /dev/spi1
+    chip_select: PE3
+    pins: [PA5, PA6, PA7]

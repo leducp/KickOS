@@ -7,14 +7,7 @@
 #ifndef KICKOS_CONFIG_LIMITS_H
 #define KICKOS_CONFIG_LIMITS_H
 
-// Scheduler priority levels. Priority 0 is reserved for the idle thread; higher
-// number = higher priority (find-first-set on the ready bitmap). NUM_PRIO is
-// coupled to the uint32_t ready bitmap: raising it past 32 needs a hierarchical
-// bitmap, not a bigger number.
-#define KICKOS_NUM_PRIO 32
-#define KICKOS_PRIO_IDLE 0
-#define KICKOS_PRIO_MIN 1
-#define KICKOS_PRIO_MAX (KICKOS_NUM_PRIO - 1)
+#include <kickos/config/priorities.h> // the scheduler's priority range (generated)
 
 // Max per-task MPU region descriptors carried in the TCB (hardware-fixed: only
 // 8 regions on ARMv6-M/v7-M).

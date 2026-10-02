@@ -11,6 +11,9 @@ include(cmake/kconfig.cmake)
 # Must precede add_subdirectory(user/apps) (a selftest expectation keys on the chunk
 # granule) and the width sum at the bottom of this file.
 include(cmake/cap_geometry.cmake)
+include(cmake/sched_geometry.cmake)
+include(cmake/stack_geometry.cmake)
+include(cmake/manifest.cmake)
 
 # KICKOS is what an add_subdirectory(KickOS) consumer tests with if(KICKOS).
 set(KICKOS TRUE CACHE INTERNAL "Building against KickOS")
@@ -348,6 +351,7 @@ if(KICKOS_TLS)
                           KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
   if(KICKOS_TLS_FROM_SP)
     message(STATUS "KickOS: the thread pointer is SP masked to the stride")
+    set(KICKOS_STACK_STRIDE ${_tls_stride})
   endif()
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
@@ -551,12 +555,6 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   set(KICKOS_SPLIT_IMAGE_CODE_MODEL -mcmodel=large)
 endif()
 
-# Whether memory protection is LIVE, which admission policy keys on. Derived, so no board can
-# state it and disagree with its backend.
-set(KICKOS_MEMORY_ENFORCED 0)
-if(KICKOS_HAVE_MPU OR KICKOS_HAVE_ASPACE)
-  set(KICKOS_MEMORY_ENFORCED 1)
-endif()
 add_compile_definitions(KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED})
 
 # Select the chip MPU backend, defaulting to PMSAv7. Use NONE without an MPU.
@@ -1081,6 +1079,28 @@ if(KICKOS_BUILD_TESTS)
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_reach PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
+  _add_test(NAME driver_metadata
+            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_driver_metadata.cmake")
+  set_tests_properties(driver_metadata PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  # A first run fetches the tool's locked dependencies into the build directory.
+  foreach(_compose_mode descriptions compositions arms)
+    _add_test(NAME platform_${_compose_mode}
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                      "${PROJECT_BINARY_DIR}" "${_compose_mode}"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(platform_${_compose_mode} PROPERTIES TIMEOUT 300 LABELS "host;tree")
+  endforeach()
+  # The walker runs, so the compiler must be the host's, which only the sim builds with.
+  if(KICKOS_ARCH STREQUAL "sim")
+    _add_test(NAME platform_tables
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                      "${PROJECT_BINARY_DIR}" tables "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}/generated/include"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(platform_tables PROPERTIES TIMEOUT 300 LABELS "host;tree")
+  endif()
+
 endif()
 
 foreach(_dir lib arch kernel user system)
@@ -1304,6 +1324,14 @@ configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.i
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)
 configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/amp_ports.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/priorities.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/stack_geometry.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/driver_geometry.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/table_version.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h" @ONLY)
 if(TARGET kickos_core)
   # The in-tree include_directories at the top of this file does not reach an
   # add_subdirectory/FetchContent consumer's own targets; this does.
@@ -1333,6 +1361,37 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_C_COMPILER}" ${_kos_c_hdr_roots}
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(c_headers PROPERTIES TIMEOUT 120 LABELS host)
+endif()
+
+# After every subdirectory, so the driver catalogue is whole.
+kickos_export_manifest("${PROJECT_BINARY_DIR}/export")
+kickos_admit_default_composition("${PROJECT_BINARY_DIR}/export")
+# The same name the installed package sets, for a consumer built beside this tree.
+set(KICKOS_MANIFEST "${PROJECT_BINARY_DIR}/export/manifest.yaml" CACHE INTERNAL
+    "The export manifest a composition is admitted against")
+if(KICKOS_BUILD_TESTS)
+  _add_test(NAME platform_manifest
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                    "${PROJECT_BINARY_DIR}" manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(platform_manifest PROPERTIES TIMEOUT 300 LABELS host)
+  set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
+      "A golden composition this build targets, relative to the source root, admitted against its manifest")
+  if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")
+    _add_test(NAME platform_golden
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                      "${PROJECT_BINARY_DIR}" golden "${PROJECT_BINARY_DIR}/export/manifest.yaml"
+                      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(platform_golden PROPERTIES TIMEOUT 300 LABELS host)
+    _add_test(NAME platform_golden_table
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                      "${PROJECT_BINARY_DIR}" table "${PROJECT_BINARY_DIR}/export/manifest.yaml"
+                      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}" "${CMAKE_C_COMPILER}"
+                      "${PROJECT_BINARY_DIR}/generated/include"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(platform_golden_table PROPERTIES TIMEOUT 300 LABELS host)
+  endif()
 endif()
 
 # --- Install / export: the dependency-inversion package --------------------
@@ -1368,6 +1427,13 @@ install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h
 # The partition's port list an app's <kickos/amp.h> derives its capability indices from.
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
+
+install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
+install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/sys")
 
 # The generated provisioning header is the one the prebuilt libs were compiled against.
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
@@ -1415,12 +1481,32 @@ write_basic_package_version_file(
   VERSION "${PROJECT_VERSION}"
   COMPATIBILITY ExactVersion)
 
-# kickos.cmake include()s cap_table.cmake list-dir-relative, so that must land beside it.
+# Where kickos_compose finds the manifest, with the descriptions and default composition it
+# names beside it.
+install(FILES "${PROJECT_BINARY_DIR}/export/manifest.yaml" DESTINATION "${KICKOS_CMAKE_DIR}")
+if(EXISTS "${PROJECT_BINARY_DIR}/export/platform")
+  install(DIRECTORY "${PROJECT_BINARY_DIR}/export/platform" DESTINATION "${KICKOS_CMAKE_DIR}")
+endif()
+if(EXISTS "${PROJECT_BINARY_DIR}/export/boards")
+  install(DIRECTORY "${PROJECT_BINARY_DIR}/export/boards" DESTINATION "${KICKOS_CMAKE_DIR}")
+endif()
+# The host tool that admits a composition against that manifest and emits its table.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/kickos_compose"
+        DESTINATION "${KICKOS_CMAKE_DIR}/compose"
+        FILES_MATCHING PATTERN "*.py")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/uv.lock"
+        DESTINATION "${KICKOS_CMAKE_DIR}/compose")
+
+# kickos.cmake include()s cap_table.cmake, driver_geometry.cmake and driver_metadata.cmake
+# list-dir-relative, so they must land beside it.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kickos.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cap_table.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_geometry.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_metadata.cmake"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
 # Install the toolchain that configured this build, with board.cmake beside it.

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU `virt` with A53 cores. The console is the PL011 the kernel drives
+# (chip_virt_arm64.cc).
+
+version: 1
+board: qemu-arm64
+chip: virt_arm64
+
+console:
+  device: /dev/uart0

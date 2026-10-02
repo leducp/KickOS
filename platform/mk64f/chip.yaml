@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the K64 Sub-Family Reference Manual (K64P144M120SF5RM) and the tree's
+# chip_mmap.h, irq.h, chip_mk64f.cc and mk64f.ld under arch/arm/chip/mk64f/, the memory type
+# and the data cache from arch_mpu_nocache_support in chip_mk64f.cc.
+
+version: 1
+chip: mk64f
+arch: armv7m
+
+# The SYSMPU sits on the bus-slave side and never sees the peripheral bridge, so it isolates
+# memory per thread and devices not at all. Devices are gated by the AIPS bridge instead: per
+# 4 KiB slot, per privilege, and once a slot is opened every unprivileged thread reaches it.
+# So a device grant here is a statement, not an enforcement, and admission must say so.
+protection:
+  unit: sysmpu
+  covers_devices: false
+  memory_type: false
+  # The two bridges' slots. GPIO at 0x400FF000 is a crossbar slave behind neither.
+  device_gate:
+    kind: aips_slot
+    size: 0x1000
+    per_thread: false
+    ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]
+
+data_cache: false
+
+devices:
+  # Windows are what a driver uses; the gate the kernel opens is the whole slot around it.
+  uart0: { window: [0x4006A000, 0x20], lines: { rxtx: 31, err: 32 } }
+  dspi0: { window: [0x4002C000, 0x40] } # its service polls, so no line is taken
+  # A crossbar slave behind no AIPS slot: every unprivileged thread reaches it ungranted.
+  gpio: { window: [0x400FF000, 0x40], count: 5, stride: 0x40 } # A to E
+
+  # MCR and channels 0 and 1. Channels 2 and 3 above them share the slot but not the owner.
+  pit: { window: [0x40037000, 0x120], owner: kernel }
+  sysmpu: { window: [0x4000D000, 0x1000], owner: kernel }
+  aips0: { window: [0x40000000, 0x1000], owner: kernel } # the slot gates themselves
+  aips1: { window: [0x40080000, 0x1000], owner: kernel }
+  mcg: { window: [0x40064000, 0x1000], owner: kernel }
+  # Clock gates and pin mux: reached through kos_periph_enable and kos_pinmux_set only.
+  sim: { window: [0x40047000, 0x2000], owner: kernel } # SOPT1 in the slot below the rest
+  port: { window: [0x40049000, 0x1000], count: 5, stride: 0x1000, owner: kernel } # A to E
+
+memory:
+  # SRAM_L below 0x20000000 and SRAM_U above: a misaligned access across the seam is not
+  # supported.
+  sram: { base: 0x1FFF0000, size: 0x40000, arena: true }
+
+# Pins are PTxN. A selector other than `gpio` is the ALT number the pin's PCR selects.
+pins:
+  PTB16: { alt3: uart0.rx, gpio: gpio.1.16 }
+  PTB17: { alt3: uart0.tx, gpio: gpio.1.17 }
+  PTB21: { gpio: gpio.1.21 }
+  PTB22: { gpio: gpio.1.22 }
+  PTC4: { gpio: gpio.2.4 }
+  PTD1: { alt2: dspi0.sck, gpio: gpio.3.1 }
+  PTD2: { alt2: dspi0.sout, gpio: gpio.3.2 }
+  PTD3: { alt2: dspi0.sin, gpio: gpio.3.3 }

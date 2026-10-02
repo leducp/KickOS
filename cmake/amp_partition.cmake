@@ -276,6 +276,9 @@ if(KICKOS_AMP_NODE)
   # kickos_endpoint_seats_check (cmake/cap_table.cmake).
 
   set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
+  # The partition as parsed here, which the export manifest carries.
+  set_property(GLOBAL PROPERTY KICKOS_AMP_PARTITION_NODE "${KICKOS_AMP_SELF_NODE}")
+  set_property(GLOBAL PROPERTY KICKOS_AMP_PARTITION_PORTS "${_amp_port_seen}")
   string(REPLACE ";" "," KICKOS_AMP_PORT_NODE_INIT "${_amp_port_nodes}")
   string(REPLACE ";" "," KICKOS_AMP_PORT_PORT_INIT "${_amp_port_ports}")
   math(EXPR _amp_port_far "${KICKOS_AMP_PORT_COUNT} - ${_amp_port_local}")

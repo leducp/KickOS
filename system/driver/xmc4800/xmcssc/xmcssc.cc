@@ -18,6 +18,7 @@
 
 #include <kickos/driver/xmcssc.h>
 
+#include <kickos/driver/declared/xmcssc.h>
 #include <kickos/driver/spi.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/emit.h> // publish-aware write; kos_print is dropped once published
@@ -32,6 +33,7 @@
 namespace drv = kickos::driver;
 namespace spi = kickos::spi;
 namespace mmap = kickos::xmc::mmap;
+namespace declared = kickos::driver::declared::xmcssc;
 
 namespace
 {
@@ -82,22 +84,22 @@ namespace
         // SR1 below is claimed BY NUMBER, so a cfg naming the sibling channel would grant one
         // window and interrupt on the other. The console owns U0C0; SPI is U0C1.
         .expected_base = mmap::USIC0_CH1_BASE,
-        .block_size = 0, // no Shared, no ring, no doorbell, no readiness latch
+        .block_size = declared::k_declared.block_size,
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
-        .ep_posture = drv::KOS_DRV_EP_RETAIN,
+        .ep_posture = declared::k_declared.ep_posture,
         .svc_kind = KOS_SVC_SPI,
-        .line_count = 1,
-        .thread_count = 1,
-        .barrier_after = 1,
+        .line_count = declared::k_declared.line_count,
+        .thread_count = declared::k_declared.thread_count,
+        .barrier_after = declared::k_declared.barrier_after,
         // EDGE: the receive flags are W1C'd by the engine before it acks.
         .lines = {{USIC0_SR1_IRQ, KOS_IRQ_EDGE}},
         // No register access by root: it holds no DEV region at all (ARCH_MPU_DEV is attached
         // only by thread_create_call), so this thread is the only one that can address the channel.
         // USIC0's module clock is already ungated by the console (U0C0) bring-up.
         .threads = {{.entry = bus_thread,
-                     .name = nullptr,
-                     .prio_delta = 0,
+                     .name = declared::k_declared.thread_name[0],
+                     .prio_delta = declared::k_declared.prio_delta[0],
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
                      .cap_count = 3,
@@ -112,6 +114,8 @@ namespace
 
     static_assert(drv::valid(k_desc), "the xmcssc descriptor is not a well-formed driver shape");
     static_assert(spi::desc_ok(k_desc), "the xmcssc cap positions do not match KOS_SPI_CAP_*");
+    static_assert(drv::declared_as(k_desc, declared::k_declared),
+                  "the xmcssc descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

@@ -3,8 +3,9 @@
 # Build tools from apt, for the packages the runner image does not already carry. The
 # runner ships most of them, so the common path installs nothing and never reaches the
 # network: apt-get update is what hangs, and a job that does not call it cannot hang in it.
+# And uv, pinned, which every configured build's host gates run tools/compose under.
 name: Install build tools
-description: apt only the packages whose command is missing, with a bounded retry.
+description: apt only the packages whose command is missing, with a bounded retry, and uv.
 
 inputs:
   packages:
@@ -54,3 +55,9 @@ runs:
         # Attempted even when every update failed: the image ships package lists, and a
         # stale list that still resolves these versions installs fine.
         sudo timeout 300 apt-get install -y --no-install-recommends $need
+
+    # Its cache lives in each build tree, which a job discards.
+    - uses: astral-sh/setup-uv@v9.0.0
+      with:
+        version: "0.10.8"
+        enable-cache: "false"

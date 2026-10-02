@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the XMC4700/XMC4800 Relax Kit Series-V1 Board User Manual rev 1.6, section 2.4,
+# and the tree's chip_xmc4800.cc and usic_uart.cc.
+
+version: 1
+board: xmc4800-relax
+chip: xmc4800
+
+# USIC0 channel 0 on the debug probe's virtual COM port.
+console:
+  device: /dev/usic0/ch0
+  pins: { tx: P1.5, rx: P1.4 }
+
+leds:
+  led1: { pin: P5.9, active: high, owner: kernel } # the kernel's diagnostic LED
+  led2: { pin: P5.8, active: high }

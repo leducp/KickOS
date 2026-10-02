@@ -9,6 +9,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/driver/declared/lx6uart.h>
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
@@ -39,4 +40,4 @@ namespace
 // LEVEL: CPU interrupt 13 is level-triggered (TRM Table 8.3-2) and the UART latch stays set
 // until the driver clears it.
 KICKOS_UART_CONSOLE_SERVICE(lx6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            lx6irq::CONSOLE_TX_LINE, KOS_IRQ_LEVEL, "lx6uartirq");
+                            lx6irq::CONSOLE_TX_LINE, KOS_IRQ_LEVEL);

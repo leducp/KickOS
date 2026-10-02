@@ -471,18 +471,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
           "that a thread_local template fits one stride.")
       endif()
       string(REGEX REPLACE "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+([0-9]+).*" "\\1" _tls_tcb "${_tls_tcb_line}")
-      # The rounding tls_block_size() applies, scraped from the header that owns it so the link
-      # and the runtime cannot disagree.
-      set(_sa_hdr "${CMAKE_SOURCE_DIR}/kernel/include/kickos/config/system.h")
-      file(STRINGS "${_sa_hdr}" _sa_line REGEX "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+[0-9]+")
-      if(_sa_line STREQUAL "")
-        message(FATAL_ERROR
-          "KickOS: ${_sa_hdr} defines no KICKOS_STACK_ALIGN, so the link cannot round a "
-          "thread_local template the way tls_block_size does.")
-      endif()
-      string(REGEX REPLACE "^#define[ \t]+KICKOS_STACK_ALIGN[ \t]+([0-9]+).*" "\\1" _stack_align "${_sa_line}")
       list(APPEND _ld_defs -DKICKOS_ARCH_TLS_TCB=${_tls_tcb} -DKICKOS_TLS_STRIDE=${_tls_stride}
-                           -DKICKOS_STACK_ALIGN=${_stack_align})
+                           -DKICKOS_STACK_ALIGN=${KICKOS_STACK_ALIGN})
       # KICKOS_TLS_CARVE_ASSERT's stacks and floors, and what the arch's
       # <kickos/arch/idle_floor.h> reads.
       list(APPEND _ld_defs -DKICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP}

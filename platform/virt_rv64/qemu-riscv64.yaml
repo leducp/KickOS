@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU RV64 `virt`. The console is the ns16550a the kernel drives (chip_virt_rv64.cc).
+
+version: 1
+board: qemu-riscv64
+chip: virt_rv64
+
+console:
+  device: /dev/uart0

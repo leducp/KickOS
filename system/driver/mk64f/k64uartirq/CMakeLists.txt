@@ -15,7 +15,10 @@
 # only, no code). CLASS carries the transmit-ready read, which is shared UART register
 # logic (decision R-A), not a local copy.
 kickos_add_driver(k64uartirq SOURCES k64uartirq.cc ../uart_k64.cc
-                  REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f)
+                  REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f
+                  THREADS uartirq:1:default:2 service:0:default:2 RECEIVER service
+                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  POSTURE handover BARRIER 1 START k64uartirq_console_start CONSOLE)
 
 # The bring-up entry is declared beside the driver rather than in user/include, so a
 # service-list provider that links this target also sees the header.

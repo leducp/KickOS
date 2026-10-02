@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's q35 PC. Values from the tree's chip_q35.cc, com1_q35.cc, chip_limits.h,
+# arch/x86/x86_64/arch_x86_64.cc, apic_x86_64.cc and arch_aspace_memtype_support in
+# aspace_x86_64.cc, the fixed PC assignments they rely on, and the map QEMU reports with
+# `info mtree`.
+#
+# No port parses ACPI or the MADT, so nothing here is read from them at run time.
+
+version: 1
+chip: q35
+arch: x86_64
+
+# Port I/O is a second address space: a port range is granted as a window is, and a ring-3
+# access reaches only the ports open in the task's I/O permission bitmap.
+protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: true, io_ports: true }
+
+cores: { count: [1, 12], smp: true }
+
+devices:
+  # No device names a line: the kernel's interrupt controller is software and drives no I/O
+  # APIC, so no claim receives a device's interrupt. COM1 raises ISA IRQ 4, COM2 IRQ 3 and
+  # the CMOS clock IRQ 8.
+  #
+  # The CMOS clock: an index port and a data port. Writing the index port also sets the
+  # NMI mask in its top bit, so the index is a privileged register inside the range: the
+  # task's bitmap opens only the data port, and the index is written through
+  # kos_port_reg_write, a byte-wide write that withholds that bit.
+  cmos_rtc:
+    ports: [0x70, 2]
+    privileged_registers: { index: 0x0 }
+  com1: { ports: [0x3F8, 8] } # 16550, the kernel console
+  com2: { ports: [0x2F8, 8] } # unpopulated unless QEMU is given a second serial port
+  hpet: { window: [0xFED00000, 0x1000] }
+
+  # The reset value of IA32_APIC_BASE, which the kernel reads at boot. Under x2APIC the
+  # block is MSRs and the page is unused.
+  lapic: { window: [0xFEE00000, 0x1000], owner: kernel }
+  ioapic: { window: [0xFEC00000, 0x1000], owner: kernel }
+  # The legacy pair, remapped and masked at boot.
+  pic_master: { ports: [0x20, 2], owner: kernel }
+  pic_slave: { ports: [0xA0, 2], owner: kernel }
+  pit: { ports: [0x40, 4], owner: kernel } # calibrates the TSC
+  pci_config: { ports: [0xCF8, 8], owner: kernel }
+  # The ICH9 PM block at the PMBASE firmware programs; the power-off register is at +4.
+  acpi_pm: { ports: [0x600, 0x80], owner: kernel }

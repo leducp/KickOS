@@ -7,13 +7,18 @@
 # Every input is scraped from the file that already owns it, and anything unreadable is
 # a FATAL_ERROR, never a guessed default.
 
+# What a build whose arch_mpu_min_region is 0 rounds and encodes at; the C side's no-unit legs
+# (arch_ram_region_size, arch_mpu_region_encodable) must say the same.
+set_property(GLOBAL PROPERTY KICKOS_NO_UNIT_GRANULE 16)
+
 # Round `want` up to the region size one MPU descriptor can name. Mirrors
 # arch_ram_region_size() (arch/include/kickos/arch/arch.h); keep the two in step.
 # The C function's two size_t-overflow fallbacks are not mirrored: math(EXPR) is signed
 # 64-bit, and the only inputs here are the provisioned boot-stack sizes (512..8192).
 function(kickos_region_size want mn pow2 out)
   if(mn EQUAL 0)
-    math(EXPR _v "((${want}) + 15) & ~15") # no MPU: 16-byte granular
+    get_property(_g GLOBAL PROPERTY KICKOS_NO_UNIT_GRANULE)
+    math(EXPR _v "((${want}) + ${_g} - 1) & ~(${_g} - 1)")
     set(${out} "${_v}" PARENT_SCOPE)
     return()
   endif()

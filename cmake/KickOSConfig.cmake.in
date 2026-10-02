@@ -33,6 +33,10 @@ set(KICKOS_CHIP "@KICKOS_CHIP@")
 # this must never be used to override that.
 set(KICKOS_CAP_TABLE_WIDTH "@KICKOS_CAP_TABLE_SLOTS@")
 
+# The export manifest a composition is admitted against, with the descriptions it names under
+# platform/ beside it.
+set(KICKOS_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/manifest.yaml")
+
 # The init provider was frozen INTO the exported link recipe at KickOS build time
 # (kickos_core's LINK_GROUP names @KICKOS_INIT_PROVIDER@). A consumer override would
 # silently no-op, because the shipped recipe still pulls the packaged provider, so a

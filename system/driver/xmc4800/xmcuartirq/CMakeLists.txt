@@ -14,7 +14,10 @@
 # backend. An image gets exactly one definition of that class, so a second xmc4800 UART
 # driver may not be linked beside this one.
 kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc
-                  CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800)
+                  CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
+                  THREADS uartirq:1:default:2 service:0:default:2 RECEIVER service
+                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  POSTURE handover BARRIER 1 START xmcuartirq_console_start CONSOLE)
 
 # The driver header ships beside the driver rather than in user/include, so a service-list
 # provider that links this target reaches it as <kickos/driver/xmcuartirq.h>.
