@@ -432,6 +432,67 @@ standing would be subtracted from a later close and banked as a delta near the c
 width. The time base is CMTW1 at 7.5 MHz, so a sample is a multiple of 32 ICLK cycles; the
 cells hold raw ticks and the scaling happens once, at the bank.
 
+SO THE RXv3 ROW'S p50 IS A TICK AND NOT A SPAN, AND THE ROW CARRIES A MEAN FOR THAT. A span of
+D cycles reads as one of the two ticks around it, and which one depends on where the open falls
+against the tick. A ping-pong loop holds that phase nearly fixed, so most samples of a window
+round the same way, and the p50 is then whichever tick the build's layout favours: the same
+switch code read 160/160/160 in one undithered build and 128/160/160 in another whose only
+change was elsewhere in the kernel.
+So on `rxv3` the bench app samples the switch row in a burst of its own (`BENCH_SWITCH_DITHER`,
+`user/apps/common/bench/main.cc`). Each report window runs the timed ping-pong as every arch
+does and prints its throughput row from it; it then resets the distributions and runs the same
+ping-pong again, untimed, with `player_b` delaying each round's post, outside every switch
+window, by the low five bits of the round count. The loop takes 2 cycles a step, so a delay
+spans 0 to 62 cycles, and the delays accumulate along the run, which walks the opens through the
+tick. A sample then reads the upper tick with probability (D mod 32)/32, so the mean of the
+samples is D. The switch row and every distribution row after it are that burst's; the
+throughput row, and every row the bench times, run the plain loop and pay nothing for the
+dither. The report prints the mean in a row of its own, directly under the switch row:
+
+    switch:    128/160/160 cyc  533/666/666 ns  (p50/p99/max, n=40001)
+    switch-mean: 136.51 cyc  566 ns  (phase-dithered, n=40001)
+
+The switch row's bytes are unchanged, so every reader of it reads what it always did; the p50
+keeps its meaning, the median of the tick-quantized samples, and is now the median of dithered
+ones. The mean is to the hundredth, over the same `n`, and its `ns` field is the whole cycles
+converted. Only `rxv3` dithers and prints the mean (`KICKOS_BENCH_SWITCH_MEAN`,
+`kickos/bench.h`); every other arch's rows, and the windows they come from, are unchanged. `tools/bench/bench-capture.sh`
+holds every `rxv3` capture to one mean in every sampled window, over the switch row's `n` and no
+greater than its `max`, and a boot of any arch that prints one to the same. Which arch a capture
+is comes from the build it was asked to run, so a capture that lost every mean is refused
+rather than read as an arch that prints none.
+
+WHAT THE MEAN MAY CLAIM, measured on the RX72M (2026-10-02). It is reproducible to the
+hundredth from capture to capture of one build. It is a figure of THE BUILD: the same switch
+code read 136.50 at the head of M10.2.3 and 142.0 to 144.0 across the windows of one boot a commit
+earlier, before the fastpath watch moved the layout, so two means compare only across builds
+whose layouts are shown to match. What the dither moves is the tick the layout favours: the head
+of M10.2.3 rebuilt with its sample burst run undithered, every byte of code in place, read 143.97
+in every window, against 136.50 dithered. And the dither costs the rows the bench times nothing:
+that undithered build's throughput, ping-pong, call/reply and spawn rows read the dithered
+build's figures to the nanosecond.
+
+THE RXv3 REPORT ALSO WATCHES THE FASTPATH'S DPFPU BANK, one row a boot, the last before
+`bench: done`:
+
+    fastpath-misaligned: 0 of 120000  (saves 0 of 60000, restores 0 of 60000)
+
+The register-form call's fastpath banks the DPFPU file on the caller's own USP, so whether that
+bank is 8-aligned is the callers' frame sizes' to decide, and at 4 mod 8 every double moves in two
+beats, 26 cycles an entry. `switch.S` counts each taken entry whose saved bank, or the bank the
+restore after it pops, stands at 4 mod 8 (`KICKOS_BENCH_FASTPATH_WATCH`, `kickos/bench.h`). The
+test is four instructions on the taken arm, about 4 cycles of a call/reply's 6,000 at 8 bytes, and
+the count itself is off the arm's line; the denominator is the fastpath's own taken count, once
+for the saves and once for the restores. `tools/bench/bench-capture.sh` refuses an
+rxv3 capture whose row is missing, does not add up, counts no entry, or counts a misaligned one;
+another arch prints none and owes none. Which arch a capture is, for this row and the mean, is
+what it was asked to run and never what survived in the log: `tools/bench/bench.sh` reads
+`KICKOS_ARCH` off the build's `CMakeCache.txt` and the capture holds it against
+`boards/<board>/board.cmake`, refusing where the two disagree or neither names one. The banner's
+arch line, `   arch    rxv3` or the terse `a rxv3`, is a cross-check only: lost, it changes
+nothing, and naming another arch it is refused. Why only this path is watched is in
+`docs/design-m10-toolchain.md`, section 2.
+
 TWO THINGS ON THAT ROW SURPRISE A READER COMPARING IT ACROSS ARCHES. Its `n` is one short of
 the switches the window held, the last switch's sample still standing in the pending cell when
 the report prints. And the cells, the stamps and the bank cost the SWINT handler something on

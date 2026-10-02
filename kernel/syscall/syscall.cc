@@ -1338,6 +1338,15 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return bench_cyccnt_hz();
                 }
+                case KOS_BENCH_OP_FASTPATH_WATCH:
+                {
+#if KICKOS_BENCH_FASTPATH_WATCH
+                    bench_fastpath_watch_print(ipc_fast_taken_count());
+                    return 0;
+#else
+                    return static_cast<uint64_t>(-KOS_ENOSYS);
+#endif
+                }
                 case KOS_BENCH_OP_DIST_PRINT:
                 {
                     if (a1 == KOS_BENCH_DIST_SWITCH_VEC)

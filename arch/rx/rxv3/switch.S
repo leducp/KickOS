@@ -105,6 +105,32 @@ _arch_switch:
     mov.b   #1, [r3]           /* pend SWINT (deferred switch) */
     rts
 
+/* arch_irq_restore(state): R1 = the IPL arch_irq_save returned. MVTIPL takes an immediate    */
+/* only, so the whole PSW goes back via MVTC with only the IPL field (b27-b24, which          */
+/* arch_rxv3.cc pins) replaced; flags, U and I are kept, and PM is ignored on write in        */
+/* supervisor.                                                                                */
+/*                                                                                            */
+/* THE MVTC IS WHERE A SWITCH PENDED UNDER THE LOCK IS TAKEN, so R0 there is the USP the      */
+/* switcher saves on, and the DPFPU file it banks starts 224 bytes below it. The operand bus  */
+/* and the RAM are 64 bits wide (UM sec.16.2.1), so at a USP of 4 mod 8 every DR dpushm.d and */
+/* dpopm.d move straddles two beats. The caller's frame sizes alone decide that residue, so   */
+/* R0 is aligned down to 8 across the MVTC. The return address is popped FIRST: the aligned   */
+/* R0 is then no lower than the slot the caller's bsr pushed, the 4 bytes                     */
+/* trap_redzone_roots.txt charges this body.                                                  */
+    .global _arch_irq_restore
+_arch_irq_restore:
+    mvfc    psw, r5
+    and     #0xf0ffffff, r5
+    shll    #24, r1
+    and     #0x0f000000, r1
+    or      r1, r5
+    pop     r4                 /* return address; R0 = the caller's SP */
+    mov.l   r0, r3
+    and     #-8, r0
+    mvtc    r5, psw            /* a pended SWINT is accepted here, on an 8-aligned USP */
+    mov.l   r3, r0
+    jmp     r4
+
 /* kickos_rx_pendsw: SWINT handler (INTB[27]). HW pushed PC then PSW to the ISP  */
 /* and cleared U (so R0 = ISP). I stays 0 for the whole handler, so the swap is  */
 /* atomic and g_arch_next is stable under it.                                    */
@@ -521,7 +547,35 @@ _kickos_rx_syscall_trap:
     add     #12, r0
     setpsw  u                  /* R0 = USP again */
     mov.l   [r1], r0           /* R0 = incoming->sp */
+#if KICKOS_BENCH && defined(__RX_DFPU_INSNS__)
+    /* THE ALIGNMENT WATCH (KICKOS_BENCH_FASTPATH_WATCH, kickos/bench.h). A frame's DPFPU bank
+       stands 12 above its base, so a base at 0 mod 8 put the save above, or puts the restore
+       below, at 4 mod 8. Both bases are tested at once and only a misaligned one leaves the
+       line. Every register but R0 is dead here: the restore reloads them all. */
+    mov.l   [r15], r14         /* the outgoing frame base */
+    and     r0, r14
+    btst    #2, r14
+    beq     .Lbench_fp_misaligned
+.Lbench_fp_watched:
+#endif
     bra.a   _kickos_rx_restore
+#if KICKOS_BENCH && defined(__RX_DFPU_INSNS__)
+.Lbench_fp_misaligned:
+    mov.l   #_g_bench_fp_misaligned, r14
+    mov.l   [r15], r15
+    btst    #2, r15
+    bne     .Lbench_fp_save_ok
+    mov.l   [r14], r15
+    add     #1, r15
+    mov.l   r15, [r14]         /* a save at 4 mod 8 */
+.Lbench_fp_save_ok:
+    btst    #2, r0
+    bne     .Lbench_fp_watched
+    mov.l   4[r14], r15
+    add     #1, r15
+    mov.l   r15, 4[r14]        /* a restore at 4 mod 8 */
+    bra     .Lbench_fp_watched
+#endif
 /* The leaf declined, or there was no block to run it on. Nothing was committed: unwind to the
    register file and the USP the trap arrived with, so the generic path below runs on that
    exact state. R0 is the frame base on both entries to this label. Nothing on the block is

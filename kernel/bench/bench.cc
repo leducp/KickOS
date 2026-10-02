@@ -508,6 +508,11 @@ extern "C"
     constinit uint32_t g_bench_sw_half = 0;
     constinit uint32_t g_bench_sw_rstart = 0;
     constinit uint32_t g_bench_sw_pend = 0;
+#if KICKOS_BENCH_FASTPATH_WATCH
+    // switch.S's taken fastpath arm, since boot: [0] the saves, [1] the restores after them,
+    // whose DPFPU bank stood at 4 mod 8.
+    constinit uint32_t g_bench_fp_misaligned[2] = {};
+#endif
 
     // C entry point for the deferred MPU commit in the switch epilogue.
     void kickos_bench_mpu_commit(uint32_t delta)
@@ -1135,6 +1140,30 @@ namespace kickos
                 static_cast<unsigned>(agg.max), static_cast<unsigned>(c));
     }
 
+#if KICKOS_BENCH_SWITCH_MEAN
+    // Its own row and not a field of the switch row, so every reader of that row reads the
+    // same bytes it always did. To the hundredth: the mean is what the tick-quantized p50
+    // cannot resolve.
+    static void switch_mean_print()
+    {
+        Acc const agg = dist_total(BD_SWITCH);
+        uint32_t const c = agg.count;
+        if (c == 0)
+        {
+            return;
+        }
+        uint64_t const centi = (agg.sum * 100u) / c;
+        uint32_t const whole = static_cast<uint32_t>(centi / 100u);
+        uint32_t const frac = static_cast<uint32_t>(centi % 100u);
+        uint32_t capped = 0;
+        uint32_t const ns = cyc_to_ns(whole, capped);
+        kprintf_paced("  switch-mean: %u.%u%u cyc  %u ns  (phase-dithered, n=%u)\n",
+                static_cast<unsigned>(whole), static_cast<unsigned>(frac / 10u),
+                static_cast<unsigned>(frac % 10u), static_cast<unsigned>(ns),
+                static_cast<unsigned>(c));
+    }
+#endif
+
     uint32_t bench_dist_print(uint32_t fast_taken)
     {
         kprintf_paced("  switch-probe: fastpath-swaps=%u  (swapped inside the trap, so not in"
@@ -1143,6 +1172,12 @@ namespace kickos
         for (uint32_t d = 0; d < DIST_ORDINARY_END; d++)
         {
             dist_print_fmt(d, DIST_FMT[d]);
+#if KICKOS_BENCH_SWITCH_MEAN
+            if (d == BD_SWITCH)
+            {
+                switch_mean_print();
+            }
+#endif
         }
         // Read each published maximum with its release address. Samples may have
         // arrived since the aggregate was printed. Site 0 means no sample.
@@ -1180,6 +1215,23 @@ namespace kickos
         }
         return dist_total(BD_SWITCH).count;
     }
+
+#if KICKOS_BENCH_FASTPATH_WATCH
+    void bench_fastpath_watch_print(uint32_t fast_taken)
+    {
+        uint32_t saves = 0;
+        uint32_t restores = 0;
+        {
+            IrqLock lock;
+            saves = g_bench_fp_misaligned[0];
+            restores = g_bench_fp_misaligned[1];
+        }
+        kprintf_paced("  fastpath-misaligned: %u of %u  (saves %u of %u, restores %u of %u)\n",
+                static_cast<unsigned>(saves + restores), static_cast<unsigned>(2u * fast_taken),
+                static_cast<unsigned>(saves), static_cast<unsigned>(fast_taken),
+                static_cast<unsigned>(restores), static_cast<unsigned>(fast_taken));
+    }
+#endif
 
     uint32_t bench_dist_print_switch_vec()
     {

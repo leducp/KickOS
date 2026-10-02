@@ -430,17 +430,9 @@ arch_irq_state_t arch_irq_save(void)
     return (psw & PSW_IPL_MASK) >> PSW_IPL_SHIFT; // old IPL
 }
 
-void arch_irq_restore(arch_irq_state_t state)
-{
-    // MVTIPL cannot take a runtime value, so the whole PSW goes back via MVTC with only the
-    // IPL bits replaced. PM is ignored on write in supervisor; flags, U and I are preserved
-    // from the current PSW.
-    uint32_t psw;
-    __asm volatile("mvfc psw, %0" : "=r"(psw));
-    psw = (psw & ~PSW_IPL_MASK) |
-          ((static_cast<uint32_t>(state) << PSW_IPL_SHIFT) & PSW_IPL_MASK);
-    __asm volatile("mvtc %0, psw" ::"r"(psw) : "memory");
-}
+// arch_irq_restore is in switch.S, which spells the IPL field as literals.
+static_assert(PSW_IPL_SHIFT == 24 and PSW_IPL_MASK == 0x0f000000u,
+              "arch_irq_restore's IPL field literals are b27-b24");
 
 int arch_in_isr(void)
 {

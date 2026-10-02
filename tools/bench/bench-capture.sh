@@ -41,6 +41,9 @@
 #   EXPECT_COMMIT  the label cmake/build_stamp.cmake stamped into the image, which the banner
 #               must carry. Default: this ROOT's own `git describe --dirty --always`, which is
 #               right only when the image was built here.
+#   EXPECT_ARCH the KICKOS_ARCH the image was configured for, which bench.sh reads out of the
+#               build's own CMakeCache.txt. Default: boards/<board>/board.cmake's. Where both
+#               are known they must agree, and a bench capture with neither is refused.
 #   EXPECT_ARMS how many arms THIS IMAGE plans, and EXPECT_SKIPS / EXPECT_PARTIALS /
 #               EXPECT_FAULTS the permission sets, all read by bench.sh out of the build's own
 #               kickos-selftest-manifest.txt. A `selftest*` capture without EXPECT_ARMS is
@@ -685,13 +688,22 @@ bench_slice() { # <log> <out>
 # window that owes it owes exactly one probe and, where that probe closed spans, a row to carry
 # them.
 #
+# `switch-mean` IS THE SWITCH ROW'S OWN MEAN, over the phase-dithered samples that row's p50 is
+# taken from (docs/reference/bench.md). An rxv3 image owes one in every window whose switch row
+# sampled, over the same n, and no greater than that row's max, since no mean exceeds the
+# largest sample it averages. WHAT OWES IT IS THE ARCH THE IMAGE WAS BUILT FOR, NOT THE ROWS THAT
+# ARRIVED: a boot that lost every mean reads, from its own rows, as one of an arch that prints
+# none, and its p50s are then the phase-dependent figures the mean exists to stand beside.
+# Another arch prints none and owes none, but a boot of one that does print a mean owes it in
+# every sampled window all the same.
+#
 # AN UNPARSEABLE ACCOUNTING LINE IS NOT AN ABSENT ONE AND MAY NOT RESOLVE TO SATISFIED: a line
 # whose fields the reader cannot read decides nothing, and skipping it silently is the same
 # hole as not requiring it.
 #
 # No `$` anchor and no reliance on the field after the last one read: every line here ends CRLF.
-bench_windows() { # <slice>
-  awk '
+bench_windows() { # <slice> <expected arch>
+  awk -v arch="$2" '
       # The CR goes before any field is read. Every console line here ends CRLF, so the last
       # field on a line carries one and a numeric match on it fails against a value that is
       # there. Nothing below distinguishes the two line endings, which is what the rest of
@@ -710,6 +722,23 @@ bench_windows() { # <slice>
               fail("it carries " nsw " switch rows, so nothing says which of them the " \
                    "end-to-end block below was conditioned on")
           }
+          if (nmean > 1) {
+              fail("it carries " nmean " switch-mean rows, so nothing says which of them " \
+                   "is the mean of its switch row")
+          }
+          if (nmean == 1 && mparsed == 0) {
+              fail("its switch-mean row does not read as a mean in cycles over n= samples, " \
+                   "so the figure is present and undecidable")
+          }
+          if (nmean == 1 && mparsed == 1 && nsw == 1 && mn != swn) {
+              fail("its switch-mean row is over n=" mn " and its switch row over n=" swn \
+                   ", so the mean is not over the samples that row reports")
+          }
+          if (nmean == 1 && mparsed == 1 && nsw == 1 && mcyc > swmax) {
+              fail("its switch-mean row reads " mcyc " cycles over a switch row whose max " \
+                   "is " swmax ", and no mean exceeds the largest sample it averages")
+          }
+          owed[win] = (swn > 0 && nmean == 0)
           if (swn > 0 && npass == 0) {
               fail("its switch row sampled " swn " and it carries no " \
                    "[  e2e-passes: asked=] line, so its end-to-end rows " \
@@ -769,11 +798,28 @@ bench_windows() { # <slice>
           swn = 0; nsw = 0; npass = 0; nprobe = 0; parsed = 0
           asked = 0; raised = 0; closed = 0; dropped = 0
           nloc = 0; ncross = 0; loc_rows = 0
+          swmax = 0; nmean = 0; mparsed = 0; mcyc = 0; mn = 0
           next
       }
       /^  switch: / {
           nsw++
           if (match($0, /n=[0-9]+\)/)) { swn = substr($0, RSTART + 2, RLENGTH - 3) + 0 }
+          if (match($0, /[0-9]+\/[0-9]+\/[0-9]+ cyc/)) {
+              split(substr($0, RSTART, RLENGTH - 4), sw, "/")
+              swmax = sw[3] + 0
+          }
+          next
+      }
+      /^  switch-mean: / {
+          nmean++
+          anymean = 1
+          mparsed = 0
+          if (match($0, /^  switch-mean: [0-9]+\.[0-9][0-9] cyc  [0-9]+ ns  \(phase-dithered, n=[0-9]+\)/)) {
+              mparsed = 1
+              mcyc = substr($0, 16) + 0
+              match($0, /n=[0-9]+\)/)
+              mn = substr($0, RSTART + 2, RLENGTH - 3) + 0
+          }
           next
       }
       /^  e2e-probe: / {
@@ -805,12 +851,127 @@ bench_windows() { # <slice>
           if (match($0, /n=[0-9]+\)/)) { ncross = substr($0, RSTART + 2, RLENGTH - 3) + 0 }
           next
       }
-      END { close_window(); exit rc }' "$1"
+      END {
+          close_window()
+          if (arch == "rxv3" || anymean == 1) {
+              why = "the boot prints a switch-mean row"
+              if (arch == "rxv3") { why = "the image is rxv3, which prints a switch-mean row," }
+              for (w = 1; w <= win; w++) {
+                  if (owed[w] == 1) {
+                      printf "  window %d: %s and this window, whose switch row sampled, " \
+                             "carries none, so its p50 stands without the mean it is read " \
+                             "beside\n", w, why
+                      rc = 1
+                  }
+              }
+          }
+          exit rc
+      }' "$1"
 }
 
-# <log> <expected label, empty for none> <slice out>. Every finding is printed; 0 means the file
-# is a complete bench report from the expected tree. The slice is written to the third argument
-# and left there, because the cycle judgement downstream reads the same one boot.
+# <board.cmake> [arch the build configured]. The arch a capture of this board is judged as, on
+# stdout; nonzero, and nothing printed, where it cannot be named or the two sources disagree.
+#
+# THE ARCH IS WHAT THE CAPTURE WAS ASKED TO RUN, SO IT IS READ OFF THE BUILD AND THE BOARD AND
+# NEVER OFF THE LOG. Every row an arch owes is owed because of it, and a log damaged enough to
+# lose those rows can lose the banner line naming the arch as easily. An arch that cannot be
+# named is refused rather than defaulted, since defaulting to one that owes nothing is the hole.
+bench_expect_arch() { # <board.cmake> [configured arch]
+  _bea_board=$(sed -n 's|^ *set( *KICKOS_ARCH  *"\([A-Za-z0-9_]*\)" *).*|\1|p' "$1" 2>/dev/null \
+    | tail -1)
+  _bea_built=${2:-}
+  if [ -n "$_bea_built" ] && [ -n "$_bea_board" ] && [ "$_bea_built" != "$_bea_board" ]; then
+    echo "  the build was configured for $_bea_built and $1 names $_bea_board, so the" >&2
+    echo "    capture cannot say which arch's rows it owes" >&2
+    return 1
+  fi
+  _bea=${_bea_built:-$_bea_board}
+  if [ -z "$_bea" ]; then
+    echo "  no arch: EXPECT_ARCH is unset and $1 sets no KICKOS_ARCH, so nothing says" >&2
+    echo "    which rows the report owes" >&2
+    return 1
+  fi
+  printf '%s\n' "$_bea"
+}
+
+# <log>. The arch the last boot's banner names, or nothing where the line is gone or damaged.
+# Both banner columns (include/kickos/diag.h): `   arch    rxv3` and the terse `a rxv3`. The
+# line stands above the commit line the slice is cut at, so it is read off the whole log up to
+# the boot start.
+#
+# THIS IS A CROSS-CHECK AND NEVER THE SOURCE: an absent line says nothing, and only a line naming
+# another arch than the expected one is a finding, an image that is not what the capture was
+# asked to run.
+bench_banner_arch() { # <log>
+  sed -n "1,$(bench_boot_start "$1")p" "$1" | awk '
+      { gsub(/\r/, "") }
+      /^   arch +[A-Za-z0-9_]+ *$/ { a = $2 }
+      /^a [A-Za-z0-9_]+ *$/ { a = $2 }
+      END { print a }'
+}
+
+# <slice> <expected arch>. The RXv3 fastpath alignment watch, one row a boot (KICKOS_BENCH_FASTPATH_WATCH in
+# kernel/include/kickos/bench.h). The register-form call's fastpath banks the DPFPU file on the
+# caller's own USP, so its alignment is the caller's frame sizes', and the census behind
+# e0f9704d found every taken entry aligned. A compiler that changes one of those frames flips
+# it at 26 cycles a call, which no throughput figure is coarse enough to refuse; this is what
+# refuses it.
+#
+# THE ROW IS OWED BY THE EXPECTED ARCH AND BY NOTHING THE LOG SAYS OF ITSELF: a boot that lost
+# it reads, from its own rows, as a backend that keeps no watch, and a boot that lost its arch
+# line reads as no arch at all. Another arch prints none and owes none. A row is held to zero
+# misaligned entries, to its own sums, and to a nonzero taken count, since a watch over no entry
+# watched nothing.
+bench_fastpath_watch() { # <slice> <expected arch>
+  awk -v arch="$2" '
+      { gsub(/\r/, "") }
+      function fail(msg) { printf "  %s\n", msg; rc = 1 }
+      /^  fastpath-misaligned: / {
+          nrow++
+          parsed = 0
+          if (match($0, /^  fastpath-misaligned: [0-9]+ of [0-9]+  \(saves [0-9]+ of [0-9]+, restores [0-9]+ of [0-9]+\)/)) {
+              parsed = 1
+              split($0, f, /[^0-9]+/)
+              mis = f[2] + 0; tot = f[3] + 0
+              sv = f[4] + 0; svn = f[5] + 0; rs = f[6] + 0; rsn = f[7] + 0
+          }
+          next
+      }
+      END {
+          if (nrow == 0 && arch == "rxv3") {
+              fail("the boot is rxv3 and carries no [  fastpath-misaligned: ] row, so the " \
+                   "watch on the fastpath DPFPU bank reported nothing and a flipped parity " \
+                   "reads as no watch at all")
+          }
+          if (nrow > 1) {
+              fail("the boot carries " nrow " fastpath-misaligned rows, so nothing says " \
+                   "which of them is its count")
+          }
+          if (nrow == 1 && parsed == 0) {
+              fail("its fastpath-misaligned row does not read as N of M over saves and " \
+                   "restores, so the watch is present and undecidable")
+          }
+          if (nrow == 1 && parsed == 1 && (mis != sv + rs || tot != svn + rsn || sv > svn || rs > rsn)) {
+              fail("its fastpath-misaligned row reads " mis " of " tot " over saves " sv \
+                   " of " svn " and restores " rs " of " rsn ", which do not add up, so " \
+                   "the row is not counting what it names")
+          }
+          if (nrow == 1 && parsed == 1 && tot == 0) {
+              fail("its fastpath-misaligned row counts no taken entry, so the watch saw " \
+                   "no fastpath and passes a parity it never read")
+          }
+          if (nrow == 1 && parsed == 1 && mis > 0) {
+              fail(mis " of the fastpath taken entries (" sv " saves, " rs " restores) " \
+                   "moved a DPFPU bank at 4 mod 8: a frame size changed and flipped the " \
+                   "parity the e0f9704d census found aligned, at 26 cycles an entry")
+          }
+          exit rc
+      }' "$1"
+}
+
+# <log> <expected label, empty for none> <slice out> <expected arch>. Every finding is printed; 0
+# means the file is a complete bench report from the expected tree. The slice is written to the
+# third argument and left there, because the cycle judgement downstream reads the same one boot.
 #
 # THE SLICE IS CUT ONCE AND EVERY ARM READS IT, the cycle judgement included. A board that
 # reboots inside the capture window leaves a complete run followed by a cut one at the same
@@ -821,11 +982,18 @@ bench_windows() { # <slice>
 # `bench: done` IS THE TRUNCATION TEST: it is the last line main writes and the reporter loop is
 # bounded, so its absence says the console window closed before the app finished. A truncated
 # capture holds every earlier marker and reads as complete on any of them.
-bench_verdict() { # <log> <want> <slice out>
+bench_verdict() { # <log> <want> <slice out> <arch>
   _bv_whole=$1
   _bv_want=$2
   _bv_log=$3
+  _bv_arch=${4:-}
   _bv_rc=0
+
+  if [ -z "$_bv_arch" ]; then
+    echo "  no expected arch: nothing says which rows this report owes, and judging it as an" >&2
+    echo "    arch that owes none passes whatever it lost" >&2
+    _bv_rc=1
+  fi
 
   if ! bench_slice "$_bv_whole" "$_bv_log"; then
     echo "  no boot start: the capture carries neither a banner title nor a commit label, so" >&2
@@ -889,9 +1057,21 @@ EOF
     esac
   fi
 
-  _bv_win=$(bench_windows "$_bv_log")
+  _bv_win=$(bench_windows "$_bv_log" "$_bv_arch")
   if [ -n "$_bv_win" ]; then
     printf '%s\n' "$_bv_win" >&2
+    _bv_rc=1
+  fi
+
+  _bv_banner_arch=$(bench_banner_arch "$_bv_whole")
+  if [ -n "$_bv_banner_arch" ] && [ -n "$_bv_arch" ] && [ "$_bv_banner_arch" != "$_bv_arch" ]; then
+    echo "  banner arch [$_bv_banner_arch] against [$_bv_arch] this capture was asked to run: the" >&2
+    echo "    image on the board is not the build being judged, so the rows it owes are another's" >&2
+    _bv_rc=1
+  fi
+  _bv_fpw=$(bench_fastpath_watch "$_bv_log" "$_bv_arch")
+  if [ -n "$_bv_fpw" ]; then
+    printf '%s\n' "$_bv_fpw" >&2
     _bv_rc=1
   fi
 
@@ -1076,6 +1256,9 @@ bench_controls() {
       printf '   KickOS 0.5.1  -  microkernel RTOS\r\n'
       printf '  ==============================================\r\n'
       printf '   board   control\r\n'
+      if [ -n "${_ctl_arch:-}" ]; then
+        printf '   arch    %s\r\n' "$_ctl_arch"
+      fi
       printf '%s%s\r\n' "${4:-   commit  }" "$2"
       printf 'microbenchmark: context-switch throughput (all arches) + per-switch cost\r\n'
       printf 'cycle counter: %s Hz (0 = no rate converts a reading; cycles only)\r\n' "$3"
@@ -1262,25 +1445,144 @@ bench_controls() {
   # bench legitimately takes.
   cat "$CTL/frozenboot" "$CTL/good" > "$CTL/frozenthenmoving"
 
-  for _c in good twowin threewin nocyc notitle; do
-    bench_verdict "$CTL/$_c" "$EXPECT_COMMIT" "$CTL/$_c.slice" 2>/dev/null \
-      || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted '$_c' report, which is a
-  complete one, so it would refuse captures this bench legitimately takes"; }
+  # THE RX SHAPE: every window's switch row followed by the mean of its dithered samples. A
+  # complete report; the mean plants below each break it one way.
+  ctl_mean_window() { # <file> <mean row>...
+    _cmw=$1
+    shift
+    {
+      printf '  throughput: 25086 ctx-sw/s  (39861 ns/sw avg over 40000 switches / 1594 ms)\r\n'
+      printf '  switch:    80/80/229 cyc  952/952/2726 ns  (p50/p99/max, n=40002)\r\n'
+      printf '%s\r\n' "$@"
+      printf '  e2e-probe: line=7 closed=50 dropped=0 tare=4000/4122 ns  (min/avg, n=64)\r\n'
+      printf '  e2e-passes: asked=50 raised=50\r\n'
+      printf '  e2e-local: 28672/30720/31857 ns  (p50/p99/max, n=50)\r\n'
+    } >> "$_cmw"
+  }
+  _mean='  switch-mean: 87.25 cyc  1038 ns  (phase-dithered, n=40002)'
+  ctl_head "$CTL/mean" "$EXPECT_COMMIT" 84000000
+  ctl_mean_window "$CTL/mean" "$_mean"
+  ctl_mean_window "$CTL/mean" "$_mean"
+  ctl_mean_window "$CTL/mean" "$_mean"
+  printf 'bench: done\r\n' >> "$CTL/mean"
+  # THE SECOND WINDOW OF THREE LOSING ITS MEAN, which the first and third would answer for if
+  # the rule asked the slice for one anywhere.
+  ctl_head "$CTL/meanlost" "$EXPECT_COMMIT" 84000000
+  ctl_mean_window "$CTL/meanlost" "$_mean"
+  ctl_window "$CTL/meanlost" 50 50
+  ctl_mean_window "$CTL/meanlost" "$_mean"
+  printf 'bench: done\r\n' >> "$CTL/meanlost"
+  # A MEAN OVER OTHER SAMPLES than the row it stands under.
+  sed '/^  switch-mean: /s|n=40002)|n=39990)|' "$CTL/mean" > "$CTL/meann"
+  # A MEAN ABOVE THE ROW'S MAX, which no set of samples has.
+  sed 's|switch-mean: 87.25 cyc|switch-mean: 230.10 cyc|' "$CTL/mean" > "$CTL/meanmax"
+  # TWO MEANS IN ONE WINDOW, nothing saying which one is the row's.
+  ctl_head "$CTL/twomean" "$EXPECT_COMMIT" 84000000
+  ctl_mean_window "$CTL/twomean" "$_mean" "$_mean"
+  printf 'bench: done\r\n' >> "$CTL/twomean"
+  # A MEAN THAT DOES NOT READ AS ONE, which a reader matching only well-formed rows skips.
+  sed 's|switch-mean: 87.25 cyc|switch-mean: 87 cyc|' "$CTL/mean" > "$CTL/meanbad"
+  # THE ARCH COMES FROM THE BUILD AND THE BOARD, and a capture that can name it from neither, or
+  # names two, is refused. Board descriptors as text, so this arm reads no board either.
+  printf 'set(KICKOS_ARCH_FAMILY "rx")\r\nset(KICKOS_ARCH        "rxv3")\r\n' > "$CTL/rx.cmake"
+  printf 'set(KICKOS_ARCH_FAMILY "rx")\n' > "$CTL/noarch.cmake"
+  for _c in "rx.cmake::rxv3" "rx.cmake:rxv3:rxv3" "noarch.cmake:rxv3:rxv3"; do
+    IFS=: read -r _cf _cb _cw <<EOF
+$_c
+EOF
+    [ "$(bench_expect_arch "$CTL/$_cf" "$_cb" 2>/dev/null)" = "$_cw" ] \
+      || { rm -rf "$CTL"; refuse "the expected arch of a planted '$_cf' built as '$_cb' is not
+  $_cw, so a capture of a board this tree describes is judged as the wrong arch or as none"; }
   done
-  for _c in cut flip other damaged dropped nopasses winlost winbody winnosw twoprobe noloc \
-            shortsweep longsweep malformed locshort noswitch reboot rebootdropped \
-            rebootdamaged; do
-    if bench_verdict "$CTL/$_c" "$EXPECT_COMMIT" "$CTL/$_c.slice" 2>/dev/null; then
+  for _c in "rx.cmake:armv7m" "noarch.cmake:" "absent.cmake:"; do
+    IFS=: read -r _cf _cb <<EOF
+$_c
+EOF
+    if bench_expect_arch "$CTL/$_cf" "$_cb" >/dev/null 2>&1; then
       rm -rf "$CTL"
-      refuse "the bench verdict passes a planted '$_c' report, so it cannot see that class and
-  would report a capture carrying it as a complete witness"
+      refuse "the expected arch of a planted '$_cf' built as '${_cb:-nothing}' resolves, so a
+  capture whose arch is contradicted or unknown is judged as one that owes whatever it carries"
+    fi
+  done
+
+  # THE FASTPATH WATCH. The mean report as a boot of the named arch prints it, the watch's rows
+  # last before the sentinel: rxv3 owes exactly one, held to zero, and another arch owes none.
+  ctl_arch_report() { # <file> <arch> <watch row>...
+    _car=$1
+    _ctl_arch=$2
+    shift 2
+    ctl_head "$_car" "$EXPECT_COMMIT" 84000000
+    _ctl_arch=
+    ctl_mean_window "$_car" "$_mean"
+    ctl_mean_window "$_car" "$_mean"
+    ctl_mean_window "$_car" "$_mean"
+    for _car_row in "$@"; do
+      printf '%s\r\n' "$_car_row" >> "$_car"
+    done
+    printf 'bench: done\r\n' >> "$_car"
+  }
+  _fpw='  fastpath-misaligned: 0 of 120002  (saves 0 of 60001, restores 0 of 60001)'
+  ctl_arch_report "$CTL/fpwatch" rxv3 "$_fpw"
+  ctl_arch_report "$CTL/fpother" armv7m
+  # THE REGRESSION IT WATCHES FOR: a frame size changed and every restore went to 4 mod 8.
+  ctl_arch_report "$CTL/fpmis" rxv3 \
+    '  fastpath-misaligned: 60001 of 120002  (saves 0 of 60001, restores 60001 of 60001)'
+  # An rxv3 boot that lost the row, which from its own rows reads as a backend keeping none.
+  ctl_arch_report "$CTL/fplost" rxv3
+  ctl_arch_report "$CTL/fptwo" rxv3 "$_fpw" "$_fpw"
+  ctl_arch_report "$CTL/fpbad" rxv3 '  fastpath-misaligned: 0 of 120002'
+  ctl_arch_report "$CTL/fpsum" rxv3 \
+    '  fastpath-misaligned: 0 of 120002  (saves 1 of 60001, restores 0 of 60001)'
+  ctl_arch_report "$CTL/fpnone" rxv3 \
+    '  fastpath-misaligned: 0 of 0  (saves 0 of 0, restores 0 of 0)'
+  # EVERY MEAN GONE FROM AN rxv3 IMAGE'S REPORT, which reads from its own rows as a report of an
+  # arch that prints none.
+  sed '/^  switch-mean: /d' "$CTL/fpwatch" > "$CTL/rxnomean"
+  # THE ARCH LINE GONE, which leaves the expected arch the only one there is: the complete
+  # report still passes, and the one that also lost its watch is still refused.
+  sed '/^   arch /d' "$CTL/fpwatch" > "$CTL/rxnoarch"
+  sed '/^   arch /d' "$CTL/fplost" > "$CTL/rxnoarchfp"
+  # THE TERSE BANNER COLUMN, read as the full one is.
+  sed 's|^   arch    rxv3|a rxv3|' "$CTL/fpwatch" > "$CTL/rxterse"
+  sed 's|^   arch    rxv3|a rxv3|' "$CTL/fplost" > "$CTL/rxterselost"
+  # A BANNER NAMING ANOTHER ARCH than the capture was asked to run, in either column and from
+  # either side: every row the rxv3 report owes is present, so only the cross-check refuses it.
+  sed 's|^   arch    rxv3|   arch    armv7m|' "$CTL/fpwatch" > "$CTL/rxcontra"
+  sed 's|^   arch    rxv3|a armv7m|' "$CTL/fpwatch" > "$CTL/rxcontraterse"
+  # Another arch's report carrying neither row, which it owes neither of.
+  sed '/^  switch-mean: /d' "$CTL/fpother" > "$CTL/armbare"
+
+  # <plant>:<the arch it is judged as>. A report of no arch's shape is judged as armv7m, an arch
+  # that owes neither RX row, so each of them reads on the one difference it plants.
+  for _c in good:armv7m twowin:armv7m threewin:armv7m nocyc:armv7m notitle:armv7m mean:armv7m \
+            fpwatch:rxv3 fpother:armv7m rxnoarch:rxv3 rxterse:rxv3 armbare:armv7m; do
+    _ca=${_c#*:}
+    bench_verdict "$CTL/${_c%%:*}" "$EXPECT_COMMIT" "$CTL/${_c%%:*}.slice" "$_ca" 2>/dev/null \
+      || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted '${_c%%:*}' report judged
+  as ${_ca:-no arch}, which is a complete one, so it would refuse captures this bench legitimately
+  takes"; }
+  done
+  for _c in cut:armv7m flip:armv7m other:armv7m damaged:armv7m dropped:armv7m \
+            nopasses:armv7m winlost:armv7m winbody:armv7m winnosw:armv7m twoprobe:armv7m \
+            noloc:armv7m shortsweep:armv7m longsweep:armv7m malformed:armv7m locshort:armv7m \
+            noswitch:armv7m reboot:armv7m rebootdropped:armv7m rebootdamaged:armv7m \
+            meanlost:armv7m meann:armv7m meanmax:armv7m twomean:armv7m meanbad:armv7m \
+            fpmis:rxv3 fplost:rxv3 fptwo:rxv3 fpbad:rxv3 fpsum:rxv3 fpnone:rxv3 rxnomean:rxv3 \
+            rxnoarchfp:rxv3 rxterselost:rxv3 rxcontra:rxv3 rxcontraterse:rxv3 fpwatch:armv7m \
+            fpwatch:; do
+    _ca=${_c#*:}
+    if bench_verdict "$CTL/${_c%%:*}" "$EXPECT_COMMIT" "$CTL/${_c%%:*}.slice" "$_ca" \
+         2>/dev/null; then
+      rm -rf "$CTL"
+      refuse "the bench verdict passes a planted '${_c%%:*}' report judged as ${_ca:-no arch}, so
+  it cannot see that class and would report a capture carrying it as a complete witness"
     fi
   done
 
   # A REBOOT IS ALSO A WINDOW BOUNDARY, so this plant is refused sliced or whole. Its two boots
   # print a report window each and the liveness groups reset at every window, so the first
   # boot's spans cannot answer for the second's.
-  bench_verdict "$CTL/movingthenfrozen" "$EXPECT_COMMIT" "$CTL/mtf.slice" 2>/dev/null \
+  bench_verdict "$CTL/movingthenfrozen" "$EXPECT_COMMIT" "$CTL/mtf.slice" armv7m 2>/dev/null \
     || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted moving-then-frozen report,
   whose last boot is complete; the counter is the finding there and the completeness arms may
   not take it"; }
@@ -1294,7 +1596,7 @@ bench_controls() {
     refuse "the cycle judgement passes the last boot of a planted moving-then-frozen report, so
   a counter that stopped between two boots reports as a live one"
   fi
-  bench_verdict "$CTL/frozenthenmoving" "$EXPECT_COMMIT" "$CTL/ftm.slice" 2>/dev/null \
+  bench_verdict "$CTL/frozenthenmoving" "$EXPECT_COMMIT" "$CTL/ftm.slice" armv7m 2>/dev/null \
     || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted frozen-then-moving report,
   whose last boot is complete and at the expected commit"; }
   if bench_cycles "$CTL/frozenthenmoving" >/dev/null 2>&1; then
@@ -1315,7 +1617,7 @@ bench_controls() {
 
   # ONE BOOT IS NOT ONE JUDGEMENT. The counter stops between two windows of the same boot, which
   # the slice cannot separate, so the plant must refuse on a report the completeness arms pass.
-  bench_verdict "$CTL/winfrozen" "$EXPECT_COMMIT" "$CTL/winfrozen.slice" 2>/dev/null \
+  bench_verdict "$CTL/winfrozen" "$EXPECT_COMMIT" "$CTL/winfrozen.slice" armv7m 2>/dev/null \
     || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted report whose counter stopped
   between windows, which is a complete one; the counter is the finding there and the
   completeness arms may not take it"; }
@@ -1339,7 +1641,19 @@ bench_controls() {
   echo "  sweep it ran and one above it, one whose denominator does not read as counts at all," >&2
   echo "  one whose locality rows are not the spans the probe closed, one with no switch row to" >&2
   echo "  read the condition off, and a complete report followed by a second boot that is cut" >&2
-  echo "  short, lost a row, or lost its banner whole at the same commit. The cycle judgement" >&2
+  echo "  short, lost a row, or lost its banner whole at the same commit. It passes a report" >&2
+  echo "  carrying a switch-mean row in each of three windows, and refuses one whose SECOND" >&2
+  echo "  window lost it, one over another n than its switch row, one above that row's max," >&2
+  echo "  two in one window, and one that does not read as a mean. It passes an rxv3 report" >&2
+  echo "  whose fastpath watch counts no misaligned entry, the same with its arch line gone or" >&2
+  echo "  in the terse column, and another arch's that carries no watch and no mean; it" >&2
+  echo "  refuses an rxv3 report whose watch counts misaligned entries, one that lost the" >&2
+  echo "  watch, also with its arch line gone or terse, one carrying two, one that does not" >&2
+  echo "  read as N of M over saves and restores, one whose counts do not add up, one whose" >&2
+  echo "  watch saw no entry, one that lost every mean, one whose banner names another arch" >&2
+  echo "  in either column, the complete rxv3 report judged as armv7m, and any report judged" >&2
+  echo "  as no arch; the expected arch resolves from the build, the board, or both agreeing," >&2
+  echo "  and is refused where they disagree or neither names one. The cycle judgement" >&2
   echo "  passes a live counter over three windows, refuses one live in its first window and" >&2
   echo "  constant in the windows after it, refuses a moving-then-frozen report read whole and" >&2
   echo "  read as its last boot alone, and refuses a frozen-then-moving one read whole while" >&2
@@ -1458,6 +1772,10 @@ if [ "$WANT_BENCH" -eq 1 ]; then
   [ "$EXPECT_COMMIT" != "nogit" ] || refuse "the image is stamped 'nogit': git could not name
   the tree it was built from, so the banner in $LOG identifies nothing and a capture checked
   against it is a witness for no tree."
+  # The arch the rows are owed by, from the build that made the image and the board it was
+  # flashed to, never from the log, which can lose the banner line naming it.
+  EXPECT_ARCH=$(bench_expect_arch "$ROOT/boards/$BOARD/board.cmake" "${EXPECT_ARCH:-}") \
+    || refuse "no arch to judge $LOG as; the findings are above."
 
   bench_controls
 
@@ -1469,11 +1787,11 @@ if [ "$WANT_BENCH" -eq 1 ]; then
   CYCLOG=$(mktemp) || refuse "cannot create a file for the capture's last boot"
   # Every refusal below this point leaves through exit, including the cycle judgement's own.
   trap 'rm -f "$CYCLOG"' EXIT
-  if ! bench_verdict "$LOG" "$EXPECT_COMMIT" "$CYCLOG"; then
+  if ! bench_verdict "$LOG" "$EXPECT_COMMIT" "$CYCLOG" "$EXPECT_ARCH"; then
     BENCH_INCOMPLETE=1
     say_kickos_lines
   else
-    printf 'bench:  complete report at %s\n' "$EXPECT_COMMIT"
+    printf 'bench:  complete report at %s (%s)\n' "$EXPECT_COMMIT" "$EXPECT_ARCH"
   fi
   if [ ! -s "$CYCLOG" ]; then
     cp "$LOG" "$CYCLOG"

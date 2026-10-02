@@ -18,6 +18,29 @@
 #define KICKOS_BENCH_TICK_BITS 32
 #endif
 
+// RX times the switch on CMTW1, one tick per 32 cycles, and a ping-pong loop holds the
+// window's phase against that tick, so p50 lands on whichever tick the phase favours.
+// The bench app therefore samples the RX switch row in a burst of its own, untimed, whose
+// players step each window's opening phase through the tick (user/apps/common/bench
+// BENCH_SWITCH_DITHER), and the switch row gains a switch-mean row: the mean of those
+// dithered samples is the span itself.
+#if defined(__RX__)
+#define KICKOS_BENCH_SWITCH_MEAN 1
+#else
+#define KICKOS_BENCH_SWITCH_MEAN 0
+#endif
+
+// The register-form call's fastpath banks the DPFPU file on the caller's own USP, so whether
+// that bank is 8-aligned is the caller's frame sizes' to decide, and a compiler that changes
+// one flips it at 26 cycles a call. switch.S counts each taken entry whose saved or restored
+// bank stands at 4 mod 8, and the bench prints the count once a boot beside the taken count
+// (KOS_BENCH_OP_FASTPATH_WATCH), which tools/bench/bench-capture.sh holds to zero.
+#if defined(__RX__) && defined(__RX_DFPU_INSNS__)
+#define KICKOS_BENCH_FASTPATH_WATCH 1
+#else
+#define KICKOS_BENCH_FASTPATH_WATCH 0
+#endif
+
 // The scheduler's own counters (KICKOS_BENCH_SCHED): off, the bench measures the kernel without
 // them.
 #if defined(KICKOS_BENCH) && KICKOS_BENCH && KICKOS_KERNEL_CORES > 1 \
@@ -339,6 +362,10 @@ namespace kickos
 
     // Print in kernel thread context outside IrqLock. Include aggregate and per-core rows.
     uint32_t bench_dist_print(uint32_t fast_taken); // Return the aggregate switch count.
+#if KICKOS_BENCH_FASTPATH_WATCH
+    // The fastpath-misaligned row, over every entry since boot; `fast_taken` is its denominator.
+    void bench_fastpath_watch_print(uint32_t fast_taken);
+#endif
     // The switch row alone, labelled as the dirty-vector variant. Returns its count.
     uint32_t bench_dist_print_switch_vec();
     void bench_phase_print();

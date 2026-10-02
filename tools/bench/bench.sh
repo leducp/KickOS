@@ -255,6 +255,13 @@ EXPECT_COMMIT=$(sed -n 's|.*kickos_build_commit\[\] = "\(.*\)";.*|\1|p' "$STAMP"
 [ -n "$EXPECT_COMMIT" ] || { echo "REFUSING: no commit label in $STAMP, so the capture would
   have nothing to check the board's banner against" >&2; exit 1; }
 export EXPECT_COMMIT
+# THE ARCH THIS IMAGE WAS CONFIGURED FOR, which decides the rows its report owes. Read off the
+# build rather than the board name, so a preset that overrides the board's arch is judged as
+# what it built; the capture also holds it against the board's descriptor.
+EXPECT_ARCH=$(sed -n 's|^KICKOS_ARCH:[A-Z]*=||p' "$BUILD/CMakeCache.txt" 2>/dev/null | tail -1)
+[ -n "$EXPECT_ARCH" ] || { echo "REFUSING: no KICKOS_ARCH in $BUILD/CMakeCache.txt, so the
+  capture would have nothing to say which rows the report owes" >&2; exit 1; }
+export EXPECT_ARCH
 
 # The emitted image base, without extension. Board-specific apps are searched FIRST, the
 # same order tools/flash-common.sh uses, so a name collision resolves the same way here.
@@ -373,7 +380,8 @@ ROUT=$(mktemp)
 RARGS=()
 for _ra in "$BOARD" "$APP" "$RRUN/$(basename "$IMG")" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
            "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
-           "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}"; do
+           "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}" \
+           "$EXPECT_ARCH"; do
   RARGS+=("$(printf '%q' "$_ra")")
 done
 "${SSH[@]}" bash -s -- "${RARGS[@]}" \
@@ -407,6 +415,7 @@ FAULTS=${14}
 [ "$SKIPS" != "-" ] && export EXPECT_SKIPS="$SKIPS"
 [ "$PARTIALS" != "-" ] && export EXPECT_PARTIALS="$PARTIALS"
 [ "$FAULTS" != "-" ] && export EXPECT_FAULTS="$FAULTS"
+export EXPECT_ARCH="${15}"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}

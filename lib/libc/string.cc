@@ -146,18 +146,26 @@ void* memset(void* dst, int c, size_t n)
         fill |= fill << 8;
         fill |= fill << 16;
         fill |= fill << 16 << 16; // folds away where a word is 32 bits
+        // Tested at the bottom, as copy_ascending's loops are. No guard: the prologue consumes
+        // under a word, so MEMSET_WORD_MIN leaves at least one whole word to store. The store
+        // and the step are separate statements because RX GCC folds only that form into its
+        // post-increment store; written `*dw++ = fill` the loop costs it two more instructions.
         Word* dw = reinterpret_cast<Word*>(d);
-        while (n >= WORD_BYTES)
+        Word* const end = dw + n / WORD_BYTES;
+        n &= WORD_MASK;
+        do
         {
-            *dw++ = fill;
-            n -= WORD_BYTES;
-        }
+            *dw = fill;
+            dw++;
+        } while (dw != end);
         d = reinterpret_cast<unsigned char*>(dw);
     }
-    while (n > 0)
+    if (n != 0)
     {
-        *d++ = b;
-        n--;
+        do
+        {
+            *d++ = b;
+        } while (--n != 0);
     }
     return dst;
 }

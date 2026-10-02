@@ -138,6 +138,26 @@ threads like every family's.
 own, keeps the default, `rxv3`, `64-bit-double/rxv3` and `64-bit-double/dfpu/rxv3`. The RX72M's
 `-misa=v3 -mdfpu`, with the 64-bit doubles `-mdfpu` implies, selects the last.
 
+**The RX switch banks the DPFPU file at an alignment the compiler chose for it.** On GCC 16.2 the
+RX72M's switch p50 read 160 cycles against GNURX 14.2's 128 ([M10.2 exit](archive/M10.2_exit.md)).
+The switcher banks DR0-DR15 224 bytes below the USP it is taken on, the operand bus and the RAM
+are 64 bits wide, and a bank at 4 mod 8 moves every double in two beats, 13 cycles a half. Nothing
+in `switch.S` chose that residue: the caller's frame sizes did, and GCC 16.2 saving one register
+fewer in `syscall_body` put the ping-pong at 4 mod 8. The trail:
+- M10.2.3 aligns R0 down to 8 across the `mvtc` in `_arch_irq_restore`, which is where a switch
+  pended under the lock is taken, so that path banks aligned whatever the frames above add up to.
+- The other ways into the bank, preemption, the register-form call's fastpath and the first-run
+  restore, were counted on silicon before anything else changed, per bench row and selftest list
+  (the table is in `STATE.md`, M10.2.3). In the bench only first-run restores are misaligned; in
+  the selftest, preemptions under the uartirq list and the fastpath's refusals.
+- Ruled (maintainer, 2026-10-02): those paths stay, since realigning them costs every entry to
+  save a few thousand cycles a run, and the fastpath's taken entries, aligned today only because
+  the callers' frames add up that way, are watched. The RX bench counts each taken entry whose
+  saved or restored bank is at 4 mod 8 (`KICKOS_BENCH_FASTPATH_WATCH`, `kickos/bench.h`), prints
+  `fastpath-misaligned: N of M` once a boot, and `tools/bench/bench-capture.sh` refuses an rxv3
+  capture whose N is not zero: the regression it exists for is a compiler change of frame size
+  flipping that parity, about 0.4 percent of a call/reply, which no throughput row would refuse.
+
 ## 3. The recipe
 
 `conan/toolchain` is one Conan recipe with the family as an option. Conan keys a package on the

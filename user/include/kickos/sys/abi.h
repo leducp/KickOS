@@ -462,9 +462,13 @@ enum kos_bench_op
                                   //   since the last reset, labelled with `tag`). -KOS_ENOSYS
                                   //   at one kernel core and in an image built without
                                   //   KICKOS_BENCH_SCHED, neither of which keeps the report.
-    KOS_BENCH_OP_E2E_QUIET = 16   // ()          -> 1 once every other kernel core runs its idle
+    KOS_BENCH_OP_E2E_QUIET = 16,  // ()          -> 1 once every other kernel core runs its idle
                                   //   thread and no thread is on its way to any core, else 0.
                                   //   The raiser polls it before a pass's first raise.
+    KOS_BENCH_OP_FASTPATH_WATCH = 17 // ()       -> 0 (kernel prints one line: the register-form
+                                  //   call's taken fastpath entries since boot whose saved or
+                                  //   restored DPFPU bank stood at 4 mod 8). -KOS_ENOSYS where
+                                  //   no backend keeps that count, which is every one but RXv3.
 };
 
 // The largest count the counted ops admit. Raising either raises what a caller can make the
