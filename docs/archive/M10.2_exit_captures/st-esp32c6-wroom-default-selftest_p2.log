@@ -1,0 +1,71 @@
+78ed605902c2783b2679e370c5cc8
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  =================================?ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x13528
+load:0x40820000,len:0x34
+load:0x40830000,len:0x1e8
+SHA-256 comparison failed:
+Calculated: 116df90456b91039bc4b4c645ea0352b41478ed605902c2783b2679e370c5cc8
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+   build   2026-10-02 01:08:50 +0200
+   app     Oct  2 2026 01:08:53 +0200
+   commit  faf82af9
+   heap    24 KiB available
+   kstack  1184 B x 17 = 20128 B
+
+1..29
+# tap route: kernel debug console (stdout not published)
+ok 1 - call_donation
+ok 2 - call_donation_hold
+ok 3 - call_donation_slow
+ok 4 - call_donation_pending
+ok 5 - bus_device_slots
+ok 6 - uart_service
+ok 7 - endpoint_crossdomain
+ok 8 - endpoint_bound
+ok 9 - cap_index0
+ok 10 - cap_chunk_span
+ok 11 - cap_gen_reuse
+ok 12 - cap_child_width
+ok 13 - cap_reply_bound_fast
+ok 14 - cap_reply_bound_slow
+ok 15 - cap_reply_release_close
+ok 16 - cap_reply_slot_reuse
+ok 17 - console_publish_priv
+ok 18 - shutdown_priv
+ok 19 - reboot_priv
+ok 20 - writable_global
+ok 21 - readable_global
+ok 22 - authority_cap
+# without the bit: create -1, implicit -1, plain 0; with it: 0, 0, 0
+ok 23 - task_authority
+ok 24 - periph_enable_unheld
+ok 25 - periph_reg_write_unheld
+ok 26 - privileged_spawn_refused
+ok 27 - thread_join
+ok 28 - join_stale_gen
+ok 29 - join_timeout
+# todo: 0
+# todo-fixed: 0
+# skipped: 0
+# vacuous: 0
+# partial: 0
+# all tests passed

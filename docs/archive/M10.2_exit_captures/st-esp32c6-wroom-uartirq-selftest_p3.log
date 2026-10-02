@@ -1,0 +1,94 @@
+0a829f8fe00f42c6ee7f79345597a
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ========================================================?ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x40800000,len:0x172f4
+load:0x40820000,len:0x34
+load:0x40830000,len:0x1b8
+SHA-256 comparison failed:
+Calculated: c2d4589b566f7eccb19f7a3aee9dd12d64c0a829f8fe00f42c6ee7f79345597a
+Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+Attempting to boot anyway...
+entry 0x40800000
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     rv32imac_zicsr
+   mpu     enforce
+   sched   tickless
+   build   2026-10-02 01:12:24 +0200
+   app     Oct  2 2026 01:12:25 +0200
+   commit  faf82af9
+   heap    24 KiB available
+   kstack  1184 B x 17 = 20128 B
+
+[c6uart] device up (IRQ TX/RX)
+1..42
+# tap route: stdout endpoint -> console driver (service list published)
+ok 1 - task_handles
+ok 2 - task_member_refusals
+ok 3 - task_creator_gate
+ok 4 - task_group_kill
+ok 5 - task_watch_reports
+ok 6 - thread_slay_window
+ok 7 - thread_slay_gate
+ok 8 - thread_slay_timeout
+ok 9 - task_slay_group
+ok 10 - task_slay_gate
+ok 11 - notify_no_line
+ok 12 - notify_bind_busy
+ok 13 - irq_thread_ctx
+ok 14 - irq_as_event
+ok 15 - irq_mask_coalesce
+ok 16 - irq_discard
+ok 17 - irq_autorearm
+ok 18 - irq_phantom_wake
+ok 19 - irq_ownership
+ok 20 - irq_spurious
+ok 21 - irq_stale_register
+ok 22 - irq_claim_gate
+ok 23 - irq_reclaim
+# handover: bound 1, inherited 0, next raise 0
+ok 24 - irq_server_handover
+ok 25 - irq_notify_already
+ok 26 - caller_stack
+ok 27 - mem_self_grant_nonpow2
+# region shaping: POWER-OF-TWO (granule 8, 3-granule request reserved 32)
+ok 28 - region_mode
+ok 29 - domain_share
+ok 30 - cross_task_block
+ok 31 - mmio_grant
+
+=== THREAD FAULT === thread 'wro' killed, system continues
+  PC=0x408009f4 mcause=0x7
+  ADDR=0x4084c040
+ok 32 - window_memory_ro
+ok 33 - stackbase_arena
+ok 34 - grant_reserved
+ok 35 - dev_window_exclusive
+# core 0 (self): 0 service(s), 0 rendezvous initiated
+# doorbell matrix 1 row(s), this core row 0: services 0 -> 0, rendezvous 0 -> 0, mine 0, peers 0
+ok 36 - doorbell_xpoke
+# arch-owned irq line: -1
+ok 37 - irq_kernel_line_reserved # PARTIAL this arch routes every line through the first-level ISR
+ok 38 - prio_ceiling_refused
+ok 39 - prio_ceiling_narrow_only
+# one buffer both ends: recv -14, send -14
+ok 40 - ipc_one_buffer_both_ends
+ok 41 - confused_deputy
+ok 42 - mem_self_grant
+# todo: 0
+# todo-fixed: 0
+# skipped: 0
+# vacuous: 0
+# partial: 1
+# all tests passed (0 skipped, 0 vacuous, 1 partial)

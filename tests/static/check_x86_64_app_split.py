@@ -13,8 +13,10 @@ else of the image, so over every application image the tree links this refuses:
     preferred base, and the boot adds the user offset to exactly those in the app window
     (arch/x86/x86_64/apprel_x86_64.cc), so each R_X86_64_64 the kept, allocated input sections
     carry must be one, one to one, a relocation against an ABSOLUTE symbol producing none
-    because its value is the same at every base. ld -m i386pep emits no record for a WEAK
-    reference to a weak definition, which only a load away from the preferred base shows;
+    because its value is the same at every base. An unpatched ld -m i386pep emits no record
+    for a word naming a WEAK definition, which only a load away from the preferred base shows,
+    and the KickOS toolchain's binutils patch is what gives it one
+    (docs/design-m10-toolchain.md section 5.5);
   - an absolute relocation narrower than 64 bits in the app window, which no record can move,
     and a relocation type this checker does not know;
   - a kernel reference to an app symbol that tests/static/x86_64_apphalf_allowlist.txt does not

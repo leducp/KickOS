@@ -8,7 +8,8 @@ from conan.errors import ConanInvalidConfiguration
 from conan.tools.files import save
 
 # The families conan/toolchain builds, as it names them.
-FAMILIES = ("arm-none-eabi",)
+FAMILIES = ("arm-none-eabi", "aarch64-none-elf", "riscv64-none-elf", "x86_64-elf", "rx-elf",
+            "xtensa-esp32-elf")
 PREFIX = "kickos-toolchain-"
 
 

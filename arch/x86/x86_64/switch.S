@@ -4,9 +4,10 @@
  * x86_64 context switch, thread entry and the fast syscall entry.
  *
  * The displacements below are literal, and arch_x86_64.cc static_asserts every one of them
- * against struct trap_frame.
+ * against struct trap_frame and struct arch_context.
  */
 
+#include <kickos/arch/context.h>
 #include <kickos/arch/ring3.h>
 
     .equ KOS_F_R15,    0
@@ -36,8 +37,9 @@
     .error "the frame size must preserve the psABI stack alignment"
     .endif
 
-/* struct arch_context: sp at displacement 0. */
-    .equ KOS_CTX_SP,   0
+/* struct arch_context: sp at displacement 0, the XSAVE area at 64. */
+    .equ KOS_CTX_SP,    0
+    .equ KOS_CTX_XSAVE, KICKOS_X86_64_CTX_XSAVE
 
     .equ KOS_CPU_KERNEL_SP, KICKOS_X86_64_CPU_KERNEL_SP
     .equ KOS_CPU_USER_RSP,  KICKOS_X86_64_CPU_USER_RSP
@@ -55,20 +57,6 @@
     .balign 16
     .globl kickos_x86_64_switch_now
 kickos_x86_64_switch_now:
-#if KICKOS_BENCH
-/* The switch window (kernel/bench/bench.cc) opens here. It encloses the SOFTWARE REGISTER
- * SAVE and the stack swap, and NOT the software restore: kickos_x86_64_resume has popped
- * all 15 GPRs by its iretq and leaves none free to close a window on, and it is shared with
- * the syscall and interrupt returns.
- *
- * NOTHING HERE MAY WRITE RFLAGS: the pushfq below must capture the caller's flags, and
- * lfence, rdtsc and mov set none. rdtsc's edx:eax are both dead at this point.
- * The TSC is 64 bits and the accumulator is 32, so only eax is kept, which is exact for any
- * delta shorter than 2^32 ticks. */
-    lfence
-    rdtsc
-    movl    %eax, %gs:KOS_CPU_SW_START
-#endif
     pushfq
     subq    $KOS_FRAME_SIZE, %rsp
     movq    %rax, KOS_F_RAX(%rsp)
@@ -104,8 +92,15 @@ kickos_x86_64_switch_now:
     movq    $0, KOS_F_VECTOR(%rsp)
     movq    $0, KOS_F_ERROR(%rsp)
 
+/* The vector state goes with the frame, both instructions naming every component in edx:eax.
+ * The outgoing area is complete before kickos_switch_unlock below lets another core take this
+ * thread, and the incoming one was completed before the unlock of the core that parked it. */
+    movl    $KICKOS_X86_64_XCR0, %eax
+    xorl    %edx, %edx
+    xsave64 KOS_CTX_XSAVE(%rdi)
     movq    %rsp, KOS_CTX_SP(%rdi)
     movq    KOS_CTX_SP(%rsi), %rsp
+    xrstor64 KOS_CTX_XSAVE(%rsi)
 #if KICKOS_KERNEL_CORES > 1 || KICKOS_BENCH
 /* A new privileged frame can be 8 modulo 16. Keep its exact base in a register the frame
  * restores, and align the temporary call stack before invoking either C hook. */
@@ -131,12 +126,34 @@ kickos_x86_64_switch_now:
 #endif
     jmp     kickos_x86_64_resume
 
+#if KICKOS_BENCH
+/* void kickos_x86_64_bench_open(void): the switch window (kernel/bench/bench.cc) opens here,
+ * called by arch_switch ahead of publish_current, so the window encloses publish_current, the
+ * register save, the stack swap and everything kickos_x86_64_switch_now does up to its close.
+ * It does NOT enclose the software restore: kickos_x86_64_resume has popped all 15 GPRs by its
+ * iretq and leaves none free to close a window on, and it is shared with the syscall and
+ * interrupt returns.
+ *
+ * The TSC is 64 bits and the accumulator is 32, so only eax is kept, which is exact for any
+ * delta shorter than 2^32 ticks. */
+    .balign 16
+    .globl kickos_x86_64_bench_open
+kickos_x86_64_bench_open:
+    lfence
+    rdtsc
+    movl    %eax, %gs:KOS_CPU_SW_START
+    ret
+#endif
+
 /* void kickos_x86_64_start(struct arch_context* first): enters the first thread. The boot
  * stack is abandoned, which arch.h permits. */
     .balign 16
     .globl kickos_x86_64_start
 kickos_x86_64_start:
     movq    KOS_CTX_SP(%rdi), %rsp
+    movl    $KICKOS_X86_64_XCR0, %eax
+    xorl    %edx, %edx
+    xrstor64 KOS_CTX_XSAVE(%rdi)
     jmp     kickos_x86_64_resume
 
 /* The address arch_context_init leaves at the top of a new thread's stack, so the entry

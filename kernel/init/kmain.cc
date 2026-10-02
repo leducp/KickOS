@@ -372,6 +372,15 @@ namespace kickos
         {
             kpanic(diag::kBootRootRun);
         }
+        // Configure refuses a mask naming no core this kernel drives; one that reached the
+        // image another way would leave root on no core that runs.
+        if ((static_cast<uint64_t>(KICKOS_ROOT_CORE_MASK) >> KICKOS_KERNEL_CORES) != 0)
+        {
+            kpanic(diag::kBootRootCoreMask);
+        }
+#if KICKOS_KERNEL_CORES > 1
+        root_attr.core_mask = static_cast<uint32_t>(KICKOS_ROOT_CORE_MASK);
+#endif
         int root_slot = -1;
         {
             IrqLock lock;

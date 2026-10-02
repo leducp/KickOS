@@ -38,6 +38,162 @@ expect_skips="$(printf '%s' "${EXPECT_SKIPS:-}" | tr ',;\t\n' '    ')"
 expect_partials="$(printf '%s' "${EXPECT_PARTIALS:-}" | tr ',;\t\n' '    ')"
 expect_faults="$(printf '%s' "${EXPECT_FAULTS:-}" | tr ',;\t\n' '    ')"
 
+# A TAP line split by a whole thread-fault record is re-joined, and nothing else is. An IRQ
+# console drains the TAP stream from a ring well behind the run, while kprintf_fault writes the
+# record to the device at once, so an expected fault can land inside a status line the ring has
+# not finished: rx72m's uartirq capture reads `ok 1`, the record, then `04 - irq_discard`, and
+# the numbering clause below reads 103->1.
+#
+# Held to exactly what kernel/init/fault.cc emits, in one column of include/kickos/diag.h: the
+# banner, then at most one PC line, then an ADDR line only after a PC. The record opens with its
+# own newline, so one landing between two lines leaves an empty line before its banner and
+# nothing to join; a non-empty line there is the head the record cut. The thread must be on the
+# expected-fault list, and the head and the line after the record must make a whole test-point
+# line. Anything short of all of that is left as the wire delivered it and judged as such.
+#
+# With <mode> `notes` prints one NOTE per re-join instead of the stream. The record stays in the
+# stream, after the line it split, so every fault clause below still counts it.
+rejoin_fault_splits() { # <expected fault names> [notes]
+    KOS_REJOIN_NAMES="$1" awk -v mode="${2:-}" '
+        function tap_line(s) {
+            return s ~ /^(not )?ok [1-9][0-9]* - [A-Za-z0-9_]+( # .*)?$/
+        }
+        # The column the banner is written in (1 full, 2 terse), or 0; sets nm.
+        function banner(s,   r) {
+            if (s ~ /^=== THREAD FAULT === thread [\047][^\047]*[\047] killed, system continues$/) {
+                c = 1
+            } else if (s ~ /^=== THREAD FAULT === thread [\047][^\047]*[\047] killed$/) {
+                c = 2
+            } else {
+                return 0
+            }
+            r = substr(s, index(s, "thread \047") + 8)
+            nm = substr(r, 1, index(r, "\047") - 1)
+            return c
+        }
+        # 1 for the lost-PC line, 2 for a PC an ADDR may follow, 0 for neither.
+        function pc_line(s, c) {
+            if (c == 1) {
+                if (s == "  PC lost to a later fault") return 1
+                if (s ~ /^  PC=0x[0-9a-f]+( [A-Za-z_][A-Za-z0-9_]*=0x[0-9a-f]+)?$/) return 2
+            } else {
+                if (s == "F1") return 1
+                if (s ~ /^F2 0x[0-9a-f]+$/) return 2
+                if (s ~ /^F3 0x[0-9a-f]+ [A-Za-z_][A-Za-z0-9_]* [0-9a-f]+$/) return 2
+            }
+            return 0
+        }
+        function addr_line(s, c) {
+            if (c == 1) return s ~ /^  ADDR=0x[0-9a-f]+$/
+            return s ~ /^ADDR=0x[0-9a-f]+$/
+        }
+        BEGIN {
+            k = split(ENVIRON["KOS_REJOIN_NAMES"], _w, " ")
+            for (j = 1; j <= k; j++) want[_w[j]] = 1
+        }
+        { line[++n] = $0 }
+        END {
+            i = 1
+            while (i <= n) {
+                e = 0
+                if (i + 2 <= n && line[i] != "" && (c = banner(line[i + 1])) && (nm in want)) {
+                    e = i + 1
+                    p = pc_line(line[e + 1], c)
+                    if (p) e++
+                    if (p == 2 && addr_line(line[e + 1], c)) e++
+                    if (e + 1 > n || line[e + 1] == "" || !tap_line(line[i] line[e + 1])) e = 0
+                }
+                if (!e) {
+                    if (mode != "notes") print line[i]
+                    i++
+                    continue
+                }
+                if (mode == "notes") {
+                    printf "NOTE: re-joined [%s], split by the %d-line fault record of" \
+                        " thread \047%s\047\n", line[i] line[e + 1], e - i, nm
+                } else {
+                    print line[i] line[e + 1]
+                    print ""
+                    for (j = i + 1; j <= e; j++) print line[j]
+                }
+                i = e + 2
+            }
+        }'
+}
+
+# Planted before it is trusted, each refusal a minimal pair against the re-joined split: a
+# re-join that never fires leaves the capture refused, and one that fires on anything reads a
+# foreign line or a broken record as a clean arm.
+_rj_record="=== THREAD FAULT === thread 'wro' killed, system continues
+  PC=0xffc01602 MPESTS=0x6
+  ADDR=0x30040"
+_rj_split="ok 103 - irq_mask_coalesce
+ok 1
+$_rj_record
+04 - irq_discard
+ok 105 - irq_autorearm"
+_probe="$(printf '%s\n' "$_rj_split" | rejoin_fault_splits wro)"
+[ "$_probe" = "ok 103 - irq_mask_coalesce
+ok 104 - irq_discard
+
+$_rj_record
+ok 105 - irq_autorearm" ] \
+    || fail "the fault-split re-join does not restore a planted line split by an expected
+  thread's whole record (got:
+$_probe)"
+_rj_terse="=== THREAD FAULT === thread 'wro' killed
+F3 0xffc01602 MPESTS 6
+ADDR=0x30040"
+_probe="$(printf 'ok 1\n%s\n04 - irq_discard\n' "$_rj_terse" | rejoin_fault_splits wro)"
+[ "$_probe" = "ok 104 - irq_discard
+
+$_rj_terse" ] \
+    || fail "the fault-split re-join does not restore a planted line split by a whole record in
+  the terse column (got:
+$_probe)"
+for _rj_case in \
+    "nothing: the record landed between two lines|ok 104 - irq_discard
+
+$_rj_record
+ok 105 - irq_autorearm" \
+    "nothing: the record landed before a line's newline|ok 104 - irq_discard
+$_rj_record
+
+ok 105 - irq_autorearm" \
+    "a non-fault line|ok 1
+# a peer's line
+04 - irq_discard" \
+    "a record cut in its PC line|ok 1
+=== THREAD FAULT === thread 'wro' killed, system continues
+  PC=0xffc01602 MPES
+04 - irq_discard" \
+    "a record cut in its banner|ok 1
+=== THREAD FAULT === thread 'wro' killed, system cont
+  PC=0xffc01602 MPESTS=0x6
+04 - irq_discard" \
+    "an ADDR line with no PC before it|ok 1
+=== THREAD FAULT === thread 'wro' killed, system continues
+  ADDR=0x30040
+04 - irq_discard" \
+    "a thread the manifest does not expect|ok 1
+$(printf '%s\n' "$_rj_record" | sed "s/'wro'/'intruder'/")
+04 - irq_discard" \
+    "halves that make no test-point line|ok 1
+$_rj_record
+04 irq_discard"; do
+    _probe="$(printf '%s\n' "${_rj_case#*|}" | rejoin_fault_splits wro)"
+    [ "$_probe" = "${_rj_case#*|}" ] \
+        || fail "the fault-split re-join rewrites a stream it must leave as delivered, split by
+  ${_rj_case%%|*} (got:
+$_probe)"
+done
+
+_rj_notes="$(printf '%s\n' "$out" | rejoin_fault_splits "$expect_faults" notes)"
+if [ -n "$_rj_notes" ]; then
+    printf '%s\n' "$_rj_notes"
+    out="$(printf '%s\n' "$out" | rejoin_fault_splits "$expect_faults")"
+fi
+
 # The producer says when it dropped output, and it is the only thing that can: every count
 # below reconciles against the lines that survived, so a capture missing whole lines can
 # satisfy all of them and still not be the run it claims to be. <kickos/sys/emit.h> gives the

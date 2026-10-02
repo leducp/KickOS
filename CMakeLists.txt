@@ -156,16 +156,15 @@ else()
     "defconfig under boards/${KICKOS_BOARD}/configs/, not a -D.")
 endif()
 
-# Publish numeric flags for -Wundef-clean consumers. PE32+ cannot safely
-# use weak undefined references through the GOT.
+# Publish numeric flags for -Wundef-clean consumers. PE32+ holds no undefined symbol, so an
+# image there may not lean on a weak undefined reference resolving to zero.
 set(KICKOS_HAVE_LIBC 1)
 set(KICKOS_LIBC_REENT 1)
 set(KICKOS_LINKER_WEAK_UNDEF 1)
-if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64")
+if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_LIBC_REENT 0)
 endif()
 if(KICKOS_ARCH STREQUAL "x86_64")
-  set(KICKOS_HAVE_LIBC 0)
   set(KICKOS_LINKER_WEAK_UNDEF 0)
 endif()
 add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
@@ -357,12 +356,13 @@ else()
 endif()
 
 # Where libc asks __getreent the thread pointer answers it: lx6 above one kernel core, and every
-# armv8a and rv64imac image, whose newlib the toolchain files take from conan/newlib. Elsewhere
-# one word is seated at every switch, which is correct only while one core runs its readers.
+# armv8a, rv64imac and x86_64 image, whose newlib the KickOS toolchain builds dynamic-reent.
+# Elsewhere one word is seated at every switch, which is correct only while one core runs its
+# readers.
 set(KICKOS_REENT_PER_THREAD 0)
 set(KICKOS_REENT_IN_TCB 0)
 if(KICKOS_LIBC_REENT)
-  if(KICKOS_ARCH STREQUAL "rv64imac")
+  if(KICKOS_ARCH STREQUAL "rv64imac" OR KICKOS_ARCH STREQUAL "x86_64")
     set(KICKOS_REENT_PER_THREAD 1)
   elseif(KICKOS_ARCH STREQUAL "armv8a"
          OR (KICKOS_ARCH STREQUAL "lx6" AND KICKOS_KERNEL_CORES GREATER 1))
@@ -660,6 +660,17 @@ kickos_isolated_cores_check(
   ORIGIN        "${KICKOS_DEFCONFIG}")
 # An APP TU asks this to know which cores it may pin onto.
 add_compile_definitions(KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES})
+
+if(NOT DEFINED KICKOS_ROOT_CORE_MASK OR KICKOS_ROOT_CORE_MASK STREQUAL "")
+  set(KICKOS_ROOT_CORE_MASK 0)
+endif()
+kickos_root_core_mask_check(
+  MASK          "${KICKOS_ROOT_CORE_MASK}"
+  KERNEL_CORES  "${KICKOS_KERNEL_CORES}"
+  SHARED        "${KICKOS_MULTICORE_MODEL_SHARED}"
+  ORIGIN        "${KICKOS_DEFCONFIG}")
+# The gate reading root's first-thread witness asks this for the core it requires.
+add_compile_definitions(KICKOS_ROOT_CORE_MASK=${KICKOS_ROOT_CORE_MASK})
 
 # Expose AMP node configuration to apps that do not include board_config.h.
 add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
@@ -1177,27 +1188,21 @@ if(TARGET kickos_kernel)
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
-  # A pure-C / freestanding app links `kickos`. Arm's nano C++ archives omit unwind
-  # metadata needed by exceptions, so that profile does not export `kickos_cxx`.
+  # A pure-C / freestanding app links `kickos`, a full-C++ one `kickos_cxx`, on either newlib
+  # profile: the KickOS toolchain's nano C++ archives keep the unwind path.
   add_library(kickos INTERFACE)
   target_link_libraries(kickos INTERFACE kickos_core)
-  if(NOT KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
-    add_library(kickos_cxx INTERFACE)
-    target_link_libraries(kickos_cxx INTERFACE kickos_core)
-  endif()
+  add_library(kickos_cxx INTERFACE)
+  target_link_libraries(kickos_cxx INTERFACE kickos_core)
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
   if(KICKOS_ARCH STREQUAL "sim")
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
-    if(TARGET kickos_cxx)
-      target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
-    endif()
+    target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
   else()
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
-    if(TARGET kickos_cxx)
-      target_link_libraries(kickos_cxx INTERFACE
-        "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
-    endif()
+    target_link_libraries(kickos_cxx INTERFACE
+      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
   endif()
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
@@ -1208,33 +1213,28 @@ if(TARGET kickos_kernel)
     target_compile_options(kickos INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
     target_link_options(kickos INTERFACE -nostdlib++)
-    if(TARGET kickos_cxx)
-      # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
-      # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
-      target_compile_options(kickos_cxx INTERFACE
-        "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-      # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
-      # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
-      target_link_libraries(kickos_cxx INTERFACE
-        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
+    # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
+    # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+    target_compile_options(kickos_cxx INTERFACE
+      "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+    # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
+    # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
+    target_link_libraries(kickos_cxx INTERFACE
+      "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
-      # Link the custom terminate handler as an object before libstdc++.
-      # This source requires exceptions and RTTI.
-      add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
-      target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
-      target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
-      # An object library links nothing: kickos_user/kickos_kernel here are usage
-      # requirements (include dirs) only, and PRIVATE keeps them off consumers.
-      target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
-      target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
-    endif()
+    # Link the custom terminate handler as an object before libstdc++.
+    # This source requires exceptions and RTTI.
+    add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
+    target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
+    target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
+    # An object library links nothing: kickos_user/kickos_kernel here are usage
+    # requirements (include dirs) only, and PRIVATE keeps them off consumers.
+    target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
+    target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
   endif()
 
   # kickos_core is a link dependency of both leaves, so it must be in the export set.
-  install(TARGETS kickos_core kickos EXPORT KickOSTargets)
-  if(TARGET kickos_cxx)
-    install(TARGETS kickos_cxx EXPORT KickOSTargets)
-  endif()
+  install(TARGETS kickos_core kickos kickos_cxx EXPORT KickOSTargets)
   # $<TARGET_OBJECTS:kickos_cxx_rt> lands verbatim in KickOSTargets.cmake, so the
   # object lib must be in the export set or an OOT find_package(KickOS) breaks.
   if(TARGET kickos_cxx_rt)
@@ -1438,7 +1438,7 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
   while(_kos_tc_pending)
     list(POP_FRONT _kos_tc_pending _kos_tc_from)
     file(READ "${_kos_tc_from}" _kos_tc_text)
-    string(REGEX MATCHALL "\\\${CMAKE_CURRENT_LIST_DIR}/[A-Za-z0-9_.+-]+\\.cmake"
+    string(REGEX MATCHALL "\\\${CMAKE_CURRENT_LIST_DIR}/[A-Za-z0-9_.+-]+\\.(cmake|h)"
            _kos_tc_incs "${_kos_tc_text}")
     foreach(_kos_inc IN LISTS _kos_tc_incs)
       string(REPLACE "\${CMAKE_CURRENT_LIST_DIR}/" "" _kos_inc "${_kos_inc}")

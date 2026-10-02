@@ -369,25 +369,31 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     another board is a loud fault here.
 
 - **`qemu-x86_64` is EMULATED ONLY, and nothing on this bench can change that either.** There is
-  no x86 silicon here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
-  by `qemu-system-x86_64 -M q35` under **TCG** with OVMF (EDK II) firmware and by nothing else, and
-  `/dev/kvm` on this box belongs to a group the invoking user is not in, so the
-  hardware-virtualisation path is closed as well. Five properties separate it from the rest of the fleet, and each
-  one costs coverage somewhere:
-  - **The image is not an ELF.** The toolchain links host `gcc` objects into a PE32+ UEFI
-    application through `ld -m i386pep` (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
+  no x86 target board here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
+  by `qemu-system-x86_64 -M q35` under **TCG** with OVMF (EDK II) firmware and by nothing else.
+  The one run under KVM, this host's processor through `-accel kvm -cpu host`, is the switch-row
+  timing of `../design-m10-toolchain.md` section 5.3, a measurement and no gate. Five properties
+  separate it from the rest of the fleet, and each one costs coverage somewhere:
+  - **The image is not an ELF.** The KickOS toolchain's `x86_64-elf` ld links the ELF objects into
+    a PE32+ UEFI application with its `i386pep` emulation
+    (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
     it from an EFI system partition, and `tests/lib/gate.sh` carries a `KICKOS_BOOT=uefi-pe` posture
     because `-kernel` cannot start such an image at all. `$<TARGET_FILE:>` names no image here; an
     app target records its path instead.
-  - **It links no C library and no libstdc++.** An app that reports through `printf`, or that wants
-    exceptions, RTTI or the STL, does not build for this board, which is why several fleet gates are
-    absent rather than failing.
+  - **Its C library finds each thread through the FS base, and no other way.** It links newlib and,
+    for a full-C++ app, libstdc++, as every cross board does, through two KickOS patches to its
+    toolchain, one to GCC and one to binutils, without which a PE32+ image cannot hold the
+    libraries' references (`../design-m10-toolchain.md` section 5.5). Each thread's
+    `struct _reent` pointer is the word at its FS base, so `thread_local` is refused here until it
+    is decided, and `tlsprobe` does not build.
   - **It needs an x86-64-v3 processor.** Everything is compiled for that level
-    (`../../arch/x86/chip/q35/cpu.cmake`) with the vector units still off, and `efi_main` first
-    runs a check compiled for the base level (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands
-    a processor below it back to firmware with a line on firmware's console. Every emulation runs
-    `qemu64` plus the level's features, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`,
-    and `x86_64_x1_floor` boots plain `qemu64` and requires the refusal.
+    (`../../arch/x86/chip/q35/cpu.cmake`), threads get x87, SSE and AVX while the kernel half is
+    compiled without them, and `efi_main` first runs a check compiled for the base level
+    (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands a processor below it back to firmware
+    with a line on firmware's console. Every emulation runs `qemu64` plus the level's features
+    and XSAVEOPT, without which QEMU 11.1's TCG spins on the write that enables XSAVE,
+    `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`, and `x86_64_x1_floor` boots plain
+    `qemu64` and requires the refusal.
   - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
     into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
     `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
@@ -736,8 +742,8 @@ the board".
 | armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, the `qemu-arm64-amp` family, `qemu-arm64-bench`, `qemu-arm64-benchsmp`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated and at four cores under a GICv3, plus the AMP partition at one, two and three images, plus the microbench gates at one core and at four; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
 | rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp`, `qemu-riscv64-bench`, `qemu-riscv64-benchsmp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel; the microbench gates at one hart and at four ride the `bench` job | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain, `-st`, `-smp` and `-bench` | -- (no per-domain unit) |
-| RXv3 | `rx72m` | **none** | -- |
-| x86_64 | `qemu-x86_64`, `qemu-x86_64-bench` | run gate over a UEFI handover, on firmware the job resolves rather than names, and the microbench gates on the same resolved pair | -- (no memory family selected; the map is flat) |
+| RXv3 | `rx72m` | build only, plain, `-st`, `-flat` and `-bench` | -- |
+| x86_64 | `qemu-x86_64`, `qemu-x86_64-bench`, `qemu-x86_64-smp2root1` | run gate over a UEFI handover, on firmware the job resolves rather than names, and the microbench gates on the same resolved pair; `errnoprobe` with root on core 1 in a job of its own on `ubuntu-26.04`, whose QEMU emulates the x2APIC q35 SMP needs | -- (no memory family selected; the map is flat) |
 
 - **The `KICKOS_SERVICE_LIST` axis is COMPILE-checked in CI and never LINK-checked there.**
   `tests/static/check_service_lists.sh` pins that every provider is declared against a preset
@@ -773,8 +779,8 @@ the board".
   shows in only one. The four-hart posture runs because a shared kernel's address-space teardown is
   exposed nowhere else: rv64 keeps the kernel's own top-level entries in each space's ROOT page, so
   a hart still holding a destroyed space's root walks a frame the pool has reissued.
-- **`qemu-x86_64` needs no cross toolchain, and its run gates need firmware.** The compiler and
-  linker are the host's own (`gcc` plus `ld -m i386pep`), so a hosted runner already has them. The
+- **`qemu-x86_64` takes the KickOS toolchain's `x86_64-elf` family, and its run gates need
+  firmware.** The job restores that family as every cross job restores its own. The
   image is a PE32+ UEFI application that `-kernel` cannot start, so the gates boot OVMF off an EFI
   system partition and need `mtools` to build one; without either they exit 77, which CTest reports
   as SKIP and CTest still exits 0, so an unprovisioned runner would green-light the board rather
@@ -793,11 +799,15 @@ the board".
   hand at each rebaseline. Its parser half is a separate registration,
   `*_bench_irqspan_controls`, which runs planted reports with no image and therefore does carry
   the `host` label and does run here.
-- **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
-  (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX
-  build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
-  hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
-  covered for RX by a green CI run; build it locally.
+- **Renesas RX is build-only.** RX72M needs `-misa=v3` and `-mdfpu`
+  (`arch/rx/chip/rx72m/cpu.cmake`), which only Renesas's changes to GCC give it; the KickOS
+  toolchain's `rx-elf` family is the pinned set plus Renesas's changes ported onto it, carried
+  as patches in `conan/toolchain/patches/`. No emulator models the part, so the gate links the four images and runs
+  their host checks, and every run claim is read off the bench. Subnormal doubles read as zero on
+  RX threads, by choice (maintainer, 2026-10-01): every thread starts with `DPSW.DDN` set
+  (`arch/rx/rxv3/arch_rxv3.cc`), so the DFPU handles a denormal operand as 0 rather than raising
+  the unimplemented-processing exception KickOS would have to emulate. `fpclass` reads the bit
+  before it expects either answer.
 - **`f302nucleo` has no RUN gate of any kind.** It is in the `build-boards` sweep and nothing
   else: the `host`-labelled gates over its own build tree, and no QEMU run gate because **no
   emulator models the part**. So what CI says about this board is that it links and that its seams
@@ -896,107 +906,64 @@ the board".
   cross-core lock, the doorbell, and the gates that read them out of a linked image. What it
   cannot add is a run: the SMP claims in its selftest suite are read off a serial capture.
 
-### Cross toolchains (the local convention)
+### Cross toolchains
 
-Each cross family finds its compiler through a hint variable, **seeded from the environment**,
-overridable with `-D`, and falling back to `PATH` when empty:
-
-| Family | Hint variable | Toolchain |
-|---|---|---|
-| ARM | `KICKOS_ARM_TOOLCHAIN_BIN` | Arm GNU Toolchain, `arm-none-eabi`, newlib |
-| AArch64 | `KICKOS_AARCH64_TOOLCHAIN_BIN` | Arm GNU Toolchain, `aarch64-none-elf`, newlib |
-| RISC-V | `KICKOS_RISCV_TOOLCHAIN_BIN` | RISCstar, `riscv32-none-elf`, newlib, rv32imac soft-float multilib |
-| RX | `KICKOS_RX_TOOLCHAIN_BIN` | Renesas GNURX (registration-gated) |
-| Xtensa | `KICKOS_XTENSA_BIN` | Espressif crosstool-NG `xtensa-esp-elf` |
-
-No toolchain file carries a default compiler path any more, so keep local pins in
-`.session/env.sh` (gitignored) and `source` it before configuring. CI uses the same pinned vendor
-tarballs, exporting the variable *and* putting the bin on `PATH` -- either route alone suffices,
-and the belt-and-braces matters because CMake's `try_compile` re-reads the toolchain file with a
-fresh cache, inheriting the environment and `PATH` but never a `-D` cache entry.
-
-**A resolved compiler is verified, not trusted.** `find_program` HINTS fall through to `PATH` when
-the hinted directory is absent, and on Debian the on-`PATH` `arm-none-eabi-g++` is a C-only
-picolibc build with no `libstdc++`/`libsupc++` for any multilib. The ARM, AArch64 and RISC-V
-toolchain files therefore probe the compiler they actually resolved -- carrying the board's own
-`-mcpu`/`-march`, since a toolchain can ship `libstdc++` for one multilib and not another -- and **refuse it at
-configure time**, naming the compiler, the multilib, what was missing, the override variable and
-the official tarball URL. Previously this surfaced dozens of build steps later as
-`fatal error: exception: No such file or directory`. RX and Xtensa skip the check: neither has a
-same-name C-only twin on `PATH` to fall through to.
+Every cross toolchain file takes its compiler and binutils from the KickOS toolchain, below, and
+from nowhere else. `kickos_toolchain_package` (`cmake/toolchain-common.cmake`) finds each
+program in the family's own bin directory with `NO_DEFAULT_PATH`, so no compiler on `PATH` can
+stand in for it, and refuses a configure where `KICKOS_TOOLCHAIN` is unset, names no toolchain
+folder, or lacks the board's family, saying how to provision it. It also refuses a build
+directory whose cached compiler is another one, which CMake cannot change in place. The variable
+is seeded from the environment and re-exported to it, because CMake's `try_compile` re-reads the
+toolchain file with a fresh cache, inheriting the environment but never a `-D` cache entry.
 
 ### The KickOS toolchain
 
-The Cortex-M boards build with KickOS's own toolchain (`../design-m10-toolchain.md`): GCC 16.2.0,
-binutils 2.47 and newlib 4.5.0 built together from pinned sources, full and nano, with libstdc++
-compiled against that newlib. Provision it once per machine, then configure in a shell that has
-sourced it:
+Every board builds with KickOS's own toolchain (`../design-m10-toolchain.md`): GCC 16.2.0,
+binutils 2.47 and newlib 4.5.0 built together from pinned sources, with libstdc++ compiled against
+that newlib, one compiler per family: `arm-none-eabi` (full and nano), `aarch64-none-elf`,
+`riscv64-none-elf` (rv32 and rv64), `x86_64-elf`, whose binutils also writes PE32+,
+`xtensa-esp32-elf` from Espressif's GCC and binutils with the ESP32 core fixed, and `rx-elf`,
+the pinned set plus Renesas's changes ported onto it, carried as patches in this repository.
+Provision it once per machine, then configure in a shell that has sourced it:
 
 ```sh
-tools/kickos-toolchain.sh <dir> arm-none-eabi
+tools/kickos-toolchain.sh <dir> [family,family,...]
 . <dir>/kickos-toolchain.sh
 ```
 
-The script builds the family on first use, about forty minutes on a 24-thread machine, and
-restores it from the Conan cache after that; `KICKOS_TOOLCHAIN_SOURCES` may name a folder holding
-the pinned archives. The script leaves `KICKOS_TOOLCHAIN` naming `<dir>`, whose
-`kickos-toolchain.cmake` points the Arm toolchain file at the package's compiler, and the newlib
-is the compiler's own, so no `KICKOS_NEWLIB_*` variable is needed. Without `KICKOS_TOOLCHAIN` the
-Arm boards take the vendor toolchain and the pinned newlib below, and every other family does so
-until its part of M10.2 lands.
+With no family named, the script provisions every one. It restores a family from the release
+`toolchain-<version>` where that holds a package for this host, and otherwise builds it on first
+use, on a 24-thread machine about an hour for Cortex-M, whose every multilib is built twice for
+nano, and a quarter of that for the others; after that the Conan cache serves it.
+`KICKOS_TOOLCHAIN_SOURCES` may name a folder holding the pinned archives, and
+`KICKOS_TOOLCHAIN_NO_RELEASE` set skips the release; `KICKOS_TOOLCHAIN_NO_BUILD` set fails
+where neither the cache nor the release holds a family. CI's toolchain jobs take a family from
+their cache, else from the release, else build it and upload its archive as an artifact under
+its release name. `tools/kickos-toolchain-release.sh` assembles
+that release's files: every pinned source, the patches copied from this repository, this
+host's package per family, and their sha256 list. CI's `toolchain-release` workflow, run by
+hand, builds every family on Linux x86_64 and macOS arm64 and gathers those files as one
+artifact to upload. The script leaves
+`KICKOS_TOOLCHAIN` naming `<dir>`, whose `kickos-toolchain.cmake` points each family's toolchain
+file at the package's compiler, whose newlib is its own.
 
-### Pinned newlib for cross boards
+### newlib for cross boards
 
-Every cross image links KickOS's pinned newlib in place of the toolchain's. AArch64, RV64 and
-Xtensa use `__getreent()`; Cortex-M, RV32 and RX use `_impure_ptr`. The package must
-match the selected toolchain header profile and the board's multilib.
-`cross_newlib.cmake` checks both and reads
-the package location from an environment variable, one per multilib:
+Every cross image links the KickOS toolchain's own newlib. AArch64, RV64 and Xtensa use
+`__getreent()`; Cortex-M, RV32 and RX use `_impure_ptr`. At configure, `cross_newlib.cmake`
+checks that the libc the board's flags select has the board's reentrancy, by its `__getreent`
+references and a header probe, and for nano that the nano header and archives answer.
 
-| Multilib | Variable | Prerequisite toolchain variable |
-|---|---|---|
-| `armv6m` | `KICKOS_NEWLIB_ARMV6M` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `armv7m` | `KICKOS_NEWLIB_ARMV7M` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `armv7em_fp_softfp` | `KICKOS_NEWLIB_ARMV7EM_FP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `armv7em_dp_softfp` | `KICKOS_NEWLIB_ARMV7EM_DP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `armv8m_fp_softfp` | `KICKOS_NEWLIB_ARMV8M_FP_SOFTFP` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `armv8m_fp_hard` | `KICKOS_NEWLIB_ARMV8M_FP_HARD` | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| `aarch64` | `KICKOS_NEWLIB_AARCH64` | `KICKOS_AARCH64_TOOLCHAIN_BIN` |
-| `rv32imac_ilp32` | `KICKOS_NEWLIB_RV32IMAC_ILP32` | `KICKOS_RISCV_TOOLCHAIN_BIN` |
-| `rv64imac_lp64` | `KICKOS_NEWLIB_RV64IMAC_LP64` | `KICKOS_RISCV_TOOLCHAIN_BIN` |
-| `rxv3_dfpu` | `KICKOS_NEWLIB_RXV3_DFPU` | `KICKOS_RX_TOOLCHAIN_BIN` |
-| `xtensa_esp32` | `KICKOS_NEWLIB_XTENSA_ESP32` | `KICKOS_XTENSA_BIN` |
-
-Provision it with Conan, once per multilib, after the toolchain whose compiler builds the package
-is on `PATH` or hinted by its variable above:
-
-```sh
-conan export conan/newlib
-conan install conan/board -o "&:multilib=<m>" --build=missing --output-folder=<dir>
-source <dir>/kickos-newlib-<m>.sh
-```
-
-`<m>` is a multilib from the table; `<dir>` is any output folder. The third
-command exports the matching variable above from the folder Conan built or restored. Configure
-after sourcing it, as with the cross toolchain variables. `.github/actions/newlib/action.yml` runs
-the same three steps in CI, cached by the multilib and the toolchain bin directory.
-
-Arm boards may select the small-memory `nano` profile:
-
-```sh
-conan install conan/board -o "&:multilib=armv7m" -o "&:flavor=nano" \
-  --build=missing --output-folder=<dir>
-source <dir>/kickos-newlib-armv7m-nano.sh
-```
-
-Use a fresh CMake build directory after switching profiles. The package compares its
-`newlib.h` with the Arm toolchain's nano header and the linker selects the nano C archive.
-Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
+The Cortex-M family carries a small-memory `nano` profile beside the full one in every
+multilib, which `--specs=nano.specs` on the compile flags selects: the nano `newlib.h`, and
+`libc_nano.a` and `libstdc++_nano.a` at the link. Use a fresh CMake build directory after
+switching profiles; configure refuses one whose cached flags name the other. Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
 implementations. Its formatted I/O omits C99 and long-long formats; floating-point
 `printf`/`scanf` require the app to link with `-u _printf_float`/`-u _scanf_float`,
-respectively. Arm's nano C++ archive does not unwind a thrown exception on the QEMU
-Cortex-M3 gate, so this profile does not export `kickos_cxx`; applications needing
-exceptions use the full profile. Other cross targets retain the full profile.
+respectively. The package's nano C++ archives unwind as its full ones do, so `kickos_cxx`
+exists on either profile: `cxxtest` passed every check on `qemu-m3` built nano (M10.2). Other
+cross targets carry the full profile only.
 
 Nano's per-thread `_reent` holds pointers where the full profile holds storage. A thread's
 first `strtok`, `localtime`, `asctime`, `rand`, `strsignal` or floating-point conversion
@@ -1011,11 +978,9 @@ reclaims nothing from the heap. The ESP32 newlib allocates the same scratch and 
 exit path, but every thread's entry return goes through the kernel there, so only an explicit
 exit returns it.
 
-The `microbit` QEMU test board defaults to nano. Provision its `armv6m` multilib with
-`-o "&:flavor=nano"` and source `kickos-newlib-armv6m-nano.sh`; CI does this for its
-micro:bit run gate. Its 32 KiB emulated SRAM is larger than a physical micro:bit v1's
-16 KiB. For a full-profile comparison, provision the full `armv6m` package in another
-build directory and set `-DKICKOS_MICROBIT_FULL_NEWLIB=ON`. An installed `microbit`
+The `microbit` QEMU test board defaults to nano, which its toolchain file selects. Its
+32 KiB emulated SRAM is larger than a physical micro:bit v1's 16 KiB. For a full-profile
+comparison, set `-DKICKOS_MICROBIT_FULL_NEWLIB=ON` in another build directory. An installed `microbit`
 package links only the profile it was built with and refuses a consumer that asks for the
 other one. Pico keeps the full profile.
 

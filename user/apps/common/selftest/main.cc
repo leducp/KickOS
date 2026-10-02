@@ -2534,15 +2534,30 @@ namespace
         // Accept a properly-sized, aligned caller-owned stack. When the arena cannot spare
         // one the reject case above has already run, so the arm stays `ok` as a partial.
         constexpr uint32_t STK = cstk_size();
-        void* raw = kos_ram_alloc(STK + 16);
+        // Where regions are powers of two the block is aligned to its own size, and 16 bytes
+        // past STK would double it. Elsewhere the 16 stand: the smallest parts' arena
+        // measurements were taken with them, and on microbit a stack that fits starves the
+        // two arena probes after this arm.
+#if defined(KICKOS_MPU_MIN_REGION_CFG) and defined(KICKOS_MPU_REGION_POW2_CFG) \
+    and KICKOS_MPU_MIN_REGION_CFG != 0 and KICKOS_MPU_REGION_POW2_CFG != 0
+        constexpr uint32_t CSTK_RESERVE = STK;
+#else
+        constexpr uint32_t CSTK_RESERVE = STK + 16u;
+#endif
+        void* raw = kos_ram_alloc(CSTK_RESERVE);
         if (raw == nullptr)
         {
             tap::partial("accept half not run (arena cannot spare a stack)");
             return;
         }
         // Allocation grants nothing, and where a backend translates the block is not even
-        // mapped: a child started on it would fault on its first push.
-        TAP_CHECK(kos_mem_self_grant(raw, STK + 16, 0) == 0);
+        // mapped: a child started on it would fault on its first push. A region backend
+        // seats the child's stack descriptor itself, and a grant there would hold one of
+        // root's own descriptors for the life of the run, which a service list that granted
+        // root a block of its own at bring-up does not leave the later arms.
+#if KICKOS_HAVE_ASPACE
+        TAP_CHECK(kos_mem_self_grant(raw, CSTK_RESERVE, 0) == 0);
+#endif
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
         // One KICKOS_STACK_ALIGN unit below the least floor a spawn charges, with an aligned
         // base, so only the size check can reject it.
@@ -5420,31 +5435,76 @@ namespace
         TAP_CHECK(g_frp_rc.load() == -KOS_ENOTIFY and g_frp_bits.load() == mask);
     }
 
+    // Whether a batch's first refusal is a supply running out, the only refusal an arm whose
+    // demand is OPTIONAL may answer with a skip; any other code is the arm failing.
+    bool refused_for_want(int rc)
+    {
+        return rc == -KOS_EMFILE or rc == -KOS_EAGAIN or rc == -KOS_ENOMEM;
+    }
     void t_reply_recv_notify()
     {
         // This ordering requires the server to reach its gate before root injects.
         TAP_SKIP_ONE_CORE_ORDER();
+        // Five capabilities live at once, two at the badge mints and the endpoint plus the
+        // gate afterwards: more than the suite's mandatory per-arm peak, so this arm draws on
+        // the OPTIONAL demand and reclaims and skips where the board did not grant it. A
+        // refusal reached as a TAP_CHECK would leak the lines and the object into every
+        // later arm.
         kos_cap_t l1 = KOS_CAP_NONE;
         kos_cap_t l2 = KOS_CAP_NONE;
-        TAP_CHECK(irq_claim_await(IRQ_CTX_LINE, &l1) == 0);
-        TAP_CHECK(irq_claim_await(FRN_LINE2, &l2) == 0);
-        // One object, two lines, one bit each: the badge is what tells them apart, and it is
-        // seated at the MINT, so root holds two badged copies just long enough to attach.
         kos_cap_t note = KOS_CAP_NONE;
-        TAP_CHECK(kos_notify_create(&note) == 0);
         kos_cap_t b1 = KOS_CAP_NONE;
         kos_cap_t b2 = KOS_CAP_NONE;
-        TAP_CHECK(kos_notify_badge(note, 0u, &b1) == 0);
-        TAP_CHECK(kos_notify_badge(note, 1u, &b2) == 0);
-        TAP_CHECK(kos_irq_bind_notify(l1, b1) == 0);
-        TAP_CHECK(kos_irq_bind_notify(l2, b2) == 0);
-        TAP_CHECK(kos_handle_close(b1) == 0); // the attachment holds its own reference
-        TAP_CHECK(kos_handle_close(b2) == 0);
+        g_ep = KOS_CAP_NONE;
+        g_frn_go = KOS_CAP_NONE;
+        int refused = 0;
+        note_refusal(irq_claim_await(IRQ_CTX_LINE, &l1), &refused);
+        note_refusal(irq_claim_await(FRN_LINE2, &l2), &refused);
+        // One object, two lines, one bit each: the badge is what tells them apart, and it is
+        // seated at the MINT, so root holds two badged copies just long enough to attach.
+        note_refusal(kos_notify_create(&note), &refused);
+        if (note != KOS_CAP_NONE)
+        {
+            note_refusal(kos_notify_badge(note, 0u, &b1), &refused);
+            note_refusal(kos_notify_badge(note, 1u, &b2), &refused);
+        }
+        if (refused == 0)
+        {
+            TAP_CHECK(kos_irq_bind_notify(l1, b1) == 0);
+            TAP_CHECK(kos_irq_bind_notify(l2, b2) == 0);
+        }
+        // The attachment holds its own reference.
+        if (b1 != KOS_CAP_NONE) { TAP_CHECK(kos_handle_close(b1) == 0); }
+        if (b2 != KOS_CAP_NONE) { TAP_CHECK(kos_handle_close(b2) == 0); }
+        if (refused == 0)
+        {
+            note_refusal(kos_endpoint_create(&g_ep), &refused);
+            note_refusal(kos_sem_create(0, &g_frn_go), &refused);
+        }
+        if (refused != 0)
+        {
+            if (g_ep != KOS_CAP_NONE) { kos_handle_close(g_ep); g_ep = KOS_CAP_NONE; }
+            if (g_frn_go != KOS_CAP_NONE) { kos_sem_destroy(g_frn_go); g_frn_go = KOS_CAP_NONE; }
+            if (l1 != KOS_CAP_NONE) { kos_handle_close(l1); }
+            if (l2 != KOS_CAP_NONE) { kos_handle_close(l2); }
+            if (note != KOS_CAP_NONE) { kos_handle_close(note); }
+            TAP_CHECK(refused_for_want(refused));
+            // Labelled by the supply that ran out, as t_mutex_deadlock does.
+            char const* why = "pool too small";
+            if (refused == -KOS_EMFILE)
+            {
+                why = "cap table too small (5 concurrent caps)";
+            }
+            if (refused == -KOS_EAGAIN)
+            {
+                why = "task object budget too small (5 concurrent objects)";
+            }
+            tap::skip("%s", why);
+            return;
+        }
         // Arm before the first injection.
         kos_irq_ack(l1);
         kos_irq_ack(l2);
-        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
-        TAP_CHECK(kos_sem_create(0, &g_frn_go) == 0);
         g_frn_r1 = -99;
         g_frn_r2 = -99;
         g_frn_r3 = -99;
@@ -6602,37 +6662,40 @@ namespace
         unsigned char rdbuf[4];
     };
 
-    // Frame + kos_call one request; returns rsp.status, or rsp.len when status is 0.
-    int uart_call(uint8_t op, uint8_t flags, uint16_t len, unsigned char const* payload,
-                  unsigned char* out, uint16_t out_max)
+    // The client's one message buffer, request and reply alike. NOT on its stack: where the
+    // syscall dispatches on the caller's own stack (KICKOS_KERNEL_STACKS 0) a 1 KiB pool
+    // stack keeps under 400 bytes above the trap red zone, and this buffer alone is 256.
+    unsigned char g_uart_msg[KOS_EP_MSG_MAX];
+    unsigned char* uart_payload()
     {
-        unsigned char buf[KOS_EP_MSG_MAX];
+        return g_uart_msg + sizeof(struct kos_uart_req);
+    }
+    unsigned char const* uart_reply()
+    {
+        return g_uart_msg + sizeof(struct kos_uart_rsp);
+    }
+
+    // Frame + kos_call one request whose `carried` payload bytes are already at
+    // uart_payload(); returns rsp.status, or rsp.len when status is 0, the reply payload
+    // left at uart_reply().
+    int uart_call(uint8_t op, uint8_t flags, uint16_t len, size_t carried)
+    {
         struct kos_uart_req req;
         memset(&req, 0, sizeof(req));
         req.op = op;
         req.flags = flags;
         req.len = len;
-        memcpy(buf, &req, sizeof(req));
-        size_t send_len = sizeof(req);
-        if (payload != nullptr)
-        {
-            memcpy(buf + sizeof(req), payload, len);
-            send_len += len;
-        }
-        int32_t const rc = kos_call(2, buf, send_len, sizeof(buf));
+        memcpy(g_uart_msg, &req, sizeof(req));
+        int32_t const rc = kos_call(2, g_uart_msg, sizeof(req) + carried, sizeof(g_uart_msg));
         if (rc < 0)
         {
             return static_cast<int>(rc);
         }
         struct kos_uart_rsp rsp;
-        memcpy(&rsp, buf, sizeof(rsp));
+        memcpy(&rsp, g_uart_msg, sizeof(rsp));
         if (rsp.status < 0)
         {
             return rsp.status;
-        }
-        if (out != nullptr and rsp.len <= out_max)
-        {
-            memcpy(out, buf + sizeof(rsp), rsp.len);
         }
         return static_cast<int>(rsp.len);
     }
@@ -6641,30 +6704,30 @@ namespace
     {
         UartResults r;
         memset(&r, 0, sizeof(r));
-        unsigned char const tx[4] = {'h', 'i', '!', '\n'};
-        r.wr = uart_call(KOS_UART_WRITE, 0, 4, tx, nullptr, 0);
-        unsigned char big[200];
-        memset(big, 'x', sizeof(big));
-        r.wr_big = uart_call(KOS_UART_WRITE, 0, sizeof(big), big, nullptr, 0);
+        memcpy(uart_payload(), "hi!\n", 4);
+        r.wr = uart_call(KOS_UART_WRITE, 0, 4, 4);
+        memset(uart_payload(), 'x', 200);
+        r.wr_big = uart_call(KOS_UART_WRITE, 0, 200, 200);
         // len claims more than the frame carried: refused rather than reading past it.
-        r.badframe = uart_call(KOS_UART_WRITE, 0, 8, nullptr, nullptr, 0);
+        r.badframe = uart_call(KOS_UART_WRITE, 0, 8, 0);
         // A blocking read is refused explicitly, never answered with 0 bytes.
-        r.block = uart_call(KOS_UART_READ, KOS_UART_F_BLOCK, 4, nullptr, nullptr, 0);
-        r.rd = uart_call(KOS_UART_READ, 0, 4, nullptr, r.rdbuf, sizeof(r.rdbuf));
-        unsigned char st[sizeof(struct kos_uart_stats)];
-        if (uart_call(KOS_UART_STATS, 0, 0, nullptr, st, sizeof(st))
-            == static_cast<int>(sizeof(st)))
+        r.block = uart_call(KOS_UART_READ, KOS_UART_F_BLOCK, 4, 0);
+        r.rd = uart_call(KOS_UART_READ, 0, 4, 0);
+        if (r.rd >= 0 and static_cast<size_t>(r.rd) <= sizeof(r.rdbuf))
+        {
+            memcpy(r.rdbuf, uart_reply(), static_cast<size_t>(r.rd));
+        }
+        if (uart_call(KOS_UART_STATS, 0, 0, 0) == static_cast<int>(sizeof(struct kos_uart_stats)))
         {
             struct kos_uart_stats s;
-            kickos::console::stats_unpack(&s, st);
+            kickos::console::stats_unpack(&s, uart_reply());
             r.stats_tx = static_cast<int>(kos_counter_load(&s.tx_bytes));
         }
         // Over the WIRE, not against console::mode_apply directly, so serve_one's dispatch
         // is covered. Accept LAST, so the server can assert the mode was stored.
-        r.mode_bad = uart_call(KOS_UART_SET_MODE, 0x80, 0, nullptr, nullptr, 0);
-        r.mode_clr = uart_call(KOS_UART_SET_MODE, 0, 0, nullptr, nullptr, 0);
-        r.mode_set = uart_call(KOS_UART_SET_MODE, KOS_UART_F_NONBLOCK, 0, nullptr,
-                               nullptr, 0);
+        r.mode_bad = uart_call(KOS_UART_SET_MODE, 0x80, 0, 0);
+        r.mode_clr = uart_call(KOS_UART_SET_MODE, 0, 0, 0);
+        r.mode_set = uart_call(KOS_UART_SET_MODE, KOS_UART_F_NONBLOCK, 0, 0);
         // A PLAIN send (no reply cap), which is how the server tells this frame apart
         // from a request.
         (void)kos_send(2, &r, sizeof(r));
@@ -9622,7 +9685,7 @@ int main(int, char**)
     TAP_ADD("threads_reach_every_core", t_threads_reach_every_core);
     TAP_ADD("reent_per_thread_cores", t_reent_per_thread_cores);
 #if defined(__x86_64__)
-    TAP_ADD("fp_trapped_every_core", t_fp_trapped_every_core);
+    TAP_ADD("fp_enabled_every_core", t_fp_enabled_every_core);
 #endif
 #endif
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION
@@ -9633,6 +9696,13 @@ int main(int, char**)
 #endif
 #if defined(__x86_64__)
     TAP_ADD("port_window", t_port_window);
+    TAP_ADD("vector_survives_block", t_vector_survives_block);
+    TAP_ADD("vector_survives_preempt", t_vector_survives_preempt);
+#if KICKOS_KERNEL_CORES > 1
+    TAP_ADD("vector_survives_migrate", t_vector_survives_migrate);
+#endif
+    TAP_ADD("vector_starts_clean", t_vector_starts_clean);
+    TAP_ADD("vector_fault_contained", t_vector_fault_contained);
 #endif
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE

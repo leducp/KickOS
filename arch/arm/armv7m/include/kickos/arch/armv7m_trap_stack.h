@@ -143,11 +143,12 @@
  * KICKOS_THREAD_SLOTS blocks of a tail its image does not contain. bluepill-c8 has 3 slots
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
- * 768 enforced against 760 measured, tied by the two bench presets f411disco-bench and
- * xmc4800-relax-bench, whose bench arm prints; the 33 ordinary presets read 444 to 648, and the
- * two partition nodes pizero2350-amp2-n0 and -n1 read 668. 1240 enforced against 1000 measured
- * at qemu-telem through arch_shutdown's telemetry tail, the only telemetry variant of any
- * armv7m board. Both are enforced above their measurement, as headroom.
+ * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
+ * 832 enforced against 768 measured at f411disco-bench and 760 at xmc4800-relax-bench, the only
+ * two. Off both, 768 enforced: the 33 ordinary presets read 444 to 640, and the two partition
+ * nodes pizero2350-amp2-n0 and -n1 read 652. 1240 enforced against 1008 measured at qemu-telem
+ * through arch_shutdown's telemetry tail, the only telemetry variant of any armv7m board. All
+ * three are enforced above their measurement, as headroom.
  *
  * A node's self-test drives the doorbell's service body from inside the dispatch (amp_probe
  * -> forge_reply_depth_recovery -> node_service); what wins there is an ordinary far reply
@@ -155,10 +156,12 @@
  * from the doorbell interrupt instead, the same body runs in handler mode on SP_main and is
  * UNMEASURED, per the PENDSV reason in tests/static/trap_redzone_roots.txt.
  *
- * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY fails to build,
- * where a fallback would silently reserve the smaller figure. */
+ * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY or KICKOS_BENCH
+ * fails to build, where a fallback would silently reserve the smaller figure. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 1240
+#elif KICKOS_BENCH
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 832
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK 768
 #endif
@@ -195,11 +198,11 @@
  * rather than their sum.
  *
  * Rounded like a thread-stack figure because it never binds: SVCK wins the block on every
- * registered preset. Off telemetry it measures 296, and 320 on the two bench presets, under an
- * enforced 448; on telemetry 952 stands over 792, down arch_shutdown's drain.
+ * registered preset. Off telemetry it measures 296, and 328 on the two bench presets, under an
+ * enforced 448; on telemetry 952 stands over 800, down arch_shutdown's drain.
  *
- * 208 + 448 = 656 against 1004 usable off telemetry, 208 + 952 = 1160 against 1468 on, where
- * SVCK asks 992 and 1464. */
+ * 208 + 448 = 656 against 1004 usable off telemetry and 1068 on the bench, 208 + 952 = 1160
+ * against 1468 on telemetry, where SVCK asks 992, 1056 and 1464. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
@@ -248,10 +251,10 @@
 
 /* What one kernel block has to hold: a requirement on KICKOS_KERNEL_STACK_SIZE, not a bound
  * anything refuses at run time, every byte of it being written by privileged code through a
- * pointer the kernel seated. It resolves per POSTURE, of which there are two, so that the
+ * pointer the kernel seated. It resolves per POSTURE, of which there are three, so that the
  * Kconfig ceiling, arch_armv7m.cc's static_assert and check_trap_redzone.sh all price the same
- * one: 224 + 768 is 992 with telemetry off and 224 + 1240 is 1464 on. Kconfig adds the canary
- * word and rounds to 16. */
+ * one: 224 + 768 is 992 off both knobs, 224 + 832 is 1056 on the bench and 224 + 1240 is 1464
+ * on telemetry. Kconfig adds the canary word and rounds to 16. */
 #define KICKOS_ARMV7M_TRAP_NEED_SVCK \
     (KICKOS_ARMV7M_TRAP_NEST_SVCK + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK)
 

@@ -3536,9 +3536,11 @@ settled; a short count is printed, not refused.
 - Every trap red-zone figure is a static call-graph walk. armv8a, rv64 and x86_64 gained one this
   milestone; their frame figures for assembly entries are hand records re-derived from the linked
   image, and a change under them moves nothing unless the record is re-derived too.
-- Zero-slack figures a reader should know before adding a frame: esp32-wroom-benchsmp PREEMPT,
-  qemu-arm64-benchgicv3 SYSK, EXITK, EXITKSW and RET, qemu-riscv SYSPRIV, qemu-x86_64-bench SYSK
-  and EXITKSW.
+- Zero-slack figures a reader should know before adding a frame: qemu-arm64-benchgicv3 SYSK,
+  EXITK, EXITKSW and RET, qemu-riscv SYSPRIV, qemu-x86_64-bench SYSK and EXITKSW, and PREEMPT on
+  the three one-core esp32-wroom presets, 432 of 432. esp32-wroom-benchsmp PREEMPT was one until
+  GCC 16.2 took it to 592 against 576; above one core lx6 now enforces 640, and f411disco-bench
+  SVCK, 768 of 768 under GCC 16.2, has a bench reserve of 832.
 - The load-robustness fixes were reproduced with planted delays and host hogs on this box; CI's
   runners were not measured.
 
@@ -3834,6 +3836,77 @@ under TCG and does not predict the cost on x86 hardware.
   with Arm 15.3.rel1 and its newlib 4.6.0, and do not compare with them.
 - The toolchain is out of M10.1. `roadmap.md` rules that KickOS builds its own from pinned sources
   on any host, a milestone after this one; until then each target's newlib follows its toolchain.
+
+## M10.2: the pre-existing silicon selftest refusals, and what these green runs do NOT say
+
+**ALL THREE ENTERED BEFORE M8.7'S SILICON PASS, WHICH ALREADY SHOWS TWO OF THEM.** `55f4151d`
+added `cross_task_block`, root's fifth lifetime MPU grant, and the per-task object reserve that
+caps root at three endpoints; `m87rXsn` captured both refusals on xmc4800-relax. f302nucleo had
+no capture between M5 and M10.2.7, while the by-name skip gate, the SVC red zone (`07e75642`)
+and `reply_recv_notify` all arrived.
+
+**THE SUITE HAD SPENT ROOT'S LAST DESCRIPTOR AND, ON XMC, ITS LAST ARENA.** A service list whose
+bring-up grants root a block, an IRQ console's ring, took the eighth descriptor on the PMSAv7 and
+RX MPUs, and on xmc4800-relax the same 1 KiB block was what the 16 KiB bump arena above its eight
+4 KiB stacks could not spare. Root still holds that ring block for the life of the image: no syscall
+returns a grant, so each such driver costs root one of its eight descriptors.
+
+**AN ARM THAT FAILS HOLDING AN OBJECT FAILS EVERY LATER ARM THAT WANTS ONE.** Both the
+xmc4800-relax endpoint cascade and f302's image 2 were one refusal and a leak, not 49 or 8
+defects. `irq_as_event` has the same over-peak shape on a 7-slot table and is not fixed: on both
+7-slot boards its 4 KiB page fails first and it skips before reaching it.
+
+**RX72M'S UARTIRQ CAPTURE WAS REFUSED BY THE WIRE, NOT BY AN ARM.** The IRQ console drains twelve
+to sixteen arms behind root, and the kernel's `wro` fault record, written straight to the UART,
+landed inside `ok 104`: `ok 1`, the record, `04 - irq_discard`, which the numbering clause reads
+as 103->1. The M10.1 exit and M10.2.7 captures carry the same lag; the record landed on a newline
+there, or inside a name (`irq_spurio`, the record, `us`), which kept the number whole and passed
+with the name cut. Ruled by the maintainer (2026-10-01): the gate re-joins a line split by a whole
+known kernel fault message. `check_tap_stream.sh` re-joins only a record in the exact form
+`kernel/init/fault.cc` emits, of a thread the image's manifest expects to fault, whose two halves
+make a well-formed test-point line. Both rx72m uartirq captures of this tree (`sifail1`,
+`sifail2`) now pass. The other 72 silicon captures that pair with a manifest keep their verdict,
+71 of them byte for byte; the `irq_spurio` one gains the re-join NOTE and still fails on #118.
+
+**WHAT IT DOES NOT SAY.**
+- A split by anything other than a whole expected fault record is still refused when it breaks
+  the numbering, and still unseen when it does not.
+- bluepill-c8 shares f302's posture and has neither a unit nor declared sets; frdmk64f's endpoint
+  provisioning is configured and built, not run.
+
+## M10.2: the toolchain's exit record, and what it does NOT say
+
+**EVERY BOARD BUILDS WITH THE KICKOS TOOLCHAIN ALONE, AND CI PASSES ON IT.** Six families, GCC
+16.2.0 with binutils 2.47 and newlib 4.5.0 from pinned sources, built by `conan/toolchain` at one
+recipe revision in a fresh store and indexed by `tools/kickos-toolchain.sh`.
+`docs/archive/M10.2_exit.md` ran every CI job on that index, 37 of them, and all pass. The six
+release archives and their digests are assembled for the maintainer to upload.
+
+**ON SILICON EVERY BOARD ON THE BENCH IS GREEN, AND MOST GOT FASTER.** rx72m, f411disco,
+xmc4800-relax, f302nucleo, esp32c6-wroom and esp32-wroom pass every declared service list and
+image, enforcing and flat. Against the M10.1 exit a Cortex-M spawn is 6.7 to 8.0 percent cheaper
+and the interrupt payload copy a third. The ESP32-C6 is the exception, spawn/exit 7 percent
+dearer, and the RX72M's switch p50 is 160 cycles against GNURX 14.2's 128. The q35 switch window
+reads 618 core cycles at p50 under KVM, under decision 15's limit of 700.
+
+**NO RED ZONE IS OVER, AND THE TIGHT ONES ARE NAMED.** Zero slack: PREEMPT 432 of 432 on the
+one-core esp32-wroom presets, esp32c6-wroom-amp2-n0's EXITK, RET and SYSPRIV,
+qemu-arm64-benchgicv3 and -benchsmp12 EXITK, and on q35 the one-core SYSK, qemu-x86_64-bench's
+IRQ, IRQK and IST, and qemu-x86_64-smp12's SYSPRIV. The tightest memory budget is still the
+F103 and F302 selftest flash, about 1.1 KiB left.
+
+**WHAT IT DOES NOT SAY.**
+- frdmk64f, picopi, pizero2350 and teensy41 were not on the bench, nor were blackpill and
+  bluepill-c8, whose presence the rig cannot decide.
+- The ESP32-C6's spawn cost is not attributed: the preliminary pass of the same day, on the same
+  riscv64 recipe, read it within 1 percent of M10.1.
+- The RX72M and ESP32 have no M10.1 exit capture, so their comparison is the M10.1 exit tree built
+  with GNURX 14.2 and esp-16.1.0, captured the same day.
+- The two long package builds, Arm and AArch64, shared the host with other work; their wall clocks
+  are no figure for the recipe.
+- No gate reads decision 15's limit; it was checked by hand with the 5.3 instrumentation applied.
+- The macOS arm64 packages are not built here: the `toolchain-release` workflow builds them on
+  `macos-15` after the push, and they are unverified until it runs.
 
 ## Where to go next
 

@@ -8,6 +8,24 @@
 #include <errno.h>
 #include <stdlib.h>
 
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
+// XCR0, in assembly of its own: tests/static/check_x86_64_no_vector.sh admits the vector-state
+// instructions of the selftest by the name of the function carrying them.
+extern "C" KICKOS_SELFTEST_LOCAL uint64_t selftest_vec_xcr0(void);
+__asm__(".pushsection .text, \"ax\", @progbits\n"
+        "    .balign 16\n"
+        "    .globl selftest_vec_xcr0\n"
+        "    .hidden selftest_vec_xcr0\n"
+        "    .type selftest_vec_xcr0, @function\n"
+        "selftest_vec_xcr0:\n"
+        "    xorl %ecx, %ecx\n"
+        "    xgetbv\n"
+        "    shlq $32, %rdx\n"
+        "    orq %rdx, %rax\n"
+        "    ret\n"
+        ".popsection\n");
+#endif
+
 namespace selftest
 {
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
@@ -2029,30 +2047,35 @@ namespace selftest
 #endif
 
 #if defined(__x86_64__)
-    // --- The floating-point trap on every core ----------------------------------------------
-    // CR0.EM makes every x87 instruction raise #NM and every SSE instruction #UD, and TS with MP
-    // traps the rest of the family. The bits are per core, and SMSW reads them from ring 3
-    // while CR4.UMIP is clear.
-    constexpr uint32_t FP_TRAP_MSW = (1u << 1) | (1u << 2) | (1u << 3);
+    // --- The vector state on every core ------------------------------------------------------
+    // EM clear, TS clear and MP set in the machine status word, which SMSW reads from ring 3
+    // while CR4.UMIP is clear, and XCR0 naming x87, SSE and AVX, which XGETBV reads there. Both
+    // are per core.
+    constexpr uint32_t FP_MSW_MASK = (1u << 1) | (1u << 2) | (1u << 3);
+    constexpr uint32_t FP_MSW_ENABLED = 1u << 1;
+    constexpr uint32_t FP_XCR0 = 7;
     Atomic<uint32_t, Order::RELAXED> g_fp_msw{0};
+    Atomic<uint32_t, Order::RELAXED> g_fp_xcr0{0};
 
-    void fp_msw_worker(void*)
+    void fp_state_worker(void*)
     {
         pl_wait_go();
         uint16_t msw = 0;
         __asm__ volatile("smsw %0" : "=r"(msw));
         g_fp_msw = msw;
+        g_fp_xcr0 = static_cast<uint32_t>(selftest_vec_xcr0());
         g_pl_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
     }
 
-    void t_fp_trapped_every_core()
+    void t_fp_enabled_every_core()
     {
-        uint32_t trapped = 0;
+        uint32_t enabled = 0;
         for (uint32_t c = 0; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
         {
             pl_reset();
             g_fp_msw = 0;
-            auto w = kos::thread::create(fp_msw_worker, nullptr, "fpmsw", 12);
+            g_fp_xcr0 = 0;
+            auto w = kos::thread::create(fp_state_worker, nullptr, "fpstate", 12);
             if (not w.valid())
             {
                 tap::skip("thread pool too small");
@@ -2062,16 +2085,18 @@ namespace selftest
             g_pl_go = 1;
             int const joined = w.join();
             uint32_t const msw = g_fp_msw;
+            uint32_t const xcr0 = g_fp_xcr0;
             uint32_t const core = g_pl_core;
-            tap::diag("core %u: machine status word 0x%x, sampled on core %u",
+            tap::diag("core %u: machine status word 0x%x, xcr0 0x%x, sampled on core %u",
                       static_cast<unsigned>(c), static_cast<unsigned>(msw),
-                      static_cast<unsigned>(core));
-            if (rc == 0 and joined == 0 and core == c and (msw & FP_TRAP_MSW) == FP_TRAP_MSW)
+                      static_cast<unsigned>(xcr0), static_cast<unsigned>(core));
+            if (rc == 0 and joined == 0 and core == c and (msw & FP_MSW_MASK) == FP_MSW_ENABLED
+                and xcr0 == FP_XCR0)
             {
-                trapped |= 1u << c;
+                enabled |= 1u << c;
             }
         }
-        TAP_CHECK(trapped == PL_ALL);
+        TAP_CHECK(enabled == PL_ALL);
     }
 #endif
 #endif

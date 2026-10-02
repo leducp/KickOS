@@ -147,10 +147,6 @@ SECTIONS
   __RUNTIME_PSEUDO_RELOC_LIST_END__ = __rt_psrelocs_end;
   ___RUNTIME_PSEUDO_RELOC_LIST__ = __rt_psrelocs_start;
   __RUNTIME_PSEUDO_RELOC_LIST__ = __rt_psrelocs_start;
-  .eh_frame BLOCK(__section_alignment__) :
-  {
-    KEEP (*(.eh_frame*))
-  }
   .pdata BLOCK(__section_alignment__) :
   {
     KEEP(*(.pdata*))
@@ -193,7 +189,6 @@ SECTIONS
     *(SORT(.text$*))
     *(.gnu.linkonce.t.*)
     *(.gcc_exc)
-    KEEP (*(.gcc_except_table))
   }
   /* The app's read-only data: its own section so no disassembler reads it as code, and still
    * inside the read-execute half of the window.
@@ -202,6 +197,15 @@ SECTIONS
   {
     LONG (0); LONG (0);
     *(.rodata .rodata.* .rdata)
+    /* The C++ exception tables and the unwind tables, which ring 3's unwinder reads:
+     * system/cxx/vterminate.cc registers the latter from here. -ffunction-sections names a
+     * table per function, and one left unnamed here lands in the kernel's half. The zero word
+     * is the terminator crtend would supply, which no image links. */
+    KEEP (*(.gcc_except_table .gcc_except_table.*))
+    . = ALIGN(8);
+    __eh_frame_start = . ;
+    KEEP (*(.eh_frame*))
+    LONG (0);
     . = ALIGN(8);
     __kickos_app_rom_end = . ;
   }
@@ -235,10 +239,16 @@ SECTIONS
     *(.bss .bss.*)
     *(COMMON)
     . = ALIGN(8);
+    /* newlib's heap, KICKOS_USER_HEAP_SIZE bytes from kickos_x86_64_link_image's --defsym. In
+     * the app window, so every address space gets a copy of its own. */
     _kickos_heap_start = . ;
+    . += KICKOS_USER_HEAP_SIZE;
     _kickos_heap_limit = . ;
     __kickos_app_sram_end = . ;
   }
+  /* Opt-in link-time heap floor, --defsym KICKOS_HEAP_MIN=<bytes> (undefined by default). */
+  ASSERT (DEFINED (KICKOS_HEAP_MIN) ? _kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN : 1,
+          "KickOS: heap below KICKOS_HEAP_MIN")
   .edata BLOCK(__section_alignment__) :
   {
     *(.edata)
@@ -262,6 +272,9 @@ SECTIONS
      *(.note.GNU-stack)
      *(.gnu.lto_*)
      *(.gnu_object_only)
+     /* The toolchain's libraries are compiled without -fno-ident, and PE32+ has no place for
+      * the compiler's version string below the image base. */
+     *(.comment)
   }
   .idata BLOCK(__section_alignment__) :
   {

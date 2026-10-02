@@ -43,3 +43,38 @@ function(kickos_isolated_cores_check)
       "${IC_KERNEL_CORES} name anything. Fix the mask in ${IC_ORIGIN}.")
   endif()
 endfunction()
+
+# Validation for KICKOS_ROOT_CORE_MASK, the core mask root is created with. Zero is the task's
+# set; anything else is a placement only the shared multicore model has, and it must name
+# cores the kernel drives, or root lands on no core that runs.
+function(kickos_root_core_mask_check)
+  set(_one MASK KERNEL_CORES SHARED ORIGIN)
+  cmake_parse_arguments(RC "" "${_one}" "" ${ARGN})
+  if(NOT DEFINED RC_MASK OR RC_MASK STREQUAL "")
+    set(RC_MASK 0)
+  endif()
+  if(NOT DEFINED RC_KERNEL_CORES OR RC_KERNEL_CORES STREQUAL "")
+    message(FATAL_ERROR "kickos_root_core_mask_check needs KERNEL_CORES")
+  endif()
+  if(NOT DEFINED RC_ORIGIN OR RC_ORIGIN STREQUAL "")
+    set(RC_ORIGIN "the board defconfig")
+  endif()
+  math(EXPR _mask "${RC_MASK}")
+  if(_mask EQUAL 0)
+    return()
+  endif()
+  if(NOT RC_SHARED)
+    message(FATAL_ERROR
+      "KICKOS_ROOT_CORE_MASK is ${RC_MASK} outside the shared multicore model, where one "
+      "kernel drives one core and root has no other to be placed on. Leave it 0 in "
+      "${RC_ORIGIN}.")
+  endif()
+  math(EXPR _undriven "${_mask} >> ${RC_KERNEL_CORES}")
+  if(NOT _undriven EQUAL 0)
+    message(FATAL_ERROR
+      "KICKOS_ROOT_CORE_MASK names a core this kernel does not schedule: the mask is "
+      "${RC_MASK} and one kernel runs ${RC_KERNEL_CORES} cores, so only bits below "
+      "${RC_KERNEL_CORES} name anything, and root would run on no core. Fix the mask in "
+      "${RC_ORIGIN}.")
+  endif()
+endfunction()

@@ -3185,7 +3185,7 @@ whose `DW_AT_decl_file` resolves to `arch.h`, which is the one line the comment 
 `DW_AT_low_pc`, no `DW_AT_location` and no type attribute moved.
 *The near-miss is worth the line it costs:* the first comparison invoked a
 `riscv32-none-elf-readelf` that is not on `PATH`, `.session/env.sh` exporting
-`KICKOS_RISCV_TOOLCHAIN_BIN` without adding it, and the resulting EMPTY dumps compared equal and
+the RISC-V toolchain hint variable of the time without adding it, and the resulting EMPTY dumps compared equal and
 reported all three objects identical. An absence-of-difference verdict taken from a tool that
 produced no output is the same false pass this step's own floors exist to rule out, one level down.
 The figures above are from the re-run, with the dump line counts printed beside them.
@@ -3912,7 +3912,7 @@ a different answer and three of them are worth carrying:
   is a knob and not a second reading of `KICKOS_ARCH_SIM`. A descriptor of zero slots was the
   tempting alternative and it is wrong: `reent_seat` writes THROUGH the seat word, so an empty
   descriptor is a null store rather than a no-op. The one C-library name KickOS's own userspace
-  layer calls is `exit()` (`user/src/uart_service.cc`), and `user/src/nolibc_exit.cc` defines it
+  layer calls is `exit()` (`user/src/uart_service.cc`), and `nolibc_exit.cc`, since removed, defined it
   onto the same `KOS_SYS_EXIT` dispatch the other two postures reach.
 - *The seven weak references are fixed at COMPILE time and the linker script is the other half.*
   Hidden visibility does not help a WEAK undefined symbol, measured both ways: gcc reaches it

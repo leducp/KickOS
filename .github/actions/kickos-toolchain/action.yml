@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-# One family of the KickOS toolchain (conan/toolchain), restored from the cache the `toolchain`
+# One family of the KickOS toolchain (conan/toolchain), restored from the cache its `toolchain`
 # job fills, then indexed into ~/kickos-toolchain with every family this job restored before it,
 # and named by KICKOS_TOOLCHAIN. Each family is its own `conan cache save` archive: one Conan
-# store restored twice keeps only the second.
+# store restored twice keeps only the second. The `toolchain` job fills the cache from the
+# release toolchain-<version> where that holds the family, and otherwise builds it and uploads
+# the archive as an artifact under its release name.
 name: KickOS toolchain family
-description: Restore (or, in the toolchain job, build) one KickOS toolchain family and index it.
+description: Restore (or, in the toolchain job, provide) one KickOS toolchain family and index it.
 
 inputs:
   family:
     description: The family's triple, one of conan/toolchains FAMILIES.
     required: true
   build:
-    description: "true in the job that builds a family the cache lacks; every other job restores."
+    description: "true in the job that provides a family the cache lacks; every other job restores."
     required: false
     default: "false"
   conan-version:
@@ -38,24 +40,45 @@ runs:
         }
         echo "$HOME/conan-venv/bin" >> "$GITHUB_PATH"
 
+    # Both keys hash every file the recipe exports: its folder and the guards it copies from tools/.
     - name: Restore the family
       if: inputs.build != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ~/kickos-toolchain-archive/${{ inputs.family }}.tgz
-        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**') }}
+        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**', 'tools/check-x86_64-*.sh') }}
         fail-on-cache-miss: true
 
-    - name: Restore or build the family
+    # The cache first, then the release, then a build: whichever fills the archive, the cache
+    # saves it when the job ends.
+    - name: Restore the family from the cache
       id: cache
       if: inputs.build == 'true'
       uses: actions/cache@v4
       with:
         path: ~/kickos-toolchain-archive/${{ inputs.family }}.tgz
-        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**') }}
+        key: kickos-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ inputs.family }}-${{ hashFiles('conan/toolchain/**', 'tools/check-x86_64-*.sh') }}
+
+    # Only a release package built from this tree's recipe revision serves.
+    - name: Restore the family from the release
+      id: release
+      if: inputs.build == 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        FAMILY: ${{ inputs.family }}
+        KICKOS_TOOLCHAIN_NO_BUILD: "1"
+      run: |
+        export CONAN_HOME="$(mktemp -d)"
+        if tools/kickos-toolchain.sh "$(mktemp -d)" "$FAMILY"; then
+          mkdir -p ~/kickos-toolchain-archive
+          ~/conan-venv/bin/conan cache save "kickos-toolchain-$FAMILY/*:*" --no-source \
+            --file ~/kickos-toolchain-archive/"$FAMILY".tgz
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Build the family
-      if: inputs.build == 'true' && steps.cache.outputs.cache-hit != 'true'
+      id: build
+      if: inputs.build == 'true' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.found != 'true'
       shell: bash
       env:
         FAMILY: ${{ inputs.family }}
@@ -63,14 +86,28 @@ runs:
         export CONAN_HOME="$(mktemp -d)"
         ~/conan-venv/bin/conan profile detect --exist-ok
         ~/conan-venv/bin/conan create conan/toolchain --name "kickos-toolchain-$FAMILY" --build=missing
-        mkdir -p ~/kickos-toolchain-archive
+        mkdir -p ~/kickos-toolchain-archive ~/kickos-toolchain-built
         ~/conan-venv/bin/conan cache save "kickos-toolchain-$FAMILY/*:*" --no-source \
           --file ~/kickos-toolchain-archive/"$FAMILY".tgz
+        name="kickos-toolchain-$FAMILY-$(uname -s)-$(uname -m).tgz"
+        cp ~/kickos-toolchain-archive/"$FAMILY".tgz ~/kickos-toolchain-built/"$name"
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+
+    # Under its release name, for the maintainer to add to the release.
+    - name: Upload the family built
+      if: steps.build.outputs.name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.build.outputs.name }}
+        path: ~/kickos-toolchain-built/${{ steps.build.outputs.name }}
+        compression-level: 0
 
     - name: Index every family restored so far
       shell: bash
       env:
         FAMILY: ${{ inputs.family }}
+        # The archive restored here is the family; reading the release is the producer's step.
+        KICKOS_TOOLCHAIN_NO_RELEASE: "1"
       # A Conan store of its own: a job's other Conan steps cache ~/.conan2 whole, so a family
       # restored there is saved into their cache and collides with the next restore.
       run: |

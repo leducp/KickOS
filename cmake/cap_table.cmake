@@ -36,7 +36,8 @@
 # generated CMake fragment and the structural constants from cmake/cap_geometry.cmake.
 #
 # kickos_endpoint_seats_check below is a SECOND arithmetic over two of the same
-# declarations, and deliberately not folded into the sum: it counts ENDPOINT POOL SLOTS
+# declarations plus the app's endpoint peak (kickos_declare_app_endpoints), and deliberately
+# not folded into the sum: it counts ENDPOINT POOL SLOTS
 # against a per-task ceiling, where the sum counts capability table INDICES against a board
 # supply, and the two answer for one crossing with different numbers.
 
@@ -150,10 +151,26 @@ function(kickos_declare_app_capabilities target peak optional reply)
   endif()
 endfunction()
 
-# The endpoint POOL SLOTS this image seats in ROOT before the app's first instruction, against
-# the ceiling one task may hold. NOT the width above: that counts capability table indices,
-# this counts pool slots, and a console handover spends one of the second and none of the
-# first.
+# Endpoints an app that declares nothing is assumed to hold live at once: one, which is what
+# the seat relation below left every app before a declaration existed.
+set(KICKOS_ENDPOINT_APP_PEAK_DEFAULT 1)
+
+# Record one app target's ENDPOINT demand: the most endpoint pool slots its root holds live at
+# once, a PEAK like the capability one above and never a sum over a run. The widest declaration
+# in the tree is what kickos_endpoint_seats_check adds to the seats.
+function(kickos_declare_app_endpoints target peak)
+  if(NOT "${peak}" MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "kickos_declare_app_endpoints(${target}): '${peak}' is not a "
+      "non-negative integer count of concurrently held endpoints")
+  endif()
+  set_target_properties(${target} PROPERTIES KICKOS_ENDPOINT_PEAK "${peak}")
+  set_property(GLOBAL APPEND PROPERTY KICKOS_ENDPOINT_APP_TARGETS "${target}")
+endfunction()
+
+# The endpoint POOL SLOTS this image seats in ROOT before the app's first instruction, plus the
+# widest app's own peak, against the ceiling one task may hold. NOT the width above: that counts
+# capability table indices, this counts pool slots, and a console handover spends one of the
+# second and none of the first.
 #
 # IT CANNOT LIVE BESIDE THE POOL RELATION in cmake/amp_partition.cmake: that file is
 # include()d before add_subdirectory(system), where the service-list target does not yet
@@ -191,33 +208,49 @@ function(kickos_endpoint_seats_check service_list)
     set(_eps_by "${service_list} (not a target; nothing retained)")
   endif()
 
+  # The widest app wins, as for the capability peak: one kernel serves every app in the tree.
+  set(_peak "${KICKOS_ENDPOINT_APP_PEAK_DEFAULT}")
+  set(_peak_by "the undeclared-app default")
+  get_property(_apps GLOBAL PROPERTY KICKOS_ENDPOINT_APP_TARGETS)
+  foreach(_a IN LISTS _apps)
+    get_target_property(_p ${_a} KICKOS_ENDPOINT_PEAK)
+    if(_p GREATER _peak)
+      set(_peak "${_p}")
+      set(_peak_by "${_a}")
+    endif()
+  endforeach()
+
   math(EXPR _seated "${_ports} + ${_eps}")
   if(_seated GREATER 0)
     message(STATUS "KickOS: endpoint seats = ${_seated} slot(s) held in root for the life of "
                    "the image = ${_ports} partition port(s) + ${_eps} retained by "
-                   "${_eps_by}; one task may hold ${_budget}")
+                   "${_eps_by}, + ${_peak} app peak (${_peak_by}); one task may hold ${_budget}")
   endif()
-  if(_seated LESS _budget)
+  math(EXPR _need "${_seated} + ${_peak}")
+  if(NOT _need GREATER _budget)
     return()
   endif()
 
-  # STRICT, and the strictness is the app's: at equality root boots exactly at its ceiling
-  # and the app running on root's table cannot create one endpoint of its own.
+  # The app runs on root's table, so its peak comes out of the same ceiling the seats do. Past
+  # it, its creates answer -KOS_EAGAIN at run time, and an arm that fails holding one leaves
+  # every later create refused.
   message(FATAL_ERROR
     "KickOS: this image seats ${_seated} endpoint pool slot(s) in ROOT before the app's "
-    "first instruction, and one task may hold ${_budget}. Root would reach its own ceiling "
-    "on the seating alone, and amp_ports_seat panics rather than refusing, so nothing at "
-    "run time would hold it there.\n"
+    "first instruction, the widest app holds ${_peak} more at once, and one task may hold "
+    "${_budget}. amp_ports_seat panics rather than refusing, so nothing at run time would hold "
+    "the seating to the ceiling, and the app's own creates would be refused.\n"
     "  partition ports, seated into root at init (KICKOS_AMP_PORTS) : ${_ports}\n"
     "  retained for the life of the image by ${_eps_by} (RETAINED_ENDPOINTS) : "
     "${_eps}\n"
     "  = seated in root : ${_seated}\n"
+    "  app peak, declared by ${_peak_by} (kickos_declare_app_endpoints) : ${_peak}\n"
+    "  = needed : ${_need}\n"
     "  one task's ceiling (KICKOS_TASK_ENDPOINT_BUDGET) : ${_budget}\n"
     "THIS SUM IS NOT EVERY SEAT. A driver the APP brings up under KOS_DRV_EP_RETAIN keeps a "
-    "further slot in root, and that posture is a runtime one no build can read, so the "
-    "headroom this relation leaves is what those have to come out of. Raise "
-    "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET in this board's defconfig, keeping it below "
-    "CONFIG_KICKOS_MAX_ENDPOINTS, or name a service list that retains fewer endpoints.")
+    "further slot in root, and that posture is a runtime one no build can read, so it has to "
+    "be counted in the app's declared peak. Raise CONFIG_KICKOS_TASK_ENDPOINT_BUDGET in this "
+    "board's defconfig, keeping it below CONFIG_KICKOS_MAX_ENDPOINTS, or name a service list "
+    "that retains fewer endpoints.")
 endfunction()
 
 # Sum the declarations, check the total against the board's supply, and forward the width.

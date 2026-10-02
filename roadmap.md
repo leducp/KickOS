@@ -1784,10 +1784,10 @@ authority being declared per task. `kos_service_bringup` has no stop hook, which
 | M10.2.1 | the design (`docs/design-m10-toolchain.md`): the pinned sources, the six families and their multilibs, the recipe, the one variable, what it deletes |
 | M10.2.2 | the recipe, the consumer recipe and the one variable, and the Cortex-M family, full and nano, with every Arm board and CI's Arm jobs on it |
 | M10.2.3 | AArch64 and RISC-V |
-| M10.2.4 | x86_64: the compiler with PE32+ binutils and the kernel's libgcc, then newlib, libstdc++ and user threads' vector state (maintainer, 2026-09-30) |
-| M10.2.5 | ESP32 from Espressif's sources and RX from Renesas's GNURX 14.2 sources (maintainer, 2026-09-30) |
+| M10.2.4 | x86_64: the compiler with PE32+ binutils, then newlib, libstdc++ and user threads' vector state (maintainer, 2026-09-30) |
+| M10.2.5 | ESP32 from Espressif's sources (maintainer, 2026-09-30), and RX as the pinned set plus Renesas's changes ported onto it, carried as patches in this repository, which the release mirrors (maintainer, 2026-10-01), with KickOS's fix to their double-precision unordered compares (maintainer, 2026-10-01) |
 | M10.2.6 | the deletions and CI's prebuilt packages for Linux x86_64 and macOS arm64 |
-| M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured |
+| M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured; done, recorded in `docs/archive/M10.2_exit.md` (2026-10-02) |
 | M10.3 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
 | M10.4 | the target side, on M10.1 and M10.3: the init -- file-order scan, skip and rescan on readiness, restart, watchers, status, packaged drivers and the console handover through their descriptors -- the lookup library, `kickos_compose` producing system targets, `KickOS::system_default` and the link-time asserts; the three golden systems run, the Relax Kit, the A53 board at four cores and q35 |
 | M10.5 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |

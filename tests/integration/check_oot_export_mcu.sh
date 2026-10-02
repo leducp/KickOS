@@ -133,14 +133,11 @@ the relink probe cannot tell which one the link uses"
 done
 [ -n "$LD" ] || fail "shipped linker script missing from package"
 
-# The consumer links the newlib package this build linked, not whichever one the shell running
-# the gate sourced: a package refuses a newlib profile other than its own.
-while IFS= read -r _row; do
-  [ -n "$_row" ] || continue
-  export "${_row%%:*}=${_row#*=}"
-done <<EOF
-$(grep -E '^KICKOS_NEWLIB_[A-Z0-9_]+:PATH=' "$KICKOS_BUILD/CMakeCache.txt" || true)
-EOF
+# The consumer builds with the KickOS toolchain this build did, not whichever one the shell
+# running the gate sourced.
+KICKOS_TOOLCHAIN=$(sed -n 's/^KICKOS_TOOLCHAIN:PATH=//p' "$KICKOS_BUILD/CMakeCache.txt")
+[ -n "$KICKOS_TOOLCHAIN" ] || fail "the build's cache names no KICKOS_TOOLCHAIN"
+export KICKOS_TOOLCHAIN
 
 echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS_BOARD) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/build" -G "$GEN" \

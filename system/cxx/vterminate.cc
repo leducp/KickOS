@@ -11,6 +11,17 @@
 #include <cxxabi.h> // abi::__cxa_current_exception_type
 #include <kickos/kos.h>
 
+#if KICKOS_HAVE_ASPACE && !KICKOS_LINKER_WEAK_UNDEF
+// A PE32+ image holds no undefined weak reference, so user/src/root_entry.cc registers no unwind
+// tables there; this constructor does, first of the app's, ahead of any that throws.
+extern "C" unsigned char __eh_frame_start[];
+extern "C" void __register_frame(void*);
+__attribute__((constructor(101))) static void kickos_register_eh_frame()
+{
+    __register_frame(__eh_frame_start);
+}
+#endif
+
 // GCC 15's <cxxabi.h> no longer declares this symbol; self-declare it so our
 // strong definition still overrides the archive member.
 namespace __gnu_cxx

@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The pinned sources of the KickOS toolchain (docs/design-m10-toolchain.md section 1). GMP, MPFR,
-# MPC and ISL are the releases GCC 16.2's contrib/download_prerequisites names.
+# MPC and ISL are the releases GCC 16.2's contrib/download_prerequisites names. `filename` names
+# an archive GitHub serves under its commit alone, or a patch in patches/ beside this file.
 sources:
   gcc:
     url: "https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz"
@@ -25,3 +26,48 @@ sources:
   isl:
     url: "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
     sha256: "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
+  # Espressif's GCC at esp-16.2.0_20260914, binutils at esp-2.47.0_20260914, and the core
+  # overlays the ESP32 family applies (design section 1).
+  gcc-esp:
+    url: "https://github.com/espressif/gcc/archive/96666a8b989e784ad3356b013e77e94a530fafe7.tar.gz"
+    filename: "espressif-gcc-96666a8b989e784ad3356b013e77e94a530fafe7.tar.gz"
+    sha256: "33e79d11f5c70dd426b2a7997cfeeed79ab57c5b5dfb1bd12696db26718741d8"
+  binutils-esp:
+    url: "https://github.com/espressif/binutils-gdb/archive/f5e7bfaf0786cd74c7138e32ca50359618967abf.tar.gz"
+    filename: "espressif-binutils-gdb-f5e7bfaf0786cd74c7138e32ca50359618967abf.tar.gz"
+    sha256: "5820a2fd06a5e2151335297f5c5ba3af0c4ff2a19950355b9d68f098503488a4"
+  xtensa-overlays:
+    url: "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz"
+    filename: "espressif-xtensa-overlays-dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz"
+    sha256: "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56"
+  # Renesas's GNURX 14.2 changes ported onto the sources above, which the RX family applies,
+  # and the trim of its multilibs to the four RX libraries (design section 1). Patches, not
+  # archives: the recipe exports them, and the release mirrors them.
+  gnurx-gcc:
+    filename: "gnurx-gcc-16.2.0.patch"
+    sha256: "a62b716bc1eafcfe64447e20d904a6e28c88246b6f0d3303fd253d99e3000467"
+  gnurx-binutils:
+    filename: "gnurx-binutils-2.47.patch"
+    sha256: "c1f573378da4bc424547a53958d7a10b353186acfd2575e2a771dd4ad031bf6a"
+  gnurx-newlib:
+    filename: "gnurx-newlib-4.5.0.patch"
+    sha256: "95484c8622c47c3d1d7c776ececee88c4a70487a845530569012c64f75e976db"
+  rx-multilib:
+    filename: "kickos-rx-multilib.patch"
+    sha256: "f239629c422c8abd9cec86269ced6e9ca881efd689a4998b5cbda0aa12f0174f"
+  # KickOS's own fix to Renesas's double-precision compare branch, which takes ORDERED for
+  # UNORDERED, so that isnan and printf read a double right under -mdfpu (design section 1).
+  kickos-rx-dfpu-compare:
+    filename: "kickos-rx-dfpu-compare.patch"
+    sha256: "4f7fb1d821867aa2bdc96b5c27cf17395a56363594770b70ad1d30bdab4edfde"
+  # KickOS's own change to the x86_64-elf GCC, which binds every symbol but a weak one locally
+  # under -fpie, so neither the libraries nor an image reach a global offset table PE32+ cannot
+  # hold (design section 5.5).
+  kickos-x86_64-binds-local:
+    filename: "kickos-x86_64-binds-local.patch"
+    sha256: "e5ccf5397c6820e8766b7bc0c4d4a2f19f440e0d02af183a30b3ecd14b75e23e"
+  # KickOS's own change to the x86_64-elf binutils, which gives an absolute word naming a weak
+  # definition the PE base relocation the boot moves it by (design section 5.5).
+  kickos-x86_64-pe-defweak-reloc:
+    filename: "kickos-x86_64-pe-defweak-reloc.patch"
+    sha256: "d26b92b35f6265a5dc46c4732de6cb65aa46a1e754a5205d9bfd59c5d9d169d1"

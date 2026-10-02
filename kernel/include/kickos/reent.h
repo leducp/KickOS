@@ -5,10 +5,10 @@
 // header: the user side STATES where the state lives, in a descriptor of plain pointers and
 // widths, and the kernel does the acquiring, the priming and the seating itself.
 //
-// KICKOS_LIBC_REENT names three postures. A cross toolchain gives the kernel newlib's per-thread
-// state to own. The sim's libc is the HOST's and owns its own. The x86_64 UEFI toolchain links no
-// C library, so nothing below is compiled; do NOT answer that posture with a descriptor of zero
-// slots, whose seat word is an address the kernel would still write through.
+// KICKOS_LIBC_REENT names two postures. A cross toolchain gives the kernel newlib's per-thread
+// state to own. The sim's libc is the HOST's and owns its own, so nothing below is compiled
+// there; do NOT answer that posture with a descriptor of zero slots, whose seat word is an
+// address the kernel would still write through.
 //
 // Where libc finds the running thread's state is KICKOS_REENT_PER_THREAD's choice. At 0 it is ONE
 // word the kernel rewrites at every switch, correct only while one core runs the threads that

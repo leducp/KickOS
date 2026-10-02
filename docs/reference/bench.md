@@ -162,6 +162,20 @@ Each list is then run in EVERY image the board's suite ships as, and the row nam
 names the image. `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes
 nothing; it asks no board either, so no line it prints is a witness.
 
+## `fpclass` on the RX72M is a step of its own
+
+`bench-fleet.sh` flashes the selftest images and nothing else. It keeps no per-board image list:
+the images are the ones the board's selftest manifest names, and its verdict is the TAP stream,
+which `fpclass` does not print. rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake`
+registers no test there, and the DFPU compare patch's silicon witness is this capture, owed by
+every RX72M pass, enforcing and flat, each under its own TAG:
+
+    VARIANT=st TAG=<tag> APP=fpclass tools/bench/bench.sh rx72m
+    tests/integration/check_fpclass.sh --log <session>/logs/<tag>-rx72m-fpclass.log
+
+It must print `PASS` under a banner naming the tree under test. A fleet pass alone reads green
+without it, which is how the M10.2 exit first went out.
+
 ## The report has to survive the console
 
 Every line the kernel side of the report prints goes out through `kprintf_paced`, which offers
@@ -970,6 +984,11 @@ closed span is a board that cannot deliver an injected line, which is refused.
   `kickos-selftest-manifest.txt`, one row per image, written by
   `tests/integration/gates/selftest.cmake` from the very variables it hands its own entries. A
   TAP app with no row, or no arm count, is REFUSED rather than checked against itself.
+  One repair is made before it judges: an IRQ console drains the stream well behind the run
+  while the kernel writes a thread-fault record straight to the device, so an expected fault
+  can land inside a status line. A line split by a WHOLE record, in the exact form
+  `kernel/init/fault.cc` emits, of a thread on the image's fault list, whose two halves make a
+  well-formed test-point line, is re-joined and named in a NOTE; any other split stays refused.
   ONE ROUTE REACHES NO VERDICT: a USB CDC console is the device, so it loses the head of the
   capture and with it the plan line. That capture says so and is reconciled by hand.
 - a SPLIT board restarts TAP numbering at 1 in each image, so a lone first plan line is a

@@ -423,8 +423,12 @@ endfunction()
 # The processor every x86_64 emulation runs, the application gates and the boot witnesses
 # alike: qemu64, which is below the floor, plus the features x86-64-v3 requires
 # (arch/x86/x86_64/floor_x86_64.cc). It reaches both runners as KICKOS_X86_64_CPU.
+#
+# +xsaveopt is not in x86-64-v3 and the port never executes it: QEMU 11.1's TCG spins on the
+# CR4 write that sets OSXSAVE for a model reporting XSAVE without it, measured, so the boot
+# never reaches its first thread.
 set(KICKOS_X86_64_QEMU_CPU
-    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave"
+    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt"
     CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
 
 # ---------------------------------------------------------------------------

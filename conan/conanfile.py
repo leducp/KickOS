@@ -7,8 +7,8 @@ from conan import ConanFile
 class KickOSDev(ConanFile):
     """Host-side development dependencies for KickOS: the host unit-test layer.
 
-    Board builds take nothing from here. Every cross board links the newlib that conan/board
-    provisions, a separate consumer. This one emits CMakeDeps and not
+    Board builds take nothing from here: every cross board builds with the KickOS toolchain
+    conan/toolchains provisions, a separate consumer. This one emits CMakeDeps and not
     CMakeToolchain: every KickOS preset already pins its own toolchainFile, and a second one
     would silently replace the compiler selection.
     """

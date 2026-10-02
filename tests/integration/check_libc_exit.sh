@@ -5,18 +5,26 @@
 # The C library's own exit() on one boot of libc_exit (natively for the sim, on QEMU when
 # QEMU_MACHINE is set).
 #
+#   check_libc_exit.sh <libc_exit image> [--atexit]
+#
 # The WORKER's marker alone would pass on a libc exit() that never reached the kernel, so
 # root's survival is the required half: KOS_SYS_EXIT ends only the calling thread unless
 # the caller is root, and nothing else in the image produces a line after a worker's exit.
 # Root's own exit() then has to end the SYSTEM carrying its status, so 7 is the witness:
 # 3 means the worker's exit took the image down with it, 124 means nobody's did.
+#
+# --atexit, where the libc's own exit() runs the image's handlers, which the sim's routing onto
+# KOS_SYS_EXIT does not: root registers one only after the worker exited, so its line after
+# root's own is root's exit() running it, and not the worker's, which would have consumed it.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=8}"
 : "${SIM_TIMEOUT:=8}"
 
-elf="${1:?usage: check_libc_exit.sh <libc_exit.elf>}"
+elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit]}"
+atexit=0
+[ "${2:-}" = "--atexit" ] && atexit=1
 
 run_image "$elf"
 
@@ -33,6 +41,13 @@ fi
 if ! has "root: exit()"; then
     fail "root never reached its own exit()"
 fi
+if [ "$atexit" -eq 1 ]; then
+    if ! printf '%s\n' "$OUT" | sed -n '/^root: exit()$/,$p' | grep -q '^root: atexit handler$'
+    then
+        fail "root's exit() ran no atexit handler registered after the worker's exit, or ran it
+  before root reached its own exit()"
+    fi
+fi
 if [ "$RC" -eq 124 ]; then
     fail "root's exit() left the system running (timed out)"
 fi
@@ -40,5 +55,9 @@ if [ "$RC" -ne 7 ]; then
     fail "root's exit() shut down with status $RC, not the 7 it passed"
 fi
 
+if [ "$atexit" -eq 1 ]; then
+    echo "PASS: exit() reached KOS_SYS_EXIT from a worker and from root, root's after its own atexit handler, carrying its status"
+    exit 0
+fi
 echo "PASS: exit() reached KOS_SYS_EXIT from a worker and from root, carrying its status"
 exit 0

@@ -44,14 +44,16 @@
  * arch_armv8a.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_ARMV8A_TRAP_NEST 1568
 
-/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 1808 on
- * qemu-arm64-benchgicv3 and benchsmp12, a spawn seeding the child's tables:
+/* The EL0 synchronous entry on the block, the syscall and the fault it contains. 1856 on
+ * qemu-arm64-benchgicv3 and benchsmp12 under the KickOS toolchain's GCC 16.2, a spawn seeding
+ * the child's tables:
  *   syscall_dispatch[112] -> thread_create_call -> spawn_masked[448] -> thread_create[144]
  *   -> domain_for -> claim_slot -> aspace_image_seed[112] -> arch_aspace_map[112]
  *   -> map_into[112]x3 -> kickos_frame_alloc -> klock_enter -> ... -> wait_gicd_rwp
  *   -> kfault_terminate
- * 1504 on qemu-arm64, a reply-receive whose exit teardown wakes into the switch. */
-#define KICKOS_ARMV8A_TRAP_DEPTH_SYSK 1808
+ * 1504 on qemu-arm64, a reply-receive whose exit teardown wakes into the switch. Reserved at
+ * 2048, above the measurement: frame size is no constraint on arm64 (maintainer, 2026-09-30). */
+#define KICKOS_ARMV8A_TRAP_DEPTH_SYSK 2048
 
 /* The fault and slay stubs on the block with an interrupt nested below. 1232 on
  * qemu-arm64-benchgicv3 and benchsmp12, the space release's rendezvous timing out into the console:

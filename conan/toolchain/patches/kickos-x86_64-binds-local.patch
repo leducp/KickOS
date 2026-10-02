@@ -1,0 +1,31 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: bind every non-weak symbol locally in an x86_64-elf position-independent executable.
+
+Against GCC 16.2.0, applied with -p1 in the GCC tree, for the x86_64-elf family alone
+(docs/design-m10-toolchain.md, section 5.5). Every image this compiler builds is one static
+PE32+ link with no dynamic symbol, and ld -m i386pep resolves a GOT load to a load of the
+symbol's own bytes rather than relaxing it, so under -fpie a reference GCC cannot prove local
+must not reach the GOT. ix86_binds_local_p answers true for every declaration that is not weak
+or a weakref, when compiling -fpie, not a shared object, with direct extern access. A weak
+declaration keeps the GOT, the one way PC-relative code can see the zero of an undefined weak
+symbol. -fpic, -shared and -mno-direct-extern-access compiles are unchanged. This modifies the
+vendored compiler, so it carries GCC's licence, not KickOS's.
+
+--- a/gcc/config/i386/i386.cc
++++ b/gcc/config/i386/i386.cc
+@@ -27443,6 +27443,13 @@
+ 				 DECL_ATTRIBUTES (exp))));
+   if (!direct_extern_access)
+     ix86_has_no_direct_extern_access = true;
++  /* KickOS: every x86_64-elf image is one static link with no dynamic symbol, so a
++     position-independent executable's references bind inside it.  A weak declaration
++     may stay undefined, at address zero, which only the GOT can give PC-relative code.  */
++  if (TARGET_64BIT && flag_pie && !flag_shlib && direct_extern_access
++      && DECL_P (exp) && !DECL_WEAK (exp)
++      && !lookup_attribute ("weakref", DECL_ATTRIBUTES (exp)))
++    return true;
+   return default_binds_local_p_3 (exp, flag_shlib != 0, true,
+ 				  direct_extern_access,
+ 				  (direct_extern_access

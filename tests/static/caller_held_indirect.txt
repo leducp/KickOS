@@ -11,6 +11,7 @@ ignore x86_64 * kickos_service_list_run@1/1 reason: userland service start callb
 ignore x86_64 * kickos_x86_64_ap_reserve@1/1 reason: firmware page allocator before kernel entry
 ignore x86_64 * kickos_x86_64_floor@1/1 reason: firmware console output before kernel entry
 ignore x86_64 * kickos_x86_64_landed@1/1 reason: kernel boot init-array constructor before scheduler start
+ignore x86_64 * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore x86_64 * tap::run_all@1/2 reason: userland test callback
 ignore x86_64 * tap::run_all@2/2 reason: userland test callback
 ignore armv8a * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start

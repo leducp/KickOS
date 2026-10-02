@@ -30,6 +30,13 @@
 #ifndef KICKOS_ARCH_X86_64_TRAP_STACK_H
 #define KICKOS_ARCH_X86_64_TRAP_STACK_H
 
+/* The KickOS toolchain's x86_64-elf GCC 16.2 (docs/design-m10-toolchain.md) builds deeper
+ * frames than the host compilers the figures below were first measured under. Where it did, the
+ * class is reserved at a round figure above its measurement, frame size being no constraint on
+ * x86 (maintainer, 2026-09-30). On qemu-x86_64-bench it measures IRQ, IRQK and IST 456, EXITK and
+ * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1184, RET 1152, SYSK 2304
+ * and PANIC 608. */
+
 /* struct trap_frame, the frame every entry builds from a 16-byte-aligned top: five hardware
  * words, the stub's error code and vector, fifteen registers. arch_x86_64.cc asserts it. */
 #define KICKOS_X86_64_TRAP_FRAME 176
@@ -43,12 +50,15 @@
 
 /* IRQ, IRQK and the frame term of every class an interrupt lands under. 408 on
  * qemu-x86_64-bench under g++ 13 and 344 under g++ 16, a timer expiry's wake re-arming the
- * slice through pick_and_seat, whose switch loads the incoming port set. */
-#define KICKOS_X86_64_TRAP_DEPTH_IRQ 448
+ * slice through pick_and_seat, whose switch loads the incoming port set. 544 on qemu-x86_64
+ * once the image links newlib (docs/design-m10-toolchain.md section 5.5): the same wake's
+ * pick_and_seat primes the incoming thread's libc state, reent_prime copying into its space
+ * through arch_aspace_acquire. */
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 576
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which
  * arch_x86_64.cc asserts. */
-#define KICKOS_X86_64_TRAP_NEST 632
+#define KICKOS_X86_64_TRAP_NEST 760
 
 /* The ring 3 syscall on the block. 1800 on qemu-x86_64-bench under g++ 13, a spawn seeding the
  * new task's space:
@@ -66,22 +76,23 @@
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1856
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
- * down IRQ's chain, which bounds the reporter those vectors actually take. */
-#define KICKOS_X86_64_TRAP_DEPTH_IST 448
+ * down IRQ's chain, which bounds the reporter those vectors actually take, and 544 with newlib
+ * linked, down the same chain. */
+#define KICKOS_X86_64_TRAP_DEPTH_IST 576
 
 /* The fault and slay stubs on the block with an interrupt nested below: 816 on both presets, a
  * dying task's teardown releasing its address space down the map editor's walks. */
-#define KICKOS_X86_64_TRAP_DEPTH_EXITK 816
+#define KICKOS_X86_64_TRAP_DEPTH_EXITK 1024
 
 /* The same stubs through the switch: 816 on both presets, down EXITK's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 816
+#define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 1024
 
 /* kickos_thread_return on a privileged thread's own stack with an interrupt nested below: 816
  * on both presets, down EXITK's chain from kickos_thread_return[16]. */
-#define KICKOS_X86_64_TRAP_DEPTH_RET 832
+#define KICKOS_X86_64_TRAP_DEPTH_RET 1024
 
 /* The same return through the switch: 816 on both presets, down EXITKSW's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_RETSW 832
+#define KICKOS_X86_64_TRAP_DEPTH_RETSW 1024
 
 /* idle_entry's own frame and arch_idle_wait's, above the interrupt idle waits for: 24 on both
  * presets. */
@@ -100,28 +111,28 @@
  * and IST 592 and PANIC 536 under g++ 13, EXITK's teardown 1080 and RET 1064 under both. */
 #if KICKOS_KERNEL_CORES > 1
 #undef KICKOS_X86_64_TRAP_DEPTH_IRQ
-#define KICKOS_X86_64_TRAP_DEPTH_IRQ 640
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 768
 #undef KICKOS_X86_64_TRAP_NEST
-#define KICKOS_X86_64_TRAP_NEST 824
+#define KICKOS_X86_64_TRAP_NEST 952
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2296
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
 /* SYSK, SYSPRIV and SYSPRIVSW: 2296 on qemu-x86_64-smp12 under g++ 13, spawn_masked[480]. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2304
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2304
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
-#define KICKOS_X86_64_TRAP_DEPTH_IST 640
+#define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK
-#define KICKOS_X86_64_TRAP_DEPTH_EXITK 1080
+#define KICKOS_X86_64_TRAP_DEPTH_EXITK 1280
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITKSW
-#define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 1080
+#define KICKOS_X86_64_TRAP_DEPTH_EXITKSW 1280
 #undef KICKOS_X86_64_TRAP_DEPTH_RET
-#define KICKOS_X86_64_TRAP_DEPTH_RET 1088
+#define KICKOS_X86_64_TRAP_DEPTH_RET 1280
 #undef KICKOS_X86_64_TRAP_DEPTH_RETSW
-#define KICKOS_X86_64_TRAP_DEPTH_RETSW 1088
+#define KICKOS_X86_64_TRAP_DEPTH_RETSW 1280
 #undef KICKOS_X86_64_PANIC_DEPTH
-#define KICKOS_X86_64_PANIC_DEPTH 576
+#define KICKOS_X86_64_PANIC_DEPTH 640
 #endif
 
 #endif

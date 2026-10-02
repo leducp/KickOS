@@ -319,10 +319,8 @@ KickOS/
     toolchain-{arm-none-eabi,aarch64-none-elf,riscv-none-elf,rx-elf,xtensa-esp32-elf,x86_64-uefi,host}.cmake
     toolchain-common.cmake          # what every cross toolchain file spells the same way:
                                     #   descriptor chain, CPU baseline, program search, link rules
-    cross_cxx_capability.cmake      # refuses a resolved cross compiler that lacks
-                                    #   newlib + libstdc++ for THIS board's multilib
-    cross_newlib.cmake              # swaps the toolchain's newlib for the pinned
-                                    #   conan/newlib package and checks its reentrancy ABI
+    cross_newlib.cmake              # checks the KickOS toolchain's newlib for the
+                                    #   board's reentrancy ABI and newlib profile
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
     cap_geometry.cmake              # the table's structural constants, emitted to C
     cap_table.cmake                 # the configure-time capability-width sum + supply check
@@ -969,8 +967,8 @@ feeds the slave app.
   thread pointer answers it, written once by `thread_create` and never by a switch: through the
   first word of the thread's TLS control block on armv8a and on lx6 above one kernel core
   (`KICKOS_REENT_IN_TCB`, which rides on `KICKOS_TLS`), and as `tp` itself on rv64imac, which
-  resumes every thread with it. armv8a, rv64imac and lx6 get that hook from their pinned
-  `conan/newlib` builds. Elsewhere libc reads one word
+  resumes every thread with it. armv8a, rv64imac and lx6 get that hook from the KickOS
+  toolchain's dynamic-reent newlib. Elsewhere libc reads one word
   (`&_impure_ptr`, or the word behind `__getreent` on lx6 at one core), and `switch_book` and
   `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is correct only while
   one core runs its readers. `errno` is that struct's first member, so this, and not a

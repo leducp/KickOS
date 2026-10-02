@@ -2,10 +2,14 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Reject GOT relocations in x86-64 UEFI objects and archive members.
+# Reject GOT and TLS relocations in x86-64 UEFI objects and archive members.
 # Usage: check-x86_64-no-got.sh <readelf> <object-or-archive>...
 # PE32+ does not build a GOT or relax GOTPCRELX loads. Match GOT rather
 # than full relocation names because readelf truncates its type column.
+# The thread pointer on q35 is a struct _reent pointer in the FS base, so
+# an address formed from it as TLS lands in another thread's state:
+# thread-local storage is refused until thread_local on q35 is decided
+# (docs/design-m10-toolchain.md section 5.5).
 
 set -u
 
@@ -33,7 +37,7 @@ for obj in "$@"; do
     # Attach the preceding File: marker to each matching relocation.
     out="$("$READELF" -r "$obj" 2>/dev/null \
            | awk '/^File: /{f=$2; next}
-                  /GOT/{print f": "$0}
+                  /GOT|TPOFF|TLSGD|TLSLD|TLSDESC/{print f": "$0}
                   END{}' || true)"
     # Require nonempty readelf output for every input; empty output is not a clean result.
     found=$("$READELF" -h "$obj" 2>/dev/null | grep -c '^ELF Header' || true)
@@ -50,10 +54,11 @@ done
 [ "$scanned" -gt 0 ] || fail "no input was scanned, so this asserted nothing"
 
 if [ "$hits" -ne 0 ]; then
-    fail "$hits of $scanned input(s) carry a global-offset-table relocation. \
+    fail "$hits of $scanned input(s) carry a global-offset-table or TLS relocation. \
 Give the specific declaration __attribute__((visibility(\"hidden\"))), and where it is WEAK \
 state the symbol in the image's linker script instead (include/kickos/klink.h): \
-ld -m i386pep leaves the load in place and the address becomes the bytes AT the symbol."
+ld -m i386pep leaves the load in place and the address becomes the bytes AT the symbol. \
+A TLS relocation is refused outright: q35 builds no thread-local storage."
 fi
 
 echo "no-got: $scanned input(s), $members ELF header(s), clean"

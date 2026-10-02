@@ -1,0 +1,58 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: branch the right way on an unordered double-precision compare on the RXv3 DFPU.
+
+Against GCC 16.2.0 with gnurx-gcc-16.2.0.patch and kickos-rx-multilib.patch applied, with -p1 in
+the GCC tree, for the rx-elf family alone (docs/design-m10-toolchain.md, section 1). Renesas's
+cbranchdf4 follows each dcmp with mvfdr, which sets the Z flag when the compared condition holds,
+and branches on Z for every ordered code. Its ORDERED and UNORDERED cases branch the opposite way,
+and the unordered pre-test of UNEQ, UNLT, UNLE, UNGT and UNGE takes the branch on every ordered
+pair. isnan, isinf, isfinite, fpclassify and the isless family, which GCC builds from these codes,
+so read every finite double as a NaN under -mdfpu, and printf prints "nan" for 1.0. The patch
+makes ORDERED branch on NZ and UNORDERED, and the UN* pre-test, on Z; EQ, NE, LT, LE, GT, GE and
+LTGT, and the single-precision fcmp patterns, are unchanged. GNURX 14.2 carries the same pattern.
+This modifies the vendored compiler, so it carries GCC's licence, not KickOS's.
+
+--- a/gcc/config/rx/rx.md
++++ b/gcc/config/rx/rx.md
+@@ -483,12 +483,16 @@
+ 	  (pc)))]
+   "flag_dfpu"
+   {
++	/* KickOS: mvfdr sets Z when the dcmp condition holds, so an unordered
++	   pair is Z after dcmpun.  ORDERED branches on NZ, UNORDERED on Z, and
++	   each UN* code takes the branch on an unordered pair before testing
++	   the ordered half.  */
+ 	switch(GET_CODE(operands[0]))
+ 	{
+ 	case ORDERED:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3";
+-    case UNORDERED:
+ 		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3";
++    case UNORDERED:
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3";
+     case EQ:
+ 		return "dcmpeq\t%2, %1\n\tmvfdr\n\tbz\t%3";
+     case NE:
+@@ -502,15 +506,15 @@
+ 	case GE:
+ 		return "dcmple\t%1, %2\n\tmvfdr\n\tbz\t%3";
+   case UNEQ:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3\n\tdcmpeq\t%2, %1\n\tmvfdr\n\tbz\t%3";
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmpeq\t%2, %1\n\tmvfdr\n\tbz\t%3";
+ 	case UNLT:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3\n\tdcmplt\t%2, %1\n\tmvfdr\n\tbz\t%3";
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmplt\t%2, %1\n\tmvfdr\n\tbz\t%3";
+ 	case UNLE:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3\n\tdcmple\t%2, %1\n\tmvfdr\n\tbz\t%3";
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmple\t%2, %1\n\tmvfdr\n\tbz\t%3";
+ 	case UNGT:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3\n\tdcmplt\t%1, %2\n\tmvfdr\n\tbz\t%3";
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmplt\t%1, %2\n\tmvfdr\n\tbz\t%3";
+ 	case UNGE:
+-		return "dcmpun\t%2, %1\n\tmvfdr\n\tbnz\t%3\n\tdcmple\t%1, %2\n\tmvfdr\n\tbz\t%3";
++		return "dcmpun\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmple\t%1, %2\n\tmvfdr\n\tbz\t%3";
+   case LTGT:
+     return "dcmplt\t%2, %1\n\tmvfdr\n\tbz\t%3\n\tdcmplt\t%1, %2\n\tmvfdr\n\tbz\t%3";
+ 	default:

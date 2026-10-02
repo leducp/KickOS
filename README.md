@@ -168,43 +168,20 @@ layout.
 
 ### Toolchains
 
-Cross toolchains accept these directory hints from the environment or CMake `-D` options,
-and otherwise search `PATH`:
-
-| Target family | Toolchain directory variable |
-|---|---|
-| Cortex-M | `KICKOS_ARM_TOOLCHAIN_BIN` |
-| ARM64 | `KICKOS_AARCH64_TOOLCHAIN_BIN` |
-| RISC-V | `KICKOS_RISCV_TOOLCHAIN_BIN` |
-| RX | `KICKOS_RX_TOOLCHAIN_BIN` |
-| Xtensa | `KICKOS_XTENSA_BIN` |
-
-The x86-64 UEFI build uses host GCC and GNU binutils with the `i386pep` linker emulation.
-See [CI toolchain setup](.github/actions/) for the versions and packages used in CI.
-
-The Cortex-M boards build with KickOS's own toolchain, GCC, binutils, newlib and libstdc++ from
-pinned sources, provisioned once per machine; its newlib is its own:
+Every board builds with KickOS's own toolchain (`docs/design-m10-toolchain.md`): GCC, binutils,
+newlib and libstdc++ from pinned sources, one compiler per target family, restored from its
+release or built once per machine. Provision it, then configure in a shell that has sourced it:
 
 ```sh
-tools/kickos-toolchain.sh kickos-toolchain arm-none-eabi
+tools/kickos-toolchain.sh kickos-toolchain
 . kickos-toolchain/kickos-toolchain.sh
 ```
 
-The other families move to it one by one (`docs/design-m10-toolchain.md`). Until then every other
-cross-built image needs its pinned newlib, provisioned once per multilib through Conan. For
-example, after setting `KICKOS_AARCH64_TOOLCHAIN_BIN`:
-
-```sh
-conan export conan/newlib
-conan install conan/board -o "&:multilib=aarch64" --build=missing --output-folder=kickos-conan/newlib
-source kickos-conan/newlib/kickos-newlib-aarch64.sh
-```
-
-Choose the multilib for the board. The generated script exports the package path its cross
-toolchain file reads; see the [board reference](docs/reference/boards.md) for the full table.
-For an Arm board, `-o "&:flavor=nano"` builds the small-memory newlib profile;
-source `kickos-newlib-<m>-nano.sh` and configure it in a separate build directory.
-The `microbit` QEMU test board defaults to nano; other boards default to full newlib.
+`KICKOS_TOOLCHAIN`, which the second line sets, is the one variable the toolchain files read;
+configure stops without it. Its newlib is the compiler's own. The x86-64 UEFI image is linked
+with the `i386pep` linker emulation, which the toolchain's `x86_64-elf` binutils carry. The
+Cortex-M family also carries newlib's small-memory nano profile: the `microbit` QEMU test board
+defaults to it, every other board to full newlib.
 
 ## CI coverage
 
@@ -222,7 +199,7 @@ Warnings are errors. Coverage includes:
 | x86-64 | QEMU `q35` with UEFI, including benchmark checks |
 | Xtensa LX6 | ESP32 builds and host checks, including SMP and benchmark configurations |
 | Other Cortex-M boards | Build and static checks, including MPU and RP2350 AMP configurations |
-| RXv3 | No CI job; validation uses the RX72M hardware |
+| RXv3 | RX72M builds and host checks, including selftest, flat and benchmark configurations; runs are validated on the RX72M hardware |
 
 ARM64 AMP runtime tests cover shared-image and two-image configurations. Three-image AMP
 partitions are built and checked for link-layout agreement; CI does not boot them. RP2350

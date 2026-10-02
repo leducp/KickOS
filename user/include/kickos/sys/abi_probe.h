@@ -40,7 +40,10 @@ enum kos_sched_op
     KOS_SCHED_OP_ISOLATED = 4,   // () -> the cores this image isolates
     // () -> monotonic mask of cores that preempted on their own slice timer.
     // Cross-core reschedules and device wakes do not set bits.
-    KOS_SCHED_OP_PREEMPTED = 5
+    KOS_SCHED_OP_PREEMPTED = 5,
+    // () -> how many times the caller has been switched in. A core's first thread is entered
+    // without a switch, so it reads 0 there until it is first switched out and back.
+    KOS_SCHED_OP_SWITCHES = 6
 };
 
 // `op` selector for KOS_SYS_ASPACE_PROBE.

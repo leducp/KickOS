@@ -59,9 +59,9 @@
   - *applies:* context switch, FP save/restore; xtensa lx6 (esp32)
   - *source:* arch/xtensa/lx6/arch_xtensa.cc (kickos_lx6_init's CPENABLE write); arch/xtensa/lx6/include/kickos/arch/xtensa_frame.h (F_F0 / F_FCR / F_FSR, the level-1 frame's FP slots); arch/xtensa/chip/esp32/startup.S (the level-1 entry's FP save and restore)
 
-- **`x86-64-no-vector-or-x87-state`** -- No vector (SSE/AVX) or x87 instruction may appear in the x86_64 freestanding text, by hand or by compiler codegen (autovectorization, a libcall lowering to SSE): the context-switch and trap paths save no XMM and no FPU state, and `entry_x86_64.cc` sets CR0.EM and CR0.TS and clears CR4.OSFXSR and CR4.OSXSAVE, so such live state does not survive a switch and executing the instruction is also a #UD or an #NM at ring 0.
+- **`x86-64-kernel-no-vector-state`** -- No vector (SSE/AVX) or x87 instruction may appear in the x86_64 kernel half, by hand or by compiler codegen (autovectorization, a libcall lowering to SSE), but the port's own: XSAVE64 and XRSTOR64 on the two switch paths and at a core's first thread, XSETBV and XGETBV in the enable. Every thread runs with x87, SSE and AVX live; a trap that does not switch saves none of it, so a kernel instruction touching that state corrupts the interrupted thread's. The kernel half is what `pe_image.ld` claims for the kernel's `.text`, compiled `-mgeneral-regs-only`, and the probe images; the applications are compiled with vectors.
   - *applies:* context switch, FP save/restore; x86_64
-  - *source:* arch/x86/x86_64/switch.S; arch/x86/x86_64/trap_x86_64.S; arch/x86/x86_64/entry_x86_64.cc; tests/static/check_x86_64_no_vector.sh (the fleet-build gate that holds it)
+  - *source:* arch/x86/x86_64/switch.S; arch/x86/x86_64/arch_x86_64.cc (kickos_x86_64_isr's save and restore); arch/x86/x86_64/entry_x86_64.cc (kickos_x86_64_fp_enable); cmake/x86_64_boot.cmake (KICKOS_X86_64_KERNEL_FLAGS on the claimed targets); tests/static/check_x86_64_no_vector.sh (the fleet-build gate that holds it)
 
 ## Critical section & interrupt-priority bands
 
@@ -280,13 +280,17 @@
   `cmake/amp_partition.cmake` refuses a partition whose crossings do not fit
   `KICKOS_MAX_ENDPOINTS`, and `kickos_endpoint_seats_check`
   (`cmake/cap_table.cmake`, called once the service-list target exists) refuses
-  `ports + RETAINED_ENDPOINTS >= KICKOS_TASK_ENDPOINT_BUDGET`. Together with the `cap.h`
-  assert that is `ports + retained < budget < pool`. The assert alone does NOT reach it: it
-  relates the budget to the pool, and an image whose seats outnumber the budget still sits
-  below the pool, so without the CMake relation root boots at or past its own ceiling on a
-  board that configured and built cleanly. **THE BUILD SUM IS NOT EVERY SEAT.** A driver an
-  APP brings up under `KOS_DRV_EP_RETAIN` keeps a further slot in root, and no build can read
-  that posture, so the headroom the strict relation leaves is what those come out of.
+  `ports + RETAINED_ENDPOINTS + app peak > KICKOS_TASK_ENDPOINT_BUDGET`, the app peak being
+  the widest `kickos_declare_app_endpoints` in the tree and 1 for an app that declares none.
+  Together with the `cap.h` assert that is `ports + retained + peak <= budget < pool`. The
+  assert alone does NOT reach it: it relates the budget to the pool, and an image whose seats
+  outnumber the budget still sits below the pool, so without the CMake relation root boots at
+  or past its own ceiling on a board that configured and built cleanly. The peak is in the sum
+  because the app runs on root's table: `xmc4800-relax`'s default list seats two, and at the
+  default budget of 3 the selftest's two-endpoint arm was refused and its leak refused every
+  later create. **THE BUILD SUM IS NOT EVERY SEAT.** A driver an APP brings up under
+  `KOS_DRV_EP_RETAIN` keeps a further slot in root, and no build can read that posture, so the
+  app has to count it in its declared peak.
 
   The bound is per TASK and not per THREAD because a thread's own capability table already
   bounds one thread and a thread can spawn siblings to widen that. **IT BOUNDS ONE TASK AND

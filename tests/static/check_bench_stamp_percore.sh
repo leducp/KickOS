@@ -49,9 +49,11 @@ arch="${3:?$_usage}"
 
 # SYMS: the bodies that carry the bracket, and under `index` the two halves are not in one.
 # BRANCH: the mnemonics whose operand names an instruction boundary, for gate.sh's synced_body.
-# Under `base`: BASE names this core's block, PCREL forms a link-time address.
+# Under `base`: BASE names this core's block, PCREL forms a link-time address, and BASE_MIN is
+# how many per-CPU base reads each body owes, 2 where one body holds the open and the close.
 # Under `index`: STAMP names a stamp cell in the literal pool, IDENT reads this core's
 # identity, and IDENT_CALL is the callee that returns it where the compiler called out.
+BASE_MIN=2
 case "$arch" in
     armv8a)
         MODE=base
@@ -69,7 +71,10 @@ case "$arch" in
         ;;
     x86_64)
         MODE=base
-        SYMS=kickos_x86_64_switch_now
+        # The open is a body of its own, which arch_switch calls ahead of publish_current, and
+        # the close stands in the switch: one per-CPU base read each.
+        SYMS='kickos_x86_64_bench_open kickos_x86_64_switch_now'
+        BASE_MIN=1
         BRANCH='^(j[a-z]*|call|ret)$'
         BASE='%gs:'
         PCREL='%rip'
@@ -437,13 +442,13 @@ for sym in $SYMS; do
   whenever the peer opened later and reads as a plausible switch cost otherwise"
         fi
 
-        # The open and the close each reach it, so one read is half a bracket. A body reading
-        # it zero times is already refused above as unknown, so what reaches here is a body
-        # that addresses its stamp and does it per core on one side only.
-        if [ "$base" -lt 2 ]; then
+        # The open and the close each reach it, so one read short is half a bracket. A body
+        # reading it zero times is already refused above as unknown, so what reaches here is a
+        # body that addresses its stamp and does it per core on one side only.
+        if [ "$base" -lt "$BASE_MIN" ]; then
             bad "the body of '$sym' in $elf reads the per-CPU base $base time(s), where the
-  bracket's open and its close each owe one, so one half of the bracket reaches its stamp some
-  other way"
+  bracket's halves in it each owe one ($BASE_MIN), so one half of the bracket reaches its stamp
+  some other way"
         fi
         continue
     fi

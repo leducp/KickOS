@@ -10,6 +10,7 @@
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/sys/abi_probe.h>
 #include <kickos/sys/atomic.h>
 
 #include <errno.h>
@@ -77,6 +78,58 @@ namespace
     {
         return reinterpret_cast<uintptr_t>(&errno);
     }
+
+#if defined(__x86_64__) && !KICKOS_ARCH_SIM
+    // --- arm F: libc on a core's first thread, before any switch ------------------------
+    // Root is a core's first thread, entered by arch_start with no switch, so only the FS base
+    // that path wrote can hand libc this thread's state. Everything here runs ahead of every
+    // call that can block: strtok and strtol out of newlib, then the two reads that say no
+    // switch-in has seated anything yet and which core entered root.
+    void arm_first_thread()
+    {
+        char buf[] = "kick os";
+        char const* const t0 = strtok(buf, " ");
+        char const* const t1 = strtok(nullptr, " ");
+        errno = 0;
+        char* end = nullptr;
+        (void)strtol("99999999999999999999999999", &end, 10);
+        int const e = errno;
+        struct _reent* const r = __getreent();
+        uintptr_t fs0 = 0;
+        __asm__ volatile("movq %%fs:0, %0" : "=r"(fs0));
+        uintptr_t const switches = kos_sched_probe(KOS_SCHED_OP_SWITCHES);
+        uintptr_t const core = kos_sched_probe(KOS_SCHED_OP_CORE);
+
+        char const* verdict = "ok";
+        if (t0 == nullptr or t1 == nullptr or strcmp(t0, "kick") != 0 or strcmp(t1, "os") != 0)
+        {
+            verdict = "STRTOK LOST ITS PLACE";
+        }
+        else if (e != ERANGE)
+        {
+            verdict = "STRTOL DID NOT SET ERRNO";
+        }
+        else if (reinterpret_cast<uintptr_t>(r) != fs0)
+        {
+            verdict = "__getreent IS NOT THE FS CELL'S WORD";
+        }
+        else if (r == _GLOBAL_REENT)
+        {
+            verdict = "LIBC RAN ON THE PROCESS-WIDE STATE";
+        }
+        else if (switches != 0)
+        {
+            verdict = "ROOT WAS ALREADY SWITCHED IN";
+        }
+        if (verdict[0] != 'o')
+        {
+            g_bad++;
+        }
+        ksnprintf(g_line, sizeof(g_line), "[errnoprobe] F first core %u switches %u %s\n",
+                  static_cast<unsigned>(core), static_cast<unsigned>(switches), verdict);
+        say(g_line);
+    }
+#endif
 
     // --- arm A: a cooperative round trip that crossed a peer's write -------------------
 
@@ -675,6 +728,9 @@ namespace
 
 int main(int, char**)
 {
+#if defined(__x86_64__) && !KICKOS_ARCH_SIM
+    arm_first_thread();
+#endif
     kos::print("[errnoprobe] start\n");
 
     arm_cooperative();

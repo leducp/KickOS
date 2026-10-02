@@ -2366,7 +2366,7 @@ reason, 310 lines out of the root and 319 into a module. Measured totals so far:
       modules. **ORDERING CONSTRAINT**: the AMP block must keep running before `cap_table.cmake` at
       root 1709, whose width depends on the port count. Also `toolchain-cxx-runtime-check.cmake` is
       not a toolchain file -- it defines one probe function and is misfiled by name.
-      **ALL THREE LANDED, plus the rename to `cmake/cross_cxx_capability.cmake`.** See the ledger
+      **ALL THREE LANDED, plus the rename to the cross C++ capability probe, a file M10.2 removed.** See the ledger
       correction above for what the arithmetic actually came to.
       **THE RENAME UNCOVERED A LATENT PACKAGING DEFECT that no gate would have caught until a
       consumer hit it.** The root file derived which fragments to SHIP by regex over the

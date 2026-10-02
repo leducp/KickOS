@@ -476,10 +476,18 @@ namespace kickos
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
         thread_head_bytes() + sizeof(MpuSet) + sizeof(CapRun) + thread_scalar_bytes();
 
+#if defined(KICKOS_ARCH_THREAD_SIZE_CEILING)
+    // An arch whose context carries a large save area pins a ceiling, which catches an
+    // accidental growth without pricing every member to the byte (context.h).
+    static_assert(sizeof(Thread) <= KICKOS_ARCH_THREAD_SIZE_CEILING,
+                  "sizeof(Thread) passed the arch's ceiling: drop the member that grew the TCB, "
+                  "or raise KICKOS_ARCH_THREAD_SIZE_CEILING where the arch states it");
+#else
     static_assert(sizeof(Thread) == KICKOS_THREAD_EXPECTED_SIZE,
                   "sizeof(Thread) moved. Either drop the member that grew the TCB, or re-measure "
                   "on a 32-BIT target and edit thread_scalar_bytes: a host measurement prices a "
                   "uint16_t at 0 and is blind to this");
+#endif
     // The last member must close the struct up to its ALIGNMENT and no further; exact equality is
     // wrong, a 64-bit single-chunk build leaving four bytes of alignment tail. Anything past
     // alignof is a hole a reordered member opened.

@@ -52,6 +52,12 @@ namespace
     // Correct for overlapping ranges when d < s: each word is read before the store
     // that could reach it, and the store never touches an address at or above the
     // next word to be read.
+    //
+    // Both loops are tested at the bottom: -Os lays a loop tested at the top out with its body
+    // past the exit, a second taken branch per iteration. The word loop needs no guard, the
+    // branch into it guarantees one word. It runs a negative offset up to zero, so the add
+    // sets the flags the branch tests and every Thumb-2 instruction in it is 16-bit: a 32-bit
+    // one at the branch target costs a fetch cycle wherever the link leaves it misaligned.
     inline __attribute__((always_inline)) void copy_ascending(unsigned char* d,
                                                               unsigned char const* s, size_t n)
     {
@@ -64,20 +70,23 @@ namespace
                 *d++ = *s++;
                 n--;
             }
-            Word* dw = reinterpret_cast<Word*>(d);
-            Word const* sw = reinterpret_cast<Word const*>(s);
-            while (n >= WORD_BYTES)
+            size_t const whole = n & ~static_cast<size_t>(WORD_MASK);
+            d += whole;
+            s += whole;
+            n -= whole;
+            ptrdiff_t i = -static_cast<ptrdiff_t>(whole);
+            do
             {
-                *dw++ = *sw++;
-                n -= WORD_BYTES;
-            }
-            d = reinterpret_cast<unsigned char*>(dw);
-            s = reinterpret_cast<unsigned char const*>(sw);
+                *reinterpret_cast<Word*>(d + i) = *reinterpret_cast<Word const*>(s + i);
+                i += static_cast<ptrdiff_t>(WORD_BYTES);
+            } while (i != 0);
         }
-        while (n > 0)
+        if (n != 0)
         {
-            *d++ = *s++;
-            n--;
+            do
+            {
+                *d++ = *s++;
+            } while (--n != 0);
         }
     }
 

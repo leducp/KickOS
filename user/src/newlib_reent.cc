@@ -8,7 +8,7 @@
 //
 // Newlib reaches its reentrant state as _REENT: __getreent() on lx6, armv8a and rv64imac,
 // and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target links
-// its own pinned conan/newlib build; errno is a member of that state.
+// the KickOS toolchain's own newlib; errno is a member of that state.
 
 #include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
 #include <kickos/reent.h>

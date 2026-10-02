@@ -3,12 +3,10 @@
 #
 # Cross toolchain for the KickOS ESP32 (Xtensa LX6) target.
 #
-# The Xtensa core configuration is baked into the toolchain at build time, so the toolchain is
-# chip-family-specific (xtensa-esp32-elf-* is the classic ESP32 LX6 overlay) and there is no
-# per-board -mcpu. We take the toolchain's DEFAULT (windowed) ABI: the prebuilt esp32 multilib
-# ships ONLY a windowed-ABI libgcc/libc. `-mabi=call0 -print-multi-directory` still resolves to
-# the windowed `esp32` multilib, so call0 code plus windowed libgcc mismatches at link and
-# faults on HW.
+# The Xtensa core configuration is baked into the toolchain at build time: the KickOS toolchain's
+# xtensa-esp32-elf family (docs/design-m10-toolchain.md) is built with the ESP32 LX6 overlay, so
+# there is no per-board -mcpu. We take its DEFAULT (windowed) ABI: its one set of libraries is
+# windowed, and call0 code linked against that libgcc mismatches at link and faults on HW.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR xtensa)
@@ -26,11 +24,10 @@ kickos_toolchain_export_baseline("${_kos_cpu}")
 
 set(KICKOS_ARCH_FAMILY "xtensa" CACHE STRING "KickOS arch family (arm|xtensa)")
 
-kickos_toolchain_cross_programs(xtensa-esp32-elf KICKOS_XTENSA_BIN)
+kickos_toolchain_package(xtensa-esp32-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_newlib("xtensa" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  KICKOS_NEWLIB_XTENSA_ESP32 dynamic)
+kickos_require_toolchain_newlib("xtensa" "${CMAKE_C_COMPILER}" dynamic)
 
 # Emit NO -mabi flag, so the windowed esp32 multilib is selected for compile AND link.
 # -mlongcalls: let the assembler relax calls that exceed the +/-512 KB call range.

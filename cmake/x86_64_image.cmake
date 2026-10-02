@@ -10,6 +10,7 @@
 # copy of itself from the source one:
 #   KICKOS_X86_64_PE_SCRIPT    the PE section script the link needs at -T
 #   KICKOS_NO_GOT              tools/check-x86_64-no-got.sh, refused before every link
+#   KICKOS_WEAK_UNDEF          tools/check-x86_64-weak-undef.sh, refused before every link
 #   KICKOS_X86_64_KREL         tools/x86_64-krel.sh, which carries the relocation copy across
 #                              the image's two links and refuses a second link that moved it
 # and the link inputs, which are a property of the configure rather than of the site:
@@ -19,6 +20,11 @@
 #
 # The three object libraries named below are targets in tree and imported ones from
 # KickOSTargets.cmake in a package; $<TARGET_OBJECTS:> reads both.
+#
+# The toolchain's own libraries join the archive group: libc.a, libm.a and libgcc.a for every
+# image, and libstdc++.a, libsupc++.a and the kickos_cxx_rt object for one whose target links
+# kickos_cxx. ld runs here without a compiler driver, so each is found once, at configure,
+# through the compiler's -print-file-name under the board's flags.
 
 if(NOT KICKOS_X86_64_PE_SCRIPT OR NOT EXISTS "${KICKOS_X86_64_PE_SCRIPT}")
   message(FATAL_ERROR "KickOS x86_64: KICKOS_X86_64_PE_SCRIPT names no file "
@@ -30,12 +36,40 @@ if(NOT KICKOS_NO_GOT OR NOT EXISTS "${KICKOS_NO_GOT}")
     "A global-offset-table load survives this link as a LOAD of the symbol's own bytes, so "
     "the guard runs before every image. An installed package ships it beside this file.")
 endif()
+if(NOT KICKOS_WEAK_UNDEF OR NOT EXISTS "${KICKOS_WEAK_UNDEF}")
+  message(FATAL_ERROR "KickOS x86_64: KICKOS_WEAK_UNDEF names no file ('${KICKOS_WEAK_UNDEF}'). "
+    "A reference to an undefined weak symbol survives this link as address 0, so the guard "
+    "runs before every image. An installed package ships it beside this file.")
+endif()
 
 if(NOT KICKOS_X86_64_KREL OR NOT EXISTS "${KICKOS_X86_64_KREL}")
   message(FATAL_ERROR "KickOS x86_64: KICKOS_X86_64_KREL names no file ('${KICKOS_X86_64_KREL}'). "
     "The boot relocates the app window from the copy of .reloc it carries, so an image linked "
     "without it refuses to boot. An installed package ships it beside this file.")
 endif()
+
+function(_kickos_x86_64_toolchain_archive out name)
+  separate_arguments(_flags NATIVE_COMMAND "${CMAKE_C_FLAGS}")
+  execute_process(COMMAND "${CMAKE_C_COMPILER}" ${_flags} "-print-file-name=${name}"
+                  OUTPUT_VARIABLE _path OUTPUT_STRIP_TRAILING_WHITESPACE
+                  RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0 OR NOT IS_ABSOLUTE "${_path}" OR NOT EXISTS "${_path}")
+    message(FATAL_ERROR "KickOS x86_64: ${CMAKE_C_COMPILER} -print-file-name=${name} found no "
+      "${name} ('${_path}'). Every application image links the KickOS toolchain's libraries "
+      "by path, ld running without a compiler driver; the x86_64-elf package installs them.")
+  endif()
+  set(${out} "${_path}" PARENT_SCOPE)
+endfunction()
+foreach(_kos_a c m gcc stdc++ supc++)
+  _kickos_x86_64_toolchain_archive(_kos_lib "lib${_kos_a}.a")
+  list(APPEND _kos_x86_64_libs "${_kos_lib}")
+endforeach()
+list(GET _kos_x86_64_libs 0 1 2 _kos_x86_64_libc)
+list(GET _kos_x86_64_libs 3 4 _kos_x86_64_libcxx)
+set(KICKOS_X86_64_LIBC "${_kos_x86_64_libc}" CACHE INTERNAL
+    "The toolchain's libc.a, libm.a and libgcc.a, which every x86_64 application image links")
+set(KICKOS_X86_64_LIBCXX "${_kos_x86_64_libcxx}" CACHE INTERNAL
+    "The toolchain's libstdc++.a and libsupc++.a, which a kickos_cxx image links")
 
 # Promoted so the function reads them whatever directory a consumer calls it from.
 set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_PE_SCRIPT}" CACHE INTERNAL
@@ -44,6 +78,8 @@ set(KICKOS_X86_64_KREL "${KICKOS_X86_64_KREL}" CACHE INTERNAL
     "The relocation-copy tool every x86_64 application link runs")
 set(KICKOS_NO_GOT "${KICKOS_NO_GOT}" CACHE INTERNAL
     "The global-offset-table guard refused before every x86_64 link")
+set(KICKOS_WEAK_UNDEF "${KICKOS_WEAK_UNDEF}" CACHE INTERNAL
+    "The undefined-weak-reference guard refused before every x86_64 link")
 
 # --subsystem=10 makes the file an EFI APPLICATION; the entry symbol is the one firmware
 # calls, on the Microsoft x64 convention.
@@ -54,9 +90,17 @@ set(KICKOS_NO_GOT "${KICKOS_NO_GOT}" CACHE INTERNAL
 # ELF archive's symbol index and still extracts no member for an undefined symbol, so every
 # image linking the arch and chip archives fails undefined while the object-only images link.
 # It is byte-identical on 2.47, which extracts either way, so only a CI runner catches its loss.
+# -u _exit force-links the C library's exit stub, as the fleet's -Wl,-u,_exit does. The heap
+# size is the one KickOS figure the PE script takes, as a symbol.
+if(NOT DEFINED KICKOS_USER_HEAP_SIZE OR KICKOS_USER_HEAP_SIZE STREQUAL "")
+  message(FATAL_ERROR "KickOS x86_64: KICKOS_USER_HEAP_SIZE is unset, so the PE script has no "
+    "heap to carve. The board configuration states it; a package records it.")
+endif()
 set(KICKOS_X86_64_LDFLAGS -m i386pep --subsystem=10 --image-base=0x400000
                           -e efi_main --no-insert-timestamp
                           -b elf64-x86-64
+                          -u _exit
+                          --defsym "KICKOS_USER_HEAP_SIZE=${KICKOS_USER_HEAP_SIZE}"
                           -T "${KICKOS_X86_64_PE_SCRIPT}"
     CACHE INTERNAL "The ld flags every x86_64 PE32+ image links with")
 
@@ -115,6 +159,19 @@ function(kickos_x86_64_link_image name)
     endif()
     list(APPEND _group_files "$<TARGET_FILE:${_t}>")
   endforeach()
+  # A full-C++ image takes the C++ runtime and the object that registers its unwind tables.
+  set(_cxx_objects "")
+  get_target_property(_links ${name} LINK_LIBRARIES)
+  if(_links AND _links MATCHES "(^|;|::)kickos_cxx(;|$)")
+    if(NOT TARGET kickos_cxx_rt)
+      message(FATAL_ERROR "kickos_x86_64_link_image(${name}): the target links kickos_cxx and "
+        "kickos_cxx_rt is no target, so the image would link no terminate handler and no "
+        "unwind-table registration.")
+    endif()
+    set(_cxx_objects $<TARGET_OBJECTS:kickos_cxx_rt>)
+    list(APPEND _group_files ${KICKOS_X86_64_LIBCXX})
+  endif()
+  list(APPEND _group_files ${KICKOS_X86_64_LIBC})
 
   # The first link measures the base-relocation directory; the second carries a copy of it in
   # .krel, which pe_image.ld places after every section a fixup can sit in, so .reloc comes
@@ -125,10 +182,13 @@ function(kickos_x86_64_link_image name)
               $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
               ${KICKOS_X86_64_APP_OBJECTS}
               $<TARGET_OBJECTS:${name}>
+              ${_cxx_objects}
               --start-group ${_group_files} --end-group)
 
   # THE ARCHIVES ARE SCANNED TOO, not the image objects alone: a global-offset-table
   # relocation on this board lands in libkickos_kernel.a, which the objects do not show.
+  # This reads what the image links; the toolchain package runs both guards over every archive
+  # it installs when it is built (conan/toolchain/conanfile.py).
   add_custom_command(
     OUTPUT "${_img}"
     COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
@@ -136,6 +196,14 @@ function(kickos_x86_64_link_image name)
             $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
             ${KICKOS_X86_64_APP_OBJECTS}
             $<TARGET_OBJECTS:${name}>
+            ${_cxx_objects}
+            ${_group_files}
+    COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
+            $<TARGET_OBJECTS:${_boot_target}>
+            $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
+            ${KICKOS_X86_64_APP_OBJECTS}
+            $<TARGET_OBJECTS:${name}>
+            ${_cxx_objects}
             ${_group_files}
     # LC_ALL=C: the host's ld is localised, and the map it writes is read by gates that key
     # on its headings (tests/static/check_appdata_no_kernel.sh).
@@ -161,8 +229,10 @@ function(kickos_x86_64_link_image name)
             $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>
             ${KICKOS_X86_64_APP_OBJECTS}
             $<TARGET_OBJECTS:${name}>
+            ${_cxx_objects}
             ${_group_files}
             "${KICKOS_NO_GOT}"
+            "${KICKOS_WEAK_UNDEF}"
             "${KICKOS_X86_64_KREL}"
             "${KICKOS_X86_64_PE_SCRIPT}"
     BYPRODUCTS "${_img}.map" "${_first}" "${_krel}.bin" "${_krel}.o"

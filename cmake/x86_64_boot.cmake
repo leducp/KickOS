@@ -18,8 +18,10 @@
 # out-of-tree consumer's kickos_emit_image() runs this exact body rather than a copy of it.
 
 # Refused before each link: an unrelaxed global-offset-table load is a CLEAN link and a fault
-# much later (see the script's own header).
+# much later, and so is a reference to an undefined weak symbol, which links to address 0 (see
+# each script's own header).
 set(KICKOS_NO_GOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-no-got.sh")
+set(KICKOS_WEAK_UNDEF "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-weak-undef.sh")
 # The relocation copy an application image carries for the boot (tools/x86_64-krel.sh).
 set(KICKOS_X86_64_KREL "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-krel.sh")
 
@@ -118,6 +120,12 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
             $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
             $<TARGET_OBJECTS:kickos_x86_64_nokernel>
             $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
+    COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
+            $<TARGET_OBJECTS:kickos_x86_64_boot>
+            $<TARGET_OBJECTS:kickos_x86_64_x2>
+            $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
+            $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+            $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
     COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
             -o "${_img}"
             $<TARGET_OBJECTS:kickos_x86_64_boot>
@@ -133,6 +141,7 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
             $<TARGET_OBJECTS:kickos_x86_64_nokernel>
             $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
             "${KICKOS_NO_GOT}"
+            "${KICKOS_WEAK_UNDEF}"
             "${KICKOS_X86_64_PE_SCRIPT}"
     COMMENT "x86_64: linking the PE32+ UEFI application ${_img}"
     COMMAND_EXPAND_LISTS
@@ -149,6 +158,13 @@ set(KICKOS_X3_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x3.efi")
 add_custom_command(
   OUTPUT "${KICKOS_X3_IMAGE}"
   COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot>
+          $<TARGET_OBJECTS:kickos_x86_64_probe3>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+          $<TARGET_OBJECTS:kickos_arch_x86_64>
+          $<TARGET_OBJECTS:kickos_chip_q35>
+  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
@@ -173,6 +189,7 @@ add_custom_command(
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"
+          "${KICKOS_WEAK_UNDEF}"
           "${KICKOS_X86_64_PE_SCRIPT}"
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X3_IMAGE}"
   COMMAND_EXPAND_LISTS
@@ -194,6 +211,12 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
+  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot>
+          $<TARGET_OBJECTS:kickos_x86_64_probe4>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_arch_x86_64>
+          $<TARGET_OBJECTS:kickos_chip_q35>
   COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
           -o "${KICKOS_X4_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
@@ -209,6 +232,7 @@ add_custom_command(
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"
+          "${KICKOS_WEAK_UNDEF}"
           "${KICKOS_X86_64_PE_SCRIPT}"
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X4_IMAGE}"
   COMMAND_EXPAND_LISTS
@@ -232,6 +256,12 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
+  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot>
+          $<TARGET_OBJECTS:kickos_x86_64_probe5>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_arch_x86_64>
+          $<TARGET_OBJECTS:kickos_chip_q35>
   COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
           -o "${KICKOS_X5_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
@@ -248,6 +278,7 @@ add_custom_command(
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"
+          "${KICKOS_WEAK_UNDEF}"
           "${KICKOS_X86_64_PE_SCRIPT}"
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X5_IMAGE}"
   COMMAND_EXPAND_LISTS
@@ -273,6 +304,13 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
+  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
+          $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
+          $<TARGET_OBJECTS:kickos_x86_64_probe6>
+          $<TARGET_OBJECTS:kickos_x86_64_nobench>
+          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
+          $<TARGET_OBJECTS:kickos_arch_x86_64>
+          $<TARGET_OBJECTS:kickos_chip_q35>
   COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
           -o "${KICKOS_X6_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
@@ -290,6 +328,7 @@ add_custom_command(
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
           "${KICKOS_NO_GOT}"
+          "${KICKOS_WEAK_UNDEF}"
           "${KICKOS_X86_64_PE_SCRIPT}"
   COMMENT "x86_64: linking the two-core AP-entry witness"
   COMMAND_EXPAND_LISTS
@@ -439,12 +478,18 @@ if(KICKOS_BUILD_TESTS)
             ${KICKOS_MCPU_FLAGS} -ffreestanding -fpie -mcmodel=small)
   set_tests_properties(x86_64_no_got_selftest PROPERTIES TIMEOUT 60 LABELS host)
 
-  # The vector and x87 census over what this board compiled and linked. It walks
-  # PROJECT_BINARY_DIR itself rather than taking a list of targets, so an object library added
-  # later is in the corpus by being built.
+  add_test(NAME x86_64_weak_undef_selftest
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_weak_undef_selftest.sh"
+            "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}" "${CMAKE_AR}")
+  set_tests_properties(x86_64_weak_undef_selftest PROPERTIES TIMEOUT 60 LABELS host)
+
+  # The vector and x87 census over the kernel half this board compiled and linked. It walks
+  # PROJECT_BINARY_DIR itself and derives the kernel half from the PE script's claims rather
+  # than taking a list of targets, so a claimed object library is in the corpus by being built.
   add_test(NAME x86_64_no_vector
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_no_vector.sh"
-            "${CMAKE_OBJDUMP}" "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}")
+            "${CMAKE_OBJDUMP}" "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}"
+            "${KICKOS_X86_64_PE_SCRIPT}")
   set_tests_properties(x86_64_no_vector PROPERTIES TIMEOUT 300 LABELS host)
 
   # The direction flag the interrupt entry clears before it calls C. Delivery through a gate
@@ -482,6 +527,39 @@ target_include_directories(kickos_x86_64_landed_kernel PRIVATE ${KICKOS_X86_64_I
   "${CMAKE_CURRENT_SOURCE_DIR}/kernel/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/system/include")
 
+# The kernel posture (cmake/toolchain-x86_64-uefi.cmake), on exactly the targets pe_image.ld
+# claims for the kernel's .text, read from the script so the two cannot drift, and on the
+# probe images' objects, which have no app half. tests/static/check_x86_64_no_vector.sh derives
+# its corpus from the same claims.
+file(STRINGS "${KICKOS_X86_64_PE_SCRIPT}" _kos_claims REGEX "\\(\\.text \\.text\\.\\*\\)")
+set(_kos_kernel_half "")
+foreach(_kos_claim IN LISTS _kos_claims)
+  if(_kos_claim MATCHES "\\*lib([a-z0-9_]+)\\.a:")
+    list(APPEND _kos_kernel_half "${CMAKE_MATCH_1}")
+  elseif(_kos_claim MATCHES "\\*([a-z0-9_]+)\\.dir/")
+    list(APPEND _kos_kernel_half "${CMAKE_MATCH_1}")
+  endif()
+endforeach()
+if(NOT "kickos_kernel" IN_LIST _kos_kernel_half)
+  message(FATAL_ERROR "KickOS x86_64: ${KICKOS_X86_64_PE_SCRIPT} claims no kickos_kernel text, "
+    "so the kernel posture would reach no kernel target. The claim lines changed shape.")
+endif()
+set(_kos_probe_objects kickos_x86_64_boot_com1)
+if(KICKOS_KERNEL_CORES EQUAL 1)
+  list(APPEND _kos_probe_objects kickos_x86_64_x2 kickos_x86_64_probe3 kickos_x86_64_probe4
+                                 kickos_x86_64_probe5 kickos_x86_64_probe6)
+  foreach(_cls IN LISTS KICKOS_X2_CLASSES)
+    list(APPEND _kos_probe_objects kickos_x86_64_probe_${_cls})
+  endforeach()
+endif()
+foreach(_kos_t IN LISTS _kos_kernel_half _kos_probe_objects)
+  if(NOT TARGET ${_kos_t})
+    message(FATAL_ERROR "KickOS x86_64: '${_kos_t}' takes the kernel posture and is no target.")
+  endif()
+  target_compile_options(${_kos_t} PRIVATE
+    "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
+endforeach()
+
 # No extra objects: the frame pool is the kernel's (kernel/mem/frame_pool.cc), q35 translating.
 set(KICKOS_X86_64_APP_OBJECTS "" CACHE INTERNAL
     "Extra objects every x86_64 application image links, beside the app's own")
@@ -507,4 +585,5 @@ install(TARGETS kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_ke
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake"
               "${KICKOS_X86_64_PE_SCRIPT}"
         DESTINATION "${KICKOS_CMAKE_DIR}")
-install(PROGRAMS "${KICKOS_NO_GOT}" "${KICKOS_X86_64_KREL}" DESTINATION "${KICKOS_CMAKE_DIR}")
+install(PROGRAMS "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}" "${KICKOS_X86_64_KREL}"
+        DESTINATION "${KICKOS_CMAKE_DIR}")

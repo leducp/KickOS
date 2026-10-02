@@ -162,6 +162,11 @@ if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv8a"
    OR KICKOS_ARCH STREQUAL "rv64imac" OR KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
+# vector_fault_contained's SIMD half, where the emulator flags an unmasked SIMD exception and
+# raises no #XM, which QEMU's TCG does.
+if(KICKOS_ARCH STREQUAL "x86_64")
+  list(APPEND KICKOS_EXPECT_PARTIALS vector_fault_contained)
+endif()
 # cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
 # segmented index. The summed width is not readable here, cmake/cap_table.cmake resolving it
 # after this directory is added, but the SUPPLY is. cap_child_width is on the same condition.
@@ -200,9 +205,10 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
      OR KICKOS_CHIP STREQUAL "q35")
     list(APPEND KICKOS_EXPECT_FAULTS was)
   endif()
-  # port_window's COM2 holder reaching the CMOS data port, and its index writer.
+  # port_window's COM2 holder reaching the CMOS data port, and its index writer, and
+  # vector_fault_contained's two victims, an unmasked x87 and an unmasked SIMD divide by zero.
   if(KICKOS_ARCH STREQUAL "x86_64")
-    list(APPEND KICKOS_EXPECT_FAULTS pwb pwi)
+    list(APPEND KICKOS_EXPECT_FAULTS pwb pwi vfmf vfxm)
   endif()
 endif()
 # window_memory_ro's child, writing through its read-only window.
@@ -294,12 +300,32 @@ if(_selftest_rebased AND TEST ${_tag}_selftest)
   set_tests_properties(${_tag}_selftest_rebased PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
 endif()
 
+# A split board's per-region sets, `<prefix>_skips_r<n>` and `<prefix>_partials_r<n>`, are
+# partitioned BY REGION, NOT BY NAME: an arm belongs to the region whose `#undef TAP_ADD` bounds
+# hold its TAP_ADD line in main.cc, and an image declares the UNION over the regions it carries.
+# check_tap_stream.sh reports a name declared in the wrong image as a NOTE and not a failure,
+# so only that rule catches a mistake. The image's run of regions comes off the target the app
+# declared, so nothing here states again which arms an image carries.
+function(_selftest_region_union prefix img out_skips out_partials)
+  get_target_property(_lo ${img} KICKOS_SELFTEST_FIRST_REGION)
+  get_target_property(_hi ${img} KICKOS_SELFTEST_LAST_REGION)
+  set(_skips "")
+  set(_partials "")
+  foreach(_region RANGE ${_lo} ${_hi})
+    if(NOT DEFINED ${prefix}_skips_r${_region} OR NOT DEFINED ${prefix}_partials_r${_region})
+      message(FATAL_ERROR
+        "selftest: ${img} carries region ${_region}, which declares no skip or partial "
+        "set in ${CMAKE_CURRENT_FUNCTION_LIST_FILE}. An undeclared region reads as permitting "
+        "nothing, so an arm that has always skipped there would fail this board's gate.")
+    endif()
+    list(APPEND _skips ${${prefix}_skips_r${_region}})
+    list(APPEND _partials ${${prefix}_partials_r${_region}})
+  endforeach()
+  set(${out_skips} "${_skips}" PARENT_SCOPE)
+  set(${out_partials} "${_partials}" PARENT_SCOPE)
+endfunction()
+
 if(KICKOS_BOARD STREQUAL "microbit")
-  # The sets below are partitioned BY REGION, NOT BY NAME: an arm belongs to the region whose
-  # `#undef TAP_ADD` bounds hold its TAP_ADD line in main.cc, and an image declares the UNION
-  # over the regions it carries. check_tap_stream.sh reports a name declared in the wrong
-  # image as a NOTE and not a failure, so only that rule catches a mistake.
-  #
   # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE,
   # so a stale list quietly permits a regression.
   set(_mb_skips_r1 "")
@@ -325,8 +351,8 @@ if(KICKOS_BOARD STREQUAL "microbit")
   if(_selftest_kernel_line_partial)
     list(APPEND _mb_partials_r4 irq_kernel_line_reserved)
   endif()
-  # The image list and each image's run of regions come off the targets the app declared, so
-  # nothing here states again how many images this board ships or which arms are in one.
+  # The image list comes off the targets the app declared, so nothing here states again how
+  # many images this board ships.
   get_property(_selftest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
   # This board's rows replace the ones written above, for the same reason its entries take
   # these sets rather than the fleet-wide ones: a manifest that disagreed with the gate would
@@ -334,20 +360,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
   set(_selftest_manifest "")
   foreach(_img IN LISTS _selftest_images)
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
-    get_target_property(_mb_lo ${_img} KICKOS_SELFTEST_FIRST_REGION)
-    get_target_property(_mb_hi ${_img} KICKOS_SELFTEST_LAST_REGION)
-    set(_mb_skips "")
-    set(_mb_partials "")
-    foreach(_mb_region RANGE ${_mb_lo} ${_mb_hi})
-      if(NOT DEFINED _mb_skips_r${_mb_region} OR NOT DEFINED _mb_partials_r${_mb_region})
-        message(FATAL_ERROR
-          "selftest: ${_img} carries region ${_mb_region}, which declares no skip or partial "
-          "set in ${CMAKE_CURRENT_LIST_FILE}. An undeclared region reads as permitting "
-          "nothing, so an arm that has always skipped there would fail this board's gate.")
-      endif()
-      list(APPEND _mb_skips ${_mb_skips_r${_mb_region}})
-      list(APPEND _mb_partials ${_mb_partials_r${_mb_region}})
-    endforeach()
+    _selftest_region_union(_mb ${_img} _mb_skips _mb_partials)
     # Comma-separated for the same reason the fleet-wide sets above are.
     list(JOIN _mb_skips "," _mb_skips)
     list(JOIN _mb_partials "," _mb_partials)
@@ -361,6 +374,46 @@ if(KICKOS_BOARD STREQUAL "microbit")
       "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
     string(APPEND _selftest_manifest "${_img}|${_mb_arms}|${_mb_skips}|"
                                      "${_mb_partials}|${KICKOS_EXPECT_FAULTS}\n")
+  endforeach()
+  file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
+endif()
+
+# f302nucleo's own declines on 16 KiB of SRAM, measured on silicon at the -st provisioning (two
+# spawnable threads, a 7-slot capability table, the arena the four images leave), and read only
+# off its bench manifest: the board has no emulator, so no CTest entry carries them. ADDED to
+# the fleet-wide sets rather than replacing them, so a derived permission appended above still
+# reaches this board. A MEASUREMENT and not slack, as microbit's are.
+if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
+  # Every one a worker this board cannot seat beside root at KICKOS_MAX_THREADS 2, but
+  # mutex_deadlock, which wants the 3 optional capabilities a 7-slot table does not grant.
+  set(_f3_skips_r1 mutex_basic mutex_pi_donation mutex_chain_boost mutex_deadlock
+                   mutex_multi_held)
+  set(_f3_partials_r1 "")
+  # Workers again, but reply_recv_notify, which holds five capabilities at once, two past the
+  # suite's mandatory per-arm peak.
+  set(_f3_skips_r2 call_timeout_revert call_infoless_revert reply_recv_notify)
+  set(_f3_partials_r2 "")
+  set(_f3_skips_r3 call_donation call_donation_hold call_donation_slow call_donation_pending
+                   cap_reply_bound_fast cap_reply_bound_slow cap_reply_release_close
+                   join_stale_gen)
+  set(_f3_partials_r3 "")
+  # irq_server_handover is a worker too many; irq_as_event's 4 KiB page and caller_stack's
+  # 2 KiB stack are arena this part does not have.
+  set(_f3_skips_r4 irq_as_event irq_server_handover)
+  set(_f3_partials_r4 caller_stack)
+  string(REPLACE "," ";" _f3_fleet_skips "${KICKOS_EXPECT_SKIPS}")
+  string(REPLACE "," ";" _f3_fleet_partials "${KICKOS_EXPECT_PARTIALS}")
+  get_property(_selftest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
+  set(_selftest_manifest "")
+  foreach(_img IN LISTS _selftest_images)
+    get_target_property(_f3_arms ${_img} KICKOS_TAP_ARMS)
+    _selftest_region_union(_f3 ${_img} _f3_skips _f3_partials)
+    list(PREPEND _f3_skips ${_f3_fleet_skips})
+    list(PREPEND _f3_partials ${_f3_fleet_partials})
+    list(JOIN _f3_skips "," _f3_skips)
+    list(JOIN _f3_partials "," _f3_partials)
+    string(APPEND _selftest_manifest "${_img}|${_f3_arms}|${_f3_skips}|"
+                                     "${_f3_partials}|${KICKOS_EXPECT_FAULTS}\n")
   endforeach()
   file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
 endif()

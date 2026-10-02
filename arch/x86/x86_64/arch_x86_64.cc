@@ -10,6 +10,8 @@
 // declaration, and the visibility attribute is what keeps the reference PC-relative
 // (tools/check-x86_64-no-got.sh).
 extern "C" __attribute__((visibility("hidden"))) void kickos_thread_fault_exit(void);
+// The chip's fatal end (kernel/include/kickos/kernel.h), which a kernel-free image also links.
+extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate(void);
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
@@ -33,6 +35,9 @@ extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_switch_now(struct arch_context
                                                              struct arch_context* to);
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_start(struct arch_context* first);
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_thread_exit(void);
+#if KICKOS_BENCH
+extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_bench_open(void);
+#endif
 
 // The app's own return path (user/src/syscall_stubs.cc), which reaches the kernel exit through
 // the syscall trap. An unprivileged thread's entry returns HERE and never into
@@ -63,6 +68,22 @@ namespace
     static_assert(offsetof(trap_frame, rsp) == 160, "switch.S uses KOS_F_RSP 160");
     static_assert(offsetof(trap_frame, ss) == 168, "switch.S uses KOS_F_SS 168");
     static_assert(offsetof(struct arch_context, sp) == 0, "switch.S uses KOS_CTX_SP 0");
+    // XSAVE and XRSTOR fault on an area that is not 64-byte aligned.
+    static_assert(offsetof(struct arch_context, xsave) == KICKOS_X86_64_CTX_XSAVE,
+                  "switch.S uses KOS_CTX_XSAVE 64");
+    static_assert(offsetof(struct arch_context, xsave) % 64 == 0
+                      and alignof(struct arch_context) % 64 == 0,
+                  "the XSAVE area must be 64-byte aligned");
+    static_assert(sizeof(arch_context::xsave) == KICKOS_X86_64_XSAVE_SIZE,
+                  "the area is XSAVE's standard format for KICKOS_X86_64_XCR0");
+    static_assert(sizeof(struct arch_context)
+                      == KICKOS_X86_64_CTX_XSAVE + KICKOS_X86_64_XSAVE_SIZE,
+                  "the members before the area fit its first 64 bytes");
+    // MXCSR's place in the legacy region, which XRSTOR reads whenever it restores SSE or AVX.
+    constexpr size_t XSAVE_MXCSR = 24;
+    // The cell at the top of an unprivileged thread's stack, aligned top minus 16, whose first
+    // word is the thread's struct _reent pointer and whose address is its FS base.
+    constexpr uintptr_t REENT_CELL = 16;
 
     // With no block seated every ring 3 entry would load a zero stack pointer. This fires if
     // the ARCH_KERNEL_STACKS_MANDATORY select is ever dropped.
@@ -168,12 +189,16 @@ namespace
     // both are written together or one entry class loads a stale pointer. A blockless context
     // publishes ZERO: idle and the boot context are privileged, so a zero is never loaded, and
     // one that was faults immediately.
+    //
+    // The FS base is written every time and never skipped against a copy of the last value:
+    // ring 3 may reload the FS selector, which reloads the base from its descriptor.
     void publish_current(struct arch_context* to)
     {
         local_state().ctx_current = to;
         kickos::x86_64::tss_set_rsp0(to->kernel_sp);
         kickos::x86_64::tss_load_ports(to->ports, to->port_count);
         kickos::x86_64::cpu_set_kernel_sp(to->kernel_sp);
+        kickos::x86_64::write_msr(KICKOS_X86_64_MSR_FS_BASE, to->fs_base);
     }
 
     // One pass: a line rung by a handler inside this loop rings the doorbell again, so a bit
@@ -237,9 +262,16 @@ void arch_context_init(struct arch_context* ctx,
 
     // SysV wants the stack 16-byte aligned at a call site, so the entry's first instruction
     // must see rsp 8 modulo 16, which the return-address slot below produces. It sits at the
-    // top of the thread's OWN stack at either level, where the entry function's `ret` looks.
+    // top of the thread's OWN stack at either level, where the entry function's `ret` looks,
+    // and below the 16-byte reentrancy cell an unprivileged thread keeps above it
+    // (arch_context_seat_reent).
     uintptr_t const top = ctx->stack_hi & ~static_cast<uintptr_t>(15);
-    uintptr_t const return_slot = top - 8;
+    uintptr_t return_slot = top - 8;
+    if (privileged == 0)
+    {
+        return_slot = top - REENT_CELL - 8;
+    }
+    ctx->fs_base = 0;
 
     // Where this frame sits IS the privilege boundary: it carries cs, ss and rflags, so whoever
     // can write it chooses the privilege level of the one iretq that starts the thread. An
@@ -272,6 +304,15 @@ void arch_context_init(struct arch_context* ctx,
     }
     *reinterpret_cast<uint64_t*>(slot_view) = returns_to;
 
+    // A zero header makes XRSTOR load every component's initial state, so no register of the
+    // slot's previous occupant reaches this thread. MXCSR is read from the area all the same.
+    for (size_t i = 0; i < KICKOS_X86_64_XSAVE_SIZE; i++)
+    {
+        ctx->xsave[i] = 0;
+    }
+    uint32_t const mxcsr = KICKOS_X86_64_MXCSR_INIT;
+    __builtin_memcpy(&ctx->xsave[XSAVE_MXCSR], &mxcsr, sizeof(mxcsr));
+
     uintptr_t const base = frame_top - X86_64_FRAME_SIZE;
     trap_frame* const f = reinterpret_cast<trap_frame*>(base);
     uint64_t* const words = reinterpret_cast<uint64_t*>(base);
@@ -295,9 +336,10 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp survives the rebuild and is put back explicitly. The stub is privileged, so
-    // the rebuild below places its frame from the block it is HANDED.
+    // kernel_sp and fs_base survive the rebuild and are put back explicitly. The stub is
+    // privileged, so the rebuild below places its frame from the block it is HANDED.
     uintptr_t const kernel_sp = ctx->kernel_sp;
+    uintptr_t const fs_base = ctx->fs_base;
 #if KICKOS_KERNEL_STACKS
     // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what
     // it is handed, and handing it the block would leave the context describing kernel .bss
@@ -313,12 +355,33 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
         ctx->stack_lo = lo;
         ctx->stack_hi = hi;
         ctx->kernel_sp = kernel_sp;
+        ctx->fs_base = fs_base;
         return;
     }
 #endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
     ctx->kernel_sp = kernel_sp;
+    ctx->fs_base = fs_base;
 }
+
+#if KICKOS_REENT_PER_THREAD
+// The cell arch_context_init left above an unprivileged thread's return slot: its first word
+// becomes `state`, written through the kernel's view of the stack as the return slot is, and
+// its user address the FS base, where libc's __getreent reads it as %fs:0. A privileged
+// context has no cell and keeps fs_base 0: the kernel calls no libc.
+void arch_context_seat_reent(struct arch_context* ctx, void* state)
+{
+    trap_frame const* const f = reinterpret_cast<trap_frame const*>(ctx->sp);
+    if (f->cs != kickos::x86_64::sel_user_code)
+    {
+        return;
+    }
+    uintptr_t const cell = (ctx->stack_hi & ~static_cast<uintptr_t>(15)) - REENT_CELL;
+    *reinterpret_cast<uint64_t*>(cell - kickos::x86_64::user_alias_offset()) =
+        reinterpret_cast<uint64_t>(state);
+    ctx->fs_base = cell;
+}
+#endif
 
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
@@ -331,6 +394,9 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
         cpu.switch_to = to;
         return;
     }
+#if KICKOS_BENCH
+    kickos_x86_64_bench_open();
+#endif
     // Thread context under the kernel IrqLock, so no interrupt observes the cell between this
     // write and the frame it describes being the one on the CPU.
     publish_current(to);
@@ -341,6 +407,15 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
 {
     (void)boot; // abandoned, as arch.h permits
     publish_current(first);
+    // Read back before the first thread's first instruction: each core seeded the base with a
+    // poison no context carries, so a missing write fails here even for a privileged first
+    // thread, whose base is 0.
+    if (kickos::x86_64::read_msr(KICKOS_X86_64_MSR_FS_BASE) != first->fs_base)
+    {
+        static char const msg[] = "\nx86_64: arch_start: IA32_FS_BASE is not the first thread's\n";
+        arch_console_write_sync(msg, sizeof(msg) - 1);
+        kfault_terminate();
+    }
     kickos_x86_64_start(first);
 
     while (true)
@@ -683,11 +758,17 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     // store; the incoming context's own frame is what the epilogue then pops.
     struct arch_context* const to = cpu.switch_to;
     cpu.switch_to = nullptr;
+    // The vector state goes with the frame. trap_x86_64.S unlocks after this returns, and
+    // nothing between the restore and its iretq touches that state.
     if (cpu.ctx_current != nullptr)
     {
         cpu.ctx_current->sp = reinterpret_cast<uintptr_t>(frame);
+        __asm__ volatile("xsave64 %0"
+                         : "=m"(cpu.ctx_current->xsave)
+                         : "a"(KICKOS_X86_64_XCR0), "d"(0));
     }
     publish_current(to);
+    __asm__ volatile("xrstor64 %0" : : "m"(to->xsave), "a"(KICKOS_X86_64_XCR0), "d"(0));
     return reinterpret_cast<kickos::x86_64::trap_frame*>(to->sp);
 }
 

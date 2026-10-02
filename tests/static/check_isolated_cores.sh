@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Gate on the isolated-core mask's configure-time refusals (cmake/isolated_cores.cmake).
+# Gate on the isolated-core mask's and root's core mask's configure-time refusals
+# (cmake/isolated_cores.cmake).
 #
 # Two refusals, each guaranteeing a different scope, and each PAIRED WITH A CONTROL differing
 # in one clause:
@@ -97,5 +98,62 @@ expect_accept  "bit 4 on eight cores"   0x10 8
 # --- Nothing isolated, which is the default and must stay buildable --------------------
 expect_accept  "the empty mask"         0x0 1
 expect_accept  "the empty mask, wide"   0x0 4
+
+# --- Root's core mask, the sibling check in the same module ------------------------------
+grep -q 'kickos_root_core_mask_check' "$SRC/CMakeLists.txt" \
+    || fail "the root CMakeLists.txt does not call kickos_root_core_mask_check, so the
+    refusals below are wired to nothing"
+ROOT_DRIVER="$TMP/drive_root.cmake"
+cat >"$ROOT_DRIVER" <<EOF
+list(APPEND CMAKE_MODULE_PATH "$SRC/cmake")
+include(isolated_cores)
+kickos_root_core_mask_check(
+  MASK         "\${RC_MASK}"
+  KERNEL_CORES "\${RC_CORES}"
+  SHARED       "\${RC_SHARED}"
+  ORIGIN       "the fixture")
+message(STATUS "ROOT-ACCEPTED")
+EOF
+
+root_rc_of() { # <mask> <cores> <shared> -> writes $TMP/out, returns cmake's status
+    "$CMAKE" "-DRC_MASK=$1" "-DRC_CORES=$2" "-DRC_SHARED=$3" -P "$ROOT_DRIVER" >"$TMP/out" 2>&1
+}
+
+# <label> <mask> <cores> <shared> <phrase the refusal must name>
+expect_root_refusal() {
+    if root_rc_of "$2" "$3" "$4"; then
+        fail "$1: root mask $2 on $3 core(s) was ACCEPTED. $(cat "$TMP/out")"
+    fi
+    if grep -q 'ROOT-ACCEPTED' "$TMP/out"; then
+        fail "$1: the module reached its accept marker despite failing"
+    fi
+    grep -q "$5" "$TMP/out" \
+        || fail "$1: refused, but the message does not name '$5'. Got: $(cat "$TMP/out")"
+    grep -q "the fixture" "$TMP/out" \
+        || fail "$1: refused, but the message does not name the configuration to fix"
+    echo "isolated_cores: REFUSED root $1 (mask $2, $3 core(s), shared $4)"
+}
+
+# <label> <mask> <cores> <shared>
+expect_root_accept() {
+    if ! root_rc_of "$2" "$3" "$4"; then
+        fail "$1: root mask $2 on $3 core(s) was REFUSED and should not be. $(cat "$TMP/out")"
+    fi
+    grep -q 'ROOT-ACCEPTED' "$TMP/out" \
+        || fail "$1: exited 0 without reaching the accept marker, so this control asserts
+    nothing"
+    echo "isolated_cores: accepted root $1 (mask $2, $3 core(s), shared $4)"
+}
+
+expect_root_refusal "outside the shared model" 0x2 1 0 "outside the shared multicore model"
+# The control: the same mask under the shared model with two cores.
+expect_root_accept  "core 1 of two, shared"    0x2 2 1
+expect_root_refusal "bit at the core count"    0x4 2 1 "does not schedule"
+expect_root_refusal "bit above the count"      0x10 4 1 "does not schedule"
+# The control: the same bit on a kernel wide enough to name it.
+expect_root_accept  "bit 4 on eight cores"     0x10 8 1
+# The default, at every posture.
+expect_root_accept  "the empty mask"           0x0 1 0
+expect_root_accept  "the empty mask, shared"   0x0 4 1
 
 echo "isolated_cores: OK"
