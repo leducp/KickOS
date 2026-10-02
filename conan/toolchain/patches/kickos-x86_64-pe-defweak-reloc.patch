@@ -1,0 +1,27 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: give a PE base relocation to an absolute word naming a weak definition.
+
+Against binutils 2.47, applied with -p1 in the binutils tree, for the x86_64-elf family alone
+(docs/design-m10-toolchain.md, section 5.5). ld -m i386pep links the ELF objects of a q35 image
+into PE32+, whose base relocations are the only list the boot has of the absolute words it must
+move to the task's view. generate_reloc in ld/pe-dll.c skips every weak symbol whose hash entry
+is not bfd_link_hash_defined, so a weak definition from an ELF input, bfd_link_hash_defweak, gets
+no record: the typeinfo, vtables and template statics C++ emits in COMDAT groups. This accepts a
+weak definition as well; an undefined weak symbol still gets none, as before. This modifies the
+vendored linker, so it carries binutils' licence, not KickOS's.
+
+--- a/ld/pe-dll.c
++++ b/ld/pe-dll.c
+@@ -1688,7 +1688,9 @@
+ 				|| h2->root.u.def.section == bfd_abs_section_ptr)
+ 			    continue;
+ 			}
+-		      else if (!blhe || blhe->type != bfd_link_hash_defined)
++		      /* KickOS: a weak definition is relocated like a strong one.  */
++		      else if (!blhe || (blhe->type != bfd_link_hash_defined
++					 && blhe->type != bfd_link_hash_defweak))
+ 			continue;
+ 		    }
+ 		  /* Nor for Dwarf FDE references to discarded sections.  */

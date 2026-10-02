@@ -14,3 +14,23 @@ if(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "microbit"
    OR KICKOS_ARCH STREQUAL "armv8a")
   kickos_add_qemu_test(TARGET errnoprobe SCRIPT "${_errnoprobe_script}")
 endif()
+
+# q35 adds arm F, libc on root as a core's first thread, and names the core that must have
+# entered it: the boot core at one kernel core, the one core a root mask names, and otherwise
+# whichever core picked root first.
+if(KICKOS_ARCH STREQUAL "x86_64")
+  set(_errnoprobe_core "any")
+  if(KICKOS_KERNEL_CORES EQUAL 1)
+    set(_errnoprobe_core 0)
+  else()
+    math(EXPR _mask "${KICKOS_ROOT_CORE_MASK}")
+    foreach(_c RANGE 0 31)
+      math(EXPR _bit "1 << ${_c}")
+      if(_mask EQUAL _bit)
+        set(_errnoprobe_core ${_c})
+      endif()
+    endforeach()
+  endif()
+  kickos_add_qemu_test(TARGET errnoprobe SCRIPT "${_errnoprobe_script}"
+    ARGS --first-core ${_errnoprobe_core} TIMEOUT 180)
+endif()

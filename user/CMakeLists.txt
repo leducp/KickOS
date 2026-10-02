@@ -12,10 +12,6 @@ set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc src/root_entry.cc
 # archive pulls it only for an app that calls exit().
 if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
-elseif(KICKOS_ARCH STREQUAL "x86_64")
-  # exit() is the one C-library name KickOS's own userspace layer calls (uart_service.cc), so a
-  # posture linking no C library has to define it.
-  list(APPEND KICKOS_USER_SOURCES src/nolibc_exit.cc)
 else()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
   list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)

@@ -42,8 +42,13 @@ cat > "$TMP/clean.c" <<'EOF'
 static int kos_selftest_state;
 int kos_selftest_read(void) { return kos_selftest_state; }
 EOF
+# A locally defined thread-local, which names no GOT: an R_X86_64_TPOFF32, which q35 refuses.
+cat > "$TMP/tls.c" <<'EOF'
+static __thread int kos_selftest_tls;
+int kos_selftest_tls_read(void) { return kos_selftest_tls; }
+EOF
 
-for n in dirty clean; do
+for n in dirty clean tls; do
     "$CC" "$@" -c -o "$TMP/$n.o" "$TMP/$n.c" || fail "$CC could not compile $TMP/$n.c"
 done
 "$AR" rcs "$TMP/dirty.a" "$TMP/dirty.o" || fail "$AR could not write $TMP/dirty.a"
@@ -57,6 +62,9 @@ if ! LC_ALL=C "$READELF" -r "$TMP/dirty.o" | grep -q 'GOT'; then
 fi
 if LC_ALL=C "$READELF" -r "$TMP/clean.o" | grep -q 'GOT'; then
     fail "$TMP/clean.o carries a GOT relocation, so the acceptance arms would assert nothing"
+fi
+if ! LC_ALL=C "$READELF" -r "$TMP/tls.o" | grep -q 'TPOFF'; then
+    fail "$TMP/tls.o carries no TPOFF relocation, so the TLS refusal arm would assert nothing"
 fi
 
 refuses() { # <what> <input>...
@@ -80,6 +88,7 @@ accepts() { # <what> <input>...
 refuses "a bare object carrying a GOT relocation" "$TMP/dirty.o" "$TMP/clean.o"
 refuses "an ARCHIVE whose only member carries one" "$TMP/dirty.a" "$TMP/clean.o"
 refuses "an ARCHIVE whose SECOND member carries one" "$TMP/mixed.a" "$TMP/clean.o"
+refuses "a local-exec TLS relocation, which names no GOT" "$TMP/tls.o" "$TMP/clean.o"
 accepts "a clean object and a clean archive" "$TMP/clean.o"
 accepts "a clean archive" "$TMP/clean.a"
 
@@ -102,4 +111,4 @@ if "$GUARD" "$READELF" "$TMP/empty.a" >"$TMP/out" 2>&1; then
 fi
 echo "  refused: an archive with no members"
 
-echo "PASS: the no-got guard refuses a GOT relocation in an object, in either member of an archive, and a dead tool"
+echo "PASS: the no-got guard refuses a GOT relocation in an object, in either member of an archive, a TLS relocation, and a dead tool"

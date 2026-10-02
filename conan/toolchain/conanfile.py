@@ -9,12 +9,19 @@ import subprocess
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
-from conan.tools.files import get, save, unzip
+from conan.tools.files import copy, get, replace_in_file, save, unzip
 
 # One entry per family (docs/design-m10-toolchain.md section 2). `gcc` and `newlib` are configure
-# options beyond the ones every family takes; `nano` is the extra newlib profile a family ships,
-# installed beside the full one as nano.specs expects: libc_nano.a, libg_nano.a, libstdc++_nano.a
-# and libsupc++_nano.a in every multilib directory, and newlib.h under include/newlib-nano.
+# options beyond the ones every family takes; `cxxflags` are added to `cflags` for the C++
+# libraries alone; `patches` name the conandata keys of files in patches/, which the recipe
+# exports, applied to a component's sources after unpacking, in order; `drop` names libc
+# members deleted from libc.a and libg.a once newlib installs, and the package fails where a
+# multilib directory lacks either archive or either still holds one; `guards` names scripts in
+# tools/, which the recipe also exports, each run with the package's own readelf over every
+# archive the package installs, and the package fails where one refuses a member; `nano` is
+# the extra newlib profile a family ships, installed
+# beside the full one as nano.specs expects: libc_nano.a, libg_nano.a, libstdc++_nano.a and
+# libsupc++_nano.a in every multilib directory, and newlib.h under include/newlib-nano.
 FAMILIES = {
     "arm-none-eabi": {
         "gcc": ["--with-multilib-list=rmprofile"],
@@ -34,9 +41,131 @@ FAMILIES = {
                  "--enable-newlib-reent-small", "--disable-newlib-register-fini",
                  "--disable-newlib-wide-orient"],
     },
+    "aarch64-none-elf": {
+        "gcc": [],
+        "cflags": "-g -O2 -ffunction-sections -fdata-sections",
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--enable-newlib-register-fini", "--enable-newlib-mb"],
+        "dynamic_reent": "1",
+        "check": [["-mcpu=cortex-a53"]],
+    },
+    # One compiler for both widths: rv64 is the default multilib, rv32 the other, every library
+    # medany, which rv64's image window needs and rv32's does not mind.
+    "riscv64-none-elf": {
+        "gcc": ["--with-arch=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "--with-abi=lp64",
+                "--with-cmodel=medany",
+                "--with-multilib-generator=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca-lp64--;"
+                "rv32imac_zicsr-ilp32--"],
+        "cflags": "-g -Os -ftls-model=local-exec -ffunction-sections -fdata-sections",
+        "newlib": ["--enable-newlib-reent-check-verify", "--enable-newlib-io-long-long",
+                   "--enable-newlib-io-c99-formats", "--enable-newlib-atexit-dynamic-alloc"],
+        "dynamic_reent": "defined(__riscv) && __riscv_xlen == 64",
+        "check": [["-march=rv32imac_zicsr", "-mabi=ilp32"],
+                  ["-march=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "-mabi=lp64",
+                   "-mcmodel=medany"]],
+    },
+    # x86_64's binutils also writes PE32+, the UEFI image q35 boots. The libraries are
+    # position-independent, as every x86_64 image is relocated, and keep no red zone, as a
+    # privileged thread takes interrupts on its own stack. x86_64-elf ships no crt0, and the
+    # check supplies its own _start. A bare x86_64-elf GCC would put constructors in .ctors,
+    # and the root task runs the app's .init_array (user/src/root_entry.cc).
+    #
+    # A PE32+ image holds no global offset table and no undefined symbol (design section 5.5).
+    # The GCC patch binds every symbol but a weak one locally under -fpie, and the libraries
+    # carry no weak undefined reference: no register_fini, no transactional clones, no
+    # time-zone override, and neither newlib's init.o, whose __libc_init_array would walk the
+    # kernel's constructors on q35, nor fini.o. No libgcov.a either, which libgcc compiles
+    # -fpic. The binutils patch gives a weak definition's absolute words their base
+    # relocation, which C++'s typeinfo and vtables need to move with the image.
+    "x86_64-elf": {
+        "binutils": ["--enable-targets=x86_64-pep"],
+        "patches": {"gcc": ["kickos-x86_64-binds-local"],
+                    "binutils": ["kickos-x86_64-pe-defweak-reloc"]},
+        "gcc": ["--disable-multilib", "--enable-initfini-array", "--with-libstdcxx-zoneinfo=no",
+                "--disable-gcov"],
+        "cflags": "-g -O2 -fpie -mno-red-zone -ffunction-sections -fdata-sections",
+        "cxxflags": "-D_GLIBCXX_USE_WEAK_REF=0",
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--disable-newlib-register-fini", "--enable-newlib-mb"],
+        "drop": ["libc_a-init.o", "libc_a-fini.o"],
+        "guards": ["check-x86_64-no-got.sh", "check-x86_64-weak-undef.sh"],
+        "dynamic_reent": "1",
+        "check": [["-march=x86-64-v3"]],
+        "link": ["-nostartfiles"],
+    },
+    # Espressif's GCC and binutils with the ESP32 core overlaid, so the compiler knows that one
+    # core and loads no plugin. The overlay's newlib core header goes where upstream newlib
+    # reads it, not where Espressif's fork does. newlib 4.5.0's generated Makefile.in copies
+    # that header's directory one level deep only, short of xtensa/config, so its libm is
+    # given the directory itself. The libraries take the boards' -mlongcalls, as an image's
+    # IRAM and flash text lie further apart than a call reaches. __BUFSIZ__ keeps each stdio
+    # buffer at the 128 bytes Espressif's newlib gives it rather than newlib's 1024.
+    "xtensa-esp32-elf": {
+        "sources": {"gcc": "gcc-esp", "binutils": "binutils-esp"},
+        "overlay": {"xtensa_esp32/binutils": "binutils", "xtensa_esp32/gcc": "gcc",
+                    "xtensa_esp32/newlib/newlib/libc/sys/xtensa/include":
+                        "newlib/newlib/libc/machine/xtensa/include"},
+        "newlib_include": "newlib/newlib/libc/machine/xtensa/include",
+        "gcc": [],
+        "cflags": "-g -O2 -mlongcalls -ffunction-sections -fdata-sections",
+        "newlib": ["--enable-newlib-atexit-dynamic-alloc", "--enable-newlib-iconv",
+                   "--enable-newlib-nano-malloc", "--enable-newlib-retargetable-locking",
+                   "--enable-newlib-reent-check-verify", "--enable-newlib-reent-small",
+                   "--enable-newlib-reent-binary-compat", "--enable-newlib-io-c99-formats",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-pos-args",
+                   "--disable-newlib-wide-orient"],
+        "config_h": "#define __BUFSIZ__ 128",
+        "dynamic_reent": "1",
+        "check": [["-mlongcalls"]],
+        "link": ["-nostartfiles"],
+    },
+    # The common sources with Renesas's changes ported onto them, as upstream's GCC and binutils
+    # know no RXv3 or double-precision FPU. The multilib patch keeps four of GNURX's 104
+    # multilibs; -misa=v3 -mdfpu selects 64-bit-double/dfpu/rxv3, as -mdfpu makes doubles
+    # 64-bit. KickOS's compare patch, last, corrects GNURX's unordered double-precision
+    # branches. Each touched file is a generated one the patches carry, made newer than its
+    # inputs so that no maintainer tool runs.
+    "rx-elf": {
+        "patches": {"gcc": ["gnurx-gcc", "rx-multilib", "kickos-rx-dfpu-compare"],
+                    "binutils": ["gnurx-binutils"],
+                    "newlib": ["gnurx-newlib"]},
+        "touch": {"gcc": ["configure", "gcc/configure"],
+                  "binutils": ["gas/config/rx-parse.c", "gas/config/rx-parse.h",
+                               "opcodes/rx-decode.c", "bfd/bfd-in2.h"],
+                  "newlib": ["newlib/Makefile.in", "libgloss/Makefile.in"]},
+        "gcc": [],
+        "cflags": "-g -O2 -ffunction-sections -fdata-sections",
+        "newlib": [],
+        "check": [["-misa=v3", "-mdfpu"]],
+    },
 }
 
+# Where `dynamic_reent` holds, every _REENT use calls __getreent(), which KickOS answers per
+# thread. A condition rather than a define: newlib's multilib build compiles every multilib
+# against this one header, so a family whose multilibs differ in reentrancy decides it per
+# multilib here.
+DYNAMIC_REENT = """
+/* KickOS: dynamic reentrancy where the multilib compiled is one the toolchain marks so. */
+#if {condition}
+#ifndef __DYNAMIC_REENT__
+#define __DYNAMIC_REENT__
+#endif
+#endif
+"""
+
+# Every component a family builds, and the source key each takes unless the family names another.
+COMPONENTS = ("gcc", "binutils", "newlib")
+PREREQUISITES = ("gmp", "mpfr", "mpc", "isl")
+
+# Every guard a family names, exported for every family, as the recipe revision is one for all.
+GUARDS = sorted({g for family in FAMILIES.values() for g in family.get("guards", [])})
+
 PREFIX = "kickos-toolchain-"
+
+# The GitHub release mirroring every source under its archive's name (design section 1).
+RELEASE = "https://github.com/leducp/KickOS/releases/download/toolchain-{version}/"
 
 
 class KickOSToolchain(ConanFile):
@@ -54,7 +183,17 @@ class KickOSToolchain(ConanFile):
     description = "The KickOS cross toolchain for one target family"
     package_type = "application"
     settings = "os", "arch"
-    exports = "conandata.yml"
+    # `exports`, not `exports_sources`: `conan cache save --no-source` keeps the export folder.
+    exports = "conandata.yml", "patches/*"
+
+    def export(self):
+        # The guards the tree's images run, copied rather than restated so there is one of each.
+        # In the export folder they are part of the recipe revision: editing one rebuilds every
+        # family, and a saved package's recipe carries the guards it passed.
+        tools = os.path.join(self.recipe_folder, "..", "..", "tools")
+        for guard in GUARDS:
+            if not copy(self, guard, tools, os.path.join(self.export_folder, "tools")):
+                raise ConanInvalidConfiguration(f"no {guard} in {os.path.normpath(tools)}")
 
     def _target(self):
         if not self.name or not self.name.startswith(PREFIX) or \
@@ -72,26 +211,79 @@ class KickOSToolchain(ConanFile):
         self.folders.source = "src"
         self.folders.build = "build"
 
+    def _key(self, component):
+        return FAMILIES[self._target()].get("sources", {}).get(component, component)
+
+    def _sources(self):
+        family = FAMILIES[self._target()]
+        overlay = ["xtensa-overlays"] if "overlay" in family else []
+        patches = [k for c in COMPONENTS for k in family.get("patches", {}).get(c, [])]
+        return [self._key(c) for c in COMPONENTS] + list(PREREQUISITES) + overlay + patches
+
+    def _archive(self, key):
+        source = self.conan_data["sources"][key]
+        return source["filename"] if "filename" in source else os.path.basename(source["url"])
+
+    def _local(self, key):
+        # The copy KICKOS_TOOLCHAIN_SOURCES holds, checked against its sha256, or "".
+        local = os.environ.get("KICKOS_TOOLCHAIN_SOURCES", "")
+        path = os.path.join(local, self._archive(key)) if local else ""
+        if not (path and os.path.isfile(path)):
+            return ""
+        return self._checked(key, path)
+
+    def _checked(self, key, path):
+        with open(path, "rb") as f:
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        expected = self.conan_data["sources"][key]["sha256"]
+        if digest != expected:
+            raise ConanInvalidConfiguration(f"{path} has sha256 {digest}, expected {expected}.")
+        return path
+
     def _fetch(self, key, destination):
         source = self.conan_data["sources"][key]
-        local = os.environ.get("KICKOS_TOOLCHAIN_SOURCES", "")
-        archive = os.path.join(local, os.path.basename(source["url"])) if local else ""
-        if archive and os.path.isfile(archive):
-            with open(archive, "rb") as f:
-                digest = hashlib.file_digest(f, "sha256").hexdigest()
-            if digest != source["sha256"]:
-                raise ConanInvalidConfiguration(
-                    f"{archive} has sha256 {digest}, expected {source['sha256']}.")
+        name = self._archive(key)
+        archive = self._local(key)
+        if archive:
             unzip(self, archive, destination=destination, strip_root=True)
         else:
-            get(self, **source, destination=destination, strip_root=True)
+            # Conan tries the next URL when one fails to download, never when one mismatches.
+            urls = [source["url"]] if "url" in source else []
+            get(self, url=urls + [RELEASE.format(version=self.version) + name], filename=name,
+                sha256=source["sha256"], destination=destination, strip_root=True)
 
     def source(self):
-        for key in ("gcc", "binutils", "newlib"):
-            self._fetch(key, os.path.join(self.source_folder, key))
+        family = FAMILIES[self._target()]
+        for component in COMPONENTS:
+            self._fetch(self._key(component), os.path.join(self.source_folder, component))
         # GCC builds these in its own tree when they sit beside its sources.
-        for key in ("gmp", "mpfr", "mpc", "isl"):
+        for key in PREREQUISITES:
             self._fetch(key, os.path.join(self.source_folder, "gcc", key))
+        if "overlay" in family:
+            # Each overlay tree lies over the sources it names, replacing the core description
+            # they carry (xtensa-config.h, xtensa-modules.c, core-isa.h).
+            overlays = os.path.join(self.source_folder, "overlays")
+            self._fetch("xtensa-overlays", overlays)
+            for tree, where in family["overlay"].items():
+                shutil.copytree(os.path.join(overlays, tree),
+                                os.path.join(self.source_folder, where), dirs_exist_ok=True)
+        for component, keys in family.get("patches", {}).items():
+            tree = os.path.join(self.source_folder, component)
+            for key in keys:
+                self._patch(key, tree)
+            for generated in family.get("touch", {}).get(component, []):
+                if os.path.isfile(os.path.join(tree, generated)):
+                    os.utime(os.path.join(tree, generated))
+
+    def _patch(self, key, tree):
+        # A stamp, not a reverse dry run: a later patch over the same lines hides the earlier.
+        stamp = os.path.join(tree, f".kickos-patched-{key}")
+        if os.path.isfile(stamp):
+            return
+        # The exported copy alone; the release only mirrors it.
+        path = self._checked(key, os.path.join(self.recipe_folder, "patches", self._archive(key)))
+        self._run(["patch", "-p1", "--no-backup-if-mismatch", "-i", path], tree)
+        save(self, stamp, "")
 
     def _run(self, argv, cwd, env=None):
         os.makedirs(cwd, exist_ok=True)
@@ -124,12 +316,14 @@ class KickOSToolchain(ConanFile):
         env = dict(os.environ)
         env["PATH"] = os.path.join(stage, "bin") + os.pathsep + env["PATH"]
         env["CFLAGS_FOR_TARGET"] = family["cflags"]
-        env["CXXFLAGS_FOR_TARGET"] = family["cflags"]
+        env["CXXFLAGS_FOR_TARGET"] = " ".join(f for f in (family["cflags"],
+                                                          family.get("cxxflags")) if f)
 
         binutils = os.path.join(self.build_folder, "binutils")
         self._run([os.path.join(src, "binutils", "configure"), f"--target={target}",
                    f"--prefix={stage}", "--disable-nls", "--disable-werror", "--disable-gdb",
-                   "--disable-gdbserver", "--disable-sim", "--disable-gprofng"], binutils, env)
+                   "--disable-gdbserver", "--disable-sim", "--disable-gprofng",
+                   *family.get("binutils", [])], binutils, env)
         self._make(binutils, env=env)
         self._make(binutils, "install-strip", env=env)
 
@@ -140,7 +334,27 @@ class KickOSToolchain(ConanFile):
         self._make(gcc1, "all-gcc", "all-target-libgcc", env=env)
         self._make(gcc1, "install-strip-gcc", "install-target-libgcc", env=env)
 
-        self._newlib(os.path.join(self.build_folder, "newlib"), stage, family["newlib"], env)
+        addition = ""
+        if "dynamic_reent" in family:
+            addition += DYNAMIC_REENT.format(condition=family["dynamic_reent"])
+        if "config_h" in family:
+            addition += f"\n/* KickOS: the family's own configuration. */\n{family['config_h']}\n"
+        config_h = os.path.join(src, "newlib", "newlib", "libc", "include", "sys", "config.h")
+        with open(config_h) as f:
+            text = f.read()
+        if addition and "/* KickOS: " not in text:
+            replace_in_file(self, config_h, "\n#endif /* __SYS_CONFIG_H__ */",
+                            addition + "\n#endif /* __SYS_CONFIG_H__ */")
+        # GETREENT_PROVIDED on the command line: getreent.c tests it before it includes any
+        # header. It leaves libc no fallback __getreent, which a static multilib never calls.
+        newlib_env = dict(env)
+        if "dynamic_reent" in family:
+            newlib_env["CFLAGS_FOR_TARGET"] += " -DGETREENT_PROVIDED"
+        if "newlib_include" in family:
+            newlib_env["CFLAGS_FOR_TARGET"] += " -I" + os.path.join(src, family["newlib_include"])
+        self._newlib(os.path.join(self.build_folder, "newlib"), stage, family["newlib"],
+                     newlib_env)
+        self._drop_members(stage, family.get("drop", []))
         if "nano" in family:
             nano = os.path.join(self.build_folder, "nano-stage")
             self._newlib(os.path.join(self.build_folder, "newlib-nano"), nano, family["nano"],
@@ -155,7 +369,85 @@ class KickOSToolchain(ConanFile):
 
         if "nano" in family:
             self._install_nano_cxx(nano, stage, env)
+        self._check_dropped(stage, family.get("drop", []))
+        self._check_guards(stage, family.get("guards", []))
         self._check_links(stage, "nano" in family)
+
+    def _libc_archives(self, stage):
+        lib = os.path.join(stage, self._target(), "lib")
+        return sorted(glob.glob(os.path.join(lib, "**", "libc.a"), recursive=True)
+                      + glob.glob(os.path.join(lib, "**", "libg.a"), recursive=True))
+
+    def _members(self, stage, archive):
+        ar = os.path.join(stage, "bin", f"{self._target()}-ar")
+        out = subprocess.run([ar, "t", archive], capture_output=True, text=True, check=True)
+        return out.stdout.split()
+
+    def _drop_members(self, stage, names):
+        # From libc.a and libg.a both, by name: newlib installs libg.a as a hard link to libc.a
+        # where it can and a copy where it cannot, and an edit of one reaches only a link.
+        if not names:
+            return
+        ar = os.path.join(stage, "bin", f"{self._target()}-ar")
+        for archive in self._libc_archives(stage):
+            present = [m for m in names if m in self._members(stage, archive)]
+            if present:
+                self._run([ar, "d", archive, *present], os.path.join(self.build_folder, "drop"))
+
+    def _multilib_dirs(self, stage):
+        # Every library directory the built compiler selects, from its own -print-multi-lib.
+        target = self._target()
+        gcc = os.path.join(stage, "bin", f"{target}-gcc")
+        out = subprocess.run([gcc, "-print-multi-lib"], capture_output=True, text=True,
+                             check=True)
+        lib = os.path.join(stage, target, "lib")
+        return [os.path.normpath(os.path.join(lib, line.split(";")[0]))
+                for line in out.stdout.split()]
+
+    def _check_dropped(self, stage, names):
+        # Both archives in every multilib directory, required before their members are read:
+        # the deletion is a claim about each, and a missing one would pass unread.
+        if not names:
+            return
+        for where in self._multilib_dirs(stage):
+            for archive in (os.path.join(where, "libc.a"), os.path.join(where, "libg.a")):
+                if not os.path.isfile(archive):
+                    raise ConanInvalidConfiguration(
+                        f"{archive} is missing, so the deletion of {', '.join(names)} "
+                        "from it cannot be checked")
+                kept = [m for m in names if m in self._members(stage, archive)]
+                if kept:
+                    raise ConanInvalidConfiguration(
+                        f"{archive} still holds {', '.join(kept)}, which this family deletes")
+
+    def _check_guards(self, stage, guards):
+        # Every archive the package installs, newlib's and libstdc++'s under the target's lib
+        # and libgcc.a under GCC's, whether or not an image links it today.
+        if not guards:
+            return
+        target = self._target()
+        roots = [os.path.join(stage, target, "lib"), os.path.join(stage, "lib", "gcc", target)]
+        archives = sorted(a for root in roots
+                          for a in glob.glob(os.path.join(root, "**", "*.a"), recursive=True))
+        if not archives:
+            raise ConanInvalidConfiguration(f"no archive under {' or '.join(roots)} to guard")
+        readelf = os.path.join(stage, "bin", f"{target}-readelf")
+        where = os.path.join(self.build_folder, "guards")
+        os.makedirs(where, exist_ok=True)
+        for guard in guards:
+            script = os.path.join(self.recipe_folder, "tools", guard)
+            for archive in archives:
+                run = subprocess.run(["sh", script, readelf, archive], capture_output=True,
+                                     text=True)
+                with open(os.path.join(where, "kickos-build.log"), "a") as log:
+                    log.write(f"$ sh {script} {readelf} {archive}\n{run.stdout}{run.stderr}")
+                if run.returncode != 0:
+                    lines = run.stderr.splitlines()
+                    shown = lines[:20] + (["..."] + lines[-1:] if len(lines) > 21 else lines[20:])
+                    raise ConanInvalidConfiguration(
+                        f"{guard} refuses {archive}:\n" + "\n".join(shown)
+                        + f"\nits whole output is in {where}/kickos-build.log")
+                self.output.info(f"{os.path.relpath(archive, stage)}: {run.stdout.strip()}")
 
     def _gcc_options(self, prefix, sysroot):
         # No --disable-tls: without it GCC falls back to emulated TLS, and KickOS seats every
@@ -192,14 +484,19 @@ class KickOSToolchain(ConanFile):
         where = os.path.join(self.build_folder, "check")
         os.makedirs(where, exist_ok=True)
         source = os.path.join(where, "check.cc")
-        save(self, source, "#include <stdexcept>\n#include <string>\n"
-             "int main() { try { throw std::runtime_error(std::string(\"k\")); }\n"
-             "  catch (const std::exception& e) { return e.what()[0] == 'k' ? 0 : 1; } }\n")
+        # __getreent is the runtime's where the libc is dynamic-reent, and unused elsewhere.
+        save(self, source, "#include <reent.h>\n#include <stdexcept>\n#include <string>\n"
+             "extern \"C\" struct _reent* __getreent(void) { return _impure_ptr; }\n"
+             "static int run() { try { throw std::runtime_error(std::string(\"k\")); }\n"
+             "  catch (const std::exception& e) { return e.what()[0] == 'k' ? 0 : 1; } }\n"
+             "int main() { return run(); }\n"
+             "extern \"C\" [[gnu::weak]] void _start() { run(); }\n")
         cxx = os.path.join(stage, "bin", f"{target}-g++")
         profiles = [[]] + ([["--specs=nano.specs"]] if nano else [])
         for flags in FAMILIES[target].get("check", [[]]):
             for profile in profiles:
-                self._run([cxx, *flags, *profile, "--specs=nosys.specs", source,
+                self._run([cxx, *flags, *profile, *FAMILIES[target].get("link", []),
+                           "--specs=nosys.specs", source,
                            "-o", os.path.join(where, "check.elf")], where)
 
     def _install_nano(self, nano, stage):
@@ -220,9 +517,8 @@ class KickOSToolchain(ConanFile):
     def package(self):
         shutil.copytree(os.path.join(self.build_folder, "stage"), self.package_folder,
                         dirs_exist_ok=True, symlinks=True)
-        sources = self.conan_data["sources"]
         save(self, os.path.join(self.package_folder, "kickos-toolchain.txt"),
-             "".join(f"{k}={os.path.basename(v['url'])}\n" for k, v in sources.items())
+             "".join(f"{k}={self._archive(k)}\n" for k in self._sources())
              + f"target={self._target()}\n")
 
     def package_info(self):

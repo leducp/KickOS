@@ -27,6 +27,13 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp2" }
     },
     {
+      "name": "qemu-x86_64-smp2root1",
+      "displayName": "QEMU q35 / x86_64, two-core shared kernel, root on core 1",
+      "inherits": "qemu-x86_64",
+      "binaryDir": "${sourceDir}/build/qemu-x86_64-smp2root1",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp2root1" }
+    },
+    {
       "name": "qemu-x86_64-smp4",
       "displayName": "QEMU q35 / x86_64, four-core shared kernel",
       "inherits": "qemu-x86_64",
@@ -59,6 +66,7 @@
     { "name": "qemu-x86_64", "configurePreset": "qemu-x86_64" },
     { "name": "qemu-x86_64-bench", "configurePreset": "qemu-x86_64-bench" },
     { "name": "qemu-x86_64-smp2", "configurePreset": "qemu-x86_64-smp2" },
+    { "name": "qemu-x86_64-smp2root1", "configurePreset": "qemu-x86_64-smp2root1" },
     { "name": "qemu-x86_64-smp4", "configurePreset": "qemu-x86_64-smp4" },
     { "name": "qemu-x86_64-smp8", "configurePreset": "qemu-x86_64-smp8" },
     { "name": "qemu-x86_64-smp12", "configurePreset": "qemu-x86_64-smp12" }
@@ -67,6 +75,7 @@
     { "name": "qemu-x86_64", "configurePreset": "qemu-x86_64", "output": { "outputOnFailure": true } },
     { "name": "qemu-x86_64-bench", "configurePreset": "qemu-x86_64-bench", "output": { "outputOnFailure": true } },
     { "name": "qemu-x86_64-smp2", "configurePreset": "qemu-x86_64-smp2", "output": { "outputOnFailure": true } },
+    { "name": "qemu-x86_64-smp2root1", "configurePreset": "qemu-x86_64-smp2root1", "output": { "outputOnFailure": true } },
     { "name": "qemu-x86_64-smp4", "configurePreset": "qemu-x86_64-smp4", "output": { "outputOnFailure": true } },
     { "name": "qemu-x86_64-smp8", "configurePreset": "qemu-x86_64-smp8", "output": { "outputOnFailure": true } },
     { "name": "qemu-x86_64-smp12", "configurePreset": "qemu-x86_64-smp12", "output": { "outputOnFailure": true } }

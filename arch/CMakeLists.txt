@@ -156,6 +156,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
   set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
+# The double-precision compares the RX compiler emits are stepped for NaN, infinite and
+# subnormal operands: plain compares were right while every unordered one branched the wrong
+# way, and no emulator runs rxv3 (tests/static/check_rx_dfpu_compare.py).
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rxv3")
+  add_test(
+    NAME    rx_dfpu_compare
+    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_rx_dfpu_compare.py"
+            "${CMAKE_C_COMPILER}" ${KICKOS_MCPU_FLAGS})
+  set_tests_properties(rx_dfpu_compare PROPERTIES TIMEOUT 60 LABELS host SKIP_RETURN_CODE 77)
+endif()
+
 # No privileged TU may reach thread-local storage. Registered on every cross board, not only
 # where KICKOS_TLS is on.
 if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))

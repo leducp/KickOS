@@ -59,11 +59,12 @@ void* _sbrk(intptr_t incr)
     return heap_bump(incr);
 }
 
-#ifdef __RX__
+#if defined(__RX__) || defined(__x86_64__)
 // The RX psABI prefixes every C identifier with a leading underscore at the asm level, so
 // the C `_sbrk` above mangles to asm `__sbrk`. Newlib references asm `_sbrk` and would
 // otherwise fall through to libnosys sbrk, which pulls `_end` and breaks the app-window
 // layout. A C function named `sbrk` mangles to asm `_sbrk` and shares the bump arena.
+// x86_64-elf's newlib references `sbrk` itself, being built with MISSING_SYSCALL_NAMES.
 void* sbrk(intptr_t incr)
 {
     return heap_bump(incr);

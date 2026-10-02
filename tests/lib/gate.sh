@@ -144,10 +144,38 @@ corpus() { # <outfile> <what> [pathspec]...
       at all. An untracked file is invisible here (git add first)."
 }
 
+# VENDORED: another project's content this tree carries under that project's licence and
+# style, today GCC's source patched by conan/toolchain/patches/. It is not KickOS source, so no
+# gate that polices KickOS source reads it. Directories only, space-separated, each ending in
+# `/`, and each must still hold a tracked file: an entry kept past its directory's removal
+# would exclude whatever lands on that path next.
+KOS_VENDORED_DIRS='conan/toolchain/patches/'
+
+# Drops the vendored paths from a list of tracked paths on stdin, for a gate that lists its
+# own corpus rather than calling corpus_all.
+drop_vendored() {
+    awk -v dirs="$KOS_VENDORED_DIRS" '
+        BEGIN { n = split(dirs, d, " ") }
+        { for (i = 1; i <= n; i++) if (index($0, d[i]) == 1) next; print }'
+}
+
 # The three pathspecs more than one gate wants, so a new extension reaches every gate at once.
-# A gate needing a narrower set spells its own and calls corpus() directly.
+# A gate needing a narrower set spells its own and calls corpus() directly. Every tracked file
+# but the vendored ones.
 corpus_all() { # <outfile>
-    corpus "$1" "tracked file"
+    _ca="$1"
+    _cx=""
+    for _cd in $KOS_VENDORED_DIRS; do
+        git ls-files -- "$_cd" > "$_ca.vendored" \
+            || fail "git ls-files failed; the corpus is UNKNOWN and not empty"
+        [ -s "$_ca.vendored" ] || fail "KOS_VENDORED_DIRS names $_cd, which holds no tracked
+      file, so that entry would exclude whatever lands on that path next. Drop it."
+        _cx="$_cx :(exclude)$_cd"
+    done
+    rm -f "$_ca.vendored"
+    # $_cx unquoted: one pathspec per vendored directory, none holding a space or a glob.
+    # shellcheck disable=SC2086
+    corpus "$_ca" "tracked file" . $_cx
 }
 
 # What counts as a source, in one list, because a spelling missing from it takes its file

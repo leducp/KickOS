@@ -202,6 +202,11 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_kernel_state_unreachable();
     KICKOS_SELFTEST_LOCAL void t_window_addr();
     KICKOS_SELFTEST_LOCAL void t_port_window();
+    KICKOS_SELFTEST_LOCAL void t_vector_survives_block();
+    KICKOS_SELFTEST_LOCAL void t_vector_survives_preempt();
+    KICKOS_SELFTEST_LOCAL void t_vector_starts_clean();
+    KICKOS_SELFTEST_LOCAL void t_vector_fault_contained();
+    KICKOS_SELFTEST_LOCAL void t_vector_survives_migrate();
     KICKOS_SELFTEST_LOCAL void t_grant_kernel_word_refused();
     KICKOS_SELFTEST_LOCAL void t_self_grant_retype();
     KICKOS_SELFTEST_LOCAL void t_recv_buf_unmapped();
@@ -269,7 +274,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_irq_reclaim_stale_raise();
     KICKOS_SELFTEST_LOCAL void t_reent_per_thread_cores();
 #if defined(__x86_64__)
-    KICKOS_SELFTEST_LOCAL void t_fp_trapped_every_core();
+    KICKOS_SELFTEST_LOCAL void t_fp_enabled_every_core();
 #endif
 #endif
 

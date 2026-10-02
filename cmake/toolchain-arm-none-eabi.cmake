@@ -3,10 +3,8 @@
 #
 # Cross toolchain for the KickOS ARM Cortex-M targets (arm-none-eabi).
 #
-# The compiler this file wants is the official Arm GNU Toolchain (newlib-based, ships
-# libstdc++/libsupc++): the full-C++ opt-in needs newlib's full libstdc++, which Debian's
-# picolibc-based apt toolchain cannot provide. The capability check after the finds is what
-# ENFORCES that, on whatever gets resolved (hint, PATH, or -D).
+# The KickOS toolchain's arm-none-eabi family (docs/design-m10-toolchain.md): GCC's rmprofile
+# multilibs, each with a full and a nano newlib and libstdc++.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -58,64 +56,24 @@ list(APPEND _kos_cpu -mfloat-abi=${KICKOS_MFLOAT_ABI})
 
 kickos_toolchain_export_baseline("${_kos_cpu}")
 
-kickos_toolchain_package(arm-none-eabi KICKOS_ARM_TOOLCHAIN_BIN)
-kickos_toolchain_cross_programs(arm-none-eabi KICKOS_ARM_TOOLCHAIN_BIN)
+kickos_toolchain_package(arm-none-eabi)
 
-# ${_kos_cpu} + -mthumb make the probe resolve THIS board's multilib, not the compiler's
-# default.
-include("${CMAKE_CURRENT_LIST_DIR}/cross_cxx_capability.cmake")
-kickos_require_usable_cross_cxx("arm" "${CMAKE_CXX_COMPILER}"
-  KICKOS_ARM_TOOLCHAIN_BIN
-  "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz"
-  ${_kos_cpu} -mthumb)
-
-# The selected Cortex-M/FPU/float-ABI flags identify the one newlib multilib this board links.
+# A board whose flags name no rmprofile multilib would link the compiler's default, Arm-state
+# libraries.
 execute_process(COMMAND "${CMAKE_C_COMPILER}" ${_kos_cpu} -mthumb -print-multi-directory
                 OUTPUT_VARIABLE _kos_multi OUTPUT_STRIP_TRAILING_WHITESPACE
                 COMMAND_ERROR_IS_FATAL ANY)
-if(_kos_multi STREQUAL "thumb/v6-m/nofp")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV6M)
-elseif(_kos_multi STREQUAL "thumb/v7-m/nofp")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV7M)
-elseif(_kos_multi STREQUAL "thumb/v7e-m+fp/softfp")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV7EM_FP_SOFTFP)
-elseif(_kos_multi STREQUAL "thumb/v7e-m+dp/softfp")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV7EM_DP_SOFTFP)
-elseif(_kos_multi STREQUAL "thumb/v8-m.main+fp/softfp")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV8M_FP_SOFTFP)
-elseif(_kos_multi STREQUAL "thumb/v8-m.main+fp/hard")
-  set(_kos_newlib_var KICKOS_NEWLIB_ARMV8M_FP_HARD)
-else()
-  message(FATAL_ERROR "KickOS arm toolchain: no pinned newlib for multilib '${_kos_multi}'")
+if(NOT _kos_multi MATCHES "^thumb/")
+  message(FATAL_ERROR "KickOS arm toolchain: '${_kos_cpu} -mthumb' selects multilib "
+    "'${_kos_multi}', no Cortex-M one")
 endif()
 set(_kos_newlib_flavor "")
 if(KICKOS_BOARD STREQUAL "microbit")
   set(_kos_newlib_flavor FLAVOR ${_kos_microbit_flavor})
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-if(_kos_tc_packaged)
-  kickos_require_toolchain_newlib("arm" "${CMAKE_C_COMPILER}" static ${_kos_newlib_flavor}
-    ${_kos_cpu} -mthumb)
-else()
-  kickos_require_newlib("arm" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-    ${_kos_newlib_var} static ${_kos_newlib_flavor} ${_kos_cpu} -mthumb)
-endif()
-if(KICKOS_BOARD STREQUAL "microbit")
-  if(DEFINED KICKOS_MICROBIT_PACKAGE_NEWLIB
-     AND NOT KICKOS_NEWLIB_FLAVOR STREQUAL KICKOS_MICROBIT_PACKAGE_NEWLIB)
-    message(FATAL_ERROR
-      "KickOS microbit: this KickOS package was built with ${KICKOS_MICROBIT_PACKAGE_NEWLIB} "
-      "newlib, but ${_kos_newlib_var} selects ${KICKOS_NEWLIB_FLAVOR}. Provision armv6m with "
-      "Conan -o \"&:flavor=${KICKOS_MICROBIT_PACKAGE_NEWLIB}\" in a fresh build directory, "
-      "or build against a KickOS package built with the ${KICKOS_NEWLIB_FLAVOR} profile.")
-  elseif(NOT KICKOS_NEWLIB_FLAVOR STREQUAL _kos_microbit_flavor)
-    message(FATAL_ERROR
-      "KickOS microbit: expected ${_kos_microbit_flavor} newlib, but "
-      "${_kos_newlib_var} selects ${KICKOS_NEWLIB_FLAVOR}. Provision armv6m with "
-      "Conan -o \"&:flavor=${_kos_microbit_flavor}\" in a fresh build directory. "
-      "Set -DKICKOS_MICROBIT_FULL_NEWLIB=ON only to compare the full profile.")
-  endif()
-endif()
+kickos_require_toolchain_newlib("arm" "${CMAKE_C_COMPILER}" static ${_kos_newlib_flavor}
+  ${_kos_cpu} -mthumb)
 
 # -mthumb: Cortex-M is Thumb-only. -mno-unaligned-access: some parts (K64F) forbid
 # unaligned/burst accesses across a RAM bank boundary (0x2000_0000, SRAM_L|SRAM_U), so the

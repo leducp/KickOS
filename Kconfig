@@ -155,6 +155,17 @@ config KICKOS_ISOLATED_CORES
 	  the boot core and a latency-critical thread is pinned alone onto the isolated
 	  one.
 
+config KICKOS_ROOT_CORE_MASK
+	hex "Cores root runs on"
+	default 0x0
+	help
+	  The core mask root is created with. Zero, the default, is root's task's own
+	  set. Any other value must name only cores this kernel drives, below
+	  KICKOS_KERNEL_CORES, and needs the shared multicore model; configure refuses
+	  anything else and kmain asserts the same, so root never lands on no core that
+	  runs. A non-zero mask is how a build makes a core other than the boot one enter
+	  root as its first thread.
+
 # AMP configuration.
 
 choice
@@ -682,12 +693,13 @@ config KICKOS_TASK_ENDPOINT_BUDGET
 	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the endpoint pool: strictly below
 	  KICKOS_MAX_ENDPOINTS or the build fails. THE POOL THIS ONE GUARDS IS THE
 	  RESPAWN'S, so the headroom it leaves is the endpoint a supervisor needs after a
-	  driver died holding its own. What the image spends before an app asks is
-	  refused against this at configure, strictly: a partition's AMP ports one slot
-	  each, plus the service list's RETAINED_ENDPOINTS, which counts a published
-	  console and every retained driver endpoint. A driver the APP brings up under
-	  KOS_DRV_EP_RETAIN is NOT in that sum, no build being able to read the posture,
-	  so it comes out of the headroom left over.
+	  driver died holding its own. What the image spends before an app asks, plus
+	  what the widest app holds at once, is refused against this at configure: a
+	  partition's AMP ports one slot each, the service list's RETAINED_ENDPOINTS,
+	  which counts a published console and every retained driver endpoint, and the
+	  app's kickos_declare_app_endpoints peak, 1 when undeclared. A driver the APP
+	  brings up under KOS_DRV_EP_RETAIN is in that peak only if the app counts it, no
+	  build being able to read the posture.
 
 config KICKOS_TASK_IRQ_HANDLE_BUDGET
 	int "Tier-1 IRQ bindings one task may hold"
@@ -842,6 +854,7 @@ config KICKOS_KERNEL_STACK_SIZE
 	default 4096 if ARCH_X86_64
 	default 1120 if ARCH_RXV3
 	default 1472 if ARCH_ARMV7M && TELEMETRY_RTT
+	default 1072 if ARCH_ARMV7M && KICKOS_BENCH
 	default 1008 if ARCH_ARMV7M
 	default 896 if ARCH_ARMV6M
 	default 1024
@@ -872,7 +885,8 @@ config KICKOS_KERNEL_STACK_SIZE
 	  largest posture effect in the fleet. The blocks
 	  are per thread SLOT, so one byte here costs KICKOS_THREAD_SLOTS bytes of kernel
 	  .bss, and applying the telemetry figure fleet-wide fails to link the boards that
-	  have no telemetry variant.
+	  have no telemetry variant. KICKOS_BENCH is a smaller class of the same kind: its
+	  arm prints from inside the dispatch, and no other preset carries that tail.
 
 	  A BOARD MAY ONLY RAISE IT. Each arch backend static_asserts the ARCH depth macro,
 	  so a defconfig figure below the arch default fails the build even on a board whose
@@ -1007,8 +1021,10 @@ config KICKOS_MIN_STACK_SIZE
 	default 2304 if ARCH_RV64IMAC
 	# An interrupt nests below a privileged caller's syscall on its own stack, a spawn seeding
 	# a whole address space at its deepest (x86_64_trap_stack.h).
-	default 3136 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
-	default 2496 if ARCH_X86_64
+	default 3264 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
+	default 2624 if ARCH_X86_64
+	# Above one core the PREEMPT zone alone is 896 (lx6_trap_stack.h).
+	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
 	default 896 if ARCH_LX6
 	default 1024
 	help

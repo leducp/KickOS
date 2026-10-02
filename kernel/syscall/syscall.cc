@@ -734,13 +734,13 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
         }
 #endif
-// An arm at one core would put the dispatch arm, its switch and its IrqLock into an image
-// whose placement half is otherwise provably absent.
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+#if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_SCHED_PROBE:
         {
             // Pure reads, so not privilege-gated. Every op but KOS_SCHED_OP_PREEMPTED reads
-            // the CALLER's own scheduling state; that one is machine-wide.
+            // the CALLER's own scheduling state; that one is machine-wide. The placement ops
+            // exist above one core alone, which keeps the placement half out of a one-core
+            // image.
             IrqLock lock;
             Thread const* const c = sched::current();
             switch (static_cast<kos_sched_op>(a0))
@@ -749,6 +749,11 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return kickos_kernel_core();
                 }
+                case KOS_SCHED_OP_SWITCHES:
+                {
+                    return c->switch_count.load();
+                }
+#if KICKOS_KERNEL_CORES > 1
                 case KOS_SCHED_OP_AFFINITY:
                 {
                     return c->affinity;
@@ -769,6 +774,7 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return ktime_slice_preempt_cores();
                 }
+#endif
                 default:
                 {
                     break;
@@ -1334,6 +1340,14 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 case KOS_BENCH_OP_DIST_PRINT:
                 {
+                    if (a1 == KOS_BENCH_DIST_SWITCH_VEC)
+                    {
+                        return bench_dist_print_switch_vec();
+                    }
+                    if (a1 != 0)
+                    {
+                        return static_cast<uint64_t>(-KOS_EINVAL);
+                    }
                     return bench_dist_print(ipc_fast_taken_count());
                 }
                 case KOS_BENCH_OP_IRQ_SETUP:

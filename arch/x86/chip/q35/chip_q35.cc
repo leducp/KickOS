@@ -83,7 +83,7 @@ namespace
     extern "C" int kickos_x86_64_ap_prepare(void (*entry)(void), uintptr_t stack_top);
     extern "C" void kickos_x86_64_ap_start(uint32_t apic_id);
     extern "C" void kickos_x86_64_doorbell_park(void);
-    extern "C" void kickos_x86_64_fp_trap(void);
+    extern "C" bool kickos_x86_64_fp_enable(uint64_t* xcr0, uint32_t* xsave_size);
 
     [[noreturn]] void ap_main(void)
     {
@@ -92,7 +92,13 @@ namespace
         {
             arch_shutdown(KICKOS_FATAL_STATUS);
         }
-        kickos_x86_64_fp_trap();
+        uint64_t xcr0 = 0;
+        uint32_t xsave_size = 0;
+        if (not kickos_x86_64_fp_enable(&xcr0, &xsave_size))
+        {
+            com1_puts("KickOS: q35 AP vector state is not the boot core's\n");
+            arch_shutdown(KICKOS_FATAL_STATUS);
+        }
         desc_init_secondary();
         ring3_cpu_init();
         apic_init_secondary();

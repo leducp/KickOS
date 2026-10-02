@@ -402,6 +402,10 @@ enum kos_mem_flags
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)
 
 // KOS_SYS_BENCH operation IDs (benchmark images only). Append new values.
+// KOS_BENCH_OP_DIST_PRINT's rows: the switch row alone, its window run with every vector register
+// written before each switch.
+#define KOS_BENCH_DIST_SWITCH_VEC 1
+
 // Unknown operations return -KOS_EINVAL. PRINT operations use the kernel console.
 // Operations marked AUTH_IRQ require KOS_AUTH_IRQ or return -KOS_EPERM.
 enum kos_bench_op
@@ -411,9 +415,12 @@ enum kos_bench_op
                                   //   which is not always the core clock, as a 64-BIT Hz
                                   //   count. 0 = no rate converts a reading, so report
                                   //   cycles alone.
-    KOS_BENCH_OP_DIST_PRINT = 2,  // ()          -> switch sample count (the kernel prints one
+    KOS_BENCH_OP_DIST_PRINT = 2,  // (rows)      -> switch sample count (the kernel prints one
                                   //   line per workload-fed distribution; a SWEPT one is
-                                  //   printed by the op that filled it)
+                                  //   printed by the op that filled it). rows
+                                  //   KOS_BENCH_DIST_SWITCH_VEC prints the switch row alone,
+                                  //   labelled as the dirty-vector variant; any other non-zero
+                                  //   rows is refused.
     KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0, or -KOS_EBUSY if irq_attach refuses the
                                   //   line. AUTH_IRQ. Names the line every IRQ op below uses.
     KOS_BENCH_OP_IRQ_SWEEP = 4,   // (samples)   -> samples taken (the kernel prints the

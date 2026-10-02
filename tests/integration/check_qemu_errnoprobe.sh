@@ -9,7 +9,11 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-elf="${1:?usage: check_qemu_errnoprobe.sh <errnoprobe.elf>}"
+elf="${1:?usage: check_qemu_errnoprobe.sh <errnoprobe.elf> [--first-core <n>|any]}"
+first_core=""
+if [ "${2:-}" = "--first-core" ]; then
+    first_core="${3:?--first-core takes a core number or any}"
+fi
 
 poll_image "$elf" "\[errnoprobe\] (PASS|FAIL)"
 
@@ -35,6 +39,17 @@ do
   than it claims"
     fi
 done
+
+# F, where the board runs it: root entered by arch_start with no switch, on the core required,
+# libc's state the word at the FS base.
+if [ -n "$first_core" ]; then
+    _core="$first_core"
+    [ "$_core" = any ] && _core='[0-9][0-9]*'
+    if ! has "\\[errnoprobe\\] F first core $_core switches 0 ok"; then
+        fail "errnoprobe arm F did not report libc on root as core $first_core's first thread,
+  before any switch: $(printf '%s\n' "$OUT" | grep '\[errnoprobe\] F' | head -1)"
+    fi
+fi
 
 # D's own vacuity: the pair can run without the preemption it exists to witness ever landing,
 # and the arm still reports a verdict.

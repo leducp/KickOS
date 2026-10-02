@@ -62,9 +62,9 @@ low_n_reason() { # <row>
       programmed and the commit bracket cannot be reached"
         fi
         ;;
-    # CMake disables KICKOS_LIBC_REENT on these two architectures.
+    # CMake disables KICKOS_LIBC_REENT on the sim, whose libc is the host's.
     REENT_SEAT)
-        if [ "$bench_arch" = sim ] || [ "$bench_arch" = x86_64 ]; then
+        if [ "$bench_arch" = sim ]; then
             echo "this arch clears KICKOS_LIBC_REENT in the top-level CMakeLists, so no
       reentrancy seat is installed on a switch and the bracket cannot be reached"
         fi
@@ -259,7 +259,7 @@ ctl_rv32() {
 '  sat-probe: width=32 (no delta this counter forms is too wide)'
 }
 
-# Shortened x86-64 fixture with its row count adjusted. REENT_SEAT is waived.
+# Shortened x86-64 fixture with its row count adjusted.
 ctl_x86() {
     printf '%s\n' \
 '   board   qemu-x86_64' \
@@ -274,7 +274,7 @@ ctl_x86() {
 '    REPLY_TOTAL      35953/258200  min=2500  n=13' \
 '    MPU_APPLY        16/6380  min=1  n=520039' \
 '    MPU_COMMIT       0/0  min=0  n=0' \
-'    REENT_SEAT       0/0  min=0  n=0' \
+'    REENT_SEAT       412/30120  min=300  n=520039' \
 '    ARCH_SWITCH      10839/210995400  min=5400  n=520013' \
 '  ns-probe: cyc=4294967295 ns=2148712634 capped=0' \
 '  sat-probe: width=64 fits+1/0 wide+0/1 max=1000'
@@ -314,7 +314,10 @@ if [ "$controls_only" -eq 1 ]; then
     parse_controls
 
     ctl 'a real one-core rv32 capture' pass 0 "$(ctl_rv32)"
-    ctl 'a trimmed capture from the arch that seats no reentrancy' pass 0 "$(ctl_x86)"
+    ctl 'a trimmed x86-64 capture' pass 0 "$(ctl_x86)"
+    ctl 'the same capture from the sim, which seats no reentrancy' pass 0 \
+        "$(ctl_x86 | sed 's|^   board   qemu-x86_64|   board   sim|; s|^   arch    x86_64|   arch    sim|
+                          s|^\(    REENT_SEAT  *\).*|\10/0  min=0  n=0|')"
 
     ctl 'a capture with no phase-table header' refuse 1 \
         "$(ctl_rv32 | sed '/^  phase table (/d')"
@@ -344,6 +347,8 @@ if [ "$controls_only" -eq 1 ]; then
         "$(ctl_rv32 | sed 's|^\(    MPU_COMMIT  *\)0/0  min=0  n=0|\158/5140  min=40  n=520039|')"
     ctl 'REENT_SEAT zeroed on an arch that seats it' refuse 1 \
         "$(ctl_rv32 | sed 's|^\(    REENT_SEAT  *\)283/27100  min=240  n=520039|\10/0  min=0  n=0|')"
+    ctl 'REENT_SEAT zeroed on x86-64, which seats it' refuse 1 \
+        "$(ctl_x86 | sed 's|^\(    REENT_SEAT  *\).*|\10/0  min=0  n=0|')"
 
     echo "PASS: $_ctl_pass planted report(s) accepted and $_ctl_refuse refused, each naming its
   own arm"

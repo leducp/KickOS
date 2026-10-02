@@ -302,6 +302,8 @@ namespace
     static_assert(sizeof(DIST_FMT) / sizeof(DIST_FMT[0]) == kickos::BD_COUNT,
                   "one label per distribution, in enum order");
 
+    constexpr DistFmt SWITCH_VEC_FMT = BENCH_DIST_ENTRY("switch-vec:");
+
     constexpr DistFmt WCASE_FMT[] = {
         BENCH_DIST_ENTRY("wcase-irq[0B]:   "),
         BENCH_DIST_ENTRY("wcase-irq[64B]:  "),
@@ -1179,6 +1181,12 @@ namespace kickos
         return dist_total(BD_SWITCH).count;
     }
 
+    uint32_t bench_dist_print_switch_vec()
+    {
+        dist_print_fmt(BD_SWITCH, SWITCH_VEC_FMT);
+        return dist_total(BD_SWITCH).count;
+    }
+
     void bench_lock_probe_print()
     {
         uint32_t const hold0 = bench_dist_count(BD_LOCK_HOLD);
@@ -1498,7 +1506,12 @@ namespace kickos
     // Measure inject-to-handler latency across an interrupt-masked copy.
     // The interval includes the masked work and exception entry.
     // Return zero if injection is unsupported.
-    static IrqSample irq_masked_once(int line, uint32_t span_bytes)
+    //
+    // noinline is load-bearing: inlined into the sweep, the copy shares the registers of its two
+    // loops, and the compiler spills the bound and reloads it, with the source base, per byte.
+    // The copy is tested at the bottom because -Os lays a loop tested at the top out with its
+    // body past the exit, which is a second taken branch per byte.
+    static __attribute__((noinline)) IrqSample irq_masked_once(int line, uint32_t span_bytes)
     {
         if (span_bytes > BENCH_LAT_SPAN_MAX)
         {
@@ -1509,9 +1522,14 @@ namespace kickos
         arch_irq_state_t st = arch_irq_save();
         uint32_t const t0 = bench_cyccnt();
         bench_irq_raise(line);
-        for (uint32_t i = 0; i < span_bytes; i++)
+        uint32_t i = 0;
+        if (span_bytes != 0)
         {
-            g_lat_dst[i] = g_lat_src[i];
+            do
+            {
+                g_lat_dst[i] = g_lat_src[i];
+                i++;
+            } while (i != span_bytes);
         }
         arch_irq_restore(st);
         // Only this core is masked. Reject an interrupt delivered to a peer during the copy.

@@ -17,6 +17,31 @@
 #define KICKOS_KERNEL_CORES 1
 #endif
 
+#if defined(__x86_64__) && !KICKOS_ARCH_SIM
+#define BENCH_VEC_DIRTY 1
+// Writes all sixteen YMM registers whole, in assembly of its own: the compiler is not told, and
+// tests/static/check_x86_64_no_vector.sh admits it by name.
+extern "C" __attribute__((visibility("hidden"))) void bench_vec_dirty(void);
+__asm__(".pushsection .text, \"ax\", @progbits\n"
+        "    .balign 16\n"
+        "    .globl bench_vec_dirty\n"
+        "    .hidden bench_vec_dirty\n"
+        "    .type bench_vec_dirty, @function\n"
+        "bench_vec_dirty:\n"
+        "    vpcmpeqd %ymm0, %ymm0, %ymm0\n    vpcmpeqd %ymm1, %ymm1, %ymm1\n"
+        "    vpcmpeqd %ymm2, %ymm2, %ymm2\n    vpcmpeqd %ymm3, %ymm3, %ymm3\n"
+        "    vpcmpeqd %ymm4, %ymm4, %ymm4\n    vpcmpeqd %ymm5, %ymm5, %ymm5\n"
+        "    vpcmpeqd %ymm6, %ymm6, %ymm6\n    vpcmpeqd %ymm7, %ymm7, %ymm7\n"
+        "    vpcmpeqd %ymm8, %ymm8, %ymm8\n    vpcmpeqd %ymm9, %ymm9, %ymm9\n"
+        "    vpcmpeqd %ymm10, %ymm10, %ymm10\n    vpcmpeqd %ymm11, %ymm11, %ymm11\n"
+        "    vpcmpeqd %ymm12, %ymm12, %ymm12\n    vpcmpeqd %ymm13, %ymm13, %ymm13\n"
+        "    vpcmpeqd %ymm14, %ymm14, %ymm14\n    vpcmpeqd %ymm15, %ymm15, %ymm15\n"
+        "    ret\n"
+        ".popsection\n");
+#else
+#define BENCH_VEC_DIRTY 0
+#endif
+
 namespace
 {
     using kickos::Atomic;
@@ -77,6 +102,19 @@ namespace
     kos::Semaphore* g_gate = nullptr;
     kos::Semaphore* g_resume = nullptr;
     Atomic<uint32_t, Order::RELAXED> g_rounds{0};
+    // Set for the dirty-vector window: each player writes every YMM register before each switch,
+    // so each restore loads the SSE and AVX components rather than their initial state.
+    Atomic<uint32_t, Order::RELAXED> g_vec_dirty{0};
+
+    void vec_dirty()
+    {
+#if BENCH_VEC_DIRTY
+        if (g_vec_dirty != 0)
+        {
+            bench_vec_dirty();
+        }
+#endif
+    }
 
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
@@ -105,7 +143,9 @@ namespace
     {
         while (true)
         {
+            vec_dirty();
             kos_sem_wait(CH_A);
+            vec_dirty();
             kos_sem_post(CH_B);
         }
     }
@@ -115,6 +155,7 @@ namespace
     {
         while (true)
         {
+            vec_dirty();
             kos_sem_wait(CH_B);
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
@@ -123,6 +164,7 @@ namespace
                 kos_sem_post(CH_GATE);
                 kos_sem_wait(CH_RESUME);
             }
+            vec_dirty();
             kos_sem_post(CH_A);
         }
     }
@@ -472,6 +514,15 @@ namespace
             (void)kos_bench(KOS_BENCH_OP_E2E_PRINT, E2E_SWEEP_PASSES, 0);
         }
         e2e_stop();
+#if BENCH_VEC_DIRTY
+        // One more window of the same ping-pong with the players' vector state dirty.
+        g_vec_dirty = 1;
+        (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+        g_resume->post();
+        g_gate->wait();
+        (void)kos_bench(KOS_BENCH_OP_DIST_PRINT, KOS_BENCH_DIST_SWITCH_VEC, 0);
+        g_vec_dirty = 0;
+#endif
     }
 
     // Both call/reply peers are SPAWNED, so the figure is worker-to-worker and not root's.

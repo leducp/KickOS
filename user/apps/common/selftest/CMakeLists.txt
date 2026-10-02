@@ -92,13 +92,17 @@ list(APPEND _selftest_defs KICKOS_SELFTEST_REGIONS=${_selftest_regions})
 
 set(_selftest_srcs main.cc selftest_common.cc
                    "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
-# Three blocks of arms sit in files of their own. Each still carries the `#if` its block had in
+# Four blocks of arms sit in files of their own. Each still carries the `#if` its block had in
 # main.cc, so a file compiled where its guard is off is empty and costs only the header; the
 # conditions here spare that parse and must therefore MATCH those guards. Getting one wrong
 # cannot shrink a suite: the registration list names every arm, so a file this list omits while
 # main.cc still registers its arms is an undefined reference at link.
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs selftest_aspace.cc)
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND KICKOS_ARCH STREQUAL "x86_64")
+  list(APPEND _selftest_srcs selftest_vector.cc)
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   list(APPEND _selftest_srcs selftest_amp.cc)
@@ -126,6 +130,9 @@ foreach(_img IN LISTS _selftest_images)
   # caps (g_lock, g_done) plus the widest mandatory arm's 3; the optional 3 more are
   # t_mutex_deadlock's, which SKIPS when it cannot allocate them.
   kickos_declare_app_capabilities(${_img} 5 3 ${KICKOS_CAP_REPLY_DEFAULT})
+  # Endpoint POOL slots, a different count: t_reply_abandoned_cap holds two at once, and at a
+  # ceiling of one below that it fails and leaves every later endpoint create refused.
+  kickos_declare_app_endpoints(${_img} 2)
   target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
   target_compile_definitions(${_img} PRIVATE ${_selftest_defs}
     KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi})
@@ -257,7 +264,11 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms "${_tap_arms} + 1") # port_window
+  math(EXPR _tap_arms "${_tap_arms} + 5") # port_window, vector_survives_block, vector_survives_preempt, vector_starts_clean, vector_fault_contained
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND KICKOS_ARCH STREQUAL "x86_64" AND KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # vector_survives_migrate
 endif()
 # Mirrors the C guard, which is the AMP posture and not the core count: an own-image node drives
 # one core and registers these all the same.
@@ -270,7 +281,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 25") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise, reent_per_thread_cores
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms "${_tap_arms} + 1") # fp_trapped_every_core
+  math(EXPR _tap_arms "${_tap_arms} + 1") # fp_enabled_every_core
 endif()
 
 # The same count per REGION. The regions are separated by the `#undef TAP_ADD` lines in
@@ -333,7 +344,11 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # port_window
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 5") # port_window, vector_survives_block, vector_survives_preempt, vector_starts_clean, vector_fault_contained
+endif()
+if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
+   AND KICKOS_ARCH STREQUAL "x86_64" AND KICKOS_KERNEL_CORES GREATER 1)
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # vector_survives_migrate
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
@@ -342,7 +357,7 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 25") # resched_reaches_pinned_caller, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise, reent_per_thread_cores
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # fp_trapped_every_core
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 1") # fp_enabled_every_core
 endif()
 
 # Every region main.cc cuts owes a count, and the counts must add up to the whole suite. That

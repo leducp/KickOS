@@ -88,13 +88,14 @@ int _kill(int, int)
     return -1;
 }
 
-#ifdef __riscv
+#if defined(__riscv) || defined(__x86_64__)
 // Required to LINK the RISC-V full-C++ image: KEEPing .eh_frame (DWARF EH) retains the
 // libc arc4random/getentropy FDEs, which pin the getentropy dependency chain against
-// --gc-sections, so _getentropy must resolve. NOT a cryptographic source: KickOS
-// exposes no HW RNG, and this is seeded off the monotonic clock only so the buffer is
-// non-constant. Callers needing real entropy must wait for an RNG driver. RISC-V only,
-// because ARM uses EHABI .ARM.exidx, keeps no .eh_frame, and never pulls this chain.
+// --gc-sections, so _getentropy must resolve; the x86_64 image is linked without
+// --gc-sections at all. NOT a cryptographic source: KickOS exposes no HW RNG, and this is
+// seeded off the monotonic clock only so the buffer is non-constant. Callers needing real
+// entropy must wait for an RNG driver. Not ARM, which uses EHABI .ARM.exidx, keeps no
+// .eh_frame, and never pulls this chain.
 int _getentropy(void* buf, size_t len)
 {
     uint64_t x = kos_clock_now();
@@ -148,6 +149,21 @@ void _fini(void)
 // _sbrk and its bump arena live in newlib_sbrk.cc, not here: this TU is force-linked
 // into every image by -Wl,-u,_exit, so a strong reference to _kickos_heap_start from
 // here would defeat the heapless-board link error.
+
+#ifdef __x86_64__
+// newlib builds x86_64-elf with MISSING_SYSCALL_NAMES (its configure.host gives the target no
+// syscall directory), so its reentrant layer calls these names without the underscore.
+int write(int fd, char const* buf, int len) __attribute__((alias("_write")));
+int read(int, char*, int) __attribute__((alias("_read")));
+int close(int) __attribute__((alias("_close")));
+int isatty(int) __attribute__((alias("_isatty")));
+int lseek(int, int, int) __attribute__((alias("_lseek")));
+int fstat(int, void*) __attribute__((alias("_fstat")));
+int getpid(void) __attribute__((alias("_getpid")));
+int kill(int, int) __attribute__((alias("_kill")));
+int getentropy(void* buf, size_t len) __attribute__((alias("_getentropy")));
+int gettimeofday(struct timeval* tv, void*) __attribute__((alias("_gettimeofday")));
+#endif
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle and the RX libc may not provide

@@ -3,8 +3,9 @@
 #
 # Cross toolchain for the KickOS Renesas RX targets (rx-elf, GNU RX).
 #
-# RX72M needs the RENESAS GNURX build: -misa=v3 and -mdfpu (arch/rx/chip/rx72m/cpu.cmake) do
-# not exist in upstream GCC's rx-elf, which is also why RX has no CI gate.
+# RX72M needs Renesas's changes to GCC: -misa=v3 and -mdfpu (arch/rx/chip/rx72m/cpu.cmake) do
+# not exist in upstream GCC's rx-elf. The KickOS toolchain's rx-elf family is the pinned set
+# plus Renesas's changes ported onto it, carried as patches in conan/toolchain/patches.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR rx)
@@ -20,11 +21,10 @@ kickos_toolchain_export_baseline("${_kos_cpu}")
 
 set(KICKOS_ARCH_FAMILY "${KICKOS_ARCH_FAMILY}" CACHE STRING "KickOS ISA family (arm|rx)")
 
-kickos_toolchain_cross_programs(rx-elf KICKOS_RX_TOOLCHAIN_BIN)
+kickos_toolchain_package(rx-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_newlib("rx" "${CMAKE_C_COMPILER}" "${CMAKE_CXX_COMPILER}"
-  KICKOS_NEWLIB_RXV3_DFPU static ${_kos_cpu})
+kickos_require_toolchain_newlib("rx" "${CMAKE_C_COMPILER}" static ${_kos_cpu})
 
 # RX instructions are always little-endian; only *data* endianness is selectable and GNU RX
 # defaults to little-endian, matching the MDE option word the linker script emits (spike

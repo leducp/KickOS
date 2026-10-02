@@ -64,10 +64,15 @@ endif()
 if(KICKOS_TLS)
   add_subdirectory(tlsprobe)
 endif()
-# The reentrancy seat is a target-libc notion; the sim bridges to the host's and x86_64 links
-# no C library at all.
-if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_ARCH STREQUAL "x86_64")
+# The reentrancy seat is a target-libc notion; the sim bridges to the host's.
+if(NOT KICKOS_ARCH STREQUAL "sim")
   add_subdirectory(errnoprobe)
+endif()
+# Double classification and printf through the compiler and newlib: on rxv3, whose DFPU
+# compare the toolchain patches, and on the M4F QEMU image, which runs the same verdict under
+# a reference compiler on every pass.
+if(KICKOS_HAVE_LIBC AND (KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_BOARD STREQUAL "qemu"))
+  add_subdirectory(fpclass)
 endif()
 
 # Per-thread stdout regression. newlib_stubs.cc (the _write under test) is compiled ONLY for
@@ -104,7 +109,7 @@ endif()
 # A board joins this list only once its RAM covers the runtime heap and its linker script homes
 # the toolchain EH tables (EHABI .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj
 # .gcc_except_table) plus the runtime writable state inside the app grants.
-if(TARGET kickos_cxx AND (KICKOS_BOARD STREQUAL "frdmk64f"
+if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_CHIP STREQUAL "mps2"
    OR ((KICKOS_BOARD STREQUAL "picopi"
@@ -113,7 +118,8 @@ if(TARGET kickos_cxx AND (KICKOS_BOARD STREQUAL "frdmk64f"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
    OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
-   OR KICKOS_BOARD STREQUAL "qemu-riscv64"))
+   OR KICKOS_BOARD STREQUAL "qemu-riscv64"
+   OR KICKOS_BOARD STREQUAL "qemu-x86_64")
   add_subdirectory(cxxtest)
 endif()
 

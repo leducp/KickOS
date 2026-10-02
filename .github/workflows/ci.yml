@@ -19,9 +19,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One job per KickOS toolchain family (conan/toolchain): it builds the family when the cache,
-  # keyed on the recipe's files, lacks it, so the jobs below restore it rather than build it
-  # inside their own timeout. A job needs only the families it builds with.
+  # One job per KickOS toolchain family (conan/toolchain): when the cache, keyed on the recipe's
+  # files, lacks the family, it restores it from the release toolchain-<version>, or else builds
+  # it and uploads the archive as an artifact for that release. The jobs below restore it from
+  # the cache rather than build it inside their own timeout. A job needs only the families it
+  # builds with.
   toolchain-arm-none-eabi:
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -33,6 +35,73 @@ jobs:
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
+          build: "true"
+
+  toolchain-aarch64-none-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: aarch64-none-elf
+          build: "true"
+
+  toolchain-riscv64-none-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: riscv64-none-elf
+          build: "true"
+
+  toolchain-x86_64-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: x86_64-elf
+          build: "true"
+
+  # Espressif's sources are git snapshots, without the parsers a release tarball ships generated.
+  toolchain-xtensa-esp32-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2 flex bison
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: xtensa-esp32-elf
+          build: "true"
+
+  # The RX patches, in conan/toolchain/patches, carry the parsers they change generated.
+  toolchain-rx-elf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: build-essential m4 curl xz-utils bzip2
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: rx-elf
           build: "true"
 
   # Run source-only checks once. Other jobs exclude the tree label.
@@ -191,6 +260,7 @@ jobs:
 
   # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
+    needs: toolchain-aarch64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -202,18 +272,16 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/aarch64-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: aarch64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
+          family: aarch64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt, Cortex-A53)
         run: |
-          cmake --preset qemu-arm64 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64
           cmake --build --preset qemu-arm64
           ctest --preset qemu-arm64 -LE tree --no-tests=error --output-on-failure
           # Require the kernel-stack and TLS tests for this architecture.
@@ -222,7 +290,7 @@ jobs:
       # The runner has no i.MX 8M Plus emulator. Check the build and host tests only.
       - name: armv8a (NXP i.MX 8M Plus EVK) link surface
         run: |
-          cmake --preset imx8mp-evk -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset imx8mp-evk
           cmake --build --preset imx8mp-evk
           ctest --preset imx8mp-evk -L host -LE tree --no-tests=error --output-on-failure
 
@@ -230,6 +298,7 @@ jobs:
   # isolation mask directly: the expected-skip list is derived from it and
   # cannot detect its accidental removal.
   qemu-arm64-smp:
+    needs: toolchain-aarch64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -241,18 +310,16 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/aarch64-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: aarch64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
+          family: aarch64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt) four cores
         run: |
-          cmake --preset qemu-arm64-smp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-smp
           cmake --build --preset qemu-arm64-smp
           ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured core count.
@@ -260,7 +327,7 @@ jobs:
             --preset qemu-arm64-smp --no-tests=error --output-on-failure
       - name: armv8a (virt) four cores, core 3 isolated
         run: |
-          cmake --preset qemu-arm64-smpiso -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-smpiso
           # Check the resolved isolation mask independently of the expected-skip list.
           iso=$(sed -n 's/^#define KICKOS_ISOLATED_CORES //p' \
                 build/qemu-arm64-smpiso/generated/include/kickos/board_config.h)
@@ -276,6 +343,7 @@ jobs:
   # Exercise shared-kernel GICv3 doorbells. The other SMP job uses GICv2;
   # AMP builds use one kernel core and cannot cover this path.
   qemu-arm64-gicv3:
+    needs: toolchain-aarch64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -287,18 +355,16 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/aarch64-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: aarch64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
+          family: aarch64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt) four cores under a GICv3
         run: |
-          cmake --preset qemu-arm64-gicv3 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-gicv3
           # Require GICv3 so this cannot silently duplicate the GICv2 job.
           gic=$(sed -n 's/^#define KICKOS_ARM64_GIC_VERSION //p' \
                 build/qemu-arm64-gicv3/generated/include/kickos/board_config.h)
@@ -315,6 +381,7 @@ jobs:
   # Test shared-image AMP indexing, separate-image bounds and two running kernels.
   # Do not retry: console interleaving and publication races must remain visible.
   qemu-arm64-amp:
+    needs: toolchain-aarch64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -326,18 +393,16 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm curl xz-utils
-      - uses: ./.github/actions/aarch64-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: aarch64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }}
+          family: aarch64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-aarch64 >/dev/null 2>&1 \
             || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: armv8a (virt) AMP, one image over four cores
         run: |
-          cmake --preset qemu-arm64-amp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-amp
           # Check the resolved AMP configuration before running its conditional tests.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp 0 shared 4
           cmake --build --preset qemu-arm64-amp
@@ -346,7 +411,7 @@ jobs:
             --preset qemu-arm64-amp --no-tests=error --output-on-failure
       - name: armv8a (virt) AMP, node 0 of a two-image partition
         run: |
-          cmake --preset qemu-arm64-amp2-n0 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-amp2-n0
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n0 0 own 2
           cmake --build --preset qemu-arm64-amp2-n0
           # These tests build the peer and merged partition, then run both kernels.
@@ -355,7 +420,7 @@ jobs:
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure
       - name: armv8a (virt) AMP, node 1 of a two-image partition
         run: |
-          cmake --preset qemu-arm64-amp2-n1 -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-amp2-n1
           # Build node 1 to catch accidental reuse of node 0's configuration.
           . ./.github/scripts/amp-pin.sh build/qemu-arm64-amp2-n1 1 own 2
           cmake --build --preset qemu-arm64-amp2-n1
@@ -365,7 +430,7 @@ jobs:
           # Three-node build-only checks compare every pair of images. Two-node checks
           # cannot detect code that assumes every peer is node 0.
           for n in 0 1 2; do
-            cmake --preset "qemu-arm64-amp3-n$n" -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+            cmake --preset "qemu-arm64-amp3-n$n"
             . ./.github/scripts/amp-pin.sh "build/qemu-arm64-amp3-n$n" "$n" own 3
             cmake --build --preset "qemu-arm64-amp3-n$n"
           done
@@ -374,6 +439,7 @@ jobs:
 
   # Use the pinned RISCstar newlib toolchain with rv32imac/ilp32 multilib.
   qemu-riscv:
+    needs: toolchain-riscv64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -385,11 +451,9 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
-      - uses: ./.github/actions/riscv-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: rv32imac_ilp32
-          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
+          family: riscv64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
@@ -397,38 +461,39 @@ jobs:
       # The flat variant registers freestanding tests without PMP enforcement.
       - name: rv32imac (virt) run gate, no PMP enforcement
         run: |
-          cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv-flat
           cmake --build --preset qemu-riscv-flat
           ctest --preset qemu-riscv-flat -LE tree --no-tests=error --output-on-failure
       # The host label excludes image tests.
       - name: build-only rv32 boards
         run: |
-          cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom
           cmake --build --preset esp32c6-wroom
           ctest --test-dir build/esp32c6-wroom -L host -LE tree --no-tests=error --output-on-failure
-          cmake --preset esp32c6-wroom-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom-flat
           cmake --build --preset esp32c6-wroom-flat
           ctest --test-dir build/esp32c6-wroom-flat -L host -LE tree --no-tests=error --output-on-failure
           # Build larger selftest and benchmark images to check flash capacity.
-          cmake --preset esp32c6-wroom-st -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom-st
           cmake --build --preset esp32c6-wroom-st
           ctest --test-dir build/esp32c6-wroom-st -L host -LE tree --no-tests=error --output-on-failure
-          cmake --preset esp32c6-wroom-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom-bench
           cmake --build --preset esp32c6-wroom-bench
           ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
           # Build both C6 AMP nodes and their one-flash partition; silicon capture stays on the bench.
-          cmake --preset esp32c6-wroom-amp2-n0 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom-amp2-n0
           cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition
           ctest --test-dir build/esp32c6-wroom-amp2-n0 -L host -LE tree --no-tests=error --output-on-failure
-          cmake --preset esp32c6-wroom-amp2-n1 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset esp32c6-wroom-amp2-n1
           cmake --build --preset esp32c6-wroom-amp2-n1
           ctest --test-dir build/esp32c6-wroom-amp2-n1 -L host -LE tree --no-tests=error --output-on-failure
-          cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv-bench
           cmake --build --preset qemu-riscv-bench
           ctest --test-dir build/qemu-riscv-bench -L host -LE tree --no-tests=error --output-on-failure
 
   # Check C++ exceptions and global-pointer placement under PMP enforcement.
   qemu-riscv-mpu:
+    needs: toolchain-riscv64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -440,18 +505,16 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
-      - uses: ./.github/actions/riscv-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: rv32imac_ilp32
-          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
+          family: riscv64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv32 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv32 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: rv32imac (virt) enforcement gate
         run: |
-          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on PMP enforcement.
@@ -463,6 +526,7 @@ jobs:
   # The SMP variant exercises address-space teardown while peers may still
   # hold a root page containing kernel mappings.
   qemu-riscv64:
+    needs: toolchain-riscv64-none-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -474,39 +538,38 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-misc curl xz-utils
-      - uses: ./.github/actions/riscv-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: rv64imac_lp64
-          toolchain-bins: ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
+          family: riscv64-none-elf
       - name: the emulator every image gate in this job boots on
         run: |
           command -v qemu-system-riscv64 >/dev/null 2>&1 \
             || { echo "qemu-system-riscv64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
       - name: rv64imac (virt) sv39 gate
         run: |
-          cmake --preset qemu-riscv64 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv64
           cmake --build --preset qemu-riscv64
           ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on memory enforcement.
           tests/ci/ctest_named.sh 'rootfault|rootgone' --preset qemu-riscv64 --no-tests=error --output-on-failure
       - name: rv64imac (virt) sv48 gate
         run: |
-          cmake --preset qemu-riscv64-sv48 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv64-sv48
           cmake --build --preset qemu-riscv64-sv48
           ctest --preset qemu-riscv64-sv48 -LE tree --no-tests=error --output-on-failure
       - name: rv64imac (virt) four harts
         run: |
-          cmake --preset qemu-riscv64-smp -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv64-smp
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the hart count and selftest configuration.
           tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure
 
-  # Boot PE32+ through OVMF using host GCC and an ld with i386pep support.
+  # Boot PE32+ through OVMF, linked by the KickOS toolchain's x86_64-elf ld under i386pep.
   # Require firmware and mtools so image tests cannot silently skip.
   qemu-x86_64:
+    needs: toolchain-x86_64-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -518,51 +581,31 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: x86_64-elf
+      - name: The OVMF firmware pair
+        run: tests/ci/resolve_ovmf.sh >> "$GITHUB_ENV"
       - name: x86_64 (q35) UEFI handover gate
         run: |
           command -v qemu-system-x86_64 >/dev/null 2>&1 \
             || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
           # Report whether this linker needs -b elf64-x86-64 to extract ELF archive
           # members under i386pep. Both outcomes are supported; the real link tests the flag.
-          ld --version | head -1
+          tc=$(sed -n 's/^set(KICKOS_TOOLCHAIN_BIN_x86_64-elf "\(.*\)")$/\1/p' "$KICKOS_TOOLCHAIN/kickos-toolchain.cmake")
+          "$tc/x86_64-elf-ld" --version | head -1
           probe=$(mktemp -d)
           printf 'int kickos_probe_member(void){return 0;}\n' > "$probe/m.c"
           printf 'extern int kickos_probe_member(void);\nint efi_main(void){return kickos_probe_member();}\n' > "$probe/r.c"
-          gcc -c -ffreestanding -fno-pic -fno-ident "$probe/m.c" -o "$probe/m.o"
-          gcc -c -ffreestanding -fno-pic -fno-ident "$probe/r.c" -o "$probe/r.o"
-          ar rcs "$probe/libm.a" "$probe/m.o"
-          if ld -m i386pep -e efi_main "$probe/r.o" "$probe/libm.a" -o "$probe/bare.efi" 2>/dev/null; then
+          "$tc/x86_64-elf-gcc" -c -ffreestanding -fno-pic -fno-ident "$probe/m.c" -o "$probe/m.o"
+          "$tc/x86_64-elf-gcc" -c -ffreestanding -fno-pic -fno-ident "$probe/r.c" -o "$probe/r.o"
+          "$tc/x86_64-elf-ar" rcs "$probe/libm.a" "$probe/m.o"
+          if "$tc/x86_64-elf-ld" -m i386pep -e efi_main "$probe/r.o" "$probe/libm.a" -o "$probe/bare.efi" 2>/dev/null; then
             echo "this ld extracts an ELF archive member under i386pep with no -b: the flag is INERT here"
           else
             echo "this ld extracts no ELF archive member under i386pep with no -b: the flag is LOAD-BEARING here"
           fi
           rm -rf "$probe"
-          # Pair the firmware code and variable store with matching sizes and names.
-          ovmf_dirs="/usr/share/OVMF /usr/share/ovmf /usr/share/edk2/x64 /usr/share/edk2-ovmf/x64 /usr/share/qemu"
-          ovmf_code=""
-          ovmf_vars=""
-          for d in $ovmf_dirs; do
-            for c in "$d"/OVMF_CODE*.fd; do
-              [ -f "$c" ] || continue
-              v=$(printf '%s' "$c" | sed 's/OVMF_CODE/OVMF_VARS/')
-              [ -f "$v" ] || continue
-              # Prefer the shortest name to avoid secure-boot firmware for an unsigned image.
-              if [ -z "$ovmf_code" ] || [ "${#c}" -lt "${#ovmf_code}" ]; then
-                ovmf_code="$c"
-                ovmf_vars="$v"
-              fi
-            done
-            [ -z "$ovmf_code" ] || break
-          done
-          if [ -z "$ovmf_code" ]; then
-            echo "no OVMF_CODE*.fd beside a matching OVMF_VARS store under: $ovmf_dirs"
-            echo "the ovmf package names those files, so a release that spells them otherwise"
-            echo "needs its directory added above rather than a path corrected"
-            exit 1
-          fi
-          echo "resolved firmware: $ovmf_code with $ovmf_vars"
-          export KICKOS_OVMF_CODE="$ovmf_code"
-          export KICKOS_OVMF_VARS="$ovmf_vars"
           cmake --preset qemu-x86_64
           cmake --build --preset qemu-x86_64
           out=$(ctest --preset qemu-x86_64 -LE tree --no-tests=error --output-on-failure 2>&1) \
@@ -573,7 +616,7 @@ jobs:
             *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           # Require the architecture-specific boot checks.
-          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest' \
+          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest|x86_64_weak_undef_selftest' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
           # Reuse this step's firmware paths. Override the shorter job timeout
           # with the benchmark gates' 240-second limit.
@@ -590,9 +633,42 @@ jobs:
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
+  # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
+  # arm F reads libc there before any switch. q35 SMP refuses to start without x2APIC, which
+  # the QEMU 8.2 of Ubuntu 24.04 does not emulate under TCG, so this job runs on 26.04.
+  qemu-x86_64-ap:
+    needs: toolchain-x86_64-elf
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      QEMU_TIMEOUT: "180"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: x86_64-elf
+      - name: The OVMF firmware pair
+        run: tests/ci/resolve_ovmf.sh >> "$GITHUB_ENV"
+      - name: x86_64 (q35) first thread on an application processor
+        run: |
+          qemu-system-x86_64 --version | head -1
+          cmake --preset qemu-x86_64-smp2root1
+          cmake --build --preset qemu-x86_64-smp2root1
+          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_errnoprobe' \
+            --test-dir build/qemu-x86_64-smp2root1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "the AP first-thread gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
+
   # Build LX6 application and selftest images. Run host checks for the
   # configuration, linker script and windowed ABI.
   xtensa:
+    needs: toolchain-xtensa-esp32-elf
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -601,31 +677,55 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build curl xz-utils file
-      - uses: ./.github/actions/xtensa-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: xtensa_esp32
-          toolchain-bins: ${{ env.KICKOS_XTENSA_BIN }}
+          family: xtensa-esp32-elf
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
-          cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --preset esp32-wroom
           cmake --build --preset esp32-wroom
           ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
-          cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --preset esp32-wroom-st
           cmake --build --preset esp32-wroom-st
           ctest --test-dir build/esp32-wroom-st -L host -LE tree --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
-          cmake --preset esp32-wroom-smp -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --preset esp32-wroom-smp
           cmake --build --preset esp32-wroom-smp
           ctest --test-dir build/esp32-wroom-smp -L host -LE tree --no-tests=error --output-on-failure
       - name: xtensa lx6 + bench config
         run: |
-          cmake --preset esp32-wroom-bench -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --preset esp32-wroom-bench
           cmake --build --preset esp32-wroom-bench
           ctest --test-dir build/esp32-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
+
+  # Build RX72M images and run host checks for each configuration. No emulator models the part.
+  rx:
+    needs: toolchain-rx-elf
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [rx72m, rx72m-st, rx72m-flat, rx72m-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build curl xz-utils file
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: rx-elf
+      - name: ${{ matrix.preset }}
+        env:
+          PRESET: ${{ matrix.preset }}
+        run: |
+          cmake --preset "$PRESET"
+          cmake --build --preset "$PRESET"
+          ctest --test-dir "build/$PRESET" -L host -LE tree --no-tests=error --output-on-failure
 
   # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
@@ -764,7 +864,7 @@ jobs:
   # sets its own limit. Four-core runs need sufficient host CPU time.
   # Adjust a gate's limit if needed rather than overriding all limits here.
   bench:
-    needs: toolchain-arm-none-eabi
+    needs: [toolchain-arm-none-eabi, toolchain-aarch64-none-elf, toolchain-riscv64-none-elf]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -773,12 +873,12 @@ jobs:
       - uses: ./.github/actions/build-tools
         with:
           packages: cmake ninja-build qemu-system-arm qemu-system-misc curl xz-utils
-      - uses: ./.github/actions/aarch64-toolchain
-      - uses: ./.github/actions/riscv-toolchain
-      - uses: ./.github/actions/newlib
+      - uses: ./.github/actions/kickos-toolchain
         with:
-          multilibs: aarch64 rv64imac_lp64
-          toolchain-bins: ${{ env.KICKOS_AARCH64_TOOLCHAIN_BIN }} ${{ env.KICKOS_RISCV_TOOLCHAIN_BIN }}
+          family: aarch64-none-elf
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: riscv64-none-elf
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: arm-none-eabi
@@ -793,11 +893,11 @@ jobs:
           # Require every named benchmark check to remain registered.
           # IRQ timing distributions are measured manually at rebaseline because
           # shared-runner load is uncontrolled.
-          cmake --preset qemu-arm64-bench -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-bench
           cmake --build --preset qemu-arm64-bench
           tests/ci/ctest_named.sh 'qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth|qemu_arm64_bench_a53_pmcr|qemu_arm64_bench_irqspan_controls' \
             --test-dir build/qemu-arm64-bench --no-tests=error --output-on-failure
-          cmake --preset qemu-riscv64-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv64-bench
           cmake --build --preset qemu-riscv64-bench
           tests/ci/ctest_named.sh 'qemu_riscv64_bench_lock|qemu_riscv64_bench_cyccnt|qemu_riscv64_bench_saturate|qemu_riscv64_bench_phase_table|qemu_riscv64_benchauth|qemu_riscv64_bench_irqspan_controls' \
             --test-dir build/qemu-riscv64-bench --no-tests=error --output-on-failure
@@ -807,12 +907,12 @@ jobs:
           # Four-core checks cover per-core samples, doorbells, lock waits, phase
           # counts, saturation, and authority checks without latency thresholds.
           # IRQ timing is measured manually; parser controls run with the host tests.
-          cmake --preset qemu-arm64-benchsmp -DKICKOS_AARCH64_TOOLCHAIN_BIN="$KICKOS_AARCH64_TOOLCHAIN_BIN"
+          cmake --preset qemu-arm64-benchsmp
           cmake --build --preset qemu-arm64-benchsmp
           ctest --test-dir build/qemu-arm64-benchsmp -L host -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'qemu_arm64_bench_percore|qemu_arm64_bench_doorbell|qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth' \
             --test-dir build/qemu-arm64-benchsmp --no-tests=error --output-on-failure
-          cmake --preset qemu-riscv64-benchsmp -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv64-benchsmp
           cmake --build --preset qemu-riscv64-benchsmp
           ctest --test-dir build/qemu-riscv64-benchsmp -L host -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'qemu_riscv64_bench_percore|qemu_riscv64_bench_doorbell|qemu_riscv64_bench_lock|qemu_riscv64_bench_cyccnt|qemu_riscv64_bench_saturate|qemu_riscv64_bench_phase_table|qemu_riscv64_benchauth' \

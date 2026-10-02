@@ -52,12 +52,13 @@ need_ere "interrupts were not disabled on entry" "^$TOK if_after_cli=0\$"
 # arena_pages is asserted NON-ZERO: a map whose conventional runs all fall below the legacy
 # floor would publish nothing and let every arm above it still report ok.
 need_ere "no memory map was taken" "^$TOK map descriptors=[1-9][0-9]* stride=[1-9][0-9]* version=[1-9][0-9]* conventional_pages=[1-9][0-9]* arena=0x[0-9a-f]* arena_pages=[1-9][0-9]*\$"
-# `fp trapped` is pinned: this port saves no x87, MMX, vector or extended state, so every bit
-# that lets an instruction reach any of it must read the same way on every machine.
+# `fp enabled` is pinned: every thread runs with x87, SSE and AVX live and both switch paths
+# save exactly that state in an 832-byte area, so the machine must read back the same way on
+# every processor the port takes.
 need_ere "the vector-state posture was not read before it was changed" \
      "^$TOK fp found em=[01] ts=[01] mp=[01] osfxsr=[01] osxmmexcpt=[01] osxsave=[01]\$"
-need_ere "x87, MMX, vector and extended state were not refused" \
-     "^$TOK fp trapped em=1 ts=1 mp=1 osfxsr=0 osxmmexcpt=0 osxsave=0\$"
+need_ere "x87, SSE and AVX were not enabled in an 832-byte XSAVE area" \
+     "^$TOK fp enabled em=0 ts=0 mp=1 ne=1 osfxsr=1 osxmmexcpt=1 osxsave=1 xcr0=7 xsave=832\$"
 need_ere "boot services were not left" "^$TOK boot services left\$"
 need_ere "interrupts came back across ExitBootServices" "^$TOK if_after_exit=0\$"
 need_ere "the entry did not reach its halt" "^$TOK landed, halting\$"

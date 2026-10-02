@@ -53,6 +53,8 @@
                         "       into root; this node could not serve or reach it",       "P19")    \
     X(kBootAmpSlot,     "kmain: a partition port landed off its derived capability slot \n"       \
                         "       (a dynamic install into root ran before the partition's)", "P20")  \
+    X(kBootRootCoreMask, "kmain: KICKOS_ROOT_CORE_MASK names a core this kernel does not run", \
+                        "P21")                                                                     \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header

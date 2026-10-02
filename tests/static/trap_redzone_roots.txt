@@ -644,6 +644,7 @@ arch    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h
 preset  x86_64 qemu-x86_64
 preset  x86_64 qemu-x86_64-bench
 preset  x86_64 qemu-x86_64-smp2
+preset  x86_64 qemu-x86_64-smp2root1
 preset  x86_64 qemu-x86_64-smp4
 preset  x86_64 qemu-x86_64-smp8
 preset  x86_64 qemu-x86_64-smp12
@@ -692,6 +693,7 @@ exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,SYSPRIV,EXITK,RET rea
 # kickos_x86_64_switch_now is the call's 8, `pushfq` and `subq $KOS_FRAME_SIZE`, then it moves
 # rsp onto the incoming frame and, under KICKOS_BENCH, calls kickos_bench_switch_done there.
 unsized x86_64 kickos_x86_64_switch_now 192 calls=?kickos_bench_switch_done reason: 8 + 8 + 176 read off switch.S; the incoming frame's resume is a jmp and runs no C
+unsized x86_64 kickos_x86_64_bench_open 8 reason: switch.S under KICKOS_BENCH, the call's return address alone: lfence, rdtsc, a store through the gs base and a ret
 unsized x86_64 kickos_panic_stack_enter 8 reason: panic_stack.S, the call's return address on the stack it leaves, then a cli, a mov and a jmp; the pushq $0 lands on the reporter's array and is KICKOS_X86_64_PANIC_FRAME
 
 # The map editor's three walks, one activation per paging level from the running root down:

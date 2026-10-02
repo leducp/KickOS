@@ -339,6 +339,8 @@ namespace kickos
 
     // Print in kernel thread context outside IrqLock. Include aggregate and per-core rows.
     uint32_t bench_dist_print(uint32_t fast_taken); // Return the aggregate switch count.
+    // The switch row alone, labelled as the dirty-vector variant. Returns its count.
+    uint32_t bench_dist_print_switch_vec();
     void bench_phase_print();
 
     // Three nested IrqLocks must produce one sample on the calling core.

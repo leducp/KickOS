@@ -96,7 +96,9 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # name it records would stay valid to this gate forever after the build dropped it, and
 # the next .html, .svg or .json committed under docs/ would do exactly that. The corpus
 # being CHECKED is unaffected: docs/*.md is still every bit of it.
-git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
+# The vendored directories of tests/lib/gate.sh are excluded too: another project's text
+# cannot make a KickOS name valid. They stay in the path set below, so a doc can cite them.
+git ls-files -z | tr '\0' '\n' | drop_vendored | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
 [ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources: cannot build the valid identifier set"
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
 # a source-side scan that stopped at the first lowercase letter would put `KOS_E` in

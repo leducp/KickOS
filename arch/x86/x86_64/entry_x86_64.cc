@@ -5,6 +5,7 @@
 // and interrupts ENABLED (UEFI 2.11 section 2.3.4). Check the processor floor and read the
 // handover flags before `cli`. kickos_x86_64_landed runs after ExitBootServices.
 
+#include <kickos/arch/context.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/uefi.h>
@@ -21,7 +22,7 @@ extern "C" __attribute__((visibility("hidden"))) void kickos_x86_64_early_trap(v
 // is the last moment those bounds can be taken.
 extern "C" void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size);
 
-extern "C" void kickos_x86_64_fp_trap(void);
+extern "C" bool kickos_x86_64_fp_enable(uint64_t* xcr0, uint32_t* xsave_size);
 
 extern "C" __attribute__((visibility("hidden"))) bool
 kickos_x86_64_floor(kickos::uefi::system_table* systab);
@@ -256,15 +257,16 @@ namespace
         return static_cast<unsigned>((v >> n) & 1u);
     }
 
-    // CR0 bits 1, 2 and 3 and CR4 bits 9, 10 and 18 (Intel SDM Vol 3 section 2.5).
+    // CR0 bits 1, 2, 3 and 5 and CR4 bits 9, 10 and 18 (Intel SDM Vol 3 section 2.5).
     constexpr uint64_t cr0_mp = 1ull << 1;
     constexpr uint64_t cr0_em = 1ull << 2;
     constexpr uint64_t cr0_ts = 1ull << 3;
+    constexpr uint64_t cr0_ne = 1ull << 5;
     constexpr uint64_t cr4_osfxsr = 1ull << 9;
     constexpr uint64_t cr4_osxmmexcpt = 1ull << 10;
     constexpr uint64_t cr4_osxsave = 1ull << 18;
 
-    void report_fp(char const* stage, uint64_t cr0, uint64_t cr4)
+    void report_fp_bits(char const* stage, uint64_t cr0, uint64_t cr4, bool with_ne)
     {
         com1_puts(stage);
         com1_puts(" em=");
@@ -273,23 +275,41 @@ namespace
         com1_dec(bit_of(cr0, 3));
         com1_puts(" mp=");
         com1_dec(bit_of(cr0, 1));
+        if (with_ne)
+        {
+            com1_puts(" ne=");
+            com1_dec(bit_of(cr0, 5));
+        }
         com1_puts(" osfxsr=");
         com1_dec(bit_of(cr4, 9));
         com1_puts(" osxmmexcpt=");
         com1_dec(bit_of(cr4, 10));
         com1_puts(" osxsave=");
         com1_dec(bit_of(cr4, 18));
-        com1_puts("\n");
     }
 
-    // Installed AFTER ExitBootServices: firmware's own code runs with vector state of its own.
-    void fp_trap_install(void)
+    // Enabled AFTER ExitBootServices: firmware's own code runs with vector state of its own.
+    void fp_enable_install(void)
     {
-        report_fp(KICKOS_X1_TOKEN " fp found", read_cr0(), read_cr4());
-        kickos_x86_64_fp_trap();
+        report_fp_bits(KICKOS_X1_TOKEN " fp found", read_cr0(), read_cr4(), false);
+        com1_puts("\n");
+        uint64_t xcr0 = 0;
+        uint32_t xsave_size = 0;
+        bool const ok = kickos_x86_64_fp_enable(&xcr0, &xsave_size);
         // READ BACK, so the line below reports the machine's answer and not the value asked
-        // for: both registers hold bits the processor may refuse to change.
-        report_fp(KICKOS_X1_TOKEN " fp trapped", read_cr0(), read_cr4());
+        // for: every one of these registers holds bits the processor may refuse to change.
+        report_fp_bits(KICKOS_X1_TOKEN " fp enabled", read_cr0(), read_cr4(), true);
+        com1_puts(" xcr0=");
+        com1_dec(xcr0);
+        com1_puts(" xsave=");
+        com1_dec(xsave_size);
+        com1_puts("\n");
+        if (not ok)
+        {
+            com1_puts(KICKOS_X1_TOKEN " FAIL the vector state is not x87, SSE and AVX in an "
+                                      "832-byte XSAVE area\n");
+            halt();
+        }
     }
 
     // The interrupt table this port owns between ExitBootServices and desc_init: firmware's
@@ -325,14 +345,30 @@ namespace
     }
 }
 
-// The port saves no x87, MMX, vector or extended state, so these six bits refuse every
-// instruction that touches any of it. -mno-sse -mno-mmx -mno-80387 bind the COMPILER; these
-// bits bind the machine, against a thread executing a raw opcode. They are per core, so every
-// core applies them before it runs a thread.
-extern "C" void kickos_x86_64_fp_trap(void)
+// Every thread runs with x87, SSE and AVX live, and both switch paths save exactly those
+// components (switch.S). TS stays clear for good, the save being eager, and NE makes an x87
+// error the #MF exception. The bits and XCR0 are per core, so every core applies them before it
+// runs a thread; false where the processor does not report the three components in the
+// standard-format area KICKOS_X86_64_XSAVE_SIZE describes, which no thread may then run on.
+extern "C" bool kickos_x86_64_fp_enable(uint64_t* xcr0, uint32_t* xsave_size)
 {
-    write_cr0(read_cr0() | cr0_em | cr0_ts | cr0_mp);
-    write_cr4(read_cr4() & ~(cr4_osfxsr | cr4_osxmmexcpt | cr4_osxsave));
+    write_cr0((read_cr0() & ~(cr0_em | cr0_ts)) | cr0_mp | cr0_ne);
+    write_cr4(read_cr4() | cr4_osfxsr | cr4_osxmmexcpt | cr4_osxsave);
+    __asm__ volatile("xsetbv" : : "c"(0u), "a"(KICKOS_X86_64_XCR0), "d"(0u) : "memory");
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0u));
+    *xcr0 = (static_cast<uint64_t>(hi) << 32) | lo;
+    // CPUID leaf 0xD subleaf 0: EAX the supported components, EBX the area the enabled ones
+    // need (Intel SDM Vol 1 section 13.2).
+    uint32_t a = 0;
+    uint32_t b = 0;
+    uint32_t c = 0;
+    uint32_t d = 0;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0xdu), "c"(0u));
+    *xsave_size = b;
+    return *xcr0 == KICKOS_X86_64_XCR0 and (a & KICKOS_X86_64_XCR0) == KICKOS_X86_64_XCR0
+           and b == KICKOS_X86_64_XSAVE_SIZE;
 }
 
 // Entered with the hardware frame on whatever stack was live. It reports and halts, so the
@@ -465,9 +501,9 @@ extern "C" KICKOS_EFIAPI status_t efi_main(handle_t image_handle, system_table* 
 
     // The FIRST two things after the handover ends: the interrupt table firmware left behind
     // names storage whose lifetime ended with the call above, and the vector state it enabled
-    // is state this port does not save.
+    // is not the set every switch saves.
     early_idt_load();
-    fp_trap_install();
+    fp_enable_install();
 
     com1_puts(KICKOS_X1_TOKEN " boot services left\n");
     report_if(KICKOS_X1_TOKEN " if_after_exit=");

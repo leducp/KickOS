@@ -71,71 +71,59 @@ macro(kickos_toolchain_export_baseline _kos_tc_cpu)
   set(KICKOS_MCPU_FLAGS "${_kos_tc_cpu}" CACHE INTERNAL "Per-board CPU/ISA baseline")
 endmacro()
 
-# kickos_toolchain_cross_programs(<tool-prefix> <hint-cache-var>)
+# kickos_toolchain_package(<triple>)
 #
-# The hint is seeded from the environment; left empty, HINTS contributes nothing and PATH
-# decides, and a pinned install SHADOWS an on-PATH toolchain. It is then re-exported to the
+# The family's compiler and binutils, from the KickOS toolchain folder KICKOS_TOOLCHAIN names
+# (docs/design-m10-toolchain.md), which tools/kickos-toolchain.sh provisions: its index gives
+# each family's bin directory, and every program is found there alone, as _kos_tc_bin in the
+# caller. The environment seeds the cache entry, and the entry is re-exported to the
 # environment for CMake's compiler-ABI probe, which re-reads the toolchain file in a SEPARATE
-# cmake process with a fresh cache: that inherits the environment and PATH, never a -D cache
-# entry.
-#
-# These finds prove a program by that NAME exists, nothing more.
-#
-# kickos_toolchain_package(<triple> <hint-cache-var>) comes first where a family is packaged:
-# when KICKOS_TOOLCHAIN names the KickOS toolchain (docs/design-m10-toolchain.md), its index
-# points the hint at that family's compiler and _kos_tc_packaged is TRUE. The environment seeds
-# the cache entry, as it seeds the hint.
-macro(kickos_toolchain_package _kos_tc_triple _kos_tc_hint)
+# cmake process with a fresh cache: that inherits the environment, never a -D cache entry.
+macro(kickos_toolchain_package _kos_tc_triple)
   set(KICKOS_TOOLCHAIN "$ENV{KICKOS_TOOLCHAIN}" CACHE PATH
-      "The KickOS toolchain folder, holding kickos-toolchain.cmake (empty => a vendor toolchain)")
+      "The KickOS toolchain folder, holding kickos-toolchain.cmake")
   set(ENV{KICKOS_TOOLCHAIN} "${KICKOS_TOOLCHAIN}")
-  set(_kos_tc_packaged FALSE)
-  if(NOT KICKOS_TOOLCHAIN STREQUAL "")
-    if(NOT EXISTS "${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
-      message(FATAL_ERROR "KickOS: KICKOS_TOOLCHAIN=${KICKOS_TOOLCHAIN} holds no "
-        "kickos-toolchain.cmake, so it is not a KickOS toolchain folder")
-    endif()
-    include("${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
-    if(NOT DEFINED KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple})
-      message(FATAL_ERROR "KickOS: the toolchain in ${KICKOS_TOOLCHAIN} carries no "
-        "${_kos_tc_triple} compiler")
-    endif()
-    # find_program leaves a cached compiler alone, so a build directory that resolved another
-    # one would keep it under the package's hint. CMake cannot change a tree's compiler.
-    file(REAL_PATH "${KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple}}" _kos_tc_bin)
-    foreach(_kos_tc_prog IN ITEMS CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_ASM_COMPILER)
-      if(NOT "$CACHE{${_kos_tc_prog}}" STREQUAL "")
-        get_filename_component(_kos_tc_dir "$CACHE{${_kos_tc_prog}}" DIRECTORY)
-        file(REAL_PATH "${_kos_tc_dir}" _kos_tc_dir)
-        if(NOT _kos_tc_dir STREQUAL _kos_tc_bin)
-          message(FATAL_ERROR "KickOS: this build directory's ${_kos_tc_prog} is "
-            "$CACHE{${_kos_tc_prog}}, not the ${_kos_tc_triple} compiler of the toolchain in "
-            "${KICKOS_TOOLCHAIN}. Configure a fresh build directory.")
-        endif()
-      endif()
-    endforeach()
-    set(${_kos_tc_hint} "${KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple}}" CACHE PATH
-        "Directory holding the ${_kos_tc_triple}-* programs" FORCE)
-    set(ENV{${_kos_tc_hint}} "${${_kos_tc_hint}}")
-    set(_kos_tc_packaged TRUE)
+  set(_kos_tc_how "Provision it from the KickOS source root with\n"
+      "  tools/kickos-toolchain.sh <dir> [family,family,...]\n"
+      "  . <dir>/kickos-toolchain.sh\n"
+      "naming ${_kos_tc_triple} among the families, and configure again in that shell.")
+  if(KICKOS_TOOLCHAIN STREQUAL "")
+    message(FATAL_ERROR "KickOS: KICKOS_TOOLCHAIN is unset, and it names the KickOS "
+      "toolchain every board builds with. " ${_kos_tc_how})
   endif()
-endmacro()
-
-macro(kickos_toolchain_cross_programs _kos_tc_prefix _kos_tc_hint)
-  set(${_kos_tc_hint} "$ENV{${_kos_tc_hint}}" CACHE PATH
-      "Directory holding the ${_kos_tc_prefix}-* programs (empty => use PATH)")
-  set(ENV{${_kos_tc_hint}} "${${_kos_tc_hint}}")
-
-  find_program(CMAKE_C_COMPILER   ${_kos_tc_prefix}-gcc
-               HINTS "${${_kos_tc_hint}}" REQUIRED)
-  find_program(CMAKE_CXX_COMPILER ${_kos_tc_prefix}-g++
-               HINTS "${${_kos_tc_hint}}" REQUIRED)
-  find_program(CMAKE_ASM_COMPILER ${_kos_tc_prefix}-gcc
-               HINTS "${${_kos_tc_hint}}" REQUIRED)
-  find_program(CMAKE_OBJCOPY      ${_kos_tc_prefix}-objcopy
-               HINTS "${${_kos_tc_hint}}" REQUIRED)
-  find_program(CMAKE_SIZE         ${_kos_tc_prefix}-size
-               HINTS "${${_kos_tc_hint}}")
+  if(NOT EXISTS "${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
+    message(FATAL_ERROR "KickOS: KICKOS_TOOLCHAIN=${KICKOS_TOOLCHAIN} holds no "
+      "kickos-toolchain.cmake, so it is not a KickOS toolchain folder. " ${_kos_tc_how})
+  endif()
+  include("${KICKOS_TOOLCHAIN}/kickos-toolchain.cmake")
+  if(NOT DEFINED KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple})
+    message(FATAL_ERROR "KickOS: the toolchain in ${KICKOS_TOOLCHAIN} carries no "
+      "${_kos_tc_triple} compiler. " ${_kos_tc_how})
+  endif()
+  file(REAL_PATH "${KICKOS_TOOLCHAIN_BIN_${_kos_tc_triple}}" _kos_tc_bin)
+  # find_program leaves a cached compiler alone, so a build directory that resolved another
+  # one would keep it. CMake cannot change a tree's compiler.
+  foreach(_kos_tc_prog IN ITEMS CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_ASM_COMPILER)
+    if(NOT "$CACHE{${_kos_tc_prog}}" STREQUAL "")
+      get_filename_component(_kos_tc_dir "$CACHE{${_kos_tc_prog}}" DIRECTORY)
+      file(REAL_PATH "${_kos_tc_dir}" _kos_tc_dir)
+      if(NOT _kos_tc_dir STREQUAL _kos_tc_bin)
+        message(FATAL_ERROR "KickOS: this build directory's ${_kos_tc_prog} is "
+          "$CACHE{${_kos_tc_prog}}, not the ${_kos_tc_triple} compiler of the toolchain in "
+          "${KICKOS_TOOLCHAIN}. Configure a fresh build directory.")
+      endif()
+    endif()
+  endforeach()
+  find_program(CMAKE_C_COMPILER   ${_kos_tc_triple}-gcc     HINTS "${_kos_tc_bin}"
+               NO_DEFAULT_PATH REQUIRED)
+  find_program(CMAKE_CXX_COMPILER ${_kos_tc_triple}-g++     HINTS "${_kos_tc_bin}"
+               NO_DEFAULT_PATH REQUIRED)
+  find_program(CMAKE_ASM_COMPILER ${_kos_tc_triple}-gcc     HINTS "${_kos_tc_bin}"
+               NO_DEFAULT_PATH REQUIRED)
+  find_program(CMAKE_OBJCOPY      ${_kos_tc_triple}-objcopy HINTS "${_kos_tc_bin}"
+               NO_DEFAULT_PATH REQUIRED)
+  find_program(CMAKE_SIZE         ${_kos_tc_triple}-size    HINTS "${_kos_tc_bin}"
+               NO_DEFAULT_PATH)
 endmacro()
 
 # kickos_toolchain_flags_init(<flags>)
@@ -147,7 +135,7 @@ endmacro()
 
 # kickos_toolchain_newlib_flags()
 #
-# After kickos_toolchain_flags_init, with kickos_require_newlib's results in scope.
+# After kickos_toolchain_flags_init, with kickos_require_toolchain_newlib's results in scope.
 macro(kickos_toolchain_newlib_flags)
   # *_FLAGS_INIT only seats an entry the cache does not hold yet. An older build
   # directory, or a -D of one of these on the first configure, keeps stock libc

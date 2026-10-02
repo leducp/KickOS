@@ -1,0 +1,54 @@
+?
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+   build   2026-10-02 07:49:55 +0200
+   app     Oct  2 2026 07:49:55 +0200
+   commit  2019db5a
+   heap    24 KiB available
+   kstack  1120 B x 17 = 19040 B
+
+[fpclass] start
+[fpclass] sizeof(double) 8 DBL_MANT_DIG 53
+[fpclass] dpsw 00000100 ddn 1
+[fpclass] class qnan nan 1 inf 0 fin 0 nrm 0 fpc 0 un 3 ok
+[fpclass] class 0/0 nan 1 inf 0 fin 0 nrm 0 fpc 0 un 3 ok
+[fpclass] class +inf nan 0 inf 1 fin 0 nrm 0 fpc 1 un 0 ok
+[fpclass] class -inf nan 0 inf 1 fin 0 nrm 0 fpc 1 un 0 ok
+[fpclass] class +0 nan 0 inf 0 fin 1 nrm 0 fpc 2 un 0 ok
+[fpclass] class -0 nan 0 inf 0 fin 1 nrm 0 fpc 2 un 0 ok
+[fpclass] class 1 nan 0 inf 0 fin 1 nrm 1 fpc 4 un 0 ok
+[fpclass] class -2.5 nan 0 inf 0 fin 1 nrm 1 fpc 4 un 0 ok
+[fpclass] class max nan 0 inf 0 fin 1 nrm 1 fpc 4 un 0 ok
+[fpclass] class min nan 0 inf 0 fin 1 nrm 1 fpc 4 un 0 ok
+[fpclass] class sub nan 0 inf 0 fin 1 nrm 0 fpc 2 un 0 ok
+[fpclass] class -sub nan 0 inf 0 fin 1 nrm 0 fpc 2 un 0 ok
+[fpclass] order nan,1 got 220 want 220 ok
+[fpclass] order 1,nan got 220 want 220 ok
+[fpclass] order nan,nan got 220 want 220 ok
+[fpclass] order 1,2 got 2d3 want 2d3 ok
+[fpclass] order 2,1 got 21c want 21c ok
+[fpclass] order 1,1 got 18a want 18a ok
+[fpclass] order -inf,inf got 2d3 want 2d3 ok
+[fpclass] orderf nan,1 got 220 want 220 ok
+[fpclass] orderf 1,nan got 220 want 220 ok
+[fpclass] orderf 1,2 got 2d3 want 2d3 ok
+[fpclass] orderf 2,1 got 21c want 21c ok
+[fpclass] orderf 1,1 got 18a want 18a ok
+[fpclass] fmt f1 [1.000000] want [1.000000] ok
+[fpclass] fmt f-2.5 [-2.500000] want [-2.500000] ok
+[fpclass] fmt g0.1 [0.1] want [0.1] ok
+[fpclass] fmt e [1.234568e+08] want [1.234568e+08] ok
+[fpclass] fmt 17g [0.10000000000000001] want [0.10000000000000001] ok
+[fpclass] fmt gbig [1e+300] want [1e+300] ok
+[fpclass] fmt gmax [1.79769e+308] want [1.79769e+308] ok
+[fpclass] fmt gsub [0] want [0] ok
+[fpclass] fmt fnan [nan] want [nan] ok
+[fpclass] fmt finf [inf] want [inf] ok
+[fpclass] fmt e-inf [-inf] want [-inf] ok
+[fpclass] PASS

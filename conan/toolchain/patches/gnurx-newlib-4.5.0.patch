@@ -1,0 +1,2656 @@
+diff -Nru a/libgloss/Makefile.in b/libgloss/Makefile.in
+--- a/libgloss/Makefile.in	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/Makefile.in	2026-09-30 20:39:01.581154480 +0000
+@@ -416,24 +416,25 @@
+ @CONFIG_RL78_TRUE@	rl78/crtn.S
+ 
+ @CONFIG_RL78_TRUE@am__append_105 = rl78/libsim.a
+-@CONFIG_RX_TRUE@am__append_106 = rx/rx.ld rx/rx-sim.ld rx/gcrt0.o \
+-@CONFIG_RX_TRUE@	rx/crt0.o rx/crtn.o
+-@CONFIG_RX_TRUE@am__append_107 = \
++@CONFIG_RX_TRUE@am__append_106 = rx/rx.ld rx/rx-sim.ld $(rx_SPECS) \
++@CONFIG_RX_TRUE@	rx/gcrt0.o rx/crt0.o rx/crtn.o
++@CONFIG_RX_TRUE@am__append_107 = $(rx_SPECS)
++@CONFIG_RX_TRUE@am__append_108 = \
+ @CONFIG_RX_TRUE@	rx/gcrt0.S \
+ @CONFIG_RX_TRUE@	rx/crt0.S \
+ @CONFIG_RX_TRUE@	rx/crtn.S
+ 
+-@CONFIG_RX_TRUE@am__append_108 = rx/libsim.a
+-@CONFIG_SPARC_TRUE@am__append_109 = sparc/crt0.o sparc/erc32-crt0.o
+-@CONFIG_SPARC_TRUE@am__append_110 = sparc/crt0.S sparc/erc32-crt0.S
+-@CONFIG_SPARC_TRUE@am__append_111 = sparc/liberc32.a
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_112 =  \
++@CONFIG_RX_TRUE@am__append_109 = rx/libsim.a
++@CONFIG_SPARC_TRUE@am__append_110 = sparc/crt0.o sparc/erc32-crt0.o
++@CONFIG_SPARC_TRUE@am__append_111 = sparc/crt0.S sparc/erc32-crt0.S
++@CONFIG_SPARC_TRUE@am__append_112 = sparc/liberc32.a
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_113 =  \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@	sparc/cygmon.ld \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@	sparc/cygmon-crt0.o \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@	sparc/cygmon-salib.o
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_113 = sparc/cygmon-crt0.S
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_114 = sparc/libcygmon.a
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@am__append_115 = \
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_114 = sparc/cygmon-crt0.S
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@am__append_115 = sparc/libcygmon.a
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@am__append_116 = \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/ex930.ld \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/ex931.ld \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/ex934.ld \
+@@ -441,64 +442,64 @@
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/elfsim.ld \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/traps.o
+ 
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@am__append_116 = \
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@am__append_117 = \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/libslite930.a \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/libslite931.a \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/libslite934.a \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SLITE_TRUE@	sparc/libslite86x.a
+ 
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_117 =  \
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_118 =  \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@	sparc/tsc701.ld \
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@	sparc/crt0-701.S
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_118 = sparc/crt0-701.S
+-@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_119 = sparc/libsplet701.a
+-@CONFIG_SPARC_TRUE@am__append_120 = sparc/erc32-test sparc/ex930-test \
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_119 = sparc/crt0-701.S
++@CONFIG_SPARC_TRUE@@SPARC_BUILD_SPLET_TRUE@am__append_120 = sparc/libsplet701.a
++@CONFIG_SPARC_TRUE@am__append_121 = sparc/erc32-test sparc/ex930-test \
+ @CONFIG_SPARC_TRUE@	sparc/ex931-test sparc/ex934-test
+-@CONFIG_SPARC_LEON_TRUE@am__append_121 = sparc_leon/libleonbare.a \
++@CONFIG_SPARC_LEON_TRUE@am__append_122 = sparc_leon/libleonbare.a \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/liblbthread.a \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/libsmall.a
+-@CONFIG_SPARC_LEON_TRUE@am__append_122 = \
++@CONFIG_SPARC_LEON_TRUE@am__append_123 = \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/crt0.o \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/pnpinit.o \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/pnpinit_simple.o \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/locore_svt.o \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/locore_mvt.o
+ 
+-@CONFIG_SPARC_LEON_TRUE@am__append_123 = \
++@CONFIG_SPARC_LEON_TRUE@am__append_124 = \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/crt0.S \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/pnpinit.c \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/pnpinit_simple.c \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/locore_svt.S \
+ @CONFIG_SPARC_LEON_TRUE@	sparc_leon/locore_mvt.S
+ 
+-@CONFIG_TIC6X_TRUE@am__append_124 = tic6x/crt0.o
+-@CONFIG_TIC6X_TRUE@am__append_125 = tic6x/crt0.S
+-@CONFIG_TIC6X_TRUE@am__append_126 = tic6x/libsim.a
+-@CONFIG_V850_TRUE@am__append_127 = v850/crt0.o
+-@CONFIG_V850_TRUE@am__append_128 = v850/crt0.S
+-@CONFIG_V850_TRUE@am__append_129 = v850/libsim.a
+-@CONFIG_VISIUM_TRUE@am__append_130 = visium/crt0.o
+-@CONFIG_VISIUM_TRUE@am__append_131 = visium/crt0.S
+-@CONFIG_VISIUM_TRUE@am__append_132 = visium/libserial.a \
++@CONFIG_TIC6X_TRUE@am__append_125 = tic6x/crt0.o
++@CONFIG_TIC6X_TRUE@am__append_126 = tic6x/crt0.S
++@CONFIG_TIC6X_TRUE@am__append_127 = tic6x/libsim.a
++@CONFIG_V850_TRUE@am__append_128 = v850/crt0.o
++@CONFIG_V850_TRUE@am__append_129 = v850/crt0.S
++@CONFIG_V850_TRUE@am__append_130 = v850/libsim.a
++@CONFIG_VISIUM_TRUE@am__append_131 = visium/crt0.o
++@CONFIG_VISIUM_TRUE@am__append_132 = visium/crt0.S
++@CONFIG_VISIUM_TRUE@am__append_133 = visium/libserial.a \
+ @CONFIG_VISIUM_TRUE@	visium/libsim.a visium/libdebug.a
+-@CONFIG_WINCE_TRUE@am__append_133 = $(gdbdir)
+-@CONFIG_WINCE_TRUE@am__append_134 = wince/stub.exe
+-@CONFIG_XSTORMY16_TRUE@am__append_135 = xstormy16/crt0.o \
++@CONFIG_WINCE_TRUE@am__append_134 = $(gdbdir)
++@CONFIG_WINCE_TRUE@am__append_135 = wince/stub.exe
++@CONFIG_XSTORMY16_TRUE@am__append_136 = xstormy16/crt0.o \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/crti.o xstormy16/crtn.o \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/sim_high.ld \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/sim_rom.ld \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/eva_app.ld \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/eva_stub.hex
+-@CONFIG_XSTORMY16_TRUE@am__append_136 = \
++@CONFIG_XSTORMY16_TRUE@am__append_137 = \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/crt0.s \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/crti.s \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/crtn.s
+ 
+-@CONFIG_XSTORMY16_TRUE@am__append_137 = xstormy16/libsim.a \
++@CONFIG_XSTORMY16_TRUE@am__append_138 = xstormy16/libsim.a \
+ @CONFIG_XSTORMY16_TRUE@	xstormy16/libeva_app.a
+-@CONFIG_XSTORMY16_TRUE@am__append_138 = xstormy16/eva_stub.elf
+-@CONFIG_XSTORMY16_TRUE@am__append_139 = xstormy16/eva_stub.hex
+-@CONFIG_XTENSA_TRUE@am__append_140 = \
++@CONFIG_XSTORMY16_TRUE@am__append_139 = xstormy16/eva_stub.elf
++@CONFIG_XSTORMY16_TRUE@am__append_140 = xstormy16/eva_stub.hex
++@CONFIG_XTENSA_TRUE@am__append_141 = \
+ @CONFIG_XTENSA_TRUE@	xtensa/default.specs \
+ @CONFIG_XTENSA_TRUE@	xtensa/nano.specs \
+ @CONFIG_XTENSA_TRUE@	xtensa/sim.elf.specs \
+@@ -507,29 +508,29 @@
+ @CONFIG_XTENSA_TRUE@	xtensa/sys.openocd.specs \
+ @CONFIG_XTENSA_TRUE@	xtensa/crt0.o
+ 
+-@CONFIG_XTENSA_TRUE@am__append_141 = \
++@CONFIG_XTENSA_TRUE@am__append_142 = \
+ @CONFIG_XTENSA_TRUE@	xtensa/crt0.S \
+ @CONFIG_XTENSA_TRUE@	xtensa/crt1-sim.S \
+ @CONFIG_XTENSA_TRUE@	xtensa/crt1-boards.S
+ 
+-@CONFIG_XTENSA_TRUE@am__append_142 = xtensa/libgloss.a
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_143 = \
++@CONFIG_XTENSA_TRUE@am__append_143 = xtensa/libgloss.a
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_144 = \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/app.elf.ld \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/crt1-sim.o \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/crt1-boards.o
+ 
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_144 = xtensa/libsys_qemu.a \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_145 = xtensa/libsys_qemu.a \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/libsys_openocd.a
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_145 = xtensa/boards/esp32/memory.elf.ld
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_146 = xtensa/boards/esp32/board.c
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_147 = -I$(srcdir)/xtensa/boards/esp32/include
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_146 = xtensa/boards/esp32/memory.elf.ld
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_147 = xtensa/boards/esp32/board.c
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_148 = -I$(srcdir)/xtensa/boards/esp32/include
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_149 = -I$(srcdir)/xtensa/boards/esp32/include
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_150 = xtensa/boards/esp32s3/memory.elf.ld
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_151 = xtensa/boards/esp32s3/board.c
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_152 = -I$(srcdir)/xtensa/boards/esp32s3/include
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_150 = -I$(srcdir)/xtensa/boards/esp32/include
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_151 = xtensa/boards/esp32s3/memory.elf.ld
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_152 = xtensa/boards/esp32s3/board.c
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_153 = -I$(srcdir)/xtensa/boards/esp32s3/include
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_154 = -I$(srcdir)/xtensa/boards/esp32s3/include
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP32S3_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@am__append_155 = -I$(srcdir)/xtensa/boards/esp32s3/include
+ subdir = .
+ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
+ am__aclocal_m4_deps = $(top_srcdir)/../config/depstand.m4 \
+@@ -1444,20 +1445,21 @@
+ rl78_libsim_a_OBJECTS = $(am_rl78_libsim_a_OBJECTS)
+ rx_libsim_a_AR = $(AR) $(ARFLAGS)
+ rx_libsim_a_LIBADD =
+-@CONFIG_RX_TRUE@am_rx_libsim_a_OBJECTS = rx/sbrk.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/heaptop.$(OBJEXT) rx/exit.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/open.$(OBJEXT) rx/close.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/read.$(OBJEXT) rx/write.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/lseek.$(OBJEXT) rx/unlink.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/getpid.$(OBJEXT) rx/kill.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/fstat.$(OBJEXT) rx/argvlen.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/argv.$(OBJEXT) rx/chdir.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/stat.$(OBJEXT) rx/chmod.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/utime.$(OBJEXT) rx/time.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/gettimeofday.$(OBJEXT) rx/times.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/link.$(OBJEXT) rx/isatty.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/abort.$(OBJEXT) rx/mcount.$(OBJEXT) \
+-@CONFIG_RX_TRUE@	rx/sigprocmask.$(OBJEXT) rx/sleep.$(OBJEXT)
++@CONFIG_RX_TRUE@am_rx_libsim_a_OBJECTS = rx/getentropy.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/sbrk.$(OBJEXT) rx/heaptop.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/exit.$(OBJEXT) rx/open.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/close.$(OBJEXT) rx/read.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/write.$(OBJEXT) rx/lseek.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/unlink.$(OBJEXT) rx/getpid.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/kill.$(OBJEXT) rx/fstat.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/argvlen.$(OBJEXT) rx/argv.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/chdir.$(OBJEXT) rx/stat.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/chmod.$(OBJEXT) rx/utime.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/time.$(OBJEXT) rx/gettimeofday.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/times.$(OBJEXT) rx/link.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/isatty.$(OBJEXT) rx/abort.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/mcount.$(OBJEXT) rx/sigprocmask.$(OBJEXT) \
++@CONFIG_RX_TRUE@	rx/sleep.$(OBJEXT)
+ rx_libsim_a_OBJECTS = $(am_rx_libsim_a_OBJECTS)
+ sparc_libcygmon_a_AR = $(AR) $(ARFLAGS)
+ sparc_libcygmon_a_LIBADD =
+@@ -1923,7 +1925,7 @@
+ CTAGS = ctags
+ CSCOPE = cscope
+ DIST_SUBDIRS = $(SUBDIRS)
+-VPATH = @srcdir@ $(am__append_133)
++VPATH = @srcdir@ $(am__append_134)
+ AARCH64_OBJTYPE = @AARCH64_OBJTYPE@
+ ACLOCAL = @ACLOCAL@
+ AMTAR = @AMTAR@
+@@ -2049,7 +2051,8 @@
+ top_srcdir = @top_srcdir@
+ ACLOCAL_AMFLAGS = -I . -I .. -I ../config
+ info_TEXINFOS = $(am__append_1)
+-CLEANFILES = $(am__append_4) $(am__append_14) $(am__append_139)
++CLEANFILES = $(am__append_4) $(am__append_14) $(am__append_107) \
++	$(am__append_140)
+ PHONY = 
+ SUBDIRS = @subdirs@ .
+ srcroot = $(top_srcdir)/..
+@@ -2068,11 +2071,11 @@
+ 	$(am__append_77) $(am__append_82) $(am__append_83) \
+ 	$(am__append_86) $(am__append_89) $(am__append_92) \
+ 	$(am__append_94) $(am__append_98) $(am__append_101) \
+-	$(am__append_103) $(am__append_106) $(am__append_109) \
+-	$(am__append_112) $(am__append_115) $(am__append_117) \
+-	$(am__append_122) $(am__append_124) $(am__append_127) \
+-	$(am__append_130) $(am__append_135) $(am__append_140) \
+-	$(am__append_143) $(am__append_145) $(am__append_150)
++	$(am__append_103) $(am__append_106) $(am__append_110) \
++	$(am__append_113) $(am__append_116) $(am__append_118) \
++	$(am__append_123) $(am__append_125) $(am__append_128) \
++	$(am__append_131) $(am__append_136) $(am__append_141) \
++	$(am__append_144) $(am__append_146) $(am__append_151)
+ multilibtool_LIBRARIES = $(am__append_2) $(am__append_5) \
+ 	$(am__append_8) $(am__append_13) $(am__append_15) \
+ 	$(am__append_24) $(am__append_27) $(am__append_28) \
+@@ -2083,11 +2086,11 @@
+ 	$(am__append_73) $(am__append_79) $(am__append_80) \
+ 	$(am__append_85) $(am__append_88) $(am__append_91) \
+ 	$(am__append_93) $(am__append_97) $(am__append_100) \
+-	$(am__append_102) $(am__append_105) $(am__append_108) \
+-	$(am__append_111) $(am__append_114) $(am__append_116) \
+-	$(am__append_119) $(am__append_121) $(am__append_126) \
+-	$(am__append_129) $(am__append_132) $(am__append_137) \
+-	$(am__append_142) $(am__append_144)
++	$(am__append_102) $(am__append_105) $(am__append_109) \
++	$(am__append_112) $(am__append_115) $(am__append_117) \
++	$(am__append_120) $(am__append_122) $(am__append_127) \
++	$(am__append_130) $(am__append_133) $(am__append_138) \
++	$(am__append_143) $(am__append_145)
+ includetooldir = $(tooldir)/include
+ includetool_DATA = $(am__append_20) $(am__append_96)
+ includesystooldir = $(tooldir)/include/sys
+@@ -2111,10 +2114,10 @@
+ 	$(am__append_69) $(am__append_72) $(am__append_78) \
+ 	$(am__append_84) $(am__append_87) $(am__append_90) \
+ 	$(am__append_95) $(am__append_99) $(am__append_104) \
+-	$(am__append_107) $(am__append_110) $(am__append_113) \
+-	$(am__append_118) $(am__append_123) $(am__append_125) \
+-	$(am__append_128) $(am__append_131) $(am__append_136) \
+-	$(am__append_141)
++	$(am__append_108) $(am__append_111) $(am__append_114) \
++	$(am__append_119) $(am__append_124) $(am__append_126) \
++	$(am__append_129) $(am__append_132) $(am__append_137) \
++	$(am__append_142)
+ FLAGS_TO_PASS = \
+ 	"CC=$(CC)" \
+ 	"CFLAGS=$(CFLAGS)" \
+@@ -2858,7 +2861,13 @@
+ @CONFIG_RL78_TRUE@	rl78/abort.S \
+ @CONFIG_RL78_TRUE@	rl78/mcount.c
+ 
++@CONFIG_RX_TRUE@rx_SPECS = \
++@CONFIG_RX_TRUE@	rx/nano.specs \
++@CONFIG_RX_TRUE@	rx/lnosys.specs \
++@CONFIG_RX_TRUE@	rx/sim.specs
++
+ @CONFIG_RX_TRUE@rx_libsim_a_SOURCES = \
++@CONFIG_RX_TRUE@	rx/getentropy.c \
+ @CONFIG_RX_TRUE@	rx/sbrk.c \
+ @CONFIG_RX_TRUE@	rx/heaptop.S \
+ @CONFIG_RX_TRUE@	rx/exit.S \
+@@ -3133,15 +3142,15 @@
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libgloss_a_SOURCES = xtensa/sleep.S \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/syscalls.c \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/window-vectors.S \
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_146) \
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_151)
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libgloss_a_CPPFLAGS = $(AM_CPPFLAGS) \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_147) \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_152)
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libsys_qemu_a_CPPFLAGS = $(AM_CPPFLAGS) \
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	-DQEMU_SEMIHOSTING \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libgloss_a_CPPFLAGS = $(AM_CPPFLAGS) \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_148) \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_153)
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libsys_qemu_a_CPPFLAGS = $(AM_CPPFLAGS) \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	-DQEMU_SEMIHOSTING \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_149) \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_154)
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libsys_qemu_a_SOURCES = \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/sim-vectors.S \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/sim-call.S \
+@@ -3149,8 +3158,8 @@
+ 
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libsys_openocd_a_CPPFLAGS = $(AM_CPPFLAGS) \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	-DOPENOCD_SEMIHOSTING \
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_149) \
+-@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_154)
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_150) \
++@CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	$(am__append_155)
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@xtensa_libsys_openocd_a_SOURCES = \
+ @CONFIG_XTENSA_TRUE@@HAVE_XTENSA_BOARD_ESP_TRUE@	xtensa/syscalls.c
+ 
+@@ -5050,6 +5059,8 @@
+ 	$(AM_V_at)-rm -f rl78/libsim.a
+ 	$(AM_V_AR)$(rl78_libsim_a_AR) rl78/libsim.a $(rl78_libsim_a_OBJECTS) $(rl78_libsim_a_LIBADD)
+ 	$(AM_V_at)$(RANLIB) rl78/libsim.a
++rx/getentropy.$(OBJEXT): rx/$(am__dirstamp) \
++	rx/$(DEPDIR)/$(am__dirstamp)
+ rx/sbrk.$(OBJEXT): rx/$(am__dirstamp) rx/$(DEPDIR)/$(am__dirstamp)
+ rx/heaptop.$(OBJEXT): rx/$(am__dirstamp) rx/$(DEPDIR)/$(am__dirstamp)
+ rx/exit.$(OBJEXT): rx/$(am__dirstamp) rx/$(DEPDIR)/$(am__dirstamp)
+@@ -6289,6 +6300,7 @@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/exit.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/fstat.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/gcrt0.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/getentropy.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/getpid.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/gettimeofday.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@rx/$(DEPDIR)/heaptop.Po@am__quote@
+@@ -10386,6 +10398,9 @@
+ @CONFIG_MCORE_TRUE@@MCORE_BUILD_PE_TRUE@	$(AM_V_GEN)cp $< $@
+ @CONFIG_MCORE_TRUE@@MCORE_BUILD_PE_TRUE@mcore/cmb.specs: mcore/pe-cmb.specs
+ @CONFIG_MCORE_TRUE@@MCORE_BUILD_PE_TRUE@	$(AM_V_GEN)cp $< $@
++
++@CONFIG_RX_TRUE@rx/%.specs: rx/elf-%.specs
++@CONFIG_RX_TRUE@	$(AM_V_GEN)cp $< $@
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@sparc/cygmon.ld: $(srcdir)/sparc/@SPARC_CYGMONLDSCRIPTTEMPL@ sparc/Makefile.inc
+ @CONFIG_SPARC_TRUE@@SPARC_BUILD_CYGMON_TRUE@	$(AM_V_GEN)sed 's/TARGET_OBJ_FORMAT/$(sparc_$(SPARC_CPU)_OBJ_FORMAT)/g;s/TARGET_RAM_START/$(sparc_$(SPARC_CPU)_RAM_START)/g;' < $< > $@
+ 
+diff -Nru a/libgloss/rx/Makefile.inc b/libgloss/rx/Makefile.inc
+--- a/libgloss/rx/Makefile.inc	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/Makefile.inc	2026-09-30 20:38:03.371323764 +0000
+@@ -14,6 +14,18 @@
+ 	%D%/rx.ld \
+ 	%D%/rx-sim.ld
+ 
++%C%_SPECS = \
++	%D%/nano.specs \
++	%D%/lnosys.specs \
++	%D%/sim.specs
++multilibtool_DATA += $(%C%_SPECS)
++
++## Make copies of the scripts to facilitate in-tree bootstrapping.
++%D%/%.specs: %D%/elf-%.specs
++	$(AM_V_GEN)cp $< $@
++
++CLEANFILES += $(%C%_SPECS)
++
+ multilibtool_DATA += \
+ 	%D%/gcrt0.o \
+ 	%D%/crt0.o \
+@@ -25,6 +37,7 @@
+ 
+ multilibtool_LIBRARIES += %D%/libsim.a
+ %C%_libsim_a_SOURCES = \
++	%D%/getentropy.c \
+ 	%D%/sbrk.c \
+ 	%D%/heaptop.S \
+ 	%D%/exit.S \
+diff -Nru a/libgloss/rx/crt0.S b/libgloss/rx/crt0.S
+--- a/libgloss/rx/crt0.S	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/crt0.S	2026-09-30 20:32:17.868263741 +0000
+@@ -61,8 +61,18 @@
+ 	mov	#__bssstart, r1
+ 	mov	#0, r2
+ 	mov	#__bsssize, r3
+-	sstr.l
++#ifdef __RX_DISALLOW_STRING_INSNS__
++	cmp	#0, r3
++	beq	2f
++1:
++	mov.l	r2, [r1+]
++	sub	#1, r3
++	bne	1b
++2:
+ 
++#else
++	sstr.l
++#endif
+ 	/* Initialize data pointer register(s).
+            Note: The registers used here should agree with the definition of
+ 	   GP_BASE_REGNUM in gcc/config/rx/rx.h.
+@@ -77,27 +87,32 @@
+ 	mov	#__gp, r13
+ #endif
+ 	
+-	bsr.a	__rx_init
++	mov    #__rx_init,r7
++	jsr	r7
+ 
+ #ifdef PROFILE_SUPPORT	/* Defined in gcrt0.S.  */
+ 	mov	# _start, r1
+ 	mov	# _etext, r2
+-	bsr.a	__monstartup
++	mov	#__monstartup,r7
++	jsr	r7
+ #endif
+ 
+ 	mov	#0, r1 /* argc */
+ 	mov	#0, r2 /* argv */
+ 	mov	#0, r3 /* envv */
+-	bsr.a	_main
++	mov	#_main,r7
++	jsr	r7
+ .LFE2:
+ 
+ #ifdef PROFILE_SUPPORT
+         mov      r1, r13       ; Save return code.
+-	bsr.a	__mcleanup
++	mov	#__mcleanup,r7
++	jsr	r7
+         mov     r13, r1
+ #endif
+ 
+-	bsr.a	_exit
++	mov	#_exit,r7
++	jsr	r7
+ 
+ 	.global	_rx_run_preinit_array
+ 	.type	_rx_run_preinit_array,@function
+@@ -149,7 +164,8 @@
+ 
+ 	.global __rx_fini
+ __rx_fini:
+-	bsr.a	_rx_run_fini_array
++	mov	#_rx_run_fini_array,r7
++	jsr	r7
+ 
+         .section .rodata
+         .balign 4
+diff -Nru a/libgloss/rx/crtn.S b/libgloss/rx/crtn.S
+--- a/libgloss/rx/crtn.S	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/crtn.S	2026-09-30 20:32:17.900546086 +0000
+@@ -31,8 +31,10 @@
+ */
+ 
+ 	.section	.init,"ax"
+-	bsr.a	_rx_run_preinit_array
+-	bsr.a	_rx_run_init_array
++	mov	#_rx_run_preinit_array,r7
++	jsr	r7
++	mov	#_rx_run_init_array,r7
++	jsr	r7
+ 	rts
+ 	.global	__rx_init_end
+ __rx_init_end:
+diff -Nru a/libgloss/rx/elf-lnosys.specs b/libgloss/rx/elf-lnosys.specs
+--- a/libgloss/rx/elf-lnosys.specs	1970-01-01 00:00:00.000000000 +0000
++++ b/libgloss/rx/elf-lnosys.specs	2026-09-30 20:32:17.924637209 +0000
+@@ -0,0 +1,13 @@
++%rename link_gcc_c_sequence                nosys_link_gcc_c_sequence
++
++*nosys_libgloss:
++-lnosys
++
++*nosys_libc:
++%{!specs=nano.specs:-lc} %{specs=nano.specs:-lc_nano}
++
++*link_gcc_c_sequence:
++%(nosys_link_gcc_c_sequence) --start-group %G %(nosys_libc) %(nosys_libgloss) --end-group
++
++*startfile: 
++--script rx.ld%s crt0%O%s crtbegin%O%s
+diff -Nru a/libgloss/rx/elf-nano.specs b/libgloss/rx/elf-nano.specs
+--- a/libgloss/rx/elf-nano.specs	1970-01-01 00:00:00.000000000 +0000
++++ b/libgloss/rx/elf-nano.specs	2026-09-30 20:32:17.948637477 +0000
+@@ -0,0 +1,21 @@
++%rename link                nano_link
++%rename link_gcc_c_sequence                nano_link_gcc_c_sequence
++%rename cpp_unique_options		nano_cpp_unique_options
++
++*cpp_unique_options:
++-isystem =/include/newlib-nano %(nano_cpp_unique_options)
++
++*nano_libc:
++-lc_nano
++
++*nano_libgloss:
++%{specs=nosys.specs:-lnosys} %{specs=sim.specs:-lsim}
++
++*link_gcc_c_sequence:
++%(nano_link_gcc_c_sequence) --start-group %G %(nano_libc) %(nano_libgloss) --end-group 
++
++*link:
++%(nano_link) %:replace-outfile(-lc -lc_nano) %:replace-outfile(-lg -lg_nano) %:replace-outfile(-lstdc++ -lstdc++_nano) %:replace-outfile(-lsupc++ -lsupc++_nano)
++
++*lib:
++%{!shared:%{g*:-lg_nano} %{!p:%{!pg:-lc_nano}}%{p:-lc_p}%{pg:-lc_p}}
+diff -Nru a/libgloss/rx/elf-sim.specs b/libgloss/rx/elf-sim.specs
+--- a/libgloss/rx/elf-sim.specs	1970-01-01 00:00:00.000000000 +0000
++++ b/libgloss/rx/elf-sim.specs	2026-09-30 20:32:17.980637836 +0000
+@@ -0,0 +1,13 @@
++%rename link_gcc_c_sequence sim_link_gcc_c_sequence
++
++*sim_libgloss:
++-lsim
++
++*sim_libc:
++%{!specs=nano.specs:-lc} %{specs=nano.specs:-lc_nano}
++
++*link_gcc_c_sequence:
++%(sim_link_gcc_c_sequence) --start-group %G %(sim_libc) %(sim_libgloss) --end-group
++
++*startfile: 
++--script rx-sim.ld%s crt0%O%s crtbegin%O%s
+diff -Nru a/libgloss/rx/exit.S b/libgloss/rx/exit.S
+--- a/libgloss/rx/exit.S	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/exit.S	2026-09-30 20:32:18.020594728 +0000
+@@ -35,6 +35,7 @@
+ 	.global	__exit
+ __exit:
+ 	pushm	r1-r2
+-	bsr.a	__rx_fini
++	mov	#__rx_fini,r7
++	jsr	r7
+ 	popm	r1-r2
+ 	SYSCALL(SYS_exit)
+diff -Nru a/libgloss/rx/getentropy.c b/libgloss/rx/getentropy.c
+--- a/libgloss/rx/getentropy.c	1970-01-01 00:00:00.000000000 +0000
++++ b/libgloss/rx/getentropy.c	2026-09-30 20:32:18.052578069 +0000
+@@ -0,0 +1,18 @@
++/*
++ * Stub version of getentropy.
++ */
++
++ #include "config.h"
++ #include <_ansi.h>
++ #include <_syslist.h>
++ #include <errno.h>
++ #undef errno
++ extern int errno;
++ 
++ int
++ _getentropy (void *buf,
++         size_t buflen)
++ {
++   errno = ENOSYS;
++   return -1;
++ }
+diff -Nru a/libgloss/rx/rx-sim.ld b/libgloss/rx/rx-sim.ld
+--- a/libgloss/rx/rx-sim.ld	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/rx-sim.ld	2026-09-30 20:32:18.087717865 +0000
+@@ -75,20 +75,30 @@
+     PROVIDE(__romdatastart = .);
+   } > RAM
+ 
++  .init :
++  {
++   KEEP (*(.init))
++   __preinit_array_start = .;
++   KEEP (*(.preinit_array))
++   __preinit_array_end = .;
++   __init_array_start = (. + 3) & ~ 3;
++   KEEP (*(.init_array))
++   KEEP (*(SORT(.init_array.*)))
++   __init_array_end = .;
++   __fini_array_start = .;
++   KEEP (*(.fini_array))
++   KEEP (*(SORT(.fini_array.*)))
++   __fini_array_end = .;
++   } > RAM
++
++  .fini :
++  {
++   KEEP (*(.fini))
++  } > RAM
++
+   .data : {
+     . = ALIGN(4);
+     PROVIDE (__datastart = .);
+-    PROVIDE (__preinit_array_start = .);
+-    KEEP (*(.preinit_array))
+-    PROVIDE (__preinit_array_end = .);
+-    PROVIDE (__init_array_start = .);
+-    KEEP (*(SORT(.init_array.*)))
+-    KEEP (*(.init_array))
+-    PROVIDE (__init_array_end = .);
+-    PROVIDE (__fini_array_start = .);
+-    KEEP (*(.fini_array))
+-    KEEP (*(SORT(.fini_array.*)))
+-    PROVIDE (__fini_array_end = .);
+     LONG(0); /* Sentinel.  */
+ 
+     /* gcc uses crtbegin.o to find the start of the constructors, so
+@@ -155,26 +165,10 @@
+   } > RAM
+   PROVIDE (__bsssize = SIZEOF(.bss) / 4);
+ 
+-  /* The __stack_size value of 0x100 is just a guess, but since it is
+-     PROVIDEd the user can override it on the command line.  It has to be
+-     set here, rather than inside the .stack section, as symbols defined
+-     inside sections are only evaluated during the final phase of the link,
+-     long after the ASSERT is checked.  An ASSERT referencing a PROVIDED but
+-     not yet evaluated symbol will automatically fail.
+-
+-     FIXME: It would be nice if this value could be automatically set via
+-     gcc's -fstack-usage command line option somehow.  */
+-  PROVIDE (__stack_size = 0x100);
+-
+   .stack (ORIGIN (STACK)) :
+   {
+     PROVIDE (__stack = .);
+     *(.stack)
+-
+-    /* Linker section checking ignores empty sections like
+-       this one so we have to have our own test here.  */
+-    ASSERT ((__stack > (_end + __stack_size)),
+-            "Error: Too much data - no room left for the stack");
+   } > STACK
+ 
+   /* Providing one of these symbols in your code is sufficient to have
+@@ -229,7 +223,7 @@
+   /* DWARF 2 */
+   .debug_info     0 : { *(.debug_info .gnu.linkonce.wi.*) }
+   .debug_abbrev   0 : { *(.debug_abbrev) }
+-  .debug_line     0 : { *(.debug_line .debug_line.* .debug_line_end ) }
++  .debug_line     0 : { *(.debug_line) }
+   .debug_frame    0 : { *(.debug_frame) }
+   .debug_str      0 : { *(.debug_str) }
+   .debug_loc      0 : { *(.debug_loc) }
+diff -Nru a/libgloss/rx/rx.ld b/libgloss/rx/rx.ld
+--- a/libgloss/rx/rx.ld	2025-01-01 01:35:33.000000000 +0000
++++ b/libgloss/rx/rx.ld	2026-09-30 20:32:18.063918143 +0000
+@@ -77,20 +77,30 @@
+     PROVIDE(__romdatastart = .);
+   } > ROM
+ 
++  .init :
++  {
++   KEEP (*(.init))
++   __preinit_array_start = .;
++   KEEP (*(.preinit_array))
++   __preinit_array_end = .;
++   __init_array_start = (. + 3) & ~ 3;
++   KEEP (*(.init_array))
++   KEEP (*(SORT(.init_array.*)))
++   __init_array_end = .;
++   __fini_array_start = .;
++   KEEP (*(.fini_array))
++   KEEP (*(SORT(.fini_array.*)))
++   __fini_array_end = .;
++   } > ROM
++
++  .fini :
++  {
++   KEEP (*(.fini))
++  } > ROM
++
+   .data : {
+     . = ALIGN(4);
+     PROVIDE (__datastart = .); /* IF_ROROM */
+-    PROVIDE (__preinit_array_start = .);
+-    KEEP (*(.preinit_array))
+-    PROVIDE (__preinit_array_end = .);
+-    PROVIDE (__init_array_start = .);
+-    KEEP (*(SORT(.init_array.*)))
+-    KEEP (*(.init_array))
+-    PROVIDE (__init_array_end = .);
+-    PROVIDE (__fini_array_start = .);
+-    KEEP (*(.fini_array))
+-    KEEP (*(SORT(.fini_array.*)))
+-    PROVIDE (__fini_array_end = .);
+     LONG(0); /* Sentinel.  */
+ 
+     /* gcc uses crtbegin.o to find the start of the constructors, so
+@@ -159,26 +169,10 @@
+   } > RAM
+   PROVIDE (__bsssize = SIZEOF(.bss) / 4);
+ 
+-  /* The __stack_size value of 0x100 is just a guess, but since it is
+-     PROVIDEd the user can override it on the command line.  It has to be
+-     set here, rather than inside the .stack section, as symbols defined
+-     inside sections are only evaluated during the final phase of the link,
+-     long after the ASSERT is checked.  An ASSERT referencing a PROVIDED but
+-     not yet evaluated symbol will automatically fail.
+-
+-     FIXME: It would be nice if this value could be automatically set via
+-     gcc's -fstack-usage command line option somehow.  */
+-  PROVIDE (__stack_size = 0x100);
+-
+   .stack (ORIGIN (STACK)) :
+   {
+     PROVIDE (__stack = .);
+     *(.stack)
+-
+-    /* Linker section checking ignores empty sections like
+-       this one so we have to have our own test here.  */
+-    ASSERT ((__stack > (_end + __stack_size)),
+-            "Error: Too much data - no room left for the stack");
+   }
+ 
+   /* Providing one of these symbols in your code is sufficient to have
+@@ -233,7 +227,7 @@
+   /* DWARF 2 */
+   .debug_info     0 : { *(.debug_info .gnu.linkonce.wi.*) }
+   .debug_abbrev   0 : { *(.debug_abbrev) }
+-  .debug_line     0 : { *(.debug_line .debug_line.* .debug_line_end ) }
++  .debug_line     0 : { *(.debug_line) }
+   .debug_frame    0 : { *(.debug_frame) }
+   .debug_str      0 : { *(.debug_str) }
+   .debug_loc      0 : { *(.debug_loc) }
+diff -Nru a/newlib/Makefile.in b/newlib/Makefile.in
+--- a/newlib/Makefile.in	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/Makefile.in	2026-09-30 20:39:01.575314937 +0000
+@@ -213,7 +213,9 @@
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/nano-vfprintf_i.c \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/nano-vfscanf.c \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/nano-vfscanf_i.c \
+-@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/nano-vfscanf_float.c
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/nano-vfscanf_float.c \
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/sfputws_r.c \
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/ssputws_r.c
+ 
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_FALSE@am__append_11 = \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_FALSE@	libc/stdio/fiprintf.c \
+@@ -861,9 +863,32 @@
+ 
+ @HAVE_LIBC_MACHINE_RL78_TRUE@am__append_116 = libc/machine/rl78/setjmp.S
+ @HAVE_LIBC_MACHINE_RX_TRUE@am__append_117 = \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/labs.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/ldiv.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/llabs.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memchr.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memcmp.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memcpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memmove.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/mempcpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memrchr.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memset.S \
+ @HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/setjmp.S \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strncmp.S libc/machine/rx/strcmp.S libc/machine/rx/strncpy.S libc/machine/rx/strcpy.S libc/machine/rx/strlen.S libc/machine/rx/strcat.S libc/machine/rx/strncat.S \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/memset.S libc/machine/rx/mempcpy.S libc/machine/rx/memcpy.S libc/machine/rx/memmove.S libc/machine/rx/memchr.S
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/stpcpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/stpncpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strcat.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strchr.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strcmp.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strcpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strcspn.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strlen.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strncat.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strncmp.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strncpy.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strnlen.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strpbrk.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strrchr.S \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/strspn.S
+ 
+ @HAVE_LIBC_MACHINE_SH_TRUE@am__append_118 = libc/machine/sh/memcpy.S libc/machine/sh/memset.S libc/machine/sh/setjmp.S libc/machine/sh/strcpy.S libc/machine/sh/strlen.S libc/machine/sh/strcmp.S
+ @HAVE_LIBC_MACHINE_SH_TRUE@@SH64_TRUE@am__append_119 = libc/machine/sh/strncpy.S
+@@ -1206,7 +1231,9 @@
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-nano-vfprintf_i.$(OBJEXT) \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-nano-vfscanf.$(OBJEXT) \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-nano-vfscanf_i.$(OBJEXT) \
+-@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-nano-vfscanf_float.$(OBJEXT)
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-nano-vfscanf_float.$(OBJEXT) \
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-sfputws_r.$(OBJEXT) \
++@HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_TRUE@	libc/stdio/libc_a-ssputws_r.$(OBJEXT)
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_FALSE@am__objects_11 = libc/stdio/libc_a-fiprintf.$(OBJEXT) \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_FALSE@	libc/stdio/libc_a-fiscanf.$(OBJEXT) \
+ @HAVE_STDIO_DIR_TRUE@@NEWLIB_NANO_FORMATTED_IO_FALSE@	libc/stdio/libc_a-iprintf.$(OBJEXT) \
+@@ -2192,19 +2219,32 @@
+ @HAVE_LIBC_MACHINE_RISCV_TRUE@	libc/machine/riscv/libc_a-ieeefp.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_RISCV_TRUE@	libc/machine/riscv/libc_a-ffs.$(OBJEXT)
+ @HAVE_LIBC_MACHINE_RL78_TRUE@am__objects_126 = libc/machine/rl78/libc_a-setjmp.$(OBJEXT)
+-@HAVE_LIBC_MACHINE_RX_TRUE@am__objects_127 = libc/machine/rx/libc_a-setjmp.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strncmp.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@am__objects_127 = libc/machine/rx/libc_a-labs.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-ldiv.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-llabs.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memchr.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memcmp.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memcpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memmove.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-mempcpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memrchr.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memset.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-setjmp.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-stpcpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-stpncpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strcat.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strchr.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strcmp.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strncpy.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strcpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strcspn.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strlen.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strcat.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strncat.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memset.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-mempcpy.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memcpy.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memmove.$(OBJEXT) \
+-@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-memchr.$(OBJEXT)
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strncmp.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strncpy.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strnlen.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strpbrk.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strrchr.$(OBJEXT) \
++@HAVE_LIBC_MACHINE_RX_TRUE@	libc/machine/rx/libc_a-strspn.$(OBJEXT)
+ @HAVE_LIBC_MACHINE_SH_TRUE@am__objects_128 = libc/machine/sh/libc_a-memcpy.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_SH_TRUE@	libc/machine/sh/libc_a-memset.$(OBJEXT) \
+ @HAVE_LIBC_MACHINE_SH_TRUE@	libc/machine/sh/libc_a-setjmp.$(OBJEXT) \
+@@ -5984,6 +6024,10 @@
+ libc/stdio/libc_a-nano-vfscanf_float.$(OBJEXT):  \
+ 	libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
++libc/stdio/libc_a-sfputws_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
++	libc/stdio/$(DEPDIR)/$(am__dirstamp)
++libc/stdio/libc_a-ssputws_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
++	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-fiprintf.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-fiscanf.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+@@ -6030,16 +6074,12 @@
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-sfputs_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+-libc/stdio/libc_a-sfputws_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+-	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-sprint_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-swprint_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-ssputs_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+-libc/stdio/libc_a-ssputws_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+-	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-ssprint_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+ 	libc/stdio/$(DEPDIR)/$(am__dirstamp)
+ libc/stdio/libc_a-sswprint_r.$(OBJEXT): libc/stdio/$(am__dirstamp) \
+@@ -9223,43 +9263,82 @@
+ libc/machine/rx/$(DEPDIR)/$(am__dirstamp):
+ 	@$(MKDIR_P) libc/machine/rx/$(DEPDIR)
+ 	@: > libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-labs.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-ldiv.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-llabs.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memchr.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memcmp.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memcpy.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memmove.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-mempcpy.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memrchr.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-memset.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+ libc/machine/rx/libc_a-setjmp.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-strncmp.$(OBJEXT):  \
++libc/machine/rx/libc_a-stpcpy.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-strcmp.$(OBJEXT):  \
++libc/machine/rx/libc_a-stpncpy.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-strncpy.$(OBJEXT):  \
++libc/machine/rx/libc_a-strcat.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-strchr.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-strcmp.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+ libc/machine/rx/libc_a-strcpy.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-strlen.$(OBJEXT):  \
++libc/machine/rx/libc_a-strcspn.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-strcat.$(OBJEXT):  \
++libc/machine/rx/libc_a-strlen.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+ libc/machine/rx/libc_a-strncat.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-memset.$(OBJEXT):  \
++libc/machine/rx/libc_a-strncmp.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-mempcpy.$(OBJEXT):  \
++libc/machine/rx/libc_a-strncpy.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-memcpy.$(OBJEXT):  \
++libc/machine/rx/libc_a-strnlen.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-memmove.$(OBJEXT):  \
++libc/machine/rx/libc_a-strpbrk.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+-libc/machine/rx/libc_a-memchr.$(OBJEXT):  \
++libc/machine/rx/libc_a-strrchr.$(OBJEXT):  \
++	libc/machine/rx/$(am__dirstamp) \
++	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
++libc/machine/rx/libc_a-strspn.$(OBJEXT):  \
+ 	libc/machine/rx/$(am__dirstamp) \
+ 	libc/machine/rx/$(DEPDIR)/$(am__dirstamp)
+ libc/machine/sh/$(am__dirstamp):
+@@ -13164,19 +13243,32 @@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/riscv/$(DEPDIR)/libc_a-strcpy.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/riscv/$(DEPDIR)/libc_a-strlen.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rl78/$(DEPDIR)/libc_a-setjmp.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-labs.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-llabs.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memchr.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memmove.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-memset.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-setjmp.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strcat.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strchr.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strcmp.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strcpy.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strlen.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strncat.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@libc/machine/rx/$(DEPDIR)/libc_a-strspn.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/sh/$(DEPDIR)/libc_a-memcpy.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/sh/$(DEPDIR)/libc_a-memset.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@libc/machine/sh/$(DEPDIR)/libc_a-setjmp.Po@am__quote@
+@@ -19266,6 +19358,146 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rl78/libc_a-setjmp.obj `if test -f 'libc/machine/rl78/setjmp.S'; then $(CYGPATH_W) 'libc/machine/rl78/setjmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rl78/setjmp.S'; fi`
+ 
++libc/machine/rx/libc_a-labs.o: libc/machine/rx/labs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-labs.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-labs.Tpo -c -o libc/machine/rx/libc_a-labs.o `test -f 'libc/machine/rx/labs.S' || echo '$(srcdir)/'`libc/machine/rx/labs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-labs.Tpo libc/machine/rx/$(DEPDIR)/libc_a-labs.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/labs.S' object='libc/machine/rx/libc_a-labs.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-labs.o `test -f 'libc/machine/rx/labs.S' || echo '$(srcdir)/'`libc/machine/rx/labs.S
++
++libc/machine/rx/libc_a-labs.obj: libc/machine/rx/labs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-labs.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-labs.Tpo -c -o libc/machine/rx/libc_a-labs.obj `if test -f 'libc/machine/rx/labs.S'; then $(CYGPATH_W) 'libc/machine/rx/labs.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/labs.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-labs.Tpo libc/machine/rx/$(DEPDIR)/libc_a-labs.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/labs.S' object='libc/machine/rx/libc_a-labs.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-labs.obj `if test -f 'libc/machine/rx/labs.S'; then $(CYGPATH_W) 'libc/machine/rx/labs.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/labs.S'; fi`
++
++libc/machine/rx/libc_a-ldiv.o: libc/machine/rx/ldiv.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-ldiv.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Tpo -c -o libc/machine/rx/libc_a-ldiv.o `test -f 'libc/machine/rx/ldiv.S' || echo '$(srcdir)/'`libc/machine/rx/ldiv.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Tpo libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/ldiv.S' object='libc/machine/rx/libc_a-ldiv.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-ldiv.o `test -f 'libc/machine/rx/ldiv.S' || echo '$(srcdir)/'`libc/machine/rx/ldiv.S
++
++libc/machine/rx/libc_a-ldiv.obj: libc/machine/rx/ldiv.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-ldiv.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Tpo -c -o libc/machine/rx/libc_a-ldiv.obj `if test -f 'libc/machine/rx/ldiv.S'; then $(CYGPATH_W) 'libc/machine/rx/ldiv.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/ldiv.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Tpo libc/machine/rx/$(DEPDIR)/libc_a-ldiv.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/ldiv.S' object='libc/machine/rx/libc_a-ldiv.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-ldiv.obj `if test -f 'libc/machine/rx/ldiv.S'; then $(CYGPATH_W) 'libc/machine/rx/ldiv.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/ldiv.S'; fi`
++
++libc/machine/rx/libc_a-llabs.o: libc/machine/rx/llabs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-llabs.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-llabs.Tpo -c -o libc/machine/rx/libc_a-llabs.o `test -f 'libc/machine/rx/llabs.S' || echo '$(srcdir)/'`libc/machine/rx/llabs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-llabs.Tpo libc/machine/rx/$(DEPDIR)/libc_a-llabs.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/llabs.S' object='libc/machine/rx/libc_a-llabs.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-llabs.o `test -f 'libc/machine/rx/llabs.S' || echo '$(srcdir)/'`libc/machine/rx/llabs.S
++
++libc/machine/rx/libc_a-llabs.obj: libc/machine/rx/llabs.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-llabs.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-llabs.Tpo -c -o libc/machine/rx/libc_a-llabs.obj `if test -f 'libc/machine/rx/llabs.S'; then $(CYGPATH_W) 'libc/machine/rx/llabs.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/llabs.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-llabs.Tpo libc/machine/rx/$(DEPDIR)/libc_a-llabs.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/llabs.S' object='libc/machine/rx/libc_a-llabs.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-llabs.obj `if test -f 'libc/machine/rx/llabs.S'; then $(CYGPATH_W) 'libc/machine/rx/llabs.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/llabs.S'; fi`
++
++libc/machine/rx/libc_a-memchr.o: libc/machine/rx/memchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memchr.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo -c -o libc/machine/rx/libc_a-memchr.o `test -f 'libc/machine/rx/memchr.S' || echo '$(srcdir)/'`libc/machine/rx/memchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memchr.S' object='libc/machine/rx/libc_a-memchr.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memchr.o `test -f 'libc/machine/rx/memchr.S' || echo '$(srcdir)/'`libc/machine/rx/memchr.S
++
++libc/machine/rx/libc_a-memchr.obj: libc/machine/rx/memchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memchr.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo -c -o libc/machine/rx/libc_a-memchr.obj `if test -f 'libc/machine/rx/memchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memchr.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memchr.S' object='libc/machine/rx/libc_a-memchr.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memchr.obj `if test -f 'libc/machine/rx/memchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memchr.S'; fi`
++
++libc/machine/rx/libc_a-memcmp.o: libc/machine/rx/memcmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcmp.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Tpo -c -o libc/machine/rx/libc_a-memcmp.o `test -f 'libc/machine/rx/memcmp.S' || echo '$(srcdir)/'`libc/machine/rx/memcmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcmp.S' object='libc/machine/rx/libc_a-memcmp.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcmp.o `test -f 'libc/machine/rx/memcmp.S' || echo '$(srcdir)/'`libc/machine/rx/memcmp.S
++
++libc/machine/rx/libc_a-memcmp.obj: libc/machine/rx/memcmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcmp.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Tpo -c -o libc/machine/rx/libc_a-memcmp.obj `if test -f 'libc/machine/rx/memcmp.S'; then $(CYGPATH_W) 'libc/machine/rx/memcmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcmp.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcmp.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcmp.S' object='libc/machine/rx/libc_a-memcmp.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcmp.obj `if test -f 'libc/machine/rx/memcmp.S'; then $(CYGPATH_W) 'libc/machine/rx/memcmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcmp.S'; fi`
++
++libc/machine/rx/libc_a-memcpy.o: libc/machine/rx/memcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo -c -o libc/machine/rx/libc_a-memcpy.o `test -f 'libc/machine/rx/memcpy.S' || echo '$(srcdir)/'`libc/machine/rx/memcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcpy.S' object='libc/machine/rx/libc_a-memcpy.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcpy.o `test -f 'libc/machine/rx/memcpy.S' || echo '$(srcdir)/'`libc/machine/rx/memcpy.S
++
++libc/machine/rx/libc_a-memcpy.obj: libc/machine/rx/memcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo -c -o libc/machine/rx/libc_a-memcpy.obj `if test -f 'libc/machine/rx/memcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/memcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcpy.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcpy.S' object='libc/machine/rx/libc_a-memcpy.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcpy.obj `if test -f 'libc/machine/rx/memcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/memcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcpy.S'; fi`
++
++libc/machine/rx/libc_a-memmove.o: libc/machine/rx/memmove.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memmove.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo -c -o libc/machine/rx/libc_a-memmove.o `test -f 'libc/machine/rx/memmove.S' || echo '$(srcdir)/'`libc/machine/rx/memmove.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memmove.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memmove.S' object='libc/machine/rx/libc_a-memmove.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memmove.o `test -f 'libc/machine/rx/memmove.S' || echo '$(srcdir)/'`libc/machine/rx/memmove.S
++
++libc/machine/rx/libc_a-memmove.obj: libc/machine/rx/memmove.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memmove.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo -c -o libc/machine/rx/libc_a-memmove.obj `if test -f 'libc/machine/rx/memmove.S'; then $(CYGPATH_W) 'libc/machine/rx/memmove.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memmove.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memmove.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memmove.S' object='libc/machine/rx/libc_a-memmove.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memmove.obj `if test -f 'libc/machine/rx/memmove.S'; then $(CYGPATH_W) 'libc/machine/rx/memmove.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memmove.S'; fi`
++
++libc/machine/rx/libc_a-mempcpy.o: libc/machine/rx/mempcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-mempcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo -c -o libc/machine/rx/libc_a-mempcpy.o `test -f 'libc/machine/rx/mempcpy.S' || echo '$(srcdir)/'`libc/machine/rx/mempcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/mempcpy.S' object='libc/machine/rx/libc_a-mempcpy.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-mempcpy.o `test -f 'libc/machine/rx/mempcpy.S' || echo '$(srcdir)/'`libc/machine/rx/mempcpy.S
++
++libc/machine/rx/libc_a-mempcpy.obj: libc/machine/rx/mempcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-mempcpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo -c -o libc/machine/rx/libc_a-mempcpy.obj `if test -f 'libc/machine/rx/mempcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/mempcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/mempcpy.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/mempcpy.S' object='libc/machine/rx/libc_a-mempcpy.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-mempcpy.obj `if test -f 'libc/machine/rx/mempcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/mempcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/mempcpy.S'; fi`
++
++libc/machine/rx/libc_a-memrchr.o: libc/machine/rx/memrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memrchr.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Tpo -c -o libc/machine/rx/libc_a-memrchr.o `test -f 'libc/machine/rx/memrchr.S' || echo '$(srcdir)/'`libc/machine/rx/memrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memrchr.S' object='libc/machine/rx/libc_a-memrchr.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memrchr.o `test -f 'libc/machine/rx/memrchr.S' || echo '$(srcdir)/'`libc/machine/rx/memrchr.S
++
++libc/machine/rx/libc_a-memrchr.obj: libc/machine/rx/memrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memrchr.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Tpo -c -o libc/machine/rx/libc_a-memrchr.obj `if test -f 'libc/machine/rx/memrchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memrchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memrchr.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memrchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memrchr.S' object='libc/machine/rx/libc_a-memrchr.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memrchr.obj `if test -f 'libc/machine/rx/memrchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memrchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memrchr.S'; fi`
++
++libc/machine/rx/libc_a-memset.o: libc/machine/rx/memset.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memset.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo -c -o libc/machine/rx/libc_a-memset.o `test -f 'libc/machine/rx/memset.S' || echo '$(srcdir)/'`libc/machine/rx/memset.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memset.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memset.S' object='libc/machine/rx/libc_a-memset.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memset.o `test -f 'libc/machine/rx/memset.S' || echo '$(srcdir)/'`libc/machine/rx/memset.S
++
++libc/machine/rx/libc_a-memset.obj: libc/machine/rx/memset.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memset.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo -c -o libc/machine/rx/libc_a-memset.obj `if test -f 'libc/machine/rx/memset.S'; then $(CYGPATH_W) 'libc/machine/rx/memset.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memset.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memset.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memset.S' object='libc/machine/rx/libc_a-memset.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memset.obj `if test -f 'libc/machine/rx/memset.S'; then $(CYGPATH_W) 'libc/machine/rx/memset.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memset.S'; fi`
++
+ libc/machine/rx/libc_a-setjmp.o: libc/machine/rx/setjmp.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-setjmp.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-setjmp.Tpo -c -o libc/machine/rx/libc_a-setjmp.o `test -f 'libc/machine/rx/setjmp.S' || echo '$(srcdir)/'`libc/machine/rx/setjmp.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-setjmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-setjmp.Po
+@@ -19280,19 +19512,61 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-setjmp.obj `if test -f 'libc/machine/rx/setjmp.S'; then $(CYGPATH_W) 'libc/machine/rx/setjmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/setjmp.S'; fi`
+ 
+-libc/machine/rx/libc_a-strncmp.o: libc/machine/rx/strncmp.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncmp.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo -c -o libc/machine/rx/libc_a-strncmp.o `test -f 'libc/machine/rx/strncmp.S' || echo '$(srcdir)/'`libc/machine/rx/strncmp.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncmp.S' object='libc/machine/rx/libc_a-strncmp.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-stpcpy.o: libc/machine/rx/stpcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-stpcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Tpo -c -o libc/machine/rx/libc_a-stpcpy.o `test -f 'libc/machine/rx/stpcpy.S' || echo '$(srcdir)/'`libc/machine/rx/stpcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/stpcpy.S' object='libc/machine/rx/libc_a-stpcpy.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncmp.o `test -f 'libc/machine/rx/strncmp.S' || echo '$(srcdir)/'`libc/machine/rx/strncmp.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-stpcpy.o `test -f 'libc/machine/rx/stpcpy.S' || echo '$(srcdir)/'`libc/machine/rx/stpcpy.S
+ 
+-libc/machine/rx/libc_a-strncmp.obj: libc/machine/rx/strncmp.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncmp.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo -c -o libc/machine/rx/libc_a-strncmp.obj `if test -f 'libc/machine/rx/strncmp.S'; then $(CYGPATH_W) 'libc/machine/rx/strncmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncmp.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncmp.S' object='libc/machine/rx/libc_a-strncmp.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-stpcpy.obj: libc/machine/rx/stpcpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-stpcpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Tpo -c -o libc/machine/rx/libc_a-stpcpy.obj `if test -f 'libc/machine/rx/stpcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/stpcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/stpcpy.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-stpcpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/stpcpy.S' object='libc/machine/rx/libc_a-stpcpy.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncmp.obj `if test -f 'libc/machine/rx/strncmp.S'; then $(CYGPATH_W) 'libc/machine/rx/strncmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncmp.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-stpcpy.obj `if test -f 'libc/machine/rx/stpcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/stpcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/stpcpy.S'; fi`
++
++libc/machine/rx/libc_a-stpncpy.o: libc/machine/rx/stpncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-stpncpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Tpo -c -o libc/machine/rx/libc_a-stpncpy.o `test -f 'libc/machine/rx/stpncpy.S' || echo '$(srcdir)/'`libc/machine/rx/stpncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/stpncpy.S' object='libc/machine/rx/libc_a-stpncpy.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-stpncpy.o `test -f 'libc/machine/rx/stpncpy.S' || echo '$(srcdir)/'`libc/machine/rx/stpncpy.S
++
++libc/machine/rx/libc_a-stpncpy.obj: libc/machine/rx/stpncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-stpncpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Tpo -c -o libc/machine/rx/libc_a-stpncpy.obj `if test -f 'libc/machine/rx/stpncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/stpncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/stpncpy.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-stpncpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/stpncpy.S' object='libc/machine/rx/libc_a-stpncpy.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-stpncpy.obj `if test -f 'libc/machine/rx/stpncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/stpncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/stpncpy.S'; fi`
++
++libc/machine/rx/libc_a-strcat.o: libc/machine/rx/strcat.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcat.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo -c -o libc/machine/rx/libc_a-strcat.o `test -f 'libc/machine/rx/strcat.S' || echo '$(srcdir)/'`libc/machine/rx/strcat.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcat.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcat.S' object='libc/machine/rx/libc_a-strcat.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcat.o `test -f 'libc/machine/rx/strcat.S' || echo '$(srcdir)/'`libc/machine/rx/strcat.S
++
++libc/machine/rx/libc_a-strcat.obj: libc/machine/rx/strcat.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcat.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo -c -o libc/machine/rx/libc_a-strcat.obj `if test -f 'libc/machine/rx/strcat.S'; then $(CYGPATH_W) 'libc/machine/rx/strcat.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcat.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcat.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcat.S' object='libc/machine/rx/libc_a-strcat.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcat.obj `if test -f 'libc/machine/rx/strcat.S'; then $(CYGPATH_W) 'libc/machine/rx/strcat.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcat.S'; fi`
++
++libc/machine/rx/libc_a-strchr.o: libc/machine/rx/strchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strchr.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strchr.Tpo -c -o libc/machine/rx/libc_a-strchr.o `test -f 'libc/machine/rx/strchr.S' || echo '$(srcdir)/'`libc/machine/rx/strchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strchr.S' object='libc/machine/rx/libc_a-strchr.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strchr.o `test -f 'libc/machine/rx/strchr.S' || echo '$(srcdir)/'`libc/machine/rx/strchr.S
++
++libc/machine/rx/libc_a-strchr.obj: libc/machine/rx/strchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strchr.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strchr.Tpo -c -o libc/machine/rx/libc_a-strchr.obj `if test -f 'libc/machine/rx/strchr.S'; then $(CYGPATH_W) 'libc/machine/rx/strchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strchr.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strchr.S' object='libc/machine/rx/libc_a-strchr.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strchr.obj `if test -f 'libc/machine/rx/strchr.S'; then $(CYGPATH_W) 'libc/machine/rx/strchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strchr.S'; fi`
+ 
+ libc/machine/rx/libc_a-strcmp.o: libc/machine/rx/strcmp.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcmp.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcmp.Tpo -c -o libc/machine/rx/libc_a-strcmp.o `test -f 'libc/machine/rx/strcmp.S' || echo '$(srcdir)/'`libc/machine/rx/strcmp.S
+@@ -19308,20 +19582,6 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcmp.obj `if test -f 'libc/machine/rx/strcmp.S'; then $(CYGPATH_W) 'libc/machine/rx/strcmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcmp.S'; fi`
+ 
+-libc/machine/rx/libc_a-strncpy.o: libc/machine/rx/strncpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo -c -o libc/machine/rx/libc_a-strncpy.o `test -f 'libc/machine/rx/strncpy.S' || echo '$(srcdir)/'`libc/machine/rx/strncpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncpy.S' object='libc/machine/rx/libc_a-strncpy.o' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncpy.o `test -f 'libc/machine/rx/strncpy.S' || echo '$(srcdir)/'`libc/machine/rx/strncpy.S
+-
+-libc/machine/rx/libc_a-strncpy.obj: libc/machine/rx/strncpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo -c -o libc/machine/rx/libc_a-strncpy.obj `if test -f 'libc/machine/rx/strncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/strncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncpy.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncpy.S' object='libc/machine/rx/libc_a-strncpy.obj' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncpy.obj `if test -f 'libc/machine/rx/strncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/strncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncpy.S'; fi`
+-
+ libc/machine/rx/libc_a-strcpy.o: libc/machine/rx/strcpy.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcpy.Tpo -c -o libc/machine/rx/libc_a-strcpy.o `test -f 'libc/machine/rx/strcpy.S' || echo '$(srcdir)/'`libc/machine/rx/strcpy.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcpy.Po
+@@ -19336,6 +19596,20 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcpy.obj `if test -f 'libc/machine/rx/strcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/strcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcpy.S'; fi`
+ 
++libc/machine/rx/libc_a-strcspn.o: libc/machine/rx/strcspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcspn.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Tpo -c -o libc/machine/rx/libc_a-strcspn.o `test -f 'libc/machine/rx/strcspn.S' || echo '$(srcdir)/'`libc/machine/rx/strcspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcspn.S' object='libc/machine/rx/libc_a-strcspn.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcspn.o `test -f 'libc/machine/rx/strcspn.S' || echo '$(srcdir)/'`libc/machine/rx/strcspn.S
++
++libc/machine/rx/libc_a-strcspn.obj: libc/machine/rx/strcspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcspn.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Tpo -c -o libc/machine/rx/libc_a-strcspn.obj `if test -f 'libc/machine/rx/strcspn.S'; then $(CYGPATH_W) 'libc/machine/rx/strcspn.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcspn.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcspn.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcspn.S' object='libc/machine/rx/libc_a-strcspn.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcspn.obj `if test -f 'libc/machine/rx/strcspn.S'; then $(CYGPATH_W) 'libc/machine/rx/strcspn.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcspn.S'; fi`
++
+ libc/machine/rx/libc_a-strlen.o: libc/machine/rx/strlen.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strlen.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strlen.Tpo -c -o libc/machine/rx/libc_a-strlen.o `test -f 'libc/machine/rx/strlen.S' || echo '$(srcdir)/'`libc/machine/rx/strlen.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strlen.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strlen.Po
+@@ -19350,20 +19624,6 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strlen.obj `if test -f 'libc/machine/rx/strlen.S'; then $(CYGPATH_W) 'libc/machine/rx/strlen.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strlen.S'; fi`
+ 
+-libc/machine/rx/libc_a-strcat.o: libc/machine/rx/strcat.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcat.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo -c -o libc/machine/rx/libc_a-strcat.o `test -f 'libc/machine/rx/strcat.S' || echo '$(srcdir)/'`libc/machine/rx/strcat.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcat.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcat.S' object='libc/machine/rx/libc_a-strcat.o' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcat.o `test -f 'libc/machine/rx/strcat.S' || echo '$(srcdir)/'`libc/machine/rx/strcat.S
+-
+-libc/machine/rx/libc_a-strcat.obj: libc/machine/rx/strcat.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strcat.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo -c -o libc/machine/rx/libc_a-strcat.obj `if test -f 'libc/machine/rx/strcat.S'; then $(CYGPATH_W) 'libc/machine/rx/strcat.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcat.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strcat.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strcat.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strcat.S' object='libc/machine/rx/libc_a-strcat.obj' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strcat.obj `if test -f 'libc/machine/rx/strcat.S'; then $(CYGPATH_W) 'libc/machine/rx/strcat.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strcat.S'; fi`
+-
+ libc/machine/rx/libc_a-strncat.o: libc/machine/rx/strncat.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncat.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncat.Tpo -c -o libc/machine/rx/libc_a-strncat.o `test -f 'libc/machine/rx/strncat.S' || echo '$(srcdir)/'`libc/machine/rx/strncat.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncat.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncat.Po
+@@ -19378,75 +19638,89 @@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncat.obj `if test -f 'libc/machine/rx/strncat.S'; then $(CYGPATH_W) 'libc/machine/rx/strncat.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncat.S'; fi`
+ 
+-libc/machine/rx/libc_a-memset.o: libc/machine/rx/memset.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memset.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo -c -o libc/machine/rx/libc_a-memset.o `test -f 'libc/machine/rx/memset.S' || echo '$(srcdir)/'`libc/machine/rx/memset.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memset.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memset.S' object='libc/machine/rx/libc_a-memset.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strncmp.o: libc/machine/rx/strncmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncmp.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo -c -o libc/machine/rx/libc_a-strncmp.o `test -f 'libc/machine/rx/strncmp.S' || echo '$(srcdir)/'`libc/machine/rx/strncmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncmp.S' object='libc/machine/rx/libc_a-strncmp.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memset.o `test -f 'libc/machine/rx/memset.S' || echo '$(srcdir)/'`libc/machine/rx/memset.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncmp.o `test -f 'libc/machine/rx/strncmp.S' || echo '$(srcdir)/'`libc/machine/rx/strncmp.S
+ 
+-libc/machine/rx/libc_a-memset.obj: libc/machine/rx/memset.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memset.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo -c -o libc/machine/rx/libc_a-memset.obj `if test -f 'libc/machine/rx/memset.S'; then $(CYGPATH_W) 'libc/machine/rx/memset.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memset.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memset.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memset.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memset.S' object='libc/machine/rx/libc_a-memset.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strncmp.obj: libc/machine/rx/strncmp.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncmp.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo -c -o libc/machine/rx/libc_a-strncmp.obj `if test -f 'libc/machine/rx/strncmp.S'; then $(CYGPATH_W) 'libc/machine/rx/strncmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncmp.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncmp.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncmp.S' object='libc/machine/rx/libc_a-strncmp.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memset.obj `if test -f 'libc/machine/rx/memset.S'; then $(CYGPATH_W) 'libc/machine/rx/memset.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memset.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncmp.obj `if test -f 'libc/machine/rx/strncmp.S'; then $(CYGPATH_W) 'libc/machine/rx/strncmp.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncmp.S'; fi`
+ 
+-libc/machine/rx/libc_a-mempcpy.o: libc/machine/rx/mempcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-mempcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo -c -o libc/machine/rx/libc_a-mempcpy.o `test -f 'libc/machine/rx/mempcpy.S' || echo '$(srcdir)/'`libc/machine/rx/mempcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/mempcpy.S' object='libc/machine/rx/libc_a-mempcpy.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strncpy.o: libc/machine/rx/strncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo -c -o libc/machine/rx/libc_a-strncpy.o `test -f 'libc/machine/rx/strncpy.S' || echo '$(srcdir)/'`libc/machine/rx/strncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncpy.S' object='libc/machine/rx/libc_a-strncpy.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-mempcpy.o `test -f 'libc/machine/rx/mempcpy.S' || echo '$(srcdir)/'`libc/machine/rx/mempcpy.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncpy.o `test -f 'libc/machine/rx/strncpy.S' || echo '$(srcdir)/'`libc/machine/rx/strncpy.S
+ 
+-libc/machine/rx/libc_a-mempcpy.obj: libc/machine/rx/mempcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-mempcpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo -c -o libc/machine/rx/libc_a-mempcpy.obj `if test -f 'libc/machine/rx/mempcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/mempcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/mempcpy.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-mempcpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/mempcpy.S' object='libc/machine/rx/libc_a-mempcpy.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strncpy.obj: libc/machine/rx/strncpy.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strncpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo -c -o libc/machine/rx/libc_a-strncpy.obj `if test -f 'libc/machine/rx/strncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/strncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncpy.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strncpy.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strncpy.S' object='libc/machine/rx/libc_a-strncpy.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-mempcpy.obj `if test -f 'libc/machine/rx/mempcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/mempcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/mempcpy.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strncpy.obj `if test -f 'libc/machine/rx/strncpy.S'; then $(CYGPATH_W) 'libc/machine/rx/strncpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strncpy.S'; fi`
+ 
+-libc/machine/rx/libc_a-memcpy.o: libc/machine/rx/memcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcpy.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo -c -o libc/machine/rx/libc_a-memcpy.o `test -f 'libc/machine/rx/memcpy.S' || echo '$(srcdir)/'`libc/machine/rx/memcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcpy.S' object='libc/machine/rx/libc_a-memcpy.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strnlen.o: libc/machine/rx/strnlen.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strnlen.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Tpo -c -o libc/machine/rx/libc_a-strnlen.o `test -f 'libc/machine/rx/strnlen.S' || echo '$(srcdir)/'`libc/machine/rx/strnlen.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strnlen.S' object='libc/machine/rx/libc_a-strnlen.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcpy.o `test -f 'libc/machine/rx/memcpy.S' || echo '$(srcdir)/'`libc/machine/rx/memcpy.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strnlen.o `test -f 'libc/machine/rx/strnlen.S' || echo '$(srcdir)/'`libc/machine/rx/strnlen.S
+ 
+-libc/machine/rx/libc_a-memcpy.obj: libc/machine/rx/memcpy.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memcpy.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo -c -o libc/machine/rx/libc_a-memcpy.obj `if test -f 'libc/machine/rx/memcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/memcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcpy.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memcpy.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memcpy.S' object='libc/machine/rx/libc_a-memcpy.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strnlen.obj: libc/machine/rx/strnlen.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strnlen.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Tpo -c -o libc/machine/rx/libc_a-strnlen.obj `if test -f 'libc/machine/rx/strnlen.S'; then $(CYGPATH_W) 'libc/machine/rx/strnlen.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strnlen.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strnlen.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strnlen.S' object='libc/machine/rx/libc_a-strnlen.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memcpy.obj `if test -f 'libc/machine/rx/memcpy.S'; then $(CYGPATH_W) 'libc/machine/rx/memcpy.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memcpy.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strnlen.obj `if test -f 'libc/machine/rx/strnlen.S'; then $(CYGPATH_W) 'libc/machine/rx/strnlen.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strnlen.S'; fi`
+ 
+-libc/machine/rx/libc_a-memmove.o: libc/machine/rx/memmove.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memmove.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo -c -o libc/machine/rx/libc_a-memmove.o `test -f 'libc/machine/rx/memmove.S' || echo '$(srcdir)/'`libc/machine/rx/memmove.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memmove.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memmove.S' object='libc/machine/rx/libc_a-memmove.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strpbrk.o: libc/machine/rx/strpbrk.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strpbrk.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Tpo -c -o libc/machine/rx/libc_a-strpbrk.o `test -f 'libc/machine/rx/strpbrk.S' || echo '$(srcdir)/'`libc/machine/rx/strpbrk.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strpbrk.S' object='libc/machine/rx/libc_a-strpbrk.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memmove.o `test -f 'libc/machine/rx/memmove.S' || echo '$(srcdir)/'`libc/machine/rx/memmove.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strpbrk.o `test -f 'libc/machine/rx/strpbrk.S' || echo '$(srcdir)/'`libc/machine/rx/strpbrk.S
+ 
+-libc/machine/rx/libc_a-memmove.obj: libc/machine/rx/memmove.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memmove.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo -c -o libc/machine/rx/libc_a-memmove.obj `if test -f 'libc/machine/rx/memmove.S'; then $(CYGPATH_W) 'libc/machine/rx/memmove.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memmove.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memmove.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memmove.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memmove.S' object='libc/machine/rx/libc_a-memmove.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strpbrk.obj: libc/machine/rx/strpbrk.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strpbrk.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Tpo -c -o libc/machine/rx/libc_a-strpbrk.obj `if test -f 'libc/machine/rx/strpbrk.S'; then $(CYGPATH_W) 'libc/machine/rx/strpbrk.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strpbrk.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strpbrk.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strpbrk.S' object='libc/machine/rx/libc_a-strpbrk.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memmove.obj `if test -f 'libc/machine/rx/memmove.S'; then $(CYGPATH_W) 'libc/machine/rx/memmove.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memmove.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strpbrk.obj `if test -f 'libc/machine/rx/strpbrk.S'; then $(CYGPATH_W) 'libc/machine/rx/strpbrk.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strpbrk.S'; fi`
+ 
+-libc/machine/rx/libc_a-memchr.o: libc/machine/rx/memchr.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memchr.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo -c -o libc/machine/rx/libc_a-memchr.o `test -f 'libc/machine/rx/memchr.S' || echo '$(srcdir)/'`libc/machine/rx/memchr.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memchr.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memchr.S' object='libc/machine/rx/libc_a-memchr.o' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strrchr.o: libc/machine/rx/strrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strrchr.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Tpo -c -o libc/machine/rx/libc_a-strrchr.o `test -f 'libc/machine/rx/strrchr.S' || echo '$(srcdir)/'`libc/machine/rx/strrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strrchr.S' object='libc/machine/rx/libc_a-strrchr.o' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memchr.o `test -f 'libc/machine/rx/memchr.S' || echo '$(srcdir)/'`libc/machine/rx/memchr.S
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strrchr.o `test -f 'libc/machine/rx/strrchr.S' || echo '$(srcdir)/'`libc/machine/rx/strrchr.S
+ 
+-libc/machine/rx/libc_a-memchr.obj: libc/machine/rx/memchr.S
+-@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-memchr.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo -c -o libc/machine/rx/libc_a-memchr.obj `if test -f 'libc/machine/rx/memchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memchr.S'; fi`
+-@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-memchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-memchr.Po
+-@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/memchr.S' object='libc/machine/rx/libc_a-memchr.obj' libtool=no @AMDEPBACKSLASH@
++libc/machine/rx/libc_a-strrchr.obj: libc/machine/rx/strrchr.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strrchr.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Tpo -c -o libc/machine/rx/libc_a-strrchr.obj `if test -f 'libc/machine/rx/strrchr.S'; then $(CYGPATH_W) 'libc/machine/rx/strrchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strrchr.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strrchr.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strrchr.S' object='libc/machine/rx/libc_a-strrchr.obj' libtool=no @AMDEPBACKSLASH@
+ @AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-memchr.obj `if test -f 'libc/machine/rx/memchr.S'; then $(CYGPATH_W) 'libc/machine/rx/memchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/memchr.S'; fi`
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strrchr.obj `if test -f 'libc/machine/rx/strrchr.S'; then $(CYGPATH_W) 'libc/machine/rx/strrchr.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strrchr.S'; fi`
++
++libc/machine/rx/libc_a-strspn.o: libc/machine/rx/strspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strspn.o -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strspn.Tpo -c -o libc/machine/rx/libc_a-strspn.o `test -f 'libc/machine/rx/strspn.S' || echo '$(srcdir)/'`libc/machine/rx/strspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strspn.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strspn.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strspn.S' object='libc/machine/rx/libc_a-strspn.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strspn.o `test -f 'libc/machine/rx/strspn.S' || echo '$(srcdir)/'`libc/machine/rx/strspn.S
++
++libc/machine/rx/libc_a-strspn.obj: libc/machine/rx/strspn.S
++@am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/rx/libc_a-strspn.obj -MD -MP -MF libc/machine/rx/$(DEPDIR)/libc_a-strspn.Tpo -c -o libc/machine/rx/libc_a-strspn.obj `if test -f 'libc/machine/rx/strspn.S'; then $(CYGPATH_W) 'libc/machine/rx/strspn.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strspn.S'; fi`
++@am__fastdepCCAS_TRUE@	$(AM_V_at)$(am__mv) libc/machine/rx/$(DEPDIR)/libc_a-strspn.Tpo libc/machine/rx/$(DEPDIR)/libc_a-strspn.Po
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS)source='libc/machine/rx/strspn.S' object='libc/machine/rx/libc_a-strspn.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCCAS_FALSE@	DEPDIR=$(DEPDIR) $(CCASDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCCAS_FALSE@	$(AM_V_CPPAS@am__nodep@)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -c -o libc/machine/rx/libc_a-strspn.obj `if test -f 'libc/machine/rx/strspn.S'; then $(CYGPATH_W) 'libc/machine/rx/strspn.S'; else $(CYGPATH_W) '$(srcdir)/libc/machine/rx/strspn.S'; fi`
+ 
+ libc/machine/sh/libc_a-memcpy.o: libc/machine/sh/memcpy.S
+ @am__fastdepCCAS_TRUE@	$(AM_V_CPPAS)$(CCAS) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CCASFLAGS) $(CCASFLAGS) -MT libc/machine/sh/libc_a-memcpy.o -MD -MP -MF libc/machine/sh/$(DEPDIR)/libc_a-memcpy.Tpo -c -o libc/machine/sh/libc_a-memcpy.o `test -f 'libc/machine/sh/memcpy.S' || echo '$(srcdir)/'`libc/machine/sh/memcpy.S
+@@ -23944,6 +24218,34 @@
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-nano-vfscanf_float.obj `if test -f 'libc/stdio/nano-vfscanf_float.c'; then $(CYGPATH_W) 'libc/stdio/nano-vfscanf_float.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/nano-vfscanf_float.c'; fi`
+ 
++libc/stdio/libc_a-sfputws_r.o: libc/stdio/sfputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-sfputws_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo -c -o libc/stdio/libc_a-sfputws_r.o `test -f 'libc/stdio/sfputws_r.c' || echo '$(srcdir)/'`libc/stdio/sfputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/sfputws_r.c' object='libc/stdio/libc_a-sfputws_r.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-sfputws_r.o `test -f 'libc/stdio/sfputws_r.c' || echo '$(srcdir)/'`libc/stdio/sfputws_r.c
++
++libc/stdio/libc_a-sfputws_r.obj: libc/stdio/sfputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-sfputws_r.obj -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo -c -o libc/stdio/libc_a-sfputws_r.obj `if test -f 'libc/stdio/sfputws_r.c'; then $(CYGPATH_W) 'libc/stdio/sfputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/sfputws_r.c'; fi`
++@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/sfputws_r.c' object='libc/stdio/libc_a-sfputws_r.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-sfputws_r.obj `if test -f 'libc/stdio/sfputws_r.c'; then $(CYGPATH_W) 'libc/stdio/sfputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/sfputws_r.c'; fi`
++
++libc/stdio/libc_a-ssputws_r.o: libc/stdio/ssputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-ssputws_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo -c -o libc/stdio/libc_a-ssputws_r.o `test -f 'libc/stdio/ssputws_r.c' || echo '$(srcdir)/'`libc/stdio/ssputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/ssputws_r.c' object='libc/stdio/libc_a-ssputws_r.o' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-ssputws_r.o `test -f 'libc/stdio/ssputws_r.c' || echo '$(srcdir)/'`libc/stdio/ssputws_r.c
++
++libc/stdio/libc_a-ssputws_r.obj: libc/stdio/ssputws_r.c
++@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-ssputws_r.obj -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo -c -o libc/stdio/libc_a-ssputws_r.obj `if test -f 'libc/stdio/ssputws_r.c'; then $(CYGPATH_W) 'libc/stdio/ssputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/ssputws_r.c'; fi`
++@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Po
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/ssputws_r.c' object='libc/stdio/libc_a-ssputws_r.obj' libtool=no @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-ssputws_r.obj `if test -f 'libc/stdio/ssputws_r.c'; then $(CYGPATH_W) 'libc/stdio/ssputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/ssputws_r.c'; fi`
++
+ libc/stdio/libc_a-fiprintf.o: libc/stdio/fiprintf.c
+ @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-fiprintf.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-fiprintf.Tpo -c -o libc/stdio/libc_a-fiprintf.o `test -f 'libc/stdio/fiprintf.c' || echo '$(srcdir)/'`libc/stdio/fiprintf.c
+ @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-fiprintf.Tpo libc/stdio/$(DEPDIR)/libc_a-fiprintf.Po
+@@ -24266,20 +24568,6 @@
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-sfputs_r.obj `if test -f 'libc/stdio/sfputs_r.c'; then $(CYGPATH_W) 'libc/stdio/sfputs_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/sfputs_r.c'; fi`
+ 
+-libc/stdio/libc_a-sfputws_r.o: libc/stdio/sfputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-sfputws_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo -c -o libc/stdio/libc_a-sfputws_r.o `test -f 'libc/stdio/sfputws_r.c' || echo '$(srcdir)/'`libc/stdio/sfputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Po
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/sfputws_r.c' object='libc/stdio/libc_a-sfputws_r.o' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-sfputws_r.o `test -f 'libc/stdio/sfputws_r.c' || echo '$(srcdir)/'`libc/stdio/sfputws_r.c
+-
+-libc/stdio/libc_a-sfputws_r.obj: libc/stdio/sfputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-sfputws_r.obj -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo -c -o libc/stdio/libc_a-sfputws_r.obj `if test -f 'libc/stdio/sfputws_r.c'; then $(CYGPATH_W) 'libc/stdio/sfputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/sfputws_r.c'; fi`
+-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-sfputws_r.Po
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/sfputws_r.c' object='libc/stdio/libc_a-sfputws_r.obj' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-sfputws_r.obj `if test -f 'libc/stdio/sfputws_r.c'; then $(CYGPATH_W) 'libc/stdio/sfputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/sfputws_r.c'; fi`
+-
+ libc/stdio/libc_a-sprint_r.o: libc/stdio/sprint_r.c
+ @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-sprint_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-sprint_r.Tpo -c -o libc/stdio/libc_a-sprint_r.o `test -f 'libc/stdio/sprint_r.c' || echo '$(srcdir)/'`libc/stdio/sprint_r.c
+ @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-sprint_r.Tpo libc/stdio/$(DEPDIR)/libc_a-sprint_r.Po
+@@ -24322,20 +24610,6 @@
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-ssputs_r.obj `if test -f 'libc/stdio/ssputs_r.c'; then $(CYGPATH_W) 'libc/stdio/ssputs_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/ssputs_r.c'; fi`
+ 
+-libc/stdio/libc_a-ssputws_r.o: libc/stdio/ssputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-ssputws_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo -c -o libc/stdio/libc_a-ssputws_r.o `test -f 'libc/stdio/ssputws_r.c' || echo '$(srcdir)/'`libc/stdio/ssputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Po
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/ssputws_r.c' object='libc/stdio/libc_a-ssputws_r.o' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-ssputws_r.o `test -f 'libc/stdio/ssputws_r.c' || echo '$(srcdir)/'`libc/stdio/ssputws_r.c
+-
+-libc/stdio/libc_a-ssputws_r.obj: libc/stdio/ssputws_r.c
+-@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-ssputws_r.obj -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo -c -o libc/stdio/libc_a-ssputws_r.obj `if test -f 'libc/stdio/ssputws_r.c'; then $(CYGPATH_W) 'libc/stdio/ssputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/ssputws_r.c'; fi`
+-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Tpo libc/stdio/$(DEPDIR)/libc_a-ssputws_r.Po
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='libc/stdio/ssputws_r.c' object='libc/stdio/libc_a-ssputws_r.obj' libtool=no @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -c -o libc/stdio/libc_a-ssputws_r.obj `if test -f 'libc/stdio/ssputws_r.c'; then $(CYGPATH_W) 'libc/stdio/ssputws_r.c'; else $(CYGPATH_W) '$(srcdir)/libc/stdio/ssputws_r.c'; fi`
+-
+ libc/stdio/libc_a-ssprint_r.o: libc/stdio/ssprint_r.c
+ @am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libc_a_CPPFLAGS) $(CPPFLAGS) $(libc_a_CFLAGS) $(CFLAGS) -MT libc/stdio/libc_a-ssprint_r.o -MD -MP -MF libc/stdio/$(DEPDIR)/libc_a-ssprint_r.Tpo -c -o libc/stdio/libc_a-ssprint_r.o `test -f 'libc/stdio/ssprint_r.c' || echo '$(srcdir)/'`libc/stdio/ssprint_r.c
+ @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) libc/stdio/$(DEPDIR)/libc_a-ssprint_r.Tpo libc/stdio/$(DEPDIR)/libc_a-ssprint_r.Po
+diff -Nru a/newlib/libc/include/math.h b/newlib/libc/include/math.h
+--- a/newlib/libc/include/math.h	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/include/math.h	2026-09-30 20:32:18.134038666 +0000
+@@ -12,6 +12,21 @@
+ /* Natural log of 2 */
+ #define _M_LN2        0.693147180559945309417
+ 
++#ifdef __TFU_MATHLIB
++static __attribute__((always_inline)) float sinf(float x) {
++    return __builtin_rx_sinf(x);
++}
++static __attribute__((always_inline)) float cosf(float x) {
++    return __builtin_rx_cosf(x);
++}
++static __attribute__((always_inline)) float atan2f(float y, float x) {
++    return __builtin_rx_atan2f(y, x);
++}
++static __attribute__((always_inline)) float hypotf(float y, float x) {
++    return __builtin_rx_hypotf(y, x);
++}
++#endif  /* __TFU_MATHLIB */
++
+ #if __GNUC_PREREQ (3, 3)
+  /* gcc >= 3.3 implicitly defines builtins for HUGE_VALx values.  */
+ 
+diff -Nru a/newlib/libc/machine/rx/Makefile.inc b/newlib/libc/machine/rx/Makefile.inc
+--- a/newlib/libc/machine/rx/Makefile.inc	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/Makefile.inc	2026-09-30 20:32:18.271386301 +0000
+@@ -1,4 +1,27 @@
+ libc_a_SOURCES += \
++	%D%/labs.S \
++	%D%/ldiv.S \
++	%D%/llabs.S \
++	%D%/memchr.S \
++	%D%/memcmp.S \
++	%D%/memcpy.S \
++	%D%/memmove.S \
++	%D%/mempcpy.S \
++	%D%/memrchr.S \
++	%D%/memset.S \
+ 	%D%/setjmp.S \
+-	%D%/strncmp.S %D%/strcmp.S %D%/strncpy.S %D%/strcpy.S %D%/strlen.S %D%/strcat.S %D%/strncat.S \
+-	%D%/memset.S %D%/mempcpy.S %D%/memcpy.S %D%/memmove.S %D%/memchr.S
++	%D%/stpcpy.S \
++	%D%/stpncpy.S \
++	%D%/strcat.S \
++	%D%/strchr.S \
++	%D%/strcmp.S \
++	%D%/strcpy.S \
++	%D%/strcspn.S \
++	%D%/strlen.S \
++	%D%/strncat.S \
++	%D%/strncmp.S \
++	%D%/strncpy.S \
++	%D%/strnlen.S \
++	%D%/strpbrk.S \
++	%D%/strrchr.S \
++	%D%/strspn.S
+diff -Nru a/newlib/libc/machine/rx/labs.S b/newlib/libc/machine/rx/labs.S
+--- a/newlib/libc/machine/rx/labs.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/labs.S	2026-09-30 20:32:18.176640023 +0000
+@@ -0,0 +1,13 @@
++	.file	"labs.S"
++
++	.section .text
++
++	.global  _labs
++	.type	 _labs,@function
++
++_labs:
++    abs     r1
++    rts
++
++   .size _labs, . - _labs
++
+diff -Nru a/newlib/libc/machine/rx/ldiv.S b/newlib/libc/machine/rx/ldiv.S
+--- a/newlib/libc/machine/rx/ldiv.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/ldiv.S	2026-09-30 20:32:18.216640470 +0000
+@@ -0,0 +1,18 @@
++	.file	"ldiv.S"
++
++	.section .text
++
++	.global  _ldiv
++	.type	 _ldiv,@function
++
++
++_ldiv:
++    mov.l   r1, r3
++    div     r2, r1
++    mul     r1, r2
++    sub     r2, r3
++    mov.l   r3, r2
++    rts
++
++   .size _ldiv, . - _ldiv
++
+diff -Nru a/newlib/libc/machine/rx/llabs.S b/newlib/libc/machine/rx/llabs.S
+--- a/newlib/libc/machine/rx/llabs.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/llabs.S	2026-09-30 20:32:18.248640826 +0000
+@@ -0,0 +1,21 @@
++	.file	"llabs.S"
++
++	.section .text
++
++	.global  _llabs
++	.type	 _llabs,@function
++
++
++_llabs:
++    mov.l   #0, r14
++    cmp     #1, r1
++    mov.l   r2, r15
++    sbb     r14, r15
++    blt.b   1f
++    rts
++1:  sub     r1, r14, r1
++    sbb     r2, r14
++    mov.l   r14, r2
++    rts
++
++    .size _llabs, . - _llabs
+diff -Nru a/newlib/libc/machine/rx/memchr.S b/newlib/libc/machine/rx/memchr.S
+--- a/newlib/libc/machine/rx/memchr.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/memchr.S	2026-09-30 20:32:18.283365100 +0000
+@@ -8,25 +8,22 @@
+ 	;; R1: string pointer
+ 	;; R2: byte sought
+ 	;; R3: max number to scan
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-	mov.b	r2, r2		; The mov.b below sign extends as it loads, so make sure that r2 is sign-extended as well.
+-2:	cmp	#0, r3
+-	beq	1f
+-	sub	#1, r3
+-	mov.b	[r1+], r5
+-	cmp	r5, r2
+-	bne	2b
+-
+-	sub	#1, r1		; We have found a match, bit now R1 points to the byte after the match.
+-1:	rts
+-#else
+-	cmp	#0, r3		; If r3 is 0 suntil.b will do nothing and not set any flags...
+-	stz     #1, r1		; ...so store 1 into r1.  It will be decremented by the SUB later.
++#ifdef __RX_ALLOW_STRING_INSNS__
++	cmp	#1, r3		; If r3 is 0 suntil.b will not set any flags, so prepare a non zero condition
+ 	suntil.b    		; Search until *r1 == r2 or r3 bytes have been examined.
+ 	stnz	#1, r1		; If no match was found return NULL.
+ 	sub	#1, r1		; suntil.b leaves r1 pointing at the address *after* the match.
+ 	rts
++#else
++1:	sub	#1, r3
++	bltu	2f
++	movu.b	[r1+], r4
++	cmp	r4, r2
++	bne	1b
++	sub	#1, r1		; We have found a match, but now R1 points to the byte after the match.
++	rts
++2:	mov	#0, r1
++	rts
+ #endif
+-
+ 	.size _memchr, . - _memchr
+ 	
+diff -Nru a/newlib/libc/machine/rx/memcmp.S b/newlib/libc/machine/rx/memcmp.S
+--- a/newlib/libc/machine/rx/memcmp.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/memcmp.S	2026-09-30 20:32:18.337617044 +0000
+@@ -0,0 +1,37 @@
++	.file	"memcmp.S"
++
++	.section .text
++	
++	.global  _memcmp
++	.type	 _memcmp,@function
++_memcmp:
++	;; R1: string pointer
++	;; R2: string pointer
++	;; R3: max number to scan
++#ifdef __RX_ALLOW_STRING_INSNS__
++	cmp	#0, r3		; If r3 is 0 scmpu will not set any flags, so prepare a zero condition       
++1:	scmpu
++	bne	2f
++	cmp	#0, r3		; all is good, but scmpu might have exited early in case of str1=str2=0
++	bne	1b 		; need to do another loop
++	mov	#0, r1		; made sure to check entire r3 items, return 0
++	rts
++2:	sub	#1, r1		; scmpu leaves r1 pointing at the adress *after* the diff
++	sub	#1, r2		; scmpu leaves r2 pointing at the adress *after* the diff
++	movu.b	[r1], r1
++	movu.b	[r2], r2
++	sub	r2, r1		; calculate the difference
++	rts
++#else
++1:	sub	#1, r3
++	bltu	2f
++	movu.b	[r1+], r4
++	movu.b	[r2+], r5
++	sub	r5, r4
++	beq	1b
++	mov	r4, r1
++	rts
++2:	mov	#0, r1
++	rts
++#endif
++	.size _memcmp, . - _memcmp
+diff -Nru a/newlib/libc/machine/rx/memcpy.S b/newlib/libc/machine/rx/memcpy.S
+--- a/newlib/libc/machine/rx/memcpy.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/memcpy.S	2026-09-30 20:32:18.347062995 +0000
+@@ -4,28 +4,25 @@
+ 	.global  _memcpy
+ 	.type	 _memcpy,@function
+ _memcpy:
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-	/* Do not use the string instructions - they might prefetch
+-	   bytes from outside of valid memory.  This is particularly
+-	   dangerous in I/O space.  */
+-
+-	;; FIXME: It would be more space efficient to just branch to _memmove...
+-	
+-	cmp	 #0, r3	      	; If the count is zero, do nothing
+-	beq	 1f
+-	
+-	mov	 r1, r14	; Save a copy of DEST
+-
+-2:	mov.b	 [r2+], r5
+-	mov.b	 r5, [r14+]
+-	sub	 #1, r3
+-	bne	 2b
+-	
+-1:	rts
+-#else
++	;; R1: string pointer
++	;; R2: string pointer
++	;; R3: bytes to copy
++#ifdef __RX_ALLOW_STRING_INSNS__
+ 	mov	r1, r4		; Save a copy of DEST
+ 	smovf	    		; Copy R2 (source) to R1 (dest).  Stop after R3 bytes.
+ 	mov	r4, r1		; Return DEST
+ 	rts
++#else
++	/* Do not use the string instructions - they might prefetch
++	   bytes from outside of valid memory.  This is particularly
++	   dangerous in I/O space.  */
++	cmp	#0, r3
++	beq	2f
++	mov	r1, r4		; use a copy of DEST
++1:	mov.b	[r2+], r5
++	mov.b	r5, [r4+]
++	sub	#1, r3
++	bne	1b
++2:	rts
+ #endif
+ 	.size _memcpy, . - _memcpy
+diff -Nru a/newlib/libc/machine/rx/memmove.S b/newlib/libc/machine/rx/memmove.S
+--- a/newlib/libc/machine/rx/memmove.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/memmove.S	2026-09-30 20:32:18.373425802 +0000
+@@ -7,51 +7,41 @@
+ 	;; R1: DEST
+ 	;; R2: SRC
+ 	;; R3: COUNT
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-	/* Do not use the string instructions - they might prefetch
+-	   bytes from outside of valid memory.  This is particularly
+-	   dangerous in I/O space.  */
+-
+-	cmp	 #0, r3	      	; If the count is zero, do nothing
+-	beq	 4f
+-	
+-	cmp	 r1, r2
+-	blt	 3f		; If SRC < DEST copy backwards
+-
+-	mov	 r1, r14	; Save a copy of DEST
+-
+-5:	mov.b	 [r2+], r5
+-	mov.b	 r5, [r14+]
+-	sub	 #1, r3
+-	bne	 5b
+-	
+-4:	rts
+-
+-3:	add	 r3, r1
+-	add	 r3, r2
+-
+-6:	mov.b	 [-r2], r5
+-	mov.b	 r5, [-r1]
+-	sub	 #1, r3
+-	bne	 6b
+-
+-	rts
+-#else	
++#ifdef __RX_ALLOW_STRING_INSNS__
+ 	mov	r1, r4		; Save a copy of DEST
+ 	cmp	r1, r2
+-	blt	2f		; If SRC (r2) is less than DEST (r1) then copy backwards
++	blt	1f		; If SRC (r2) is less than DEST (r1) then copy backwards
+ 	smovf
+-1:	
+ 	mov	r4, r1		; Return DEST
+ 	rts
+-2:
+-	add	r3, r1		; The SMOVB instructions requires the DEST in r1 and the 
++1:	add	r3, r1		; The SMOVB instructions requires the DEST in r1 and the 
+ 	add	r3, r2		; SRC in r2 but it needs them to point the last bytes of
+-	sub	#1, r2		; the regions involved not the first bytes, hence these
+-	sub	#1, r1		; additions and subtractions.
++	sub	#1, r1		; the regions involved not the first bytes, hence these
++	sub	#1, r2		; additions and subtractions.
+ 	smovb
+-	bra	1b
+-
+-#endif /* SMOVF allowed.  */
++	mov	r4, r1		; Return DEST
++	rts
++#else
++	/* Do not use the string instructions - they might prefetch
++	   bytes from outside of valid memory.  This is particularly
++	   dangerous in I/O space.  */
+ 
++	cmp	#0, r3	      	; If the count is zero, do nothing
++	beq	4f
++	mov	r1, r4		; Save a copy of DEST
++	cmp	r1, r2	
++	blt	2f		; If SRC (r2) is less than DEST (r1) then copy backwards
++1:	mov.b	[r2+], r5
++	mov.b	r5, [r4+]
++	sub	#1, r3
++	bne	1b
++	rts	
++2:	add	r3, r4
++	add	r3, r2
++3:	mov.b	[-r2], r5
++	mov.b	r5, [-r4]
++	sub	#1, r3
++	bne	3b
++4:	rts		
++#endif
+ 	.size _memmove, . - _memmove
+diff -Nru a/newlib/libc/machine/rx/mempcpy.S b/newlib/libc/machine/rx/mempcpy.S
+--- a/newlib/libc/machine/rx/mempcpy.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/mempcpy.S	2026-09-30 20:32:18.384897194 +0000
+@@ -4,22 +4,23 @@
+ 	.global  _mempcpy
+ 	.type	 _mempcpy,@function
+ _mempcpy:
+-#ifdef __RX_DISALLOW_STRING_INSNS__
++	;; R1: string pointer
++	;; R2: string pointer
++	;; R3: bytes to copy
++#ifdef __RX_ALLOW_STRING_INSNS__
++	smovf
++	rts
++#else
+ 	/* Do not use the string instructions - they might prefetch
+ 	   bytes from outside of valid memory.  This is particularly
+ 	   dangerous in I/O space.  */
+ 
+ 	cmp	 #0, r3	      	; If the count is zero, do nothing
+ 	beq	 2f
+-	
+-1:	mov.b	 [r2+], r5
+-	mov.b	 r5, [r1+]
++1:	mov.b	 [r2+], r4
++	mov.b	 r4, [r1+]
+ 	sub	 #1, r3
+ 	bne	 1b
+-
+ 2:	rts
+-#else
+-	smovf
+-	rts
+ #endif
+ 	.size _mempcpy, . - _mempcpy
+diff -Nru a/newlib/libc/machine/rx/memrchr.S b/newlib/libc/machine/rx/memrchr.S
+--- a/newlib/libc/machine/rx/memrchr.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/memrchr.S	2026-09-30 20:32:18.412119363 +0000
+@@ -0,0 +1,21 @@
++	.file	"memrchr.S"
++
++	.section .text
++	
++	.global  _memrchr
++	.type	 _memrchr,@function
++_memrchr:
++	;; R1: string pointer
++	;; R2: byte sought
++	;; R3: max number to scan
++	cmp	#0, r3
++	beq	2f
++	add	r3, r1
++1:	movu.b	[-r1], r4
++	cmp	r2, r4
++	beq	3f
++	sub	#1, r3
++	bne	1b
++2:	mov	#0, r1
++3:	rts
++	.size _memrchr, . - _memrchr
+\ No newline at end of file
+diff -Nru a/newlib/libc/machine/rx/memset.S b/newlib/libc/machine/rx/memset.S
+--- a/newlib/libc/machine/rx/memset.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/memset.S	2026-09-30 20:32:18.428861149 +0000
+@@ -4,10 +4,21 @@
+ 	.global  _memset
+ 	.type	 _memset,@function
+ _memset:
++	;; R1: string pointer
++	;; R2: value to set
++	;; R3: bytes to copy
++#ifdef __RX_ALLOW_STRING_INSNS__
+ 	mov	r1, r4
+-	sstr.b
++ 	sstr.b
+ 	mov	r4, r1
+ 	rts
+-
+-	.size _memset, . - _memset
+-	
++#else
++	cmp	#0, r3
++	beq	2f
++	mov	r1, r4
++1:	mov.b	r2, [r4+]
++	sub	#1, r3
++	bne	1b
++2:	rts
++#endif
++	.size _memset, . - _memset	
+diff -Nru a/newlib/libc/machine/rx/stpcpy.S b/newlib/libc/machine/rx/stpcpy.S
+--- a/newlib/libc/machine/rx/stpcpy.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/stpcpy.S	2026-09-30 20:32:18.472643326 +0000
+@@ -0,0 +1,22 @@
++	.file	"stpcpy.S"
++
++	.section .text
++	.global  _stpcpy
++	.type	 _stpcpy,@function
++_stpcpy:
++	;; R1: destination string pointer
++	;; R2: source string pointer
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	#-1, r3		; No limit for smovu
++	smovu
++	sub	#1, r1		; Return pointer to the \0 char
++	rts
++#else
++1:	mov.b	[r2+], r3
++	mov.b	r3, [r1+]
++	cmp	#0, r3
++	bne	1b
++	sub	#1, r1		; Return pointer to the \0 char
++	rts
++#endif
++	.size _stpcpy, . - _stpcpy
+\ No newline at end of file
+diff -Nru a/newlib/libc/machine/rx/stpncpy.S b/newlib/libc/machine/rx/stpncpy.S
+--- a/newlib/libc/machine/rx/stpncpy.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/stpncpy.S	2026-09-30 20:32:18.497662332 +0000
+@@ -0,0 +1,46 @@
++	.file	"stpncpy.S"
++
++	.section .text
++	.global  _stpncpy
++	.type	 _stpncpy,@function
++_stpncpy:
++	;; R1: destination string pointer
++	;; R2: source string pointer
++	;; R3: number of bytes to be copied
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	r3, r4		; Prepare for r3=0 cornercase
++	smovu
++	cmp	#0, r3
++	beq 1f
++	mov	r1, r4
++	mov	#0, r2
++	sstr.b
++	add	#-1, r4, r1
++	rts
++1:	mov.b	[-r1], r2
++	cmp	#0, r2		; Check if end of string
++	stnz	#1, r2
++	cmp	#0, r4		; Check for cornercase r3 = 0
++	stz	#1, r2
++	add	r2, r1		; Bunch of workarounds to return correct pointer
++	rts
++#else
++	cmp	#0, r3
++	beq	4f
++1:	mov.b	[r2+], r4
++	mov.b	r4, [r1+]
++	cmp	#0, r4
++	beq	2f
++	sub	#1, r3
++	bne	1b
++	rts
++2:	sub	#1, r1		; Store pointer to the \0 char
++	cmp	#0, r3		; Corner case of \0 at end of array
++	beq	4f
++	add	#1, r1, r2	; Move pointer to r2, we have \0 in r4
++3:	mov.b	r4, [r2+]
++	sub	#1, r3
++	bne	3b
++4:	rts
++#endif
++	.size _stpncpy, . - _stpncpy
+diff -Nru a/newlib/libc/machine/rx/strcat.S b/newlib/libc/machine/rx/strcat.S
+--- a/newlib/libc/machine/rx/strcat.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strcat.S	2026-09-30 20:32:18.505187319 +0000
+@@ -4,9 +4,21 @@
+ 	.global  _strcat
+ 	.type	 _strcat,@function
+ _strcat:
+-	;; On entry: r1 => Destination
+-	;;           r2 => Source
+-#ifdef __RX_DISALLOW_STRING_INSNS__
++	;; R1 : Destination
++	;; R2 : Source
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov 	r1, r4		; Save a copy of the dest pointer.
++	mov 	r2, r5		; Save a copy of the source pointer.
++	mov	#0, r2		; Search for the NUL byte.
++	not 	r2, r3		; No limit on the number of bytes examined.
++	suntil.b		; Find the end of the destination string.
++	sub	#1, r1		; suntil.b leaves r1 pointing to the byte beyond the NUL.
++	not 	r2, r3		; No limit on the number of bytes copied	
++	mov	r5, r2		; Restore the source pointer.		
++	smovu			; Copy source to destination
++	mov	r4, r1		; Return the original dest pointer.
++	rts
++#else
+ 	mov 	r1, r4		; Save a copy of the dest pointer.
+ 	
+ 1:	mov.b	[r4+], r5	; Find the NUL byte at the end of R4.
+@@ -21,21 +33,6 @@
+ 	bne 	2b
+ 
+ 	rts
+-#else
+-	mov 	r1, r4		; Save a copy of the dest pointer.
+-	mov 	r2, r5		; Save a copy of the source pointer.
+-	
+-	mov	#0,  r2		; Search for the NUL byte.
+-	mov 	#-1, r3		; Limit on the number of bytes examined.
+-	suntil.b		; Find the end of the destination string.
+-	sub	#1,  r1		; suntil.b leaves r1 pointing to the byte beyond the match.
+-
+-	mov	#-1, r3		; Set a limit on the number of bytes copied.
+-	mov	r5,  r2		; Restore the source pointer.
+-	smovu			; Copy source to destination
+-
+-	mov	r4, r1		; Return the original dest pointer.
+-	rts
+ #endif
+ 	.size _strcat, . - _strcat
+ 	
+diff -Nru a/newlib/libc/machine/rx/strchr.S b/newlib/libc/machine/rx/strchr.S
+--- a/newlib/libc/machine/rx/strchr.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strchr.S	2026-09-30 20:32:18.515525643 +0000
+@@ -0,0 +1,36 @@
++	.file	"strchr.S"
++
++	.section .text
++	.global  _strchr
++	.type	 _strchr,@function
++_strchr:
++	;; R1 : String pointer
++	;; R2 : the character to search for
++#ifdef __RX_ALLOW_STRING_INSNS__
++	pushm	r1-r2
++	mov	#0, r2
++	not	r2, r3
++	suntil.b
++	sub	#2, r2		; r3 has the counter, which we can substract from -2
++	sub	r3, r2, r3	; to find the length
++	popm	r1-r2
++	cmp	#0, r2		; corner case of looking fir \0
++	beq	1f
++	suntil.b
++	stnz	#1, r1
++	sub	#1, r1
++	rts
++1:	add	r3, r1
++	rts
++#else
++1:	movu.b	[r1+], r3
++	cmp	r2, r3
++	beq	2f
++	cmp	#0, r3
++	bne	1b
++	mov	#0, r1		; Return null because end of string found
++	rts
++2:	sub	#1, r1
++	rts
++#endif
++	.size _strchr, . - _strchr
+diff -Nru a/newlib/libc/machine/rx/strcmp.S b/newlib/libc/machine/rx/strcmp.S
+--- a/newlib/libc/machine/rx/strcmp.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strcmp.S	2026-09-30 20:32:18.518715992 +0000
+@@ -5,29 +5,24 @@
+ 	.global  _strcmp
+ 	.type	 _strcmp,@function
+ _strcmp:
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-2:	mov.b	[r1+], r4
+-	mov.b	[r2+], r5
+-	cmp	#0, r4
+-	beq	3f
+-	cmp	#0, r5
+-	beq	3f
+-	cmp	r4, r5
+-	beq	2b
+-
+-3:	and	#0xff, r4	; We need to perform an unsigned comparison of the bytes.
+-	and	#0xff, r5
++	;; R1: string pointer
++	;; R2: string pointer
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	#-1, r3		; No limit to compare
++	scmpu			; Perform the string comparison
++	movu.b	[-r1], r4	; Read back last checked chars
++	movu.b	[-r2], r5
+ 	sub	r5, r4, r1
+ 	rts
+ #else
+-	mov	#-1, r3		; Strictly speaking this is incorrect, but I doubt if anyone will ever know.
+-	scmpu			; Perform the string comparison
+-	bnc	1f		; If Carry is not set skip over
+-	scne.L	r1		; Set result based on Z flag
+-	rts			;
+-1:				;
+-	mov	#-1,r1		; Carry not set, result should be negative
+-	rts			;
++1:	movu.b	[r1+], r4
++	movu.b	[r2+], r5
++	cmp	#0, r4
++	beq	2f
++	cmp	r5, r4
++	beq	1b
++2:	sub	r5, r4, r1
++	rts
+ #endif
+ 	.size _strcmp, . - _strcmp
+ 	
+diff -Nru a/newlib/libc/machine/rx/strcpy.S b/newlib/libc/machine/rx/strcpy.S
+--- a/newlib/libc/machine/rx/strcpy.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strcpy.S	2026-09-30 20:32:18.523898359 +0000
+@@ -6,7 +6,13 @@
+ _strcpy:
+ 	;; R1: dest
+ 	;; R2: source
+-#ifdef __RX_DISALLOW_STRING_INSNS__
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	r1, r4
++	mov	#-1, r3		; Strictly speaking this is incorrect, but I doubt if anyone will ever know.
++	smovu
++	mov	r4, r1
++	rts
++#else
+ 	mov	r1, r4		; Leave the destination address unchanged in the result register.
+ 
+ 1:	mov.b	[r2+], r5
+@@ -15,11 +21,5 @@
+ 	bne	1b
+ 
+ 	rts
+-#else
+-	mov	r1, r4
+-	mov	#-1, r3		; Strictly speaking this is incorrect, but I doubt if anyone will ever know.
+-	smovu
+-	mov	r4, r1
+-	rts
+ #endif
+ 	.size _strcpy, . - _strcpy
+diff -Nru a/newlib/libc/machine/rx/strcspn.S b/newlib/libc/machine/rx/strcspn.S
+--- a/newlib/libc/machine/rx/strcspn.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strcspn.S	2026-09-30 20:32:18.560644308 +0000
+@@ -0,0 +1,25 @@
++	.file	"strcspn.S"
++
++	.section .text
++
++	.global  _strcspn
++	.type	 _strcspn,@function
++
++_strcspn:
++    mov.l   r1, r14
++1:  mov.l   r14, r15
++    movu.b  [r15], r5
++    add     #1, r15, r14
++    cmp     #0, r5
++    beq.b   3f
++    mov.l   r2, r4
++2:  movu.b  [r4+], r3
++    cmp     #0, r3
++    beq.b   1b
++    cmp     r3, r5
++    bne.b   2b
++3:  sub     r1, r15
++    mov.l   r15, r1
++    rts
++
++    .size _strcspn, . - _strcspn
+diff -Nru a/newlib/libc/machine/rx/strlen.S b/newlib/libc/machine/rx/strlen.S
+--- a/newlib/libc/machine/rx/strlen.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strlen.S	2026-09-30 20:32:18.571606808 +0000
+@@ -5,25 +5,21 @@
+ 	.global  _strlen
+ 	.type	 _strlen,@function
+ _strlen:
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-	mov	r1, r4
+-
+-1:	mov.b	[r1+], r5
+-	cmp	#0, r5
+-	bne	1b
+-
+-	sub	#1, r1
+-	sub	r4, r1
++	;; R1: pointer to string
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	#0, r2
++	not	r2, r3		; No limit on the number of bytes examined.
++	suntil.b
++	sub	#2, r2		; r3 has the counter, which we can substract from -2
++	sub	r3, r2, r1	; to find the length
+ 	rts
+ #else
+-	add	#0, r1, r4	; Save a copy of the string start address and set the condition flags.
+-	beq     null_string	; Test for a NULL pointer.
+-	mov	#-1, r3		; Set a limit on the number of bytes examined.
+-	mov	#0,  r2		; Stop searching when we find a NUL byte.
+-	suntil.b     		; Search until *r1 == r2
+-	sub	#1, r1		; suntil.b leaves r1 pointing to the byte beyond the match.
+-null_string:
+-	sub	r4, r1		; Compute the length.
++	mov	r1, r3
++1:	mov.b	[r1+], r2
++	cmp	#0, r2
++	bne	1b
++	sub	#1, r1
++	sub	r3, r1
+ 	rts
+ #endif
+ 	.size _strlen, . - _strlen
+diff -Nru a/newlib/libc/machine/rx/strncat.S b/newlib/libc/machine/rx/strncat.S
+--- a/newlib/libc/machine/rx/strncat.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strncat.S	2026-09-30 20:32:18.585438794 +0000
+@@ -4,55 +4,40 @@
+ 	.global  _strncat
+ 	.type	 _strncat,@function
+ _strncat:
+-	;; On entry: r1 => Destination
+-	;;           r2 => Source
+-	;; 	     r3 => Max number of bytes to copy
+-#ifdef __RX_DISALLOW_STRING_INSNS__
++	;; R1 : Destination
++	;; R2 : Source
++	;; R3 : Max number of bytes to copy
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov 	r1, r4		; Save a copy of the dest pointer.
++	pushm	r2-r3		; Save a copy of the parameters.
++	mov	#0, r2		; Search for the NUL byte.
++	not 	r2, r3		; No limit on the number of bytes examined.
++	suntil.b		; Find the end of the destination string.
++	sub	#1, r1		; suntil.b leaves r1 pointing to the byte beyond the NUL.
++	popm	r2-r3		; Restore a copy of the parameters.
++	smovu			; Copy source to destination.
++	mov.b	[-r1], r2	; Need to read back last written character,
++	cmp	#0, r2		; since we can't compare r3 directly, 
++	beq	1f              ; because of cornercase r3=0, [r2]=NUL.
++	mov.b	#0, 1[r1]	; Add NUL.
++1:	mov	r4, r1		; Return the original dest pointer.	
++	rts
++#else
+ 	cmp	#0, r3		; If max is zero we have nothing to do.
+-	beq	2f
+-	
+-	mov 	r1, r4		; Leave the desintation pointer intact for the return value.
+-	
++	beq	3f
++	mov 	r1, r4		; Leave the destination pointer intact for the return value.
+ 1:	mov.b	[r4+], r5	; Find the NUL byte at the end of the destination.
+ 	cmp	#0, r5
+ 	bne	1b
+-
+ 	sub	#1, r4
+-
+-3:	mov.b	[r2+], r5	; Copy bytes from the source into the destination ...
++2:	mov.b	[r2+], r5	; Copy bytes from the source into the destination ...
+ 	mov.b	r5, [r4+]
+ 	cmp	#0, r5		; ... until we reach a NUL byte ...
+-	beq 	2f
++	beq 	3f
+ 	sub	#1, r3
+-	bne	3b		; ... or we have copied N bytes.
+-	
+-2:	rts
+-#else
+-	mov 	r1, r4		; Save a copy of the dest pointer.
+-	mov 	r2, r5		; Save a copy of the source pointer.
+-	mov 	r3, r14		; Save a copy of the byte count.
+-	
+-	mov	#0,  r2		; Search for the NUL byte.
+-	mov 	#-1, r3		; Search until we run out of memory.
+-	suntil.b		; Find the end of the destination string.
+-	sub	#1, r1		; suntil.b leaves r1 pointing to the byte beyond the NUL.
+-
+-	mov	r14, r3		; Restore the limit on the number of bytes copied.
+-	mov	r5, r2		; Restore the source pointer.
+-	mov	r1, r5		; Save a copy of the dest pointer.
+-	smovu			; Copy source to destination.
+-
+-	add	#0, r14, r3	; Restore the number of bytes to copy (again), but this time set the Z flag as well.
+-	beq	1f  		; If we copied 0 bytes then we already know that the dest string is NUL terminated, so we do not have to do anything.
+-	mov	#0, r2		; Otherwise we must check to see if a NUL byte
+-	mov	r5, r1		;  was included in the bytes that were copied.
+-	suntil.b
+-	beq	1f		; Z flag is set if a match was found.
+-	add	r14, r5		; Point at byte after end of copied bytes.
+-	mov.b	#0, [r5]	; Store a NUL there.
+-1:	
+-	mov	r4, r1		; Return the original dest pointer.
+-	rts
++	bne	2b		; ... or we have copied N bytes.
++	mov.b	#0, [r4]	; Add NUL.
++3:	rts
+ #endif
+ 	.size _strncat, . - _strncat
+ 	
+diff -Nru a/newlib/libc/machine/rx/strncmp.S b/newlib/libc/machine/rx/strncmp.S
+--- a/newlib/libc/machine/rx/strncmp.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strncmp.S	2026-09-30 20:32:18.595821522 +0000
+@@ -7,35 +7,26 @@
+ 	;; R1: string1
+ 	;; R2: string2
+ 	;; R3: max number of bytes to compare
+-#ifdef __RX_DISALLOW_STRING_INSNS__
+-	cmp	#0, r3		; For a length of zero, return zero
+-	beq	4f
+-
+-2:	mov.b	[r1+], r4
+-	mov.b	[r2+], r5
+-	cmp	#0, r4
+-	beq	3f
+-	cmp	#0, r5
+-	beq	3f
+-	sub	#1, r3
++	cmp	#0, r3
+ 	beq	3f
+-	cmp	r4, r5
+-	beq	2b
+-
+-3:	and	#0xff, r4	; We need to perform an unsigned comparison of the bytes.
+-	and	#0xff, r5
++#ifdef __RX_ALLOW_STRING_INSNS__
++	scmpu			; Perform the string comparison
++	movu.b	[-r1], r4	; Read back last checked chars
++	movu.b	[-r2], r5
+ 	sub	r5, r4, r1
+ 	rts
+-
+-4:	mov	#0, r1
+-	rts
+ #else
+-	scmpu			; Perform the string comparison
+-	bnc	1f		; If Carry is not set skip over
+-	scne.L	r1		; Set result based on Z flag
+-	rts			;
+-1:				;
+-	mov	#-1,r1		; Carry not set, result should be negative
+-	rts			;
++1:	movu.b	[r1+], r4
++	movu.b	[r2+], r5
++	cmp	#0, r4
++	beq	2f
++	sub	#1, r3
++	beq	2f
++	cmp	r5, r4
++	beq	1b
++2:	sub	r5, r4, r1
++	rts
+ #endif
++3:	mov	#0, r1
++	rts
+ 	.size _strncmp, . - _strncmp
+diff -Nru a/newlib/libc/machine/rx/strncpy.S b/newlib/libc/machine/rx/strncpy.S
+--- a/newlib/libc/machine/rx/strncpy.S	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/machine/rx/strncpy.S	2026-09-30 20:32:18.602180930 +0000
+@@ -4,38 +4,31 @@
+ 	.global  _strncpy
+ 	.type	 _strncpy,@function
+ _strncpy:
+-#ifdef __RX_DISALLOW_STRING_INSNS__
++	;; R1: dest
++	;; R2: source
++	;; R3: bytes to copy
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	r1, r4		; Save a copy of the dest pointer.
++	smovu	    		; Copy the bytes
++	mov	#0, r2		; Fill the remaining bytes with NULs,
++	sstr.b
++	mov	r4, r1		; Return the destination pointer
++	rts
++#else
+ 	cmp	#0, r3
+ 	beq	3f
+-	
+ 	mov	r1, r4		; Preserve R1 for the return value.
+-
+-2:	mov.b	[r2+], r5	; Copy bytes until...
++1:	mov.b	[r2+], r5	; Copy bytes until...
+ 	mov.b	r5, [r4+]
+ 	sub	#1, r3
+ 	beq	3f		; ... our count reaches zero
+ 	cmp	#0, r5
+-	bne	2b		; ... or we have written a NUL byte
+-
+-4:	mov.b	r5, [r4+]	; Continue to write further NUL bytes
++	bne	1b		; ... or we have written a NUL byte
++2:	mov.b	r5, [r4+]	; Continue to write further NUL bytes
+ 	sub	#1, r3
+-	bne	4b		; until the count reaches zero.
+-
++	bne	2b		; until the count reaches zero.
+ 3:	rts
+ 	
+-#else
+-	mov	r1, r4		; Save a copy of the dest pointer.
+-	mov	r3, r5		; Save a copy of the byte count
+-	smovu	    		; Copy the bytes
+-	cmp	#0, r3		; If we have copied the number of bytes requested
+-	beq	1f  		;  then skip the next bit:
+-	add	r4, r5, r1	; Point to the last byte that we are supposed to write.
+-	sub	r3, r1		; Subtract the number of bytes left to be written.
+-	mov	#0, r2		; Fill the remaining bytes with NULs,
+-	sstr.b
+-1:
+-	mov	r4, r1		; Return the destination pointer
+-	rts
+ #endif
+ 	.size _strncpy, . - _strncpy
+ 	
+diff -Nru a/newlib/libc/machine/rx/strnlen.S b/newlib/libc/machine/rx/strnlen.S
+--- a/newlib/libc/machine/rx/strnlen.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strnlen.S	2026-09-30 20:32:18.631682459 +0000
+@@ -0,0 +1,34 @@
++	.file	"strnlen.S"
++
++	.section .text
++	
++	.global  _strnlen
++	.type	 _strnlen,@function
++_strnlen:
++	;; R1: pointer to string
++	;; R2: max bytes to check
++#ifdef __RX_ALLOW_STRING_INSNS__
++	mov	r2, r3	
++	mov	#0, r2
++	add	r1, r2, r4	; Set the flag as nonzero for max bytes to check=0
++	suntil.b
++	stz	#1, r2		; If a match was found, we must substract 1 from length
++	sub	r2, r1
++	sub	r4, r1	
++	rts
++#else
++	mov	r1, r3
++	cmp	#0, r2
++	beq	2f
++1:	mov.b	[r1+], r4
++	cmp	#0, r4
++	beq	3f
++	sub	#1, r2
++	bne	1b
++2:	sub	r3, r1
++	rts
++3:	sub	#1, r1
++	sub	r3, r1
++	rts
++#endif
++	.size _strnlen, . - _strnlen
+diff -Nru a/newlib/libc/machine/rx/strpbrk.S b/newlib/libc/machine/rx/strpbrk.S
+--- a/newlib/libc/machine/rx/strpbrk.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strpbrk.S	2026-09-30 20:32:18.660532208 +0000
+@@ -0,0 +1,26 @@
++	.file	"strpbrk.S"
++
++	.section .text
++
++	.global  _strpbrk
++	.type	 _strpbrk,@function
++
++_strpbrk:
++    mov.l   r1, r14
++    movu.b  [r14], r15
++    add     #1, r14, r1
++    cmp     #0, r15
++    beq.b  2f
++    mov.l   r2, r5
++1:  movu.b  [r5+], r4
++    cmp     #0, r4
++    beq.b   _strpbrk
++    cmp     r4, r15
++    bne.b   1b
++    bra.s   3f
++2:  mov.l   #0, r14
++3:  mov.l   r14, r1
++    rts
++
++    .size _strpbrk, . - _strpbrk
++
+diff -Nru a/newlib/libc/machine/rx/strrchr.S b/newlib/libc/machine/rx/strrchr.S
+--- a/newlib/libc/machine/rx/strrchr.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strrchr.S	2026-09-30 20:32:18.700645869 +0000
+@@ -0,0 +1,35 @@
++	.file	"strrchr.S"
++
++	.section .text
++	.global  _strrchr
++	.type	 _strrchr,@function
++_strrchr:
++	;; R1 : String pointer
++	;; R2 : the character to search for
++#ifdef __RX_ALLOW_STRING_INSNS__
++	pushm	r1-r2
++	mov	#0, r2
++	not	r2, r3
++	suntil.b		; Find end of string
++	popm	r2-r3
++1:	movu.b	[-r1], r4	; Search backwards
++	cmp	r3, r4
++	beq	2f
++	cmp	r1, r2
++	bne	1b
++	mov	#0, r1
++2:	rts
++#else
++	mov	#1, r4
++1:	movu.b	[r1+], r3
++	cmp	r2, r3
++	beq	3f
++2:	cmp	#0, r3
++	bne	1b
++	sub	#1, r4
++	mov	r4, r1
++	rts
++3:	mov	r1, r4	
++	bra	2b
++#endif
++	.size _strrchr, . - _strrchr
+diff -Nru a/newlib/libc/machine/rx/strspn.S b/newlib/libc/machine/rx/strspn.S
+--- a/newlib/libc/machine/rx/strspn.S	1970-01-01 00:00:00.000000000 +0000
++++ b/newlib/libc/machine/rx/strspn.S	2026-09-30 20:32:18.745555245 +0000
+@@ -0,0 +1,26 @@
++	.file	"strspn.S"
++
++	.section .text
++
++	.global  _strspn
++	.type	 _strspn,@function
++
++_strspn:
++    mov.l   r1, r14
++2:  mov.l   r14, r15
++    movu.b  [r15], r5
++    add     #1, r15, r14
++    cmp     #0, r5
++    beq.b   1f
++    mov.l   r2, r4
++3:  movu.b  [r4+], r3
++    cmp     #0, r3
++    beq.s   1f
++    cmp     r3, r5
++    beq.b   2b
++    bra.b   3b
++1:  sub     r1, r15
++    mov.l   r15, r1
++    rts
++
++    .size _strspn, . - _strspn
+diff -Nru a/newlib/libc/stdio/Makefile.inc b/newlib/libc/stdio/Makefile.inc
+--- a/newlib/libc/stdio/Makefile.inc	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libc/stdio/Makefile.inc	2026-09-30 20:32:18.757143980 +0000
+@@ -9,7 +9,9 @@
+ 	%D%/nano-vfprintf_i.c \
+ 	%D%/nano-vfscanf.c \
+ 	%D%/nano-vfscanf_i.c \
+-	%D%/nano-vfscanf_float.c
++	%D%/nano-vfscanf_float.c \
++	%D%/sfputws_r.c \
++	%D%/ssputws_r.c
+ else
+ libc_a_SOURCES += \
+ 	%D%/fiprintf.c \
+diff -Nru a/newlib/libm/common/fdlibm.h b/newlib/libm/common/fdlibm.h
+--- a/newlib/libm/common/fdlibm.h	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libm/common/fdlibm.h	2026-09-30 20:32:18.822753912 +0000
+@@ -264,12 +264,23 @@
+ 
+ /* A union which permits us to convert between a double and two 32 bit
+    ints.  */
++#ifdef __RL78__
++#ifdef _DOUBLE_IS_32BITS
++#define __double64_t	long double
++#else
++#define __double64_t	double
++#endif
++#endif
+ 
+ #ifdef __IEEE_BIG_ENDIAN
+ 
+ typedef union 
+ {
+-  double value;
++#ifdef __RL78__
++  __double64_t value;
++#else
++	double value;
++#endif
+   struct 
+   {
+     __uint32_t msw;
+diff -Nru a/newlib/libm/common/sf_nextafter.c b/newlib/libm/common/sf_nextafter.c
+--- a/newlib/libm/common/sf_nextafter.c	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libm/common/sf_nextafter.c	2026-09-30 20:32:18.842524181 +0000
+@@ -36,7 +36,7 @@
+ 	if(FLT_UWORD_IS_ZERO(ix)) {		/* x == 0 */
+ 	    SET_FLOAT_WORD(x,(hy&0x80000000)|FLT_UWORD_MIN);
+ 	    y = x*x;
+-	    if(y==x) return y; else return x;	/* raise underflow flag */
++	    if(y==x) return x; else return y;	/* raise underflow flag */
+ 	}
+ 	if(hx>=0) {				/* x > 0 */
+ 	    if(hx>hy) {				/* x > y, x -= ulp */
+diff -Nru a/newlib/libm/common/sf_remquo.c b/newlib/libm/common/sf_remquo.c
+--- a/newlib/libm/common/sf_remquo.c	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libm/common/sf_remquo.c	2026-09-30 20:32:18.863420485 +0000
+@@ -55,7 +55,7 @@
+ 	    q = 0;
+ 	    goto fixup;	/* |x|<|y| return x or x-y */
+ 	} else if(hx==hy) {
+-	    *quo = 1;
++	    *quo = -1;
+ 	    return Zero[(__uint32_t)sx>>31];	/* |x|=|y| return x*0*/
+ 	}
+ 
+diff -Nru a/newlib/libm/math/ef_pow.c b/newlib/libm/math/ef_pow.c
+--- a/newlib/libm/math/ef_pow.c	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libm/math/ef_pow.c	2026-09-30 20:32:18.916348621 +0000
+@@ -125,7 +125,7 @@
+ 	    if(hy<0) z = one/z;	/* z = (1/|x|) */
+ 	    if(hx<0) {
+ 		if(((ix-0x3f800000)|yisint)==0) {
+-		    z = (z-z)/(z-z); /* (-1)**non-int is NaN */
++		    z = NAN; /* (-1)**non-int is NaN */
+ 		} else if(yisint==1) 
+ 		    z = -z;		/* (x<0)**odd = -(|x|**odd) */
+ 	    }
+@@ -133,7 +133,7 @@
+ 	}
+     
+     /* (x<0)**(non-int) is NaN */
+-	if(((((__uint32_t)hx>>31)-1)|yisint)==0) return (x-x)/(x-x);
++	if(((((__uint32_t)hx>>31)-1)|yisint)==0) return NAN;
+ 
+     /* |y| is huge */
+ 	if(iy>0x4d000000) { /* if |y| > 2**27 */
+diff -Nru a/newlib/libm/math/wf_tgamma.c b/newlib/libm/math/wf_tgamma.c
+--- a/newlib/libm/math/wf_tgamma.c	2025-01-01 01:35:33.000000000 +0000
++++ b/newlib/libm/math/wf_tgamma.c	2026-09-30 20:32:18.944956664 +0000
+@@ -31,10 +31,12 @@
+ #else
+ 	if(_LIB_VERSION == _IEEE_) return y;
+ 
+-	if(x < 0.0 && floor(x)==x)
++	if(!finitef(y)) {
++	  if(x < 0.0f && floorf(x)==x)
+ 	    errno = EDOM;
+-	  else if (finite(x))
++	  else if (finitef(x))
+ 	    errno = ERANGE;
++	}
+ 	return y;
+ #endif
+ }

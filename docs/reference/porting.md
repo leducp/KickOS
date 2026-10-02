@@ -688,35 +688,21 @@ PMSAv7 on the M4/M7/M3, PMSAv8 on the M33). Translation enforcement is gated at 
 including `arch_reserved_blocks`, which has **no fallback TU on purpose**, so an enforcing port
 that forgets to declare its reserved set fails to LINK rather than leaving a silent open hole --
 but their chip-specific trapping (SYSMPU, the M7 anti-speculation wrap, PMSAv6) stays
-silicon-proven. Xtensa is build-only (no upstream ESP32 machine model), and
-**Renesas RX has no CI gate at all**: RX72M needs `-misa=v3`/`-mdfpu`, which exist only in the
-registration-gated Renesas GNURX build. So a change to the arch seam is unverified for RX until
-you build it yourself. Per-ISA detail: `boards.md` ("CI coverage & cross toolchains").
+silicon-proven. Xtensa and Renesas RX are build-only (no upstream emulator models the ESP32
+or the RX72M), so a change to the arch seam is unverified there until it runs on the bench.
+Per-ISA detail: `boards.md` ("CI coverage & cross toolchains").
 
 ### Cross toolchains (before you configure anything)
 
-A cross build resolves its compiler through a per-family hint variable, seeded from the
-environment, overridable with `-D`, falling back to `PATH` when empty:
-`KICKOS_ARM_TOOLCHAIN_BIN`, `KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`,
-`KICKOS_XTENSA_BIN`. No toolchain file carries a default compiler path, so **keep local pins in
-`.session/env.sh` (gitignored) and `source` it first**; CI sets the same variables and puts the
-pinned tarball's bin on `PATH`. Both routes matter: CMake's `try_compile` re-reads the toolchain
-file with a fresh cache, so it inherits the environment and `PATH` but never a `-D` cache entry --
-which is why each toolchain file re-exports the resolved value into the environment.
-
-**The hint is convenience; the capability check is the safety net.** `find_program` HINTS fall
-through to `PATH` when the hinted directory is absent, so a fresh clone on another host can
-silently resolve a distro cross-gcc -- and Debian's `arm-none-eabi-g++` is C-only picolibc with no
-`libstdc++`/`libsupc++` for any multilib, which used to surface ~40 build steps later as
-`fatal error: exception: No such file or directory`. The ARM and RISC-V toolchain files therefore
-probe the compiler they actually resolved (`cmake/cross_cxx_capability.cmake`) and refuse
-it at configure time, naming the compiler, the multilib, what was missing, the override variable
-and the official tarball URL. The probes carry the board's own `-mcpu`/`-march`, because a
-toolchain can ship `libstdc++` for one multilib and not another and the default multilib would
-hide that; picolibc is tested *positively* (via `__PICOLIBC__`) because Debian's build also
-defines `__NEWLIB__`, so inferring it from newlib's absence would pass it. **A new ARM or RISC-V
-port inherits this for free.** RX and Xtensa deliberately skip it -- neither has a same-name
-C-only twin on `PATH` to fall through to, so `find_program(... REQUIRED)` is already loud enough.
+Every cross build takes its compiler from the KickOS toolchain (`docs/design-m10-toolchain.md`),
+which `tools/kickos-toolchain.sh <dir>` provisions and `. <dir>/kickos-toolchain.sh` names in
+`KICKOS_TOOLCHAIN`, the one variable the toolchain files read. A toolchain file calls
+`kickos_toolchain_package(<triple>)` (`cmake/toolchain-common.cmake`), which finds every
+program in that family's bin directory and nowhere else, and refuses the configure when the
+folder lacks the family. A new port on an existing family inherits its compiler; a new family
+is a `FAMILIES` entry in `conan/toolchain/conanfile.py` and in `conan/toolchains/conanfile.py`.
+The value is re-exported to the environment because CMake's `try_compile` re-reads the
+toolchain file with a fresh cache, inheriting the environment but never a `-D` cache entry.
 
 ### Pin-function config (`arch_pinmux_set`)
 
@@ -1894,6 +1880,13 @@ part fails the **link** at `KICKOS_MAX_THREADS=12`, with `KICKOS_BOOT_ARENA_ASSE
 reporting that the arena can no longer hold idle + root.
 
 ### The 5 skips on a 16 KiB part
+
+**The count below is the three-slot, two-image reading and is not today's.** At
+`KICKOS_MAX_THREADS 2` over four images `f302nucleo-st` measures 18 skips, nearly all of them a
+worker the board cannot seat beside root, and a `caller_stack` partial beside the partials every
+7-slot board reports. They are declared
+per region in `tests/integration/gates/selftest.cmake`, which is where the bench manifest reads
+them from, and that list and not this section is the measurement to compare a capture against.
 
 `f302nucleo` was re-provisioned at `124b68c` and the measured skip count on silicon went
 **9 -> 5**. Silicon, `.session/m456-silicon/b5-nuc-selftest-after.log`: plan `1..63`,

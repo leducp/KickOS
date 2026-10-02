@@ -8,6 +8,7 @@
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
 #include <kickos/arch/portio.h>
+#include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/arch/trap.h>
 #include <kickos/arch/x86_64_trap_stack.h>
@@ -240,8 +241,9 @@ namespace kickos::x86_64
                              "movw %0, %%ss"
                              ::"r"(data)
                              : "memory");
-            // A null selector zeroes both bases. ring3_init then writes the gs pair by MSR,
-            // the only writer of the per-core pointer the syscall entry reads.
+            // A null selector need not change either base in 64-bit mode. ring3_init then writes
+            // the gs pair by MSR, the only writer of the per-core pointer the syscall entry reads,
+            // and desc_init_secondary seeds the FS base.
             uint16_t const none = sel_null;
             __asm__ volatile("movw %0, %%fs\n\t"
                              "movw %0, %%gs"
@@ -270,6 +272,9 @@ namespace kickos::x86_64
         build_tss_descriptor(c);
 
         load_gdt(c);
+        // Loading the null FS selector need not touch the base in 64-bit mode, so this is what
+        // establishes it, before any switch-in on this core writes the thread's own.
+        write_msr(KICKOS_X86_64_MSR_FS_BASE, KICKOS_X86_64_FS_POISON);
 
         uint16_t const tr = sel_tss;
         __asm__ volatile("ltr %0" ::"r"(tr) : "memory");
