@@ -272,6 +272,7 @@ root    rxv3 SYS_FAST ?kickos_bench_switch_done
 # return-address slot, so a frameless leaf reports 4 and not 0: arch_bitband_present
 # (`mov.l #0, r1; rts`) reports 4. arch_switch is switch.S and touches no stack at all.
 unsized rxv3 arch_switch 0  reason: switch.S leaf, records the target and pends SWINT, touches no stack
+unsized rxv3 arch_irq_restore 4 reason: switch.S leaf, pops its return address before it aligns R0 down to 8 across the MVTC, so R0 never goes below the return-address slot the caller's bsr pushed, which is the unit rx-elf reports
 unsized rxv3 kickos_panic_stack_enter 4 reason: switch.S, four instructions that write no stack of their own; the 4 is the return-address slot the caller's bsr pushed, which is the unit rx-elf reports
 unsized rxv3 __udivdi3   28 reason: measured from the ELF, prologue push plus return-address slot
 unsized rxv3 __umoddi3   32 reason: measured from the ELF, prologue push plus return-address slot

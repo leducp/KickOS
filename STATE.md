@@ -3908,6 +3908,49 @@ F103 and F302 selftest flash, about 1.1 KiB left.
 - The macOS arm64 packages are not built here: the `toolchain-release` workflow builds them on
   `macos-15` after the push, and they are unverified until it runs.
 
+## M10.2.3: the RX switch's DPFPU alignment, and what these green runs do NOT say
+
+**THE 160 AGAINST 128 WAS A MISALIGNED DPFPU BANK, AND ONLY THE PENDED SWITCH IS REALIGNED.** The
+RX72M's operand bus and RAM are 64 bits wide, so a DPFPU bank at 4 mod 8 gives every double of
+`dpushm.d` and `dpopm.d` two beats, 13 cycles a half and 26 a switch. Where the bank lands is the
+caller's frame sizes' to decide, and GCC 16.2 saving one register fewer in `syscall_body` moved the
+ping-pong onto 4 mod 8. `_arch_irq_restore` now aligns R0 down to 8 across the `mvtc` where a
+switch pended under the lock is taken (`arch/rx/rxv3/switch.S`). Every other way into the bank was
+counted before deciding (M10.2.3 with that fix, GCC 16.2, rx72m, a scratch counter build not
+committed; entries / entries at 4 mod 8):
+
+| Path | Bench | Selftest, default | Selftest, uartirq |
+| --- | --- | --- | --- |
+| Switch pended under the lock, the realigned one | 666868 / 0 | 1363 / 0 | 27894 / 0 |
+| Preemption of user mode | 0 | 2 / 1 | 99 / 61 |
+| Preemption of kernel mode | 0 | 171 / 1 | 14279 / 221 |
+| Register-form call fastpath, taken (save, and the restore after it) | 60000 / 0 | 2 / 0 | 2 / 0 |
+| Register-form call fastpath, refused | 0 | 283 / 261 | 283 / 261 |
+| Restore after a pended switch | 666868 / 434 | 1536 / 224 | 42272 / 506 |
+| Other restore, `arch_start` | 1 / 1 | 1 / 1 | 1 / 1 |
+
+At 26 cycles a misaligned pair: in the bench, only first-run restores, every new thread's first
+frame being fabricated at its block top, 434 of them, about 5.6k cycles a run. In the selftest the
+uartirq list's preemptions, about 7.3k cycles, mostly `thread_slay_timeout` and
+`call_timeout_revert`, and the refused fastpath, about 6.8k, 255 of its 261 in the arm
+`reply_abandoned_cap`.
+
+**RULED (maintainer, 2026-10-02): THE OTHER PATHS STAY AS THEY ARE, AND THE FASTPATH IS WATCHED.**
+Realigning a preemption takes a pad flag in every switch frame, paid by all 667k bench entries to
+save none of them; the fastpath is aligned on every taken entry measured; and aligning the
+first-run frame flips the parity of the frames built after it. The fastpath's alignment still
+rests on the callers' frame sizes, and a flip there costs about 0.4 percent of call/reply at
+8 bytes, under any row's noise. So the RX bench counts each taken fastpath entry whose saved or
+restored bank stands at 4 mod 8 (`KICKOS_BENCH_FASTPATH_WATCH`) and prints
+`fastpath-misaligned: N of M` once a boot, and `tools/bench/bench-capture.sh` refuses an rxv3
+capture whose N is not zero or whose row is missing. The decision trail is in
+`docs/design-m10-toolchain.md`, section 2.
+
+**WHAT IT DOES NOT SAY.**
+- The census was taken with GCC 16.2 alone, on one tree's layout. The watch covers the fastpath's
+  taken entries only; a preemption or a first-run restore may move to 4 mod 8 with no row saying so.
+- The selftest carries no watch: the counter is in bench images alone.
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

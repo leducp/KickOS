@@ -42,6 +42,18 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
 #define BENCH_VEC_DIRTY 0
 #endif
 
+// THE RX SWITCH ROW IS SAMPLED IN A BURST OF ITS OWN (KICKOS_BENCH_SWITCH_MEAN in
+// kernel/include/kickos/bench.h). CMTW1 ticks every 32 cycles and the ping-pong holds each
+// switch window's open at one phase of that tick, so every sample rounds the same way. In that
+// burst player_b delays each round's post by the round count's low five bits, outside every
+// window, and the delays accumulate along the run, which walks the opens through the tick.
+// The burst is not timed, so the throughput row and every row after it run the plain loop.
+#if defined(__RX__)
+#define BENCH_SWITCH_DITHER 1
+#else
+#define BENCH_SWITCH_DITHER 0
+#endif
+
 namespace
 {
     using kickos::Atomic;
@@ -149,6 +161,41 @@ namespace
             kos_sem_post(CH_B);
         }
     }
+#if BENCH_SWITCH_DITHER
+    // Set by the reporter across the switch row's own burst, read by player_b at each resume.
+    Atomic<uint32_t, Order::RELAXED> g_switch_dither{0};
+
+    // 2 cycles a step (sub, bne), so the 32 values cover the tick twice.
+    void switch_dither(uint32_t round)
+    {
+        uint32_t k = round & 31u;
+        if (k != 0)
+        {
+            __asm__ volatile("1: sub #1, %0\n\tbne 1b" : "+r"(k));
+        }
+    }
+
+    // Whole dithered bursts, from a resume to the gate after each. Returns at a resume whose
+    // burst is plain, which the caller's post then opens.
+    void player_b_dithered()
+    {
+        uint32_t round = g_rounds;
+        while (g_switch_dither != 0)
+        {
+            do
+            {
+                switch_dither(round);
+                kos_sem_post(CH_A);
+                kos_sem_wait(CH_B);
+                round = g_rounds + 1;
+                g_rounds = round;
+            } while ((round % ROUNDS_PER_REPORT) != 0);
+            kos_sem_post(CH_GATE);
+            kos_sem_wait(CH_RESUME);
+        }
+    }
+#endif
+
     // Parks for the whole report, with player_a parked on A behind it: above one kernel core the
     // reporter's probes and sweeps take it off the players' core, and the pair runs there again.
     void player_b(void*) // caps: A@1, B@2, gate@3, resume@4
@@ -163,6 +210,9 @@ namespace
             {
                 kos_sem_post(CH_GATE);
                 kos_sem_wait(CH_RESUME);
+#if BENCH_SWITCH_DITHER
+                player_b_dithered();
+#endif
             }
             vec_dirty();
             kos_sem_post(CH_A);
@@ -489,6 +539,15 @@ namespace
 #if KICKOS_KERNEL_CORES > 1
             sched_report(TAG_W1);
 #endif
+#if BENCH_SWITCH_DITHER
+            // The switch row's own burst, untimed: the timed one's samples are dropped, so the
+            // row above paid nothing for the dither and the rows below read only this burst.
+            (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
+            g_switch_dither = 1;
+            g_resume->post();
+            g_gate->wait();
+            g_switch_dither = 0;
+#endif
 
             // The kernel places this thread before each burst and refuses a core it does not
             // schedule, which is what ends the walk; at one kernel core the first call is
@@ -730,7 +789,9 @@ namespace
     constexpr uint64_t BENCH_BUSIEST_SLOT =
         2ull * (static_cast<uint64_t>(CALLREPLY_REPS)
                     * (2ull * (sizeof(CR_SPANS) / sizeof(CR_SPANS[0])) + 2ull)
-                + static_cast<uint64_t>(THROUGHPUT_REPORTS) * ROUNDS_PER_REPORT + XT_ROUNDS);
+                + static_cast<uint64_t>(THROUGHPUT_REPORTS) * ROUNDS_PER_REPORT
+                      * (1u + BENCH_SWITCH_DITHER)
+                + XT_ROUNDS);
     static_assert(BENCH_BUSIEST_SLOT < (1ull << 31),
                   "these rep counts drive a distribution slot towards a 32-bit wrap; the "
                   "percentiles under it would be wrong and no row would say so");
@@ -1375,6 +1436,8 @@ int main(int, char**)
     xt_pingpong();
     xt_callreply();
     spawn_exit();
+    // The kernel refuses it, and prints nothing, where no backend keeps the watch.
+    (void)kos_bench(KOS_BENCH_OP_FASTPATH_WATCH, 0, 0);
     kickos::emit("bench: done\n");
     return 0;
 }
