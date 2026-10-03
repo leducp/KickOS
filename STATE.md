@@ -3953,15 +3953,6 @@ capture whose N is not zero or whose row is missing. The decision trail is in
 
 ## M10.3: the composition's host side, and what these green runs do NOT say
 
-**ADMISSION MODELS AN INIT THAT DOES NOT EXIST YET.** The supply rules count what the design's
-"What one task costs" says the init spends, and nothing boots a table: M10.4's init must match
-that model, and three of its terms are rulings rather than readings of code. The init pins a
-line-taking task, a packaged driver included, to its declared core, where `driver_service.cc`
-claims on core 0 today; on a masked-SP build it gives every thread one whole stride and never
-hands a composition's figure over as a caller stack; and its peak holdings are modelled step by
-step through the walk. The arena replay starts at the chip's arena entry and ignores the static
-image below it, so the link-time `ASSERT`s M10.4 brings stay the authority on fit.
-
 **THE CHIP FILES AND THE KERNEL'S C STATE THE SAME FACTS TWICE UNTIL M10.5 GENERATES THE C.** The
 values were checked against the tree's C and the manuals; the ones nothing in the tree uses are
 where an error would sit (the virt lines and virtio set, XMC LED2, the i.MX 8M Plus GIC split and
@@ -3983,6 +3974,40 @@ there without honouring it (the open item in `TODO.md`).
 - The table compiles on every golden arch and round-trips on the host; nothing reads it on target.
 - The sweep ran the whole preset list on the scratch toolchain index, not the toolchain-1.0
   release.
+
+## M10.4: the composition's target side, and what these green runs do NOT say
+
+**THE INIT AND ADMISSION AGREE BY A FAKE KERNEL, NOT BY THE REAL ONE.** The cost equality tests run
+the init's walk against a scripted kernel and compare its peaks with `kickos_compose cost`. The
+fake was hardened twice against kernel/ (errnos, sweeps, slay, vacated endpoints), but a kernel
+change the fake does not mirror passes those tests. On target, only the golden systems, the
+restart witnesses and the driver witnesses exercise the walk, and none of them runs a pool at its
+admitted ceiling.
+
+**WHERE IT RAN.** QEMU: q35 at two cores, the A53 board at four, `qemu-riscv` (rv32, SP not
+masked). Silicon: the XMC4800 Relax Kit, golden system and user-task restart witness, judged by the
+tracked gates through `bench.sh JUDGE=`, the init reaching 776 of root's 4096 bytes. The driver
+restart witnesses ran on QEMU only. No composition links on rxv3, lx6, armv6m or armv8m, which
+have no chip files until M10.5: RX's symbol spellings in the emitted asserts are checked as
+strings and by one fixture link, and the driver trap encodings of RX and armv6m silicon are
+unwitnessed (lx6 and the Cortex-M0 have no fault isolation, so a trap ends the system there).
+
+**RULINGS TAKEN WITHOUT THE MAINTAINER, each reversible:** each watcher gets its own status
+block; an endpoint grows one alignment step on 32-bit non-AMP builds for its vacated byte.
+
+**MAINTAINER RULING:** a task ends as a process does. Its entry's exit or any member's fault slays
+every other member at once, creator or none, and `kos_task_kill` slays the group too; the init
+keeps no grace and never escalates. `kos_thread_kill` is the one cooperative cancel left.
+
+**MAINTAINER RULING:** a console driver may restart, and the init repeats the whole handover at
+every start of it. `kos_console_publish` requires HANDOUT, refusing a WAIT-only capability, and
+seats WAIT when the publisher lacks it (`console-publish-leaves-a-wait` in
+`docs/reference/invariants.md`).
+The reversible ruling that a publish through HANDOUT seats WAIT is now the maintainer's ruling.
+
+**FLAKES SEEN ONLY UNDER A SATURATED HOST.** The witnesses lose lines when the kernel console ring
+drops bytes (they now fail naming the drop); x86 selftest fault arms and `hello` hit their QEMU
+timeouts while two sweeps shared the box, and passed alone.
 
 ## Where to go next
 

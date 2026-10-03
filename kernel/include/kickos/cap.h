@@ -678,6 +678,14 @@ namespace kickos
     // rights 0, the publisher's CAP_SIGNAL. False = nothing changed.
     bool cap_console_publish(Thread* publisher, int obj_handle);
 
+    // kos_console_publish through the publisher's endpoint capability `e`, which must hold
+    // HANDOUT. One not holding WAIT gains it and counts as receiving, as an endpoint's creator
+    // does from the start, so every publish leaves `e` holding WAIT and HANDOUT and the
+    // publisher's narrow at the end of the handover is the last WAIT going whenever no driver
+    // thread holds one. Caller holds IrqLock. Returns 0, -KOS_EACCES (no HANDOUT) or
+    // -KOS_EOVERFLOW (a counter at its ceiling); a refusal changes nothing.
+    int cap_console_publish_through(Thread* publisher, CapEntry* e);
+
     // The published console endpoint's global handle. False = nothing has been published, and
     // *out is untouched. The sentinel stays private to cap.cc: it is tested by EQUALITY, never
     // by sign, because a live handle whose slot generation has reached 32768 is NEGATIVE.

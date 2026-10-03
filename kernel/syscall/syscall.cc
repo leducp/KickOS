@@ -20,6 +20,7 @@
 #include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
+#include <kickos/kruntime.h> // kmemset
 #include <kickos/ramown.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
@@ -43,6 +44,26 @@ namespace kickos
 
     namespace
     {
+#if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
+        // KOS_GRANT_OP_ARENA_SCRIBBLE: kos_ram_alloc's authority, over arena nothing holds yet.
+        uint64_t arena_scribble(size_t size)
+        {
+            IrqLock lock;
+            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            uintptr_t const next = arch_ram_next();
+            uintptr_t const end = arch_ram_base() + arch_ram_size();
+            if (next > end or size > end - next)
+            {
+                return 0;
+            }
+            kmemset(reinterpret_cast<void*>(next), KOS_ARENA_SCRIBBLE, size);
+            return next;
+        }
+#endif
+
         // Yield passes the publish drain allows before declaring a stuck chip writer.
         constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
 
@@ -485,23 +506,21 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            int handle = -1;
             {
                 IrqLock lock;
-                // The GLOBAL gen-encoded handle, NOT the pool index. Any rights: the publish
-                // is identity-only.
+                // The GLOBAL gen-encoded handle, NOT the pool index.
                 CapEntry* e = cap_lookup(c, static_cast<uint32_t>(a0));
                 if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
                     or kernel().endpoints.resolve(e->obj) == nullptr)
                 {
                     return static_cast<uint64_t>(-KOS_EBADF);
                 }
-                handle = e->obj;
                 // Must precede the relinquish below: it is the last step that can fail, and a
                 // refusal has to leave a working console behind.
-                if (not cap_console_publish(c, handle))
+                int const rc = cap_console_publish_through(c, e);
+                if (rc != 0)
                 {
-                    return static_cast<uint64_t>(-KOS_EOVERFLOW); // endpoint refcount ceiling
+                    return static_cast<uint64_t>(rc);
                 }
                 // Refuses every NEW kernel chip writer and gives up the ring, WITHOUT
                 // handing the device over: a writer already counted below may be mid-message
@@ -594,10 +613,23 @@ uint64_t syscall_body(uintptr_t nr,
             // UNGATED by authority, gated by creatorship inside (task.cc).
             return static_cast<uint64_t>(task_state_call(static_cast<kos_task_t>(a0)));
         }
-        case KOS_SYS_WINDOW_ADDR:
+        case KOS_SYS_WINDOW_GET:
         {
-            // UNGATED: possession of the window is the whole gate (syscall_mem.cc).
-            return static_cast<uint64_t>(window_addr_call(a0, a1));
+            // UNGATED: it answers only the caller's own windows (syscall_mem.cc).
+            return static_cast<uint64_t>(window_get_call(a0, a1));
+        }
+        case KOS_SYS_TASK_EXIT_STATUS:
+        {
+            // UNGATED by authority, gated by creatorship inside (task.cc). Any int is a status,
+            // so it rides an out-parameter.
+            int rc = cap_out_check(a1);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            int32_t status = 0;
+            rc = task_exit_status_call(static_cast<kos_task_t>(a0), &status);
+            return cap_out_deliver(a1, rc, static_cast<uint32_t>(status));
         }
         case KOS_SYS_PORT_REG_WRITE:
         {
@@ -631,6 +663,10 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 task_sched_grant(static_cast<kos_task_t>(a0), static_cast<uint8_t>(a1),
                                  static_cast<uint32_t>(a2)));
+        }
+        case KOS_SYS_THREAD_SET_PRIORITY:
+        {
+            return static_cast<uint64_t>(thread_set_priority(a0));
         }
         case KOS_SYS_THREAD_SLAY:
         {
@@ -894,6 +930,12 @@ uint64_t syscall_body(uintptr_t nr,
                     result = grant_region_admissible(base, size, rw | ARCH_MPU_NOCACHE, false);
                     break;
                 }
+#if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
+                case KOS_GRANT_OP_ARENA_SCRIBBLE:
+                {
+                    return arena_scribble(size);
+                }
+#endif
                 case KOS_GRANT_OP_RESERVED_COUNT:
                 {
                     struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
@@ -931,6 +973,16 @@ uint64_t syscall_body(uintptr_t nr,
                 return 1u;
             }
             return 0u;
+        }
+#elif defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
+        case KOS_SYS_GRANT_PROBE:
+        {
+            // A region board with no unit answers the arena op alone.
+            if (a0 == KOS_GRANT_OP_ARENA_SCRIBBLE)
+            {
+                return arena_scribble(static_cast<size_t>(a2));
+            }
+            return static_cast<uint64_t>(-KOS_EINVAL);
         }
 #endif
         case KOS_SYS_IRQ_UNMASK:
@@ -991,22 +1043,38 @@ uint64_t syscall_body(uintptr_t nr,
             // arch_ram_alloc does an unguarded read-modify-write of the bump pointer.
             // POINTER return, OUT of the -KOS_E* scheme: a negative errno cast to void* would
             // be a non-NULL pointer, so EVERY failure path returns 0 (NULL).
+#if KICKOS_HAVE_ASPACE
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
             {
                 return 0;
             }
-#if KICKOS_HAVE_ASPACE
             // A page-aligned range RESERVED in the calling task's own space, mapped nowhere;
-            // the frames under it make it a globally unique name the handoff can carry. A
-            // privileged caller gets null: the kernel domain carries no space.
+            // the frames under it make it a globally unique name the handoff can carry, and the
+            // frame pool hands them out cleared. A privileged caller gets null: the kernel
+            // domain carries no space.
             return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
                                   static_cast<size_t>(a0));
 #else
-            // The block AND the record of who reserved it (ramown.h).
-            return reinterpret_cast<uintptr_t>(
-                ram_owner_alloc(c->task, static_cast<size_t>(a0)));
+            void* block = nullptr;
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+                {
+                    return 0;
+                }
+                // The block AND the record of who reserved it (ramown.h).
+                block = ram_owner_alloc(c->task, static_cast<size_t>(a0));
+            }
+            // Cleared over the extent a region grants, with interrupts open: no other task can
+            // name the block, and the arena never takes one back, so this is its only clear.
+            if (block != nullptr)
+            {
+                ram_block_clear(block, arch_ram_region_size(static_cast<size_t>(a0)));
+            }
+            return reinterpret_cast<uintptr_t>(block);
 #endif
         }
 #if KICKOS_HAVE_ASPACE

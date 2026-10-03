@@ -4,9 +4,12 @@
 # python -m kickos_compose platform <file or directory>...
 # python -m kickos_compose admit <composition>... --manifest <manifest> | --platform <platform directory>
 # python -m kickos_compose manifest <manifest>...
-# python -m kickos_compose emit <composition> --manifest <manifest> -o <file.c>
+# python -m kickos_compose emit <composition> --manifest <manifest> -o <file.c> [--asserts <file.ld>]
+#                               [--fragment <file.cmake>]
+# python -m kickos_compose cost <composition> --manifest <manifest>
 #
-# Against a manifest, the chip and board files are the ones its `descriptions` names.
+# Against a manifest, the chip and board files are the ones its `descriptions` names. A run that
+# refuses exits REFUSED; any other failure exits otherwise.
 
 import argparse
 import os
@@ -14,8 +17,13 @@ import sys
 
 from .composition import admit
 from .descriptions import check_platform
-from .emit import emit
+from .emit import admitted_of, emit_system
 from .manifest import check_manifests
+from .supply import init_figures
+
+# The exit status of a run that refused what it read, which kickos_compose tells apart from a tool
+# that did not run: Python's own failures exit 1 and argparse's 2.
+REFUSED = 3
 
 
 def finish(report, count, what, scope=""):
@@ -24,7 +32,7 @@ def finish(report, count, what, scope=""):
         print(refusal)
     if refusals:
         print("kickos_compose: %d refusal(s) in %d %s(s) read%s" % (len(refusals), count, what, scope))
-        return 1
+        return REFUSED
     print("kickos_compose: %d %s(s) read, none refused%s" % (count, what, scope))
     return 0
 
@@ -45,9 +53,15 @@ def main(argv):
     table.add_argument("composition", help="the composition file")
     table.add_argument("--manifest", required=True, help="the export manifest of the kernel build it runs on")
     table.add_argument("-o", dest="output", required=True, help="the C source to write")
+    table.add_argument("--asserts", help="the linker script of the system target's link-time asserts to write")
+    table.add_argument("--fragment", help="the CMake fragment kickos_compose reads to write")
+    cost = commands.add_parser("cost", help="admit a composition and print what its init spends, one figure "
+                                            "per line")
+    cost.add_argument("composition", help="the composition file")
+    cost.add_argument("--manifest", required=True, help="the export manifest of the kernel build it runs on")
     arguments = parser.parse_args(argv)
 
-    if arguments.command in ("admit", "emit"):
+    if arguments.command in ("admit", "emit", "cost"):
         platform = getattr(arguments, "platform", None)
         if platform is not None and not os.path.isdir(platform):
             print("kickos_compose: --platform %s is no directory" % platform, file=sys.stderr)
@@ -64,17 +78,33 @@ def main(argv):
         return finish(report, count, "composition", scope)
 
     if arguments.command == "emit":
-        # A refused composition leaves no table behind, so a build cannot link the last one.
-        if os.path.exists(arguments.output):
-            os.remove(arguments.output)
-        report, text = emit(arguments.composition, arguments.manifest)
-        if text is None and not report.refusals:
+        # A refused composition leaves nothing behind, so a build cannot link the last one.
+        outputs = [arguments.output, arguments.asserts, arguments.fragment]
+        for output in outputs:
+            if output is not None and os.path.exists(output):
+                os.remove(output)
+        report, texts = emit_system(arguments.composition, arguments.manifest, os.path.basename(arguments.output))
+        if texts is None and not report.refusals:
             print("kickos_compose: %s was not admitted" % arguments.composition, file=sys.stderr)
             return 1
-        if text is None:
+        if texts is None:
             return finish(report, 1, "composition")
-        with open(arguments.output, "w", encoding="ascii", newline="\n") as stream:
-            stream.write(text)
+        for output, text in zip(outputs, texts):
+            if output is None:
+                continue
+            with open(output, "w", encoding="ascii", newline="\n") as stream:
+                stream.write(text)
+        return 0
+
+    if arguments.command == "cost":
+        report, admitted = admitted_of(arguments.composition, arguments.manifest)
+        if admitted is None and not report.refusals:
+            print("kickos_compose: %s was not admitted" % arguments.composition, file=sys.stderr)
+            return 1
+        if admitted is None:
+            return finish(report, 1, "composition")
+        for name, count in init_figures(admitted.tasks, admitted.shared, admitted.manifest, admitted.translating):
+            print("%s %d" % (name, count))
         return 0
 
     if arguments.command == "manifest":

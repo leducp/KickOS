@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's RV32 `virt` machine. Values from the tree's chip_virt_rv32.cc and virt_rv32.ld under
+# arch/riscv/chip/virt_rv32/, and arch_mpu_min_region, arch_mpu_nocache_support and the PMP
+# commit in arch/riscv/rv32imac/arch_rv32imac.cc; the CLINT layout from the RISC-V Privileged
+# ISA v1.10 and QEMU's `virt` memory map.
+
+version: 1
+chip: virt_rv32
+arch: rv32imac
+
+# PMP checks every user-mode access, device windows included, and its entry carries no type.
+protection: { unit: pmp, covers_devices: true, memory_type: false }
+# No data cache sits over the RAM: the arena is reached uncached.
+data_cache: false
+
+devices:
+  # No device names a line: the kernel drives no PLIC, its lines being software-injected on
+  # the supervisor software interrupt.
+  # Machine-mode timer and software interrupts: msip, mtimecmp and mtime.
+  clint: { window: [0x02000000, 0x10000], owner: kernel }
+
+memory:
+  dram: { base: 0x80000000, size: 0x800000, arena: true } # virt_rv32.ld's RAM

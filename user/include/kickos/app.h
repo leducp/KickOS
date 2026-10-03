@@ -2,14 +2,18 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The OS-agnostic application entry contract (dependency inversion, invariant #8). The app writes
-// a plain `int main(int argc, char** argv)`; linking the exported `kickos` (or `kickos_cxx`)
-// target compiles it with -Dmain=kickos_app_main, and the kernel's boot path calls
-// kickos_app_main after init. Its int return becomes the process exit status on the sim.
+// a plain `int main(int argc, char** argv)`; linking KickOS::kernel, or the `kickos` and
+// `kickos_cxx` leaves, compiles it with -Dmain=kickos_app_main. Under a system target,
+// kickos_main (KickOS::main), the entry a composition names as `entry: kickos_main` and the
+// default composition names for its `main` task, calls kickos_app_main as that task's entry
+// thread and passes its return to exit(), so the system ends with it where the composition
+// `ends` on that task. Under the `kickos` and `kickos_cxx` leaves the default init calls it on
+// root's thread, and its return becomes the process exit status on the sim.
 //
-// App and library C++ global ctors run on MCU targets from the kernel's root thread just before
-// kickos_app_main, on ONE thread in sequence. An app global ctor MUST NOT block (sleep/wait), or
-// a higher-priority thread it already spawned may run before the remaining globals are
-// constructed. Do blocking work inside main.
+// App and library C++ global ctors run on MCU targets from the kernel's root thread before
+// kickos_app_main runs, on ONE thread in sequence, and before the init starts any task. An app
+// global ctor MUST NOT block (sleep/wait), or a higher-priority thread it already spawned may run
+// before the remaining globals are constructed. Do blocking work inside main.
 //
 // This declaration is force-included into every app TU by the build. extern "C" gives the
 // -Dmain-renamed C++ `main` C language linkage, so it resolves to the unmangled symbol the

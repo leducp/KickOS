@@ -15,7 +15,7 @@
 # driver may not be linked beside this one.
 kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc
                   CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
-                  THREADS uartirq:1:default:2 service:0:default:2 RECEIVER service
+                  THREADS uartirq:1:default:2:0 service:0:default:2:1 RECEIVER service
                   WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START xmcuartirq_console_start CONSOLE)
 

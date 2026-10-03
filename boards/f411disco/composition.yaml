@@ -5,6 +5,7 @@ version: 1
 board: f411disco
 stdout: kernel
 ends: main
+heap: 8192
 accepts: [no_protection] # for the -flat build alone
 
 tasks:

@@ -57,8 +57,10 @@ int main()
     KOS_SYS_THREAD_SELF,
     KOS_SYS_TASK_WATCH,
     KOS_SYS_TASK_STATE,
-    KOS_SYS_WINDOW_ADDR,
+    KOS_SYS_WINDOW_GET,
     KOS_SYS_PORT_REG_WRITE,
+    KOS_SYS_TASK_EXIT_STATUS,
+    KOS_SYS_THREAD_SET_PRIORITY,
     };
     for (kos_syscall_nr s : calls)
     {

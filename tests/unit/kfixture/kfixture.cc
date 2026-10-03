@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <new> // Thread holds a kickos::Atomic, so a reset is a re-construction
@@ -19,6 +20,7 @@
 #include <kickos/kernel.h>
 #include <kickos/list.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/time.h>
 
 #include "kfixture.h"
@@ -533,13 +535,12 @@ namespace kickos
         // Keep initialization consistent with endpoint_slot_claim.
         Endpoint* endpoint()
         {
-            Endpoint* ep = kernel().endpoints.at(kernel().endpoints.alloc());
-            if (ep == nullptr)
+            Endpoint* ep = nullptr;
+            if (endpoint_slot_claim(&ep) < 0)
             {
                 printf("FIXTURE FAIL: endpoint pool exhausted\n");
                 exit(1);
             }
-            *ep = Endpoint{};
             return ep;
         }
 
@@ -689,6 +690,24 @@ namespace kickos
             }
             // Clear on both paths to prevent longjmp into an expired frame.
             g_park_armed = false;
+        }
+
+        void run_exit_in_gap(Thread* t, int code)
+        {
+            if (not g_in_gap_action)
+            {
+                printf("FIXTURE FAIL: run_exit_in_gap outside a chunk-gap action\n");
+                exit(1);
+            }
+            jmp_buf outer;
+            memcpy(&outer, &g_park_jmp, sizeof(jmp_buf));
+            bool const outer_armed = g_park_armed;
+            Thread* const was = kernel().current[kickos_kernel_core()];
+            kernel().current[kickos_kernel_core()] = t;
+            run_exit(code);
+            kernel().current[kickos_kernel_core()] = was;
+            memcpy(&g_park_jmp, &outer, sizeof(jmp_buf));
+            g_park_armed = outer_armed;
         }
 
         void run_noreturn(void (*fn)())

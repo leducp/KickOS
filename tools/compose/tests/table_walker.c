@@ -37,9 +37,10 @@ static struct bit_name const grant_flag_names[] = {
     {KOS_WINDOW_RO, "ro"}, {KOS_WINDOW_UNCACHED, "uncached"}, {0, NULL}};
 static struct bit_name const region_flag_names[] = {{KOS_MEM_NOCACHE, "uncached"}, {0, NULL}};
 static struct bit_name const header_flag_names[] = {{KOS_TABLE_ENDS_TASK, "ends_task"}, {0, NULL}};
+static struct bit_name const task_flag_names[] = {{KOS_TABLE_TASK_CONSOLE, "console"}, {0, NULL}};
 
 static char const* const kind_names[] = {"endpoint_serve", "endpoint_use", "notification", "window",
-                                         "ports",          "region",       "line"};
+                                         "ports",          "region",       "line",         "status"};
 
 static int faults = 0;
 
@@ -131,9 +132,13 @@ int main(void)
     printf(" version=%u", (unsigned)h->version);
     print_bits("flags", h->flags, header_flag_names);
     print_index("ends_task", h->ends_task);
-    printf(" tasks=%u grants=%u refs=%u privs=%u regions=%u strings=%" PRIu32 "\n", (unsigned)h->task_count,
-           (unsigned)h->grant_count, (unsigned)h->ref_count, (unsigned)h->priv_count, (unsigned)h->region_count,
-           h->strings_size);
+    printf(" tasks=%u grants=%u refs=%u privs=%u regions=%u strings=%" PRIu32 " init_priority=%u\n",
+           (unsigned)h->task_count, (unsigned)h->grant_count, (unsigned)h->ref_count, (unsigned)h->priv_count,
+           (unsigned)h->region_count, h->strings_size, (unsigned)h->init_priority);
+    if (h->rsv0 != 0 or h->rsv1 != 0 or h->rsv2 != 0)
+    {
+        ++faults;
+    }
 
     for (unsigned n = 0; n < h->task_count; ++n)
     {
@@ -145,13 +150,16 @@ int main(void)
         }
         printf("task %u name=%s entry=%s", n, text_at(strings, h->strings_size, t->name), symbol_at(entry));
         print_index("driver", t->driver);
-        printf(" stack=%" PRIu32 " priority=%u restart_max=%u core_mask=0x%" PRIX32, t->stack, (unsigned)t->priority,
-               (unsigned)t->restart_max, t->core_mask);
+        printf(" stack=%" PRIu32 " block=%" PRIu32 " priority=%u restart_max=%u", t->stack, t->block,
+               (unsigned)t->priority, (unsigned)t->restart_max);
+        print_bits("flags", t->flags, task_flag_names);
+        printf(" core_mask=0x%" PRIX32, t->core_mask);
         print_bits("authority", t->authority, authority_names);
         printf(" grants=%u+%u cap_grants=%u uses=%u+%u watches=%u+%u\n", (unsigned)t->first_grant,
                (unsigned)t->grant_count, (unsigned)t->cap_grant_count, (unsigned)t->first_use,
                (unsigned)t->use_count, (unsigned)t->first_watch, (unsigned)t->watch_count);
-        if (t->rsv0 != 0 or t->rsv1 != 0 or t->rsv2 != 0 or t->rsv3[0] != 0 or t->rsv3[1] != 0 or t->rsv3[2] != 0)
+        if (t->rsv1 != 0 or t->rsv3[0] != 0 or t->rsv3[1] != 0 or t->rsv3[2] != 0
+            or (t->flags & ~(uint16_t)KOS_TABLE_TASK_CONSOLE) != 0 or (t->driver == KOS_TABLE_NONE and t->block != 0))
         {
             ++faults;
         }
@@ -181,11 +189,12 @@ int main(void)
         printf(" name=%s", text_at(strings, h->strings_size, g->name));
         printf(" path=%s", text_at(strings, h->strings_size, g->path));
         print_index("target", g->target);
+        print_index("window", g->window);
         printf(" base=0x%" PRIX64 " size=0x%" PRIX32, g->base, g->size);
         print_index("line_index", g->line_index);
         print_index("line", g->line);
         printf(" privs=%u+%u\n", (unsigned)g->priv_first, (unsigned)g->priv_count);
-        if (g->rsv0 != 0 or g->rsv1 != 0)
+        if (g->rsv1 != 0)
         {
             ++faults;
         }

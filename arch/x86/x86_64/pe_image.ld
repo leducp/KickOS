@@ -239,7 +239,7 @@ SECTIONS
     *(.bss .bss.*)
     *(COMMON)
     . = ALIGN(8);
-    /* newlib's heap, KICKOS_USER_HEAP_SIZE bytes from kickos_x86_64_link_image's --defsym. In
+    /* newlib's heap, KICKOS_USER_HEAP_SIZE bytes, a link symbol. In
      * the app window, so every address space gets a copy of its own. */
     _kickos_heap_start = . ;
     . += KICKOS_USER_HEAP_SIZE;
@@ -249,6 +249,9 @@ SECTIONS
   /* Opt-in link-time heap floor, --defsym KICKOS_HEAP_MIN=<bytes> (undefined by default). */
   ASSERT (DEFINED (KICKOS_HEAP_MIN) ? _kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN : 1,
           "KickOS: heap below KICKOS_HEAP_MIN")
+  /* The block a stack pays for thread-local data, which a system target's asserts read
+   * (arch/common/sections.ld.h). This board has no KICKOS_TLS, so a stack pays none. */
+  __kickos_tls_carve = 0;
   .edata BLOCK(__section_alignment__) :
   {
     *(.edata)

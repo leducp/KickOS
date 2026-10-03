@@ -7,8 +7,8 @@
 
 set(KICKOS_DRIVER_OPTIONS NOTIFY CONSOLE)
 set(KICKOS_DRIVER_SINGLE CLASS REGDIR BLOCK POSTURE BARRIER START RECEIVER)
-set(KICKOS_DRIVER_MULTI SOURCES THREADS WINDOWS LINES)
-set(KICKOS_DRIVER_METADATA THREADS WINDOWS LINES BLOCK POSTURE BARRIER START RECEIVER NOTIFY CONSOLE)
+set(KICKOS_DRIVER_MULTI SOURCES THREADS WINDOWS LINES CLIENT)
+set(KICKOS_DRIVER_METADATA THREADS WINDOWS LINES BLOCK POSTURE BARRIER START RECEIVER NOTIFY CONSOLE CLIENT)
 
 # Writes `content` to `path` unless it already holds it, so nothing that depends on the file is
 # rebuilt for an identical configure. No @-reference or ${} in `content` is expanded again.
@@ -98,15 +98,18 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   set(_names "")
   set(_threads "")
   set(_caps "")
+  set(_badged "")
   foreach(_t IN LISTS M_THREADS)
-    if(NOT _t MATCHES "^([a-z][a-z0-9_]*):([0-9]+):(default):([0-9]+)$" OR CMAKE_MATCH_2 GREATER 127
-       OR CMAKE_MATCH_4 GREATER 255)
+    if(NOT _t MATCHES "^([a-z][a-z0-9_]*):([0-9]+):(default):([0-9]+):([0-9]+)$" OR CMAKE_MATCH_2 GREATER 127
+       OR CMAKE_MATCH_4 GREATER 255 OR CMAKE_MATCH_5 GREATER CMAKE_MATCH_4)
       message(FATAL_ERROR "kickos_add_driver(${name}): THREADS entry '${_t}' is not "
-        "<role>:<priority offset 0 to 127>:default:<capabilities its spawn delegates>")
+        "<role>:<priority offset 0 to 127>:default:<capabilities its spawn delegates>"
+        ":<badged notification copies among them>")
     endif()
     list(APPEND _roles "${CMAKE_MATCH_1}")
     list(APPEND _prio "${CMAKE_MATCH_2}")
     list(APPEND _caps "${CMAKE_MATCH_4}")
+    list(APPEND _badged "${CMAKE_MATCH_5}")
     if(CMAKE_MATCH_1 STREQUAL "service")
       list(APPEND _names "nullptr")
     else()
@@ -115,7 +118,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
     _kickos_json_quote("${CMAKE_MATCH_1}" _qrole)
     _kickos_json_quote("${CMAKE_MATCH_3}" _qstack)
     list(APPEND _threads "{\"name\": ${_qrole}, \"priority\": ${CMAKE_MATCH_2}, \"stack\": ${_qstack}, \
-\"caps\": ${CMAKE_MATCH_4}}")
+\"caps\": ${CMAKE_MATCH_4}, \"badged\": ${CMAKE_MATCH_5}}")
   endforeach()
   list(LENGTH _roles _thread_count)
   list(FIND _roles "${M_RECEIVER}" _receiver)
@@ -177,6 +180,19 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
     set(_block ${M_BLOCK})
     set(_qblock ${M_BLOCK})
   endif()
+  # The libraries a task using the driver links, which kickos_compose links in a system naming it.
+  set(_clients "")
+  foreach(_c IN LISTS M_CLIENT)
+    if(NOT _c MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
+      message(FATAL_ERROR "kickos_add_driver(${name}): CLIENT names the library a client of the "
+        "driver links, a target name, not '${_c}'")
+    endif()
+    _kickos_json_quote("${_c}" _qc)
+    if(_qc IN_LIST _clients)
+      message(FATAL_ERROR "kickos_add_driver(${name}): CLIENT names '${_c}' twice")
+    endif()
+    list(APPEND _clients "${_qc}")
+  endforeach()
   set(_barrier true)
   if(M_BARRIER STREQUAL "none")
     set(_barrier false)
@@ -188,17 +204,19 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   _kickos_json_array(_jwindows ${_windows})
   _kickos_json_array(_jlines ${_lines})
   _kickos_json_array(_jthreads ${_threads})
+  _kickos_json_array(_jclients ${_clients})
   _kickos_json_quote("${M_POSTURE}" _qposture)
   _kickos_json_quote("${M_START}" _qstart)
   _kickos_json_quote("${M_RECEIVER}" _qreceiver)
   set(${out_json} "{\"windows\": ${_jwindows}, \"lines\": ${_jlines}, \"threads\": ${_jthreads}, \
 \"endpoints\": ${KICKOS_DRIVER_ENDPOINTS}, \"notifications\": ${_notifications}, \
 \"block\": ${_qblock}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
-\"start\": ${_qstart}, \"receiver\": ${_qreceiver}}"
+\"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}}"
       PARENT_SCOPE)
 
   list(JOIN _prio ", " _prio_init)
   list(JOIN _caps ", " _caps_init)
+  list(JOIN _badged ", " _badged_init)
   list(JOIN _names ", " _name_init)
   string(TOUPPER "${name}" _guard)
   set(${out_header}
@@ -224,6 +242,7 @@ namespace kickos::driver::declared::${name}
         .prio_delta = {${_prio_init}},
         .thread_name = {${_name_init}},
         .cap_count = {${_caps_init}},
+        .badged = {${_badged_init}},
         .receiver = ${_receiver},
         .notify = ${_notify},
         .block_size = ${_block}u,
@@ -237,4 +256,23 @@ namespace kickos::driver::declared::${name}
 #endif
 " PARENT_SCOPE)
   set(${out_packaged} TRUE PARENT_SCOPE)
+endfunction()
+
+# Refuses packaged driver `name` when its catalogue entry `entry` names a CLIENT that no target
+# KickOS::<client> is: kickos_compose links that target into every system naming the driver. Run
+# once every target is declared, at the manifest's export.
+function(kickos_driver_clients_exist name entry)
+  string(JSON _count ERROR_VARIABLE _none LENGTH "${entry}" client)
+  if(_none OR _count EQUAL 0)
+    return()
+  endif()
+  math(EXPR _last "${_count} - 1")
+  foreach(_i RANGE ${_last})
+    string(JSON _client GET "${entry}" client ${_i})
+    if(NOT TARGET KickOS::${_client})
+      message(FATAL_ERROR "kickos_add_driver(${name}): CLIENT names '${_client}', and no target "
+        "KickOS::${_client} exists once the build is declared; kickos_compose links it into every "
+        "system naming the driver")
+    endif()
+  endforeach()
 endfunction()

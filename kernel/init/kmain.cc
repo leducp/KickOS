@@ -329,13 +329,13 @@ namespace kickos
             sched::add(&kernel().idle_tcb);
         }
 
-        // Root runs at a low priority so a worker's completion post never preempts it.
-        // Spawn order is not a barrier: any interrupt between two spawns reschedules onto the
-        // highest-priority READY thread, so an orchestrator that needs its workers staged
-        // MUST gate them on a semaphore it posts itself.
+        // Root lowers itself to the priority its image states (kickos_root_lower,
+        // <kickos/sys/init.h>). Spawn order is not a barrier: any interrupt between two spawns
+        // reschedules onto the highest-priority READY thread, so an orchestrator that needs its
+        // workers staged MUST gate them on a semaphore it posts itself.
         ThreadAttr root_attr;
         root_attr.name = "root";
-        root_attr.prio = KICKOS_PRIO_MIN + 1;
+        root_attr.prio = KICKOS_PRIO_MAX;
         root_attr.policy = Policy::FIFO;
         // Privilege is a property of the fabricated first frame (arch_context_init), so
         // there is no demotion instant: root is unprivileged from its first instruction.
@@ -372,8 +372,6 @@ namespace kickos
         {
             kpanic(diag::kBootRootRun);
         }
-        // Configure refuses a mask naming no core this kernel drives; one that reached the
-        // image another way would leave root on no core that runs.
         if ((static_cast<uint64_t>(KICKOS_ROOT_CORE_MASK) >> KICKOS_KERNEL_CORES) != 0)
         {
             kpanic(diag::kBootRootCoreMask);

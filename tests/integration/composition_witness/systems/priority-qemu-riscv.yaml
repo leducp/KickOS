@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The init's priority on QEMU RV32 `virt`, one core: the init at 5 between a task at 6 and one
+# at 4, each watching a pulse at 7 that ends twice. The task at 4 ends the system.
+
+version: 1
+board: qemu-riscv
+
+stdout: kernel
+
+ends: low
+heap: 16384
+init: { priority: 5 }
+
+tasks:
+  - name: pulse
+    entry: prio_pulse_main
+    stack: 2048
+    priority: 7
+    restart: { max: 1 }
+
+  - name: high
+    entry: prio_high_main
+    stack: 4096
+    priority: 6
+    watches: [pulse]
+
+  - name: low
+    entry: prio_low_main
+    stack: 4096
+    priority: 4
+    watches: [pulse]

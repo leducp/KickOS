@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M10 GOLDEN EXAMPLE: does not build yet. `kos_self_t`, the `kos_grant_*` lookups, the
-// `kos_window_*` accessors and `kos_task_status` are what M10 adds; everything else is today's API.
-//
-// The health checker, written by the user and shared by every system in this example. The
-// composition lists what it `watches`; the init raises bit i here each time the i-th of those
-// dies, after applying its restart counter, and answers what this task asks about it. It also
-// maps /shm/history read-only, so a death is logged with the last readings the sensor wrote.
-// What to do about a death is this task's decision: this one only reports, where a motor
-// controller would engage its brakes or a degraded system would carry on and say so.
+// The health checker, the same on every board. The composition lists what it `watches`; the
+// init raises bit i of /init/events each time the i-th of those dies, after applying its
+// restart counter, and kos_task_status answers that task's state. It maps /shm/history
+// read-only, so a death is logged with the last reading the sensor wrote. What to do about a
+// death is this task's decision: this one reports it.
 
 #include <kickos/sys.h>
 

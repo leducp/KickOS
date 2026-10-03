@@ -1030,13 +1030,15 @@ namespace selftest
         TAP_CHECK(g_pw_word == 0x600Du); // and root's copy was untouched by either
     }
 
-    // Two task siblings share one image.
+    // Two task siblings share one image. The writer, the task's entry, holds the task open
+    // until the reader has read: its exit ends the task.
     volatile uint32_t g_sib_word = 0u;
-    void sib_writer(void* arg) // caps: done@1
+    void sib_writer(void* arg) // caps: done@1, hold@2
     {
         g_sib_word = 0xBEEFu;
         static_cast<volatile uint64_t*>(arg)[0] = 1u;
         kos_sem_post(CH_DONE);
+        kos_sem_wait(2);
     }
     void sib_reader(void* arg) // caps: done@1
     {
@@ -1058,30 +1060,35 @@ namespace selftest
         out[1] = 0;
         g_sib_word = 0u;
         kos_task_t t = KOS_TASK_NONE;
-        if (kos_task_create(blk, SIB_BLK, 0, &t) != 0)
+        kos_cap_t hold = KOS_CAP_NONE;
+        if (kos_task_create(blk, SIB_BLK, 0, &t) != 0 or kos_sem_create(0, &hold) != 0)
         {
-            tap::skip("task pool too small");
+            tap::skip("task or semaphore pool too small");
             return;
         }
-        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {hold, KOS_CAP_WAIT}};
         // Wait for the writer before starting the reader; spawn alone does not preempt.
-        if (not kos::thread::create_caps(sib_writer, blk, "sibW", 10, caps, 1, KOS_POLICY_FIFO,
+        if (not kos::thread::create_caps(sib_writer, blk, "sibW", 10, caps, 2, KOS_POLICY_FIFO,
                                          0, false, nullptr, 0, 0, nullptr, t).valid())
         {
             (void)kos_task_kill(t);
+            (void)kos_handle_close(hold);
             tap::skip("thread pool too small");
             return;
         }
         wait_n(1);
-        if (not kos::thread::create_caps(sib_reader, blk, "sibR", 10, caps, 1, KOS_POLICY_FIFO,
-                                         0, false, nullptr, 0, 0, nullptr, t).valid())
+        bool const read = kos::thread::create_caps(sib_reader, blk, "sibR", 10, caps, 1,
+                                                   KOS_POLICY_FIFO, 0, false, nullptr, 0, 0,
+                                                   nullptr, t)
+                              .valid();
+        if (read)
         {
-            (void)kos_task_kill(t);
-            tap::skip("thread pool too small");
-            return;
+            wait_n(1);
         }
-        wait_n(1);
+        kos_sem_post(hold);
         (void)kos_task_kill(t);
+        (void)kos_handle_close(hold);
+        TAP_CHECK(read);
         TAP_CHECK(out[0] == 1u);          // the writer ran
         TAP_CHECK(out[1] == 0xBEEFu);     // and its sibling saw the store: one image, one group
         TAP_CHECK(g_sib_word == 0u);      // root did not: a different group is a different copy
@@ -2600,8 +2607,8 @@ namespace selftest
 #if defined(KICKOS_SELFTEST_SPARE_DEV)
     // --- A device window at the address the kernel chose -------------------------------
     // The holder, in a task of its own, reads a device the kernel never drives through the
-    // address kos_window_addr answers, which is not the physical one, and is refused one for a
-    // device it does not hold; it reports over an endpoint, its task's data being its own.
+    // address kos_window_get answers, which is not the physical one, and is answered no window
+    // past its list; it reports over an endpoint, its task's data being its own.
     // While it lives a second task is refused the device; once it has exited, its sibling in
     // the task faults on the address it left, and the next instance is granted the device and
     // reaches it again.
@@ -2618,20 +2625,20 @@ namespace selftest
     uintptr_t g_wa_addr = 0; // the holder's task's copy, which its sibling reads
     void wa_holder(void*) // caps: E(SIGNAL)@1, hold@2
     {
-        void* at = nullptr;
+        kos_window at = {};
         WaSeen seen = {-99, -99, 0, 0};
-        seen.rc = kos_window_addr(WA_DEV, &at);
-        g_wa_addr = reinterpret_cast<uintptr_t>(at);
+        seen.rc = kos_window_get(0, &at);
+        g_wa_addr = at.base;
         if (seen.rc == 0)
         {
             if (g_wa_addr != WA_DEV)
             {
                 seen.moved = 1u;
             }
-            seen.value = *static_cast<volatile uint32_t*>(at);
+            seen.value = *reinterpret_cast<volatile uint32_t*>(at.base);
         }
-        void* other = nullptr;
-        seen.other = kos_window_addr(WA_DEV + WA_SIZE, &other);
+        kos_window other = {};
+        seen.other = kos_window_get(1, &other);
         (void)kos_send(1, &seen, sizeof(seen));
         kos_sem_wait(2);
         kos_exit(0);
@@ -2706,7 +2713,7 @@ namespace selftest
                   == -KOS_ETIMEDOUT);
         (void)kos_task_kill(t);
         TAP_CHECK(first.rc == 0 and first.moved == 1u and first.value != 0);
-        TAP_CHECK(first.other == -KOS_EPERM);
+        TAP_CHECK(first.other == -KOS_EINVAL);
         // The next instance, in the other task, maps the device again.
         WaSeen again = {-99, -99, 0, 0};
         kos_sem_post(hold);
@@ -3307,6 +3314,65 @@ namespace selftest
         TAP_CHECK(late_frame != rootf); // a frame of its own, not the image's own page
         settle_exits();
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
+    }
+
+    // A task's static data is the image's as root held it at the first explicit task, never a
+    // global root wrote since. A first task is created before the write, so the arm holds
+    // whichever arm made the image's first; the task after the write and its restart both read
+    // the image's value. Before process_data_template, which drops root's space for good.
+    void t_process_data_from_image()
+    {
+        settle_exits();
+        constexpr uint32_t FI_BLK = 8u * DT_WORDS;
+        void* const blk = kos_ram_alloc(FI_BLK);
+        if (blk == nullptr)
+        {
+            tap::skip("arena cannot spare a report block");
+            return;
+        }
+        TAP_CHECK(kos_mem_self_grant(blk, FI_BLK, 0) == 0);
+        volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
+        kos_task_t first = KOS_TASK_NONE;
+        if (kos_task_create(blk, FI_BLK, 0, &first) != 0)
+        {
+            tap::skip("task pool too small");
+            return;
+        }
+        (void)kos_task_kill(first);
+        g_dt_word = DT_B;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        uint64_t seen[2] = {0, 0};
+        int ran = 0;
+        for (int run = 0; run < 2; run++)
+        {
+            out[DT_VALUE] = 0;
+            kos_task_t t = KOS_TASK_NONE;
+            if (kos_task_create(blk, FI_BLK, 0, &t) != 0)
+            {
+                break;
+            }
+            if (not kos::thread::create_caps(dt_reader, blk, "fiR", 10, caps, 1, KOS_POLICY_FIFO,
+                                             0, false, nullptr, 0, 0, nullptr, t).valid())
+            {
+                (void)kos_task_kill(t);
+                break;
+            }
+            wait_n(1);
+            (void)kos_task_kill(t);
+            seen[run] = out[DT_VALUE];
+            ran++;
+        }
+        g_dt_word = DT_A;
+        settle_exits();
+        if (ran != 2)
+        {
+            tap::skip("task or thread pool too small for the restart");
+            return;
+        }
+        tap::diag("data from the image: first %u, restart %u",
+                  static_cast<unsigned>(seen[0]), static_cast<unsigned>(seen[1]));
+        TAP_CHECK(seen[0] == DT_A); // not root's DT_B
+        TAP_CHECK(seen[1] == DT_A);
     }
 
     // Space-less threads must not write the app's reentrancy slots through a previously active

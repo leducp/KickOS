@@ -204,14 +204,13 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 #     closing E takes recv_holders to 0 and notes the console dead. Waiting after both
 #     spawns leaves the service thread holding a WAIT cap on E, and that close reclaims
 #     nothing.
-#   - kos_handle_close(ep) precedes kos_thread_kill: the note must be set before the
-#     cancelled thread's exit re-runs the reclaim.
+#   - kos_handle_close(ep) precedes kos_task_kill: the note must be set before the
+#     slain thread's exit re-runs the reclaim.
 #   - the kill is not optional: the note alone leaves the console USER_OWNED because the
 #     wedged thread still holds the window (dev_window_free in kernel/init/console.cc).
 #
-# The wedge parks IN a notification wait, the one shape thread_kill can cancel. Wedged before that
-# first wait it is marked rather than killed, nothing releases the window and the tag is
-# legitimately lost (xmcuartirq.cc).
+# The task kill slays the wedged thread in its notification wait: it never runs past that wait,
+# and its exit releases the window.
 #
 # The assertion is a PAIR from the SAME kos::print mechanism, as in case 1:
 #   after the publish, before the timeout : absent  (USER_OWNED drops it)
@@ -235,8 +234,8 @@ RC=$?
 set -e
 printf '%s\n' "$OUT"
 
-# Premise. Parked means the thread holds the window AND sits in a notification wait, so the cancel
-# below is possible and the timeout is not a spawn failure.
+# Premise. Parked means the thread holds the window AND sits in a notification wait, so the
+# timeout is not a spawn failure.
 has '\[simcon\] wedge irq thread parked, ready never set' \
   || fail "case 4: the wedge irq thread never parked (no DEV window, or no line?)"
 
@@ -265,14 +264,10 @@ COUNT="$(count_of '\[simcon\] ERROR: IRQ thread never reached its loop')"
 [ "$COUNT" -eq 1 ] \
   || fail "case 4: the timeout tag appeared $COUNT times (double-routed?)"
 
-# The cancel is observable, and it must PRECEDE the tag: releasing the window is what lets
-# the already-noted death reclaim the console.
-has '\[simcon\] wedge irq thread cancelled, releasing the registers' \
-  || fail "case 4: the wedged irq thread was never cancelled out of its notification wait, so nothing released the register window"
-CANCEL_AT="$(line_of 'wedge irq thread cancelled')"
-TAG_AT="$(line_of 'ERROR: IRQ thread never reached its loop')"
-{ [ -n "$CANCEL_AT" ] && [ -n "$TAG_AT" ] && [ "$CANCEL_AT" -lt "$TAG_AT" ]; } \
-  || fail "case 4: the timeout tag reached the wire BEFORE the window was released, so the reclaim was not what carried it"
+# The kill stops the wedged thread at once: it never gets back to its own code past the wait.
+if has '\[simcon\] wedge irq thread woke from its wait'; then
+    fail "case 4: the wedged irq thread ran its own code past its wait, so the task kill did not stop it at once"
+fi
 
 # Bounded: root returned. 124 is the outer timeout, i.e. a hang.
 [ "$RC" -ne 124 ] \

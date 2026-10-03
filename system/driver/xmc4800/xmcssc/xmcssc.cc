@@ -46,16 +46,17 @@ namespace
     // as memory. Diagnostics go through emit, not kos_print: the console is already USER_OWNED
     // here, so the kernel chip path drops every byte.
     //
-    // NO FAILURE PATH MAY exit: root KEEPS a WAIT-bearing cap on E under KOS_DRV_EP_RETAIN, so
-    // recv_holders never reaches 0 when this thread dies, the last-receiver-gone wake never
-    // fires, and a client parked in kos_call would block forever. A bring-up refusal panics
-    // instead. serve_loop returns only once its receive fails, which means no client is parked.
+    // NO FAILURE PATH MAY exit on a service list: root KEEPS a WAIT-bearing cap on E under
+    // KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies, the
+    // last-receiver-gone wake never fires, and a client parked in kos_call would block forever.
+    // A bring-up refusal panics there, and traps under the init, which handles the death.
+    // serve_loop returns only once its receive fails, which means no client is parked.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
         // the first receive event needs.
         struct kos_spi_bus_config cfg;
-        cfg.base = reinterpret_cast<uintptr_t>(arg);
+        cfg.base = reinterpret_cast<uintptr_t>(drv::thread_start(arg));
         cfg.ep = KOS_CAP_NONE; // a local engine reaches no endpoint
         cfg.irq = spi::KOS_SPI_CAP_LINE;
         // The bring-up attached LINE 0 to this object on BIT 0 and handed the unbadged
@@ -64,18 +65,21 @@ namespace
         cfg.notify_bit = 0;
 
         struct kos_spi_bus bus;
-        if (kos_spi_bus_open(&bus, &cfg) < 0)
+        int32_t const opened = kos_spi_bus_open(&bus, &cfg);
+        if (opened < 0)
         {
             kickos::emit("[xmcssc] ERROR: channel bring-up refused (a PV register store was "
                          "discarded)\n");
+            drv::trap_under_init();
             kos_panic("[xmcssc] channel bring-up refused (see the ERROR line above)");
         }
 
         kickos::emit("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
 
-        spi::serve_loop(&bus);
+        (void)spi::serve_loop(&bus);
 
         (void)kos_spi_bus_close(&bus);
+        drv::trap_under_init();
         exit(0);
     }
 

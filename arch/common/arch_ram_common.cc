@@ -105,6 +105,13 @@ void* arch_ram_alloc(size_t size)
     return p;
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+uintptr_t arch_ram_next(void)
+{
+    return reinterpret_cast<uintptr_t>(__kickos_ram_start) + g_ram_used;
+}
+#endif
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 {

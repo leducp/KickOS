@@ -4,8 +4,8 @@
 # KickOS build helpers: per-component flag posture, the app target kind
 # (kickos_add_app_target) and the image emitter kickos_emit_image().
 #
-# The application owns the final link: the link recipe lives on the exported `kickos` /
-# `kickos_cxx` usage targets, never in these helpers. An app is three lines,
+# The application owns the final link: the link recipe lives on the exported KickOS::kickos /
+# KickOS::kickos_cxx usage targets, never in these helpers. An app is three lines,
 # examples/oot-mcu-app being the reference shape.
 
 # ---------------------------------------------------------------------------
@@ -19,11 +19,12 @@
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
-# List-dir-relative: cap_table.cmake, driver_geometry.cmake and driver_metadata.cmake must be
-# installed beside this file.
+# List-dir-relative: cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
+# heap_symbol.cmake and compose.cmake must be installed beside this file.
 include("${CMAKE_CURRENT_LIST_DIR}/cap_table.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driver_geometry.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driver_metadata.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/heap_symbol.cmake")
 
 # In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
 # installed package ships kickos.cmake with no boards/ sibling.
@@ -32,6 +33,9 @@ if(EXISTS "${KICKOS_BOARDS_DIR}")
 else()
   set(KICKOS_IN_TREE FALSE)
 endif()
+
+# After KICKOS_IN_TREE, which places the host tool.
+include("${CMAKE_CURRENT_LIST_DIR}/compose.cmake")
 
 # KICKOS_ARCH_FAMILY (arm|rx|sim|...) routes arch/<family>/... and the cross toolchain; a
 # board that omits it falls back to a derivation from the arch.
@@ -76,7 +80,7 @@ endfunction()
 #   arch/sim                  -> hosted (bridges to host libc), still no exc/rtti.
 #
 # Warning flags never leave this project: they are applied PRIVATE to targets we own, and
-# the exported `kickos`/`kickos_cxx` usage targets carry none of them.
+# the exported KickOS::kickos and KickOS::kickos_cxx usage targets carry none of them.
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
@@ -211,7 +215,7 @@ endfunction()
 #   No-op on the sim (a runnable host ELF is the deliverable there).
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
-#   after target_link_libraries(app PRIVATE kickos).
+#   after target_link_libraries(app PRIVATE KickOS::kickos).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   if(KICKOS_ARCH STREQUAL "sim")
@@ -230,6 +234,8 @@ function(kickos_emit_image target)
     kickos_x86_64_link_image(${target})
     return()
   endif()
+  # For its refusal of a link that would define the heap size twice.
+  kickos_image_leaves(${target} _leaves)
   add_custom_command(TARGET ${target} POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.bin
     COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.hex
@@ -290,9 +296,10 @@ endfunction()
 #
 #   The selection is a GLOBAL property rather than a variable because the deciding site
 #   (system/CMakeLists.txt in tree, KickOSConfig.cmake in a package) is in a different
-#   directory scope from the apps that consume it.
+#   directory scope from the apps that consume it. <target> is the backend's KickOS:: name,
+#   which KickOSConfig.cmake replays verbatim.
 #
-#   The BACKEND MUST PRECEDE `kickos` ON THE LINK LINE: the toolchains link the component
+#   The BACKEND MUST PRECEDE KickOS::kickos ON THE LINK LINE: the toolchains link the component
 #   archives with a --start-group rescan, so a group member that ever referenced a class symbol
 #   would otherwise pull a second definer out of the group and the ORDER, not the selection,
 #   would decide the engine. That ordering is kickos_add_app_target's to hold, which is why no
@@ -301,6 +308,43 @@ function(kickos_select_class_backend class target)
   string(TOUPPER "${class}" _cls)
   set_property(GLOBAL PROPERTY KICKOS_CLASS_BACKEND_${_cls} "${target}")
   set_property(GLOBAL APPEND PROPERTY KICKOS_CLASS_BACKEND_CLASSES "${class}")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_export_name(<target> <out>)
+#   The target's name under the package's namespace: KickOS::<EXPORT_NAME>, or KickOS::<target>
+#   where it sets none or is no target yet. A target named inside $<LINK_GROUP:> or
+#   $<TARGET_OBJECTS:> reaches KickOSTargets.cmake verbatim, so those genexes spell this name.
+# ---------------------------------------------------------------------------
+function(kickos_export_name target out)
+  set(_name "${target}")
+  if(TARGET ${target})
+    get_target_property(_export ${target} EXPORT_NAME)
+    if(_export)
+      set(_name "${_export}")
+    endif()
+  endif()
+  set(${out} "KickOS::${_name}" PARENT_SCOPE)
+endfunction()
+
+# kickos_alias_target(<target>...)
+#   Defines each target's kickos_export_name as its in-tree ALIAS, which is all a provider the
+#   link group names needs in tree.
+function(kickos_alias_target)
+  foreach(_t IN LISTS ARGN)
+    kickos_export_name(${_t} _alias)
+    add_library(${_alias} ALIAS ${_t})
+  endforeach()
+endfunction()
+
+# kickos_export_targets(<target>...)
+#   kickos_alias_target, and installs each target into the KickOSTargets export set, which names
+#   it the same way installed.
+function(kickos_export_targets)
+  kickos_alias_target(${ARGN})
+  install(TARGETS ${ARGN} EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+          OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
 endfunction()
 
 # kickos_class_backend(<class> <out>)
@@ -329,7 +373,7 @@ endfunction()
 #   The remaining two lines of an app are the consumer's own and are NOT done here:
 #
 #     kickos_add_app_target(foo main.cc)
-#     target_link_libraries(foo PRIVATE kickos)   # or kickos_cxx for a full-C++ app
+#     target_link_libraries(foo PRIVATE KickOS::kickos)   # or KickOS::kickos_cxx for full C++
 #     kickos_emit_image(foo)
 #
 #   The in-tree warning and C-standard posture applied below belongs to this tree and not to
@@ -343,17 +387,17 @@ function(kickos_add_app_target name)
   endif()
   set(_app_sources ${APP_UNPARSED_ARGUMENTS})
   # Without this a missing arch leaf degrades to a bare -lkickos_arch_<arch> link error.
-  if(NOT TARGET kickos_arch_${KICKOS_ARCH})
+  if(NOT TARGET KickOS::kickos_arch_${KICKOS_ARCH})
     message(FATAL_ERROR "kickos_add_app_target(${name}): board '${KICKOS_BOARD}' needs arch "
-      "'${KICKOS_ARCH}', but this KickOS package provides no kickos_arch_${KICKOS_ARCH} (it "
-      "was built for a different board)")
+      "'${KICKOS_ARCH}', but this KickOS package provides no KickOS::kickos_arch_${KICKOS_ARCH} "
+      "(it was built for a different board)")
   endif()
   if(KICKOS_ARCH STREQUAL "x86_64")
     add_library(${name} OBJECT ${_app_sources})
   else()
     add_executable(${name} ${_app_sources})
   endif()
-  # Linked HERE, before the app's own `kickos` line, which is what puts the backend archive
+  # Linked HERE, before the app's own KickOS::kickos line, which is what puts the backend archive
   # ahead of the rescan group; see kickos_select_class_backend.
   foreach(_class IN LISTS APP_CLASSES)
     kickos_class_backend("${_class}" _backend)
@@ -380,10 +424,11 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>]
-#                   [THREADS <role>:<priority offset>:<stack>:<capabilities>...] [RECEIVER <role>]
+#                   [THREADS <role>:<priority offset>:<stack>:<capabilities>:<badged>...] [RECEIVER <role>]
 #                   [WINDOWS <role>...] [LINES <role>...] [NOTIFY]
 #                   [BLOCK <bytes>|none] [POSTURE handover|retain]
-#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE])
+#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE]
+#                   [CLIENT <target>...])
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
 #   that links kickos_user, sees system/include, optionally sees a chip register dir (REGDIR,
 #   definitions only), optionally links a chip class leaf (CLASS), and is EXPORTED so an
@@ -395,8 +440,10 @@ endfunction()
 #   BARRIER, START, the C function the init calls to bring it up, and RECEIVER, the thread that
 #   waits on its endpoint. A role is its thread's name, but the role `service`, whose thread takes
 #   its service-list entry's name; a stack is `default` only, bring_up spawning every thread on
-#   the kernel's default stack; and a thread's capabilities are what its spawn delegates. NOTIFY
-#   says it uses the notification the shared bring-up creates. Its catalogue entry joins the
+#   the kernel's default stack; a thread's capabilities are what its spawn delegates, and badged the
+#   copies of the driver's notification among them, which the bring-up mints for the spawn. NOTIFY
+#   says it uses the notification the shared bring-up creates. CLIENT names the libraries a task
+#   using the driver links, which kickos_compose links in a system naming it. Its catalogue entry joins the
 #   KICKOS_DRIVER_CATALOGUE global property for the manifest, and its descriptor reads the
 #   generated <kickos/driver/declared/<name>.h>, whose k_declared it static_asserts declared_as.
 function(kickos_add_driver name)
@@ -417,8 +464,7 @@ function(kickos_add_driver name)
   if(DEFINED DRV_CLASS)
     target_link_libraries(kickos_${name} PRIVATE ${DRV_CLASS})
   endif()
-  install(TARGETS kickos_${name} EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  kickos_export_targets(kickos_${name})
   if(NOT _packaged)
     return()
   endif()
@@ -921,8 +967,7 @@ function(kickos_add_board_provider name)
   if(BP_LINK)
     target_link_libraries(kickos_${name} PUBLIC ${BP_LINK})
   endif()
-  install(TARGETS kickos_${name} EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  kickos_export_targets(kickos_${name})
 endfunction()
 
 # ---------------------------------------------------------------------------

@@ -1030,7 +1030,7 @@ config KICKOS_MIN_STACK_SIZE
 	default 2304 if ARCH_RV64IMAC
 	# An interrupt nests below a privileged caller's syscall on its own stack, a spawn seeding
 	# a whole address space at its deepest (x86_64_trap_stack.h).
-	default 3264 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
+	default 3328 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
 	default 2624 if ARCH_X86_64
 	# Above one core the PREEMPT zone alone is 896 (lx6_trap_stack.h).
 	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1

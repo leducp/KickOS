@@ -50,7 +50,8 @@
         void irq_entry(void* arg)                                                           \
         {                                                                                   \
             ::kickos::uart::irq_thread<struct kos_uart>(                                    \
-                static_cast< ::kickos::uart::Ctx*>(arg), params);                           \
+                static_cast< ::kickos::uart::Ctx*>(::kickos::driver::thread_start(arg)),    \
+                params);                                                                    \
         }                                                                                   \
                                                                                             \
         int block_init(void* blk, struct kos_service_cfg const* cfg)                        \

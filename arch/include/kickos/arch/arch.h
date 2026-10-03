@@ -58,6 +58,12 @@
 #define KICKOS_ARCH_HAS_PORTS 0
 #endif
 
+// A region arch whose chips may put a data cache over the arena defines this in its context.h,
+// and arch_dcache_invalidate with it, which kos_ram_alloc's clear calls.
+#ifndef KICKOS_ARCH_ARENA_DCACHE
+#define KICKOS_ARCH_ARENA_DCACHE 0
+#endif
+
 // Architecture-specific MPU descriptors. Included only with KICKOS_HAVE_MPU;
 // otherwise the type stays incomplete and is used only through pointers.
 #if KICKOS_HAVE_MPU
@@ -489,6 +495,11 @@ static inline bool arch_ram_region_admissible(uintptr_t base, size_t size)
 uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);
 void* arch_ram_alloc(size_t size);
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Selftest kernels on a region arch: the arena's first byte not handed out yet, at or below the
+// next block's base.
+uintptr_t arch_ram_next(void);
+#endif
 
 // Fill up to max shared application regions: code RX and static data RW/NX.
 // Return their count, or zero if none are modeled. The kernel prepends these

@@ -7,11 +7,8 @@
 #ifndef KICKOS_CONFIG_LIMITS_H
 #define KICKOS_CONFIG_LIMITS_H
 
+#include <kickos/config/mpu_geometry.h> // KICKOS_MPU_MAX_REGIONS (generated)
 #include <kickos/config/priorities.h> // the scheduler's priority range (generated)
-
-// Max per-task MPU region descriptors carried in the TCB (hardware-fixed: only
-// 8 regions on ARMv6-M/v7-M).
-#define KICKOS_MPU_MAX_REGIONS 8
 
 // Structural bounded-spin backstop for raw synchronous MMIO polls on the
 // panic/fault/boot path: a wedged peripheral must never hang, so every such poll

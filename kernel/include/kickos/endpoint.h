@@ -67,12 +67,14 @@ namespace kickos
         // and refusal, because obj_ref_inc tests both before moving either.
         uint8_t recv_holders = 0;
         // Live caps carrying CAP_HANDOUT: holders that may seat a receiver without being one.
-        // With no receiver, a caller answers -KOS_EAGAIN while this is nonzero and
-        // -KOS_ECONNREFUSED once it is not. Rides the padding byte before next_served.
+        // Rides the padding byte before next_served.
         uint8_t handout_holders = 0;
         // Intrusive link in `server`'s served-endpoint chain, or EP_SERVED_NONE.
         // Non-sentinel exactly while `server` is non-null.
         uint16_t next_served = EP_SERVED_NONE;
+        // Set when recv_holders falls to 0 and cleared when a receiver next waits here: a
+        // receiver a handout seats counts as none until it first receives.
+        uint8_t vacated = 0;
 #if KICKOS_AMP_NODE
         // The node whose kernel holds the receiver, PLUS ONE: 0 is local, so a zeroed slot
         // is already local and nothing has to be seated. THE WHOLE ANSWER to "is this
@@ -166,9 +168,16 @@ namespace kickos
 
 #endif
 
-    // What a caller no receiver will take is answered: -KOS_EAGAIN while a receiver beyond
-    // the `leaving` ones already on their way out, or a holder of the handout right, remains,
-    // since a retry can meet it; -KOS_ECONNREFUSED once neither does.
+    // Whether a sender or caller finds a receiver: one holds WAIT, and one has waited here
+    // since the last receiver left.
+    inline bool endpoint_receiving(Endpoint const* e)
+    {
+        return e->recv_holders != 0 and e->vacated == 0;
+    }
+
+    // What a caller finding no receiver is answered, a vacated endpoint included:
+    // -KOS_EAGAIN while a WAIT holder beyond the `leaving` ones already on their way out, or a
+    // HANDOUT holder, remains, since a receiver may come; -KOS_ECONNREFUSED once neither does.
     inline int32_t endpoint_unserved(Endpoint const* e, unsigned leaving)
     {
         if (e->recv_holders > leaving or e->handout_holders > 0)
@@ -179,10 +188,13 @@ namespace kickos
     }
 
 #if KICKOS_AMP_NODE
-    constexpr unsigned EP_NARROW_BYTES = 6; // the two holder counts, next_served, far_node, far_port
+    constexpr unsigned EP_NARROW_BYTES = 7; // the two holder counts, next_served, vacated, far_node, far_port
 #else
-    constexpr unsigned EP_NARROW_BYTES = 4; // the two holder counts, next_served
+    constexpr unsigned EP_NARROW_BYTES = 5; // the two holder counts, next_served, vacated
 #endif
+    // The span the narrow fields take ahead of `server` on every posture: one pointer on a
+    // 64-bit build, two words on a 32-bit one.
+    constexpr unsigned EP_NARROW_SPAN = 8;
 
     // ONE guard over BOTH arms: a field added under the AMP guard costs its size in .bss on
     // every AMP board, times the endpoint pool, exactly as one added outside it does. The
@@ -196,6 +208,8 @@ namespace kickos
                              + sizeof(Thread*),
                   "Endpoint grew past its two lists, the narrow fields packed into the padding "
                   "ahead of `server`, and `server` itself");
+    static_assert(sizeof(Endpoint) == 2 * sizeof(List) + EP_NARROW_SPAN + sizeof(Thread*),
+                  "Endpoint grew past EP_NARROW_SPAN bytes of narrow fields ahead of `server`");
 
     // Unwind `t` out of whichever endpoint park it sits under (WAIT_EP_SEND, WAIT_EP_RECV or
     // WAIT_EP_REPLY), reverting any priority donation that park had pinned, and wake it with

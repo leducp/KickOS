@@ -58,9 +58,13 @@ namespace kickos
 #endif
 
         // A fresh unprivileged domain, with the address space it needs where a backend
-        // translates. On refusal the slot is left reinitialised and *err written.
-        Domain* claim_slot(int* err)
+        // translates, seeded for `caller`'s posture. On refusal the slot is left reinitialised
+        // and *err written.
+        Domain* claim_slot(uint32_t caller, int* err)
         {
+#if not KICKOS_HAVE_ASPACE
+            (void)caller;
+#endif
             Domain* d = free_slot();
             if (d == nullptr)
             {
@@ -88,7 +92,7 @@ namespace kickos
                 *err = KOS_ENOMEM;
                 return nullptr;
             }
-            if (not aspace_image_seed(d->space, &d->ranges))
+            if (not aspace_image_seed(d->space, &d->ranges, (caller & DOM_CALLER_TASK) != 0))
             {
                 (void)drop_space(d); // a space with no handoff yet: the edge is null
                 *err = KOS_ENOMEM;
@@ -278,7 +282,7 @@ namespace kickos
         if (mem_base == nullptr or mem_size == 0)
         {
 #if KICKOS_HAVE_ASPACE
-            return claim_slot(err);
+            return claim_slot(caller, err);
 #else
             return domain_default_user();
 #endif
@@ -311,7 +315,7 @@ namespace kickos
         }
 #endif
 #endif
-        Domain* d = claim_slot(err);
+        Domain* d = claim_slot(caller, err);
         if (d == nullptr)
         {
             return nullptr;

@@ -1461,6 +1461,13 @@ void* arch_ram_alloc(size_t size)
     return reinterpret_cast<void*>(aligned);
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+uintptr_t arch_ram_next(void)
+{
+    return reinterpret_cast<uintptr_t>(sim().arena) + sim().arena_used;
+}
+#endif
+
 // arch_domain_static_regions lives in kernel/domain/domain.cc. On this build the weak
 // __kickos_code_*/__kickos_appdata_* linker symbols are undefined, so it returns 0: the app's
 // code and data are host-process memory and the sim governs only the arena.

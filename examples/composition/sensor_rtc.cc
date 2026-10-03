@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M10 GOLDEN EXAMPLE: does not build yet. `kos_self_t`, the `kos_grant_*` lookups and the
-// `kos_window_*` accessors are what M10 adds; everything else is today's API.
-//
-// The sensor task for QEMU `virt` on A53 cores: a driver that owns its device, unlike the
-// XMC's, which is a client of a bus service. Its measurement is the PL031 clock's seconds
-// count. The composition grants the PL031's page; this task holds no authority.
+// The sensor task for QEMU `virt` on A53 cores, which owns its device, where the XMC's is a
+// client of a bus service. Its measurement is the PL031 clock's seconds count. The composition
+// grants the PL031's page; this task holds no authority.
 //
 // `kos_window_addr` answers the address the window is mapped at IN THIS TASK: on a translating
 // board that is wherever the task's address space put the page, not the physical address the

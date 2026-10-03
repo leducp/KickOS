@@ -991,10 +991,17 @@ alignment rule no caller would honour.
 user virtual address is not one operation on a backend whose physical space is discontiguous, so
 the page splitting belongs above this seam.
 
-**There is no `arch/common/` fallback and nothing in the tree calls it yet.** Who calls it is open
-(`../design-m6-mmu.md` section 7), so a port defines it when its first caller arrives and fails the
-LINK until then: a no-op default would report maintenance it never did, which is the one answer
-worse than a link error.
+**There is no `arch/common/` fallback.** A port defines it when its first caller arrives and fails
+the LINK until then: a no-op default would report maintenance it never did, which is the one answer
+worse than a link error. armv8a cleans the boot-register block for cores that read it with their
+caches off. `kos_ram_alloc` on a region board cleans AND invalidates each block it has zeroed,
+through `arch_dcache_invalidate`, where the arch defines `KICKOS_ARCH_ARENA_DCACHE` in its
+`context.h`: a mapping of the block that bypasses the cache then reads the zeroes, and no line of
+the block is left in the cache to be read through a cached alias or evicted over what that mapping
+stores. An arch defining it therefore provides `arch_dcache_invalidate` as a clean-and-invalidate
+by address to the point of coherency over the whole range. A clean alone (`DCCMVAC`) leaves the
+lines valid and does not meet that contract. armv7m defines it with `DCCIMVAC` and maintains
+nothing while `CCR.DC` is clear, which leaves the Teensy 4.1's Cortex-M7 the one board it acts on.
 
 ### The map editor's acquire pair (`arch_aspace_acquire`, `arch_aspace_release`)
 
@@ -1365,8 +1372,8 @@ Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first (the five 
 re-measured 2026-09-20 at the four-image split; `frdmk64f{,-st}` still 2026-09-04):
 `bluepill-c8` **0 B**, `f302nucleo` 288 B, `f302nucleo-st` 1,600 B,
 `bluepill-c8-st` 2,048 B, `microbit` 2,048 B, `frdmk64f{,-st} +MPU` 24,576 B. The binding
-image on every split board whose arena base follows `.bss` is the one carrying the LAST
-region, `selftest_p4` on the two STM32 parts and `selftest_p3` on `microbit`; on
+image on every split board whose arena base follows `.bss` is the one carrying the most static
+data, `selftest_p5` on `bluepill-c8-st` and `selftest_p3` on `f302nucleo-st` and `microbit`; on
 `frdmk64f{,-st}` and on `esp32c6-wroom{,-st}` every image reports the same figure instead, an
 alignment window pinning the base, so there is no binding image to name on those. The
 tightest BOOT margin is `f302nucleo`'s 2,336 B, and no board measured is below zero on either
@@ -1556,7 +1563,7 @@ why the honest place to answer the question is the link.
 **Headroom is a LINK-TIME quantity, and whether it is also PER-IMAGE depends on the
 board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint moves the
 arena base and the FATTEST image is what caps `KICKOS_MAX_THREADS`: on `bluepill-c8-st`
-the images span 1,984 B of base, and the split `selftest_p4` is the binding one. Where an
+the images span 2,012 B of base, and the split `selftest_p5` is the binding one. Where an
 alignment window pins the base instead, every image on the board reports the SAME headroom
 -- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20014320`
 (`0x20014340` on `frdmk64f-st`). Check
@@ -1700,8 +1707,8 @@ Four readings, and they are the point of the section:
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
-  FOUR images today, so the board emits no single `1..63` plan; read the plan sizes off the
-  configure line (see `boards.md`, *The selftest ships as SEVERAL images on four boards*).
+  SIX images today, so the board emits no single `1..63` plan; read the plan sizes off the
+  configure line (see `boards.md`, *The selftest ships as SEVERAL images on five boards*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`
@@ -2388,7 +2395,7 @@ site):
   is correct either way, and it is what the earlier Debian arm-none-eabi toolchain
   (picolibc) *required*, since picolibc's spec injected a default `-T picolibc.ld`
   unless it saw a driver-level `-T` (a `-Wl,-T` was invisible to that check and the
-  two scripts collided at address 0). Keep the driver-level form. (See the `kickos`
+  two scripts collided at address 0). Keep the driver-level form. (See the `KickOS::kickos`
   interface `target_link_options`.)
 - **QEMU's DWT cycle counter is frozen.** `arch_clock_now` has NO armv7m fallback at
   all -- it is a required per-chip definition (`arch_armv7m.cc`, "Monotonic clock: NO

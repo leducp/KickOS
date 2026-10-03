@@ -134,8 +134,25 @@
 #define KICKOS_TLS_IDLE_ASSERT()
 #endif
 
+/* __kickos_tls_carve: the block a stack pays for the linked image's thread-local data, as
+ * KICKOS_TLS_CARVE_ASSERT counts it. A system target's asserts read it. A comparison is 0 or 1.
+ */
+#if defined(KICKOS_TLS) && KICKOS_TLS
+#define KICKOS_TLS_CARVE_SYMBOL()                                             \
+    KICKOS_LD_C_SYM(__kickos_tls_carve) = (SIZEOF(.tdata) + SIZEOF(.tbss) != 0) \
+                             * ALIGN(__kickos_tbss_end - __kickos_tdata_start \
+                                         + KICKOS_ARCH_TLS_TCB,               \
+                                     KICKOS_STACK_ALIGN)                      \
+                         + (SIZEOF(.tdata) + SIZEOF(.tbss) == 0)              \
+                               * KICKOS_REENT_IN_TCB                          \
+                               * ALIGN(KICKOS_ARCH_TLS_TCB, KICKOS_STACK_ALIGN);
+#else
+#define KICKOS_TLS_CARVE_SYMBOL() KICKOS_LD_C_SYM(__kickos_tls_carve) = 0;
+#endif
+
 #if defined(KICKOS_TLS) && KICKOS_TLS
 #define KICKOS_TLS_FIT_ASSERT()                                               \
+    KICKOS_TLS_CARVE_SYMBOL()                                                 \
     ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
                || ALIGN(__kickos_tbss_end - __kickos_tdata_start              \
                             + KICKOS_ARCH_TLS_TCB,                            \
@@ -150,6 +167,7 @@
     KICKOS_TLS_IDLE_ASSERT()
 #else
 #define KICKOS_TLS_FIT_ASSERT()                                               \
+    KICKOS_TLS_CARVE_SYMBOL()                                                 \
     ASSERT(SIZEOF(.tdata) == 0,                                               \
            "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")   \
     ASSERT(SIZEOF(.tbss) == 0,                                                \

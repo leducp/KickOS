@@ -163,8 +163,8 @@ if(NOT _kickos_cpu STREQUAL "")
   target_compile_definitions(kickos_kernel PRIVATE KICKOS_CPU_NAME="${_kickos_cpu}")
 endif()
 
-install(TARGETS kickos_kernel EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+set_target_properties(kickos_kernel PROPERTIES EXPORT_NAME kernel_archive)
+kickos_export_targets(kickos_kernel)
 
 if(KICKOS_SCHED_PERIODIC_TICK)
   target_compile_definitions(kickos_kernel PUBLIC KICKOS_SCHED_PERIODIC_TICK=1)

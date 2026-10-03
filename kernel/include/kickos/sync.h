@@ -128,6 +128,17 @@ namespace kickos
     void endpoint_server_set(Endpoint* ep, Thread* t);
     void endpoint_server_clear(Endpoint* ep);
 
+    // A receiver entering a receive on `ep`: it becomes the server and the endpoint is no
+    // longer vacated. Caller holds IrqLock.
+    void endpoint_receiver_waits(Endpoint* ep, Thread* t);
+
+    // A pool slot reset to a fresh endpoint, its index, or -1 with *out unchanged when the pool
+    // is full. Caller holds IrqLock.
+    [[nodiscard]] int endpoint_slot_claim(Endpoint** out);
+    // The same, seated for its creator, whose cap carries every right: a receiver and a
+    // handout holder from the start, so the endpoint is never vacated before its first close.
+    [[nodiscard]] int endpoint_claim_created(Endpoint** out);
+
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller
     // parked on t->reply_waiters, and the highest parked SEND_WAIT caller on each endpoint

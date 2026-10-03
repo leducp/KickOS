@@ -4,7 +4,7 @@
 #
 # CI gate for the dependency-inversion acceptance criterion: install the KickOS sim package,
 # then configure + build + run a standalone out-of-tree app against it via
-# find_package(KickOS) + plain add_executable, linking the exported `kickos` usage target.
+# find_package(KickOS) + plain add_executable, linking the exported KickOS::kickos usage target.
 # No KickOS-specific macro is involved, which is the supported downstream shape. The MCU half
 # of the same criterion is check_oot_export_mcu.sh.
 #
@@ -42,6 +42,9 @@ echo "== installing KickOS package to $TMP/prefix =="
 
 echo "== the installed export manifest and its descriptions =="
 installed_manifest "$KICKOS_BUILD" "$KICKOS_SRC" "$TMP/prefix"
+
+echo "== the names a user links, under KickOS:: =="
+package_names "$KICKOS_BUILD" "$KICKOS_SRC" "$CMAKE" "$TMP/prefix" "$TMP/names"
 
 echo "== configuring out-of-tree app via find_package(KickOS) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-app" -B "$TMP/build" -G "$GEN" \

@@ -362,6 +362,22 @@ before publish returns (it lowers its own priority and yields so a lower-priorit
 can finish -- the scheduler is strict-priority). The panic path funnels through
 `kpanic_enter`, which flips the UART to `RECLAIMED` and polled-prints.
 
+**Who may publish, and what HANDOUT allows.** The caller holds `AUTH_CONSOLE` (`-KOS_EPERM`
+otherwise) and names an endpoint through a capability holding HANDOUT: `-KOS_EBADF` for a bad,
+stale or non-endpoint capability, `-KOS_EACCES` for one without HANDOUT, a WAIT-only capability
+included. The publish seats WAIT on that capability when it does not hold it already, counted
+in `recv_holders`, and the endpoint receives as a fresh one does for its creator: a send parks
+until a receiver takes it rather than being answered `-KOS_EAGAIN`. Every publish therefore
+leaves the publisher holding WAIT and HANDOUT, and a WAIT it drops at the end of the handover.
+The console's return is keyed on the published endpoint's last WAIT going, so a handover that
+fails before any driver thread holds WAIT gives the console back at that drop. An endpoint's
+creator holds all four rights, so a first publish goes through the creator's capability. HANDOUT
+is also what lets the init, which keeps a console driver's endpoint narrowed to SIGNAL, TRANSFER
+and HANDOUT between its instances, publish it again at every start: a restart repeats the first
+handover step for step. `-KOS_EOVERFLOW` answers a reference or receiver count at its ceiling. A
+refusal changes nothing: no right seated, no reference taken, the console untouched.
+`cap_console_publish_through` in `kernel/syscall/cap.cc` is the rule.
+
 **A DRIVER DEATH is the second route to `RECLAIMED`.** `cap_teardown` only NOTES it, when the
 published endpoint's `recv_holders` reaches 0, and `console_on_driver_death` then asks the DEVICE:
 it defers while any live domain still holds `arch_console_reclaim_window()`. A driver is a THREAD
@@ -419,24 +435,40 @@ fallback never gets the `-1` it needs to route around the dead console. The kern
 cheaply tell "published" from "published and served", so the publisher must not spawn
 console-dependent tasks when the driver spawn did not succeed.
 
-**The publisher MUST drop its own WAIT-bearing capability immediately after the spawn.** The
-no-receiver answer is keyed on `recv_holders` reaching **0**, and nothing else fires it; with the
-publisher's handout right gone in the same close, it is `-KOS_ECONNREFUSED`.
-`kos_endpoint_create` sets `recv_holders = 1` for the creator, and delegating a `CAP_WAIT` copy
-to the driver at spawn bumps it to **2**, so at that instant the endpoint has two receiver
-holders. If the publisher keeps its copy, the driver's death drops the count to 1, not 0: no
-refusal is delivered, parked senders are never woken, and every client hangs for the life of the
-system. That is strictly WORSE than a dark console, which is why the drop is a hard rule and
-not a tidiness convention. Dropping it does not tear the endpoint down, because the kernel holds
-its own `g_stdout_target` reference. A re-publish after a driver death therefore uses a FRESH
-endpoint, the publisher again holding no receiver.
+**The publisher MUST drop its own WAIT right when the handover ends.** The no-receiver answer is
+keyed on `recv_holders` falling to **0**, and nothing else fires it. The publish takes a
+capability holding HANDOUT and leaves it holding WAIT too, so the drop is owed after every
+publish. `kos_endpoint_create` sets `recv_holders = 1` for the creator, a publish through a
+capability without WAIT seats the same one, and delegating a `CAP_WAIT` copy to the driver at
+spawn bumps it to **2**, so at that instant the endpoint has two receiver holders. If the
+publisher keeps its WAIT, the driver's death drops the count to 1, not 0: no answer is
+delivered, parked senders are never woken, and every client hangs for the life of the system.
+That is strictly WORSE than a dark console, which is why the drop is a hard rule and not a
+tidiness convention.
+`console_handover_finish` drops it in one of two ways. A driver brought up from a service list
+closes the endpoint capability outright, so its death leaves neither a WAIT nor a HANDOUT holder
+and a send answers `-KOS_ECONNREFUSED`. A driver brought up under the init (given a
+`kos_driver_instance`) narrows it to SIGNAL, TRANSFER and HANDOUT (`HANDOVER_KEPT`), the rights
+the init's walk (`system/init/compose/walk.cc`) keeps of every endpoint it creates for a server.
+Its death then vacates the endpoint and gives the kernel its console back: a send answers
+`-KOS_EAGAIN` while the init's HANDOUT remains, until the endpoint next receives
+(`endpoint_unserved` in `kernel/include/kickos/endpoint.h`). The endpoint outlives the instances
+of its driver: a restart publishes the SAME endpoint again through that HANDOUT, which seats the
+init's WAIT and hands the console over, then seats the new driver on it and narrows, as the
+first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the endpoint, its
+driver out of restarts. Neither drop tears the endpoint down, because the kernel holds its own
+`g_stdout_target` reference.
 
 **There is a DARK WINDOW between the publish flip and the driver actually serving capability 0.**
 `console_emit`'s chip path is already dropping (RTT still carries it) while no userspace receiver
-exists yet. Output is not lost in it: a client `send` parks on `send_waiters` and the rendezvous
-absorbs the gap, which is why there is no "handover in progress" state to size. What the window
-does mean is that the console is dark on the wire for its duration, and that a failure inside it
-is the case the atomicity rule above exists to forbid.
+exists yet. Output is not lost in it: the publisher holds WAIT and the endpoint receives, so a
+client `send` before the driver's first wait parks on `send_waiters` (bounded when timed) and the
+rendezvous absorbs the gap, which is why there is no "handover in progress" state to size. A
+restart's window is the same, its publish making the vacated endpoint receive again. Between a
+driver's death and its restart's publish the endpoint is vacated: a send answers `-KOS_EAGAIN`
+and `_write` emits that chunk through the kernel console, which the death gave back. What the
+window does mean is that the console is dark on the wire for its duration, and that a failure
+inside it is the case the atomicity rule above exists to forbid.
 
 ## The two protocols a published console endpoint carries
 

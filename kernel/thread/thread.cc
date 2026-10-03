@@ -187,6 +187,8 @@ namespace kickos
 #if KICKOS_ARCH_HAS_PORTS
     static_assert(KICKOS_MAX_THREAD_WINDOWS <= KICKOS_ARCH_PORT_RANGES,
                   "a thread's full window list would not fit its port set");
+    static_assert(KICKOS_MAX_THREAD_WINDOWS <= 4 and KICKOS_ARCH_PORT_RANGES <= 4,
+                  "arch_context::port_places holds each range's place in two bits");
 
     bool port_aperture_ok(uintptr_t base, size_t count)
     {
@@ -254,9 +256,11 @@ namespace kickos
                 // A port window's record is the context's port set, which the switch loads.
                 if (w.kind == KOS_WINDOW_PORTS)
                 {
-                    t->ctx.ports[t->ctx.port_count].base = static_cast<uint16_t>(w.base);
-                    t->ctx.ports[t->ctx.port_count].last =
-                        static_cast<uint16_t>(w.base + w.size - 1u);
+                    uint8_t const r = t->ctx.port_count;
+                    t->ctx.ports[r].base = static_cast<uint16_t>(w.base);
+                    t->ctx.ports[r].last = static_cast<uint16_t>(w.base + w.size - 1u);
+                    t->ctx.port_places =
+                        static_cast<uint8_t>(t->ctx.port_places | ((i & 3u) << (2u * r)));
                     t->ctx.port_count++;
                     continue;
                 }
@@ -279,7 +283,9 @@ namespace kickos
                     size = arch_ram_region_size(w.size);
                     rights = window_memory_attr(w.flags);
                 }
-                fitted = t->mpu.add_window(w.base, size, rights) and fitted;
+                fitted = t->mpu.add_window(w.base, size, rights, static_cast<uint8_t>(i),
+                                           w.flags)
+                         and fitted;
             }
             return fitted;
         }
@@ -330,6 +336,7 @@ namespace kickos
         t->stack_base = stack_base;
         t->stack_size = stack_size;
         t->kstack_owned = attr.kstack_owned;
+        t->task_entry = attr.task_entry;
         t->mpu.clear();
 
         // A reference on the task is held for the thread's lifetime and released at exit

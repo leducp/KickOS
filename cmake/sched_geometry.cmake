@@ -12,3 +12,6 @@ set(KICKOS_NUM_PRIO 32)
 set(KICKOS_PRIO_IDLE 0)
 set(KICKOS_PRIO_MIN 1)
 math(EXPR KICKOS_PRIO_MAX "${KICKOS_NUM_PRIO} - 1")
+# The kernel creates root at KICKOS_PRIO_MAX. An image linking no system target lowers root to
+# this one before its constructors; a composed init lowers itself to its composition's.
+math(EXPR KICKOS_PRIO_ROOT "${KICKOS_PRIO_MIN} + 1")

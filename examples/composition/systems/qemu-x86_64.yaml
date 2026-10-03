@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# M10 GOLDEN EXAMPLE: the same app and health checker, on QEMU q35, to exercise what the x86
-# port adds: a device reached through PORTS rather than memory, granted with the same `devices`
-# field, the task's I/O permission bitmap opening its data port and the kernel seam writing its
-# index. M10 is done on this board when it is admitted, builds, and runs under a two-core preset.
+# The golden system on QEMU q35: the app and health checker of xmc4800-relax.yaml beside a
+# sensor reading the CMOS clock, a device reached through PORTS rather than memory and granted
+# with the same `devices` field. The task's I/O permission bitmap opens the clock's data port,
+# and the kernel writes its index port for it.
 
 version: 1
 board: qemu-x86_64
@@ -13,6 +13,9 @@ board: qemu-x86_64
 stdout: kernel
 
 ends: never
+
+# The libc heap the image carves.
+heap: 16384
 
 shared:
   - name: /shm/history

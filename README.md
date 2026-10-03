@@ -31,7 +31,7 @@ third-party kernel code. Register definitions come from hardware manuals.
   scheduler, syscall dispatcher and capability code, with emulated privilege transitions.
 - **Portable backends.** Architecture and chip code implement the interface described in
   the [porting guide](docs/reference/porting.md).
-- **CMake integration.** Applications can use `find_package(KickOS)`, link `kickos` and
+- **CMake integration.** Applications can use `find_package(KickOS)`, link `KickOS::kickos` and
   provide an ordinary `main`. See the [host](examples/oot-app/) and
   [MCU](examples/oot-mcu-app/) examples.
 
@@ -91,6 +91,9 @@ Requirements:
 - CMake 3.25 or newer for the supplied version-6 presets, plus Ninja.
 - A host C/C++ compiler for sim, or the target's toolchain.
 - Python 3 with `kconfiglib` for configuration.
+- [uv](https://docs.astral.sh/uv/), which runs the composition tool (`tools/compose`) under a
+  Python of 3.12 or newer with the `ruamel.yaml` its `uv.lock` pins: a board with a default
+  composition, and every `kickos_compose` against an installed package, configures through it.
 - GoogleTest with a CMake package for the host unit tests.
 - QEMU for emulator tests; x86-64 also needs OVMF firmware and `mtools`.
 

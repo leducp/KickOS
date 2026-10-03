@@ -313,6 +313,7 @@ namespace kickos
             {
                 return;
             }
+            ep->vacated = 1;
             // Mark console-driver loss before waking the parked senders: inline switching can
             // run them immediately. Keep the marker if reclaim is deferred while an IRQ thread
             // still owns the register window. exit_current retries after thread death
@@ -1598,6 +1599,32 @@ namespace kickos
         }
         stdout_target() = obj_handle;
         return true;
+    }
+
+    int cap_console_publish_through(Thread* publisher, CapEntry* e)
+    {
+        if ((e->rights & CAP_HANDOUT) == 0)
+        {
+            return -KOS_EACCES;
+        }
+        Endpoint* const ep = kernel().endpoints.resolve(e->obj);
+        KICKOS_DEBUG_ASSERT(ep != nullptr);
+        bool const seat = (e->rights & CAP_WAIT) == 0;
+        if (seat and ep->recv_holders == UINT8_MAX)
+        {
+            return -KOS_EOVERFLOW;
+        }
+        if (not cap_console_publish(publisher, e->obj))
+        {
+            return -KOS_EOVERFLOW;
+        }
+        if (seat)
+        {
+            e->rights = static_cast<uint8_t>(e->rights | CAP_WAIT);
+            ep->recv_holders++;
+            ep->vacated = 0;
+        }
+        return 0;
     }
 
     bool cap_console_target(int* out)

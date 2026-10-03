@@ -21,6 +21,10 @@ kickos_toolchain_export_baseline("${_kos_cpu}")
 
 set(KICKOS_ARCH_FAMILY "${KICKOS_ARCH_FAMILY}" CACHE STRING "KickOS ISA family (arm|rx)")
 
+# rx-elf spells every C name in the link with one more leading underscore, as KICKOS_LD_C_SYM in
+# the chip script does.
+set(KICKOS_C_SYMBOL_PREFIX "_" CACHE INTERNAL "What the link spells before a C name")
+
 kickos_toolchain_package(rx-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")

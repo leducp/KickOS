@@ -272,11 +272,11 @@ init) stays in the caller.
 There is no separate client API. A client calls the SPI class, and WHICH backend answers is the
 image posture's decision rather than the client's: `system/CMakeLists.txt` selects it
 (`kickos_select_class_backend`), an app names only the class it calls (`CLASSES` on
-`kickos_add_app_target`), and the selected archive is linked ahead of the `kickos` rescan group,
-because every backend of one class defines the same four symbols and the ORDER would otherwise
-decide the engine. The default selection is `kickos_spi_proxy`, whose four bodies marshal onto
-this protocol; `-DKICKOS_SPI_LOCAL_ENGINE=ON` selects the chip's local engine instead, and a
-client body is identical either way. The mapping IS the 1:1 rule:
+`kickos_add_app_target`), and the selected archive is linked ahead of the `KickOS::kickos`
+rescan group, because every backend of one class defines the same four symbols and the ORDER
+would otherwise decide the engine. The default selection is `KickOS::kickos_spi_proxy`, whose
+four bodies marshal onto this protocol; `-DKICKOS_SPI_LOCAL_ENGINE=ON` selects the chip's local
+engine instead, and a client body is identical either way. The mapping IS the 1:1 rule:
 
 | class call | request |
 |---|---|

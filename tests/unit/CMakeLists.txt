@@ -9,7 +9,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   foreach(_unit IN ITEMS
       amphold ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
-      deathspace drvbringup fastrefuse faultline frame fusedwake grantnocache irqquiesce kstring
+      deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
       ktime mapexec mapfence mpuskip mtimeconv placeadmit ramowner reschedowed slotpool taskbudget
       uartclass vrange)
     add_subdirectory(${_unit})
@@ -19,7 +19,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capbadge capprobe capsweep faultband irqbindown parkresult priodonor rangecheck rootslot
+      cancelkind capbadge capprobe capsweep consolepub faultband irqbindown parkresult priodonor rangecheck rootslot
       rrslice schedwake slayhook taskdeath taskpool wildstack)
     add_subdirectory(${_unit})
   endforeach()

@@ -77,14 +77,16 @@ void serve_loop(Shared* sh)
     }
 }
 
-void console_serve_loop(Shared* sh)
+int32_t console_serve_loop(Shared* sh)
 {
-    console::console_serve_loop<Transport>(sh);
+    return console::console_serve_loop<Transport>(sh);
 }
 
 void console_thread(void* arg)
 {
-    console_serve_loop(&static_cast<Ctx*>(arg)->sh);
+    (void)console_serve_loop(&static_cast<Ctx*>(driver::thread_start(arg))->sh);
+    // Not the entry thread: its exit would end it alone and leave the task alive.
+    driver::trap_under_init();
     exit(0);
 }
 

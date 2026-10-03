@@ -59,6 +59,14 @@ namespace kickos
     inline void* ram_owner_alloc(Task const*, size_t size) { return arch_ram_alloc(size); }
     inline bool ram_owner_nameable(Task const*, uintptr_t, size_t) { return true; }
 #endif
+
+#if not KICKOS_HAVE_ASPACE
+    // Zero a block kos_ram_alloc hands out over `extent`, the span a region grants. Where the
+    // arch puts a data cache over the arena the zeroes are cleaned to memory and the lines
+    // dropped, so a mapping of the block that bypasses the cache reads the zeroes and no later
+    // eviction writes a stale line over what that mapping stored.
+    void ram_block_clear(void* block, size_t extent);
+#endif
 }
 
 #endif

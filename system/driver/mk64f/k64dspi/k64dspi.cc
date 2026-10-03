@@ -40,30 +40,33 @@ namespace
     void bus_thread(void* arg)
     {
         struct kos_spi_bus_config cfg;
-        cfg.base = reinterpret_cast<uintptr_t>(arg);
+        cfg.base = reinterpret_cast<uintptr_t>(drv::thread_start(arg));
         cfg.ep = KOS_CAP_NONE;  // a local engine reaches no endpoint
         cfg.irq = KOS_CAP_NONE; // the DSPI pump polls its FIFOs
         cfg.notify = KOS_CAP_NONE; // and so blocks on nothing
         cfg.notify_bit = 0;
 
         struct kos_spi_bus bus;
-        if (kos_spi_bus_open(&bus, &cfg) < 0)
+        int32_t const opened = kos_spi_bus_open(&bus, &cfg);
+        if (opened < 0)
         {
             // emit, not kos_print: the console is already USER_OWNED here, so the kernel
             // chip path drops every byte.
             kickos::emit("[k64dspi] ERROR: bus bring-up refused, DSPI0 unreachable\n");
-            // NO exit HERE: root keeps a WAIT-bearing cap on the endpoint under
-            // KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies, the
-            // last-receiver-gone wake never fires, and a client parked in kos_call
-            // would block forever.
+            // NO exit HERE on a service list: root keeps a WAIT-bearing cap on the endpoint
+            // under KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies,
+            // the last-receiver-gone wake never fires, and a client parked in kos_call would
+            // block forever. Under the init the trap ends the task instead.
+            drv::trap_under_init();
             kos_panic("[k64dspi] bus bring-up refused (see the ERROR line above)");
         }
 
         kickos::emit("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS on PTC4)\n");
 
-        spi::serve_loop(&bus);
+        (void)spi::serve_loop(&bus);
 
         (void)kos_spi_bus_close(&bus);
+        drv::trap_under_init();
         exit(0);
     }
 

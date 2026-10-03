@@ -46,6 +46,13 @@ struct kos_seam_control
     // What the handover probe returns. 0 = the rendezvous completed.
     int32_t send_timed_rc;
 
+    // Refusals of the calls a bring-up given an instance makes.
+    bool sched_grant_fails;
+    bool watch_fails;
+    bool pin_fails;
+    // How many claims answer -KOS_EAGAIN, the line retiring, before the next is taken.
+    uint32_t irq_claim_retiring;
+
     // The readiness latch a spawned thread would set once it reaches its loop. Null, or
     // latch_on_spawn false, models the thread that never got there.
     volatile uint32_t* latch;
@@ -66,5 +73,8 @@ char const* kos_seam_trace();
 
 // Everything kos_print was handed, concatenated.
 char const* kos_seam_msg();
+
+// The arg the `i`-th spawn since the reset handed its thread, or null past the spawns recorded.
+void* kos_seam_spawn_arg(uint32_t i);
 
 #endif

@@ -62,8 +62,8 @@
  *   -> arch_aspace_destroy -> kickos_arm64_instruction_side_rendezvous -> arch_ipi_wait
  *   -> doorbell::hex1 -> console_tx_insert_line[112] -> console_write_line_sync[80]
  *   -> klock_enter -> ... -> wait_gicd_rwp -> kfault_terminate
- * NEST + 1232 = 2800 is the block's deepest need, against 4092 above the canary. */
-#define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 1232
+ * NEST + 1248 = 2816 is the block's deepest need, against 4092 above the canary. */
+#define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 1248
 
 /* The same stubs through the switch. 1648 on qemu-arm64-benchgicv3:
  *   kickos_thread_fault_exit -> kprintf_fault[416] -> cap_console_deliver -> sched::wake

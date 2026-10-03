@@ -5,6 +5,7 @@ version: 1
 board: qemu-riscv64
 stdout: kernel
 ends: main
+heap: 65536
 
 tasks:
   - name: main

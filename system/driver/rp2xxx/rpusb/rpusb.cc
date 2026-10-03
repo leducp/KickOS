@@ -367,7 +367,7 @@ namespace
 
     void rpusb_irq_thread(void* arg)
     {
-        usb::Shared* sh = static_cast<usb::Shared*>(arg);
+        usb::Shared* sh = static_cast<usb::Shared*>(drv::thread_start(arg));
         RpUsb dev;
         dev.sh = sh;
         dev.dpram = reg::DPRAM_BASE;
@@ -384,7 +384,7 @@ namespace
 
     void rpusb_service_thread(void* arg)
     {
-        usb::console_serve_loop(static_cast<usb::Shared*>(arg));
+        usb::console_serve_loop(static_cast<usb::Shared*>(drv::thread_start(arg)));
     }
 
     int block_init(void* blk, struct kos_service_cfg const*)

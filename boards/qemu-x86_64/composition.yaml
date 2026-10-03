@@ -5,6 +5,7 @@ version: 1
 board: qemu-x86_64
 stdout: kernel
 ends: main
+heap: 16384
 
 tasks:
   - name: main

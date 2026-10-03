@@ -24,6 +24,9 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <string>
+#include <vector>
+
 namespace drv = kickos::driver;
 
 namespace
@@ -604,4 +607,365 @@ TEST_F(DrvBringup, a_timed_out_handover_probe_cancels_nothing)
                  " close11 close12 close13 close10 probe")
         << "a timed-out probe leaves the group alone and prints nothing";
     EXPECT_STREQ(kos_seam_msg(), "") << "a timed-out probe prints no diagnostic";
+}
+
+// ---------------------------------------------------------------------------
+// Given an instance (docs/design-m10-target.md, section 2): the init's ring block and endpoint,
+// the task written back, nothing of the init's closed on a failure.
+
+namespace
+{
+    constexpr kos_cap_t K_ENDPOINT = 7;
+    constexpr kos_cap_t K_WATCH = 8;
+
+    alignas(256) unsigned char g_ring[K_BLOCK];
+
+    struct kos_driver_instance instance_of(drv::Descriptor const& d)
+    {
+        struct kos_driver_instance in = {};
+        in.endpoint = K_ENDPOINT;
+        in.watch = K_WATCH;
+        in.task = 1234u;
+        if (d.block_size != 0u)
+        {
+            in.block = g_ring;
+            in.block_size = d.block_size;
+        }
+        in.line_count = d.line_count;
+        in.console = d.ep_posture == drv::KOS_DRV_EP_HANDOVER;
+        for (uint8_t i = 0; i < d.line_count; i++)
+        {
+            in.lines[i] = static_cast<uint16_t>(d.lines[i].number);
+        }
+        return in;
+    }
+
+    struct kos_service_cfg cfg_with(struct kos_driver_instance* in)
+    {
+        // The init fills no kind: the bring-up takes it from the descriptor.
+        struct kos_service_cfg cfg = cfg_of(0xFFu, K_BASE);
+        cfg.instance = in;
+        return cfg;
+    }
+
+    // The tokens a narrowed console endpoint leaves: SIGNAL, TRANSFER and HANDOUT.
+    char const* const NARROW = "narrow7/14";
+}
+
+class DrvInstance : public DrvBringup
+{
+};
+
+TEST_F(DrvInstance, a_bring_up_takes_the_init_s_block_and_endpoint_and_writes_its_task_back)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
+                                            " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
+                                            " close10 close11 close12 "} + NARROW + " probe")
+        << "no alloc, no self-grant and no endpoint of its own; the console narrowed, never closed";
+    EXPECT_EQ(in.task, 90u);
+    EXPECT_STREQ(kos_seam_msg(), "");
+}
+
+TEST_F(DrvInstance, a_retained_endpoint_is_the_instance_s_and_out_ep_is_left_alone)
+{
+    struct kos_driver_instance in = instance_of(k_tail_barrier);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    kos_cap_t out = 99u;
+    EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, &out), 0);
+    EXPECT_STREQ(kos_seam_trace(), "taskmem90 grant90/8/0 watch90/8/7 spawn50");
+    EXPECT_EQ(out, 99u);
+}
+
+TEST_F(DrvInstance, a_retained_endpoint_takes_no_out_ep_and_is_not_narrowed)
+{
+    struct kos_driver_instance in = instance_of(k_tail_barrier);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, nullptr), 0);
+    EXPECT_STREQ(kos_seam_trace(), "taskmem90 grant90/8/0 watch90/8/7 spawn50");
+}
+
+TEST_F(DrvInstance, the_ceiling_is_the_priority_plus_the_highest_thread_offset)
+{
+    struct kos_driver_instance in = instance_of(k_three);
+    in.core_mask = 1u << 2;
+    struct kos_service_cfg cfg = cfg_with(&in);
+    cfg.prio = 5u;
+    EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), 0);
+    EXPECT_PRED2(says, kos_seam_trace(), "grant90/6/4 ") << kos_seam_trace();
+}
+
+TEST_F(DrvInstance, every_thread_runs_on_the_declared_core)
+{
+    struct kos_driver_instance in = instance_of(k_three);
+    in.core_mask = 1u << 2;
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), 0);
+    EXPECT_PRED2(says, kos_seam_trace(), "spawn50 core4 spawn51 core4 spawn52 core4 ")
+        << "the line holder and the threads holding none alike: " << kos_seam_trace();
+}
+
+TEST_F(DrvInstance, a_failed_start_before_the_first_spawn_leaves_the_task_and_endpoint_to_the_init)
+{
+    g_seam.irq_claim_fail_at = 2;
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim! close10 "}
+                                    + NARROW + " print print")
+        << "the claimed line closed, the console narrowed BEFORE the print, no tkill and no close of 7";
+    EXPECT_EQ(in.task, 90u) << "the init slays what it was handed";
+}
+
+TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_step)
+{
+    struct Arm
+    {
+        char const* what;
+        std::string trace;
+    };
+    std::vector<Arm> arms;
+
+    kos_seam_reset();
+    g_seam.sched_grant_fails = true;
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    arms.push_back({"sched_grant", kos_seam_trace()});
+
+    kos_seam_reset();
+    g_seam.watch_fails = true;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    arms.push_back({"watch", kos_seam_trace()});
+
+    kos_seam_reset();
+    g_seam.console_publish_fails = true;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    arms.push_back({"publish", kos_seam_trace()});
+
+    kos_seam_reset();
+    g_seam.spawn_fail_at = 2;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    arms.push_back({"spawn", kos_seam_trace()});
+
+    kos_seam_reset();
+    g_seam.latch_on_spawn = false;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    arms.push_back({"barrier", kos_seam_trace()});
+
+    for (Arm const& arm : arms)
+    {
+        std::string const tail = std::string{NARROW} + " print print";
+        ASSERT_GE(arm.trace.size(), tail.size()) << arm.what;
+        EXPECT_EQ(arm.trace.substr(arm.trace.size() - tail.size()), tail) << arm.what << ": " << arm.trace;
+        EXPECT_EQ(arm.trace.find("tkill"), std::string::npos) << arm.what;
+        EXPECT_EQ(arm.trace.find("close7"), std::string::npos) << arm.what;
+    }
+}
+
+// The init's endpoint, narrowed by the first start, is published again by the next one.
+TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_narrows_before_it_prints)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    std::string const first = kos_seam_trace();
+    EXPECT_EQ(first, std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
+                                 " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
+                                 " close10 close11 close12 "} + NARROW + " probe");
+
+    kos_seam_reset();
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    EXPECT_EQ(kos_seam_trace(), first) << "the restart publishes the same endpoint and hands over again";
+
+    // The restart's receiver refused: its narrow is what gives the kernel its console back.
+    kos_seam_reset();
+    g_seam.spawn_fail_at = 2;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
+                                            " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn!"
+                                            " close10 close11 close12 "} + NARROW + " print print")
+        << "no tkill and no close of 7: the task and the endpoint stay the init's";
+}
+
+TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
+{
+    g_seam.send_timed_rc = -KOS_EAGAIN;
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_EAGAIN);
+    EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
+                                            " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
+                                            " close10 close11 close12 "} + NARROW + " probe print print")
+        << "narrowed, probed, reported; the init slays the task";
+    EXPECT_PRED2(says, kos_seam_msg(), "probe was not taken");
+}
+
+TEST_F(DrvInstance, a_line_retiring_from_the_last_instance_is_claimed_again_within_the_bound)
+{
+    g_seam.irq_claim_retiring = drv::KOS_DRV_CLAIM_RETRIES;
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    EXPECT_PRED2(says, kos_seam_trace(), "claim? sleep*1 claim?") << kos_seam_trace();
+
+    kos_seam_reset();
+    g_seam.irq_claim_retiring = drv::KOS_DRV_CLAIM_RETRIES + 1u;
+    in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "past the bound, a failed start";
+}
+
+TEST_F(DrvInstance, an_instance_that_is_not_this_driver_s_is_refused_before_the_task)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+
+    in.lines[1] = 18u;
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print") << "a line numbered differently";
+    EXPECT_PRED2(says, kos_seam_msg(), "lines are not the ones");
+
+    kos_seam_reset();
+    in = instance_of(k_two);
+    in.block_size = K_BLOCK * 2u;
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_msg(), "ring block is not this driver's") << "a block of another size";
+
+    kos_seam_reset();
+    in = instance_of(k_two_nocache);
+    EXPECT_EQ(drv::bring_up(k_two_nocache, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_msg(), "ring block is not this driver's")
+        << "a typed block the init's self-grant did not type";
+    EXPECT_EQ(in.task, KOS_TASK_NONE);
+}
+
+TEST_F(DrvInstance, a_block_the_descriptor_refuses_to_lay_out_is_a_failed_start_before_the_task)
+{
+    g_block_init_rc = -KOS_EINVAL;
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print");
+    EXPECT_EQ(in.task, KOS_TASK_NONE);
+}
+
+TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_claim_and_bind_step)
+{
+    struct Arm
+    {
+        char const* what;
+        void (*arm)();
+    };
+    Arm const arms[] = {
+        {"claim", []
+         {
+             g_seam.irq_claim_fail_at = 1;
+         }},
+        {"notify_create", []
+         {
+             g_seam.notify_create_fails = true;
+         }},
+        {"badge", []
+         {
+             g_seam.notify_badge_fails = true;
+         }},
+        {"bind", []
+         {
+             g_seam.irq_bind_notify_fails = true;
+         }},
+    };
+    for (Arm const& a : arms)
+    {
+        kos_seam_reset();
+        a.arm();
+        struct kos_driver_instance in = instance_of(k_two);
+        struct kos_service_cfg const cfg = cfg_with(&in);
+        EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << a.what;
+        std::string const trace = kos_seam_trace();
+        std::string const tail = std::string{NARROW} + " print print";
+        ASSERT_GE(trace.size(), tail.size()) << a.what;
+        EXPECT_EQ(trace.substr(trace.size() - tail.size()), tail) << a.what << ": " << trace;
+        EXPECT_EQ(trace.find("tkill"), std::string::npos) << a.what;
+    }
+}
+
+TEST_F(DrvInstance, a_retained_endpoint_is_never_narrowed_on_a_failure)
+{
+    // Before any thread holds the endpoint, and with one live.
+    g_seam.spawn_fail_at = 1;
+    struct kos_driver_instance in = instance_of(k_tail_barrier);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, nullptr), -1);
+    EXPECT_STREQ(kos_seam_trace(), "taskmem90 grant90/8/0 watch90/8/7 spawn! print print");
+
+    kos_seam_reset();
+    g_seam.latch_on_spawn = false;
+    in = instance_of(k_tail_barrier);
+    EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, nullptr), -1);
+    EXPECT_STREQ(kos_seam_trace(), "taskmem90 grant90/8/0 watch90/8/7 spawn50 sleep*1000 print print");
+}
+
+TEST_F(DrvInstance, a_table_and_a_descriptor_disagreeing_on_the_console_are_refused_before_the_task)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    in.console = false;
+    struct kos_service_cfg cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_msg(), "disagree on the console");
+    EXPECT_EQ(std::string{kos_seam_trace()}.find("task"), std::string::npos);
+
+    kos_seam_reset();
+    in = instance_of(k_tail_barrier);
+    in.console = true;
+    cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_msg(), "disagree on the console");
+}
+
+TEST_F(DrvBringup, a_cfg_whose_reserved_bytes_are_set_is_refused)
+{
+    struct kos_service_cfg cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    cfg.rsv[3] = 1u;
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_STREQ(kos_seam_trace(), "print print");
+    EXPECT_PRED2(says, kos_seam_msg(), "reserved bytes");
+}
+
+TEST_F(DrvBringup, an_instance_whose_block_is_odd_is_refused_before_anything_is_made)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    in.block = static_cast<unsigned char*>(in.block) + 1;
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_STREQ(kos_seam_trace(), "narrow7/14 print print");
+    EXPECT_PRED2(says, kos_seam_msg(), "cannot carry the posture");
+}
+
+TEST_F(DrvBringup, a_failing_thread_traps_under_the_init_and_returns_on_a_service_list)
+{
+    // Each thread records the posture its spawn's arg carries, as its entry's thread_start does.
+    struct kos_service_cfg const listed = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    EXPECT_EQ(drv::bring_up(k_two, &listed, nullptr), 0);
+    EXPECT_EQ(drv::thread_start(kos_seam_spawn_arg(1)), kos_seam_spawn_arg(1));
+    drv::trap_under_init();
+
+    kos_seam_reset();
+    struct kos_driver_instance in = instance_of(k_two);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0);
+    EXPECT_EQ(drv::thread_start(kos_seam_spawn_arg(1)), in.block);
+    EXPECT_DEATH(drv::trap_under_init(), "");
+
+    kos_seam_reset();
+    EXPECT_EQ(drv::bring_up(k_two, &listed, nullptr), 0);
+    (void)drv::thread_start(kos_seam_spawn_arg(1));
+    drv::trap_under_init();
 }

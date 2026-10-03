@@ -5,7 +5,7 @@
 # package. It does NOT live in the KickOS tree.
 #
 # The MCU path needs no more ceremony than the host one: the same plain
-# add_executable + target_link_libraries, and the exported `kickos` target supplies
+# add_executable + target_link_libraries, and the exported KickOS::kickos target supplies
 # the whole bare-metal link recipe (component archive group, entry glue,
 # -nostartfiles, the chip linker script plus a real build dependency on it).
 #
@@ -28,7 +28,7 @@ if(KICKOS_ARCH STREQUAL "x86_64")
 else()
   add_executable(oot_mcu_app main.cc)
 endif()
-target_link_libraries(oot_mcu_app PRIVATE kickos)
+target_link_libraries(oot_mcu_app PRIVATE KickOS::kickos)
 # The one bare-metal extra: flashing needs a .bin/.hex (an .efi where the image IS the
 # deliverable), and a POST_BUILD action cannot ride a usage requirement, so it is an explicit
 # opt-in line.

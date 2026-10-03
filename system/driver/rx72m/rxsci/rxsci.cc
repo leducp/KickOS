@@ -40,7 +40,7 @@ namespace
 
     void irq_entry(void* arg)
     {
-        uart::irq_thread<struct kos_uart>(static_cast<uart::Ctx*>(arg), k_uart);
+        uart::irq_thread<struct kos_uart>(static_cast<uart::Ctx*>(drv::thread_start(arg)), k_uart);
     }
 
     int block_init(void* blk, struct kos_service_cfg const* cfg)

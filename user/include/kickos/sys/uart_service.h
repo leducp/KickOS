@@ -151,19 +151,22 @@ void irq_loop(Uart& dev, Shared* sh)
 {
     // Bind before signaling readiness and waiting: a raise before the bind is LATCHED in the
     // object and delivered to whoever binds next, so nothing is lost either way.
-    if (kos_notify_bind(KOS_UART_CAP_NOTIFY) != 0)
+    int bound = kos_notify_bind(KOS_UART_CAP_NOTIFY);
+    if (bound != 0)
     {
         dev_shutdown(&dev);
+        driver::trap_under_init();
         return;
     }
     sh->ready = 1;
+    int waited = 0;
     while (true)
     {
         // The FIRST wait is also what arms the line: a claim leaves it masked so no window
         // exists in which it is armed and unowned. One wait covers the line and the
         // doorbell, which is why this class needs no relay thread.
-        if (kos_notify_wait(KOS_UART_CAP_NOTIFY, KOS_UART_ACCEPT, KOS_TIMEOUT_NONE, nullptr)
-            != 0)
+        waited = kos_notify_wait(KOS_UART_CAP_NOTIFY, KOS_UART_ACCEPT, KOS_TIMEOUT_NONE, nullptr);
+        if (waited != 0)
         {
             break; // the cap went away: the line is gone, so this thread has no work
         }
@@ -180,6 +183,7 @@ void irq_loop(Uart& dev, Shared* sh)
         }
     }
     dev_shutdown(&dev);
+    driver::trap_under_init();
     exit(0);
 }
 
@@ -202,15 +206,17 @@ struct UartParams
     bool prime;
 };
 
-// NEVER exits on an open failure: once root has closed its own cap the service thread is the
-// endpoint's sole receiver and would keep accepting stdout into a ring nothing drains, so the
-// panic path is what reclaims the console (D6).
+// NEVER exits on an open failure: the service thread would stay the endpoint's receiver and
+// keep accepting stdout into a ring nothing drains. Under the init the trap ends the whole task;
+// on a service list the panic is what reclaims the console (D6).
 template <typename Uart>
 void irq_thread(Ctx* ctx, UartParams const& p)
 {
     Uart dev;
-    if (kos_uart_open(&dev, &ctx->ucfg) < 0)
+    int32_t const opened = kos_uart_open(&dev, &ctx->ucfg);
+    if (opened < 0)
     {
+        driver::trap_under_init();
         kos_panic(p.open_fail);
     }
     // The marker must precede the first pass: only a pend latched before the line's FIRST
@@ -246,7 +252,7 @@ size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* bu
 // respawn signal.
 void serve_loop(Shared* sh);
 
-void console_serve_loop(Shared* sh);
+int32_t console_serve_loop(Shared* sh);
 
 // The console service thread entry: its ARG is the Ctx the bring-up granted.
 void console_thread(void* arg);

@@ -433,6 +433,7 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
     EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "and it was woken with EPIPE";
     EXPECT_EQ(c->state, ThreadState::EXITED) << "the dying thread still finished its exit";
     EXPECT_EQ(ep->server, nullptr) << "the endpoint's server pointer was cleared";
+    EXPECT_EQ(ep->vacated, 1u) << "the teardown left the endpoint vacated";
     EXPECT_FALSE(cap_teardown_active()) << "the sweep still balanced its depth";
 }
 
@@ -526,6 +527,7 @@ TEST_F(SchedWake, a_sender_is_not_epiped_while_another_receiver_holds_the_endpoi
     EXPECT_STREQ(trace(), "reclaim switch1>3") << "no drain, so the only switch is the exit's own";
     EXPECT_EQ(sender->state, ThreadState::BLOCKED) << "the sender is still parked";
     EXPECT_EQ(ep->recv_holders, 1u) << "one holder was dropped, not the last";
+    EXPECT_EQ(ep->vacated, 0u) << "so the endpoint is not vacated";
 }
 
 TEST_F(SchedWake, a_send_only_cap_does_not_drain_the_endpoint)

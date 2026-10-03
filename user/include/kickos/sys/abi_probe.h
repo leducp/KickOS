@@ -426,7 +426,8 @@ enum
 #define KOS_ASPACE_UNWIND_MIN_DEPTH 4
 
 // `op` selector for KOS_SYS_GRANT_PROBE. Ops 0..4 return the predicate as 0/1; ops 5..7
-// return a raw count / reserved-block base / size. A BAD op returns -KOS_EINVAL.
+// return a raw count / reserved-block base / size; op 10 an address. A BAD op returns
+// -KOS_EINVAL.
 enum kos_grant_op
 {
     KOS_GRANT_OP_HITS_RESERVED = 0,   // grant_hits_reserved(base, size)
@@ -438,8 +439,14 @@ enum kos_grant_op
     KOS_GRANT_OP_RESERVED_BASE = 6,   // reserved block[base].base (base indexes the block)
     KOS_GRANT_OP_RESERVED_SIZE = 7,   // reserved block[base].size (base indexes the block)
     KOS_GRANT_OP_NOCACHE_SUPPORT = 8, // arch_mpu_nocache_support() (enum arch_mpu_nocache)
-    KOS_GRANT_OP_RAM_NOCACHE = 9      // grant_region_admissible RAM|NOCACHE, unprivileged
+    KOS_GRANT_OP_RAM_NOCACHE = 9,     // grant_region_admissible RAM|NOCACHE, unprivileged
+    // Selftest kernels, AUTH_MEMORY: writes KOS_ARENA_SCRIBBLE over the `size` bytes the arena
+    // has not handed out yet, as silicon leaves RAM, and answers the first one's address, or 0
+    // where the arena is shorter (-KOS_EPERM without the authority).
+    KOS_GRANT_OP_ARENA_SCRIBBLE = 10
 };
+
+#define KOS_ARENA_SCRIBBLE 0xA5u
 
 #ifdef __cplusplus
 }

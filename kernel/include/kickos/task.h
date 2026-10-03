@@ -10,8 +10,11 @@
 // IMPLICIT task of its own (task_for). A thread that names a task joins an EXPLICIT one, created
 // by task_create before any of its threads exist.
 //
-// A FAULT is the only death that ends the group from a member's own exit. Every death a caller
-// asked for ends one thread; a caller that wants the group calls task_cancel_group itself.
+// Two deaths end the group from a member's own exit: a FAULT, and the death by any cause of the
+// task's ENTRY thread, the first member a non-member seats (or the thread whose spawn built an
+// implicit task). The first of them gives the task its status, and an ended task takes no
+// member. A cancel of any other member ends that member alone; a caller that wants the group
+// calls task_cancel_group itself.
 //
 // A task owns a DEV window's LIFETIME and never its ACCESS: the window is a region of the asking
 // THREAD, and the group cancel is what returns it.
@@ -55,12 +58,16 @@ namespace kickos
         // unprivileged thread take the top of the run queue, which is a starvation hole on a
         // one-core board too.
         uint8_t prio_ceiling = 0;
-        // The creator's watch (kos_task_watch): nonzero once the armed endpoint has been
-        // waited on since the task last emptied, which is what "ready" means.
-        uint8_t watch_ready = 0;
+        // TASK_MARK_* bits (task.cc): the armed endpoint has been waited on since the task last
+        // emptied, which is what "ready" means for the creator's watch (kos_task_watch); the
+        // task has ended and its status is set; it is dead, every member swept.
+        uint8_t marks = 0;
         // The bit to raise, the arming capability's badge, as an index: one bit is all a
         // capability ever raises.
         uint8_t watch_bit = 0;
+        // Members released and still sweeping their capabilities: the death is reported once
+        // the task is empty and this is back to zero.
+        uint8_t sweeping = 0;
 #if KICKOS_KERNEL_CORES > 1
         uint32_t core_set = 0;
 #endif
@@ -69,17 +76,20 @@ namespace kickos
         int32_t watch_notify = 0;
         // The endpoint whose first receive means ready, biased the same way; compared only.
         int32_t watch_ep = 0;
+        // The status the task ended with, which kos_task_exit_status answers once it has ended.
+        int32_t exit_status = 0;
     };
 
-    // What the KICKOS_MAX_TASKS budget is priced against, 20 bytes on a 32-bit target at one
+    // What the KICKOS_MAX_TASKS budget is priced against, 24 bytes on a 32-bit target at one
     // kernel core and one core-set word more above it. MEASURE ON A 32-BIT TARGET if this
     // fires: a host build prices the tail differently, so a host measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
         size_t raw = sizeof(Domain*) + sizeof(Task::refcount) + sizeof(Task::creator_tag)
-                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling) + sizeof(Task::watch_ready)
-                     + sizeof(Task::watch_bit) + sizeof(Task::watch_notify)
-                     + sizeof(Task::watch_ep);
+                     + sizeof(Task::gen) + sizeof(Task::prio_ceiling) + sizeof(Task::marks)
+                     + sizeof(Task::watch_bit) + sizeof(Task::sweeping)
+                     + sizeof(Task::watch_notify)
+                     + sizeof(Task::watch_ep) + sizeof(Task::exit_status);
 #if KICKOS_KERNEL_CORES > 1
         raw = raw + sizeof(Task::core_set);
 #endif
@@ -144,7 +154,8 @@ namespace kickos
     bool task_created_by(Task const* t, uint16_t tag);
 
     // Release the creator's hold: the group is no longer nameable, and the slot and its
-    // domain go back as soon as the last member leaves (at once, if there is none).
+    // domain go back as soon as the last member leaves (at once, if there is none). Caller
+    // holds IrqLock.
     void task_drop_hold(Task* t);
 
     // The creator's reports (kos_task_watch). Arm or replace the watch on `task`, or disarm
@@ -152,10 +163,26 @@ namespace kickos
     // nothing of its kind), -KOS_EPERM (not the creator), -KOS_EACCES (the notification cap
     // lacks SIGNAL).
     int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep);
-    // KOS_TASK_LIVE | KOS_TASK_READY for the instance `task` names, or -KOS_EBADF / -KOS_EPERM.
+    // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, or -KOS_EBADF /
+    // -KOS_EPERM.
     int task_state_call(kos_task_t task);
-    // The task emptied and every member's teardown ran: raise the watch, once, if `t` is
-    // still the instance of generation `gen`. Caller holds IrqLock.
+    // 0 and the status the task `task` names ended with in *status, or -KOS_EBUSY until it has
+    // ended, -KOS_EBADF / -KOS_EPERM.
+    int task_exit_status_call(kos_task_t task, int32_t* status);
+    // The task ends, its entry thread having died by any cause or a member faulted: it takes no
+    // member from here on, the creator's watch is raised, and `code` is its status when `latch`
+    // holds, the ending thread being uncancelled; otherwise it keeps KOS_EXIT_CANCELLED. A later
+    // end raises and latches nothing. Every other member is slain (CANCEL_SLAY), with or without
+    // a creator, and a privileged one killed (CANCEL_KILL). Caller holds IrqLock.
+    void task_end(Task* t, int code, bool latch);
+    // Whether `t` has ended, which refuses it a new member. Null-safe: false.
+    bool task_ended(Task const* t);
+    // A member released from `t`, of generation `gen`, has swept its capabilities: true when
+    // that leaves the task of generation `gen` empty with no member sweeping, which is its
+    // death and what a WAIT_TASK_EMPTY waiter waits for. Caller holds IrqLock.
+    bool task_sweep_done(Task* t, uint16_t gen);
+    // The task emptied and every member's sweep ran: mark it ended and dead and raise the
+    // watch, once, if `t` is still the task of generation `gen`. Caller holds IrqLock.
     void task_report_death(Task* t, uint16_t gen);
     uint16_t task_gen(Task const* t); // null-safe: 0
     // A member of `t` is waiting to receive on the endpoint `ep_obj` names: raise the watch
@@ -220,22 +247,23 @@ namespace kickos
 
     // Live members. Null-safe (0).
     uint8_t task_member_count(Task const* t);
+    // Released members whose capability sweep has not finished. Null-safe (0).
+    uint8_t task_sweeping(Task const* t);
 
     void task_ref(Task* t); // a thread joins; the first one acquires the domain
-    // A thread leaves. For an implicit task the last one out releases the domain and frees the
-    // slot, so the caller's Task* is a dangling name from here on. An explicit task outlives its
-    // members until its creator drops the hold. TRUE when THIS call emptied the group, which is
-    // what a WAIT_TASK_EMPTY waiter is waiting for; the transition happens once and only its
-    // cause can see it.
+    // A thread leaves, and counts as sweeping until its task_sweep_done. For an implicit task
+    // the last one out releases the domain and frees the slot, which free_slot seats again only
+    // once every sweep under it is done. An explicit task outlives its members until its
+    // creator drops the hold. TRUE when THIS call emptied the group; the transition happens
+    // once and only its cause can see it.
     bool task_release(Task* t);
 
-    // Cancel every live member at `kind` (a CancelKind): each is marked and woken out of
-    // whatever it is parked on, so it reaches its own death point. Cooperative at CANCEL_KILL only
-    // in that a member which never enters the kernel again never dies; at CANCEL_SLAY every
-    // member's resume is claimed instead. The group dies by ONE rule: there is no exception
-    // argument, and thread_cancel_kind already refuses a dying thread. Caller holds the
-    // exclusion.
-    void task_cancel_group(Task* t, uint8_t kind);
+    // Slay every live member: each is marked and woken out of whatever it is parked on, and its
+    // next resume is claimed, so it reaches its own death point. The group dies by ONE rule:
+    // there is no exception argument, and thread_cancel_kind already refuses a dying thread. A
+    // privileged member, which no explicit task has, takes CANCEL_KILL instead: its frames may
+    // hold kernel work, as thread_slay refuses it for. Caller holds the exclusion.
+    void task_cancel_group(Task* t);
 }
 
 #endif

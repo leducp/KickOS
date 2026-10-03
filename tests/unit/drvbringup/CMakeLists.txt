@@ -20,6 +20,23 @@ kickos_add_unit_test(NAME drv_bringup
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
+# A failing UART driver thread by posture: the thread bodies of uart_service.h and
+# user/src/uart_service.cc over the same seam, a trap reaching the host as SIGILL.
+kickos_add_unit_test(NAME drv_thread_trap
+  SOURCES thread_trap.cc kos_seam.cc
+          "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
+          "${PROJECT_SOURCE_DIR}/user/src/uart_service.cc"
+          "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
+# The driver witness's serve loop over its own two fakes: a reply to a caller whose timed call
+# expired is not the driver's failure. HOST-ONLY: serve_reply.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_witness_serve
+  SOURCES serve_reply.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
 # The shutdown side of the same console probe: the default init body's flush handshake
 # (system/init/common/default_init_run.cc), compiled in over its own fakes for the same
 # reason driver_service.cc is above: kickos_user carries the real syscall stubs.
@@ -30,3 +47,7 @@ kickos_add_unit_test(NAME init_flush
           "${PROJECT_SOURCE_DIR}/system/init/common/default_init_run.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
+
+# The same bring-up built for more than one kernel core, in a directory of its own: its posture
+# scrubs the build's core count from the directory it is declared in.
+add_subdirectory(cores)

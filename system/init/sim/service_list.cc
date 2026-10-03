@@ -163,7 +163,7 @@ namespace
     {
         kos::thread::Handle const h =
             drv::spawn_one(k_desc.threads[0], cfg, /*blk=*/nullptr, ep, /*line=*/nullptr,
-                           /*note=*/KOS_CAP_NONE, task);
+                           /*note=*/KOS_CAP_NONE, task, /*core_mask=*/0u, /*under_init=*/false);
         if (not h.valid())
         {
             // CLOSE BEFORE PRINTING: the console is USER_OWNED from the publish on, and the
@@ -208,7 +208,7 @@ namespace
                == 0)
         {
         }
-        wire_puts("[simcon] wedge irq thread cancelled, releasing the registers\n");
+        wire_puts("[simcon] wedge irq thread woke from its wait\n");
         kos_exit(0);
     }
 #endif
@@ -307,8 +307,9 @@ extern "C"
     // loop parks forever unless KICKOS_SIMCON_EXIT_AFTER bounds it. Root keeps its
     // WAIT-bearing cap, which keeps the mirror wake away too; kos_cap_narrow could drop WAIT
     // and keep KOS_CAP_HANDOUT, and this service does not.
-    void simconsole_driver(void*)
+    void simconsole_driver(void* arg)
     {
+        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");
         wire_puts("[simcon] driver up (host fd 1)\n");
 
@@ -433,9 +434,9 @@ extern "C"
             return -1;
         }
 
-        // Close BEFORE cancelling, so the death note is already set when the cancelled
-        // thread's exit runs the reclaim. The note alone does not reclaim: the wedged
-        // thread still holds the register window, and the cancel is what releases it.
+        // Close BEFORE the kill, so the death note is already set when the slain thread's
+        // exit runs the reclaim. The note alone does not reclaim: the wedged thread still
+        // holds the register window, and its exit is what releases it.
         uint32_t waited = 0;
         while (g_win_ready == 0u)
         {
@@ -457,7 +458,7 @@ extern "C"
             (void)kos_task_kill(task);
             return drvt.error();
         }
-        return drv::console_handover_finish(ep, "[simcon] ", task);
+        return drv::console_handover_finish(ep, "[simcon] ", task, nullptr);
     }
 #endif
 
@@ -534,7 +535,7 @@ extern "C"
         // window thread is cancelled SEPARATELY on the failure path, because it is not in the
         // driver's group: the console comes back only once the WINDOW is free, and the window
         // holder is not the thread whose death EPIPEs the probe.
-        int const rc = drv::console_handover_finish(ep, "[simcon] ", task);
+        int const rc = drv::console_handover_finish(ep, "[simcon] ", task, nullptr);
         if (rc != 0)
         {
             (void)g_win_thread.kill();
@@ -570,7 +571,8 @@ extern "C"
         .addr = 0,
         .prio = 12,
         .kind = KOS_SVC_CONSOLE,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     static struct kos_service_bringup const sim_services[] = {

@@ -28,6 +28,10 @@ kickos_add_diagnostic_apps(fault panicgate specfault)
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(gpioblink)
   add_subdirectory(libc_exit)
+  # A board with a default composition builds KickOS::system_default.
+  if(EXISTS "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml")
+    add_subdirectory(sysdefault)
+  endif()
   kickos_add_diagnostic_apps(mpu_fault rootfault rootgone rootauth rebootdemo reclaimwit
                              objbudget)
 endif()

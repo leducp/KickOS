@@ -24,5 +24,4 @@ endif()
 target_include_directories(kickos_lib PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-install(TARGETS kickos_lib EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+kickos_export_targets(kickos_lib)

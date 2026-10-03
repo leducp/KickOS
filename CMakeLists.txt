@@ -12,7 +12,10 @@ include(cmake/kconfig.cmake)
 # granule) and the width sum at the bottom of this file.
 include(cmake/cap_geometry.cmake)
 include(cmake/sched_geometry.cmake)
+include(cmake/init_geometry.cmake)
 include(cmake/stack_geometry.cmake)
+include(cmake/mpu_geometry.cmake)
+include(cmake/exit_geometry.cmake)
 include(cmake/manifest.cmake)
 
 # KICKOS is what an add_subdirectory(KickOS) consumer tests with if(KICKOS).
@@ -176,6 +179,9 @@ add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
 option(KICKOS_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
+# A package built with them carries their archives and lists them in its catalogue, so only a
+# witness preset sets it.
+option(KICKOS_TEST_DRIVERS "Build tests/drivers, the packaged drivers the driver restart witness composes" OFF)
 option(KICKOS_BUILD_INTEGRATION_TESTS
        "Register the CTest cases that RUN a KickOS image (sim, qemu, out-of-tree export)" ON)
 
@@ -311,6 +317,10 @@ else()
 endif()
 
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
+# What the link spells before a C name, which a toolchain whose ABI adds one declares.
+if(NOT DEFINED KICKOS_C_SYMBOL_PREFIX)
+  set(KICKOS_C_SYMBOL_PREFIX "")
+endif()
 # Always defined, so every `#if KICKOS_TLS_FROM_SP` site is -Wundef-clean.
 if(NOT DEFINED KICKOS_TLS_FROM_SP)
   set(KICKOS_TLS_FROM_SP 0)
@@ -917,6 +927,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kernel_data_reserve PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME geometry_emitted
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_geometry_emitted.sh" "${PROJECT_BINARY_DIR}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(geometry_emitted PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME app_heap_align
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_heap_align.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1031,6 +1046,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(awk_portable PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME capture_matchers
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_capture_matchers.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(capture_matchers PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
   # is registered from every board and reads no build output.
   _add_test(NAME kernel_core_index
@@ -1084,6 +1104,11 @@ if(KICKOS_BUILD_TESTS)
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_driver_metadata.cmake")
   set_tests_properties(driver_metadata PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME heap_symbol
+            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_heap_symbol.cmake")
+  set_tests_properties(heap_symbol PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   # A first run fetches the tool's locked dependencies into the build directory.
   foreach(_compose_mode descriptions compositions arms)
     _add_test(NAME platform_${_compose_mode}
@@ -1106,6 +1131,9 @@ endif()
 foreach(_dir lib arch kernel user system)
   add_subdirectory(${_dir})
 endforeach()
+if(KICKOS_TEST_DRIVERS)
+  add_subdirectory(tests/drivers)
+endif()
 
 # After arch, which generates the script. Where the carve is never zero each default stack's link
 # assert can be driven to its floor.
@@ -1126,10 +1154,11 @@ endif()
 
 # Set before kickos_core below, whose LINK_GROUP pulls the provider archive.
 set(KICKOS_INIT_PROVIDER "kickos_default_init" CACHE STRING
-  "CMake target providing kickos_init_entry (the userspace init service). Default = the built-in kickos_system service; a power user names their own target.")
+  "CMake target providing kickos_init_entry (the userspace init service). Default = the built-in kickos_system service; a power user names their own target, exported with kickos_export_targets.")
 
 if(TARGET kickos_kernel)
-  # Consumers link a leaf (kickos / kickos_cxx), never kickos_core directly.
+  # Consumers link a leaf (KickOS::kickos, KickOS::kickos_cxx or KickOS::kernel), never
+  # kickos_core directly.
   add_library(kickos_core INTERFACE)
   # Place init and service providers after the kernel in the rescan group.
   # Resolve their dependency closure after system targets exist.
@@ -1138,12 +1167,29 @@ if(TARGET kickos_kernel)
     message(STATUS "KickOS: service-list closure = ${KICKOS_SERVICE_LIST_LIBS}")
   endif()
   # CMake forbids a library in two groups within one target; build a group
-  # for each configuration below.
+  # for each configuration below. Members go by kickos_export_name.
+  set(_kickos_head_targets kickos_user kickos_kernel)
+  set(_kickos_providers_targets ${KICKOS_INIT_PROVIDER} kickos_root_lower
+                                ${KICKOS_SERVICE_LIST_LIBS} ${KICKOS_BOARD_PINMAP_LIBS})
+  set(_kickos_tail_targets kickos_arch_${KICKOS_ARCH} kickos_lib)
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
-    set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib")
-  else()
-    set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib")
+    list(PREPEND _kickos_tail_targets kickos_chip_${KICKOS_CHIP})
   endif()
+  foreach(_kickos_part head providers tail)
+    set(_kickos_${_kickos_part}_names "")
+    foreach(_kickos_t IN LISTS _kickos_${_kickos_part}_targets)
+      kickos_export_name(${_kickos_t} _kickos_name)
+      list(APPEND _kickos_${_kickos_part}_names "${_kickos_name}")
+    endforeach()
+  endforeach()
+  # Read by the export gates, which check KickOS::kernel is the full group less these.
+  set(KICKOS_GROUP_PROVIDERS "${_kickos_providers_names}" CACHE INTERNAL
+      "The init provider, root's lowering, service list and pin map of the link group, by export name")
+  list(JOIN _kickos_head_names "," _kickos_head)
+  list(JOIN _kickos_tail_names "," _kickos_tail_group)
+  list(JOIN _kickos_providers_names "," _kickos_providers_group)
+  set(_kickos_group "${_kickos_head},${_kickos_providers_group},${_kickos_tail_group}")
+  set(_kickos_kernel_group "${_kickos_head},${_kickos_tail_group}")
   # Link the interface-only kickos_system outside the rescan group.
   target_link_libraries(kickos_core INTERFACE kickos_system)
   # The app writes `int main`, renamed to the kernel-called symbol; app.h is force-included
@@ -1208,21 +1254,52 @@ if(TARGET kickos_kernel)
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
-  # A pure-C / freestanding app links `kickos`, a full-C++ one `kickos_cxx`, on either newlib
-  # profile: the KickOS toolchain's nano C++ archives keep the unwind path.
+  # A pure-C / freestanding app links KickOS::kickos, a full-C++ one KickOS::kickos_cxx, on
+  # either newlib profile: the KickOS toolchain's nano C++ archives keep the unwind path.
+  # KickOS::kernel is KickOS::kickos_cxx without the init provider, root's lowering, the service
+  # list and the pin map.
   add_library(kickos INTERFACE)
-  target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
-  target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  add_library(kickos_kernel_leaf INTERFACE)
+  set_target_properties(kickos_kernel_leaf PROPERTIES EXPORT_NAME kernel)
+  set(_kickos_leaf_group_kickos "${_kickos_group}")
+  set(_kickos_leaf_group_kickos_cxx "${_kickos_group}")
+  set(_kickos_leaf_group_kickos_kernel_leaf "${_kickos_kernel_group}")
+  foreach(_kickos_leaf kickos kickos_cxx kickos_kernel_leaf)
+    target_link_libraries(${_kickos_leaf} INTERFACE kickos_core)
+  endforeach()
+  # The scripts size .userheap by the KICKOS_USER_HEAP_SIZE link symbol. The old leaves define
+  # it from the knob; KickOS::kernel leaves it to the system target. Inert on an MPU chip,
+  # whose heap is the .appdata window pad.
+  kickos_heap_defsym(_kickos_heap "${KICKOS_USER_HEAP_SIZE}")
+  if(_kickos_heap AND NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
+    foreach(_kickos_leaf kickos kickos_cxx)
+      target_link_options(${_kickos_leaf} INTERFACE "LINKER:${_kickos_heap}")
+    endforeach()
+  endif()
+  # Every system target's table defines the symbol (<kickos/sys/table.h>), so a link of none
+  # fails naming it and a link of two fails on its second definition.
+  target_link_options(kickos_kernel_leaf INTERFACE
+    "LINKER:--require-defined=${KICKOS_C_SYMBOL_PREFIX}kickos_link_one_system_target")
+  if(NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
+    target_link_libraries(kickos_kernel_leaf INTERFACE
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cmake/kernel_leaf.ld>"
+      "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/kernel/kernel_leaf.ld>")
+    install(FILES cmake/kernel_leaf.ld DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos/kernel")
+  endif()
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
   if(KICKOS_ARCH STREQUAL "sim")
-    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
-    target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+    foreach(_kickos_leaf kickos kickos_cxx kickos_kernel_leaf)
+      target_link_libraries(${_kickos_leaf} INTERFACE
+        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}}>")
+    endforeach()
   else()
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
-    target_link_libraries(kickos_cxx INTERFACE
-      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
+    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
+      target_link_libraries(${_kickos_leaf} INTERFACE
+        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},stdc++,supc++,c>")
+    endforeach()
   endif()
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
@@ -1233,14 +1310,6 @@ if(TARGET kickos_kernel)
     target_compile_options(kickos INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
     target_link_options(kickos INTERFACE -nostdlib++)
-    # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
-    # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
-    target_compile_options(kickos_cxx INTERFACE
-      "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-    # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
-    # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
-    target_link_libraries(kickos_cxx INTERFACE
-      "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
     # Link the custom terminate handler as an object before libstdc++.
     # This source requires exceptions and RTTI.
@@ -1250,16 +1319,26 @@ if(TARGET kickos_kernel)
     # An object library links nothing: kickos_user/kickos_kernel here are usage
     # requirements (include dirs) only, and PRIVATE keeps them off consumers.
     target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
-    target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
+
+    kickos_export_name(kickos_user _kickos_user_name)
+    kickos_export_name(kickos_cxx_rt _kickos_cxx_rt_name)
+    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
+      # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
+      # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+      target_compile_options(${_kickos_leaf} INTERFACE
+        "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+      # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
+      # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
+      target_link_libraries(${_kickos_leaf} INTERFACE
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name}>")
+      target_link_libraries(${_kickos_leaf} INTERFACE "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
+    endforeach()
   endif()
 
-  # kickos_core is a link dependency of both leaves, so it must be in the export set.
-  install(TARGETS kickos_core kickos kickos_cxx EXPORT KickOSTargets)
-  # $<TARGET_OBJECTS:kickos_cxx_rt> lands verbatim in KickOSTargets.cmake, so the
-  # object lib must be in the export set or an OOT find_package(KickOS) breaks.
+  # kickos_core is a link dependency of every leaf, so it must be in the export set.
+  kickos_export_targets(kickos_core kickos kickos_cxx kickos_kernel_leaf)
   if(TARGET kickos_cxx_rt)
-    install(TARGETS kickos_cxx_rt EXPORT KickOSTargets
-      OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+    kickos_export_targets(kickos_cxx_rt)
   endif()
 endif()
 
@@ -1281,6 +1360,10 @@ if(KICKOS_BUILD_TESTS)
   add_subdirectory(tests/integration)
 endif()
 
+if(KICKOS_BUILD_TESTS AND TARGET kickos AND KICKOS_ARCH MATCHES "^(sim|x86_64)$")
+  add_subdirectory(tests/composition)
+endif()
+
 # Validate providers after apps/superprojects can define them.
 # Library-only builds need no linked provider.
 if(TARGET kickos_core)
@@ -1288,8 +1371,7 @@ if(TARGET kickos_core)
     message(FATAL_ERROR "KICKOS_INIT_PROVIDER='${KICKOS_INIT_PROVIDER}' is not a CMake target. Name a target that defines kickos_init_entry, or unset to use the default kickos_default_init.")
   endif()
   if(NOT KICKOS_INIT_PROVIDER STREQUAL "kickos_default_init")
-    message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default). "
-      "For an installed/exported package it must also be install(EXPORT KickOSTargets).")
+    message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default)")
   endif()
   # Late for the same reason: a service-list provider under system/init/<board>/ is not a
   # target at the kickos_core site above.
@@ -1313,6 +1395,14 @@ if(TARGET kickos_core)
   if(NOT TARGET ${KICKOS_BOARD_PINMAP})
     message(FATAL_ERROR "KICKOS_BOARD_PINMAP='${KICKOS_BOARD_PINMAP}' is not a CMake target. Name a target that defines kos_board_pinmap, or use the default kickos_pinmap_none.")
   endif()
+  foreach(_kickos_t IN LISTS _kickos_providers_targets)
+    kickos_export_name(${_kickos_t} _kickos_name)
+    if(NOT TARGET ${_kickos_name})
+      message(FATAL_ERROR "KickOS: the link group names ${_kickos_t} as ${_kickos_name}, which "
+        "is no target. Give it that name with kickos_alias_target, or with "
+        "kickos_export_targets, which also installs it.")
+    endif()
+  endforeach()
 endif()
 
 # Resolve after system providers and app demand declarations are available.
@@ -1328,10 +1418,16 @@ configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/priorities.h.
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h" @ONLY)
 configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/stack_geometry.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/mpu_geometry.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/mpu_geometry.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/exit_status.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/exit_status.h" @ONLY)
 configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/driver_geometry.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h" @ONLY)
 configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/table_version.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h" @ONLY)
+configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/init_geometry.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/init_geometry.h" @ONLY)
 if(TARGET kickos_core)
   # The in-tree include_directories at the top of this file does not reach an
   # add_subdirectory/FetchContent consumer's own targets; this does.
@@ -1365,10 +1461,25 @@ endif()
 
 # After every subdirectory, so the driver catalogue is whole.
 kickos_export_manifest("${PROJECT_BINARY_DIR}/export")
-kickos_admit_default_composition("${PROJECT_BINARY_DIR}/export")
 # The same name the installed package sets, for a consumer built beside this tree.
 set(KICKOS_MANIFEST "${PROJECT_BINARY_DIR}/export/manifest.yaml" CACHE INTERNAL
     "The export manifest a composition is admitted against")
+# KickOS::system_default: the export's default composition as a system target, on a board that
+# has one, so a build whose default no longer fits fails its configure.
+if(TARGET kickos_kernel_leaf AND EXISTS "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml")
+  kickos_compose(kickos_system_default
+                 "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml"
+                 EXPORT_NAME system_default)
+elseif(TARGET kickos_kernel_leaf)
+  # A board with no default composition still exports KickOS::system_default, whose link fails on
+  # a required symbol that names the remedy, rather than on an unknown target at configure.
+  add_library(kickos_system_default INTERFACE)
+  set_target_properties(kickos_system_default PROPERTIES EXPORT_NAME system_default)
+  target_link_libraries(kickos_system_default INTERFACE KickOS::kernel)
+  target_link_options(kickos_system_default INTERFACE
+    "LINKER:--require-defined=${KICKOS_C_SYMBOL_PREFIX}kickos_no_default_composition_write_one_and_call_kickos_compose")
+  kickos_export_targets(kickos_system_default)
+endif()
 if(KICKOS_BUILD_TESTS)
   _add_test(NAME platform_manifest
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
@@ -1430,9 +1541,12 @@ install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h
 
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h"
               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/config/mpu_geometry.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h"
               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/init_geometry.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/exit_status.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/sys")
 
 # The generated provisioning header is the one the prebuilt libs were compiled against.
@@ -1451,9 +1565,8 @@ if(KICKOS_BOARD_INCLUDE_DIR)
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
 
-# No NAMESPACE: an app links and kickos_add_app_target asserts the bare target names
-# (kickos_arch_<arch>, ...), identically in-tree and installed. Do not add one.
 install(EXPORT KickOSTargets
+        NAMESPACE KickOS::
         FILE KickOSTargets.cmake
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
@@ -1498,8 +1611,8 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/uv.lock"
         DESTINATION "${KICKOS_CMAKE_DIR}/compose")
 
-# kickos.cmake include()s cap_table.cmake, driver_geometry.cmake and driver_metadata.cmake
-# list-dir-relative, so they must land beside it.
+# kickos.cmake include()s cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
+# heap_symbol.cmake and compose.cmake list-dir-relative, so they must land beside it.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
@@ -1507,6 +1620,8 @@ install(FILES
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cap_table.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_geometry.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_metadata.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/heap_symbol.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/compose.cmake"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
 # Install the toolchain that configured this build, with board.cmake beside it.

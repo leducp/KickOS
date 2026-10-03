@@ -41,7 +41,19 @@
 # host is ssh_config's: a port is passed only where the rig names one, so an ssh alias
 # carrying its own Port and User works as itself.
 #
-# The -st variant states the enforcing posture itself; there is no posture flag.
+# The -st variant states the enforcing posture itself; there is no posture flag. VARIANT set
+# empty builds the board's own preset.
+#
+# PACKAGE_PROJECT names a consumer project, relative to the tree, built against the board build's
+# installed package as the golden and composition gates build one (tests/lib/package_image.sh);
+# APP is its target and PACKAGE_ARGS reaches its configure verbatim.
+#
+# JUDGE names a gate script, relative to the tree, that reads a capture through KOS_CAPTURE. It
+# runs here over the log just taken, as `<script> <board build> <tree> cmake JUDGE_ARGS...`, and
+# its verdict is this run's exit status:
+#
+#   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
+#     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
 set -u
 # HOW MANY IMAGES THE SUITE SHIPS AS ON THIS BOARD IS A PROPERTY OF ITS CONFIGURE, and
 # LIST_IMAGES=1 is how a caller asks: configure, print the names one per line, flash nothing.
@@ -73,6 +85,10 @@ echo "=== tree $TREE"
 
 TAG="${TAG:-m475}"
 BOARD="${1:?usage: bench.sh <board> [jlink-sn]}"
+if [ -n "${JUDGE:-}" ] && [ ! -f "$JUDGE" ]; then
+  echo "REFUSING: JUDGE $JUDGE names no gate script in $TREE" >&2
+  exit 2
+fi
 SN="${2:-}"
 APP="${APP:-selftest}"
 
@@ -105,8 +121,13 @@ fi
 # The preset variant. `st` states the enforcing posture and the selftest syscalls; `bench`
 # states the same posture plus the microbench. The variant is part of the BUILD DIR so a
 # bench capture and a selftest capture at one TAG cannot share a tree.
-VARIANT="${VARIANT:-st}"
-BUILD="build/$TAG-$BOARD-$VARIANT"
+VARIANT="${VARIANT-st}"
+PRESET="$BOARD"
+BUILD="build/$TAG-$BOARD"
+if [ -n "$VARIANT" ]; then
+  PRESET="$BOARD-$VARIANT"
+  BUILD="$BUILD-$VARIANT"
+fi
 LOG="$SESSION/logs/$TAG-$BOARD-$APP.log"
 mkdir -p "$SESSION/logs"
 
@@ -171,7 +192,7 @@ fi
 # broken preset. A removed knob's name is deliberately not spelled here, because this file is
 # tracked and doc_names would take a dead name from it into its valid set and stop reporting it
 # in the docs.
-if ! CFGOUT=$(cmake --preset "$BOARD-$VARIANT" -B "$BUILD" "${EXTRA[@]+"${EXTRA[@]}"}" 2>&1); then
+if ! CFGOUT=$(cmake --preset "$PRESET" -B "$BUILD" "${EXTRA[@]+"${EXTRA[@]}"}" 2>&1); then
   printf '%s\n' "$CFGOUT" | tail -20 >&2
   if printf '%s\n' "$CFGOUT" | grep -q 'no such symbol'; then
     echo "REFUSING: $BUILD holds a stale generated/.config from an earlier session." >&2
@@ -195,7 +216,7 @@ if [ "${LIST_IMAGES:-0}" = "1" ]; then
   MANIFEST_OWED=1
 fi
 if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
-  echo "REFUSING: $BOARD-$VARIANT configured but published no selftest manifest at $MANIFEST." >&2
+  echo "REFUSING: $PRESET configured but published no selftest manifest at $MANIFEST." >&2
   echo "  tests/integration/gates/selftest.cmake writes it, and it is skipped whole when" >&2
   echo "  KICKOS_BUILD_TESTS is off. Without it the capture has no arm count and no permission" >&2
   echo "  sets, and a TAP stream nothing checks is a count of the lines that survived." >&2
@@ -244,7 +265,20 @@ if [ "${AMP_PARTITION:-0}" = "1" ]; then
   fi
   BUILD_TARGET=amp_partition
 fi
-cmake --build "$BUILD" -j8 --target "$BUILD_TARGET" > /dev/null || exit 1
+IMG=""
+if [ -n "${PACKAGE_PROJECT:-}" ]; then
+  [ -f "$PACKAGE_PROJECT/CMakeLists.txt" ] || { echo "REFUSING: PACKAGE_PROJECT $PACKAGE_PROJECT names no CMake project in $TREE" >&2; exit 1; }
+  # The install takes every target the package ships, so the whole tree is built first.
+  cmake --build "$BUILD" -j8 > /dev/null || exit 1
+  PKG_OUT="$PWD/$BUILD/package-$APP"
+  rm -rf "$PKG_OUT"
+  # Deliberately unquoted: the caller passes one or more -D words.
+  # shellcheck disable=SC2086
+  IMG=$(sh tests/lib/package_image.sh "$PWD/$BUILD" cmake "$PWD/$PACKAGE_PROJECT" "$APP" \
+          "$PKG_OUT" ${PACKAGE_ARGS:-}) || exit 1
+else
+  cmake --build "$BUILD" -j8 --target "$BUILD_TARGET" > /dev/null || exit 1
+fi
 
 # THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
 # asked of git here. The two answer differently the moment the tree is touched between the
@@ -271,7 +305,6 @@ export EXPECT_ARCH
 # there is no selftest_p2/ directory to find. tools/flash-common.sh's _app_base has the same
 # blind spot.
 BASE=${APP%_p[0-9]}
-IMG=""
 if [ "${AMP_PARTITION:-0}" = "1" ]; then
   IMG="$PWD/$BUILD/kickos-partition"
 fi
@@ -293,6 +326,17 @@ if [ -z "$IMG" ]; then
 fi
 [ -n "$IMG" ] || { echo "REFUSING: $APP built but no image under $BUILD/user/apps/{$BOARD,common}/$APP" >&2; exit 1; }
 
+# The capture's verdict, from the gate script JUDGE names; none without one.
+judge() {
+  if [ -z "${JUDGE:-}" ]; then
+    return 0
+  fi
+  echo "=== judging $LOG with $JUDGE"
+  # Deliberately unquoted: the caller passes one or more words.
+  # shellcheck disable=SC2086
+  KOS_CAPTURE="$LOG" sh "$JUDGE" "$PWD/$BUILD" "$PWD" cmake ${JUDGE_ARGS:-}
+}
+
 # --- boards here ---------------------------------------------------------------
 if [ -z "${BENCH_HOST:-}" ]; then
   # Selecting the mode is BENCH_HOST's job and not the rig config's: a key must not move a
@@ -310,6 +354,7 @@ if [ -z "${BENCH_HOST:-}" ]; then
   if [ "${AMP_PARTITION:-0}" = "1" ]; then
     python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
   fi
+  judge || exit $?
   exit 0
 fi
 
@@ -452,3 +497,4 @@ echo "log: $LOG  ($LBYTES bytes, fetched from $BENCH_HOST)"
 if [ "${AMP_PARTITION:-0}" = "1" ]; then
   python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
 fi
+judge || exit $?

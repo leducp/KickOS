@@ -97,7 +97,7 @@ extern "C"
 
 void k64uart_console_driver(void* arg)
 {
-    uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // UART0 window base
+    uintptr_t const win = reinterpret_cast<uintptr_t>(drv::thread_start(arg)); // UART0 window base
 
     struct kos_uart_stats stats = {};
     struct kos_uart_config cfg = {};

@@ -5,6 +5,7 @@ version: 1
 board: frdmk64f
 stdout: kernel
 ends: main
+heap: 16384
 accepts: [no_protection] # for the -flat build alone
 
 tasks:

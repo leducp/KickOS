@@ -103,3 +103,20 @@ namespace kickos
 }
 
 #endif // KICKOS_HAVE_MPU
+
+#if not KICKOS_HAVE_ASPACE
+
+#include <kickos/kruntime.h> // kmemset
+
+namespace kickos
+{
+    void ram_block_clear(void* block, size_t extent)
+    {
+        kmemset(block, 0, extent);
+#if KICKOS_ARCH_ARENA_DCACHE
+        arch_dcache_invalidate(block, extent);
+#endif
+    }
+}
+
+#endif

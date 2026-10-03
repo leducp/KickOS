@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The restart witness on QEMU q35 at two cores: examples/composition/systems/qemu-x86_64.yaml
+# with the test sensor as `sensor`'s entry and two restarts.
+
+version: 1
+board: qemu-x86_64
+
+stdout: kernel
+
+ends: never
+heap: 16384
+
+shared:
+  - name: /shm/history
+    size: 64
+    cache: cached
+
+tasks:
+  - name: sensor
+    entry: restart_sensor_main
+    stack: 4096
+    priority: 9
+    core: 1
+    devices: [/dev/cmos_rtc]
+    serves: /svc/sensor
+    maps: { /shm/history: rw }
+    restart: { max: 2 }
+
+  - name: app
+    entry: app_main
+    stack: 8192
+    priority: 8
+    uses: [/svc/sensor]
+
+  - name: health
+    entry: health_main
+    stack: 4096
+    priority: 10
+    watches: [sensor]
+    maps: { /shm/history: ro }

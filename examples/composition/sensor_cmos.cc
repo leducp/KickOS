@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M10 GOLDEN EXAMPLE: does not build yet. `kos_self_t`, the `kos_grant_*` lookups, the
-// `kos_window_*` accessors, the port grant and `kos_port_reg_write` are what M10 adds; everything else is
-// today's API.
-//
-// The sensor task for QEMU q35: a driver that owns a PORT device. Its measurement is the CMOS
-// clock's seconds register, read as the clock keeps it (BCD by default), which is enough for an
-// app that only asks whether the value moves. The composition grants the clock's port range;
-// the task's I/O permission bitmap opens the data port alone. The index port's top bit masks
-// NMIs, so the index is written through kos_port_reg_write, a byte-wide write that withholds
-// that bit.
+// The sensor task for QEMU q35, which owns a PORT device. Its measurement is the CMOS clock's
+// seconds register, read as the clock keeps it (BCD by default), which is enough for an app that
+// only asks whether the value moves. The composition grants the clock's port range; the task's
+// I/O permission bitmap opens the data port alone. The index port's top bit masks NMIs, so the
+// index is written through kos_port_reg_write, a byte-wide write that withholds that bit.
 
 #include <kickos/sys.h>
 

@@ -22,12 +22,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..")
 
 # A golden system granting what none of the three does: an instance's window and line, an
-# uncached region, authority, and a task whose return ends the system.
+# uncached region, authority, a task whose return ends the system, and the init's priority.
 VARIANTS = [
     ("qemu-arm64.yaml", "qemu-arm64-variant.yaml", [
         ("devices: [/dev/rtc]", VIRTIO % "bus_master, coarse_gate" + "\n    lines: { irq: /dev/virtio/3/irq }"),
         ("cache: cached", "cache: uncached"),
         ("ends: never", "ends: health"),
+        ("heap: 65536\n", "heap: 65536\ninit: { priority: 5 }\n"),
         ("    watches: [sensor]\n", "    watches: [sensor]\n    authority: [system, memory]\n"),
     ]),
 ]
@@ -38,7 +39,7 @@ VARIANTS = [
 EXPECTED = {
     "xmc4800-relax.yaml": [
         ("grant", {"path": "/dev/usic0/ch0"}, {"kind": "window", "base": "0x40030000", "size": "0x200",
-                                              "privs": "0+3"}),
+                                              "privs": "0+3", "window": "none"}),
         ("grant", {"path": "/dev/usic0/ch1"}, {"kind": "window", "base": "0x40030200", "size": "0x200",
                                               "privs": "0+3"}),
         ("priv", {"#": "0"}, {"offset": "0x10", "width": "4"}),
@@ -49,30 +50,42 @@ EXPECTED = {
         ("task", {"name": "health"}, {"watches": "2+2", "authority": "-"}),
         ("ref", {"#": "2"}, {"task": "1"}),
         ("ref", {"#": "3"}, {"task": "2"}),
-        ("task", {"name": "console"}, {"driver": "1", "entry": "xmcuartirq_console_start", "stack": "0"}),
-        ("task", {"name": "spi0"}, {"driver": "0", "restart_max": "3"}),
+        ("task", {"name": "console"}, {"driver": "1", "entry": "xmcuartirq_console_start", "stack": "0",
+                                       "block": "1024", "flags": "console"}),
+        ("task", {"name": "spi0"}, {"driver": "0", "restart_max": "3", "block": "0", "flags": "-"}),
+        ("task", {"name": "sensor"}, {"block": "0", "flags": "-"}),
         ("task", {"#": "0"}, {"name": "console"}),
         ("string", {"offset": "0"}, {"text": "console"}),
         ("string", {"offset": "8"}, {"text": "regs"}),
         ("string", {"offset": "13"}, {"text": "/dev/usic0/ch0"}),
         ("region", {"name": "/shm/history"}, {"size": "0x40", "flags": "-"}),
+        ("grant", {"kind": "region", "flags": "-"}, {"window": "0", "target": "0"}),
+        ("grant", {"kind": "status"}, {"path": "/init/status", "flags": "ro", "cap_slot": "none", "window": "0",
+                                       "size": "0x20"}),
+        ("grant", {"kind": "region", "flags": "ro"}, {"window": "1"}),
     ],
     "qemu-arm64.yaml": [
         ("task", {"name": "app"}, {"core_mask": "0x4"}),
         ("task", {"name": "sensor"}, {"core_mask": "0x2"}),
         ("task", {"name": "health"}, {"core_mask": "0x0"}),
-        ("grant", {"path": "/dev/rtc"}, {"base": "0x9010000", "size": "0x1000"}),
+        ("grant", {"path": "/dev/rtc"}, {"base": "0x9010000", "size": "0x1000", "window": "0"}),
         ("region", {"name": "/shm/history"}, {"size": "0x1000"}),
+        ("grant", {"kind": "region", "flags": "-"}, {"window": "1"}),
+        ("grant", {"kind": "status"}, {"window": "0", "size": "0x1000"}),
+        ("grant", {"kind": "region", "flags": "ro"}, {"window": "1"}),
     ],
     "qemu-x86_64.yaml": [
-        ("grant", {"path": "/dev/cmos_rtc"}, {"kind": "ports", "base": "0x70", "size": "0x2", "privs": "0+1"}),
+        ("header", {}, {"init_priority": "2"}),
+        ("grant", {"path": "/dev/cmos_rtc"}, {"kind": "ports", "base": "0x70", "size": "0x2", "privs": "0+1",
+                                             "window": "0"}),
         ("priv", {"#": "0"}, {"offset": "0x0", "width": "1"}),
     ],
     "qemu-arm64-variant.yaml": [
         ("task", {"name": "health"}, {"authority": "memory,system"}),
-        ("grant", {"path": "/dev/virtio/31"}, {"base": "0xA003E00", "size": "0x200"}),
+        ("grant", {"path": "/dev/virtio/31"}, {"base": "0xA003E00", "size": "0x200", "window": "1"}),
+        ("grant", {"kind": "line"}, {"window": "none", "cap_slot": "cap0+0"}),
         ("grant", {"kind": "line"}, {"path": "/dev/virtio/3/irq", "line": "51", "line_index": "0"}),
-        ("header", {}, {"flags": "ends_task", "ends_task": "2"}),
+        ("header", {}, {"flags": "ends_task", "ends_task": "2", "init_priority": "5"}),
         ("region", {"#": "0"}, {"flags": "uncached"}),
     ],
 }
@@ -159,7 +172,8 @@ class RoundTrip(unittest.TestCase):
 
         outputs = []
         for seed in ("0", "1"):
-            output = os.path.join(work, "table-%s.c" % seed)
+            os.makedirs(os.path.join(work, "seed-" + seed))
+            output = os.path.join(work, "seed-" + seed, "table.c")
             run = emit_with_seed(path, manifest, output, seed)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             outputs.append(read(output))
@@ -167,7 +181,7 @@ class RoundTrip(unittest.TestCase):
 
         report, table = emit.table_of(path, manifest)
         self.assertEqual([str(r) for r in report.refusals], [])
-        self.assertEqual(emit.render(table, os.path.basename(path)), outputs[0])
+        self.assertEqual(emit.render(table, os.path.basename(path), path), outputs[0])
 
         stubs = os.path.join(work, "stubs.c")
         write(stubs, stub_source(table))
@@ -175,7 +189,7 @@ class RoundTrip(unittest.TestCase):
         compile_run = subprocess.run(
             [COMPILER, "-std=c11", "-pedantic-errors", "-Wall", "-Wextra", "-Werror",
              "-I", os.path.join(TREE, "user", "include"), "-I", os.path.join(TREE, "system", "include"),
-             "-I", INCLUDE, os.path.join(work, "table-0.c"), stubs, os.path.join(HERE, "table_walker.c"),
+             "-I", INCLUDE, os.path.join(work, "seed-0", "table.c"), stubs, os.path.join(HERE, "table_walker.c"),
              "-o", walker], capture_output=True, text=True)
         self.assertEqual(compile_run.returncode, 0, compile_run.stdout + compile_run.stderr)
         walk = subprocess.run([walker], capture_output=True, text=True)
@@ -189,6 +203,64 @@ class RoundTrip(unittest.TestCase):
                       if kind == record and all(fields.get(k) == v for k, v in pick.items())]
             self.assertEqual(len(picked), 1, "%s %r picks %d records" % (record, pick, len(picked)))
             self.assertEqual({k: picked[0].get(k) for k in want}, want, "%s %r" % (record, pick))
+
+    def test_the_walker_faults_a_task_field_no_emit_writes(self):
+        scratch = tempfile.mkdtemp(prefix="kickos-table-")
+        try:
+            root = os.path.join(scratch, "platform")
+            shutil.copytree(PLATFORM, root)
+            manifest = os.path.join(scratch, "manifest.yaml")
+            write(manifest, MANIFESTS["xmc4800-relax.yaml"])
+            report, table = emit.table_of(os.path.join(SYSTEMS, "xmc4800-relax.yaml"), manifest)
+            sensor = [task for task in table.tasks if task.name == "sensor"][0]
+            rendered = emit.render(table, "xmc4800-relax.yaml")
+            sensor.block = 64
+            cases = [("control", rendered, 0),
+                     ("a user task's ring block", emit.render(table, "xmc4800-relax.yaml"), 1),
+                     ("an unknown task flag", rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = 2,"), 1)]
+            stubs = os.path.join(scratch, "stubs.c")
+            write(stubs, stub_source(table))
+            for what, source, faults in cases:
+                with self.subTest(case=what):
+                    path = os.path.join(scratch, "table.c")
+                    write(path, source)
+                    walker = os.path.join(scratch, "walker")
+                    built = subprocess.run(
+                        [COMPILER, "-std=c11", "-pedantic-errors", "-Wall", "-Wextra", "-Werror",
+                         "-I", os.path.join(TREE, "user", "include"), "-I", os.path.join(TREE, "system", "include"),
+                         "-I", INCLUDE, path, stubs, os.path.join(HERE, "table_walker.c"), "-o", walker],
+                        capture_output=True, text=True)
+                    self.assertEqual(built.returncode, 0, built.stderr)
+                    walk = subprocess.run([walker], capture_output=True, text=True)
+                    self.assertEqual("faults=" in walk.stdout, faults != 0, walk.stdout[-200:])
+        finally:
+            shutil.rmtree(scratch)
+
+    def test_an_entry_declared_otherwise_is_reported_at_its_line_in_the_composition(self):
+        scratch = tempfile.mkdtemp(prefix="kickos-table-")
+        try:
+            shutil.copytree(PLATFORM, os.path.join(scratch, "platform"))
+            path = os.path.join(scratch, "qemu-arm64.yaml")
+            shutil.copyfile(os.path.join(SYSTEMS, "qemu-arm64.yaml"), path)
+            manifest = os.path.join(scratch, "manifest.yaml")
+            write(manifest, MANIFESTS["qemu-arm64.yaml"])
+            source = os.path.join(scratch, "table.c")
+            run = emit_with_seed(path, manifest, source, "0")
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            line = read(path).splitlines().index("    entry: sensor_main") + 1
+            # The app declaring the entry as something else, as a missing or mistyped one would be.
+            other = os.path.join(scratch, "other.h")
+            write(other, "extern int sensor_main;\n")
+            built = subprocess.run(
+                [COMPILER, "-std=c11", "-I", os.path.join(TREE, "user", "include"),
+                 "-I", os.path.join(TREE, "system", "include"), "-I", INCLUDE, "-include", other,
+                 "-c", source, "-o", source + ".o"], capture_output=True, text=True)
+            self.assertNotEqual(built.returncode, 0)
+            self.assertIn("%s:%d:" % (path, line), built.stderr)
+            # What follows the declarations is reported at its own line in the emitted source.
+            self.assertNotIn("%s:%d:" % (path, line + 1), built.stderr)
+        finally:
+            shutil.rmtree(scratch)
 
     def test_a_slot_reading_as_none_does_not_compile(self):
         scratch = tempfile.mkdtemp(prefix="kickos-table-")

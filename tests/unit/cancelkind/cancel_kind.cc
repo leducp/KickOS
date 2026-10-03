@@ -4,7 +4,7 @@
 // Test monotonic cancellation (NONE < KILL < SLAY) and rejection of re-blocking
 // for every nonzero kind. KILL must not restore a cleanup window after SLAY.
 // Exercise notify_wait with the real notification code. Syscall death-point behavior is
-// covered by sim_driver_death and task_group_kill.
+// covered by sim_driver_death and thread_slay_window.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -149,21 +149,25 @@ namespace kickos
             EXPECT_EQ(victim->cancel_kind, CANCEL_KILL) << "still the kind the first call wrote";
         }
 
-        TEST_F(CancelWiring, a_group_cancel_writes_kill_on_every_member)
+        TEST_F(CancelWiring, a_group_cancel_slays_every_member_and_kills_a_privileged_one)
         {
             Task* const group = task(0);
             Thread* const a = seat_pool(SLOT_VICTIM, PRIO_LOW);
             Thread* const b = seat_pool(SLOT_PEER, PRIO_LOW);
+            Thread* const r = seat_pool(SLOT_KILLER, PRIO_LOW);
+            r->privileged = true;
             join_task(a, group);
             join_task(b, group);
+            join_task(r, group);
 
             {
                 IrqLock lock;
-                task_cancel_group(group, CANCEL_KILL);
+                task_cancel_group(group);
             }
 
-            EXPECT_EQ(a->cancel_kind, CANCEL_KILL) << "the group form writes the same kind";
-            EXPECT_EQ(b->cancel_kind, CANCEL_KILL) << "on every member, not just the first";
+            EXPECT_EQ(a->cancel_kind, CANCEL_SLAY) << "the group form slays";
+            EXPECT_EQ(b->cancel_kind, CANCEL_SLAY) << "every member, not just the first";
+            EXPECT_EQ(r->cancel_kind, CANCEL_KILL) << "a privileged member's frames may hold kernel work";
         }
 
         // --- the escalation order ------------------------------------------------------
@@ -199,11 +203,11 @@ namespace kickos
         }
 
         // Driven through the paths that DO write the byte rather than asserted over a pool
-        // nothing touched: a sweep that finds no slay because no cancel ran at all would pass
-        // on a broken kill. The FAULT exit is what makes the group cancel run: an ordinary
-        // return is scoped to one thread (kernel/sched/sched.cc) and would leave the sweep
-        // reading only the direct kill.
-        TEST_F(CancelWiring, a_cooperative_death_never_writes_slay)
+        // nothing touched. The FAULT exit is what makes the group cancel run: an ordinary
+        // return of a member that is not the entry is scoped to one thread
+        // (kernel/sched/sched.cc). The group is slain; the stranger killed directly keeps the
+        // kill it was given.
+        TEST_F(CancelWiring, a_fault_slays_its_group_and_a_kill_stays_a_kill)
         {
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_KILLER, PRIO_HIGH);
@@ -219,11 +223,9 @@ namespace kickos
             }
             run_exit_faulted(0);
 
-            EXPECT_EQ(slots_holding(CANCEL_SLAY), 0)
-                << "a fault ends its group cooperatively; only a slain member escalates "
-                   "its peers";
-            EXPECT_EQ(slots_holding(CANCEL_KILL), 2)
-                << "and the sweep is not vacuous; the direct kill and the group's both landed";
+            EXPECT_EQ(victim->cancel_kind, CANCEL_SLAY) << "a fault slays its group";
+            EXPECT_EQ(slots_holding(CANCEL_SLAY), 1) << "and nobody outside it";
+            EXPECT_EQ(slots_holding(CANCEL_KILL), 1) << "the direct kill landed as a kill";
         }
 
         // A SLAY IS AIMED AT ONE THREAD, so the byte it writes must not spread from the

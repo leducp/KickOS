@@ -9,7 +9,8 @@ import os
 
 from .composition import AUTHORITIES, Cache, admit_composition, read_composition, region_size
 from .manifest import read_manifest
-from .subset import File, Report
+from .subset import File, Report, line_of
+from .supply import arena_blocks, ram_align, ram_size, ring_block, status_block
 
 # The most entries of one kind, whose last index is then 0xFFFE.
 COUNT_LIMIT = 0xFFFF
@@ -17,12 +18,16 @@ COUNT_LIMIT = 0xFFFF
 FIELD_LIMIT = 0xFFFE
 STRINGS_LIMIT = 0xFFFFFFFF
 EVENTS = "/init/events"
+STATUS = "/init/status"
 CAPABILITY_KINDS = ("endpoint_serve", "endpoint_use", "notification", "line")
+WINDOW_KINDS = ("window", "ports", "region", "status")
 # A privileged register's width is the kernel call that writes it: a port register one byte
 # through kos_port_reg_write, a memory register a 32-bit word through kos_periph_reg_write.
 WIDTHS = {"port": 1, "mem": 4}
 GRANT_FLAGS = {"ro": "KOS_WINDOW_RO", "uncached": "KOS_WINDOW_UNCACHED"}
 AUTHORITY_BITS = {name: "KOS_AUTH_%s" % name.upper() for name in AUTHORITIES}
+# The entry KickOS::main defines, which calls the app's main.
+PACKAGED_MAIN = "kickos_main"
 
 
 class Pool:
@@ -48,8 +53,10 @@ class TaskEntry:
         self.entry = None
         self.driver = None
         self.stack = 0
+        self.block = 0
         self.priority = 0
         self.restart_max = 0
+        self.console = False
         self.core_mask = 0
         self.authority = []
         self.first_grant = 0
@@ -69,6 +76,7 @@ class GrantEntry:
         self.name = name
         self.path = path
         self.target = None
+        self.window = None
         self.base = 0
         self.size = 0
         self.line_index = None
@@ -88,6 +96,7 @@ class Table:
     def __init__(self, version):
         self.version = version
         self.ends_task = None
+        self.init_priority = 0
         self.tasks = []
         self.grants = []
         self.refs = []
@@ -96,6 +105,8 @@ class Table:
         self.strings = Pool()
         # Each entry symbol once, as (symbol, "task" or "driver"), in first-use order.
         self.externs = []
+        # Each entry symbol's line in the composition, where the task first naming it names it.
+        self.extern_lines = {}
 
 
 def emit(path, manifest_path):
@@ -103,11 +114,25 @@ def emit(path, manifest_path):
     report, table = table_of(path, manifest_path)
     if table is None:
         return report, None
-    return report, render(table, os.path.basename(path))
+    return report, render(table, os.path.basename(path), path)
 
 
-def table_of(path, manifest_path):
-    """(the Report, the Table of the composition at `path` or None once refused)."""
+def emit_system(path, manifest_path, output="table.c"):
+    """(the Report, None once refused, or the (C source, asserts script, CMake fragment) a system
+    target is built from); `output` is the name the C source is compiled under."""
+    report, admitted = admitted_of(path, manifest_path)
+    if admitted is None:
+        return report, None
+    table = build(admitted)
+    if not check_table(File(path, report), admitted.root, table):
+        return report, None
+    source = os.path.basename(path)
+    return report, (render(table, source, path, output), render_asserts(admitted, path),
+                    render_fragment(admitted, table, source))
+
+
+def admitted_of(path, manifest_path):
+    """(the Report, the Admitted composition at `path` or None once refused)."""
     report = Report()
     manifest = read_manifest(manifest_path, report)
     if not manifest:
@@ -117,6 +142,14 @@ def table_of(path, manifest_path):
         return report, None
     admitted = admit_composition(path, text, None, report, Cache(), manifest)
     if admitted is None or report.refusals:
+        return report, None
+    return report, admitted
+
+
+def table_of(path, manifest_path):
+    """(the Report, the Table of the composition at `path` or None once refused)."""
+    report, admitted = admitted_of(path, manifest_path)
+    if admitted is None:
         return report, None
     table = build(admitted)
     if not check_table(File(path, report), admitted.root, table):
@@ -138,6 +171,7 @@ def build(admitted):
     regions = list(admitted.shared)
     if admitted.ends.value != "never":
         table.ends_task = index[admitted.ends.value]
+    table.init_priority = admitted.init_priority
     runs = {}
 
     for task in admitted.tasks:
@@ -147,9 +181,12 @@ def build(admitted):
         if task.driver is not None:
             entry.driver = catalogue.index(task.driver)
             symbol = (task.catalogue.start, "driver")
+            entry.block = ring_block(task) or 0
+            entry.console = task.catalogue.console
         entry.entry = symbol[0]
         if symbol not in table.externs:
             table.externs.append(symbol)
+            table.extern_lines[symbol[0]] = line_of(task.nodes.get("entry", task.nodes.get("driver")))
         if task.driver is None:
             entry.stack = task.stack
             entry.authority = [name for name in AUTHORITIES if name in task.authority]
@@ -158,12 +195,18 @@ def build(admitted):
         if task.core is not None:
             entry.core_mask = 1 << task.core
         entry.first_grant = len(table.grants)
+        windows = []
 
+        # A packaged driver's Descriptor places what each of its threads receives, so its grants
+        # record neither a slot nor a window's place.
         def grant(kind, name, path):
             made = GrantEntry(kind, pool.add(name), pool.add(path))
             if kind in CAPABILITY_KINDS and task.driver is None:
                 made.cap_slot = entry.cap_grant_count
                 entry.cap_grant_count = entry.cap_grant_count + 1
+            if kind in WINDOW_KINDS and task.driver is None:
+                made.window = len(windows)
+                windows.append(made)
             table.grants.append(made)
             return made
 
@@ -175,6 +218,9 @@ def build(admitted):
                     grant("endpoint_use", used, used).target = served[used]
             elif field == "watches" and task.watches:
                 grant("notification", EVENTS, EVENTS)
+                made = grant("status", STATUS, STATUS)
+                made.flags.append("ro")
+                made.size = region_size(status_block(task, manifest), admitted.chip, admitted.cluster, manifest)
             elif field == "devices":
                 for k, held in enumerate(task.grants):
                     name = held.path
@@ -202,7 +248,12 @@ def build(admitted):
                     if admitted.shared[mapped].cache == "uncached":
                         made.flags.append("uncached")
             elif field == "lines":
-                for line in task.lines:
+                # A packaged driver's lines in the order of its line roles, which its descriptor
+                # numbers its lines in.
+                lines = task.lines
+                if task.driver is not None:
+                    lines = sorted(task.lines, key=lambda held: task.catalogue.lines.index(held.name))
+                for line in lines:
                     made = grant("line", line.name, line.path)
                     made.line_index = line.index
                     made.line = line.source
@@ -256,6 +307,11 @@ def printable(text):
     return "".join(out)
 
 
+def c_string(text):
+    """`text` inside a C string literal."""
+    return printable(text).replace("\"", "\\\"")
+
+
 def none_or(value):
     if value is None:
         return "KOS_TABLE_NONE"
@@ -268,8 +324,10 @@ def bits(names, spelled):
     return " | ".join(spelled[name] for name in names)
 
 
-
-def render(table, source):
+def render(table, source, composition=None, output="table.c"):
+    """The table's C source, `source` naming the composition it came from. Given the composition's
+    path, each entry's declaration is reported at its line there, and what follows at its own line
+    in `output`, the name the source is compiled under."""
     pool = table.strings
     out = [
         "// SPDX-License-Identifier: CECILL-C",
@@ -288,10 +346,14 @@ def render(table, source):
         "",
     ]
     for symbol, kind in table.externs:
+        if composition is not None:
+            out.append("#line %d \"%s\"" % (table.extern_lines[symbol], c_string(composition)))
         if kind == "driver":
             out.append("extern int %s(struct kos_service_cfg const* cfg);" % symbol)
         else:
             out.append("extern void %s(kos_self_t const* self);" % symbol)
+    if table.externs and composition is not None:
+        out.append("#line %d \"%s\"" % (len(out) + 2, c_string(output)))
     if table.externs:
         out.append("")
 
@@ -339,6 +401,7 @@ def render(table, source):
     out.append("        .priv_count = %d," % len(table.privs))
     out.append("        .region_count = %d," % len(table.regions))
     out.append("        .strings_size = %d," % pool.size)
+    out.append("        .init_priority = %d," % table.init_priority)
     out.append("    },")
     if table.tasks:
         out.append("    .task = {")
@@ -348,11 +411,14 @@ def render(table, source):
                 entry = ".driver = %s" % task.entry
             out.append("        [%d] = {" % n)
             out.append("            .name = %d," % pool.offsets[task.name])
+            out.append("            .block = %d," % task.block)
             out.append("            .entry = { %s }," % entry)
             out.append("            .driver = %s," % none_or(task.driver))
             out.append("            .stack = %d," % task.stack)
             out.append("            .priority = %d," % task.priority)
             out.append("            .restart_max = %d," % task.restart_max)
+            if task.console:
+                out.append("            .flags = KOS_TABLE_TASK_CONSOLE,")
             out.append("            .core_mask = 0x%Xu," % task.core_mask)
             out.append("            .authority = %s," % bits(task.authority, AUTHORITY_BITS))
             out.append("            .first_grant = %d," % task.first_grant)
@@ -377,6 +443,7 @@ def render(table, source):
             out.append("            .name = %d," % pool.offsets[grant.name])
             out.append("            .path = %d," % pool.offsets[grant.path])
             out.append("            .target = %s," % none_or(grant.target))
+            out.append("            .window = %s," % none_or(grant.window))
             out.append("            .base = 0x%Xu," % grant.base)
             out.append("            .size = 0x%Xu," % grant.size)
             out.append("            .line_index = %s," % none_or(grant.line_index))
@@ -415,8 +482,122 @@ def render(table, source):
     out.append("};")
     out.append("")
     out.append("struct kos_table_header const* const kickos_table = &kickos_table_image.header;")
+    out.append("char const kickos_link_one_system_target = 1;")
     return "\n".join(out) + "\n"
 
+
+def ld_text(text):
+    """`text` inside a linker script's double-quoted string."""
+    return printable(text).replace("\"", "'")
+
+
+def render_asserts(admitted, composition):
+    """The link-time asserts of docs/design-m10-target.md, section 6, an implicit script over the
+    chip script's symbols, each spelled as the build's C ABI spells it, citing the composition by
+    its path."""
+    name = ld_text(composition)
+    out = [
+        "/* SPDX-License-Identifier: CECILL-C",
+        " * Copyright (c) 2026 Philippe Leduc",
+        " *",
+        " * GENERATED by kickos_compose emit from %s; edits are overwritten by the next emit." % name,
+        " */",
+        "",
+    ]
+    out.extend(stack_asserts(admitted, name))
+    out.extend(arena_asserts(admitted))
+    out.extend(heap_asserts(admitted, name))
+    return "\n".join(out) + "\n"
+
+
+def c_symbol(manifest, symbol):
+    return (manifest.symbol_prefix or "") + symbol
+
+
+def stack_asserts(admitted, name):
+    """Each reserved stack holds the image's thread-local carve above KICKOS_MIN_STACK_SIZE, where
+    SP is not masked."""
+    manifest = admitted.manifest
+    out = []
+    if manifest.stack_stride is not None or manifest.min_stack is None:
+        return out
+    carve = c_symbol(manifest, "__kickos_tls_carve")
+    for task in admitted.tasks:
+        if not task.entry or task.stack is None:
+            continue
+        out.append("ASSERT(%d >= %d + %s," % (task.stack, manifest.min_stack, carve))
+        out.append("       \"KickOS: %s's %d-byte stack cannot hold the linked image's thread-local block, "
+                   "__kickos_tls_carve, above the %d bytes of KICKOS_MIN_STACK_SIZE, so its `stack` in %s "
+                   "would have to grow\")" % (ld_text(task.label()), task.stack, manifest.min_stack, name))
+    return out
+
+
+def arena_asserts(admitted):
+    """On a region board, each block arch_ram_alloc places, from the linked arena's start, ends at or
+    below its end; the cursor is a symbol of this script."""
+    manifest = admitted.manifest
+    out = []
+    if admitted.translating:
+        return out
+    cursor = c_symbol(manifest, "__kickos_ram_start")
+    end = c_symbol(manifest, "__kickos_ram_end")
+    for n, (what, want, figure) in enumerate(arena_blocks(admitted.tasks, admitted.shared, manifest)):
+        if not want:
+            continue
+        placed = "__kickos_system_arena_%d" % n
+        out.append("%s = ALIGN(%s, 0x%X) + 0x%X;" % (placed, cursor, ram_align(want, manifest),
+                                                  ram_size(want, manifest)))
+        out.append("ASSERT(%s <= %s," % (placed, end))
+        out.append("       \"KickOS: the arena cannot hold %s, placed as arch_ram_alloc places it after every "
+                   "block before it, from __kickos_ram_start to __kickos_ram_end; %s, or a block before it, "
+                   "would have to shrink, or the image's static footprint\")" % (ld_text(what), ld_text(figure)))
+        cursor = placed
+    return out
+
+
+def heap_asserts(admitted, name):
+    """KICKOS_USER_HEAP_SIZE is this system's heap, and the image carves at least that much."""
+    manifest = admitted.manifest
+    out = ["ASSERT(KICKOS_USER_HEAP_SIZE == %d," % admitted.heap,
+           "       \"KickOS: KICKOS_USER_HEAP_SIZE is not the %d-byte heap of %s, which its system target "
+           "defines at the link: link exactly one system target, and define no KICKOS_USER_HEAP_SIZE of the "
+           "app's own\")" % (admitted.heap, name)]
+    if admitted.heap:
+        out.append("ASSERT(%s - %s >= %d," % (c_symbol(manifest, "_kickos_heap_limit"),
+                                              c_symbol(manifest, "_kickos_heap_start"), admitted.heap))
+        out.append("       \"KickOS: the %d-byte heap of %s, its `heap`, is more than the image carves from "
+                   "_kickos_heap_start to _kickos_heap_limit: state a smaller `heap` in %s, or link a kernel "
+                   "package built to carve more, whose KICKOS_APPDATA_SIZE is that span where the heap is the app "
+                   "window's pad\")" % (admitted.heap, name, name))
+    return out
+
+
+def render_fragment(admitted, table, source):
+    """The CMake fragment kickos_compose reads: the packaged drivers the composition names and the
+    libraries their clients link, whether it names KickOS::main's entry, and its heap."""
+    drivers = []
+    clients = []
+    for task in admitted.tasks:
+        if task.driver is not None and task.driver not in drivers:
+            drivers.append(task.driver)
+            for client in task.catalogue.client:
+                if client not in clients:
+                    clients.append(client)
+    main = 0
+    if (PACKAGED_MAIN, "task") in table.externs:
+        main = 1
+    out = [
+        "# SPDX-License-Identifier: CECILL-C",
+        "# Copyright (c) 2026 Philippe Leduc",
+        "#",
+        "# GENERATED by kickos_compose emit from %s; edits are overwritten by the next emit." % printable(source),
+        "",
+        "set(KICKOS_COMPOSE_DRIVERS \"%s\")" % ";".join(drivers),
+        "set(KICKOS_COMPOSE_CLIENTS \"%s\")" % ";".join(clients),
+        "set(KICKOS_COMPOSE_MAIN %d)" % main,
+        "set(KICKOS_COMPOSE_HEAP %d)" % admitted.heap,
+    ]
+    return "\n".join(out) + "\n"
 
 
 def names_or_dash(names):
@@ -438,20 +619,24 @@ def dump(table):
     if table.ends_task is not None:
         flags.append("ends_task")
     out = ["header magic=ok version=%d flags=%s ends_task=%s tasks=%d grants=%d refs=%d privs=%d regions=%d "
-           "strings=%d" % (table.version, names_or_dash(flags), none_text(table.ends_task), len(table.tasks),
-                           len(table.grants), len(table.refs), len(table.privs), len(table.regions), pool.size)]
+           "strings=%d init_priority=%d"
+           % (table.version, names_or_dash(flags), none_text(table.ends_task), len(table.tasks), len(table.grants),
+              len(table.refs), len(table.privs), len(table.regions), pool.size, table.init_priority)]
     for n, task in enumerate(table.tasks):
-        out.append("task %d name=%s entry=%s driver=%s stack=%d priority=%d restart_max=%d core_mask=0x%X "
-                   "authority=%s grants=%d+%d cap_grants=%d uses=%d+%d watches=%d+%d"
-                   % (n, task.name, task.entry, none_text(task.driver), task.stack, task.priority, task.restart_max,
-                      task.core_mask, names_or_dash(task.authority), task.first_grant, task.grant_count,
+        flags = "-"
+        if task.console:
+            flags = "console"
+        out.append("task %d name=%s entry=%s driver=%s stack=%d block=%d priority=%d restart_max=%d flags=%s "
+                   "core_mask=0x%X authority=%s grants=%d+%d cap_grants=%d uses=%d+%d watches=%d+%d"
+                   % (n, task.name, task.entry, none_text(task.driver), task.stack, task.block, task.priority,
+                      task.restart_max, flags, task.core_mask, names_or_dash(task.authority), task.first_grant, task.grant_count,
                       task.cap_grant_count, task.first_use, task.use_count, task.first_watch, task.watch_count))
     for n, grant in enumerate(table.grants):
-        out.append("grant %d kind=%s flags=%s cap_slot=%s name=%s path=%s target=%s base=0x%X size=0x%X "
+        out.append("grant %d kind=%s flags=%s cap_slot=%s name=%s path=%s target=%s window=%s base=0x%X size=0x%X "
                    "line_index=%s line=%s privs=%d+%d"
                    % (n, grant.kind, names_or_dash(grant.flags), none_text(grant.cap_slot, "cap0+%d"), grant.name,
-                      grant.path, none_text(grant.target), grant.base, grant.size, none_text(grant.line_index),
-                      none_text(grant.line), grant.priv_first, grant.priv_count))
+                      grant.path, none_text(grant.target), none_text(grant.window), grant.base, grant.size,
+                      none_text(grant.line_index), none_text(grant.line), grant.priv_first, grant.priv_count))
     for n, task in enumerate(table.refs):
         out.append("ref %d task=%d" % (n, task))
     for n, (offset, width) in enumerate(table.privs):
