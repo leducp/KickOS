@@ -67,6 +67,9 @@ echo "== installing MCU KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \
   || fail "cmake --install failed"
 
+echo "== the installed export manifest and its descriptions =="
+installed_manifest "$KICKOS_BUILD" "$KICKOS_SRC" "$TMP/prefix"
+
 # The cross toolchain file, whichever family this package was built for. A package also
 # ships the fragments that file include()s, and they are toolchain-*.cmake too; the one a
 # consumer names is the one no other shipped file includes. Derived, so a new fragment does

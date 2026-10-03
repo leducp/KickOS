@@ -12,6 +12,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/driver/declared/k64uartirq.h>
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
@@ -41,4 +42,4 @@ namespace
 // LEVEL: every source on this vector is a status flag that stays asserted until the driver
 // clears it at the peripheral.
 KICKOS_UART_CONSOLE_SERVICE(k64uartirq, k_uart, /*fallback_baud=*/115200u, mmap::UART0_BASE,
-                            kickos::mk64f::irq::UART0_RXTX_IRQ, KOS_IRQ_LEVEL, "uartirq");
+                            kickos::mk64f::irq::UART0_RXTX_IRQ, KOS_IRQ_LEVEL);

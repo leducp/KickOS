@@ -14,7 +14,10 @@
 # REGDIR carries the chip's regs/usart.h bit map and irq.h vector numbers, definitions only.
 # CLASS carries the transmit-ready read, which is shared USART register logic.
 kickos_add_driver(f4uartirq SOURCES f4uartirq.cc ../uart_stm32f4.cc
-                  REGDIR arch/arm/chip/stm32f411 CLASS kickos_class_stm32f411)
+                  REGDIR arch/arm/chip/stm32f411 CLASS kickos_class_stm32f411
+                  THREADS uartirq:1:default:2 service:0:default:2 RECEIVER service
+                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  POSTURE handover BARRIER 1 START f4uartirq_console_start CONSOLE)
 
 # The bring-up entry is declared beside the driver rather than in user/include, so a
 # service-list provider that links this target also sees the header.

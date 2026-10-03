@@ -14,7 +14,8 @@ namespace kickos::mk64f::mmap
 {
     // AIPS bridge control pages (RM ch.20): MPRA + PACRA..PACRP, the per-4-KB-slot
     // supervisor/write/trusted gate for that bridge's 128 peripheral slots. AIPS0
-    // fronts 0x4000_0000..0x4007_FFFF, AIPS1 the next 512 KB.
+    // fronts 0x4000_0000..0x4007_FFFF, AIPS1 0x4008_0000..0x400F_EFFF; the GPIO block in the last
+    // 4 KB sits on AIPS1's crossbar port but behind no slot (RM 3.10.1.1).
     constexpr uintptr_t AIPS0_BASE = 0x40000000u;
     constexpr uintptr_t AIPS1_BASE = 0x40080000u;
 

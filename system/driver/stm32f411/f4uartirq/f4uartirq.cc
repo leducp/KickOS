@@ -12,6 +12,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/driver/declared/f4uartirq.h>
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
@@ -47,4 +48,4 @@ namespace
 // status flag stays asserted until the driver clears it at the peripheral. ORE is the one
 // that matters: RXNEIE arms it, and a bare DR read does not clear it.
 KICKOS_UART_CONSOLE_SERVICE(f4uartirq, k_uart, /*fallback_baud=*/115200u, mmap::USART2_BASE,
-                            kickos::stm32f411::irq::USART2_IRQ, KOS_IRQ_LEVEL, "uartirq");
+                            kickos::stm32f411::irq::USART2_IRQ, KOS_IRQ_LEVEL);

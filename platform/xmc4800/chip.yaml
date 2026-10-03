@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the XMC4700/XMC4800 Reference Manual V1.3, the tree's chip_mmap.h, irq.h,
+# chip_xmc4800.cc, usic_uart.cc and xmc4800.ld under arch/arm/chip/xmc4800/, and
+# arch_mpu_nocache_support in arch/arm/common/arch_mpu_nocache_support_default.cc.
+
+version: 1
+chip: xmc4800
+arch: armv7m
+# The unit sits on the CPU's access path, so a device window is enforced per task.
+protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+data_cache: false
+
+devices:
+  # USIC0 is a MODULE of two channels. Each channel is its own register window, but the
+  # module's service-request lines are shared: a channel raises whichever line its INPR
+  # register points at. So the lines belong to the module, named /dev/usic0/sr0 and so on,
+  # and a composition binds one to a driver explicitly; admission refuses a line bound twice.
+  # The driver learns which line it was given from its lookup and programs INPR to match.
+  # The module clock gate and reset sit in the SCU, which the kernel owns.
+  usic0:
+    lines: { sr0: 84, sr1: 85, sr2: 86, sr3: 87, sr4: 88, sr5: 89 }
+    channels:
+      ch0: { window: [0x40030000, 0x200] }
+      ch1: { window: [0x40030200, 0x200] }
+    # Inside each channel window, and Write = PV: an unprivileged store is discarded with no
+    # fault, so a driver writes them through kos_periph_reg_write. Which channel may write
+    # which bits is kernel policy and stays in the kernel.
+    privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
+
+  # A port's window holds its pins' IOCR mux too, so a grant of it reaches the kernel's
+  # console and LED pins in that port.
+  port: { window: [0x48028000, 0x100], count: 10, stride: 0x100 } # P0 to P9
+  port14: { window: [0x48028E00, 0x100] } # P14 and P15 are inputs only
+  port15: { window: [0x48028F00, 0x100] }
+
+  ccu40: { window: [0x4000C000, 0x4000], owner: kernel } # the monotonic time base
+  scu: { window: [0x50004000, 0x4000], owner: kernel }   # clock gates, resets, PLL and RTC
+
+memory:
+  dsram1: { base: 0x20000000, size: 0x20000, arena: true }
+
+# Pins are PORT.PIN. A function is what the pin's IOCR selects; `in:` names an input path.
+pins:
+  P1.5: { alt2: usic0.ch0.dout0, gpio: port.1.5 }
+  P1.4: { in: usic0.ch0.dx0b, gpio: port.1.4 }
+  P5.8: { gpio: port.5.8 }
+  P5.9: { gpio: port.5.9 }

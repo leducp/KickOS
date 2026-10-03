@@ -8,6 +8,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/driver/declared/rxsci.h>
 #include <kickos/driver/uart.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/uart_service.h>
@@ -19,6 +20,7 @@
 namespace drv = kickos::driver;
 namespace uart = kickos::uart;
 namespace mmap = kickos::rx::mmap;
+namespace declared = kickos::driver::declared::rxsci;
 
 namespace
 {
@@ -50,14 +52,14 @@ namespace
     constexpr drv::Descriptor k_desc = {
         .tag = "[rxsci] ",
         .expected_base = mmap::SCI6,
-        .block_size = uart::KOS_UART_BLOCK_SIZE,
+        .block_size = declared::k_declared.block_size,
         .block_flags = 0,
         .ready_offset = uart::KOS_UART_READY_OFFSET,
-        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .ep_posture = declared::k_declared.ep_posture,
         .svc_kind = KOS_SVC_CONSOLE,
-        .line_count = 2,
-        .thread_count = 2,
-        .barrier_after = 1,
+        .line_count = declared::k_declared.line_count,
+        .thread_count = declared::k_declared.thread_count,
+        .barrier_after = declared::k_declared.barrier_after,
         // Both EDGE: a raise taken while the line is masked latches and redelivers on the
         // rearm. TEI6 / ERI6 are LEVEL and are NOT claimed (see <rxsci.h>).
         .lines = {{SCI6_TXI_LINE, KOS_IRQ_EDGE}, {SCI6_RXI_LINE, KOS_IRQ_EDGE}},
@@ -65,8 +67,8 @@ namespace
         // holder services RXI directly instead of a second thread converting it into a
         // raise on TXI's binding.
         .threads = {{.entry = irq_entry,
-                     .name = "rxsciirq",
-                     .prio_delta = 1,
+                     .name = declared::k_declared.thread_name[0],
+                     .prio_delta = declared::k_declared.prio_delta[0],
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = true,
                      .cap_count = 3,
@@ -74,8 +76,8 @@ namespace
                               {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
                               {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
                     {.entry = uart::console_thread,
-                     .name = nullptr,
-                     .prio_delta = 0,
+                     .name = declared::k_declared.thread_name[1],
+                     .prio_delta = declared::k_declared.prio_delta[1],
                      .arg = drv::KOS_DRV_ARG_BLOCK,
                      .window_grant = false,
                      .cap_count = 2,
@@ -89,6 +91,8 @@ namespace
 
     static_assert(drv::valid(k_desc), "the rxsci descriptor is not a well-formed driver shape");
     static_assert(uart::desc_ok(k_desc), "the rxsci cap positions do not match KOS_UART_CAP_*");
+    static_assert(drv::declared_as(k_desc, declared::k_declared),
+                  "the rxsci descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

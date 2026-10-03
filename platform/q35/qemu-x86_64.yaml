@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU q35. The console is COM1, the 16550 the kernel drives (com1_q35.cc).
+
+version: 1
+board: qemu-x86_64
+chip: q35
+
+console:
+  device: /dev/com1

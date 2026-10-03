@@ -9,6 +9,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/driver/declared/c6uart.h>
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
@@ -37,4 +38,4 @@ namespace
 //
 // LEVEL: the UART source stays asserted until the driver clears the latch.
 KICKOS_UART_CONSOLE_SERVICE(c6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            c6irq::UART0_TX_LINE, KOS_IRQ_LEVEL, "c6uartirq");
+                            c6irq::UART0_TX_LINE, KOS_IRQ_LEVEL);

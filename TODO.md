@@ -5796,15 +5796,15 @@ milestone does not close while any of them still composes a system.
       thread in another task, one of the deferred questions; and what a task's own threads
       need, a task's concurrency being bounded by its budgets already.
 
-- [ ] **M10.3: THE PLATFORM FILES MOVE TO A TOP-LEVEL `platform/`.** Ruled by the maintainer on
+- [x] **M10.3: THE PLATFORM FILES MOVE TO A TOP-LEVEL `platform/`.** Ruled by the maintainer on
       2026-09-28: `platform/<chip>/chip.yaml` and `platform/<chip>/<board>.yaml`, beside `arch/`
       and `kernel/`, so every consumer in the tree reads one source -- the header generator, the
       host tool, tooling. A top-level tree rather than homes under `arch/` because a chip file is
       independent of architecture, which the i.MX 8M Plus's A53 cluster and M7 need. `boards/`
-      keeps a board's build configuration and its default composition. Until then the files are
-      the M10.0 draft in `examples/composition/platform/`, already grouped the same way.
+      keeps a board's build configuration and its default composition.
 
-- [ ] **M10.3: THE HOST TOOL.** Read the three files under their schemas, check the composition
+- [x] **M10.3: THE HOST TOOL.** LANDED in M10.3.2 to M10.3.8, the rules below each with an arm;
+      the partition's rules wait for the partition build in M10.5. Read the three files under their schemas, check the composition
       against the manifest and the descriptions, and emit one table or refuse. A refusal names
       its rule, and a size refusal names the kernel knob that would have to grow. Each rule gets
       an arm and a mutation proving the arm reddens. Rules to start from:
@@ -5820,12 +5820,16 @@ milestone does not close while any of them still composes a system.
           refused (the external audit found the XMC composition could not show which USIC
           channel owned which module line, the SPI driver hard-coding SR1);
         - a packaged driver's metadata also declares what it consumes beyond its entry: its
-          threads and their priority offsets, endpoints, notifications and stacks. `xmcuartirq`
+          threads and their priority offsets, endpoints, notifications and stacks. It is declared
+          on `kickos_add_driver` and emitted to the driver's `Descriptor` and to the manifest,
+          a value the build reads never being read back out of C (M4.7.5). `xmcuartirq`
           spawns a second thread one priority above its service, which the composition does not
           show, and the golden XMC system uses 7 of that board's 8 thread slots, so admission can
           only count pools and the console-priority rule from that metadata;
         - a line's claimer declared on exactly one core (M9.2), a declared pin inside the task's
           grant and no pin required;
+        - the board's console device granted only to the task `stdout` names, and `stdout`
+          naming the endpoint of a packaged driver that takes the console, or `kernel`;
         - **a CI gate admits every board's default composition** against that board's
           manifest, so a change to a chip file, a driver descriptor or a pool that breaks a
           default is caught where it is made, and the tool has a fleet-wide corpus from its first
@@ -5845,11 +5849,14 @@ milestone does not close while any of them still composes a system.
           no priority inheritance, and declared after the task `stdout` names, since only a task
           spawned after the console's publish finds its standard output on it;
         - a shared region's required `cache` against who shares it: `cached` refused where a
-          bus master reaches it or where nodes the chip file does not declare coherent share it,
-          unless accepted, and `uncached` refused where the unit cannot express a memory type
+          bus master reaches it, unless accepted, the case of nodes sharing it being the
+          partition build's in M10.5, and `uncached` refused where the unit cannot express a memory type
           over data-cached memory (the external audit found the schema had no cache field).
       The kernel build starts exporting its manifest and descriptions here, and the golden
-      example is admitted.
+      example is admitted. The defaults are the seven boards with both descriptions, xmc4800-relax,
+      qemu-arm64, qemu-x86_64, f411disco, frdmk64f, esp32c6-wroom and qemu-riscv64 (maintainer,
+      2026-10-02); the rest come with their chip files in M10.5. The tool runs under `uv`, its
+      dependencies declared beside it (maintainer, 2026-10-02).
 
 - [ ] **M10.4: THE INIT AND THE NAME LOOKUP.** Scan the table in file order, leave tasks whose
       `uses` are not ready pending, and rescan them on readiness events. Start each eligible task
@@ -5889,7 +5896,9 @@ milestone does not close while any of them still composes a system.
 - [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
       eight the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`,
       `irq.h`, `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board
-      its minimal default composition, and link
+      its minimal default composition, build the partition's compositions together (a partition
+      gate's assignment derived, a device two nodes grant refused, a region cached across nodes
+      unless accepted), and link
       `KickOS::system_default` in the out-of-tree examples CI builds (`examples/oot-app`,
       `examples/oot-mcu-app`), which link only `kickos` today. Move every board and
       app onto compositions, packaged drivers taking

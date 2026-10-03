@@ -482,7 +482,7 @@ jobs:
           ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
           # Build both C6 AMP nodes and their one-flash partition; silicon capture stays on the bench.
           cmake --preset esp32c6-wroom-amp2-n0
-          cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition
+          cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition kickos_default_composition
           ctest --test-dir build/esp32c6-wroom-amp2-n0 -L host -LE tree --no-tests=error --output-on-failure
           cmake --preset esp32c6-wroom-amp2-n1
           cmake --build --preset esp32c6-wroom-amp2-n1
@@ -632,6 +632,12 @@ jobs:
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
+      # Host gates only: a two-core image does not boot on this runner's QEMU, see qemu-x86_64-ap.
+      - name: x86_64 (q35) two-core host gates
+        run: |
+          cmake --preset qemu-x86_64-smp2
+          cmake --build build/qemu-x86_64-smp2
+          ctest --test-dir build/qemu-x86_64-smp2 -L host -LE tree --no-tests=error --output-on-failure
 
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
   # arm F reads libc there before any switch. q35 SMP refuses to start without x2APIC, which

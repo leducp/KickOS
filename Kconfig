@@ -379,6 +379,14 @@ config KICKOS_HAVE_MPU
 	default 1 if MEMORY_MODEL_MPU
 	default 0
 
+config KICKOS_MEMORY_ENFORCED
+	int
+	default 1 if MEMORY_MODEL_MPU || HAS_ASPACE
+	default 0
+	help
+	  Whether memory protection is LIVE, by region or by translation, which admission
+	  policy keys on. Derived, so no board can state it and disagree with its backend.
+
 # Derive page-table depth from paging mode. Boot code checks satp readback
 # because unsupported WARL modes may be ignored.
 
@@ -514,9 +522,10 @@ config KICKOS_MAX_TASKS
 	  data grant or changing privilege gets a task of its own, and kos_task_create reserves
 	  one before any thread joins it, so what this bounds is DISTINCT GROUPS live at once.
 
-	  Two of the slots are boot's: idle's task and root's. Past those, a spawn that finds
-	  the pool full answers -KOS_ENOMEM, the same code thread-pool exhaustion answers, and
-	  it is refused before any thread slot is claimed.
+	  KICKOS_KERNEL_CORES + 1 of the slots are boot's: each kernel core's idle task and
+	  root's. Past those, a spawn that finds the pool full answers -KOS_ENOMEM, the same
+	  code thread-pool exhaustion answers, and it is refused before any thread slot is
+	  claimed.
 
 config KICKOS_MAX_DOMAINS
 	int "Memory-domain pool"

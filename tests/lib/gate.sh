@@ -528,6 +528,40 @@ package_defs() { # <compile_commands.json> <outfile>
       either the exported target lost its usage requirements or $1 is not a compile database"
 }
 
+# The export manifest a package installs, the descriptions it names and the board's default
+# composition: each the build's own copy, and the host tool the package installs run from the
+# prefix on the installed manifest and the installed default.
+installed_manifest() { # <kickos-build> <kickos-source> <prefix>
+    _im_built="$1/export/manifest.yaml"
+    [ -f "$_im_built" ] || fail "the build wrote no export manifest at $_im_built"
+    _im_found="$(find "$3" -path '*/cmake/KickOS/manifest.yaml')"
+    [ -n "$_im_found" ] || fail "the package installs no cmake/KickOS/manifest.yaml under $3"
+    [ "$(printf '%s\n' "$_im_found" | wc -l)" -eq 1 ] \
+        || fail "the package installs several manifests: $_im_found"
+    cmp -s "$_im_built" "$_im_found" || fail "the installed $_im_found is not the build's manifest"
+    if [ -d "$1/export/platform" ]; then
+        for _im_d in $(cd "$1/export" && find platform -type f); do
+            cmp -s "$1/export/$_im_d" "$(dirname "$_im_found")/$_im_d" \
+                || fail "the package does not install the build's $_im_d beside its manifest"
+        done
+    fi
+    _im_tool="$(dirname "$_im_found")/compose"
+    [ -f "$_im_tool/kickos_compose/__main__.py" ] || fail "the package installs no host tool at $_im_tool"
+    _im_board="$(sed -n 's/^KICKOS_BOARD:[A-Z]*=//p' "$1/CMakeCache.txt")"
+    [ -n "$_im_board" ] || fail "$1/CMakeCache.txt states no KICKOS_BOARD"
+    _im_default="boards/$_im_board/composition.yaml"
+    if [ -f "$2/$_im_default" ]; then
+        cmp -s "$2/$_im_default" "$(dirname "$_im_found")/$_im_default" \
+            || fail "the package does not install $_im_default beside its manifest"
+        (cd "$2" && tests/static/check_platform.sh "$1" installed "$_im_tool" "$_im_found" \
+            "$(dirname "$_im_found")/$_im_default") \
+            || fail "the installed tool refuses the installed manifest or $_im_default (see above)"
+    else
+        (cd "$2" && tests/static/check_platform.sh "$1" installed "$_im_tool" "$_im_found") \
+            || fail "the installed tool refuses the installed manifest or a description it names (see above)"
+    fi
+}
+
 # How an image is handed to the emulator, per board, into KOS_BOOT_ARGS as a word list the
 # two runners below leave unquoted. The default is `-semihosting -kernel <elf>`.
 #

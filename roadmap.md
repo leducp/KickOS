@@ -1603,9 +1603,10 @@ If that takes longer to explain than this paragraph, the design is wrong. The de
 [`docs/design-m10-composition.md`](docs/design-m10-composition.md).
 
 **THE MILESTONE IS WRITTEN TEST-FIRST, AND THE TEST IS A SYSTEM A USER WOULD WRITE.**
-[`examples/composition/`](examples/composition/) holds the end goal before any code reads it:
-a user application, the composition that describes its system, and the chip and board
-descriptions it is checked against. It runs on three boards: the XMC4800 Relax Kit; QEMU `virt`
+[`examples/composition/`](examples/composition/) holds the end goal:
+a user application and the composition that describes its system, which the host tool admits
+against the chip and board descriptions under [`platform/`](platform/) and emits as a table, and
+which the init M10.4 brings is to run. It runs on three boards: the XMC4800 Relax Kit; QEMU `virt`
 with four A53 cores, which adds per-task address spaces, page-sized windows and placement on
 cores; and QEMU q35, which adds a device reached through ports. The STM32F411E-DISCO, the FRDM-K64F, the ESP32-C6, QEMU's RV64 `virt` and q35, and the
 i.MX 8M Plus are described too, as format witnesses chosen for being unlike those two. The
@@ -1789,8 +1790,16 @@ authority being declared per task. `kos_service_bringup` has no stop hook, which
 | M10.2.6 | the deletions and CI's prebuilt packages for Linux x86_64 and macOS arm64 |
 | M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured; done, recorded in `docs/archive/M10.2_exit.md` (2026-10-02) |
 | M10.3 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
+| M10.3.1 | the design corrections (maintainer, 2026-10-02): the console device granted only to the task `stdout` names, which must be a console driver's endpoint; a packaged driver's metadata declared on `kickos_add_driver` and emitted to its `Descriptor` and to the manifest; the manifest generated at configure; the host tool under `uv` |
+| M10.3.2 | the platform files moved to `platform/`, the YAML subset, and the chip and board schemas, every description admitted and every form refusal reddened by a mutated file |
+| M10.3.3 | the composition schema, its names, and the order and ownership rules |
+| M10.3.4 | the export manifest and the packaged driver catalogue, `xmcuartirq` and `xmcssc` first |
+| M10.3.5 | admission's encoding, enforcement and memory-type rules, with `accepts` |
+| M10.3.6 | admission's supply, scheduling and authority rules |
+| M10.3.7 | the emitted table: its layout header and a deterministic emitter, round-tripped and compiled on each golden arch |
+| M10.3.8 | the default compositions of the seven boards with both descriptions (maintainer, 2026-10-02), each build admitting its own, and the three golden systems admitted; the partition build, which no golden system needs, is M10.5's |
 | M10.4 | the target side, on M10.1 and M10.3: the init -- file-order scan, skip and rescan on readiness, restart, watchers, status, packaged drivers and the console handover through their descriptors -- the lookup library, `kickos_compose` producing system targets, `KickOS::system_default` and the link-time asserts; the three golden systems run, the Relax Kit, the A53 board at four cores and q35 |
-| M10.5 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
+| M10.5 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, the partition build (a partition gate's assignment derived, a device two nodes grant refused, a region cached across nodes), every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
 | M10.6 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,

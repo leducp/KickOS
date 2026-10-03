@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# M10 GOLDEN EXAMPLE -- the end goal, written before the code that reads it. Nothing reads
-# this file yet. M10 is done when this system is admitted on the host, builds, and runs on
-# an XMC4800 Relax Kit with no jumper and no external part.
+# M10 GOLDEN EXAMPLE: the end goal, written before the code that reads it. M10 is done when
+# this system is admitted on the host, builds, and runs on an XMC4800 Relax Kit with no jumper
+# and no external part.
 #
 # The system: a fake sensor whose "measurement" is a counter echoed through the SPI bus
 # service's internal loopback, and an app that polls it and notices when it freezes. Every

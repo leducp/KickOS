@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+[project]
+name = "kickos-compose"
+version = "0.1.0"
+description = "The KickOS composition host tool"
+requires-python = ">=3.12"
+dependencies = ["ruamel.yaml==0.19.1"]
+
+[tool.uv]
+package = false

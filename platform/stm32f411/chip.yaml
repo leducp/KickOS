@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from RM0383 and the tree's chip_mmap.h, irq.h, chip_stm32f411.cc and stm32f411.ld
+# under arch/arm/chip/stm32f411/, the f411spi app, and arch_mpu_nocache_support in
+# arch/arm/common/arch_mpu_nocache_support_default.cc.
+
+version: 1
+chip: stm32f411
+arch: armv7m
+protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+data_cache: false
+
+devices:
+  # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
+  # whole 1 KiB bus slot.
+  usart2: { window: [0x40004400, 0x20], lines: { global: 38 } }
+  spi1: { window: [0x40013000, 0x20], lines: { global: 35 } }
+
+  tim2: { window: [0x40000000, 0x400], owner: kernel } # the monotonic time base
+  rcc: { window: [0x40023800, 0x400], owner: kernel }
+  # Every GPIO port. A pin is muxed through kos_pinmux_set, never through a granted window.
+  gpio: { window: [0x40020000, 0x400], count: 5, stride: 0x400, owner: kernel } # A to E
+  gpioh: { window: [0x40021C00, 0x400], owner: kernel } # F and G are not on this part
+
+memory:
+  sram: { base: 0x20000000, size: 0x20000, arena: true }
+
+# Pins are PORT PIN. A selector other than `gpio` is the alternate-function number the pin's AFR
+# selects.
+pins:
+  PA2: { af7: usart2.tx, gpio: gpio.0.2 }
+  PA3: { af7: usart2.rx, gpio: gpio.0.3 }
+  PA5: { af5: spi1.sck, gpio: gpio.0.5 }
+  PA6: { af5: spi1.miso, gpio: gpio.0.6 }
+  PA7: { af5: spi1.mosi, gpio: gpio.0.7 }
+  PD12: { gpio: gpio.3.12 }
+  PE3: { gpio: gpio.4.3 }

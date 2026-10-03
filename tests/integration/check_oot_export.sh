@@ -40,6 +40,9 @@ echo "== installing KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \
   || fail "cmake --install failed"
 
+echo "== the installed export manifest and its descriptions =="
+installed_manifest "$KICKOS_BUILD" "$KICKOS_SRC" "$TMP/prefix"
+
 echo "== configuring out-of-tree app via find_package(KickOS) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_PREFIX_PATH="$TMP/prefix" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \

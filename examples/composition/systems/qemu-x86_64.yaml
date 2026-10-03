@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# M10 GOLDEN EXAMPLE -- the same app and health checker, on QEMU q35, to exercise what the x86
+# M10 GOLDEN EXAMPLE: the same app and health checker, on QEMU q35, to exercise what the x86
 # port adds: a device reached through PORTS rather than memory, granted with the same `devices`
 # field, the task's I/O permission bitmap opening its data port and the kernel seam writing its
-# index. Nothing reads this file yet. M10 is done on this board when it is admitted, builds, and
-# runs under a two-core preset.
+# index. M10 is done on this board when it is admitted, builds, and runs under a two-core preset.
 
 version: 1
 board: qemu-x86_64

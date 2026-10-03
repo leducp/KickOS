@@ -77,6 +77,12 @@ classify() {
         # VCS metadata, not authored content.
         .gitignore|*/.gitignore|.gitattributes|*/.gitattributes)
             printf 'none\n' ;;
+        # uv writes the lock whole on every `uv lock`, so a header line would not survive one.
+        uv.lock|*/uv.lock)
+            printf 'none\n' ;;
+        # `#`.
+        *.toml)
+            printf 'need\n' ;;
         Kconfig|*/Kconfig|defconfig|*/defconfig)
             printf 'need\n' ;;
         # A configure_file/`.in` template: the substituted copy is a source file, so the
@@ -181,6 +187,10 @@ arm none   .gitignore
 arm none   boards/x/.gitignore
 arm none   .gitattributes
 arm refuse boards/x/gitignore
+arm none   tools/compose/uv.lock
+arm refuse tools/compose/poetry.lock
+arm need   tools/compose/pyproject.toml
+arm refuse tools/compose/pyproject.tml
 arm need   Kconfig
 arm need   boards/x/Kconfig
 arm refuse boards/x/Kconfiguration
@@ -210,12 +220,12 @@ while IFS="$TAB" read -r want path; do
         refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
     esac
 done < "$TMP/classify_controls"
-[ "$i" -eq 37 ] || fail "$i classify() control(s) ran, expected 37"
+[ "$i" -eq 41 ] || fail "$i classify() control(s) ran, expected 41"
 # All three verdicts, or a classify() collapsed onto one of them would satisfy every equality
 # above and still classify the whole tree wrong.
-[ "$C_NEED" -eq 14 ] || fail "classify() answered need for $C_NEED of 14 controls"
-[ "$C_NONE" -eq 9 ] || fail "classify() answered none for $C_NONE of 9 controls"
-[ "$C_REFUSE" -eq 14 ] || fail "classify() answered refuse for $C_REFUSE of 14 controls"
+[ "$C_NEED" -eq 15 ] || fail "classify() answered need for $C_NEED of 15 controls"
+[ "$C_NONE" -eq 10 ] || fail "classify() answered none for $C_NONE of 10 controls"
+[ "$C_REFUSE" -eq 16 ] || fail "classify() answered refuse for $C_REFUSE of 16 controls"
 
 # The header check. Each positive is one clause: no tag at all, a tag one line past the
 # window, a copyright line not beside the tag, the two words in PROSE, and a copyright line

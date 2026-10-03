@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <kickos/units.h>
+#include <kickos/config/stack_geometry.h> // KICKOS_STACK_ALIGN (generated)
 
 // Use board_config.h provisioning when available; standalone defaults target
 // the simulator rather than small-RAM boards.
@@ -95,9 +96,6 @@
 // Reject undersized or misaligned stacks. Idle is exempt because it never exits.
 #ifndef KICKOS_MIN_STACK_SIZE
 #define KICKOS_MIN_STACK_SIZE 1024
-#endif
-#ifndef KICKOS_STACK_ALIGN
-#define KICKOS_STACK_ALIGN 16
 #endif
 
 // The bootstrap idle/root thread stacks. A syscall runs on the calling thread's stack, so

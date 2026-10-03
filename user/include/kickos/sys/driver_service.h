@@ -17,6 +17,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h> // KOS_CAP_STDOUT
+#include <kickos/sys/driver_geometry.h> // KICKOS_DRIVER_ENDPOINTS (generated)
 #include <kickos/sys/errno.h>
 #include <kickos/sys/service.h>
 
@@ -607,6 +608,56 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
 }
 
 // ---------------------------------------------------------------------------------
+// What kickos_add_driver declares for a packaged driver and exports in the manifest's
+// catalogue, read from the generated <kickos/driver/declared/<name>.h>. A descriptor takes its
+// line and thread counts, ring block, posture, barrier point, thread names and priority offsets
+// from it, and declared_as checks the descriptor's own statement of every other declared fact.
+struct Declared
+{
+    uint8_t window_count;
+    uint8_t line_count;
+    uint8_t thread_count;
+    int8_t prio_delta[KOS_DRV_THREADS_MAX];
+    char const* thread_name[KOS_DRV_THREADS_MAX]; // null takes cfg->name
+    uint8_t cap_count[KOS_DRV_THREADS_MAX];
+    uint8_t receiver; // the thread that waits on the endpoint
+    bool notify;
+    uint32_t block_size;
+    uint8_t ep_posture; // enum kos_drv_ep
+    bool barrier;
+    uint8_t barrier_after; // thread_count where there is no barrier
+    bool console;
+};
+
+constexpr bool declared_as(Descriptor const& d, Declared const& m)
+{
+    if (window_holder_count(d) != m.window_count)
+    {
+        return false;
+    }
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        if (d.threads[i].cap_count != m.cap_count[i])
+        {
+            return false;
+        }
+    }
+    if (ep_holder(d) != m.receiver)
+    {
+        return false;
+    }
+    if (notify_used(d) != m.notify)
+    {
+        return false;
+    }
+    if ((d.ready_offset != KOS_DRV_READY_NONE) != m.barrier)
+    {
+        return false;
+    }
+    return (d.svc_kind == KOS_SVC_CONSOLE) == m.console;
+}
+
+// ---------------------------------------------------------------------------------
 // Print `tag` then `msg` and return -1, the bring-up failure code.
 int fail(char const* tag, char const* msg);
 
@@ -645,6 +696,10 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
                               kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
                               kos_task_t task);
+
+// The catalogue states what bring_up creates from the build's declaration of it.
+static_assert(KICKOS_DRIVER_ENDPOINTS == 1 and KICKOS_DRIVER_NOTIFICATIONS == 1,
+              "bring_up creates one endpoint, and one notification for a driver that uses one");
 
 // The whole choreography. Returns 0, or a negative failure code: a bad descriptor or a failed
 // step prints its own diagnostic; a handover probe refusal is returned unchanged.

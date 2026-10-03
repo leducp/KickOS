@@ -1049,8 +1049,10 @@ feeds the slave app.
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
-  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR])` -- a freestanding,
-  exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side; `kickos_add_qemu_test(NAME
+  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREADS ...])` -- a freestanding,
+  exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with `THREADS`
+  a packaged driver whose declared metadata reaches both its descriptor, through the generated
+  `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue; `kickos_add_qemu_test(NAME
   TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
   prefix in exactly one place; and `kickos_add_board_provider(<name> SOURCE [LINK])` -- a pinmap or
   service-list descriptor lib that folds its `install(EXPORT)` in so adding a provider cannot drift

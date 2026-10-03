@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's RV64 `virt` machine. Values from the tree's chip_virt_rv64.cc, boot_layout.ld.h,
+# arch_rv64imac.cc and memtype_known in aspace_rv64imac.cc, from the device tree QEMU
+# publishes with `-M virt -machine dumpdtb=`, and from the RISC-V PLIC specification's
+# memory map.
+
+version: 1
+chip: virt_rv64
+arch: rv64imac
+
+# Sv39 or Sv48 by preset; the page is 4 KiB either way. Same consequences as virt_arm64. No
+# Svpbmt, so a memory type is the physical address's and an entry carries none.
+protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: false }
+
+cores: { count: [1, 4], smp: true }
+
+devices:
+  # No device names a line: the kernel's interrupt controller is software and drives no PLIC,
+  # so no claim receives a device's interrupt. QEMU wires the UART to PLIC source 10 and the
+  # RTC to 11.
+  uart0: { window: [0x10000000, 0x1000] } # ns16550a, the kernel console
+  # A free-running nanosecond clock: a measurement that always moves.
+  rtc: { window: [0x00101000, 0x1000] }   # goldfish RTC
+
+  # Machine-mode timer and software interrupts.
+  clint: { window: [0x02000000, 0x10000], owner: kernel }
+  # The specification's whole 64 MiB map: QEMU decodes a prefix of it sized by its hart limit.
+  plic: { window: [0x0C000000, 0x4000000], owner: kernel }
+  test_finisher: { window: [0x00100000, 0x1000], owner: kernel } # SiFive test device, the power-off
