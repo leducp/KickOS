@@ -6,6 +6,6 @@
 # unprivileged thread, proven both ways (granted works, ungranted faults MemManage).
 # No CTest gate: it answers a HARDWARE question (PMSA peripheral enforcement) and is validated
 # by the operator on silicon, not by the in-env sim/QEMU.
-kickos_add_app_target(f411spi main.cc)
+add_executable(f411spi main.cc)
 target_link_libraries(f411spi PRIVATE kickos)
 kickos_emit_image(f411spi)

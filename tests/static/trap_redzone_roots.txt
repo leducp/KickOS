@@ -649,7 +649,7 @@ preset  x86_64 qemu-x86_64-smp2root1
 preset  x86_64 qemu-x86_64-smp4
 preset  x86_64 qemu-x86_64-smp8
 preset  x86_64 qemu-x86_64-smp12
-link    x86_64 maps=**/*.efi.map reason: kickos_x86_64_link_image writes one per application image (cmake/x86_64_image.cmake), and the boot images it does not link write none
+link    x86_64 maps=**/*.efi.map reason: tools/x86_64-link.sh writes one per application image, and a boot probe's single link writes none
 class   x86_64 IRQ       frame=KICKOS_X86_64_TRAP_FRAME_IRQ depth=KICKOS_X86_64_TRAP_DEPTH_IRQ
 class   x86_64 IRQK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IRQ \
                          stack=kernel

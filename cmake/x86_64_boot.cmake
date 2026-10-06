@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The x86_64 images. Every one is a PE32+ UEFI application, and CMake cannot drive
-# `ld -m i386pep` as a linker for a target, so each image is one custom command.
+# The x86_64 boot probe images, and the objects every application image links. Each probe is a
+# PE32+ UEFI application of its own single link, one custom command through
+# tools/x86_64-link.sh --one-pass; an application image is an executable, linked through the
+# same tool by cmake/toolchain-x86_64-uefi.cmake's rule.
 #
-# Two image families:
+# Two probe families:
 #   - X1 and X2 carry NO kernel and no interrupt source, over an explicit OBJECT subset, and
 #     take the declining kickos_x86_64_isr fallback so every vector reports.
 #   - X3 carries the real arch and chip ARCHIVES. Archives, because a fallback TU sits beside
@@ -13,16 +15,12 @@
 #
 # The X3 image supplies kickos_isr_timer, kickos_isr_irq and kickos_thread_return itself; the
 # syscall entry every app needs is step X4's.
-#
-# The APPLICATION image link is cmake/x86_64_image.cmake, included below and installed, so an
-# out-of-tree consumer's kickos_emit_image() runs this exact body rather than a copy of it.
 
-# Refused before each link: an unrelaxed global-offset-table load is a CLEAN link and a fault
-# much later, and so is a reference to an undefined weak symbol, which links to address 0 (see
-# each script's own header).
+# The link tool and what it runs: the two guards before every link, and the relocation copy an
+# application image carries for the boot.
+set(KICKOS_X86_64_LINK "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-link.sh")
 set(KICKOS_NO_GOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-no-got.sh")
 set(KICKOS_WEAK_UNDEF "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-weak-undef.sh")
-# The relocation copy an application image carries for the boot (tools/x86_64-krel.sh).
 set(KICKOS_X86_64_KREL "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-krel.sh")
 
 set(KICKOS_X86_64_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64")
@@ -30,15 +28,17 @@ set(KICKOS_Q35_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/chip/q35")
 
 set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
 
-# KICKOS_X86_64_LDFLAGS and kickos_x86_64_link_image() come from here. Included before the
-# images below, which link with those same flags.
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake")
-
-# The probe images below link no leaf and take the heap from the knob.
-if(NOT KICKOS_X86_64_HEAP_LDFLAGS)
+# A probe links no leaf, so it states the section script, the exit stub and the heap itself.
+kickos_heap_defsym(_kos_probe_heap "${KICKOS_USER_HEAP_SIZE}")
+if(NOT _kos_probe_heap)
   message(FATAL_ERROR "KickOS x86_64: KICKOS_USER_HEAP_SIZE is unset, so the probe images' PE "
     "script has no heap to carve. The board configuration states it.")
 endif()
+set(KICKOS_X86_64_PROBE_LINK "${KICKOS_X86_64_LINK}" --one-pass
+    "${KICKOS_X86_64_LD}" "${CMAKE_READELF}" "${CMAKE_OBJDUMP}" "${CMAKE_OBJCOPY}"
+    "-Wl,-u,_exit" "-Wl,-T,${KICKOS_X86_64_PE_SCRIPT}" "-Wl,${_kos_probe_heap}")
+set(KICKOS_X86_64_PROBE_DEPENDS "${KICKOS_X86_64_LINK}" "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}"
+    "${KICKOS_X86_64_PE_SCRIPT}")
 
 # arch/include is here for the X3 probe alone; the kernel-free images reach only the two
 # backend directories.
@@ -120,19 +120,7 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
 
   add_custom_command(
     OUTPUT "${_img}"
-    COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-            $<TARGET_OBJECTS:kickos_x86_64_boot>
-            $<TARGET_OBJECTS:kickos_x86_64_x2>
-            $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
-            $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-            $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
-    COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
-            $<TARGET_OBJECTS:kickos_x86_64_boot>
-            $<TARGET_OBJECTS:kickos_x86_64_x2>
-            $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
-            $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-            $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
-    COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
+    COMMAND ${KICKOS_X86_64_PROBE_LINK}
             -o "${_img}"
             $<TARGET_OBJECTS:kickos_x86_64_boot>
             $<TARGET_OBJECTS:kickos_x86_64_x2>
@@ -146,9 +134,7 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
             $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
             $<TARGET_OBJECTS:kickos_x86_64_nokernel>
             $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
-            "${KICKOS_NO_GOT}"
-            "${KICKOS_WEAK_UNDEF}"
-            "${KICKOS_X86_64_PE_SCRIPT}"
+            ${KICKOS_X86_64_PROBE_DEPENDS}
     COMMENT "x86_64: linking the PE32+ UEFI application ${_img}"
     COMMAND_EXPAND_LISTS
     VERBATIM)
@@ -163,30 +149,16 @@ set(KICKOS_X1_IMAGE "${KICKOS_X86_64_IMAGE_none}")
 set(KICKOS_X3_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x3.efi")
 add_custom_command(
   OUTPUT "${KICKOS_X3_IMAGE}"
-  COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe3>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe3>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
+  COMMAND ${KICKOS_X86_64_PROBE_LINK}
           -o "${KICKOS_X3_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          --start-group
+          -Wl,--start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          --end-group
+          -Wl,--end-group
   # See the per-class link above for why the OBJECTS and not the targets.
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
@@ -194,9 +166,7 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          "${KICKOS_NO_GOT}"
-          "${KICKOS_WEAK_UNDEF}"
-          "${KICKOS_X86_64_PE_SCRIPT}"
+          ${KICKOS_X86_64_PROBE_DEPENDS}
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X3_IMAGE}"
   COMMAND_EXPAND_LISTS
   VERBATIM)
@@ -211,35 +181,21 @@ target_include_directories(kickos_x86_64_probe4 PRIVATE ${KICKOS_X86_64_INCLUDES
 set(KICKOS_X4_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x4.efi")
 add_custom_command(
   OUTPUT "${KICKOS_X4_IMAGE}"
-  COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe4>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe4>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
+  COMMAND ${KICKOS_X86_64_PROBE_LINK}
           -o "${KICKOS_X4_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          --start-group
+          -Wl,--start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          --end-group
+          -Wl,--end-group
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          "${KICKOS_NO_GOT}"
-          "${KICKOS_WEAK_UNDEF}"
-          "${KICKOS_X86_64_PE_SCRIPT}"
+          ${KICKOS_X86_64_PROBE_DEPENDS}
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X4_IMAGE}"
   COMMAND_EXPAND_LISTS
   VERBATIM)
@@ -256,36 +212,22 @@ target_include_directories(kickos_x86_64_probe5 PRIVATE ${KICKOS_X86_64_INCLUDES
 set(KICKOS_X5_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x5.efi")
 add_custom_command(
   OUTPUT "${KICKOS_X5_IMAGE}"
-  COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe5>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe5>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
+  COMMAND ${KICKOS_X86_64_PROBE_LINK}
           -o "${KICKOS_X5_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          --start-group
+          -Wl,--start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          --end-group
+          -Wl,--end-group
   # See the per-class link above for why the OBJECTS and not the targets.
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          "${KICKOS_NO_GOT}"
-          "${KICKOS_WEAK_UNDEF}"
-          "${KICKOS_X86_64_PE_SCRIPT}"
+          ${KICKOS_X86_64_PROBE_DEPENDS}
   COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X5_IMAGE}"
   COMMAND_EXPAND_LISTS
   VERBATIM)
@@ -303,39 +245,23 @@ target_include_directories(kickos_x86_64_probe6 PRIVATE ${KICKOS_X86_64_INCLUDES
 set(KICKOS_X6_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x6.efi")
 add_custom_command(
   OUTPUT "${KICKOS_X6_IMAGE}"
-  COMMAND "${KICKOS_NO_GOT}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
-          $<TARGET_OBJECTS:kickos_x86_64_probe6>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
-          $<TARGET_OBJECTS:kickos_x86_64_probe6>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          $<TARGET_OBJECTS:kickos_arch_x86_64>
-          $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
+  COMMAND ${KICKOS_X86_64_PROBE_LINK}
           -o "${KICKOS_X6_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
           $<TARGET_OBJECTS:kickos_x86_64_probe6>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          --start-group
+          -Wl,--start-group
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          --end-group
+          -Wl,--end-group
   DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
           $<TARGET_OBJECTS:kickos_x86_64_probe6>
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           "$<TARGET_FILE:kickos_chip_q35>"
           "$<TARGET_FILE:kickos_arch_x86_64>"
-          "${KICKOS_NO_GOT}"
-          "${KICKOS_WEAK_UNDEF}"
-          "${KICKOS_X86_64_PE_SCRIPT}"
+          ${KICKOS_X86_64_PROBE_DEPENDS}
   COMMENT "x86_64: linking the two-core AP-entry witness"
   COMMAND_EXPAND_LISTS
   VERBATIM)
@@ -514,15 +440,15 @@ else()
   message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
 endif()
 
-# ---------------------------------------------------------------------------
-# The APPLICATION images: the same eight archives the root CMakeLists groups for every other
-# board, linked here rather than through the compiler driver, which cannot select the PE+
-# emulation.
-#
-# kickos_add_app_target makes the app target an OBJECT library on this arch, and
-# kickos_emit_image calls the function below, which writes the image and records its path on
-# the target as KICKOS_IMAGE_FILE (cmake/kickos.cmake).
-# ---------------------------------------------------------------------------
+if(KICKOS_BUILD_TESTS)
+  add_test(NAME x86_64_link_order
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_link_order.sh"
+            "${PROJECT_BINARY_DIR}" "${KICKOS_X86_64_PE_SCRIPT}")
+  kickos_host_gate(x86_64_link_order TIMEOUT 60)
+  add_test(NAME x86_64_link_order_controls
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_link_order.sh" --controls)
+  kickos_host_gate(x86_64_link_order_controls TIMEOUT 60)
+endif()
 
 # The boot tail of an image that carries the kernel: RAM publish, the kernel-owned ctor
 # window, arch_init, kmain.
@@ -566,31 +492,12 @@ foreach(_kos_t IN LISTS _kos_kernel_half _kos_probe_objects)
     "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
 endforeach()
 
-# No extra objects: the frame pool is the kernel's (kernel/mem/frame_pool.cc), q35 translating.
-set(KICKOS_X86_64_APP_OBJECTS "" CACHE INTERNAL
-    "Extra objects every x86_64 application image links, beside the app's own")
-
-# The link group, captured at include time and comma-split into a real list: $<LINK_GROUP:>
-# takes it comma-separated, and an unsplit string reaches the loop below as one name. A
-# function reads its variables from the CALLING scope, a different directory here; the
-# cache entry is what keeps the two from having to agree by accident.
-string(REPLACE "," ";" _kos_x86_64_group "${_kickos_group}")
-set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
-    "The archive group an x86_64 application image links, from the root CMakeLists")
-string(REPLACE "," ";" _kos_x86_64_kernel_group "${_kickos_kernel_group}")
-set(KICKOS_X86_64_KERNEL_GROUP "${_kos_x86_64_kernel_group}" CACHE INTERNAL
-    "The archive group an x86_64 image linking KickOS::kernel links, the providers left out")
-
-# --- What an installed package needs to run that same link -------------------
-# The image is written by ld from OBJECTS, so the objects are part of the deliverable: an app
-# built out of tree links these three exactly as an in-tree one does. Exporting them installs
-# their objects and puts them in KickOSTargets as IMPORTED_OBJECTS, which is what makes
-# $<TARGET_OBJECTS:> in cmake/x86_64_image.cmake resolve in a consumer.
+# kickos_core links the boot and landing objects (CMakeLists.txt), so an out-of-tree app links
+# them exactly as an in-tree one does: exported, they reach KickOSTargets as IMPORTED_OBJECTS.
 kickos_export_targets(kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_kernel)
 
-# Beside the module that names them: it reads both list-dir-relative out of a package.
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake"
-              "${KICKOS_X86_64_PE_SCRIPT}"
-        DESTINATION "${KICKOS_CMAKE_DIR}")
-install(PROGRAMS "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}" "${KICKOS_X86_64_KREL}"
+# Beside the installed toolchain file, which finds the link tool there, and the tool its scripts.
+install(FILES "${KICKOS_X86_64_PE_SCRIPT}" DESTINATION "${KICKOS_CMAKE_DIR}")
+install(PROGRAMS "${KICKOS_X86_64_LINK}" "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}"
+                 "${KICKOS_X86_64_KREL}"
         DESTINATION "${KICKOS_CMAKE_DIR}")

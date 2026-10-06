@@ -208,7 +208,7 @@ on QEMU's translating boards.
 
 1. The nine described chips: `xmc4800`, `stm32f411`, `mk64f`, `esp32c6`, `virt_rv32`, then the
    translating `virt_arm64`, `virt_rv64`, `q35` and `imx8mp` (M10.5.2).
-2. The rest, by family (M10.5.3): the STM32 pair `stm32f103` and `stm32f302`; the RP pair
+2. The rest, by family (M10.5.4): the STM32 pair `stm32f103` and `stm32f302`; the RP pair
    `rp2040` and `rp2350`; `imxrt1062`; `sam3x8e`; `nrf51`; `mps2` and the AN505; `rx72m`;
    `esp32`; the sim.
 
@@ -265,7 +265,7 @@ userspace, as the composition design leaves for when each board moves:
 
 ## 3. The smallest boards, measured first
 
-Before any app moves on `microbit`, `f302nucleo` and `bluepill-c8`, M10.5.4 measures what the
+Before any app moves on `microbit`, `f302nucleo` and `bluepill-c8`, M10.5.5 measures what the
 move costs there. Three builds of one tree, one plain C `main` that prints a line and returns:
 
 | image | links | isolates |
@@ -492,54 +492,63 @@ headers and the stub go as section 1 and section 2 land.
 
 ## 7. x86_64 through `add_executable`
 
-This moves after every app and the selftest are composed, so a rename of
-`kickos_add_app_target` to `add_executable` is all it asks of any CMakeLists.
+This lands right after the board files and before any app moves onto a composition, so the old
+leaves `kickos` and `kickos_cxx` carry the same x86_64 usage requirements as `KickOS::kernel` until
+they are deleted, and no app's CMakeLists is rewritten twice.
 
 The installed `cmake/toolchain-x86_64-uefi.cmake` sets the executable link rule of C and C++ to a
 wrapper, with `.efi` as each language's executable suffix. The per-language suffix is the one that
 holds: CMake's generic platform resets the plain one after the toolchain file is read.
 
 ```cmake
-set(CMAKE_EXECUTABLE_SUFFIX_C ".efi")
-set(CMAKE_EXECUTABLE_SUFFIX_CXX ".efi")
-set(CMAKE_C_LINK_EXECUTABLE
-    "<x86_64-link.sh> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
-set(CMAKE_CXX_LINK_EXECUTABLE
-    "<x86_64-link.sh> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+foreach(_kos_lang C CXX)
+  set(CMAKE_EXECUTABLE_SUFFIX_${_kos_lang} ".efi")
+  set(CMAKE_${_kos_lang}_LINK_EXECUTABLE
+      "\"${_kos_link}\" \"${KICKOS_X86_64_LD}\" \"${CMAKE_READELF}\" \"${CMAKE_OBJDUMP}\" \"${CMAKE_OBJCOPY}\"${KICKOS_X86_64_LIBDIRS} <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+endforeach()
 ```
 
-**The wrapper**, installed beside `tools/x86_64-krel.sh`, runs what `cmake/x86_64_image.cmake` runs
-today, in order: `tools/check-x86_64-no-got.sh` and `tools/check-x86_64-weak-undef.sh` over the
+`_kos_link` is the tool beside the toolchain file, and `KICKOS_X86_64_LIBDIRS` the `-L` directory
+of each toolchain library, which the tool resolves every `-l` against and hands `ld` as a path.
+
+**The wrapper**, installed beside `tools/x86_64-krel.sh`, runs what the image's custom command ran,
+in order: `tools/check-x86_64-no-got.sh` and `tools/check-x86_64-weak-undef.sh` over the
 objects and every archive, the first `ld -m i386pep` pass, the relocation directory's extract, its
 object, the second pass, and the check that the directory did not move. It passes
-`-b elf64-x86-64` unconditionally, as today, and CI's probe of whether that flag is load-bearing
-stays. It writes the map beside the image as `<TARGET>.map`, the path the gates read through
-`KICKOS_IMAGE_MAP`.
+`-b elf64-x86-64` unconditionally, and CI's probe of whether that flag is load-bearing stays;
+CI links with the toolchain's binutils 2.47, so the 2.42 path the flag exists for is not
+witnessed. It writes the map beside the image as `<TARGET>.map`, the path the gates read through
+`KICKOS_IMAGE_MAP`, and a failed link leaves neither the image nor the map.
 
 - **The fleet keeps its `-Wl,` spelling.** The wrapper turns each `-Wl,a,b` it is given into `a b`
   for `ld`, so the kernel target's link options, the `--require-defined` of the system-target
   symbol, the system target's heap `--defsym`, a map request and the link group's
   `--start-group`/`--end-group` reach the linker unchanged. It refuses an argument it does not know
   rather than pass a compiler-driver flag to `ld`.
-- **The boot and kernel-landing objects ride usage requirements**: `KickOS::kernel` links the boot
+- **The boot and kernel-landing objects ride usage requirements**: every leaf links the boot
   OBJECT library for its core count and the landed kernel's, so `$<TARGET_OBJECTS>` places them;
-  `libc`, `libm`, `libgcc`, `libstdc++` and `libsupc++` are the kernel target's link libraries by
-  the absolute paths the toolchain file resolves, inside its group, with `-T` naming `pe_image.ld`.
-- **A rebased image** is a second executable over the same OBJECT library as the first, linked with
-  `-Wl,--image-base=<base>`, so nothing is compiled twice.
-- **The boot probes** in `cmake/x86_64_boot.cmake` keep their own single-pass command: they are
-  bring-up images, not apps.
+  `libc`, `libm`, `libgcc`, `libstdc++` and `libsupc++` are named by `-l` inside each leaf's
+  group, the toolchain file's rule carrying their `-L` directories, so no path of the building
+  machine reaches the exported targets; `-T` names `pe_image.ld`. CMake places an object a usage
+  requirement carries by its target's depth, so the C++ runtime object rides an INTERFACE target
+  one level below the leaf, and `tests/static/check_x86_64_link_order.sh` pins the order.
+- **A rebased image** is a second executable over the first's objects (`$<TARGET_OBJECTS:>` of
+  the first) and its link libraries, linked with `-Wl,--image-base=<base>`, so nothing is
+  compiled twice.
+- **The boot probes** in `cmake/x86_64_boot.cmake` keep their own single-pass command, through
+  the same tool's `--one-pass`: they are bring-up images, not apps.
 - **The configure's own compiler checks** stay static libraries, as
   `kickos_toolchain_bare_metal_rules` already sets them, so they never reach the wrapper.
 - **What goes**: `kickos_add_app_target`, the OBJECT branch, `kickos_x86_64_link_image` and its
   deferral to the end of the configure, the system targets' `KICKOS_SYSTEM_*` properties that
-  exist only for it, and the x86 groups `KickOSConfig.cmake` bakes. `kickos_emit_image` does
-  nothing on x86_64, as on the sim.
+  exist only for it, and the x86 groups `KickOSConfig.cmake` bakes. `kickos_emit_image` keeps
+  only its mixed-leaf refusal on x86_64. An app calling a driver class names it through
+  `kickos_link_class_backends`, and `user/apps` applies the tree's warning and C-standard posture
+  at directory scope.
 
-Proven in CI on q35 at one and two cores and under the composition and x86 gates, on each
-binutils version CI's probe reports, and installed: `examples/oot-mcu-app` links through it.
-**If the rule cannot be made to hold**, `kickos_add_app_target` stays as the one documented
-exception and says why (`TODO.md`).
+Proven on q35 at one to twelve cores under the composition and x86 gates, with every loaded
+section of every image byte-identical to the custom-command link it replaced, and installed:
+`examples/oot-mcu-app` links through it.
 
 ## 8. The out-of-tree examples
 
@@ -636,10 +645,10 @@ So an LP grant is admitted only where it coalesces with one of the LP kernel's t
 refused otherwise: the LP kernel's pages are part of the derived set rather than fixed regions the
 grants must fit around, and none is dropped to make room. As the pages stand, none coalesces: the
 LP UART, which the chip file gains from Table 5.3-2, sits past LP_AON, which is the kernel's, so
-every LP peripheral granted to the LP node is refused, and M10.5.8 reports that rather than taking
+every LP peripheral granted to the LP node is refused, and M10.5.9 reports that rather than taking
 a region from the kernel. HP_APM has nine regions to spare on a two-node partition. The LP reset-vector permit
 programs 0x7000_0000, which the TRM's map leaves reserved, LP SRAM sitting at 0x5000_0000 (Table
-5.3-1): M10.5.8 checks it against the manual before it becomes a row.
+5.3-1): M10.5.9 checks it against the manual before it becomes a row.
 
 **The RP2350's ACCESSCTRL** (RP2350 datasheet, 10.6). One register per peripheral at 0x4006_0000
 plus the offsets of Table 911. Node 0, Secure and privileged, writes each before it launches the

@@ -18,12 +18,6 @@
 #
 #   Requires uv on PATH, which runs the tool under a Python of 3.12 or newer with the ruamel.yaml
 #   its uv.lock pins, in one environment per build tree.
-#
-#   A system target records for the x86_64 image link, which runs ld without a compiler driver:
-#     KICKOS_SYSTEM_OBJECTS   the object libraries it links, by name
-#     KICKOS_SYSTEM_ARCHIVES  the archives it links, by name
-#     KICKOS_SYSTEM_HEAP      its heap
-#   and the asserts script as its INTERFACE_LINK_DEPENDS.
 
 # The host tool: tools/compose in the source tree, the compose folder an installed package
 # carries beside this file.
@@ -177,9 +171,4 @@ function(kickos_compose system composition)
   kickos_heap_defsym(_heap "${KICKOS_COMPOSE_HEAP}")
   target_link_options(${system} INTERFACE "LINKER:${_heap}")
   set_property(TARGET ${system} APPEND PROPERTY INTERFACE_LINK_DEPENDS ${_asserts_link})
-  set_target_properties(${system} PROPERTIES
-    KICKOS_SYSTEM_OBJECTS "${_objects}"
-    KICKOS_SYSTEM_ARCHIVES "${_archives}"
-    KICKOS_SYSTEM_HEAP "${KICKOS_COMPOSE_HEAP}"
-    EXPORT_PROPERTIES "KICKOS_SYSTEM_OBJECTS;KICKOS_SYSTEM_ARCHIVES;KICKOS_SYSTEM_HEAP")
 endfunction()

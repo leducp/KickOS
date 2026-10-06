@@ -47,8 +47,8 @@ find_program(CMAKE_OBJDUMP x86_64-elf-objdump HINTS "${_kos_tc_bin}" NO_DEFAULT_
 find_program(CMAKE_NM      x86_64-elf-nm      HINTS "${_kos_tc_bin}" NO_DEFAULT_PATH REQUIRED)
 find_program(CMAKE_READELF x86_64-elf-readelf HINTS "${_kos_tc_bin}" NO_DEFAULT_PATH REQUIRED)
 
-# The image is linked by ld directly: the compiler driver cannot select the PE+ emulation,
-# and the link takes no crt and no library at all.
+# The image is linked by ld directly, through the link rule below: the compiler driver cannot
+# select the PE+ emulation.
 find_program(KICKOS_X86_64_LD x86_64-elf-ld HINTS "${_kos_tc_bin}" NO_DEFAULT_PATH REQUIRED)
 
 # Refused here: an ld without the PE+ emulation reports an unrecognised -m at the link step
@@ -92,3 +92,48 @@ set(KICKOS_X86_64_KERNEL_FLAGS -mgeneral-regs-only)
 string(APPEND CMAKE_CXX_FLAGS_INIT " -fno-exceptions -fno-rtti")
 
 kickos_toolchain_bare_metal_rules()
+
+# Both languages' executable link rule is tools/x86_64-link.sh, which an installed package
+# carries beside this file, and their suffix .efi; only the per-language suffix survives
+# CMakeGenericSystem. The rule leaves out <FLAGS>: compile flags, which ld would refuse.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/x86_64-link.sh")
+  set(_kos_link "${CMAKE_CURRENT_LIST_DIR}/x86_64-link.sh")
+else()
+  get_filename_component(_kos_link "${CMAKE_CURRENT_LIST_DIR}/../tools/x86_64-link.sh" ABSOLUTE)
+endif()
+# ld runs without a compiler driver, so the toolchain's own library directories are the rule's,
+# found here under the board's flags. A link names those libraries by -l, which keeps this
+# machine's paths out of an exported link interface. A try-compile builds a static library and
+# links nothing, so it skips the probes; the cache keys them on the compiler and its flags.
+get_property(_kos_in_try_compile GLOBAL PROPERTY IN_TRY_COMPILE)
+set(_kos_libdirs_key "${CMAKE_C_COMPILER} ${_kos_common}")
+if(NOT _kos_in_try_compile AND NOT "${KICKOS_X86_64_LIBDIRS_KEY}" STREQUAL "${_kos_libdirs_key}")
+  separate_arguments(_kos_flags NATIVE_COMMAND "${_kos_common}")
+  set(_kos_dirs "")
+  foreach(_kos_a c m gcc stdc++ supc++)
+    execute_process(COMMAND "${CMAKE_C_COMPILER}" ${_kos_flags} "-print-file-name=lib${_kos_a}.a"
+                    OUTPUT_VARIABLE _kos_path OUTPUT_STRIP_TRAILING_WHITESPACE
+                    RESULT_VARIABLE _kos_rc)
+    if(NOT _kos_rc EQUAL 0 OR NOT IS_ABSOLUTE "${_kos_path}" OR NOT EXISTS "${_kos_path}")
+      message(FATAL_ERROR "KickOS x86_64 toolchain: ${CMAKE_C_COMPILER} -print-file-name found "
+        "no lib${_kos_a}.a ('${_kos_path}'). The x86_64-elf package installs it.")
+    endif()
+    get_filename_component(_kos_dir "${_kos_path}" DIRECTORY)
+    file(REAL_PATH "${_kos_dir}" _kos_dir)
+    list(APPEND _kos_dirs "${_kos_dir}")
+  endforeach()
+  list(REMOVE_DUPLICATES _kos_dirs)
+  set(_kos_libdirs "")
+  foreach(_kos_dir IN LISTS _kos_dirs)
+    string(APPEND _kos_libdirs " \"-L${_kos_dir}\"")
+  endforeach()
+  set(KICKOS_X86_64_LIBDIRS "${_kos_libdirs}" CACHE INTERNAL
+      "The -L arguments of the x86_64 link rule")
+  set(KICKOS_X86_64_LIBDIRS_KEY "${_kos_libdirs_key}" CACHE INTERNAL
+      "The compiler and flags KICKOS_X86_64_LIBDIRS was probed under")
+endif()
+foreach(_kos_lang C CXX)
+  set(CMAKE_EXECUTABLE_SUFFIX_${_kos_lang} ".efi")
+  set(CMAKE_${_kos_lang}_LINK_EXECUTABLE
+      "\"${_kos_link}\" \"${KICKOS_X86_64_LD}\" \"${CMAKE_READELF}\" \"${CMAKE_OBJDUMP}\" \"${CMAKE_OBJCOPY}\"${KICKOS_X86_64_LIBDIRS} <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+endforeach()

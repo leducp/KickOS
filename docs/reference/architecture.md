@@ -1042,21 +1042,23 @@ feeds the slave app.
   build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
   instead of leaving a stale image to flash. Bare metal adds exactly one optional line,
   `kickos_emit_image(<target>)`, because turning the ELF into `.bin`/`.hex`/`.uf2` is a `POST_BUILD`
-  action and no usage requirement can carry an action. x86_64 is the one arch where the
-  `add_executable` line above cannot be written at all: what firmware loads is a PE32+ UEFI
-  application and CMake cannot drive `ld -m i386pep` as a linker for a target, so there the app
-  target is an OBJECT library and `kickos_emit_image()` writes the image out of its objects --
-  out of tree exactly as in tree, over the one recipe `cmake/x86_64_image.cmake` holds and the
-  package installs beside the section script and the objects that link is made of.
-  `kickos_add_app_target(<name> <sources>... [CLASSES <class>...])` is the positional convenience
-  for three things that are not an app's to state: that target kind, this tree's `-Werror` plus
-  `C_STANDARD 11` posture (in tree only), and WHICH backend answers each driver class the app
-  calls. An app names the class (it is already in its `#include` list); the backend and its
-  position ahead of the rescan group come from `kickos_select_class_backend`, called by
-  `system/CMakeLists.txt` because the choice is the image posture's -- every backend of one class
-  defines the same public symbols, so exactly one links and the ORDER, not the selection, would
-  otherwise decide the engine. It has no powers the plain path above lacks; downstream projects
-  use that plain path instead. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
+  action and no usage requirement can carry an action. x86_64 writes the same two lines: what
+  firmware loads is a PE32+ UEFI application, which the compiler driver cannot link, so the
+  installed `cmake/toolchain-x86_64-uefi.cmake` sets the executable link rule to
+  `tools/x86_64-link.sh` and the suffix to `.efi`. That tool takes the driver's `-Wl,` spelling,
+  runs the two guards over every input, links twice with `ld -m i386pep` so the image carries a
+  copy of its relocation directory, and writes `<image>.map`; the section script and the boot
+  and kernel-landing objects ride the exported leaves, so `kickos_emit_image()` only checks the
+  image's leaves there. The order of an image's objects decides its app half, and
+  `tests/static/check_x86_64_link_order.sh` pins it. An app whose sources call a driver class
+  adds `kickos_link_class_backends(<target> <class>...)` before its `KickOS::kickos` line: an
+  app names the class (it is already in its `#include` list); the backend and its position
+  ahead of the rescan group come from `kickos_select_class_backend`, called by
+  `system/CMakeLists.txt` because the choice is the image posture's, since every backend of one
+  class defines the same public symbols, so exactly one links and the ORDER, not the selection,
+  would otherwise decide the engine. In tree, `user/apps` applies this tree's `-Werror` plus
+  `C_STANDARD 11` posture to every app at directory scope. Switching sim<->MCU is a one-word
+  `BOARD`/toolchain change.
   First-class acceptance criterion, gated both ways (`tests/integration/check_oot_export{,_mcu}.sh`)
   on one board per `KICKOS_ARCH` (`tests/integration/oot_arch_boards.txt`), which is the only
   thing in the tree that reads an installed package from outside.

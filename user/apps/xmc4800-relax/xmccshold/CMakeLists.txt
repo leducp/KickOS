@@ -6,7 +6,7 @@
 # the gate for a hardware CS in the XMC SPI service.
 # No CTest gate: it answers a HARDWARE question (does the CS stay held?) and is validated by
 # the operator on silicon.
-kickos_add_app_target(xmccshold main.cc)
+add_executable(xmccshold main.cc)
 target_link_libraries(xmccshold PRIVATE kickos)
 kickos_emit_image(xmccshold)
 

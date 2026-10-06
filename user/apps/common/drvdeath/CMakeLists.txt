@@ -3,7 +3,7 @@
 
 # Console reclaim on driver death. The published posture plus a driver that exits on cue is
 # only automatable on the host (see tests/integration/check_sim_drvdeath.sh).
-kickos_add_app_target(drvdeath main.cc)
+add_executable(drvdeath main.cc)
 target_link_libraries(drvdeath PRIVATE kickos)
 kickos_emit_image(drvdeath)
 

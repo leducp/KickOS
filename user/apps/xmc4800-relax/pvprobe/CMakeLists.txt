@@ -6,7 +6,7 @@
 # are they dropped or faulted?
 # No CTest gate: it answers a HARDWARE question (USIC register access privilege) and is
 # validated by the operator on silicon.
-kickos_add_app_target(pvprobe main.cc)
+add_executable(pvprobe main.cc)
 target_link_libraries(pvprobe PRIVATE kickos)
 kickos_emit_image(pvprobe)
 

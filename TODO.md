@@ -1877,7 +1877,7 @@ inside the tree.
       reports and does not refuse, both answers being correct for their linker, and the flag's
       loss is still caught by the real link failing wherever it is load-bearing. Read at binutils
       2.47 the probe says INERT, which agrees with the record. What this does not do is take
-      either branch: dropping the flag from `cmake/x86_64_image.cmake` and pinning a linker that
+      either branch: dropping the flag from `tools/x86_64-link.sh` and pinning a linker that
       needs it are both the maintainer's, and what was missing for either was any way to learn,
       per run, whether a needing toolchain is still reachable.
       **RULED AT M8.13: THE FLAG STAYS AND SO DOES THE PROBE.** The flag is load-bearing at
@@ -5864,21 +5864,20 @@ milestone does not close while any of them still composes a system.
       of the restart witness with the init's stack depth, each judged through `tools/bench`'s
       `JUDGE`.
 
-- [ ] **M10.5: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
-      maintainer on 2026-09-28, so a user's CMake is plain on every board. Today x86 is the one
-      exception: firmware loads a PE32+ UEFI application, the compiler driver has no PE32+
-      output, so `kickos_add_app_target` makes the app an OBJECT library and
-      `kickos_emit_image` links the `.efi` with a custom command calling `ld -m i386pep`
-      (`cmake/x86_64_image.cmake`), after the global-offset-table guard
-      (`tools/check-x86_64-no-got.sh`). The tree's comment that CMake "cannot drive" that linker
-      is a choice, not a limit: the installed x86 toolchain file can set the executable link
-      rule to a wrapper that runs the guard and then `ld -m i386pep` with the section script and
-      flags, with `.efi` as the executable suffix, and the boot and kernel-landing objects ride
-      the kernel target's usage requirements. The snag to solve is the kernel target's link
-      options, written for the compiler driver (`-Wl,`), which `LINKER:` flags can carry to a
-      direct linker. Proven in CI on both binutils versions the tree already distinguishes (the
-      `-b elf64-x86-64` workaround for 2.42). **If the rule cannot be made to hold**,
-      `kickos_add_app_target` stays as the one documented exception, and says why.
+- [x] **M10.5: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
+      maintainer on 2026-09-28, so a user's CMake is plain on every board. **LANDED**: the
+      installed x86 toolchain file sets the executable link rule to `tools/x86_64-link.sh`, with
+      `.efi` as the suffix. The tool takes the driver's `-Wl,` spelling, refuses any other driver
+      flag, runs the global-offset-table and weak-undefined guards over every input, and links
+      the image with `ld -m i386pep` in two passes, writing its map beside it. The section
+      script, the boot and kernel-landing objects and the toolchain's libraries ride the leaves'
+      usage requirements, the libraries by `-l` name with their `-L` directories in the rule, so
+      no path of the building machine reaches the exported targets. `kickos_add_app_target`, the
+      OBJECT-library app and its custom-command image link are deleted, and
+      `tests/static/check_x86_64_link_order.sh` pins the object order CMake chooses, which decides
+      the app half's bytes. Not witnessed: the binutils 2.42 `-b elf64-x86-64` path, since CI links
+      with the toolchain's 2.47 as the bench does; the flag stays unconditional and CI's probe
+      still reports whether it is load-bearing.
 
 - [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
       eight the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`,

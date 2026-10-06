@@ -6,7 +6,7 @@
 # relocate the app window a second time (arch/x86/x86_64/apprel_x86_64.cc). .reloc itself is a
 # discardable section a loader is free not to keep, so the image carries a copy in .krel, and
 # the copy's size is known only once a link has produced the directory: the image is linked
-# twice (cmake/x86_64_image.cmake).
+# twice (tools/x86_64-link.sh).
 #
 #   x86_64-krel.sh extract <objdump> <objcopy> <first-link.efi> <out.bin>
 #       The directory's bytes, exactly as long as the data directory states, not the section's

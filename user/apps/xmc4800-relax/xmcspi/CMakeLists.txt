@@ -6,7 +6,7 @@
 # user/apps/f411disco/f411spi), proven both ways (granted works, ungranted faults MemManage).
 # No CTest gate: it answers a HARDWARE question (PMSA peripheral enforcement) and is validated
 # by the operator on silicon.
-kickos_add_app_target(xmcspi main.cc)
+add_executable(xmcspi main.cc)
 target_link_libraries(xmcspi PRIVATE kickos)
 kickos_emit_image(xmcspi)
 

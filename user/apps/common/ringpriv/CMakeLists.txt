@@ -19,7 +19,7 @@
 # FATAL_ERRORs on an unclassified armv6m board.
 set(_ring ${KICKOS_HAVE_PRIV_RING})
 
-kickos_add_app_target(ringpriv main.cc)
+add_executable(ringpriv main.cc)
 target_link_libraries(ringpriv PRIVATE kickos)
 kickos_emit_image(ringpriv)
 target_compile_definitions(ringpriv PRIVATE RINGPRIV_EXPECT_RING=${_ring})
@@ -27,7 +27,7 @@ target_compile_definitions(ringpriv PRIVATE RINGPRIV_EXPECT_RING=${_ring})
 # ringppb only where there IS a ring to be refused. On a no-ring core the same read
 # succeeds, and correctly so, which would make a confinement gate assert the opposite.
 if(_ring)
-  kickos_add_app_target(ringppb ppb.cc)
+  add_executable(ringppb ppb.cc)
   target_link_libraries(ringppb PRIVATE kickos)
   kickos_emit_image(ringppb)
 endif()

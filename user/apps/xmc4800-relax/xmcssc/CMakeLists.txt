@@ -12,7 +12,8 @@
 # No CTest gate: it answers a HARDWARE question (an unprivileged SSC engine over the
 # PMSA-granted USIC window, exercising the FEM=1 hardware CS-hold framing) and is validated by
 # the operator on silicon.
-kickos_add_app_target(xmcssc main.cc CLASSES spi)
+add_executable(xmcssc main.cc)
+kickos_link_class_backends(xmcssc spi)
 # The endpoint accessor is the DRIVER's, not the class backend's: this app names the service it
 # takes a capability from, which no posture chooses for it.
 target_link_libraries(xmcssc PRIVATE kickos_xmcssc kickos)

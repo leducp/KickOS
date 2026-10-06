@@ -7,7 +7,7 @@
 # 0x54). It deliberately faults, so it is never a production image.
 # No CTest gate: it answers a HARDWARE question (RX MPU peripheral enforcement) and is
 # validated by the operator on silicon.
-kickos_add_app_target(rxdrv main.cc)
+add_executable(rxdrv main.cc)
 # Driver-model rule 6: the PORT output-latch readback is shared register logic, so it comes
 # from the freestanding kickos_class_rx72m leaf.
 target_link_libraries(rxdrv PRIVATE kickos_class_rx72m)

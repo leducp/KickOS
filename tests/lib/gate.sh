@@ -532,6 +532,33 @@ package_defs() { # <compile_commands.json> <outfile>
 # tests/lib/package_names/, handed the build's own provider members, then the link line of each
 # image it defines read without building: no member reaches it by a bare -l, and where the
 # package ships the C++ runtime object every full-C++ image links it.
+# machine_path_named <dirs file> <file>...: the first of the directories, one per line, that a
+# <file> names, printed with that file. Status 0 when one does, 1 when none does, 2 when there
+# is nothing to read, which a caller must not take for 1.
+machine_path_named() {
+    _mp_list="$1"
+    shift
+    if [ $# -eq 0 ] || [ ! -s "$_mp_list" ]; then
+        echo "no package file, or no machine directory, to read for a machine path" >&2
+        return 2
+    fi
+    for _mp_f in "$@"; do
+        if [ ! -f "$_mp_f" ]; then
+            echo "$_mp_f is no file, so it cannot be read for a machine path" >&2
+            return 2
+        fi
+    done
+    while IFS= read -r _mp_d; do
+        for _mp_f in "$@"; do
+            if grep -qF -e "$_mp_d" "$_mp_f"; then
+                printf '%s in %s\n' "$_mp_d" "$_mp_f"
+                return 0
+            fi
+        done
+    done < "$_mp_list"
+    return 1
+}
+
 package_names() { # <kickos-build> <kickos-source> <cmake> <prefix> <scratch dir> [<cmake arg>...]
     _pn_build="$1"
     _pn_src="$2"
@@ -547,6 +574,41 @@ package_names() { # <kickos-build> <kickos-source> <cmake> <prefix> <scratch dir
         sed -n '/CMake Error/,$p' "$_pn_dir.log" | sed -n '1,20p' >&2
         fail "an out-of-tree configure does not find the package's KickOS:: names (see above)"
     }
+    # The package names no directory of the machine that built it: the source and build trees,
+    # or a cross compiler's own installation, whose libraries a link names by -l. A host
+    # compiler's /usr is on every host and is not one.
+    _pn_cc="$(sed -n 's/^CMAKE_C_COMPILER:[^=]*=//p' "$_pn_build/CMakeCache.txt")"
+    if [ -z "$_pn_cc" ]; then
+        _pn_cc="$(sed -n 's/^set(CMAKE_C_COMPILER "\(.*\)")$/\1/p' \
+            "$_pn_build"/CMakeFiles/*/CMakeCCompiler.cmake | head -n 1)"
+    fi
+    [ -n "$_pn_cc" ] || fail "neither the cache nor CMakeCCompiler.cmake of $_pn_build names the \
+C compiler, so its installation cannot be looked for in the package"
+    _pn_cc_root="$(cd "$(dirname "$_pn_cc")/.." && pwd -P)"
+    [ -n "$_pn_cc_root" ] || fail "the C compiler $_pn_cc has no installation directory"
+    _pn_built="$(cd "$_pn_build" && pwd)"
+    : > "$_pn_dir.dirs"
+    for _pn_d in "$_pn_src" "$(cd "$_pn_src" && pwd -P)" "$_pn_built" \
+                 "$(cd "$_pn_build" && pwd -P)" "$_pn_cc_root"; do
+        case "$_pn_d" in
+            ""|/|/usr) ;;
+            *) printf '%s\n' "$_pn_d" >> "$_pn_dir.dirs" ;;
+        esac
+    done
+    _pn_pkg="$_pn_prefix/lib/cmake/KickOS"
+    _pn_rc=0
+    _pn_hit="$(machine_path_named "$_pn_dir.dirs" "$_pn_pkg"/KickOSTargets*.cmake \
+        "$_pn_pkg/KickOSConfig.cmake" "$_pn_pkg/kickos.cmake" "$_pn_pkg/manifest.yaml")" \
+        || _pn_rc=$?
+    case "$_pn_rc" in
+        0) fail "the package names a directory of the machine that built it: $_pn_hit" ;;
+        1) ;;
+        *) fail "the package's files could not be read for a machine path" ;;
+    esac
+    cp "$_pn_pkg/KickOSConfig.cmake" "$_pn_dir.plant" || fail "cannot copy $_pn_pkg/KickOSConfig.cmake"
+    printf 'set(_kickos_planted "%s/lib")\n' "$_pn_built" >> "$_pn_dir.plant"
+    machine_path_named "$_pn_dir.dirs" "$_pn_dir.plant" > /dev/null \
+        || fail "the machine-path check passed a package file with $_pn_built planted in it"
     _pn_ninja="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$_pn_dir/CMakeCache.txt")"
     [ -x "$_pn_ninja" ] || fail "the probe's cache names no usable ninja ($_pn_ninja)"
     _pn_rt="$(find "$_pn_prefix" -name 'vterminate.*' | head -n 1)"

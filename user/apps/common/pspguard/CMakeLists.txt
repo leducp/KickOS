@@ -13,7 +13,7 @@
 # pushes the same block through the same PSP and, on its slow path, hands that PSP to a
 # PRIVILEGED trampoline. A guard installed in the switcher alone leaves it open, so this arm
 # asserts the refusal names SVCall.
-kickos_add_app_target(pspguard_svc main.cc)
+add_executable(pspguard_svc main.cc)
 target_link_libraries(pspguard_svc PRIVATE kickos)
 kickos_emit_image(pspguard_svc)
 target_compile_definitions(pspguard_svc PRIVATE KICKOS_PSPGUARD_MODE=2)
@@ -29,7 +29,7 @@ target_compile_definitions(pspguard_svc PRIVATE KICKOS_PSPGUARD_MODE=2)
 # is check_trap_redzone.sh, which measures the descent the red zone reserves for on every
 # preset it is registered for. main.cc #errors if this arm is built without the blocks.
 if(KICKOS_KERNEL_STACKS)
-  kickos_add_app_target(pspguard_svcdepth main.cc)
+  add_executable(pspguard_svcdepth main.cc)
   target_link_libraries(pspguard_svcdepth PRIVATE kickos)
   kickos_emit_image(pspguard_svcdepth)
   target_compile_definitions(pspguard_svcdepth PRIVATE KICKOS_PSPGUARD_MODE=5)
@@ -51,14 +51,14 @@ endif()
 # A PendSV arm, so it spawns the ticker too, and it is deliberately outside the armv7m-only
 # block below: that exclusion is about where the in-stack arms park, not about thread count.
 if(KICKOS_KERNEL_STACKS AND NOT KICKOS_HAVE_MPU)
-  kickos_add_app_target(pspguard_block main.cc)
+  add_executable(pspguard_block main.cc)
   target_link_libraries(pspguard_block PRIVATE kickos)
   kickos_emit_image(pspguard_block)
   target_compile_definitions(pspguard_block PRIVATE KICKOS_PSPGUARD_MODE=6)
 endif()
 
 if(KICKOS_ARCH STREQUAL "armv7m")
-  kickos_add_app_target(pspguard main.cc)
+  add_executable(pspguard main.cc)
   target_link_libraries(pspguard PRIVATE kickos)
   kickos_emit_image(pspguard)
   target_compile_definitions(pspguard PRIVATE KICKOS_PSPGUARD_MODE=0)
@@ -67,7 +67,7 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   # board's own compiler flags, and main.cc #errors without __ARM_FP.
   string(FIND "${KICKOS_MCPU}" "mfpu" _pg_has_fpu)
   if(_pg_has_fpu GREATER -1)
-    kickos_add_app_target(pspguard_fp main.cc)
+    add_executable(pspguard_fp main.cc)
     target_link_libraries(pspguard_fp PRIVATE kickos)
     kickos_emit_image(pspguard_fp)
     target_compile_definitions(pspguard_fp PRIVATE KICKOS_PSPGUARD_MODE=1)
@@ -77,11 +77,11 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   # it, refusable only by the upper bound, and a PSP under the stack, refusable only by the
   # lower one. Each lands in a granted domain region, so hardware stacking succeeds and the
   # software push is what gets refused.
-  kickos_add_app_target(pspguard_above main.cc)
+  add_executable(pspguard_above main.cc)
   target_link_libraries(pspguard_above PRIVATE kickos)
   kickos_emit_image(pspguard_above)
   target_compile_definitions(pspguard_above PRIVATE KICKOS_PSPGUARD_MODE=3)
-  kickos_add_app_target(pspguard_below main.cc)
+  add_executable(pspguard_below main.cc)
   target_link_libraries(pspguard_below PRIVATE kickos)
   kickos_emit_image(pspguard_below)
   target_compile_definitions(pspguard_below PRIVATE KICKOS_PSPGUARD_MODE=4)

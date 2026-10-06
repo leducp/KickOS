@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS build helpers: per-component flag posture, the app target kind
-# (kickos_add_app_target) and the image emitter kickos_emit_image().
+# KickOS build helpers: per-component flag posture, the driver-class backends an app links
+# (kickos_link_class_backends) and the image emitter kickos_emit_image().
 #
 # The application owns the final link: the link recipe lives on the exported KickOS::kickos /
 # KickOS::kickos_cxx usage targets, never in these helpers. An app is three lines,
@@ -211,8 +211,9 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
-#   MCU only: turn a linked ELF into flashable .bin and .hex, and print size.
-#   No-op on the sim (a runnable host ELF is the deliverable there).
+#   Does nothing on the sim. Elsewhere it refuses a link reaching KickOS::kernel and an old
+#   leaf; on an MCU it then writes the .bin and .hex a board flashes and prints the size, and on
+#   x86_64 it marks the image's map for cleaning.
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
 #   after target_link_libraries(app PRIVATE KickOS::kickos).
@@ -221,21 +222,12 @@ function(kickos_emit_image target)
   if(KICKOS_ARCH STREQUAL "sim")
     return()
   endif()
-  # x86_64: the deliverable IS the image, and writing it is this step. CMake cannot drive
-  # `ld -m i386pep` as a linker for a target, so cmake/x86_64_boot.cmake writes the PE32+ UEFI
-  # application from the app's objects with a custom command; there is no ELF here to objcopy,
-  # and the target is an OBJECT library that $<TARGET_FILE:> may not name at all.
+  kickos_image_leaves(${target} _leaves)
   if(KICKOS_ARCH STREQUAL "x86_64")
-    if(NOT COMMAND kickos_x86_64_link_image)
-      message(FATAL_ERROR "kickos_emit_image(${target}): x86_64 needs "
-        "kickos_x86_64_link_image, which cmake/x86_64_boot.cmake defines. Include that "
-        "fragment before add_subdirectory(user/apps).")
-    endif()
-    kickos_x86_64_link_image(${target})
+    set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+      "$<TARGET_FILE:${target}>.map")
     return()
   endif()
-  # For its refusal of a link that would define the heap size twice.
-  kickos_image_leaves(${target} _leaves)
   add_custom_command(TARGET ${target} POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.bin
     COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.hex
@@ -302,8 +294,8 @@ endfunction()
 #   The BACKEND MUST PRECEDE KickOS::kickos ON THE LINK LINE: the toolchains link the component
 #   archives with a --start-group rescan, so a group member that ever referenced a class symbol
 #   would otherwise pull a second definer out of the group and the ORDER, not the selection,
-#   would decide the engine. That ordering is kickos_add_app_target's to hold, which is why no
-#   app states it.
+#   would decide the engine. That ordering is kickos_link_class_backends's to hold, which is why
+#   no app states it.
 function(kickos_select_class_backend class target)
   string(TOUPPER "${class}" _cls)
   set_property(GLOBAL PROPERTY KICKOS_CLASS_BACKEND_${_cls} "${target}")
@@ -357,69 +349,24 @@ function(kickos_class_backend class out)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_app_target(<name> <source>...)
-#   The app target itself, and nothing else about the app: an executable everywhere but
-#   x86_64, where what firmware loads is a PE32+ UEFI application CMake cannot drive a linker
-#   for, so the target is an OBJECT library and cmake/x86_64_boot.cmake writes the image out of
-#   its objects (kickos_emit_image). An OBJECT library, so the target_compile_definitions and
-#   friends a call site applies still bind.
-#
-#   CLASSES names the DRIVER CLASSES the app's own sources call (spi, i2c, ...), which is the
-#   one thing about a class an application knows: it is in its #include list. WHICH backend
-#   answers each, and its position on the link line, are the image posture's and are read here
-#   from kickos_select_class_backend. An app that names no class links no backend, which is
-#   what keeps a mock-carrying image (the selftest) free of a second definer.
-#
-#   The remaining two lines of an app are the consumer's own and are NOT done here:
-#
-#     kickos_add_app_target(foo main.cc)
-#     target_link_libraries(foo PRIVATE KickOS::kickos)   # or KickOS::kickos_cxx for full C++
-#     kickos_emit_image(foo)
-#
-#   The in-tree warning and C-standard posture applied below belongs to this tree and not to
-#   the app, which is why it is here rather than repeated in every app file; out of tree the
-#   application target belongs to the consumer and gets neither.
+# kickos_link_class_backends(<target> <class>...)
+#   Links the backend kickos_select_class_backend chose for each DRIVER CLASS the app's own
+#   sources call (spi, i2c, ...), the one thing about a class an application knows. Called
+#   before the app's KickOS::kickos line, which puts each backend archive ahead of the rescan
+#   group. An app that names no class links no backend, which is what keeps a mock-carrying
+#   image (the selftest) free of a second definer.
 # ---------------------------------------------------------------------------
-function(kickos_add_app_target name)
-  cmake_parse_arguments(APP "" "" "CLASSES" ${ARGN})
-  if(NOT APP_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR "kickos_add_app_target(${name}): no sources")
-  endif()
-  set(_app_sources ${APP_UNPARSED_ARGUMENTS})
-  # Without this a missing arch leaf degrades to a bare -lkickos_arch_<arch> link error.
-  if(NOT TARGET KickOS::kickos_arch_${KICKOS_ARCH})
-    message(FATAL_ERROR "kickos_add_app_target(${name}): board '${KICKOS_BOARD}' needs arch "
-      "'${KICKOS_ARCH}', but this KickOS package provides no KickOS::kickos_arch_${KICKOS_ARCH} "
-      "(it was built for a different board)")
-  endif()
-  if(KICKOS_ARCH STREQUAL "x86_64")
-    add_library(${name} OBJECT ${_app_sources})
-  else()
-    add_executable(${name} ${_app_sources})
-  endif()
-  # Linked HERE, before the app's own KickOS::kickos line, which is what puts the backend archive
-  # ahead of the rescan group; see kickos_select_class_backend.
-  foreach(_class IN LISTS APP_CLASSES)
+function(kickos_link_class_backends target)
+  foreach(_class IN LISTS ARGN)
     kickos_class_backend("${_class}" _backend)
     if(NOT _backend)
-      message(FATAL_ERROR "kickos_add_app_target(${name}): no backend of the '${_class}' class "
-        "is selected for board '${KICKOS_BOARD}'. A board whose chip has no such block cannot "
-        "host this app; kickos_select_class_backend names the backend where it can.")
+      message(FATAL_ERROR "kickos_link_class_backends(${target}): no backend of the '${_class}' "
+        "class is selected for board '${KICKOS_BOARD}'. A board whose chip has no such block "
+        "cannot host this app; kickos_select_class_backend names the backend where it can.")
     endif()
-    target_link_libraries(${name} PRIVATE ${_backend})
-    # Recorded so a gate reading this image's definitions can inventory the backend it
-    # really linked; tests/integration/gates/selftest.cmake reads it.
-    set_property(TARGET ${name} APPEND PROPERTY KICKOS_APP_CLASS_BACKENDS "${_backend}")
+    target_link_libraries(${target} PRIVATE ${_backend})
+    set_property(TARGET ${target} APPEND PROPERTY KICKOS_APP_CLASS_BACKENDS "${_backend}")
   endforeach()
-  if(KICKOS_IN_TREE)
-    target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
-    # gcc 15 defaults to gnu23, which accepts bool, static_assert, alignas and nullptr, so
-    # an unpinned C app stops witnessing the C contract it exists for.
-    set_target_properties(${name} PROPERTIES
-      C_STANDARD 11
-      C_STANDARD_REQUIRED ON
-      C_EXTENSIONS OFF)
-  endif()
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -661,8 +608,7 @@ endfunction()
 #   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
 #   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
 #   TIMEOUT defaults to 60s.
-#   TARGET names an app target; the image is $<TARGET_FILE:> unless that target records a
-#   KICKOS_IMAGE_FILE, which the x86_64 OBJECT-library app does.
+#   TARGET names an app target, whose image is $<TARGET_FILE:>.
 # ---------------------------------------------------------------------------
 function(kickos_add_qemu_test)
   cmake_parse_arguments(QT "" "NAME;TARGET;BOARD;SCRIPT;MACHINE;TIMEOUT" "ARGS" ${ARGN})
@@ -684,17 +630,9 @@ function(kickos_add_qemu_test)
     set(_machine "${QT_MACHINE}")
   endif()
   list(APPEND _env QEMU_MACHINE=${_machine})
-  # An app target that writes its image outside CMake's target model records the path; every
-  # other one is named by $<TARGET_FILE:>.
-  get_target_property(_qt_image "${QT_TARGET}" KICKOS_IMAGE_FILE)
-  if(_qt_image)
-    set(_qt_file "${_qt_image}")
-  else()
-    set(_qt_file "$<TARGET_FILE:${QT_TARGET}>")
-  endif()
   add_test(NAME "${QT_NAME}"
     COMMAND "${CMAKE_COMMAND}" -E env ${_env}
-            "${QT_SCRIPT}" "${_qt_file}" ${QT_ARGS})
+            "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
   if(NOT QT_TIMEOUT)
     set(QT_TIMEOUT 60)
   endif()

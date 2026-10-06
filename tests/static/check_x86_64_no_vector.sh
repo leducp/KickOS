@@ -22,8 +22,8 @@
 # the kernel's .text, which is what puts them in the kernel half; the executable sections of
 # every application image outside its app window, .apptext, the images being where the linker
 # is free to synthesise text of its own; and every probe image whole, those having no app half
-# of their own. An application image is one kickos_x86_64_link_image linked, which writes its
-# map beside it; a probe image carries none.
+# of their own. An application image is one whose link wrote its map beside it
+# (tools/x86_64-link.sh); a probe image carries none.
 #
 # The split is a control of its own: the app half of the selftest image must decode at least
 # one vector instruction outside the arms' own assembly, selftest_vec_* and bench_vec_*, or the
@@ -380,7 +380,7 @@ N_APPIMG="$(lines "$TMP/appimages")"
     || fail "$N_IMG image(s) under $BUILD, beneath the floor of $IMG_FLOOR: the links did not
       run, so whatever the linker put in the image is unread."
 [ "$N_APPIMG" -gt 0 ] \
-    || fail "no image under $BUILD carries the map kickos_x86_64_link_image writes, so no
+    || fail "no image under $BUILD carries the map tools/x86_64-link.sh writes, so no
       application image's kernel half is in the corpus"
 
 # --- the split -----------------------------------------------------------------

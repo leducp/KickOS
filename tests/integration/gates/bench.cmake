@@ -41,9 +41,6 @@ kickos_host_gate(${_tag}_bench_phase_table_controls)
 # Runtime tests cannot expose sharing because the kernel lock serializes the bracket.
 if(KICKOS_KERNEL_CORES GREATER 1)
   set(_bench_image "$<TARGET_FILE:bench>")
-  if(KICKOS_ARCH STREQUAL "x86_64")
-    get_target_property(_bench_image bench KICKOS_IMAGE_FILE)
-  endif()
   add_test(NAME ${_tag}_bench_stamp_percore
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_stamp_percore.sh"
             "${_bench_image}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")

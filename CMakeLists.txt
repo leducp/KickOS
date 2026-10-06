@@ -799,8 +799,8 @@ endif()
 # Must precede the components: their $<INSTALL_INTERFACE:...> uses CMAKE_INSTALL_INCLUDEDIR.
 include(GNUInstallDirs)
 
-# Here and not down in the install section: cmake/x86_64_boot.cmake installs its image
-# recipe there too, and is included well before it.
+# Here and not down in the install section: cmake/x86_64_boot.cmake installs the x86_64 link tool
+# and section script there too, and is included well before it.
 set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
 
 if(KICKOS_BUILD_TESTS)
@@ -1289,6 +1289,39 @@ if(TARGET kickos_kernel)
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
+  # x86_64's link rule runs ld with no compiler driver (tools/x86_64-link.sh), so the PE section
+  # script, the exit stub and the boot and kernel-landing objects ride the leaves, and the tools
+  # that link runs are its dependencies.
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    set(_kos_pe_script "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64/pe_image.ld")
+    set(_kos_pe_script_installed "$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/pe_image.ld")
+    target_link_options(kickos_core INTERFACE
+      "LINKER:-u,_exit"
+      "$<BUILD_INTERFACE:LINKER:-T,${_kos_pe_script}>"
+      "$<INSTALL_INTERFACE:LINKER:-T,${_kos_pe_script_installed}>")
+    set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      "$<BUILD_INTERFACE:${_kos_pe_script}>"
+      "$<INSTALL_INTERFACE:${_kos_pe_script_installed}>")
+    foreach(_kos_tool x86_64-link.sh x86_64-krel.sh check-x86_64-no-got.sh
+                      check-x86_64-weak-undef.sh)
+      set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/${_kos_tool}>"
+        "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/${_kos_tool}>")
+    endforeach()
+    set(_kos_boot_target kickos_x86_64_boot)
+    if(KICKOS_KERNEL_CORES GREATER 1)
+      set(_kos_boot_target kickos_x86_64_boot_ap)
+    endif()
+    kickos_export_name(${_kos_boot_target} _kos_boot_name)
+    kickos_export_name(kickos_x86_64_landed_kernel _kos_landed_name)
+    target_link_libraries(kickos_core INTERFACE
+      "$<TARGET_OBJECTS:${_kos_boot_name}>" "$<TARGET_OBJECTS:${_kos_landed_name}>")
+  endif()
+  set(_kickos_scripted_link FALSE)
+  if(NOT (KICKOS_ARCH STREQUAL "sim") AND (KICKOS_LINKER_SCRIPT OR KICKOS_ARCH STREQUAL "x86_64"))
+    set(_kickos_scripted_link TRUE)
+  endif()
+
   # A pure-C / freestanding app links KickOS::kickos, a full-C++ one KickOS::kickos_cxx, on
   # either newlib profile: the KickOS toolchain's nano C++ archives keep the unwind path.
   # KickOS::kernel is KickOS::kickos_cxx without the init provider, root's lowering, the service
@@ -1307,7 +1340,7 @@ if(TARGET kickos_kernel)
   # it from the knob; KickOS::kernel leaves it to the system target. Inert on an MPU chip,
   # whose heap is the .appdata window pad.
   kickos_heap_defsym(_kickos_heap "${KICKOS_USER_HEAP_SIZE}")
-  if(_kickos_heap AND NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
+  if(_kickos_heap AND _kickos_scripted_link)
     foreach(_kickos_leaf kickos kickos_cxx)
       target_link_options(${_kickos_leaf} INTERFACE "LINKER:${_kickos_heap}")
     endforeach()
@@ -1316,7 +1349,7 @@ if(TARGET kickos_kernel)
   # fails naming it and a link of two fails on its second definition.
   target_link_options(kickos_kernel_leaf INTERFACE
     "LINKER:--require-defined=${KICKOS_C_SYMBOL_PREFIX}kickos_link_one_system_target")
-  if(NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
+  if(_kickos_scripted_link)
     target_link_libraries(kickos_kernel_leaf INTERFACE
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cmake/kernel_leaf.ld>"
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/kernel/kernel_leaf.ld>")
@@ -1328,6 +1361,13 @@ if(TARGET kickos_kernel)
     foreach(_kickos_leaf kickos kickos_cxx kickos_kernel_leaf)
       target_link_libraries(${_kickos_leaf} INTERFACE
         "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}}>")
+    endforeach()
+  elseif(KICKOS_ARCH STREQUAL "x86_64")
+    # No compiler driver appends the toolchain's libraries, so each leaf's group names them.
+    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c,m,gcc>")
+    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
+      target_link_libraries(${_kickos_leaf} INTERFACE
+        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},stdc++,supc++,c,m,gcc>")
     endforeach()
   else()
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
@@ -1344,7 +1384,10 @@ if(TARGET kickos_kernel)
     # or EH table fails the link loud.
     target_compile_options(kickos INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
-    target_link_options(kickos INTERFACE -nostdlib++)
+    # x86_64's link has no driver to take it, and its group already leaves the C++ libraries out.
+    if(NOT KICKOS_ARCH STREQUAL "x86_64")
+      target_link_options(kickos INTERFACE -nostdlib++)
+    endif()
 
     # Link the custom terminate handler as an object before libstdc++.
     # This source requires exceptions and RTTI.
@@ -1357,6 +1400,15 @@ if(TARGET kickos_kernel)
 
     kickos_export_name(kickos_user _kickos_user_name)
     kickos_export_name(kickos_cxx_rt _kickos_cxx_rt_name)
+    # x86_64's image lays its app half out in link order, and CMake orders an object a usage
+    # requirement carries by its target's depth: one level below the leaf keeps the runtime
+    # object after a system target's (tests/static/check_x86_64_link_order.sh).
+    set(_kickos_cxx_rt_link "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
+    if(KICKOS_ARCH STREQUAL "x86_64")
+      add_library(kickos_cxx_core INTERFACE)
+      target_link_libraries(kickos_cxx_core INTERFACE "${_kickos_cxx_rt_link}")
+      set(_kickos_cxx_rt_link kickos_cxx_core)
+    endif()
     foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
       # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
       # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
@@ -1364,9 +1416,12 @@ if(TARGET kickos_kernel)
         "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
       # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
       # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
-      target_link_libraries(${_kickos_leaf} INTERFACE
-        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name}>")
-      target_link_libraries(${_kickos_leaf} INTERFACE "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
+      # x86_64 has no driver, and its first group holds the C++ libraries.
+      if(NOT KICKOS_ARCH STREQUAL "x86_64")
+        target_link_libraries(${_kickos_leaf} INTERFACE
+          "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name}>")
+      endif()
+      target_link_libraries(${_kickos_leaf} INTERFACE "${_kickos_cxx_rt_link}")
     endforeach()
   endif()
 
@@ -1375,10 +1430,11 @@ if(TARGET kickos_kernel)
   if(TARGET kickos_cxx_rt)
     kickos_export_targets(kickos_cxx_rt)
   endif()
+  if(TARGET kickos_cxx_core)
+    kickos_export_targets(kickos_cxx_core)
+  endif()
 endif()
 
-# Before the apps: it links the OBJECTS of the arch and chip targets add_subdirectory(arch)
-# created, and defines the kickos_x86_64_link_image that kickos_emit_image calls.
 if(KICKOS_ARCH STREQUAL "x86_64")
   include(cmake/x86_64_boot.cmake)
 endif()

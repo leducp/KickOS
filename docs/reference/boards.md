@@ -375,8 +375,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     a PE32+ UEFI application with its `i386pep` emulation
     (`../../cmake/toolchain-x86_64-uefi.cmake`), firmware loads
     it from an EFI system partition, and `tests/lib/gate.sh` carries a `KICKOS_BOOT=uefi-pe` posture
-    because `-kernel` cannot start such an image at all. `$<TARGET_FILE:>` names no image here; an
-    app target records its path instead.
+    because `-kernel` cannot start such an image at all. An app is a plain `add_executable` whose
+    link rule is `tools/x86_64-link.sh`, and `$<TARGET_FILE:>` names its `.efi`.
   - **Its C library finds each thread through the FS base, and no other way.** It links newlib and,
     for a full-C++ app, libstdc++, as every cross board does, through two KickOS patches to its
     toolchain, one to GCC and one to binutils, without which a PE32+ image cannot hold the

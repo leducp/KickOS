@@ -475,17 +475,16 @@ the required symbol `kickos_no_default_composition_write_one_and_call_kickos_com
 names the remedy. The default composition names `entry: kickos_main` and `ends` on it, and
 states no heap, so it takes the kernel build's.
 
-**x86_64** keeps `kickos_add_app_target`. Its image link reads the target's link libraries: for
-`KickOS::kernel` it links the kernel's group without the old init and with the C++ runtime, and
-for each system target its objects, archives, heap and script. The `--defsym` that
-`cmake/x86_64_image.cmake` passes from the knob is the system target's.
+**x86_64** links as every other board does since M10.5 (`docs/design-m10-fleet.md`, section 7):
+`KickOS::kernel` carries the kernel's group without the old init and with the C++ runtime, and
+each system target its objects, archives, heap and script, as usage requirements.
 
 **The namespace.** The targets are `KickOS::kernel` and `KickOS::system_default`, exported by
-`install(EXPORT KickOSTargets NAMESPACE KickOS::)`. The targets take `EXPORT_NAME` `kernel`, `system_default`, `init` and `main`; every
-exported target gets an in-tree `ALIAS` of its exported name, and the package's functions name
-targets that way: the arch check in `kickos_add_app_target`, the x86 image link, and the
-class-backend lines `KickOSConfig.cmake` writes. `examples/oot-app/` and `examples/oot-mcu-app/`
-link `KickOS::kickos` until M10.5 moves them to `KickOS::system_default`, and their gates follow.
+`install(EXPORT KickOSTargets NAMESPACE KickOS::)`. The targets take `EXPORT_NAME` `kernel`,
+`system_default`, `init` and `main`; every exported target gets an in-tree `ALIAS` of its exported
+name, and the package's functions name targets that way: the arch check and the class-backend lines
+`KickOSConfig.cmake` writes. `examples/oot-app/` and `examples/oot-mcu-app/` link `KickOS::kickos`
+until M10.5 moves them to `KickOS::system_default`, and their gates follow.
 
 ## 6. The link-time asserts
 
@@ -710,7 +709,7 @@ no margin.
 `KICKOS_ROOT_STACK_SIZE` for the init, the cores, `KICKOS_RAM_OWNER_SLOTS`,
 `KICKOS_ASPACE_RANGES`, and the `init` section's record sizes and free regions. On the
 CMake side: `kickos_add_driver` and its catalogue, `cmake/driver_geometry.cmake`, the manifest,
-`kickos_emit_image`, `kickos_add_app_target` on x86, and the gate machinery of
+`kickos_emit_image`, the x86_64 link rule, and the gate machinery of
 `tests/lib/gate.sh`.
 
 **Left.** `KICKOS_SERVICE_LIST`, `KICKOS_BOARD_PINMAP`, `KICKOS_INIT_PROVIDER`,

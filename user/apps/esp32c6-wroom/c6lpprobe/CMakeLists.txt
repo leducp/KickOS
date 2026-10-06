@@ -11,7 +11,7 @@ if(NOT KICKOS_HAVE_MPU)
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/lp_probe.S"
     VERBATIM)
   set_source_files_properties("${_lp_probe_obj}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
-  kickos_add_app_target(c6lpprobe main.cc "${_lp_probe_obj}")
+  add_executable(c6lpprobe main.cc "${_lp_probe_obj}")
   target_link_libraries(c6lpprobe PRIVATE kickos)
   kickos_emit_image(c6lpprobe)
 endif()

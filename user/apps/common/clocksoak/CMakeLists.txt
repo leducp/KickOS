@@ -8,7 +8,7 @@
 # sleep_ns only), so it builds for any board.
 # No CTest gate: it answers a HARDWARE question (does the wide-counter monotonic clock survive
 # real wraps and idle) validated by the operator on the wire.
-kickos_add_app_target(clocksoak main.cc)
+add_executable(clocksoak main.cc)
 target_link_libraries(clocksoak PRIVATE kickos)
 kickos_emit_image(clocksoak)
 

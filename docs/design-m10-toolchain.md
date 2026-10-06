@@ -503,7 +503,7 @@ is vector code, fails the build.
 and every image whole, so it would refuse every app. Its corpus becomes the objects of the
 kernel-half targets, a set it derives from the claims in `pe_image.ld` rather than listing; the
 executable sections of every image outside the app window; and the probe images whole. An
-application image is one `kickos_x86_64_link_image` linked, which writes its map beside it. Its
+application image is one whose link wrote its map beside it (`tools/x86_64-link.sh`). Its
 controls stay, and one joins them: the app half of the selftest image must decode at least one
 vector instruction, or the split did not happen and the rescoped gate reads nothing new. The
 vector-state arms of 5.6 are assembly in the app half, so the control counts only instructions
@@ -598,12 +598,12 @@ no GOT; it refuses only the initial-exec `R_X86_64_GOTTPOFF`, measured. On q35 t
 therefore also refuses `TPOFF`, `DTPOFF`, `TLSGD` and `TLSLD` relocations until `thread_local`
 there is decided.
 
-**The PE link pulls archive members.** `kickos_x86_64_link_image` (`cmake/x86_64_image.cmake`)
-runs ld itself, so no compiler driver adds libraries. It adds the package's `libc.a`, `libm.a`
-and `libgcc.a` to the group, and `libstdc++.a` and `libsupc++.a` for an image whose target links
-`kickos_cxx`, each found at configure through the compiler's `-print-file-name` under the board's
-flags and fatal when missing. `-b elf64-x86-64` already makes `ld -m i386pep` extract ELF archive
-members, and the group rescans, so newlib's `_sbrk_r` reaches `kickos_user`'s `_sbrk` and
+**The PE link pulls archive members.** The image link (`tools/x86_64-link.sh` since M10.5) runs ld
+itself, so no compiler driver adds libraries. Each leaf's group names `libc`, `libm` and `libgcc`,
+and `libstdc++` and `libsupc++` for a full-C++ leaf, and the toolchain file's link rule carries
+their directories, each found at configure through the compiler's `-print-file-name` under the
+board's flags and fatal when missing. `-b elf64-x86-64` already makes `ld -m i386pep` extract ELF
+archive members, and the group rescans, so newlib's `_sbrk_r` reaches `kickos_user`'s `_sbrk` and
 libstdc++'s `operator new` reaches `malloc`. The fleet's `-Wl,-u,_exit` becomes ld's own `-u
 _exit`. `tools/check-x86_64-no-got.sh` and the relocation-copy pass already read every group
 member, so the package archives join their corpus.
@@ -742,8 +742,8 @@ names `tools/check-x86_64-no-got.sh` and `tools/check-x86_64-weak-undef.sh`, and
 has installed, the recipe runs each with the package's own `readelf` over every archive under
 `x86_64-elf/lib` and `lib/gcc/x86_64-elf`, the eight above and any a later build adds; one refused
 member fails the package. That is what holds "every member of every installed archive". The
-image gate of `kickos_x86_64_link_image` (`cmake/x86_64_image.cmake`) runs the same guards over
-what an image links, its objects and its link group's archives, which leaves out `libg.a`,
+image link (`tools/x86_64-link.sh`) runs the same guards over what an image links, its objects
+and its link group's archives, which leaves out `libg.a`,
 `libnosys.a` and `libstdc++exp.a`. The recipe's `export()` copies the two scripts from `tools/`
 into its export folder rather than restating them, so each guard exists once, and they are part
 of the recipe revision as the patches are: an edit to either rebuilds every family, and CI's
@@ -857,7 +857,7 @@ Rebuilt with the patched compiler and these four changes emulated, the 38 member
 scope stays what it is: every member of every package archive, read whole.
 
 **Were one of them to stay, the guard's scope would narrow to what a link pulls, with a proof read
-from the link.** `kickos_x86_64_link_image` would pass `-Map`, whose "Archive member included to
+from the link.** The image link would pass `-Map`, whose "Archive member included to
 satisfy reference by file (symbol)" lines name every member the link took, and the guard would run
 over exactly those members, extracted from their archives, before the image counts. The proof that
 the image is then safe is on the input side, because the PE image keeps no relocation for

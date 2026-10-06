@@ -6,7 +6,7 @@
 # Both are Xtensa configuration OPTIONS whose realisation no document on hand states, so the
 # measurement is the source.
 # No CTest gate: it answers a HARDWARE question and there is no ESP32 emulator in this tree.
-kickos_add_app_target(lx6smp main.cc app_cpu.S)
+add_executable(lx6smp main.cc app_cpu.S)
 target_link_libraries(lx6smp PRIVATE kickos)
 kickos_emit_image(lx6smp)
 

@@ -18,6 +18,6 @@ if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   return()
 endif()
 
-kickos_add_app_target(conreclaim main.cc)
+add_executable(conreclaim main.cc)
 target_link_libraries(conreclaim PRIVATE kickos)
 kickos_emit_image(conreclaim)

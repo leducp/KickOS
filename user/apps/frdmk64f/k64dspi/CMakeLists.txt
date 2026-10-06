@@ -9,7 +9,8 @@
 # No CTest gate: it answers a HARDWARE question (an unprivileged DSPI engine over the
 # AIPS-opened slot) and is validated by the operator on silicon against a real ESC (or a
 # SOUT->SIN loopback jumper).
-kickos_add_app_target(k64dspi main.cc CLASSES spi)
+add_executable(k64dspi main.cc)
+kickos_link_class_backends(k64dspi spi)
 # The endpoint accessor is the DRIVER's, not the class backend's: this app names the service it
 # takes a capability from, which no posture chooses for it. It resolved without this line only
 # where the board's service list happened to pull the same archive in.
