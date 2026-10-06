@@ -21,7 +21,7 @@ CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
-    "data_cache", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins", "esptool_image",
+    "data_cache", "doorbell_seat", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins", "esptool_image",
 )
 PROTECTION_FIELDS = (
     "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports", "driven",
@@ -214,6 +214,8 @@ class Chip:
         self.clusters = []
         self.multi_arch = False
         self.data_cache = True
+        # Whether its AMP doorbell keeps a per-core seat a raise can be withheld or deferred by.
+        self.doorbell_seat = False
         self.devices = {}
         # {cluster or PART: Protection} for each view whose unit is known.
         self.protection = {}
@@ -274,11 +276,13 @@ def check_chip(path, text, report):
                      "`chip: %s` sits in platform/%s/, which names it `%s`" % (name, folder, folder))
     chip = Chip(folder, path)
 
-    for flag in ("clusters_coherent", "data_cache"):
+    for flag in ("clusters_coherent", "data_cache", "doorbell_seat"):
         if flag in top:
             setting = f.boolean(top[flag], "`%s`" % flag)
             if flag == "data_cache" and setting is False:
                 chip.data_cache = False
+            if flag == "doorbell_seat" and setting is True:
+                chip.doorbell_seat = True
     if "esptool_image" in top:
         chip.esptool_image = words(f, top["esptool_image"], "`esptool_image`")
     if "arch" in top:

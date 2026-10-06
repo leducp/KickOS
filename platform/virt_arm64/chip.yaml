@@ -19,6 +19,8 @@ arch: armv8a
 protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: true }
 
 cores: { count: [1, 4], smp: true }
+# The GIC's per-core routing is the seat a doorbell raise is withheld or deferred by.
+doorbell_seat: true
 
 # PMCCNTR_EL0 answers the emulator's own virtual clock rather than guest cycles.
 cycle_counter: { hz: 0 }

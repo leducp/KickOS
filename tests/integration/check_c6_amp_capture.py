@@ -58,8 +58,9 @@ def main() -> None:
     vector, self_clk = one("vectors", r"^# ampdiag: peer node=1 vectors=0x([0-9a-f]+) tag=0 clk=20000000 "
                            r"self clk=([0-9]+)$", log)
     vector = int(vector, 16)
-    require(int(self_clk) in {160000000 >> n for n in range(9)}, "vectors",
-            f"HP clock {self_clk} Hz is not 160 MHz >> n, the rates its MTIME conversion holds")
+    # The bench boots through EN, whose reset leaves CPU_CLK on the 40 MHz crystal, never the PLL.
+    require(int(self_clk) in {40000000 >> n for n in range(7)}, "vectors",
+            f"HP clock {self_clk} Hz is not 40 MHz >> n, the crystal rates its MTIME conversion holds")
     require(0x4083c000 <= (vector & ~3) < 0x40878000 and (vector & 3) == 1, "vectors",
             f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
     one("alive", r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)

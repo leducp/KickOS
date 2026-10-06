@@ -962,6 +962,12 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(app_stack_control PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  kickos_find_kconfig(_app_stack_py _app_stack_py_found)
+  _add_test(NAME app_stack_presets
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_stack_presets.sh"
+                    "${_app_stack_py}" "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(app_stack_presets PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME frame_pool_unwritten
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_frame_pool_unwritten.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1040,16 +1046,43 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(tap_stream_sets PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
+  _add_test(NAME stamp_lines
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_stamp_lines.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(stamp_lines PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME amp_peers
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_peers.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(amp_peers PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME starved_arms
             COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_starved_arms.py"
                     "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/common/selftest"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(starved_arms PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
+  _add_test(NAME seat_arms
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_seat_arms.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/common/selftest"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/gates/selftest.cmake"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(seat_arms PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME kconsole_emit
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconsole_emit.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconsole_emit PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME sweep_checkout
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_sweep_checkout.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(sweep_checkout PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME rig_shells
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_rig_shells.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(rig_shells PROPERTIES TIMEOUT 60 LABELS "host;tree" SKIP_RETURN_CODE 77)
 
   _add_test(NAME boot_bounds
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_boot_bounds.sh" 120
@@ -1166,6 +1199,12 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_heap_symbol.cmake")
   set_tests_properties(heap_symbol PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME selftest_partials
+            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    "-DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/selftest_partials"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_selftest_partials.cmake")
+  set_tests_properties(selftest_partials PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   # A first run fetches the tool's locked dependencies into the build directory.
   foreach(_compose_mode descriptions compositions arms coverage)

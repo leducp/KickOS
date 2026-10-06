@@ -176,11 +176,16 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
        amp_far_answer_deferred)
 endif()
 
-# amp_deferred_doorbell requires a published per-core doorbell destination.
-# RP2350 uses a direct SIO write and returns ARCH_IPI_SEAT_NONE, so the test
-# skips. Keep this exception limited to backends without a destination slot.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
-  list(APPEND KICKOS_EXPECT_SKIPS amp_deferred_doorbell)
+# The arms that skip on a doorbell keeping no seat (tests/static/check_seat_arms.py), where the
+# chip file states none.
+set(_selftest_seat_skips amp_deferred_doorbell amp_far_reply_guard)
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+  if(NOT KICKOS_CHIP_DOORBELL_SEAT MATCHES "^(ON|OFF)$")
+    message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_DOORBELL_SEAT")
+  endif()
+  if(NOT KICKOS_CHIP_DOORBELL_SEAT)
+    list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_seat_skips})
+  endif()
 endif()
 
 # The two console_publish arms publish the console themselves, which they refuse to do in an
@@ -199,6 +204,9 @@ function(_selftest_names_known what)
     endif()
   endforeach()
 endfunction()
+
+include("${PROJECT_SOURCE_DIR}/tests/integration/selftest_partials.cmake")
+_selftest_starved_arms("${PROJECT_SOURCE_DIR}/user/apps/common/selftest/main.cc" _selftest_starved)
 
 # <names> cut to the members of <keep>, once each, comma-joined into <out>.
 function(_selftest_cut names keep out)
@@ -227,6 +235,20 @@ function(_selftest_image_sets img skips partials out_skips out_partials)
     list(APPEND _skips ${_selftest_driver_skips})
   endif()
   set(_partials ${partials})
+  get_target_property(_system ${img} KICKOS_APP_SYSTEM)
+  get_property(_composition GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system})
+  list(GET _composition 0 _first)
+  if(_first STREQUAL "PARTITION")
+    math(EXPR _at "${KICKOS_AMP_NODE_ID} + 1")
+    list(GET _composition ${_at} _composition)
+  endif()
+  if(NOT EXISTS "${_composition}")
+    message(FATAL_ERROR "selftest: the image ${img} names no composition of its own (${_composition})")
+  endif()
+  _selftest_driver_tasks("${_composition}" _driver_tasks)
+  _selftest_derived_partials("${_selftest_starved}" "${_skips}" ${_driver_tasks} ${KICKOS_MAX_TASKS}
+                             _derived)
+  list(APPEND _partials ${_derived})
   # caller_stack_overlap runs on caller_stack's block, so it skips wherever that block is short.
   if("caller_stack" IN_LIST _partials)
     list(APPEND _skips caller_stack_overlap)

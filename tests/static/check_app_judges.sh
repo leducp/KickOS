@@ -11,8 +11,9 @@
 # where op `drop` removes every line carrying the literal, `swap` replaces its first occurrence
 # on each line, `after` adds the replacement as a line after each line carrying it, `order`
 # exchanges the first line carrying the literal with the first line carrying the replacement,
-# and `cache` judges the fixture whole with the replacement as the cache line instead. A second
-# edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
+# and `cache` judges the fixture whole with the replacement as the cache line instead. An edit
+# applies to the fixture and its arrival stamps alike; `log-<op>` edits the fixture alone and
+# `times-<op>` the stamps alone. A second edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
 # `;@<fitting>` for each bench fitting the rig declares on the board; none declares none.
 # Every judge an app CMake or a gate fragment names must have a passing row, and every app a
@@ -56,16 +57,25 @@ tests/integration/check_f411spi.sh|f411spi-unwired.capture||killed|drop|=== THRE
 tests/integration/check_f411spi.sh|f411spi-unwired.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404
 tests/integration/check_f411spi.sh|f411spi-unwired.capture||panic|swap|PC=0x080002f4|KERNEL PANIC: PC=0x080002f4
 tests/integration/check_k64drv.sh|k64drv.capture||timer-start|drop|counting the 1 kHz LPO|
-tests/integration/check_wallclock.sh|wallclock.capture||mark-0|drop|[wallclock] mark 0|
 tests/integration/check_wallclock.sh|wallclock.capture||mark-1|drop|[wallclock] mark 1|
-tests/integration/check_wallclock.sh|wallclock.capture||mark-1|order|[wallclock] mark 0|[wallclock] mark 1
+tests/integration/check_wallclock.sh|wallclock.capture||mark-2|drop|[wallclock] mark 2|
+tests/integration/check_wallclock.sh|wallclock.capture||mark-2|order|[wallclock] mark 1|[wallclock] mark 2
 tests/integration/check_wallclock.sh|wallclock.capture||done|drop|[wallclock] done|
-tests/integration/check_wallclock.sh|wallclock.capture||panic|after|[wallclock] mark 1|KERNEL PANIC: planted
-tests/integration/check_wallclock.sh|wallclock.capture||sleep-short|swap|advanced 5000031725 ns|advanced 4999031725 ns
-tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|21.219733
-tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|3.719733
-tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|6.269733
-tests/integration/check_wallclock.sh|wallclock.capture||no-times|drop|1.217408|
+tests/integration/check_wallclock.sh|wallclock.capture||panic|after|[wallclock] mark 2|KERNEL PANIC: planted
+tests/integration/check_wallclock.sh|wallclock.capture||declared|swap|sleeping 5000000000 ns|sleeping 5000000001 ns
+tests/integration/check_wallclock.sh|wallclock.capture||declared|swap|mark 0, sleeping 5000000000|mark 0, sleeping 4000000000
+tests/integration/check_wallclock.sh|wallclock.capture||sleep-short|swap|advanced 5000025108 ns|advanced 4999025108 ns
+tests/integration/check_wallclock.sh|wallclock.capture||kernel-long|swap|advanced 5000025108 ns|advanced 5060000000 ns|swap|11.222058|11.264733
+tests/integration/check_wallclock.sh|wallclock.capture||kernel-host|swap|advanced 5000025108 ns|advanced 5040000000 ns|swap|11.222058|11.179733
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|26.222058
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|8.722058
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|11.272058
+tests/integration/check_wallclock.sh|wallclock.capture||no-times|times-drop|.||times-drop|#|
+tests/integration/check_wallclock.sh|wallclock.capture||stamps|times-swap|advanced 5000025108 ns|advanced 5000025109 ns
+tests/integration/check_wallclock.sh|wallclock.capture||stamps|times-drop|[wallclock] mark 0|
+tests/integration/check_wallclock.sh|wallclock.capture||stamps|log-drop|[wallclock] mark 0|
+tests/integration/check_wallclock.sh|wallclock-nomark0.capture||mark-2|drop|[wallclock] mark 2|
+tests/integration/check_wallclock.sh|wallclock-nomark0.capture||host-time|swap|11.222058|11.272058
 tests/integration/check_k64drv.sh|k64drv.capture||tick|drop|[k64drv] tick 7|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|swap|[k64drv] tick 2|[k64drv] tick 22
 tests/integration/check_k64drv.sh|k64drv.capture||tick|order|[k64drv] tick 4|[k64drv] tick 5
@@ -124,6 +134,21 @@ tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOP
 tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback MISMATCH (every|
 tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|after|zero-tx loopback: MISMATCH|[k64dspi] ERROR: planted
 tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback MISMATCH (every|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|verdict|swap|: MISMATCH|: PASS
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|verdict|swap|loopback MISMATCH (every transfer completed, rx != tx)|loopback PASS (the SPI bus echoes tx == rx)
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|verdict|swap|zero-tx loopback: MISMATCH|zero-tx loopback: PASS|after|loopback MISMATCH (every|[k64dspi] loopback PASS (the SPI bus echoes tx == rx)
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|after|single-byte loopback: MISMATCH|[k64dspi] single-byte loopback: PASS
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|verdict|after|loopback PASS (the SPI|[k64dspi] loopback MISMATCH (every transfer completed, rx != tx)
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|after|zero-tx loopback: PASS|[k64dspi] zero-tx loopback: MISMATCH
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|drop|BYTE_TEST attempt 8:|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|swap|attempt 3: 0x0 (xfer OK)|attempt 3: 0x87654321 (xfer OK)
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|swap|BYTE_TEST MISMATCH: no valid signature; check CS (D9/PTC4), baud/mode, or shield seating|BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|swap|attempt 8: 0x0 (xfer OK)|attempt 8: 0x87654321 (xfer OK)
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|order|BYTE_TEST attempt 1:|BYTE_TEST attempt 2:
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|after|BYTE_TEST attempt 8:|[k64dspi] BYTE_TEST attempt 9: 0x0 (xfer OK)
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||verdict|after|BYTE_TEST MISMATCH|[k64dspi] LAN9252 BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||verdict|after|BYTE_TEST attempt 1:|[k64dspi] BYTE_TEST attempt 2: 0x0 (xfer OK)
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||verdict|swap|attempt 1: 0x87654321 (xfer OK)|attempt 1: 0x0 (xfer OK)
 tests/integration/check_rxdrv.sh|rxdrv.capture||mux|swap|general I/O rc 0|general I/O rc -16
 tests/integration/check_rxdrv.sh|rxdrv.capture||console-pin|drop|refused (-KOS_EBUSY)|
 tests/integration/check_rxdrv.sh|rxdrv.capture||holder|drop|PASS periph_enable holder|
@@ -233,6 +258,9 @@ tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083c001|vectors=0x4083c000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=120000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=160000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=80000000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=312500
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
@@ -580,13 +608,24 @@ plant() {
         }' "$1" > "$5"
 }
 
-# <in> <op> <literal> <replacement> <out>: plant, and the same edit on <in>'s arrival stamps,
-# <in>.times, where it has them.
+# <in> <op> <literal> <replacement> <out>: plant over <in> and <in>.times, where it exists.
 plant_pair() {
-    plant "$1" "$2" "$3" "$4" "$5"
+    _pp_log="$2"
+    _pp_times="$2"
+    case "$2" in
+        log-*)
+            _pp_log="${2#log-}"
+            _pp_times=none
+            ;;
+        times-*)
+            _pp_log=none
+            _pp_times="${2#times-}"
+            ;;
+    esac
+    plant "$1" "$_pp_log" "$3" "$4" "$5"
     rm -f "$5.times"
     if [ -f "$1.times" ]; then
-        plant "$1.times" "$2" "$3" "$4" "$5.times"
+        plant "$1.times" "$_pp_times" "$3" "$4" "$5.times"
     fi
 }
 

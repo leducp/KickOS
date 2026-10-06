@@ -219,7 +219,7 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -228,8 +228,13 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             spin++;
         }
+        if (spin == UART_POLL_BOUND)
+        {
+            return false;
+        }
         *r32p(UART_UTXD) = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
     }
+    return true;
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)

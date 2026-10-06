@@ -241,12 +241,13 @@ void arch_ipi_wait(uint32_t)
 }
 
 // Unmasked on every backend, so these bytes reach the wire without a lock owner to name.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         mock_push(static_cast<uint8_t>(buf[i]));
     }
+    return true;
 }
 
 void arch_irq_mask(int)

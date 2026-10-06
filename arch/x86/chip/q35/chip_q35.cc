@@ -257,12 +257,16 @@ void arch_init(void)
 // ring, and this one is linked into the kernel-less bring-up images too.
 //
 // Raw bytes: no newline translation here, unlike com1_puts.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
-        com1_putc(buf[i]);
+        if (not com1_putc(buf[i]))
+        {
+            return false;
+        }
     }
+    return true;
 }
 
 void arch_console_flush_sync(void)

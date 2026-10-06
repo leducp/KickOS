@@ -162,7 +162,7 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -171,11 +171,12 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-                return; // bounded: a wedged UART must not hang the panic path (drop)
+                return false; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         reg32(chip::USART_DR) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)

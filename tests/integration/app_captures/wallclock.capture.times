@@ -17,5 +17,6 @@
 0.115082	   heap    15 KiB available
 0.115813	   kstack  1008 B x 9 = 9072 B
 1.217408	[wallclock] mark 0, sleeping 5000000000 ns
-6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns
-6.224591	[wallclock] done
+6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
+11.222058	[wallclock] mark 2, the kernel clock advanced 5000025108 ns
+11.226916	[wallclock] done

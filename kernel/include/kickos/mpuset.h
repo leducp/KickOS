@@ -37,11 +37,13 @@ namespace kickos
 
     // Whether an MPU deciding overlaps by `rule` (ARCH_MPU_OVERLAP_*) decides every byte both
     // regions cover as the kernel's checks do: readable where either region grants R
-    // (user_range_ok), writable only where both grant W (read_only_overlaps), and of the one
-    // memory type both name. `lower` and `higher` are named by slot number. X is not asked: no
-    // kernel check reads it.
+    // (user_range_ok), writable only where both grant W (read_only_overlaps). `lower` and
+    // `higher` are named by slot number, and a region seated with no descriptor decides nothing
+    // in the hardware. Two memory types never share a byte, on every backend alike. X is not
+    // asked: no kernel check reads it.
     constexpr bool mpu_overlap_expressible(int rule, arch_mpu_region const& lower,
-                                           arch_mpu_region const& higher)
+                                           bool lower_seated, arch_mpu_region const& higher,
+                                           bool higher_seated)
     {
         if (lower.size == 0 or higher.size == 0 or lower.base > higher.base + (higher.size - 1u)
             or higher.base > lower.base + (lower.size - 1u))
@@ -56,7 +58,18 @@ namespace kickos
         uint32_t const hi = higher.attr & (ARCH_MPU_R | ARCH_MPU_W);
         uint32_t const kernel = ((lo | hi) & ARCH_MPU_R) | (lo & hi & ARCH_MPU_W);
         uint32_t hardware = 0;
-        if (rule == ARCH_MPU_OVERLAP_HIGHER)
+        if (not lower_seated or not higher_seated)
+        {
+            if (lower_seated)
+            {
+                hardware = lo;
+            }
+            if (higher_seated)
+            {
+                hardware = hi;
+            }
+        }
+        else if (rule == ARCH_MPU_OVERLAP_HIGHER)
         {
             hardware = hi;
         }
@@ -73,6 +86,13 @@ namespace kickos
             return false;
         }
         return hardware == kernel;
+    }
+
+    // Both regions seated.
+    constexpr bool mpu_overlap_expressible(int rule, arch_mpu_region const& lower,
+                                           arch_mpu_region const& higher)
+    {
+        return mpu_overlap_expressible(rule, lower, true, higher, true);
     }
 
     class MpuSet
@@ -212,22 +232,25 @@ namespace kickos
 #endif
 
 #if KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
-        // Whether this MPU decides every byte `r`, seated at slot `at`, shares with another
-        // region of the set as the kernel's checks do (mpu_overlap_expressible). A region already
-        // at `at` is the one `r` replaces.
+        // Whether this MPU decides every byte `r`, at slot `at`, shares with another region of
+        // the set as the kernel's checks do (mpu_overlap_expressible), each region as the image
+        // seats it. A region already at `at` is the one `r` replaces.
         [[nodiscard]] __attribute__((noinline)) bool admits(arch_mpu_region const& r,
-                                                            uint8_t at) const
+                                                            uint8_t at, bool r_seated) const
         {
             for (uint8_t i = 0; i < count_; i++)
             {
+                bool const seated = arch_mpu_encoded_seated(&image_, i);
                 bool ok = true;
                 if (i < at)
                 {
-                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, regions_[i], r);
+                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, regions_[i], seated, r,
+                                                 r_seated);
                 }
                 else if (i > at)
                 {
-                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, r, regions_[i]);
+                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, r, r_seated, regions_[i],
+                                                 seated);
                 }
                 if (not ok)
                 {
@@ -242,7 +265,7 @@ namespace kickos
         {
             for (uint8_t i = 0; i < count_; i++)
             {
-                if (not admits(regions_[i], i))
+                if (not admits(regions_[i], i, arch_mpu_encoded_seated(&image_, i)))
                 {
                     return false;
                 }
@@ -250,7 +273,8 @@ namespace kickos
             return true;
         }
 
-        // admits(), at the slot add_enforced_retyping(base, size, attr) would seat the region in.
+        // admits(), at the slot add_enforced_retyping(base, size, attr) would seat the region in,
+        // which seats a descriptor for it or refuses it.
         [[nodiscard]] bool retyping_expressible(uintptr_t base, size_t size, uint32_t attr) const
         {
             uint8_t at = count_;
@@ -263,7 +287,7 @@ namespace kickos
                 }
             }
             arch_mpu_region const r = {base, size, attr};
-            return admits(r, at);
+            return admits(r, at, true);
         }
 #endif
 

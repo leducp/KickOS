@@ -12,9 +12,10 @@
 
 #include <stdint.h>
 
-extern "C" uint32_t arch_mpu_encode(arch_mpu_region const*, size_t n, arch_mpu_encoded*)
+extern "C" uint32_t arch_mpu_encode(arch_mpu_region const*, size_t n, arch_mpu_encoded* out)
 {
-    return static_cast<uint32_t>((1ull << n) - 1u);
+    out->seated = static_cast<uint32_t>((1ull << n) - 1u);
+    return out->seated;
 }
 
 namespace kickos

@@ -64,6 +64,13 @@ namespace consoleseam
     // since reset(): a fault taken in the polled writer.
     void run_in_sync_write(uint32_t ordinal, void (*fn)(void));
 
+    // From now on arch_console_write_sync sends nothing and answers false: a wedged channel,
+    // each call one stall window of the polled writer.
+    void set_sync_stalls(bool stalls);
+
+    // The most such windows inside ONE contiguous masked span.
+    uint32_t max_masked_stalls();
+
     // Called at the instant USER_OWNED is flipped.
     void note_commit();
 }

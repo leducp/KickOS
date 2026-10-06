@@ -48,6 +48,8 @@
 #               EXPECT_FAULTS the permission sets, all read by bench.sh out of the build's own
 #               kickos-selftest-manifest.txt. A `selftest*` capture without EXPECT_ARMS is
 #               refused: a stream checked only against itself passes whatever it lost.
+#   PEER_ERASE  `<from>:<to>` flash windows erased before the image is loaded, which bench.sh
+#               derives for an own-image AMP node's image loaded alone. Default: none.
 #   TEENSY_LOAD_SECS  per-load bound for teensy41's HalfKay flash. Default 60.
 set -u
 
@@ -67,6 +69,7 @@ SN="${5:-}"
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
 . "$HERE/reset-boot.sh"
+. "$HERE/stamper.sh"
 . "$HERE/banner.sh"
 rig_find "$ROOT" || true
 
@@ -189,13 +192,9 @@ fi
 : > "$LOG" || refuse "cannot write $LOG"
 # Every route's lines are stamped on arrival here, for a judge that times the board against this
 # host. It stops at the capture window's end, before a route cuts the log's head away.
-python3 "$HERE/stamp_lines.py" "$LOG" "$$" &
-STAMPER=$!
+stamper_start "$HERE" "$LOG" "$$" || refuse "$STAMPER_WHY"
 stop_stamper() {
-  [ -n "$STAMPER" ] || return 0
-  kill -TERM "$STAMPER" 2>/dev/null
-  wait "$STAMPER" 2>/dev/null
-  STAMPER=""
+  stamper_stop || refuse "$STAMPER_WHY"
 }
 
 READER=""
@@ -283,7 +282,7 @@ case $BOARD in
     READER=$!
     sleep 1
     check_reader "on arming"
-    : > "$LOG"
+    stamper_truncate "$HERE" "$LOG" "$$" || refuse "$STAMPER_WHY"
     # Taken BEFORE the reset: the core restarts at the read's detach, ahead of st-flash's exit,
     # so the boot's first lines are already in the log when the command returns. What the earlier
     # image prints past this until the connect stops it carries no banner title.
@@ -310,7 +309,7 @@ case $BOARD in
       arm_waiting_reader
       sleep 1
       check_reader "on arming"
-      if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+      if ! POUT=$(FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
         stop_wrapped_reader
         printf '%s\n' "$POUT" | tail -8 >&2
         refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
@@ -323,7 +322,7 @@ case $BOARD in
       arm_wrapped_reader "$PORT"
       sleep 1
       check_reader "on arming"
-      if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+      if ! POUT=$(FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
         kill $READER 2>/dev/null
         printf '%s\n' "$POUT" | tail -8 >&2
         refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."

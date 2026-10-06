@@ -8,6 +8,7 @@
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <kickos/arch/mpu_overlap.h>
@@ -24,5 +25,11 @@ struct arch_mpu_encoded
     uint32_t addr[ARCH_MPU_ENCODED_SLOTS]; // pmpaddr0..7, NAPOT
     uint32_t cfg[2];                       // pmpcfg0, pmpcfg1
 };
+
+// Whether slot `i` holds a descriptor: its pmpcfg byte is 0 where it does not.
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return ((img->cfg[i / 4u] >> (8u * (i % 4u))) & 0xFFu) != 0u;
+}
 
 #endif

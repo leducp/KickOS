@@ -90,6 +90,7 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$HERE/rig.sh"
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
+. "$HERE/amp_peers.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory holding env.sh and receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
@@ -342,6 +343,16 @@ EXPECT_ARCH=$(sed -n 's|^KICKOS_ARCH:[A-Z]*=||p' "$BUILD/CMakeCache.txt" 2>/dev/
   capture would have nothing to say which rows the report owes" >&2; exit 1; }
 export EXPECT_ARCH
 
+# An own-image AMP node's image loaded alone runs alone, as its manifest row judges it: node 0
+# starts whatever an earlier partition left in the other nodes' flash windows, so they go first.
+PEER_ERASE=""
+if [ "${AMP_PARTITION:-0}" != "1" ]; then
+  PEER_ERASE=$(amp_peer_text "$BUILD/generated/kickos_config.cmake") \
+    || { echo "REFUSING: $PEER_ERASE" >&2; exit 1; }
+  PEER_ERASE=$(printf '%s\n' "$PEER_ERASE" | paste -sd ' ' -)
+fi
+export PEER_ERASE
+
 # The emitted image base, without extension. Board-specific apps are searched FIRST, the
 # same order tools/flash-common.sh uses, so a name collision resolves the same way here.
 #
@@ -409,7 +420,7 @@ if [ -z "${BENCH_HOST:-}" ]; then
   # KICKOS_RIG is passed explicitly rather than left to the capture script's own
   # discovery: TREE may be a worktree, which has no .session/ to discover.
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
-    CONSOLE_USB_CDC="$CONSOLE_USB_CDC" \
+    CONSOLE_USB_CDC="$CONSOLE_USB_CDC" PEER_ERASE="$PEER_ERASE" \
     "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN" || exit $?
   judge || exit $?
   exit 0
@@ -483,7 +494,7 @@ RARGS=()
 for _ra in "$BOARD" "$APP" "$RRUN/$(basename "$IMG")" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
            "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
            "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}" \
-           "$EXPECT_ARCH"; do
+           "$EXPECT_ARCH" "${PEER_ERASE:--}"; do
   RARGS+=("$(printf '%q' "$_ra")")
 done
 "${SSH[@]}" bash -s -- "${RARGS[@]}" \
@@ -518,6 +529,8 @@ FAULTS=${14}
 [ "$PARTIALS" != "-" ] && export EXPECT_PARTIALS="$PARTIALS"
 [ "$FAULTS" != "-" ] && export EXPECT_FAULTS="$FAULTS"
 export EXPECT_ARCH="${15}"
+PEER_ERASE=${16}
+[ "$PEER_ERASE" != "-" ] && export PEER_ERASE
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}

@@ -56,9 +56,10 @@ extern "C"
     }
 
     // This fixture describes MPU regions but does not enforce them.
-    uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded*)
+    uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded* out)
     {
-        return (static_cast<uint32_t>(1) << n) - 1u;
+        out->seated = (static_cast<uint32_t>(1) << n) - 1u;
+        return out->seated;
     }
 
     // IRQ tests inspect Kernel::irq_table; the default handler marks a free line.

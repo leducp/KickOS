@@ -103,7 +103,10 @@ int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
     return arch_console_write(buf, n);
 }
 
-void arch_console_write_sync(char const*, size_t) {}
+bool arch_console_write_sync(char const*, size_t)
+{
+    return true;
+}
 
 void arch_shutdown(int)
 {

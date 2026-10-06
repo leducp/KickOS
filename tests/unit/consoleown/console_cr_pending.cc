@@ -45,7 +45,11 @@ extern "C"
         *cr_pending = false;
         return static_cast<int>(n);
     }
-    void arch_console_write_sync(char const*, size_t) { g_pokes = g_pokes + 1; }
+    bool arch_console_write_sync(char const*, size_t)
+    {
+        g_pokes = g_pokes + 1;
+        return true;
+    }
     void arch_console_flush_sync(void) {}
     void arch_console_reclaim(void) { g_reclaims = g_reclaims + 1; }
     void arch_console_reclaim_window(uintptr_t* base, size_t* size)

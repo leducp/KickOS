@@ -15,8 +15,10 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
 | `tools/bench/stamp_lines.py` | stamps each line every capture route appends to the log with its host arrival time, into `<log>.times`, which `bench.sh` fetches beside the log; `wallclock`'s judge times a kernel sleep by it |
+| `tools/bench/stamper.sh` | sourced: starts the stamper with no earlier `<log>.times` left, refuses a capture whose stamper is not running or failed, and truncates the log only with no stamper over it |
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
+| `tools/bench/amp_peers.sh` | sourced: the other nodes' flash text windows of an own-image AMP node's build, which a capture of that image alone erases before the load so the node runs with no peer |
 | `tools/bench/board-rows.sh` | sourced: THE per-board table, the probe row that decides presence and the console row a capture opens |
 | `tools/bench/exit_rows.py` | READ ONLY: extract the M9.7 emulator exit rows from `docs/archive/M9.7_exit_captures/`, its row pattern also matching the M8.12 format quoted in `docs/archive/M8.12_meas.md` lines 238-239; require every named capture and sampled row |
 

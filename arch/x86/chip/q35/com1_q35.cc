@@ -66,14 +66,18 @@ namespace kickos::q35
         put(reg_data, b);
     }
 
-    void com1_putc(char c)
+    bool com1_putc(char c)
     {
         uint32_t spin = 0;
-        while (com1_slot_free() == 0 and spin < poll_bound)
+        while (com1_slot_free() == 0)
         {
-            spin++;
+            if (++spin >= poll_bound)
+            {
+                return false;
+            }
         }
         com1_push(static_cast<uint8_t>(c));
+        return true;
     }
 
     void com1_drain(void)

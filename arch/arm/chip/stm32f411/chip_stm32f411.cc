@@ -371,7 +371,7 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -380,11 +380,12 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-                return; // bounded: a wedged UART must not hang the panic path (drop)
+                return false; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r32(usart::DR) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 // SR.TC, not SR.TXE: TXE says DR handed the byte to the shift register, TC says the shift

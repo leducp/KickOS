@@ -86,7 +86,11 @@ rig_wired() {
     _rig_w="$(printf '%s\n' "$_rig_w" | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')"
     _rig_both=""
     _rig_n=0
-    for _rig_f in $(rig_exclusive "$1"); do
+    _rig_rest="$(rig_exclusive "$1")"
+    while [ -n "$_rig_rest" ]; do
+        _rig_f="${_rig_rest%% *}"
+        _rig_rest="${_rig_rest#"$_rig_f"}"
+        _rig_rest="${_rig_rest# }"
         case " $_rig_w " in
             *" $_rig_f "*)
                 _rig_both="$_rig_both $_rig_f"
@@ -111,24 +115,24 @@ rig_judge() {
     _rj_log="$2"
     _rj_build="$3"
     _rj_judge="$4"
-    _rj_ifs="$IFS"
-    _rj_glob=1
-    case "$-" in
-        *f*)
-            _rj_glob=0
-            ;;
-        *)
-            ;;
-    esac
-    IFS=';'
-    set -f
-    # shellcheck disable=SC2086
-    set -- $5
-    if [ "$_rj_glob" -eq 1 ]; then
-        set +f
-    fi
-    IFS="$_rj_ifs"
-    for _rj_f in $_rj_wired; do
+    _rj_rest="$5"
+    set --
+    while [ -n "$_rj_rest" ]; do
+        case "$_rj_rest" in
+            *";"*)
+                set -- "$@" "${_rj_rest%%;*}"
+                _rj_rest="${_rj_rest#*;}"
+                ;;
+            *)
+                set -- "$@" "$_rj_rest"
+                _rj_rest=""
+                ;;
+        esac
+    done
+    while [ -n "$_rj_wired" ]; do
+        _rj_f="${_rj_wired%% *}"
+        _rj_wired="${_rj_wired#"$_rj_f"}"
+        _rj_wired="${_rj_wired# }"
         set -- "$@" "@$_rj_f"
     done
     KOS_CAPTURE="$_rj_log" sh "$_rj_judge" "$_rj_build" "$PWD" cmake "$@"

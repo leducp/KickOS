@@ -9,7 +9,8 @@
 namespace kickos::q35
 {
     void com1_init(void);
-    void com1_putc(char c);
+    // False, and nothing sent, once the holding register never emptied.
+    bool com1_putc(char c);
 
     // The status read and the data write com1_putc is built from.
     int com1_slot_free(void);

@@ -3,8 +3,9 @@
 
 # Which stacked frames the v6-M fault reporter reads, over the backend's own predicate and the
 # kernel's real kickos_fault_frame_trusted. No armv6m emulator enforces memory, so no image
-# witnesses it. v6-M always has kernel stacks, which the sim's context cannot seat: frame.cc
-# stands in for the kernel-block bound.
+# witnesses it. frame.cc stands in for fault.cc's kernel-block bound, which reads ctx.kernel_sp:
+# the sim's arch_context is opaque storage with no such field, and kickos_kseam's Thread carries
+# no kernel stack.
 set(_v6f_header "${PROJECT_SOURCE_DIR}/arch/arm/armv6m/include/kickos/arch/armv6m_fault_frame.h")
 if(NOT EXISTS "${_v6f_header}")
   message(FATAL_ERROR "KickOS: ${_v6f_header} is gone, so v6m_fault_frame would witness nothing.")

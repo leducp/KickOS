@@ -572,7 +572,7 @@ int arch_console_write(char const* buf, size_t n)
 
 // Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must stay
 // reachable with the scheduler and IRQs down, so it polls TDRE directly.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -581,11 +581,12 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin >= CONSOLE_POLL_LIMIT)
             {
-                return; // TDRE never cleared (SCI dead/misconfigured): drop, don't hang
+                return false; // TDRE never cleared (SCI dead/misconfigured): drop, don't hang
             }
         }
         r8(sci::TDR) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 // Block until the shift register is idle, not merely the holding register: SSR.TEND is set

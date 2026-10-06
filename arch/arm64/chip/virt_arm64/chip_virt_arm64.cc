@@ -552,10 +552,10 @@ int arch_console_write(char const* buf, size_t n)
 
 // The PL011 comes out of QEMU's reset already enabled at the machine's default baud, so
 // the polled path needs no bring-up.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
 #if KICKOS_AMP_OWN_IMAGE
-    g_claim.polled_write(buf, n, console_hold_ticks());
+    return g_claim.polled_write(buf, n, console_hold_ticks());
 #else
     for (size_t i = 0; i < n; i++)
     {
@@ -566,10 +566,11 @@ void arch_console_write_sync(char const* buf, size_t n)
         }
         if (spin == UART_POLL_BOUND)
         {
-            return;
+            return false;
         }
         *r32p(UART_DR) = static_cast<uint32_t>(static_cast<unsigned char>(buf[i]));
     }
+    return true;
 #endif
 }
 

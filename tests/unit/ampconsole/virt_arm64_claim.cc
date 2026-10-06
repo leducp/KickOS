@@ -159,6 +159,20 @@ TEST_F(VirtArm64Claim, PolledLineRenewsAnEndedGrantNoPeerTook)
     EXPECT_EQ(g_wire, "ab\n");
 }
 
+// A line lost to a peer mid-line is dropped up to its newline, across the calls carrying it: its
+// tail never resumes after the peer's output. The next line goes out whole.
+TEST_F(VirtArm64Claim, APolledLineLostMidLineStaysDroppedAcrossCalls)
+{
+    g_stall_at = {1u};
+    g_peer_steals = true;
+    EXPECT_TRUE(claim.polled_write("ab", 2u, BUDGET));
+    g_word = 0; // the peer's line is done
+    EXPECT_TRUE(claim.polled_write("\r\n", 2u, BUDGET));
+    EXPECT_EQ(g_wire, "a");
+    EXPECT_TRUE(claim.polled_write("cd\n", 3u, BUDGET));
+    EXPECT_EQ(g_wire, "acd\n");
+}
+
 TEST_F(VirtArm64Claim, UserWriteStopsAtAnEndedGrant)
 {
     g_stall_at = {1u};

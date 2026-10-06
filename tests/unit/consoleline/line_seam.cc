@@ -233,12 +233,13 @@ int arch_in_isr(void)
 
 // Reaches the same mock edge as the ring's own pushes, so a fallback byte and a drained byte
 // sit on one wire in the order they were written.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         mock_push(static_cast<uint8_t>(buf[i]));
     }
+    return true;
 }
 
 void arch_irq_mask(int)

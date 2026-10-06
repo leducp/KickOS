@@ -7,14 +7,35 @@
 #
 #   stamp_lines.py <log> <watched-pid>
 #
-# Runs until SIGTERM, or until <watched-pid> is gone. A log that shrinks was truncated by its
-# capture, so its later bytes are a new stream.
+# <log>.times exists once it is ready. Runs until SIGTERM, or until <watched-pid> is gone or a
+# zombie, and writes a last line that has no newline at exit.
+#
+# A stamp is the first poll that saw the line's newline: never earlier than its arrival, later by
+# at most the gap since the poll before, and every line completed within one poll shares it.
+# A log that shrinks, or whose stamped bytes change, is a new stream from its first byte. A
+# rewrite within one poll that reproduces the stamped bytes at the head and just ahead of the
+# read point reads as the same stream, so the reproduced lines keep their earlier stamps.
 import os
 import signal
 import sys
 import time
 
 POLL_S = 0.002
+WINDOW = 4096
+
+
+def gone(pid):
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return True
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            stat = f.read()
+    except OSError:
+        return False
+    end = stat.rfind(b")")
+    return stat[end + 2:end + 3] == b"Z"
 
 
 def main():
@@ -22,35 +43,60 @@ def main():
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     t0 = time.monotonic()
+    fd = None
     offset = 0
+    head = b""
+    tail = b""
     pending = b""
+    pending_at = 0.0
     with open(log + ".times", "wb") as times:
+
+        def stamp(at, line):
+            times.write(b"%.6f\t" % at + line.rstrip(b"\r") + b"\n")
+
         while True:
             last = bool(stop)
             try:
-                size = os.stat(log).st_size
+                ino = os.stat(log).st_ino
             except FileNotFoundError:
-                size = 0
-            if size < offset:
-                offset = 0
-                pending = b""
-            if size > offset:
+                ino = None
+            if ino is not None and (fd is None or os.fstat(fd).st_ino != ino):
+                try:
+                    opened = os.open(log, os.O_RDONLY)
+                except FileNotFoundError:
+                    opened = None
+                if opened is not None:
+                    if fd is not None:
+                        os.close(fd)
+                    fd = opened
+                    offset, head, tail, pending = 0, b"", b"", b""
+            if fd is not None:
+                size = os.fstat(fd).st_size
                 now = time.monotonic() - t0
-                with open(log, "rb") as f:
-                    f.seek(offset)
-                    data = f.read(size - offset)
-                offset += len(data)
-                pending += data
-                while b"\n" in pending:
-                    line, _, pending = pending.partition(b"\n")
-                    times.write(b"%.6f\t" % now + line.rstrip(b"\r") + b"\n")
-                times.flush()
+                if size < offset or (offset > 0 and (
+                        os.pread(fd, len(head), 0) != head
+                        or os.pread(fd, len(tail), offset - len(tail)) != tail)):
+                    offset, head, tail, pending = 0, b"", b"", b""
+                    continue
+                if size > offset:
+                    data = os.pread(fd, size - offset, offset)
+                    offset += len(data)
+                    head += data[:WINDOW - len(head)]
+                    tail = (tail + data)[-WINDOW:]
+                    pending += data
+                    pending_at = now
+                    while b"\n" in pending:
+                        line, _, pending = pending.partition(b"\n")
+                        stamp(now, line)
+                    times.flush()
             if last:
+                if pending:
+                    stamp(pending_at, pending)
+                times.flush()
                 return
-            try:
-                os.kill(watched, 0)
-            except ProcessLookupError:
-                return
+            if gone(watched):
+                stop.append(True)
+                continue
             time.sleep(POLL_S)
 
 

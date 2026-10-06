@@ -11,6 +11,7 @@
 // datasheet RP-008373-DS-2, 2.2.3), so adjacent cells already answer from different banks.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 #include <kickos/arch/doorbell_cells.h>
 
 #include "accessctrl_rows.h"
@@ -410,6 +411,8 @@ uint32_t arch_ipi_deferred(uint32_t core)
 }
 
 // With no publication there is no seat to keep.
+static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
+              "this doorbell keeps no seat, which the chip file must state by leaving doorbell_seat out");
 uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated)
 {
     (void)core;

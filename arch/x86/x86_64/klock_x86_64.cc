@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 
 #if KICKOS_KERNEL_CORES > 1
 
@@ -175,6 +176,8 @@ uint32_t arch_ipi_deferred(uint32_t)
     return 0;
 }
 
+static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
+              "this doorbell keeps no seat, which the chip file must state by leaving doorbell_seat out");
 uint32_t arch_ipi_seat_set(uint32_t, uint32_t)
 {
     return ARCH_IPI_SEAT_NONE;

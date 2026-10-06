@@ -48,7 +48,7 @@ extern "C"
 {
     void kickos_armv7m_init(void);
     void kickos_xmc_usic_init(void);                        // usic_uart.cc
-    void kickos_xmc_usic_write(char const* buf, size_t n);  // usic_uart.cc
+    bool kickos_xmc_usic_write(char const* buf, size_t n);  // usic_uart.cc
 
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
@@ -565,9 +565,9 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
-    kickos_xmc_usic_write(buf, n);
+    return kickos_xmc_usic_write(buf, n);
 }
 
 // XMC ports are always clocked (no per-port gate).

@@ -29,6 +29,7 @@
 #include "regs/sim.h"
 #include "regs/sysmpu.h"
 #include "sysmpu_error.h"
+#include "sysmpu_encode.h"
 #include "sysmpu_rights.h"
 #include "regs/uart.h"
 #include "regs/wdog.h"
@@ -529,40 +530,10 @@ int arch_periph_enable(uintptr_t base)
 // K64F overrides only the commit, so there is no duplicate arch_mpu_apply symbol.
 extern "C" struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
-// Pack the region set into the three RGD words a commit writes. SRTADDR/ENDADDR are
-// addr[31:5], so a region whose base or end is not 32-byte aligned would be programmed as
-// a window rounded outward from what was asked; such a region gets WORD2 0 instead, which
-// the commit reads as "invalidate this descriptor".
 extern "C" uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                                     struct arch_mpu_encoded* out)
 {
-    if (n > ARCH_MPU_ENCODED_SLOTS)
-    {
-        n = ARCH_MPU_ENCODED_SLOTS;
-    }
-    uint32_t seated = 0;
-    size_t i = 0;
-    for (; i < n; i++)
-    {
-        out->word0[i] = 0;
-        out->word1[i] = 0;
-        out->word2[i] = 0;
-        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
-        {
-            uintptr_t const base = regions[i].base;
-            out->word0[i] = static_cast<uint32_t>(base);
-            out->word1[i] = static_cast<uint32_t>(base + regions[i].size - 1);
-            out->word2[i] = sysmpu_word2(regions[i].attr);
-            seated |= static_cast<uint32_t>(1) << i;
-        }
-    }
-    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
-    {
-        out->word0[i] = 0;
-        out->word1[i] = 0;
-        out->word2[i] = 0;
-    }
-    return seated;
+    return sysmpu_encode(regions, n, out);
 }
 
 // The RGD words the SYSMPU holds, and whether that record may be believed. A commit
@@ -749,7 +720,7 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -758,11 +729,12 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-                return; // bounded: a wedged UART must not hang the panic path (drop)
+                return false; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r8(UART0_D) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)

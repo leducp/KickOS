@@ -119,13 +119,14 @@ extern "C"
         return 0;
     }
 
-    uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded*)
+    uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded* out)
     {
-        if (n >= 32u)
+        out->seated = 0xFFFFFFFFu;
+        if (n < 32u)
         {
-            return 0xFFFFFFFFu;
+            out->seated = (1u << n) - 1u;
         }
-        return (1u << n) - 1u;
+        return out->seated;
     }
 
     void arch_mpu_apply(struct arch_mpu_region const*, size_t, struct arch_mpu_encoded const*)

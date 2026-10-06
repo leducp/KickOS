@@ -33,12 +33,10 @@ using kickos::rp2xxx::r32;
 #if KICKOS_AMP_OWN_IMAGE
 namespace
 {
-    enum class Put
-    {
-        STORED,
-        LOST,   // the claim ended or could not be had; dropped
-        WEDGED, // the FIFO never drained; dropped
-    };
+    using kickos::console_retry::Put;
+
+    // One writer state serves: this node drives one core.
+    kickos::console_retry::PolledLine g_polled;
 
     // One byte under the partition claim, checked after the FIFO wait: the grant can end
     // while a byte waits for room.
@@ -177,45 +175,30 @@ int arch_console_write(char const* buf, size_t n)
 #endif
 }
 
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     if (n == 0)
     {
-        return;
+        return true;
     }
 #if KICKOS_AMP_OWN_IMAGE
-    // Scoped to this call: a line this writer lost must not cost the next writer its own.
-    bool dropping = false;
-#endif
+    bool const sent = g_polled.write(buf, n, console_put);
+    kickos::rp2xxx::console_drop(buf[n - 1] == '\n');
+    return sent;
+#else
     for (size_t i = 0; i < n; i++)
     {
-#if KICKOS_AMP_OWN_IMAGE
-        if (dropping)
-        {
-            dropping = buf[i] != '\n';
-            continue;
-        }
-        // No caller here can offer the rest again, so a lost claim costs the rest of the line.
-        Put const put = console_put(buf[i]);
-        if (put == Put::WEDGED)
-        {
-            return; // bounded: a wedged UART must not hang the panic path (drop)
-        }
-        dropping = put == Put::LOST and buf[i] != '\n';
-#else
         uint32_t spin = 0;
         while ((r32(reg::uart::FR) & reg::uart::FR_TXFF) != 0)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-                return; // bounded: a wedged UART must not hang the panic path (drop)
+                return false; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r32(reg::uart::DR) = static_cast<uint8_t>(buf[i]);
-#endif
     }
-#if KICKOS_AMP_OWN_IMAGE
-    kickos::rp2xxx::console_drop(buf[n - 1] == '\n');
+    return true;
 #endif
 }
 

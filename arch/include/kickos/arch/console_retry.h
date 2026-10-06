@@ -59,6 +59,45 @@ namespace kickos::console_retry
         }
         return done;
     }
+
+    enum class Put
+    {
+        STORED,
+        LOST,   // the claim ended or could not be had
+        WEDGED, // the FIFO never drained
+    };
+
+    // Panic, fault and ISR output on a claimed UART, which no caller can offer again. A line
+    // whose claim was lost, or whose FIFO wedged, is dropped up to and including its '\n',
+    // however many calls carry it.
+    class PolledLine
+    {
+    public:
+        // False once `put` reports a wedged FIFO.
+        template<class PutFn>
+        bool write(char const* buf, size_t n, PutFn put)
+        {
+            for (size_t i = 0; i < n; i++)
+            {
+                char const c = buf[i];
+                if (dropping_)
+                {
+                    dropping_ = c != '\n';
+                    continue;
+                }
+                Put const result = put(c);
+                dropping_ = result != Put::STORED and c != '\n';
+                if (result == Put::WEDGED)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+    private:
+        bool dropping_ = false;
+    };
 }
 
 #endif

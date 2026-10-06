@@ -73,6 +73,7 @@ HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
 #define KICKOS_CHIP_CYCCNT_HZ 0
 #define KICKOS_CHIP_CYCCNT_GLITCHES 1
 #define KICKOS_CHIP_DCACHE 1
+#define KICKOS_CHIP_DOORBELL_SEAT 0
 """
 
 
@@ -172,6 +173,21 @@ class Generated(unittest.TestCase):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
             self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % count, text, name)
+
+    def test_doorbell_seat(self):
+        text = chip.generate(self.view())
+        self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT OFF)\n", text["chip.cmake"])
+        self.assertIn("#define KICKOS_CHIP_DOORBELL_SEAT 0\n", text["chip_limits.h"])
+        self.write(self.path, SMALL.replace("protection:", "doorbell_seat: true\nprotection:", 1))
+        text = chip.generate(self.view())
+        self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT ON)\n", text["chip.cmake"])
+        self.assertIn("#define KICKOS_CHIP_DOORBELL_SEAT 1\n", text["chip_limits.h"])
+
+    def test_tree_doorbell_seat(self):
+        for name, seat in (("virt_arm64", "ON"), ("rp2350", "OFF"), ("esp32c6", "OFF")):
+            path = os.path.join(TREE, "platform", name, "chip.yaml")
+            text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
+            self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT %s)\n" % seat, text, name)
 
     def test_tables_follow_ownership(self):
         rows = chip.table_rows(self.view())

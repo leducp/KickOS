@@ -19,5 +19,6 @@ rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
    kstack  1008 B x 9 = 9072 B
 
 [wallclock] mark 0, sleeping 5000000000 ns
-[wallclock] mark 1, the kernel clock advanced 5000031725 ns
+[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
+[wallclock] mark 2, the kernel clock advanced 5000025108 ns
 [wallclock] done

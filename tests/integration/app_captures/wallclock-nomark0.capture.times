@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+0.104117	ESP-ROM:esp32c6-20220919
+0.104848	Build:Sep 19 2022
+0.105579	rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
+0.107041	  ==============================================
+0.107772	   KickOS 0.5.1  -  microkernel RTOS
+0.108503	  ==============================================
+0.109234	   board   esp32c6-wroom
+0.109965	   arch    rv32imac
+0.110696	   cpu     esp32c6
+0.111427	   mpu     pmp
+0.112158	   sched   tickless
+0.112889	   build   2026-10-06 12:00:00 +0200
+0.113620	   app     Oct  6 2026 12:00:01 +0200
+0.114351	   commit  65fa3473
+0.115082	   heap    15 KiB available
+0.115813	   kstack  1008 B x 9 = 9072 B
+6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
+11.222058	[wallclock] mark 2, the kernel clock advanced 5000025108 ns
+11.226916	[wallclock] done

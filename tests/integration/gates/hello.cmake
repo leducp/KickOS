@@ -260,3 +260,13 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
             "${KICKOS_CHIP_LIMITS_H}" "${PROJECT_BINARY_DIR}/generated/chip/chip_layout.h")
   kickos_host_gate(rp_node_vectors)
 endif()
+
+# The ESP32-C6's CPU clock, read ahead of the constructors in Reset_Handler, out of the linked
+# image. Structural because no emulator runs a C6 image. It runs no image, so it carries the
+# host label.
+if(KICKOS_CHIP STREQUAL "esp32c6")
+  add_test(NAME c6_clock_first
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_c6_clock_first.sh"
+            "$<TARGET_FILE:hello>" "${CMAKE_OBJDUMP}")
+  kickos_host_gate(c6_clock_first)
+endif()

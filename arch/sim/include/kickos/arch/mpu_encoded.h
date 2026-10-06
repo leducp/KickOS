@@ -8,6 +8,7 @@
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <kickos/arch/mpu_overlap.h>
@@ -23,5 +24,11 @@ struct arch_mpu_encoded
 {
     uint32_t seated; // bit i: regions[i] is one mprotect call
 };
+
+// Whether slot `i` holds a descriptor.
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return ((img->seated >> i) & 1u) != 0u;
+}
 
 #endif

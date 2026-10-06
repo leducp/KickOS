@@ -48,13 +48,9 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 OUT="${SWEEP_OUT:-/var/tmp/kickos-hostsweep}"
 JOBS="${SWEEP_JOBS:-4}"
+. "$ROOT/tools/sweep-common.sh"
 # kickos-conan is gitignored, so a worktree has none of its own: the main checkout holds it.
-MAIN="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-if [ -n "$MAIN" ]; then
-    MAIN="$(dirname "$MAIN")"
-else
-    MAIN="$ROOT"
-fi
+MAIN="$(main_checkout "$ROOT")"
 GPREFIX="${SWEEP_GTEST_PREFIX:-$MAIN/kickos-conan}"
 FORCE="${SWEEP_FORCE:-0}"
 

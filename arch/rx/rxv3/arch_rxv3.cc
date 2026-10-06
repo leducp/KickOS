@@ -7,6 +7,7 @@
 
 #include "chip_layout.h"
 #include "regs.h"
+#include "rx_mpu_encode.h"
 #include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
 #include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
@@ -759,51 +760,10 @@ void arch_timer_disarm(void)
 // arch_mpu_apply stores the set; SWINT commits it after the physical switch
 // so the outgoing thread retains access to its stack until then.
 #if KICKOS_HAVE_MPU
-// The page masks are field encoding, not rounding: a region the 16-byte pages cannot
-// represent EXACTLY gets REPAGE 0 (V clear), never a window widened by up to 15 bytes on
-// each side.
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out)
 {
-    if (n > ARCH_MPU_ENCODED_SLOTS)
-    {
-        n = ARCH_MPU_ENCODED_SLOTS;
-    }
-    uint32_t seated = 0;
-    size_t i = 0;
-    for (; i < n; i++)
-    {
-        out->rspage[i] = 0;
-        out->repage[i] = 0;
-        if (arch_mpu_region_encodable(regions[i].base, regions[i].size))
-        {
-            uintptr_t const base = regions[i].base;
-            uintptr_t const end = base + regions[i].size - 1; // inclusive last byte
-            uint32_t uac = 0;
-            if (regions[i].attr & ARCH_MPU_R)
-            {
-                uac |= MPU_UAC_R;
-            }
-            if (regions[i].attr & ARCH_MPU_W)
-            {
-                uac |= MPU_UAC_W;
-            }
-            if (regions[i].attr & ARCH_MPU_X)
-            {
-                uac |= MPU_UAC_X;
-            }
-            out->rspage[i] = static_cast<uint32_t>(base) & MPU_PAGE_MASK;
-            out->repage[i] =
-                (static_cast<uint32_t>(end) & MPU_PAGE_MASK) | uac | MPU_REPAGE_V;
-            seated |= static_cast<uint32_t>(1) << i;
-        }
-    }
-    for (; i < ARCH_MPU_ENCODED_SLOTS; i++)
-    {
-        out->rspage[i] = 0;
-        out->repage[i] = 0;
-    }
-    return seated;
+    return kickos::rxv3::rx_mpu_encode(regions, n, out);
 }
 
 static struct arch_mpu_encoded const* g_pend_image = nullptr;

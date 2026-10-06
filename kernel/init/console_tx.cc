@@ -338,9 +338,10 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
 // the line fits: never more than the line needs. A producer drain holding a byte it took is the
 // one writer the mask does not stop, so that ring is not touched.
 //
-// `inserting` is held across the polled loop and each byte is TAKEN before it is written: a
+// `inserting` is held across the polled loop and each run is TAKEN before it is written: a
 // synchronous fault in the UART poke can nest a record or a panic flush here, and either must
-// find the byte gone rather than send it again or move the tail back.
+// find the run gone rather than send it again or move the tail back. After a run the writer
+// could not send, the rest is taken unsent, so a wedged channel costs one stall per line.
 int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
 {
     ConsoleTxRing& r = tx();
@@ -360,11 +361,20 @@ int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
             return 0;
         }
         r.inserting = true;
+        bool live = true;
         while (r.space() < needed)
         {
             uint32_t const tail = r.tail;
-            r.tail = (tail + 1u) & r.mask;
-            arch_console_write_sync(r.buf + tail, 1);
+            uint32_t run = needed - r.space();
+            if (run > r.size - tail)
+            {
+                run = r.size - tail;
+            }
+            r.tail = (tail + run) & r.mask;
+            if (live)
+            {
+                live = arch_console_write_sync(r.buf + tail, run);
+            }
         }
         r.inserting = false;
         if (not insert_locked(buf, n, crlf))

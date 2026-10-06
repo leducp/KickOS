@@ -2,8 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # Which overlaps of one thread's regions each region backend decides as the kernel's range checks
-# do, through the kernel's predicate and the rule each backend's own mpu_encoded.h states. One
-# translation unit per backend header, each of which shares one include guard.
+# do, through the kernel's predicate, the rule each backend's own mpu_encoded.h states and the
+# image each backend's own encoder writes. One translation unit per backend header, each of which
+# shares one include guard.
 set(_mo_rules "")
 foreach(_mo armv6m_pmsav7 armv7m_pmsav7 armv7m_pmsav8 armv7m_sysmpu rv32imac rxv3 sim)
   list(APPEND _mo_rules "${CMAKE_CURRENT_BINARY_DIR}/rule_${_mo}.cc")
@@ -35,4 +36,11 @@ int mpu_overlap_rule_${_mo_name}()
 ")
 endwhile()
 
-kickos_add_unit_test(NAME mpu_overlap SOURCES mpu_overlap.cc ${_mo_rules} KERNEL)
+# hw_<backend>.cc: each backend's real encoder, the image decoded as its hardware reads it.
+set_source_files_properties(hw_rxv3.cc PROPERTIES
+  INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/arch/rx/rxv3/include")
+kickos_add_unit_test(NAME mpu_overlap
+  SOURCES mpu_overlap.cc ${_mo_rules} hw_armv7m_pmsav7.cc hw_armv7m_pmsav8.cc
+          hw_armv7m_sysmpu.cc hw_rv32imac.cc hw_rxv3.cc hw_sim.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/arch/sim"
+  KERNEL)

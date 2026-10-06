@@ -173,7 +173,8 @@ is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-s
 for a peripheral-bridge fault rather than an MPU one. A thread's fault is not a panic and runs
 no reporter, so the kill path asks `arch_fault_chip_addr()` instead: it hands the thread's fault
 record the latched address where neither `MMFAR` nor `BFAR` is valid, and clears the latch
-whatever the core recorded, since a latch left set labels the next thread's fault.
+whatever the core recorded, since a latch left set labels the next thread's fault. An
+instruction-fetch fault (`IBUSERR`, as `IACCVIOL`) carries no latched address: its stacked PC names it.
 
 ### Fault-isolation contract (a faulting thread takes its task and nothing beyond)
 

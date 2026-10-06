@@ -65,7 +65,11 @@ extern "C"
     int arch_in_isr(void) { return 0; }
 
     int arch_console_write(char const*, size_t) { note_poke(); return 1; }
-    void arch_console_write_sync(char const*, size_t) { note_poke(); }
+    bool arch_console_write_sync(char const*, size_t)
+    {
+        note_poke();
+        return true;
+    }
     void arch_console_flush_sync(void) {}
     void arch_console_reclaim(void) { g_reclaims = g_reclaims + 1; }
     void arch_console_reclaim_window(uintptr_t* base, size_t* size)

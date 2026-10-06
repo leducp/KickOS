@@ -13,7 +13,8 @@
 
 #include <stddef.h>
 
-extern "C" void arch_console_write_sync(char const* buf, size_t n)
+extern "C" bool arch_console_write_sync(char const* buf, size_t n)
 {
     arch_console_write(buf, n);
+    return true;
 }

@@ -854,7 +854,8 @@ bool arch_irq_line_kernel_owned(int line);
 // covers, so its count can be short. A CR may already have gone out for an uncounted newline;
 // the retry seam below remembers it until LF lands.
 // write_sync is bounded, polled output for panic, faults and startup, safe
-// without scheduling or IRQs. Each chip must define it; the fallback forwards
+// without scheduling or IRQs. It answers false once the channel stalled, having
+// dropped what it could not send. Each chip must define it; the fallback forwards
 // to write and cannot provide those guarantees.
 int arch_console_write(char const* buf, size_t n);
 #if KICKOS_AMP_OWN_IMAGE
@@ -862,7 +863,7 @@ int arch_console_write(char const* buf, size_t n);
 // stops at an ended claim, which a kernel line on ARM64 renews when no peer took it.
 int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
 #endif
-void arch_console_write_sync(char const* buf, size_t n);
+bool arch_console_write_sync(char const* buf, size_t n);
 
 // Restore the console UART for panic output after user access. Handover
 // backends must rewrite the full register setup idempotently; default is a no-op.
