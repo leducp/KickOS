@@ -18,6 +18,7 @@
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/usb_console.h>
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
@@ -30,9 +31,7 @@
 #include "regs/gpio.h"
 #include "regs/aipstz.h"
 #include "regs/lpuart.h"
-#if defined(KICKOS_USB_CONSOLE)
 #include "regs/usbphy.h"
-#endif
 #include "regs/wdog.h"
 
 #include <stddef.h>
@@ -304,9 +303,7 @@ namespace
     // 600 MHz CCM/ARM-PLL config is a follow-up; see the design doc.
     void clock_init() {}
 
-#if defined(KICKOS_USB_CONSOLE)
     constexpr uint32_t POLL_TIMEOUT_USB = 1000000u;
-#endif
 
     // --- Monotonic clock: GPT1 free-running off the 24 MHz crystal oscillator ----
     // (RM ch.52). The armv7m arch provides NO clock fallback: the DWT is debug-domain
@@ -425,7 +422,6 @@ namespace
         r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
     }
 
-#if defined(KICKOS_USB_CONSOLE)
     // The USB1 clock tree and PHY: the CCGR6 gate, PLL_USB1 and USBPHY1, none of which the
     // unprivileged driver can reach (CCM is in arch_reserved_blocks, the PHY is outside the
     // granted window). RM Table 9-6 lists CCM_CCGR6_CG0 among the gates the boot ROM leaves
@@ -470,7 +466,6 @@ namespace
                         r32(reg::usbphy::PHY1_CTRL), r32(reg::usbphy::PHY1_PWD),
                         r32(kickos::imxrt1062::mmap::USB1_BASE));
     }
-#endif
 
 #ifdef KICKOS_UART_BEACON
     // Baud-beacon diagnostic. Programs
@@ -556,9 +551,10 @@ void arch_init(void)
     clock_init();
     gpt_clock_init(); // monotonic clock up before the scheduler reads it
     uart6_init();
-#if defined(KICKOS_USB_CONSOLE)
-    usb_clock_init(); // after uart6_init: a refusal here must still be able to print
-#endif
+    if (&kickos_usb_device_console != nullptr)
+    {
+        usb_clock_init(); // after uart6_init: a refusal here must still be able to print
+    }
 #ifdef KICKOS_UART_BEACON
     uart6_beacon(); // never returns: raw 0x55 stream for host baud sweep
 #endif

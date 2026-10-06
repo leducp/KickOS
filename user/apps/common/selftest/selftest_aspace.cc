@@ -9,8 +9,8 @@
 namespace selftest
 {
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // The zero-authority worker joins root's task, so it shares these globals; only its authority
-    // differs from root's.
+    // The zero-authority worker joins main's task, so it shares these globals; only its authority
+    // differs from main's.
     uintptr_t g_mint_seed = 0;
     uintptr_t g_mint_objects = 0;
     uintptr_t g_mint_self_space = 0;
@@ -116,14 +116,14 @@ namespace selftest
     // Its task has a space of its own and NO reservation: the frame reaches it as a delegated
     // capability and nothing else.
     constexpr int CH_SHARE_FRAME = 2; // delegated SECOND, after CH_DONE
-    constexpr uint32_t SHARE_A = 0xC3A11CE0u; // written by root, read by the child
-    constexpr uint32_t SHARE_B = 0xC3B00B1Eu; // written by the child, read by root
+    constexpr uint32_t SHARE_A = 0xC3A11CE0u; // written by main, read by the child
+    constexpr uint32_t SHARE_B = 0xC3B00B1Eu; // written by the child, read by main
     void share_child(void*)
     {
         uintptr_t const base = static_cast<uintptr_t>(
             kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0));
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
-        // A DIFFERENT address from root's: the holder chooses.
+        // A DIFFERENT address from main's: the holder chooses.
         uintptr_t const va = base + g * 4u;
         kos_cap_t const space =
             static_cast<kos_cap_t>(kos_aspace_probe(KOS_ASPACE_OP_CAP_SELF_SPACE, 0));
@@ -250,23 +250,16 @@ namespace selftest
         return g_snp_blk;
     }
 
-    // Cached before any grant attempt: a wrongly admitted grant could map the guard and make a
-    // later scan find a different page.
-    uintptr_t g_snp_guard = 0;
-
+    // Each caller scans before any grant attempt: a wrongly admitted grant could map the guard
+    // and make a later scan find a different page.
     uintptr_t snp_guard(uintptr_t page, uintptr_t g)
     {
-        if (g_snp_guard != 0)
-        {
-            return g_snp_guard;
-        }
         uintptr_t p = page;
         for (unsigned i = 0; i < 64u and p >= g; i++)
         {
             uintptr_t const below = p - g;
             if (kos_aspace_probe(KOS_ASPACE_OP_FRAME_AT, below) == 0)
             {
-                g_snp_guard = below;
                 return below;
             }
             p = below;
@@ -274,16 +267,61 @@ namespace selftest
         return 0;
     }
 
-    void t_stack_grant_refused()
+    // Runs an arm's body on a stack the kernel placed with its guard below it, which main's own
+    // stack is not: the init reserved it and handed it to main's task.
+    enum class PoolStackBody
+    {
+        GRANT_REFUSED,
+        GUARD_INTACT,
+        HANDOFF_REFUSED
+    };
+    void stack_grant_refused_body();
+    void stack_guard_intact_body();
+    void stack_handoff_refused_body();
+    void pool_stack_worker(void* arg) // caps: done@1
+    {
+        switch (static_cast<PoolStackBody>(reinterpret_cast<uintptr_t>(arg)))
+        {
+            case PoolStackBody::GRANT_REFUSED:
+            {
+                stack_grant_refused_body();
+                break;
+            }
+            case PoolStackBody::GUARD_INTACT:
+            {
+                stack_guard_intact_body();
+                break;
+            }
+            case PoolStackBody::HANDOFF_REFUSED:
+            {
+                stack_handoff_refused_body();
+                break;
+            }
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void on_pool_stack(PoolStackBody body)
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        auto w = kos::thread::create_caps(pool_stack_worker,
+                                          reinterpret_cast<void*>(static_cast<uintptr_t>(body)),
+                                          "pstk", 10, caps, 1, KOS_POLICY_FIFO, 0,
+                                          /*privileged=*/false, nullptr, 0,
+                                          KOS_AUTH_MEMORY | KOS_AUTH_TASKS);
+        if (not w.valid())
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        (void)w.join();
+    }
+
+    void stack_grant_refused_body()
     {
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         TAP_CHECK(g != 0);
-        void* const mine = snp_block();
-        if (mine == nullptr)
-        {
-            tap::skip("no reservation left for the positive control");
-            return;
-        }
+        void* const mine = g_snp_blk;
         // A local, so the page under it is this thread's own stack whatever the board's layout.
         volatile uint32_t canary = 0x51AC0DE5u;
         uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
@@ -310,8 +348,18 @@ namespace selftest
         TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(guard), g, 0) == -KOS_EPERM);
     }
 
+    void t_stack_grant_refused()
+    {
+        if (snp_block() == nullptr)
+        {
+            tap::skip("no reservation left for the positive control");
+            return;
+        }
+        on_pool_stack(PoolStackBody::GRANT_REFUSED);
+    }
+
     // Check that the guard stays unmapped, independently of the grant return code.
-    void t_stack_guard_intact()
+    void stack_guard_intact_body()
     {
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         TAP_CHECK(g != 0);
@@ -333,18 +381,17 @@ namespace selftest
         TAP_CHECK(canary == 0x6BA2DEEDu);
     }
 
-    // Reject donation of the live stack: its frames are freed when the donor exits.
-    void t_stack_handoff_refused()
+    void t_stack_guard_intact()
     {
-        settle_exits();
+        on_pool_stack(PoolStackBody::GUARD_INTACT);
+    }
+
+    // Reject donation of the live stack: its frames are freed when the donor exits.
+    void stack_handoff_refused_body()
+    {
         uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
         TAP_CHECK(g != 0);
-        void* const mine = snp_block();
-        if (mine == nullptr)
-        {
-            tap::skip("no reservation left for the positive control");
-            return;
-        }
+        void* const mine = g_snp_blk;
         volatile uint32_t canary = 0x4A0FF5EDu;
         uintptr_t const page = reinterpret_cast<uintptr_t>(&canary) & ~(g - 1u);
         uintptr_t const guard = snp_guard(page, g);
@@ -379,11 +426,22 @@ namespace selftest
         TAP_CHECK(kos_task_kill(ok) == 0);
     }
 
+    void t_stack_handoff_refused()
+    {
+        settle_exits();
+        if (snp_block() == nullptr)
+        {
+            tap::skip("no reservation left for the positive control");
+            return;
+        }
+        on_pool_stack(PoolStackBody::HANDOFF_REFUSED);
+    }
+
     uintptr_t g_live_rest = 0;
     constexpr uint64_t SETTLE_POLL_NS = 100000ull;
 
     // A thread returns its stack frames, and as its task's last member its space, inside its
-    // own exit, which runs after the done post root waits on and after any kill returns. Read a
+    // own exit, which runs after the done post main waits on and after any kill returns. Read a
     // frame or space count only after this, and call it only where the arm holds no thread
     // alive, or it waits for that one too.
     void settle_exits()
@@ -431,12 +489,12 @@ namespace selftest
             return;
         }
         wait_n(1);
-        // Root's capability plus the child's MAPPING; the child dropped its own.
+        // main's capability plus the child's MAPPING; the child dropped its own.
         uint64_t const refs_after_child = kos_aspace_probe(KOS_ASPACE_OP_CAP_RUN_REFS, 0);
         tap::diag("cap pin: refs after the child mapped and closed = %u",
                   static_cast<unsigned>(refs_after_child));
         TAP_CHECK(refs_after_child == 2u);
-        // Root drops its capability too: from here NO capability names the run.
+        // main drops its capability too: from here NO capability names the run.
         kos_handle_close(fcap);
         kos_handle_close(acap);
         // Only the mapping holds the run. The child's own space also consumes frames.
@@ -492,13 +550,13 @@ namespace selftest
         wait_n(1);
         uintptr_t const theirs = static_cast<uintptr_t>(mine[2])
                                  | (static_cast<uintptr_t>(mine[3]) << 32);
-        tap::diag("cap share: root 0x%x, peer 0x%x",
+        tap::diag("cap share: main 0x%x, peer 0x%x",
                   static_cast<unsigned>(va), static_cast<unsigned>(theirs));
         TAP_CHECK(theirs != 0);
         TAP_CHECK(theirs != va);
         TAP_CHECK(mine[1] == SHARE_B);
 
-        // The borrower dies while root still maps the run: the run belongs to the CAPABILITY,
+        // The borrower dies while main still maps the run: the run belongs to the CAPABILITY,
         // so the space that mapped it owned nothing to free.
         (void)kos_task_kill(t);
         settle_exits();
@@ -734,7 +792,7 @@ namespace selftest
     void sframe_worker(void*) // caps: done@1, gate@2
     {
         kos_sem_post(CH_DONE);
-        kos_sem_wait(2); // held alive while root reads the pool
+        kos_sem_wait(2); // held alive while main reads the pool
     }
     bool sframe_cycle(uintptr_t* live)
     {
@@ -813,7 +871,7 @@ namespace selftest
             tap::skip("arena cannot spare the shared region");
             return;
         }
-        // Root maps the block too: the pair answers through it.
+        // main maps the block too: the pair answers through it.
         TAP_CHECK(kos_mem_self_grant(shared, 256, 0) == 0);
         volatile uint32_t* const slot = static_cast<volatile uint32_t*>(shared);
         if (not two_space_ids(shared, 256, slot))
@@ -835,7 +893,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Plain spawns would share root's task, so both tasks are created explicitly.
+    // Plain spawns would share main's task, so both tasks are created explicitly.
     bool two_space_ids_own_tasks(uint32_t* ida, uint32_t* idb)
     {
         *ida = 0;
@@ -893,7 +951,7 @@ namespace selftest
             }
         }
         wait_n(seated);
-        // After the members are gone, so each kill only drops root's hold on an empty group.
+        // After the members are gone, so each kill only drops main's hold on an empty group.
         (void)kos_task_kill(ta);
         (void)kos_task_kill(tb);
         (void)kos_handle_close(ep);
@@ -915,14 +973,14 @@ namespace selftest
     }
 
     // One virtual address, private data frames, shared text frames. Each worker reports through
-    // its own block; private globals cannot report to root.
+    // its own block; private globals cannot report to main.
     enum
     {
         PW_ADDR = 0,     // the member's own &g_pw_word
         PW_DATA_FRAME = 1,
         PW_TEXT_FRAME = 2,
         PW_READBACK = 3,
-        PW_SEED = 4, // root's, read by the member: the value only that member writes
+        PW_SEED = 4, // main's, read by the member: the value only that member writes
         PW_WORDS = 5
     };
     volatile uint32_t g_pw_word = 0u;
@@ -1027,7 +1085,7 @@ namespace selftest
         TAP_CHECK(roottf != 0 and oa[PW_TEXT_FRAME] == roottf and ob[PW_TEXT_FRAME] == roottf);
         // Each read back its OWN write, after the other had written the same address.
         TAP_CHECK(oa[PW_READBACK] == PW_A and ob[PW_READBACK] == PW_B);
-        TAP_CHECK(g_pw_word == 0x600Du); // and root's copy was untouched by either
+        TAP_CHECK(g_pw_word == 0x600Du); // and main's copy was untouched by either
     }
 
     // Two task siblings share one image. The writer, the task's entry, holds the task open
@@ -1091,7 +1149,7 @@ namespace selftest
         TAP_CHECK(read);
         TAP_CHECK(out[0] == 1u);          // the writer ran
         TAP_CHECK(out[1] == 0xBEEFu);     // and its sibling saw the store: one image, one group
-        TAP_CHECK(g_sib_word == 0u);      // root did not: a different group is a different copy
+        TAP_CHECK(g_sib_word == 0u);      // main did not: a different group is a different copy
     }
 
     // Handoff at the same address, through both task creation and a grant-carrying spawn.
@@ -1167,8 +1225,8 @@ namespace selftest
         }
         wait_n(1);
         TAP_CHECK(mine != 0 and first_frame == mine and out[HO_FRAME] == mine);
-        TAP_CHECK(first_seen == HO_SENTINEL + 1u);   // the child read what root wrote
-        TAP_CHECK(first_addr == reinterpret_cast<uintptr_t>(blk)); // at the address root named
+        TAP_CHECK(first_seen == HO_SENTINEL + 1u);   // the child read what main wrote
+        TAP_CHECK(first_addr == reinterpret_cast<uintptr_t>(blk)); // at the address main named
         TAP_CHECK(out[HO_SEEN] == HO_SENTINEL + 1u);
         TAP_CHECK(out[HO_ADDR] == reinterpret_cast<uintptr_t>(blk));
         // A nondefault type on a separate block: all aliases of one block carry one type. Task
@@ -1208,7 +1266,7 @@ namespace selftest
         TAP_CHECK(tout[HO_TYPE] == donor_type); // the two live mappings agree
         TAP_CHECK(tout[HO_SEEN] == HO_SENTINEL + 1u);
         TAP_CHECK(tout[HO_ADDR] == reinterpret_cast<uintptr_t>(typed));
-        // Borrowers exited while root still maps the block: no donor frame may have been freed.
+        // Borrowers exited while main still maps the block: no donor frame may have been freed.
         // BALANCE reports refused frees as all ones.
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
@@ -1284,7 +1342,7 @@ namespace selftest
 
     // The donor task exits before its borrower, then a churn task allocates and writes frames:
     // the borrower's data must survive on the domain lifetime reference. Pool counters alone
-    // cannot detect early reuse. Root cannot serve as the donor; it joins it before the churn.
+    // cannot detect early reuse. main cannot serve as the donor; it joins it before the churn.
     enum
     {
         DX_STATUS = 0, // 1 once the donor seated a borrower into its own block
@@ -1314,7 +1372,7 @@ namespace selftest
         uint64_t addr;
     };
 
-    // Park until root has joined the donor and exhausted available frames with churn.
+    // Park until main has joined the donor and exhausted available frames with churn.
     void dx_borrower(void* arg) // caps: done@1, ep(WAIT)@2
     {
         volatile uint64_t* const blk = static_cast<volatile uint64_t*>(arg);
@@ -1338,8 +1396,8 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Root joins the donor instead of waiting for a post.
-    void dx_donor(void* arg) // caps: done@1, ep(WAIT|TRANSFER)@2; arg is ROOT's report block
+    // main joins the donor instead of waiting for a post.
+    void dx_donor(void* arg) // caps: done@1, ep(WAIT|TRANSFER)@2; arg is main's report block
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         void* const blk = kos_ram_alloc(DX_BLK);
@@ -1364,7 +1422,7 @@ namespace selftest
         {
             return;
         }
-        // Read last: root compares it after the join with no space allocated or freed between.
+        // Read last: main compares it after the join with no space allocated or freed between.
         out[DX_HELD] = kos_aspace_probe(KOS_ASPACE_OP_SPACES_HELD, 0);
         out[DX_STATUS] = 1;
     }
@@ -1446,7 +1504,7 @@ namespace selftest
         // The donor has exited before any frame churn begins.
         int const jrc = donor.join();
         bool const seated = jrc == 0 and dout[DX_STATUS] == 1u;
-        // Drop root's creator hold before the churn, or it hides a missing borrower reference.
+        // Drop main's creator hold before the churn, or it hides a missing borrower reference.
         (void)kos_task_kill(td);
         if (not seated)
         {
@@ -1562,7 +1620,7 @@ namespace selftest
         bool const heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(uint64_t) * RT_WORDS), &opts)
                            == static_cast<int32_t>(sizeof(uint64_t) * RT_WORDS);
         bool const joined = m.join() == 0;
-        // Root's creator hold keeps the empty task's space alive.
+        // main's creator hold keeps the empty task's space alive.
         bool const reaped = kos_task_kill(t) == 0;
         return heard and joined and reaped;
     }
@@ -1907,7 +1965,7 @@ namespace selftest
     constexpr uint64_t HOSTILE_EL1H = 0x205u; // M[3:0] = EL1h, plus the debug mask
     constexpr uint32_t HOSTILE_WINDOW = 1024; // spans the whole armv8a exception frame
     constexpr int CH_HPARK = 2; // delegated SECOND to the sibling
-    // The victim has private globals, so report through the block shared with root.
+    // The victim has private globals, so report through the block shared with main.
     void hostile_victim(void* arg)
     {
         *static_cast<volatile int32_t*>(arg) = kos_shutdown(0);
@@ -1948,7 +2006,7 @@ namespace selftest
             tap::skip("arena cannot spare a strided victim stack");
             return;
         }
-        // Map root's reservation so it can read the shared verdict.
+        // Map main's reservation so it can read the shared verdict.
         TAP_CHECK(kos_mem_self_grant(raw, 3u * VSTK, 0) == 0);
         uintptr_t const vbase = (reinterpret_cast<uintptr_t>(raw) + (VSTK - 1u))
             & ~static_cast<uintptr_t>(VSTK - 1u);
@@ -1957,7 +2015,7 @@ namespace selftest
         *verdict = -99;
         kos_task_t task = KOS_TASK_NONE;
         TAP_CHECK(kos_task_create(raw, 3u * VSTK, 0, &task) == 0);
-        // Lower priority keeps the victim parked until root joins. A caller-owned stack lets its
+        // Lower priority keeps the victim parked until main joins. A caller-owned stack lets its
         // sibling locate and overwrite the saved frame.
         auto const victim = kos::thread::create(hostile_victim,
                                                 const_cast<int32_t*>(verdict), "hvic", 1,
@@ -2168,7 +2226,7 @@ namespace selftest
         }
         if (s_ok and not c_ok)
         {
-            // Root sends in the client's place so the server finishes within this arm.
+            // main sends in the client's place so the server finishes within this arm.
             char pad[PI_MSG] = {};
             (void)kos_send(ep, pad, PI_MSG);
         }
@@ -2204,7 +2262,7 @@ namespace selftest
         g_pi_info.reply_cap = PI_GUARD;
     }
 
-    // Root's own copies of both, which no member's IPC may reach.
+    // main's own copies of both, which no member's IPC may reach.
     bool pi_root_intact()
     {
         bool ok = g_pi_info.badge == PI_GUARD and g_pi_info.reply_cap == PI_GUARD;
@@ -2289,7 +2347,7 @@ namespace selftest
 #if KICKOS_FAULT_ISOLATION
     constexpr uint32_t FAULT_JOIN_US = 60000;
 
-    // Faults through an ungranted reservation owned by root, which no worker space maps.
+    // Faults through an ungranted reservation owned by main, which no worker space maps.
     void fault_toucher(void* arg)
     {
         *static_cast<volatile unsigned char*>(arg) = 1u;
@@ -2305,7 +2363,7 @@ namespace selftest
     }
 
     // A user fault must kill all task siblings, which share the damaged space.
-    // Root must survive in its separate space.
+    // main must survive in its separate space.
     void t_fault_kills_task()
     {
         settle_exits();
@@ -2322,7 +2380,7 @@ namespace selftest
             tap::skip("no reservation left to name an unmapped page with");
             return;
         }
-        // After root's reservation and before the victim's task, so the delta is that task alone.
+        // After main's reservation and before the victim's task, so the delta is that task alone.
         uint64_t const frames_before = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         kos_task_t task = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &task) != 0)
@@ -2355,12 +2413,12 @@ namespace selftest
             tap::skip("pool too small for the victim");
             return;
         }
-        tap::diag("faulting on 0x%lx, reserved by root and mapped in no space",
+        tap::diag("faulting on 0x%lx, reserved by main and mapped in no space",
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(absent)));
-        // Both joins must succeed without timeout; reaching this check proves root survived.
+        // Both joins must succeed without timeout; reaching this check proves main survived.
         TAP_CHECK(victim.join(FAULT_JOIN_US) == 0);
         TAP_CHECK(sibling.join(FAULT_JOIN_US) == 0);
-        // Drop root's creator hold before checking pool counts; it keeps an empty task alive.
+        // Drop main's creator hold before checking pool counts; it keeps an empty task alive.
         TAP_CHECK(kos_task_kill(task) == 0);
         uint64_t const frames_after = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
         tap::diag("frame pool free %u before the task, %u after it died",
@@ -2737,7 +2795,7 @@ namespace selftest
 #endif
 #endif
 
-    // Root has memory authority but must not grant an unreserved kernel address. Do not reject
+    // main has memory authority but must not grant an unreserved kernel address. Do not reject
     // all high addresses: the user arena is high-half on this board.
     void t_grant_kernel_word_refused()
     {
@@ -3009,7 +3067,7 @@ namespace selftest
         g_ru_unmap = 1;
         g_ru_sent = 1;
         g_ru_got = 99;
-        // No task named, so both are threads of root's task and the page the puller takes is
+        // No task named, so both are threads of main's task and the page the puller takes is
         // the receiver's own.
         kos_cap_grant rcaps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_WAIT}};
         kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL},
@@ -3149,7 +3207,7 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_lu_rounds{0};
     int32_t g_lu_got[KICKOS_CAP_REPLY_MAX + 1];
 
-    // Parked on send_waiters before root receives, which reaches the receiver scan instead of
+    // Parked on send_waiters before main receives, which reaches the receiver scan instead of
     // the fastpath.
     void lu_caller(void*) // caps: done@1, E(SIGNAL)@2
     {
@@ -3157,7 +3215,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // One receiver across the failures and the control, so they spend one cap budget. Root maps
+    // One receiver across the failures and the control, so they spend one cap budget. main maps
     // opts before each gate and unmaps it only once the receiver parked, so the failure is at
     // delivery and not at syscall entry.
     void lu_receiver(void*) // caps: done@1, E(WAIT)@2, gate@3
@@ -3173,7 +3231,7 @@ namespace selftest
                 kos_reply_recv(KOS_CAP_NONE, g_lu_rx, kos_call_lens_pack(0, LU_LEN), o);
             g_lu_got[i] = got;
             g_lu_rounds = i + 1u;
-            // Only in the round root left mapped, and never decided by got: a wrong success
+            // Only in the round main left mapped, and never decided by got: a wrong success
             // would fault.
             if (i == KICKOS_CAP_REPLY_MAX)
             {
@@ -3297,7 +3355,7 @@ namespace selftest
                     {
                         b_call_faulted = false;
                     }
-                    // The receiver outranks root and must already have recorded this round.
+                    // The receiver outranks main and must already have recorded this round.
                     if (g_lu_rounds.load() != i + 1u)
                     {
                         break;
@@ -3342,7 +3400,7 @@ namespace selftest
             }
         }
 
-        // The receiver stores its reply's result after that reply has released root.
+        // The receiver stores its reply's result after that reply has released main.
         if (g_lu_rounds.load() == KICKOS_CAP_REPLY_MAX + 1u)
         {
             wait_n(1);
@@ -3420,7 +3478,7 @@ namespace selftest
         (void)kos_task_kill(t1);
         uint64_t const first_value = out[DT_VALUE];
         uint64_t const first_frame = out[DT_FRAME];
-        // Once root changes its globals, a new process must still read the saved snapshot.
+        // Once main changes its globals, a new process must still read the saved snapshot.
         (void)kos_aspace_probe(KOS_ASPACE_OP_DATA_HOME_FORGET, 0);
         g_dt_word = DT_B;
         out[DT_VALUE] = 0;
@@ -3445,22 +3503,22 @@ namespace selftest
         uint64_t const late_value = out[DT_VALUE];
         uint64_t const late_frame = out[DT_FRAME];
         g_dt_word = DT_A;
-        tap::diag("data template: root frame %u, first %u/%u, after the home is lost %u/%u",
+        tap::diag("data template: main frame %u, first %u/%u, after the home is lost %u/%u",
                   static_cast<unsigned>(rootf), static_cast<unsigned>(first_frame),
                   static_cast<unsigned>(first_value), static_cast<unsigned>(late_frame),
                   static_cast<unsigned>(late_value));
         TAP_CHECK(rootf != 0 and first_frame != 0 and late_frame != 0);
         TAP_CHECK(first_value == DT_A and first_frame != rootf);
-        TAP_CHECK(late_value == DT_A); // the snapshot, not root's live word
+        TAP_CHECK(late_value == DT_A); // the snapshot, not main's live word
         TAP_CHECK(late_frame != rootf); // a frame of its own, not the image's own page
         settle_exits();
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
-    // A task's static data is the image's as root held it at the first explicit task, never a
-    // global root wrote since. A first task is created before the write, so the arm holds
-    // whichever arm made the image's first; the task after the write and its restart both read
-    // the image's value. Before process_data_template, which drops root's space for good.
+    // A task's static data is the image's as root held it at the first explicit task, the init
+    // creating main's, never a global main wrote since; the task after the write and its restart
+    // both read the image's value. Before process_data_template, which forgets the image's data
+    // home for good.
     void t_process_data_from_image()
     {
         settle_exits();
@@ -3512,7 +3570,7 @@ namespace selftest
         }
         tap::diag("data from the image: first %u, restart %u",
                   static_cast<unsigned>(seen[0]), static_cast<unsigned>(seen[1]));
-        TAP_CHECK(seen[0] == DT_A); // not root's DT_B
+        TAP_CHECK(seen[0] == DT_A); // not main's DT_B
         TAP_CHECK(seen[1] == DT_A);
     }
 

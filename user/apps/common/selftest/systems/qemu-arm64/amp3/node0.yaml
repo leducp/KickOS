@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The suite on node 0, serving the first port the partition names it and using every port it
+# names another node.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+shared:
+  - name: /shm/share
+    size: 0x100000
+    cache: cached
+    partition: true
+
+tasks:
+  - name: main
+    entry: selftest_main
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, pinmux, irq, console, tasks]
+    serves: /amp/2
+    uses: [/amp/3, /amp/4, /amp/5]
+    maps: { /shm/share: rw }

@@ -219,6 +219,7 @@ endfunction()
 #   after target_link_libraries(app PRIVATE KickOS::kernel KickOS::system_default).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
+  set_property(GLOBAL APPEND PROPERTY KICKOS_EMITTED_IMAGES ${target})
   if(KICKOS_ARCH STREQUAL "sim")
     return()
   endif()

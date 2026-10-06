@@ -35,8 +35,6 @@ BENCH="$HERE/bench.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
-# The tree the service-list providers are declared in; lists_for greps it.
-ROOT="${TREE:-$RIG_TREE}"
 TAG="${TAG:-m475}"
 OUTDIR="$RIG_SESSION/logs"
 mkdir -p "$OUTDIR"
@@ -44,19 +42,20 @@ mkdir -p "$OUTDIR"
 ALL="rx72m f302nucleo esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
 WANT="${*:-$ALL}"
 
-# WHICH IMAGES A BOARD'S SUITE SHIPS AS, asked of the tree one board at a time. The count is a
-# property of that board's own configure: the selftest app cuts its registration list into
-# regions and groups them into as many images as the board's flash or code window takes, and it
-# publishes the names it emitted. A list here would be a second authority, and this script
-# carried one: it named two boards that had gone to four images and did not name esp32c6-wroom
-# at all, so a fleet pass flashed one image of three on that board. TAP numbering RESTARTS at 1
-# in each image, so a lone first plan line is a FRACTION of a run and not a short one, and the
-# pass read green for two splits.
+# WHICH IMAGES A BOARD'S BUILD SHIPS, asked of the tree one board at a time, as bench.sh's
+# `<image>|<stdout>|<judge>` rows. The count is a property of that board's own configure: the
+# selftest app cuts its registration list into regions and groups them into as many images as
+# the board's flash or code window takes, once under the kernel's console and once under each
+# console driver the board composes, and each board app names the gate script that judges it. A list here would be a second authority, and this script carried
+# one: it named two boards that had gone to four images and did not name esp32c6-wroom at all,
+# so a fleet pass flashed one image of three on that board. TAP numbering RESTARTS at 1 in each
+# image, so a lone first plan line is a FRACTION of a run and not a short one, and the pass read
+# green for two splits.
 #
 # The configure this does is the one the runs below reuse: same TAG, same board, same variant,
-# same service list, so it lands in the same build dir and costs nothing twice.
-images_for() { # <board> <service list> <stderr out>
-  TAG="$TAG" SERVICE_LIST="$2" LIST_IMAGES=1 "$BENCH" "$1" 2>"$3"
+# so it lands in the same build dir and costs nothing twice.
+images_for() { # <board> <stderr out>
+  TAG="$TAG" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
 }
 
 # ONE enumeration of the bus, taken once, wherever the boards are.
@@ -86,52 +85,35 @@ else
 fi
 
 RESULTS=""
-# THE SERVICE LISTS A BOARD OWES A FULL PASS, derived from the tree rather than listed here:
-# a provider is named kickos_services_<board-ish>[_variant], so the tree IS the declaration and a
-# provider added tomorrow is owed tomorrow. Prints the DEFAULT list first (empty string, meaning
-# "whatever the preset defaults to") then every variant.
-#
-# This exists because a fleet pass that runs only the default list reports a clean sweep while
-# saying nothing about the lists it never ran.
-lists_for() { # <board>
-  local board=$1 key stem
-  # TWO spellings, because the providers use both: the board with its dash removed
-  # (xmc4800-relax -> kickos_services_xmc4800relax_*) and the board's first dash-segment
-  # (esp32-wroom -> kickos_services_esp32_*). Deduped, since a dashless board matches both.
-  key=$(printf '%s' "$board" | tr -d '-')
-  stem=$(printf '%s' "$board" | cut -d- -f1)
-  # A NAMED sentinel through printf, never an empty line and never a bare `-`. The caller reads
-  # this through $(...), which word-splits, so an empty entry vanishes and the DEFAULT list is
-  # silently skipped, by the very mechanism that exists to stop a list being silently skipped.
-  # A bare `-` disappears too: echo ate it here, which is why this is printf and a word.
-  printf '@default\n'
-  {
-    grep -rhoE "kickos_services_${key}_[a-z0-9_]+" "$ROOT" --include=CMakeLists.txt 2>/dev/null
-    grep -rhoE "kickos_services_${stem}_[a-z0-9_]+" "$ROOT" --include=CMakeLists.txt 2>/dev/null
-  } | sort -u
-}
-
 record() {
   RESULTS="${RESULTS}$(printf '%-16s %s' "$1" "$2")
 "
 }
 
+# The judge bench.sh names for a selftest image: the capture runs it over the TAP stream.
+TAP_JUDGE=tests/integration/check_tap_stream.sh
+
 # Runs bench.sh for ONE board and ONE image. The serial, when a board needs one, is
 # passed as its own argument here and nowhere else.
 bench_one() {
-  local board=$1 app=$2 sn=$3 label=$4 out rc
+  local board=$1 app=$2 sn=$3 label=$4 judge=$5 out rc
   out=$(mktemp)
   if [ -n "$sn" ]; then
-    TAG="$TAG" APP="$app" SERVICE_LIST="${SERVICE_LIST:-}" "$BENCH" "$board" "$sn" > "$out" 2>&1
+    TAG="$TAG" APP="$app" "$BENCH" "$board" "$sn" > "$out" 2>&1 < /dev/null
   else
-    TAG="$TAG" APP="$app" SERVICE_LIST="${SERVICE_LIST:-}" "$BENCH" "$board" > "$out" 2>&1
+    TAG="$TAG" APP="$app" "$BENCH" "$board" > "$out" 2>&1 < /dev/null
   fi
   rc=$?
   if [ $rc -ne 0 ]; then
-    record "$label" "FAILED rc=$rc: $(grep -m1 REFUSING "$out" || echo 'see log below')"
-    grep -E 'REFUSING|Error|error:' "$out" | head -5 | sed 's/^/    /'
+    record "$label" "FAILED rc=$rc: $(grep -m1 -E 'REFUSING|FAIL' "$out" || echo 'see log below')"
+    grep -E 'REFUSING|FAIL|Error|error:' "$out" | head -5 | sed 's/^/    /'
     rm -f "$out"
     return 1
+  fi
+  if [ "$judge" != "$TAP_JUDGE" ]; then
+    rm -f "$out"
+    record "$label" "PASS ($judge)"
+    return 0
   fi
   # bench-capture.sh already prints the counts; fold them onto one line for the table.
   local okc notokc plan skipc partc banner mpu runs
@@ -160,6 +142,7 @@ bench_one() {
 FAILED=0
 ABSENT=0
 COVERED=""
+OWED=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
@@ -193,40 +176,45 @@ EOF
   fi
 
   echo "=== $board${SN:+  SN $SN}"
-  # EVERY LIST THE BOARD OWES, not just the default. A pass that ran only the default list is
-  # not a pass over this board: a driver is only in the image if the service list puts it there,
-  # so a green default run says nothing about the driver, and a regression can live entirely in
-  # the list nobody ran. Each list gets its OWN TAG, because TAG keys the log and two captures
-  # of one app at one tag overwrite each other.
-  for list in $(lists_for "$board"); do
-    if [ "$list" = "@default" ]; then
-      list=""
-      ltag="$TAG"; llabel="$board/<default>"
-    else
-      ltag="$TAG$(printf '%s' "${list#kickos_services_}" | tr -d '_')"; llabel="$board/$list"
-    fi
-    LERR=$(mktemp)
-    IMAGES=$(TAG="$ltag" images_for "$board" "$list" "$LERR")
-    if [ -z "$IMAGES" ]; then
-      record "$llabel" "REFUSED (the tree was not able to say which images this board ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
-      grep -E 'REFUSING|Error|error:' "$LERR" | head -5 | sed 's/^/    /'
-      rm -f "$LERR"
-      FAILED=1
+  LERR=$(mktemp)
+  IMAGES=$(images_for "$board" "$LERR")
+  if [ -z "$IMAGES" ]; then
+    record "$board" "REFUSED (the tree was not able to say which images this board ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
+    grep -E 'REFUSING|Error|error:' "$LERR" | head -5 | sed 's/^/    /'
+    rm -f "$LERR"
+    FAILED=1
+    continue
+  fi
+  rm -f "$LERR"
+  # EVERY IMAGE, AND THE LABEL SAYS WHICH ONE. Each selftest image carries its own plan starting
+  # at 1, so a figure in the table below belongs to an image rather than to the board. A console
+  # driver is only in the images whose composition names it, so a green kernel-console run says
+  # nothing about the driver.
+  UNJUDGED=0
+  while IFS='|' read -r img _stdout judge <&4; do
+    [ -n "$img" ] || continue
+    if [ "$judge" = "-" ]; then
+      UNJUDGED=$((UNJUDGED + 1))
       continue
     fi
-    rm -f "$LERR"
-    # EVERY IMAGE, AND THE LABEL SAYS WHICH ONE. Each carries its own plan starting at 1, so a
-    # figure in the table below belongs to an image rather than to the board.
-    for img in $IMAGES; do
-      if [ "$DRY_RUN" = "1" ]; then
-        record "$llabel/$img" "WOULD FLASH (dry run; no capture, no verdict)"
-        continue
-      fi
-      TAG="$ltag" SERVICE_LIST="$list" bench_one "$board" "$img" "$SN" "$llabel/$img" || FAILED=1
-    done
-    COVERED="$COVERED$board ${list:-@default}
+    OWED="$OWED$board $img
 "
-  done
+    if [ "$DRY_RUN" = "1" ]; then
+      record "$board/$img" "WOULD FLASH (dry run; judge $judge)"
+      continue
+    fi
+    if bench_one "$board" "$img" "$SN" "$board/$img" "$judge"; then
+      COVERED="$COVERED$board $img
+"
+    else
+      FAILED=1
+    fi
+  done 4<<ROWS
+$IMAGES
+ROWS
+  if [ "$UNJUDGED" -ne 0 ]; then
+    record "$board" "$UNJUDGED image(s) no judge names, not captured"
+  fi
 done
 
 echo
@@ -238,30 +226,26 @@ if [ "$ABSENT" -ne 0 ]; then
   echo "  tools/bench/bench-present.sh reports the whole bus, probe serials and consoles."
 fi
 
-# COVERAGE, stated rather than assumed. A pass that skipped a list is not a pass over that
+# COVERAGE, stated rather than assumed. A pass that skipped an image is not a pass over that
 # board.
 echo
-echo "=== service-list coverage"
+echo "=== image coverage"
 UNCOVERED=0
-for board in $WANT; do
-  for list in $(lists_for "$board"); do
-    shown=$list
-    if [ "$list" = "@default" ]; then
-      shown="<default>"
-    fi
-    if printf '%s' "$COVERED" | grep -qxF "$board $list"; then
-      printf '  %-16s %-38s captured\n' "$board" "$shown"
-    else
-      printf '  %-16s %-38s NOT RUN\n' "$board" "$shown"
-      UNCOVERED=$((UNCOVERED + 1))
-    fi
-  done
-done
+while read -r board img; do
+  [ -n "$board" ] || continue
+  if printf '%s' "$COVERED" | grep -qxF "$board $img"; then
+    printf '  %-16s %-38s captured\n' "$board" "$img"
+  else
+    printf '  %-16s %-38s NOT RUN\n' "$board" "$img"
+    UNCOVERED=$((UNCOVERED + 1))
+  fi
+done <<OWED
+$OWED
+OWED
 if [ "$UNCOVERED" -ne 0 ]; then
   echo
-  echo "INCOMPLETE: $UNCOVERED declared service list(s) were not run, so this pass does not"
-  echo "  cover those boards. A driver is only in the image if the service list puts it there,"
-  echo "  so a green default-list run says nothing about the driver."
+  echo "INCOMPLETE: $UNCOVERED judged image(s) a board ships were not captured, so this pass does not"
+  echo "  cover those boards."
   exit 1
 fi
 exit $FAILED

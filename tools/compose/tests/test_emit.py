@@ -254,6 +254,13 @@ class Emitted(unittest.TestCase):
         self.assertEqual([r.split(": ")[1] for r in refusals], ["form.missing"])
         self.assertIn("task `app` runs an `entry`, so it needs `ceiling`", refusals[0])
 
+    def test_the_fragment_names_the_driver_serving_stdout(self):
+        refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
+        self.assertIn("set(KICKOS_COMPOSE_STDOUT \"xmcuartirq\")\n", fragment)
+        source, asserts, fragment, gate = self.system_heap([])
+        self.assertIn("set(KICKOS_COMPOSE_STDOUT \"kernel\")\n", fragment)
+
     def test_a_heap_of_zero_stays_zero(self):
         source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 0\n")])
         self.assertIn("set(KICKOS_COMPOSE_HEAP 0)\n", fragment)
@@ -427,16 +434,27 @@ class Partitioned(unittest.TestCase):
         self.assertIn("set(KICKOS_COMPOSE_GATE 1)", texts[2])
         self.assertIn("kickos_gate_row_count = 0;", texts[3])
 
+    # A partition region of a granule and one byte, declared first on node 0 and last on node 1.
+    LOG = {0: [("  - name: /shm/book\n", "  - name: /shm/log\n    size: 0x1001\n    cache: uncached\n"
+                "    partition: true\n  - name: /shm/book\n")],
+           1: [("    partition: true\ntasks:", "    partition: true\n  - name: /shm/log\n    size: 0x1001\n"
+                "    cache: uncached\n    partition: true\ntasks:")]}
+
     def test_partition_regions_are_placed_in_node_0_s_declaration_order(self):
-        second = ("  - name: /shm/book\n", "  - name: /shm/log\n    size: 0x1001\n    cache: uncached\n"
-                  "    partition: true\n  - name: /shm/book\n")
-        reordered = ("    partition: true\ntasks:", "    partition: true\n  - name: /shm/log\n    size: 0x1001\n"
-                     "    cache: uncached\n    partition: true\ntasks:")
-        paths = self.nodes(ARM64_PAIR, ARM64_AMP, {0: [second], 1: [reordered]})
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, self.LOG)
         report, found = partition.admit_partition(paths, self.manifest, 0)
         self.assertEqual([str(r) for r in report.refusals], [])
         self.assertEqual(found.admitted[0].offsets, {"/shm/log": 0, "/shm/book": 0x2000})
         self.assertEqual(found.admitted[1].offsets, {"/shm/log": 0, "/shm/book": 0x2000})
+
+    def test_a_partition_region_reaches_the_table_on_whole_granules(self):
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, self.LOG)
+        report, texts = emit.emit_system(None, self.manifest, "table.c", paths)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        self.assertIn(".size = 0x2000u, .offset = 0x0u, .flags = KOS_MEM_NOCACHE | KOS_TABLE_REGION_PARTITION",
+                      texts[0])
+        self.assertIn(".size = 0x1000u, .offset = 0x2000u, .flags = KOS_MEM_NOCACHE | KOS_TABLE_REGION_PARTITION",
+                      texts[0])
 
     def test_the_c6_rows_give_each_node_its_grants_and_nothing_else(self):
         hp = ("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/timg0]\n")

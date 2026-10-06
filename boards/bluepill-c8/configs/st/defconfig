@@ -3,9 +3,10 @@
 
 CONFIG_BOARD_BLUEPILL_C8=y
 
-# Enable self-test syscalls and omit the heap to fit boot and worker stacks.
-CONFIG_KICKOS_MAX_THREADS=2
-CONFIG_KICKOS_MAX_TASKS=4
+# Enable self-test syscalls and omit the heap to fit boot and worker stacks. The selftest's main
+# takes one thread and one task of each pool.
+CONFIG_KICKOS_MAX_THREADS=3
+CONFIG_KICKOS_MAX_TASKS=5
 CONFIG_KICKOS_MAX_DOMAINS=4
 CONFIG_KICKOS_MAX_SEMAPHORES=4
 CONFIG_KICKOS_MAX_MUTEXES=4

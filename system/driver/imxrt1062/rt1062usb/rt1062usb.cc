@@ -30,6 +30,7 @@
 #include <kickos/sys/errno.h> // KOS_EPERM
 #include <kickos/sys/service.h>
 #include <kickos/sys/usb_cdc_service.h>
+#include <kickos/usb_console.h>
 
 #include "irq.h"
 #include "rt_usb_regs.h"
@@ -955,6 +956,8 @@ namespace
 
 extern "C"
 {
+
+char const kickos_usb_device_console = 1;
 
 int rtusb_console_start(struct kos_service_cfg const* cfg)
 {

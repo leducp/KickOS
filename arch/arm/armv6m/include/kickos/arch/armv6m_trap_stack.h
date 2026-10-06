@@ -91,19 +91,25 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  picopi-st at 552, the deepest of this arch's four declared presets
-                  (picopi 544, microbit and picopi-flat 536).
+     _SVCK   808  picopi-st at 600, the deepest of this arch's four declared presets, a spawn
+                  staging KICKOS_MAX_SPAWN_GRANTS 9 grants:
+                    syscall_dispatch[64] -> thread_create_call[16] -> spawn_masked[304]
+                    -> thread_create[72] -> task_for[24] -> domain_for[40]
+                    -> grant_region_admissible[32] -> grant_hits_reserved[40]
+                    -> arch_reserved_blocks[8]
+                  microbit, also at 9, reads 536, and picopi and picopi-flat, at 6, read 544
+                  and 536.
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
-   (kickos_panic_stack_enter, switch.S), so what 552 measures at picopi-st is the exit path
+   (kickos_panic_stack_enter, switch.S), so what 544 measures at picopi is the exit path
    under endpoint_reply_recv and no console backend at all:
-     syscall_dispatch[64] -> endpoint_reply_recv[128] -> exit_current[56] -> cap_teardown[40]
-     -> teardown_entry[40] -> obj_close_protocol[16] -> endpoint_rights_dropped[32] -> wake[8]
+     syscall_dispatch[56] -> endpoint_reply_recv[128] -> exit_current[64] -> cap_teardown[40]
+     -> teardown_entry[32] -> obj_close_protocol[16] -> endpoint_rights_dropped[32] -> wake[8]
      -> resched_after_wake[8] -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32]
      -> __aeabi_ldivmod[96]
-   808 IS ENFORCED OVER THAT 552 ON PURPOSE, as headroom a future change is measured against
-   rather than slack to spend. Cutting it to the measurement returns 256 per
-   KICKOS_THREAD_SLOTS, the block falling from 896 to 640, and buys the next added assert a
+   808 IS ENFORCED OVER THAT 600 ON PURPOSE, as headroom a future change is measured against
+   rather than slack to spend. Cutting it to the measurement returns 208 per
+   KICKOS_THREAD_SLOTS, the block falling from 896 to 688, and buys the next added assert a
    gate failure on whichever preset happens to be deepest.
 
    On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, with the

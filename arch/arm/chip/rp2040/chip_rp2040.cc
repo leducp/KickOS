@@ -27,6 +27,7 @@
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/usb_console.h>
 
 #include <stdint.h>
 
@@ -91,7 +92,6 @@ namespace
     uint32_t g_uart_ibrd = reg::uart::IBRD_115200;
     uint32_t g_uart_fbrd = reg::uart::FBRD_115200;
 
-#if defined(KICKOS_USB_CONSOLE)
     // Cycles spent letting a stopped clock generator settle before its aux mux moves.
     constexpr uint32_t CLK_STOP_SPIN = 64u;
 
@@ -139,7 +139,6 @@ namespace
         // and RESET_DONE only asserts once clk_usb runs, hence the ordering above.
         unreset(reg::resets::USBCTRL);
     }
-#endif
 
     void clocks_init()
     {
@@ -275,9 +274,10 @@ void arch_init(void)
     clocks_init();
     unreset(reg::resets::UART0);
     uart0_init();
-#if defined(KICKOS_USB_CONSOLE)
-    usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
-#endif
+    if (&kickos_usb_device_console != nullptr)
+    {
+        usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+    }
     kickos_armv6m_init();
 }
 

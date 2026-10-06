@@ -84,13 +84,19 @@ tasks:
 """
 
 
-# A client of seven servers on a kernel build that delegates eight capabilities at a spawn, past
-# the six of the host build the tests compile the walk for.
-WIDE = "".join("  - name: s%d\n    entry: sensor_main\n    stack: 4096\n    priority: 9\n    ceiling: 9\n    serves: /svc/s%d\n\n"
-               % (n, n) for n in range(7))
-WIDE = (CHAIN[:CHAIN.index("tasks:\n")] + "tasks:\n" + WIDE + "  - name: wide\n    entry: app_main\n    stack: 4096\n"
-        "    priority: 8\n    ceiling: 8\n    uses: [%s]\n" % ", ".join("/svc/s%d" % n for n in range(7)))
-WIDE_MANIFEST = MANIFESTS["qemu-x86_64.yaml"].replace("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 8\n")
+# A client of one server more than the host build the tests compile the walk for delegates at a
+# spawn, on a kernel build that delegates one more still.
+def wide(grants):
+    servers = "".join("  - name: s%d\n    entry: sensor_main\n    stack: 4096\n    priority: 9\n    ceiling: 9\n"
+                      "    serves: /svc/s%d\n\n" % (n, n) for n in range(grants + 1))
+    text = (CHAIN[:CHAIN.index("tasks:\n")] + "tasks:\n" + servers + "  - name: wide\n    entry: app_main\n"
+            "    stack: 4096\n    priority: 8\n    ceiling: 8\n    uses: [%s]\n"
+            % ", ".join("/svc/s%d" % n for n in range(grants + 1)))
+    manifest = MANIFESTS["qemu-x86_64.yaml"].replace("  KICKOS_MAX_SPAWN_GRANTS: 6\n",
+                                                     "  KICKOS_MAX_SPAWN_GRANTS: %d\n" % (grants + 2))
+    refusal = ("init: `wide` is spawned with %d capabilities and 0 windows, and a spawn takes at most %d and 4"
+               % (grants + 1, grants))
+    return text, manifest, refusal
 
 
 # A two-thread packaged driver with a restart, whose receiver is not its entry thread, a client
@@ -163,8 +169,6 @@ FIXTURES = {
                       MANIFESTS["qemu-arm64.yaml"], None),
     "driver_restart": (DRIVER_RESTART, DRIVER_RESTART_MANIFEST, None),
     "chain_ends": (CHAIN.replace("ends: never", "ends: top"), MANIFESTS["qemu-x86_64.yaml"], None),
-    "wide": (WIDE, WIDE_MANIFEST,
-             "init: `wide` is spawned with 7 capabilities and 0 windows, and a spawn takes at most 6 and 4"),
 }
 for board, manifest in DEFAULTS.items():
     FIXTURES["default_" + board.replace("-", "_")] = (default(board), manifest, None)
@@ -215,14 +219,19 @@ def describe(name, admitted, refusal):
 
 def main(argv):
     if len(argv) < 3:
-        print("usage: emit_systems.py <scratch directory> <system>=<table.c>... systems=<systems.cc>",
-              file=sys.stderr)
+        print("usage: emit_systems.py <scratch directory> <system>=<table.c>... systems=<systems.cc> "
+              "grants=<KICKOS_MAX_SPAWN_GRANTS>", file=sys.stderr)
         return 2
     scratch = argv[1]
     shutil.rmtree(scratch, ignore_errors=True)
     shutil.copytree(PLATFORM, os.path.join(scratch, "platform"))
     requests = dict(request.split("=", 1) for request in argv[2:])
     systems = requests.pop("systems", None)
+    grants = requests.pop("grants", None)
+    if grants is None or not grants.isdigit():
+        print("emit_systems.py: no grants=<KICKOS_MAX_SPAWN_GRANTS> of the host build", file=sys.stderr)
+        return 1
+    FIXTURES["wide"] = wide(int(grants))
     if systems is None or sorted(requests) != sorted(FIXTURES):
         print("emit_systems.py: the requests name %s, and the systems are %s and systems"
               % (", ".join(sorted(requests)), ", ".join(sorted(FIXTURES))), file=sys.stderr)

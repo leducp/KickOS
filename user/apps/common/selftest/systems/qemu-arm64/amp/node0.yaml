@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The suite on the shared image's node 0, whose peers run no kernel, serving the port the
+# partition names it and using the ports it names node 1.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    entry: selftest_main
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, pinmux, irq, console, tasks]
+    serves: /amp/2
+    uses: [/amp/0, /amp/3]

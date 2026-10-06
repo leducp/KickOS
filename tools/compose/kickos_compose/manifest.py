@@ -52,6 +52,10 @@ class Manifest:
         self.amp_share = 0
         # Its one memory type, in a region's `cache` vocabulary.
         self.amp_share_cache = "cached"
+        # Whether each node runs an image of its own, or every node this one: under a shared
+        # image the peers run a service body and no kernel, so this node's composition is the
+        # partition's only one.
+        self.amp_image = "own"
         self.cap_reserved = None
         # What the link spells before a C name.
         self.symbol_prefix = None
@@ -231,10 +235,13 @@ def check_target(f, node, manifest):
 
 
 def check_amp(f, node, manifest):
-    values = f.fields(node, "`target` amp", ("node", "nodes", "ports", "share", "share_cache", "slices", "window"),
+    values = f.fields(node, "`target` amp",
+                      ("node", "nodes", "ports", "share", "share_cache", "slices", "window", "image"),
                       ("node", "nodes", "ports", "share", "share_cache"))
     if values is None:
         return
+    if "image" in values:
+        manifest.amp_image = f.enum(values["image"], "`target` amp image", ("own", "shared")) or "own"
     if "share" in values:
         manifest.amp_share = f.integer(values["share"], "`target` amp share", 32) or 0
     if "share_cache" in values:

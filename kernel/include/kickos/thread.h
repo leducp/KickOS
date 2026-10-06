@@ -478,8 +478,12 @@ namespace kickos
         return bytes;
     }
 
-    constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
+    // Rounded to the TCB's alignment: a single-chunk run on a 16-byte-aligned host TCB leaves an
+    // alignment tail the measured scalar bytes do not carry.
+    constexpr size_t thread_members_bytes =
         thread_head_bytes() + sizeof(MpuSet) + sizeof(CapRun) + thread_scalar_bytes();
+    constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
+        (thread_members_bytes + alignof(Thread) - 1) / alignof(Thread) * alignof(Thread);
 
 #if defined(KICKOS_ARCH_THREAD_SIZE_CEILING)
     // An arch whose context carries a large save area pins a ceiling, which catches an

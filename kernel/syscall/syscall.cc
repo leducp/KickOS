@@ -645,12 +645,10 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
-#if KICKOS_KERNEL_CORES > 1
         case KOS_SYS_THREAD_SELF:
         {
             return thread_self();
         }
-#endif
         case KOS_SYS_THREAD_SET_AFFINITY:
         {
             return static_cast<uint64_t>(

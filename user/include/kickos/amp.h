@@ -10,8 +10,10 @@
 // same string and get opposite roles.
 //
 // The kernel seats those capabilities into root before its first instruction, in list order,
-// so an entry's POSITION in the list is its capability handle. Nothing below is a syscall:
-// every value here is decided at build time.
+// so an entry's POSITION in the list is its handle in ROOT'S table. Only the init uses
+// KOS_AMP_PORT_CAP and kos_amp_port as capabilities; a composed task holds the crossings its
+// composition names at slots of its own, and asks kos_amp_port only whether the partition names
+// one. Nothing below is a syscall: every value here is decided at build time.
 //
 // A crossing the partition does not name has no capability: kos_amp_port answers KOS_CAP_NONE,
 // which every send, call and receive refuses with -KOS_EBADF.
@@ -65,9 +67,9 @@ extern "C"
 {
 #endif
 
-// Where entry `i` of the list was seated. The kernel's seating is the first dynamic install
-// into root's run and it runs in list order; it panics at boot rather than let either stop
-// being true.
+// Where entry `i` of the list was seated in root's table. The kernel's seating is the first
+// dynamic install into root's run and it runs in list order; it panics at boot rather than let
+// either stop being true.
 #define KOS_AMP_PORT_CAP(i) ((kos_cap_t)(KOS_CAP_FIRST_DYNAMIC + (i)))
 
 // Entry `i` of the list. Out of range answers KOS_AMP_NO_ENTRY.
@@ -93,8 +95,8 @@ static inline uint32_t kos_amp_entry_port(uint32_t i)
     return k_port[i];
 }
 
-// The capability this image was handed for `port` of `node`, or KOS_CAP_NONE where the
-// partition names no such crossing.
+// Root's capability for `port` of `node`, or KOS_CAP_NONE where the partition names no such
+// crossing.
 //
 // A LOCAL entry answers an endpoint to RECEIVE on (kos_recv / kos_reply); a far entry answers
 // one to CALL (kos_send / kos_call). kos_amp_port_is_local says which, and a caller that does

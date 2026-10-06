@@ -33,7 +33,7 @@ namespace selftest
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
     // --- Placement: affinity, the task's core set, and the isolated cores -----------------
     // Every scheduling probe reads the CALLER's state: a worker reports what the kernel seated
-    // on it, not what root asked for.
+    // on it, not what main asked for.
     constexpr uint64_t PLACE_STEP_NS = 500000ull;
     constexpr unsigned PL_SAMPLES = 64;
     constexpr unsigned PL_DEADLINE_STEPS = 400; // 200 ms
@@ -41,7 +41,7 @@ namespace selftest
 
     kos_cap_t g_pl_gate = KOS_CAP_NONE;
 
-    // Keeps its task non-empty until root posts the gate.
+    // Keeps its task non-empty until main posts the gate.
     void pl_gate_worker(void*) // caps: gate@1
     {
         kos_sem_wait(1);
@@ -64,8 +64,8 @@ namespace selftest
         g_pl_cores = 0;
     }
 
-    // The gate SLEEPS rather than yields: a worker above root's priority that spun here would
-    // hold the core root has to run on to release it.
+    // The gate SLEEPS rather than yields: a worker above main's priority that spun here would
+    // hold the core main has to run on to release it.
     void pl_wait_go()
     {
         while (g_pl_go.load() == 0)
@@ -220,7 +220,7 @@ namespace selftest
         (void)kos_send(1, rep, sizeof(rep));
     }
 
-    // `t` is KOS_TASK_NONE for root's own task. False when the spawn or the rendezvous failed.
+    // `t` is KOS_TASK_NONE for main's own task. False when the spawn or the rendezvous failed.
     bool sib_pin_run(kos_task_t t, int32_t* rep)
     {
         kos_cap_grant caps[] = {{g_pl_ep, KOS_CAP_SIGNAL}};
@@ -307,8 +307,8 @@ namespace selftest
     }
 
     // --- Placement: a running thread is re-placed under an affinity change ---------------
-    // A pinned child drives the move: root holds no handle to itself, so it cannot be kept off
-    // the spinner's core. The spinner sits above root and the driver above the spinner, so the
+    // A pinned child drives the move: main holds no handle to itself, so it cannot be kept off
+    // the spinner's core. The spinner sits above main and the driver above the spinner, so the
     // driver stays scheduled once both share the destination.
     constexpr uint32_t PL_HOME = 0; // the boot core
     kos_thread_t g_pl_victim = KOS_THREAD_NONE;
@@ -469,7 +469,7 @@ namespace selftest
         (void)kos_handle_close(g_pl_gate);
         TAP_CHECK(seated);
         TAP_CHECK(mj == 0);
-        // Root is unprivileged: a core its OWN grant holds does not make another task's thread
+        // main is unprivileged: a core its OWN grant holds does not make another task's thread
         // its to place.
         TAP_CHECK(rc == -KOS_EPERM);
     }
@@ -602,7 +602,7 @@ namespace selftest
     }
 
     // --- A second grant narrows again and never re-widens -------------------------------
-    // task_sched_grant weighs a request against the CALLER's grant, which root holds whole, so
+    // task_sched_grant weighs a request against the CALLER's grant, which main holds whole, so
     // only task_sched_narrow's check against the TASK's current set can refuse this.
     void t_grant_second_narrow_only()
     {
@@ -993,7 +993,7 @@ namespace selftest
         unsigned const me = static_cast<unsigned>(reinterpret_cast<uintptr_t>(arg));
         // Released together, so both of a pair are queued before either arms a slice. A burner
         // runs the instant it is created, and on a slow host the first could burn its whole
-        // round before root creates the second, which reads as a comparator that never fired.
+        // round before main creates the second, which reads as a comparator that never fired.
         pl_wait_go();
         uint64_t const start = kos_clock_now();
         uint32_t seen = 0;
@@ -1223,7 +1223,7 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_pl_spread_passes[PL_CROWD];
     uint32_t g_pl_spread_want = 0; // published before the crowd is released
 
-    // A time budget, sampled until the union is complete: root holds core 0 until it blocks in
+    // A time budget, sampled until the union is complete: main holds core 0 until it blocks in
     // the join below, so a crowd spending a fixed sample count can finish before core 0 is free
     // and read as never having reached it.
     constexpr uint64_t PL_SPREAD_BUDGET_NS = 200000000ull; // 200 ms
@@ -1371,7 +1371,7 @@ namespace selftest
 
     // A fused reply followed by a park must notify the caller's core. A FIFO spinner occupies
     // that core, so only a reschedule request lets the higher-priority caller run.
-    constexpr uint8_t XC_SPIN_PRIO = 14;   // above root, below the caller
+    constexpr uint8_t XC_SPIN_PRIO = 14;   // above main, below the caller
     constexpr uint8_t XC_CALLER_PRIO = 20; // the thread the reply readies
     constexpr uint8_t XC_SERVER_PRIO = 12;
     constexpr uint32_t XC_JOIN_US = 400000;
@@ -1508,9 +1508,9 @@ namespace selftest
     }
 
     // --- A caller that lowers itself takes a thread waiting on a peer core ------------------
-    // Root raises itself on its core B, then readies W behind an equal-priority spinner pinned
-    // to core A, W's mask naming A and B. Root's level holds W on A until root lowers itself below
-    // W, and the drop that lowering makes must move W to B, where it runs. Root spins rather than
+    // main raises itself on its core B, then readies W behind an equal-priority spinner pinned
+    // to core A, W's mask naming A and B. main's level holds W on A until main lowers itself below
+    // W, and the drop that lowering makes must move W to B, where it runs. main spins rather than
     // sleeps throughout: a park would drop B's level by another path.
     constexpr uint8_t PD_HIGH = 20;
     constexpr uint8_t PD_EQUAL = 12;
@@ -1553,7 +1553,7 @@ namespace selftest
     {
         if (kos_sched_probe(KOS_SCHED_OP_CEILING) < PD_HIGH)
         {
-            tap::skip("root's ceiling is below %u", static_cast<unsigned>(PD_HIGH));
+            tap::skip("main's ceiling is below %u", static_cast<unsigned>(PD_HIGH));
             return;
         }
         g_pd_stop = 0;
@@ -1611,10 +1611,10 @@ namespace selftest
         {
             wjoined = w.join();
         }
-        int const restored = kos_thread_set_priority(KICKOS_PRIO_ROOT);
+        int const restored = kos_thread_set_priority(g_self->priority);
         if (away == home)
         {
-            tap::skip("no non-isolated core beside root's");
+            tap::skip("no non-isolated core beside main's");
             return;
         }
         if (not x.valid() or not w.valid())
@@ -1622,7 +1622,7 @@ namespace selftest
             tap::skip("pool too small for 2 threads");
             return;
         }
-        tap::diag("root on core %u lowered with W behind a spinner on core %u: W ran on core %u",
+        tap::diag("main on core %u lowered with W behind a spinner on core %u: W ran on core %u",
                   static_cast<unsigned>(home), static_cast<unsigned>(away),
                   static_cast<unsigned>(g_pd_core.load()));
         TAP_CHECK(raised == 0 and widened == 0 and lowered == 0 and restored == 0);
@@ -1646,7 +1646,7 @@ namespace selftest
     constexpr uint64_t XIRQ_CLAIM_BUDGET_NS = 2000000000ull;
     constexpr uint64_t XIRQ_CLAIM_POLL_NS = 100000ull;
     constexpr uint8_t XIRQ_PRIO = 12;
-    constexpr int XIRQ_REL = 3; // root-to-child release, delegated after done and ready
+    constexpr int XIRQ_REL = 3; // main-to-child release, delegated after done and ready
     constexpr int32_t XIRQ_UNSET = -99;
 
     // A released line is claimable again only once its retirement's grace period has passed.
@@ -1706,7 +1706,7 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_xw_inject{XIRQ_UNSET};
     Atomic<uint32_t, Order::RELAXED> g_xw_inject_core{0xffu};
 
-    // caps: done@1, ready@2. Armed before it reports ready, so the raise root orders next
+    // caps: done@1, ready@2. Armed before it reports ready, so the raise main orders next
     // lands on an armed line and not in the latch the first arm discards.
     void xirq_waiter(void*)
     {
@@ -1820,7 +1820,7 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_xs_core[XS_LEGS];
 
     // caps: done@1, ready@2, release@3. Claims and attaches the line and never arms it, so the
-    // raise root lands while it is held stays latched until the release.
+    // raise main lands while it is held stays latched until the release.
     void xirq_stale_owner(void*)
     {
         kos_cap_t irq = KOS_CAP_NONE;
@@ -1858,7 +1858,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // One later owner on `core`: its first wait must stay quiet, and the raise root lands after
+    // One later owner on `core`: its first wait must stay quiet, and the raise main lands after
     // it must wake it there. False when the thread could not be made.
     bool xirq_next_leg(int leg, uint32_t core, kos_cap_t ready)
     {

@@ -34,6 +34,7 @@
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/service.h>
 #include <kickos/sys/usb_cdc_service.h>
+#include <kickos/usb_console.h>
 
 #include "rp_usb_chip.h"
 #include "rp_usb_regs.h"
@@ -450,6 +451,8 @@ namespace
 
 extern "C"
 {
+
+char const kickos_usb_device_console = 1;
 
 int rpusb_console_start(struct kos_service_cfg const* cfg)
 {

@@ -751,12 +751,17 @@ config KICKOS_TASK_NOTIFY_BUDGET
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"
 	range 2 16
+	default 9 if KICKOS_ENABLE_SELFTEST && KICKOS_CAP_TABLE_SUPPLY >= 10
 	default 6
 	help
 	  Costs caller stack, not .bss: thread_create_call stages the grant list in arrays
 	  on the calling thread's own stack. The floor is 2, not 1: the child width is
 	  this plus one plus the reply peak, and a width inside the reserved index
 	  range leaves a child no slot of its own, which configure refuses.
+
+	  The selftest's main is a composed task with a child's table: 2 reserved
+	  slots, 5 capabilities it holds at once and 3 its deadlock arm skips without.
+	  9 seats all ten where the board's supply backs them.
 
 config KICKOS_MAX_THREAD_WINDOWS
 	int "Windows one thread may hold"
@@ -1061,7 +1066,7 @@ config KICKOS_MIN_STACK_SIZE
 	# An interrupt nests below a privileged caller's syscall on its own stack, a spawn seeding
 	# a whole address space at its deepest (x86_64_trap_stack.h).
 	default 3328 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
-	default 2624 if ARCH_X86_64
+	default 2752 if ARCH_X86_64
 	# Above one core the PREEMPT zone alone is 896 (lx6_trap_stack.h).
 	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
 	default 896 if ARCH_LX6

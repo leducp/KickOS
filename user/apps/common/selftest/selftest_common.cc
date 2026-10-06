@@ -9,6 +9,8 @@ namespace selftest
 {
     kos_cap_t g_done = KOS_CAP_NONE; // shared completion counter (MAIN's cap; delegated to workers)
     kos_cap_t g_lock = KOS_CAP_NONE; // binary semaphore = mutex over the event log (MAIN's cap)
+    kos_self_t const* g_self = nullptr;
+    kos_thread_t g_main = KOS_THREAD_NONE;
 
     void wait_n(int n)
     {

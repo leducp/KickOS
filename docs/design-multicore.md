@@ -1641,8 +1641,8 @@ part that could not do that would be a part on which the default core set means 
 
 **Observing that costs an observer off the core under test.** A thread above the observer's
 priority spinning on the observer's own core never gives it back, so the observer must be somewhere
-else. A thread places itself through `kos_thread_self`, which answers the caller's own handle above
-one kernel core, and a spawner places its child; both are placements the grant already permits,
+else. A thread places itself through `kos_thread_self`, which answers the caller's own handle,
+and a spawner places its child; both are placements the grant already permits,
 because a task is one scheduling domain. A thread handling an IRQ uses the first before it claims.
 
 ### Isolation shapes the default, not the admission
@@ -1757,7 +1757,7 @@ The placement half is entirely behind `#if KICKOS_KERNEL_CORES > 1` and contribu
 single-core image. `Task::core_set`, `Thread::affinity`, `sched_placeable_on`, `sched::set_affinity`,
 `sched::add_idle`, `available_to`, the placement hooks, `Kernel::seated_prio`, the per-pair rings
 and cells, and `switch_book`'s mask test are all absent from such a build, `kos_thread_set_affinity` is
-`-KOS_ENOSYS`, and `kos_thread_self` answers `KOS_THREAD_NONE`.
+`-KOS_ENOSYS`, and `kos_thread_self` still answers the caller's own handle.
 
 **The PRIORITY CEILING does not fold, and it is not meant to.** It is unconditional where the core
 set is conditional, because the hole it closes is not an SMP hole: unbounded priority let any

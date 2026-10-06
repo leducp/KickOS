@@ -36,66 +36,130 @@ endif()
 if(DEFINED _selftest_spare_dev)
   list(APPEND _selftest_defs KICKOS_SELFTEST_SPARE_DEV=${_selftest_spare_dev})
 endif()
-# A board service list runs a console driver, which holds the console device.
-if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  list(APPEND _selftest_defs KICKOS_SELFTEST_CONSOLE_DRIVER=1)
-endif()
 
 # main.cc cuts the registration list into contiguous REGIONS. An image carries a contiguous
 # RUN of them and elides the rest, so the arms are partitioned between the images and still
 # run in the order one image would run them in. main.cc refuses a build whose count differs
 # from the one stated here, because a region no image carries runs nowhere and no plan check
 # can see it.
-set(_selftest_regions 6)
+set(_selftest_regions 10)
 
-# How many images this board ships. A per-board property, not a fleet one, and the binding
-# budget is a different one on each of them: 64 KiB of FLASH on the two STM32 parts, the
-# 128 KiB pow2 PMP code window (`_code_size` in arch/riscv/chip/esp32c6/esp32c6.ld) on an
-# enforcing ESP32-C6, whose next step up would take 128 KiB straight off the thread arena,
-# the 240 KiB node slice on the ESP32-C6's own-image AMP partition, the arena that follows
-# .bss on nrf51, and the 128 KiB IRAM every ESP32 instruction runs from (`IRAM` in
-# arch/xtensa/chip/esp32/esp32.ld), which the bench probes and the second core's code
-# together overrun. None of these is a number the build can read back from the board, so the
-# count is stated here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE,
-# KICKOS_BENCH and KICKOS_KERNEL_CORES come from the board's own config, and every gate takes
-# the image list and each image's arm count off the targets below rather than restating
-# either.
-set(_selftest_parts 1)
+# The images this board ships, as the first region of each: image i carries its first region up
+# to the next image's first less one, so the images are contiguous, in order, and cover every
+# region once. Order across images does not matter, each one initialising the board and running
+# its own arms alone.
+#
+# A per-board property, not a fleet one, and the binding budget is a different one on each of
+# them: 64 KiB of FLASH on the two STM32 parts, the 128 KiB pow2 PMP code window (`_code_size`
+# in arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take
+# 128 KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
+# partition, the arena that follows .bss on nrf51, and the 128 KiB IRAM every ESP32 instruction
+# runs from (`IRAM` in arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a
+# console driver or the second core's code. The bench probes take the C6's code window past one
+# more cut. None of these is a number the build can read back from the board, so the cut is
+# stated here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH
+# come from the board's own config, and every gate takes the image list and each image's arm
+# count off the targets below rather than restating either.
+set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
-  set(_selftest_parts 6)
-elseif(KICKOS_CHIP STREQUAL "nrf51" OR (KICKOS_CHIP STREQUAL "esp32c6" AND
-       (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE)))
-  set(_selftest_parts 4)
-elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_BENCH AND KICKOS_KERNEL_CORES GREATER 1)
-  set(_selftest_parts 2)
+  set(_selftest_firsts 1 2 3 4 5 6 7 8 9)
+elseif(KICKOS_CHIP STREQUAL "nrf51")
+  set(_selftest_firsts 1 5 7 9 10)
+elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
+  set(_selftest_firsts 1 3 5 7 10)
+elseif(KICKOS_CHIP STREQUAL "esp32c6" AND (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE))
+  set(_selftest_firsts 1 5 7 10)
+elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_BENCH)
+  set(_selftest_firsts 1 7)
 endif()
-if(_selftest_parts GREATER _selftest_regions)
-  message(FATAL_ERROR
-    "selftest: ${_selftest_parts} image(s) asked of ${_selftest_regions} region(s), so an "
-    "image would carry no region at all, plan zero arms and pass. Cut another region in "
-    "main.cc, or take fewer images.")
+set(_selftest_bound "")
+set(_selftest_prev 0)
+foreach(_first IN LISTS _selftest_firsts)
+  if(NOT _first GREATER _selftest_prev OR _first GREATER _selftest_regions)
+    message(FATAL_ERROR
+      "selftest: the images' first regions ${_selftest_firsts} must rise from 1 within the "
+      "${_selftest_regions} region(s) main.cc cuts, or an image would carry no region at all, "
+      "plan zero arms and pass.")
+  endif()
+  if(_selftest_prev GREATER 0)
+    math(EXPR _last "${_first} - 1")
+    list(APPEND _selftest_bound "${_selftest_prev}-${_last}")
+  endif()
+  set(_selftest_prev ${_first})
+endforeach()
+list(GET _selftest_firsts 0 _selftest_first)
+if(NOT _selftest_first EQUAL 1)
+  message(FATAL_ERROR "selftest: the first image must start at region 1, not ${_selftest_first}")
 endif()
+list(APPEND _selftest_bound "${_selftest_prev}-${_selftest_regions}")
 
-# Image i takes the regions ]ceil((i-1)R/P), ceil(iR/P)]: contiguous, in order, and as even
-# a share as the two counts allow, the earlier images carrying the extra region when P does
-# not divide R. Order across images does not matter, each one initialising the board and
-# running its own arms alone.
+# The suite runs under the kernel's console and under each console driver of this build's
+# catalogue that consoles/<board>/ composes, each as its own run of images. An AMP node runs it
+# under the kernel's console, as this node of a partition whose other nodes run ampecho, or as
+# the shared image's one composition.
+set(_selftest_consoles "")
+set(_selftest_console_files "")
+get_property(_selftest_catalogue GLOBAL PROPERTY KICKOS_DRIVER_CATALOGUE)
+if(NOT KICKOS_AMP_NODE)
+  file(GLOB _selftest_console_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/consoles/${KICKOS_BOARD}"
+       CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/consoles/${KICKOS_BOARD}/*.yaml")
+endif()
+set(_selftest_amp_dir "systems/${KICKOS_BOARD}/${KICKOS_CONFIG_VARIANT}")
+set(_selftest_partition "")
+if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+  math(EXPR _selftest_last_node "${KICKOS_AMP_NODES} - 1")
+  foreach(_node RANGE 0 ${_selftest_last_node})
+    if(_node EQUAL KICKOS_AMP_NODE_ID)
+      list(APPEND _selftest_partition "${_selftest_amp_dir}/node${_node}.yaml")
+    else()
+      list(APPEND _selftest_partition "${_selftest_amp_dir}/echo${_node}.yaml")
+    endif()
+  endforeach()
+endif()
+foreach(_file IN LISTS _selftest_console_files)
+  string(REGEX REPLACE "\\.yaml$" "" _driver "${_file}")
+  if(_driver IN_LIST _selftest_catalogue)
+    list(APPEND _selftest_consoles ${_driver})
+  endif()
+endforeach()
+# reply_abandoned_cap creates two endpoints of main's own beside each one main holds: every
+# crossing the partition names and, under a console driver, the console's.
+set(_selftest_main_endpoints ${KICKOS_AMP_PORT_COUNT})
+if(_selftest_consoles)
+  math(EXPR _selftest_main_endpoints "${_selftest_main_endpoints} + 1")
+endif()
+math(EXPR _selftest_endpoint_peak "${_selftest_main_endpoints} + 2")
+if(KICKOS_TASK_ENDPOINT_BUDGET LESS _selftest_endpoint_peak)
+  message(FATAL_ERROR
+    "selftest: main holds up to ${_selftest_main_endpoints} endpoint(s) and reply_abandoned_cap "
+    "creates 2 more, past KICKOS_TASK_ENDPOINT_BUDGET ${KICKOS_TASK_ENDPOINT_BUDGET}")
+endif()
 set(_selftest_images "")
 set(_selftest_region_lo "")
 set(_selftest_region_hi "")
-foreach(_part RANGE 1 ${_selftest_parts})
-  math(EXPR _part_lo
-       "((${_part} - 1) * ${_selftest_regions} + ${_selftest_parts} - 1) / ${_selftest_parts} + 1")
-  math(EXPR _part_hi
-       "(${_part} * ${_selftest_regions} + ${_selftest_parts} - 1) / ${_selftest_parts}")
-  set(_part_img "selftest_p${_part}")
-  if(_part EQUAL 1)
-    set(_part_img selftest)
+set(_selftest_image_console "")
+foreach(_console kernel ${_selftest_consoles})
+  set(_console_img selftest)
+  if(NOT _console STREQUAL "kernel")
+    set(_console_img selftest_${_console})
   endif()
-  list(APPEND _selftest_images ${_part_img})
-  list(APPEND _selftest_region_lo ${_part_lo})
-  list(APPEND _selftest_region_hi ${_part_hi})
+  set(_part 0)
+  foreach(_run IN LISTS _selftest_bound)
+    math(EXPR _part "${_part} + 1")
+    string(REPLACE "-" ";" _run "${_run}")
+    list(GET _run 0 _part_lo)
+    list(GET _run 1 _part_hi)
+    set(_part_img "${_console_img}_p${_part}")
+    if(_part EQUAL 1)
+      set(_part_img ${_console_img})
+    endif()
+    list(APPEND _selftest_images ${_part_img})
+    list(APPEND _selftest_region_lo ${_part_lo})
+    list(APPEND _selftest_region_hi ${_part_hi})
+    list(APPEND _selftest_image_console ${_console})
+  endforeach()
 endforeach()
+list(LENGTH _selftest_bound _selftest_parts)
 
 list(APPEND _selftest_defs KICKOS_SELFTEST_REGIONS=${_selftest_regions})
 # The arch whose region kernel maintains the cache over a non-cacheable block (KICKOS_ARCH_ARENA_DCACHE).
@@ -140,24 +204,30 @@ set(_img_index 0)
 foreach(_img IN LISTS _selftest_images)
   list(GET _selftest_region_lo ${_img_index} _img_lo)
   list(GET _selftest_region_hi ${_img_index} _img_hi)
+  list(GET _selftest_image_console ${_img_index} _img_console)
   math(EXPR _img_index "${_img_index} + 1")
   add_executable(${_img} ${_selftest_srcs})
-  target_link_libraries(${_img} PRIVATE kickos)
+  if(_img_console STREQUAL "kernel" AND _selftest_partition)
+    kickos_app_system(${_img} PARTITION ${_selftest_partition} SYSTEM selftest_system)
+  elseif(_img_console STREQUAL "kernel" AND KICKOS_AMP_NODE)
+    kickos_app_system(${_img} COMPOSITION ${_selftest_amp_dir}/node0.yaml SYSTEM selftest_system)
+  elseif(_img_console STREQUAL "kernel")
+    kickos_app_system(${_img} COMPOSITION system.yaml SYSTEM selftest_system)
+  else()
+    kickos_app_system(${_img} COMPOSITION consoles/${KICKOS_BOARD}/${_img_console}.yaml
+                      SYSTEM selftest_${_img_console}_system)
+    target_compile_definitions(${_img} PRIVATE KICKOS_SELFTEST_CONSOLE_DRIVER=1)
+  endif()
   kickos_emit_image(${_img})
-  # PEAK concurrently held capabilities, not a sum over the run. The peak is main's 2 permanent
-  # caps (g_lock, g_done) plus the widest mandatory arm's 3; the optional 3 more are
-  # t_mutex_deadlock's, which SKIPS when it cannot allocate them.
-  kickos_declare_app_capabilities(${_img} 5 3 ${KICKOS_CAP_REPLY_DEFAULT})
-  # Endpoint POOL slots, a different count: t_reply_abandoned_cap holds two at once, and at a
-  # ceiling of one below that it fails and leaves every later endpoint create refused.
-  kickos_declare_app_endpoints(${_img} 2)
   target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
   target_compile_definitions(${_img} PRIVATE ${_selftest_defs}
     KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi})
   # Recorded on the target, so a gate picks an image's skip and partial sets by the regions
-  # it actually carries instead of by a part number written out a second time.
+  # it carries and its console, instead of by a name written out a second time.
   set_target_properties(${_img} PROPERTIES
-    KICKOS_SELFTEST_FIRST_REGION "${_img_lo}" KICKOS_SELFTEST_LAST_REGION "${_img_hi}")
+    KICKOS_SELFTEST_FIRST_REGION "${_img_lo}" KICKOS_SELFTEST_LAST_REGION "${_img_hi}"
+    KICKOS_SELFTEST_CONSOLE "${_img_console}"
+    KICKOS_IMAGE_JUDGE tests/integration/check_tap_stream.sh)
   # At the fleet Debug default this app's .text overflows the 64K-flash parts.
   if(NOT KICKOS_ARCH STREQUAL "sim")
     target_compile_options(${_img} PRIVATE -Os)
@@ -250,7 +320,7 @@ message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h,
 set(_tap_arms 109) # unconditional, incl. prio_self_raise_lower, prio_self_boosted, prio_self_ceiling, console_publish_handout, console_publish_narrow, task_authority, task_watch_reports, task_exit_entry_return, task_exit_member_exit, task_dead_after_sweep, task_dead_after_every_sweep, task_slay_after_every_sweep, endpoint_handout, endpoint_handout_parked, notify_no_line, notify_bind_busy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, ipc_one_buffer_both_ends, readable_global, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout, task_handles, task_member_refusals, task_creator_gate, task_group_kill, 3 x thread_slay_*, 2 x task_slay_*
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 16") # bus_device_slots, uart_service, reboot_priv, 13 x irq_*
-  math(EXPR _tap_arms "${_tap_arms} + 4") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout (region 2)
+  math(EXPR _tap_arms "${_tap_arms} + 4") # call_reg_fastpath, reply_recv_notify, reply_recv_notify_park, irq_wait_timeout (region 4)
   math(EXPR _tap_arms "${_tap_arms} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
@@ -307,7 +377,7 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
   # where no peer answers rather than being compiled out.
-  math(EXPR _tap_arms "${_tap_arms} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
+  math(EXPR _tap_arms "${_tap_arms} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_crossing_holder, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # amp_share_crossing
@@ -324,105 +394,117 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STRE
 endif()
 
 # The same count per REGION. The regions are separated by the `#undef TAP_ADD` lines in
-# main.cc: region 1 ends after endpoint_handout, region 2 after call_donation_hold, region 3
-# after task_exit_member_exit, region 4 after the IRQ arms, region 5 after uncached_grant_sync,
-# region 6 is the rest.
+# main.cc: region 1 ends after sem_raii, region 2 after endpoint_handout, region 3 after
+# reply_abandoned_cap, region 4 after call_donation_hold, region 5 after cap_reply_slot_reuse,
+# region 6 after task_exit_member_exit, region 7 after task_slay_after_every_sweep, region 8
+# after the IRQ arms, region 9 after caller_stack, region 10 is the rest.
 #
 # These MUST stay independent expressions, never derived from _tap_arms above: the equality
 # asserted below is only a check while both sides are stated separately, and a new arm has to
 # move a clause on each side.
-set(_tap_arms_r1 34) # region 1, unconditional, svc_roundtrip through endpoint_handout: 16 scheduler/sync/time/console arms, 10 x mutex_*, 2 x prio_self_*, 6 x endpoint_*
+set(_tap_arms_r1 16) # region 1, unconditional, svc_roundtrip through sem_raii: the scheduler/sync/time/console arms
 
-set(_tap_arms_r2 25) # region 2, unconditional, endpoint_handout_parked through call_donation_hold, incl. endpoint_handout_parked, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, call_infoless_revert, call_close_reply, call_happy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, call_donation, call_donation_hold
+set(_tap_arms_r2 18) # region 2, unconditional, mutex_basic through endpoint_handout: 10 x mutex_*, 2 x prio_self_*, 6 x endpoint_*
+
+set(_tap_arms_r3 10) # region 3, unconditional: endpoint_handout_parked, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
+
+set(_tap_arms_r4 15) # region 4, unconditional, call_infoless_revert through call_donation_hold, incl. call_infoless_revert, call_close_reply, call_happy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, call_donation, call_donation_hold
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r2 "${_tap_arms_r2} + 4") # reply_recv_notify_park, reply_recv_notify, irq_wait_timeout, call_reg_fastpath
+  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 4") # reply_recv_notify_park, reply_recv_notify, irq_wait_timeout, call_reg_fastpath
 endif()
 
-set(_tap_arms_r3 25) # region 3, unconditional: call_donation_slow, call_donation_pending, endpoint_crossdomain, cap_index0, cap_chunk_span, cap_gen_reuse, cap_child_width, cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close, cap_reply_slot_reuse, console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, task_authority, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen, join_timeout, task_exit_entry_return, task_exit_member_exit
+set(_tap_arms_r5 11) # region 5, unconditional: call_donation_slow, call_donation_pending, endpoint_crossdomain, cap_index0, cap_chunk_span, cap_gen_reuse, cap_child_width, cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close, cap_reply_slot_reuse
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 3") # bus_device_slots, uart_service, reboot_priv
+  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 2") # bus_device_slots, uart_service
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 1") # endpoint_bound
+  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # endpoint_bound
+endif()
+
+set(_tap_arms_r6 14) # region 6, unconditional: console_publish_priv, shutdown_priv, writable_global, readable_global, authority_cap, task_authority, periph_enable_unheld, periph_reg_write_unheld, privileged_spawn_refused, thread_join, join_stale_gen, join_timeout, task_exit_entry_return, task_exit_member_exit
+if(KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # reboot_priv
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
-  math(EXPR _tap_arms_r3 "${_tap_arms_r3} + 2") # periph_reg_write_mask, window_list
+  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 2") # periph_reg_write_mask, window_list
 endif()
 
-set(_tap_arms_r4 16) # region 4, unconditional, task_dead_after_sweep through the IRQ arms, incl. task_dead_after_sweep, task_dead_after_every_sweep, task_handles, task_member_refusals, task_creator_gate, task_group_kill, prio_self_ceiling, task_watch_reports, 3 x thread_slay_*, 3 x task_slay_*, notify_no_line, notify_bind_busy
+set(_tap_arms_r7 14) # region 7, unconditional, task_dead_after_sweep through task_slay_after_every_sweep, incl. task_dead_after_sweep, task_dead_after_every_sweep, task_handles, task_member_refusals, task_creator_gate, task_group_kill, prio_self_ceiling, task_watch_reports, 3 x thread_slay_*, 3 x task_slay_*
+
+set(_tap_arms_r8 2) # region 8, unconditional, notify_no_line through the IRQ arms: notify_no_line, notify_bind_busy
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 13") # 13 x irq_*
+  math(EXPR _tap_arms_r8 "${_tap_arms_r8} + 13") # 13 x irq_*
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 2") # irq_cross_core_wake, irq_reclaim_stale_raise
+  math(EXPR _tap_arms_r8 "${_tap_arms_r8} + 2") # irq_cross_core_wake, irq_reclaim_stale_raise
 endif()
 
-set(_tap_arms_r5 4) # region 5, unconditional, caller_stack through uncached_grant_sync: caller_stack, mem_self_grant_nonpow2, domain_share, mmio_grant
+set(_tap_arms_r9 4) # region 9, unconditional, caller_stack_arena through caller_stack: mem_self_grant_nonpow2, domain_share, mmio_grant, caller_stack
 if(KICKOS_HAVE_ASPACE)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # caller_stack_arena
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # caller_stack_arena
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # region_mode
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # region_mode
 endif()
 if(KICKOS_MEMORY_ENFORCED)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # cross_task_block
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # cross_task_block
 endif()
 if(KICKOS_FAULT_ISOLATION)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # task_exit_driver_trap
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # task_exit_driver_trap
 endif()
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 5") # window_memory_ro, task_exit_member_fault, task_exit_entry_killed, task_exit_cancelled_fault, task_exit_implicit_fault
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 5") # window_memory_ro, task_exit_member_fault, task_exit_entry_killed, task_exit_cancelled_fault, task_exit_implicit_fault
 endif()
 if(KICKOS_ENABLE_SELFTEST AND (KICKOS_HAVE_MPU OR DEFINED _selftest_spare_dev))
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 1") # window_get
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # window_get
 endif()
 if(KICKOS_ENABLE_SELFTEST AND NOT KICKOS_HAVE_ASPACE)
-  math(EXPR _tap_arms_r5 "${_tap_arms_r5} + 2") # ram_alloc_zeroed, uncached_grant_sync
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 2") # ram_alloc_zeroed, uncached_grant_sync
 endif()
 
-set(_tap_arms_r6 5) # region 6, unconditional, stackbase_arena through mem_self_grant, incl. ipc_one_buffer_both_ends, confused_deputy, console_publish_handout, console_publish_narrow, mem_self_grant
+set(_tap_arms_r10 5) # region 10, unconditional, stackbase_arena through mem_self_grant, incl. ipc_one_buffer_both_ends, confused_deputy, console_publish_handout, console_publish_narrow, mem_self_grant
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 4") # doorbell_xpoke, irq_kernel_line_reserved, prio_ceiling_refused, prio_ceiling_narrow_only
 endif()
 if(KICKOS_HAVE_MPU)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # stackbase_arena
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 1") # stackbase_arena
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 2") # grant_reserved, dev_window_exclusive
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 2") # grant_reserved, dev_window_exclusive
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 49") # frame_run_slot_recycle, call_reply_undisclosed, cap_objects, cap_map, recv_buf_unmapped, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, uncached_alias_sync, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, app_pointers_relocated, process_data_from_image, process_data_template
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 49") # frame_run_slot_recycle, call_reply_undisclosed, cap_objects, cap_map, recv_buf_unmapped, cap_map_over_stack, stack_grant_refused, stack_guard_intact, stack_handoff_refused, stack_slot_returns, cap_map_pins_run, cap_share, aspace_seam, aspace_model, aspace_map_cycle, aspace_translate, aspace_refusals, aspace_span, aspace_acquire_dup, aspace_balance, aspace_domain_balance, aspace_forced_unwind, aspace_churn, stack_is_frames, 2 x aspace_two_spaces_*, process_private_data, task_siblings_share, task_handoff_readback, task_handoff_donor_exits, task_handoff_slice, reservation_teardown, frame_scrub_cross_task, 2 x spawn_refusal_frees_*, parked_frame_hostile, split_access, process_ipc_same_addr, process_call_reply, grant_kernel_word_refused, self_grant_retype, uncached_alias_sync, reent_seating, aspace_acquire_balance, map_tlbi_elided, aspace_active_cores, app_pointers_relocated, process_data_from_image, process_data_template
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 2") # fault_kills_task, kernel_state_unreachable
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 2") # fault_kills_task, kernel_state_unreachable
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND DEFINED _selftest_spare_dev)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # window_addr
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 1") # window_addr
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 5") # port_window, vector_survives_block, vector_survives_preempt, vector_starts_clean, vector_fault_contained
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 5") # port_window, vector_survives_block, vector_survives_preempt, vector_starts_clean, vector_fault_contained
 endif()
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
    AND KICKOS_ARCH STREQUAL "x86_64" AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # vector_survives_migrate
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 1") # vector_survives_migrate
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_crossing_holder, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # amp_share_crossing
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 1") # amp_share_crossing
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE AND KICKOS_MEMORY_ENFORCED
    AND NOT KICKOS_AMP_USER_SHARE_SIZE EQUAL 0)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 2") # amp_share_seated, amp_share_window
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 2") # amp_share_seated, amp_share_window
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 24") # resched_reaches_pinned_caller, prio_self_lower_moves_waiter, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, reent_per_thread_cores
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 24") # resched_reaches_pinned_caller, prio_self_lower_moves_waiter, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, reent_per_thread_cores
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_ARCH STREQUAL "x86_64")
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # fp_enabled_every_core
+  math(EXPR _tap_arms_r10 "${_tap_arms_r10} + 1") # fp_enabled_every_core
 endif()
 
 # Every region main.cc cuts owes a count, and the counts must add up to the whole suite. That

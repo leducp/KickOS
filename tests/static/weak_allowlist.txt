@@ -40,6 +40,11 @@ ___register_frame
 kickos_c6_lp_probe_boot
 _kickos_c6_lp_probe_boot
 
+# A USB device console driver's mark (include/kickos/usb_console.h): only an image linking one
+# defines it, and chip init brings the USB clock tree up where it does.
+kickos_usb_device_console
+_kickos_usb_device_console
+
 # --- toolchain-owned, present only in the final image -------------------------
 # Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT.
 __aeabi_idiv0

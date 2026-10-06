@@ -41,6 +41,7 @@ target_link_libraries(ampping_app PRIVATE KickOS::kernel)
 foreach(_ampping ampping_n0 ampserve)
   add_executable(${_ampping} $<TARGET_OBJECTS:ampping_app>)
   target_link_libraries(${_ampping} PRIVATE KickOS::kernel ampping_system)
+  set_target_properties(${_ampping} PROPERTIES KICKOS_APP_SYSTEM ampping_system)
   kickos_emit_image(${_ampping})
 endforeach()
 # One CONCURRENTLY parked far caller: the peer's call is held on this node's table while the
@@ -48,9 +49,20 @@ endforeach()
 kickos_declare_app_capabilities(ampserve ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
 
 # The peer the SELFTEST talks to: it echoes the caller's own bytes, where ampserve's reply
-# transforms the payload.
-add_executable(ampecho main_echo.c)
-target_link_libraries(ampecho PRIVATE kickos)
+# transforms the payload. Its node of the partition the selftest's node 0 runs in, every other
+# node an ampecho too.
+set(_ampecho_systems "${PROJECT_SOURCE_DIR}/user/apps/common/selftest/systems/${KICKOS_BOARD}/${KICKOS_CONFIG_VARIANT}")
+set(_ampecho_partition "")
+foreach(_amp_node RANGE 0 ${_amp_last_node})
+  if(_amp_node EQUAL 0 AND NOT KICKOS_AMP_NODE_ID EQUAL 0)
+    list(APPEND _ampecho_partition "${_ampecho_systems}/node0.yaml")
+  else()
+    list(APPEND _ampecho_partition "${_ampecho_systems}/echo${_amp_node}.yaml")
+  endif()
+endforeach()
+add_executable(ampecho main_echo.c crossing.c)
+target_include_directories(ampecho PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+kickos_app_system(ampecho PARTITION ${_ampecho_partition})
 kickos_emit_image(ampecho)
 kickos_declare_app_capabilities(ampecho ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
 

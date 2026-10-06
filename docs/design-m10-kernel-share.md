@@ -278,8 +278,8 @@ to a window uncached (`aspace_frames_type_ok`, `memory_type_free`,
 region board asking the held task domains beside the live threads, an empty task holding its data
 with no member; a list names a block once; and the region set marks its windows, so a region board
 answers none for its stack or data region. `window_memory_ro` witnesses all three. The spawn
-chain's frame sets the x86 reservations, at one core and above: SYSK 1832 and 2432, SYSPRIV and
-SYSPRIVSW 1856 and 2368, and the spawn floor 2624 and 3328.
+chain's frame sets the x86 reservations, at one core and above: SYSK 1864 and 2432, SYSPRIV and
+SYSPRIVSW 1920 and 2368, and the spawn floor 2752 and 3328.
 
 ## 7. The x86 port grant and `kos_port_reg_write` (M10.1.8)
 
@@ -330,7 +330,7 @@ CMOS data port; the CMOS holder moving itself to core 1 and reading there on the
 creator having no right to pin another task's thread; and a direct index write faulting. Removing
 the close on switch, opening the index, dropping the holder check or loading every switch into core
 0's bitmap turns it red. The switch's compare lies on the interrupt chain, which x86's single-core
-IRQ and IST reservations of 576 and its spawn floor of 2624 cover
+IRQ and IST reservations of 640 and its spawn floor of 2752 cover
 (`arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h`); rv64 reserves its SYSK, a spawn
 seeding the child's tables, at 2048.
 
@@ -438,16 +438,17 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   its region.
 - **Reservations.** The entry flag in `spawn_masked`'s frame and the explicit task's seed
   posture (`DOM_CALLER_TASK`) carried through the domain claim are on the spawn chain. x86
-  reserves SYSK at 1832 on one core and 2432 above it, SYSPRIV and SYSPRIVSW at 1856 and 2368,
-  and the spawn floor at 2624 and 3328
+  reserves SYSK at 1864 on one core and 2432 above it, SYSPRIV and SYSPRIVSW at 1920 and 2368,
+  and the spawn floor at 2752 and 3328
   (`arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h`, `Kconfig`).
 - **Data from the image.** On a translating board an explicit task's space copies its static
   data from one snapshot of root's, taken by the first explicit task's seed (`DOM_CALLER_TASK`),
   so every task and every restart an init starts begins from the image's data as root held it
-  then and never from a global the init wrote since. A spawn bringing its own data grant keeps
-  copying root's live data while root lives, as the T6 template of `design-m6-mmu.md` states:
-  a global root writes before such a spawn is one the child reads, which the selftest's IRQ
-  driver arms rely on. A snapshot that cannot be taken refuses the creation with `-KOS_ENOMEM`.
+  then and never from a global the init wrote since. An implicit task, the one a spawn creates,
+  copies its spawner's live data, root's or a task's, as the T6 template of `design-m6-mmu.md`
+  states: a global the spawner writes before the spawn is one the child reads, which the
+  selftest's IRQ driver arms rely on. Root is the only snapshot source. A snapshot that cannot be
+  taken refuses the creation with `-KOS_ENOMEM`.
 - **Every reservation zeroed.** `kos_ram_alloc` clears a region board's block after the bracket
   that recorded it, and cleans it to memory and invalidates its lines where the arch puts a data
   cache over the arena, as the frame pool already clears a translating board's.

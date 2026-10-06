@@ -88,11 +88,12 @@ namespace kickos
     // Seed shared RX text, private RW data and matching validation ranges.
     // The first space uses the image data. A later one copies the snapshot of
     // root's data where `from_snapshot`, an explicit task's, the first such seed
-    // taking it out of the live root; any other copies the live root while it
-    // lives and the snapshot after, which root's release takes if nothing did.
-    // Fail if neither source exists. On failure, release the partially built
-    // space with aspace_release.
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot);
+    // taking it out of the live root; any other copies `spawner`'s live data where
+    // it names a space, else the live root while it lives and the snapshot after,
+    // which root's release takes if nothing did. Fail if no source exists. On
+    // failure, release the partially built space with aspace_release.
+    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot,
+                           struct arch_aspace* spawner);
 
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.

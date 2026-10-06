@@ -203,8 +203,7 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 // access, EINVAL for a nonzero mask with no machine core, EBADF for an invalid/
 // exited handle, ENOSYS on single-core kernels.
 int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
-// The caller's own handle, which is what lets a thread place itself. KOS_THREAD_NONE on a
-// single-core kernel, which carries no placement.
+// The caller's own handle.
 kos_thread_t kos_thread_self(void);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
 // the calling task's priority ceiling (kos_task_sched_grant). A thread boosted by priority

@@ -143,8 +143,9 @@ enum kos_aspace_op
 };
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect
-// -KOS_EINVAL; the syscall stub returns an unsigned word. "Root only" admits any
-// thread of root's task and any thread holding KOS_AUTH_SYSTEM.
+// -KOS_EINVAL; the syscall stub returns an unsigned word. "Gated" admits any thread
+// of a task whose threads hold a crossing of the partition: root's, and each task the
+// init delegates one to.
 enum kos_amp_op
 {
     // (node) -> send one echo request and ring the peer. Zero means accepted;
@@ -171,7 +172,8 @@ enum kos_amp_op
     // Must be zero: remote record indices lie outside the local pool.
     KOS_AMP_OP_BAND_RESOLVE = 12,
     // () -> publish with a peer doorbell seat withheld, then restore and drain.
-    // Bits 15:0: chosen node; bits 31:16: skipped raises at that node.
+    // Bits 15:0: chosen node; bits 31:16: skipped raises at that node. Gated, or a
+    // thread holding KOS_AUTH_SYSTEM.
     KOS_AMP_OP_DEFER = 13,
     // () -> reset-record checks: 1 abandoned record freed; 2 next call gets a
     // record; 4 token changed; 8 stale token releases no slot; 16 test completed.
@@ -179,17 +181,18 @@ enum kos_amp_op
     KOS_AMP_OP_RESET_RECORD = 14,
     // (hold) -> withhold the first peer's doorbell seat, or restore it when zero.
     // Publications remain unserviced while held, keeping remote callers parked.
-    // Root only. Return 1 if moved, or 0 when unsupported (skip the test).
+    // Gated. Return 1 if moved, or 0 when unsupported (skip the test).
     KOS_AMP_OP_PEER_HOLD = 17,
-    // (port) -> signed result of privileged endpoint mint for the first peer.
-    // Root only. Any minted cap is closed before return.
+    // (port) -> signed result of privileged endpoint mint for the first peer. Any minted cap is
+    // closed before return, but with KOS_AMP_MINT_HOLD in the argument, where its handle is the
+    // answer and the caller holds the endpoint's only capability.
     KOS_AMP_OP_MINT = 18,
     // (node) -> calls deferred because the reply ring had no free slot.
     // The call remains unread; this counts backpressure, not lost messages.
     KOS_AMP_OP_REPLY_RESERVE = 19,
     // () -> free reply slots for answering the first peer. Drain first if that
     // peer has no kernel, so earlier forged calls cannot fill the ring forever.
-    // Zero means full. Root only.
+    // Zero means full. Gated.
     KOS_AMP_OP_REPLY_ROOM = 20,
     // (node) -> replies whose content was lost on publication failure or call-ring
     // reset. Count each lost answer once; send an empty reply while the obligation
@@ -199,18 +202,18 @@ enum kos_amp_op
     KOS_AMP_OP_TAIL_RESET = 22,
     // () -> test the strike limit on the unused self reply ring. Bits: 1 first
     // invalid-tail publication refused; 2 accepted at limit; 4 published at
-    // adopted tail; 8 tail_reset incremented; 16 test ran. Root only.
+    // adopted tail; 8 tail_reset incremented; 16 test ran. Gated.
     KOS_AMP_OP_TAIL_RECOVERY = 23,
     // () -> accept a call, remove its reply reservation, then reply to a full
     // ring. Bits: 1 reply_unsent incremented; 2 call slot retained; 4 token dead;
-    // 8 test ran; 16 skipped for a live peer. Root only. Finish with ANSWER_DISCHARGE.
+    // 8 test ran; 16 skipped for a live peer. Gated. Finish with ANSWER_DISCHARGE.
     KOS_AMP_OP_ANSWER_DEFER = 24,
     // () -> service the deferred answer. Bits: 1 empty tagged reply sent;
-    // 2 call slot returned; 4 no pending record; 8 test ran. Root only.
+    // 2 call slot returned; 4 no pending record; 8 test ran. Gated.
     KOS_AMP_OP_ANSWER_DISCHARGE = 25,
     // () -> reset a call ring. Bits: 1 reset ran; 2 abandoned record dead;
     // 4 empty tagged reply sent; 8 reply_unsent incremented; 16 test ran;
-    // 32 skipped. Root only.
+    // 32 skipped. Gated.
     KOS_AMP_OP_RESET_ANSWERS = 26,
     // (node) -> arrivals answered with -KOS_EFAULT because copying payload or
     // receive-info to a local buffer failed. Count once per arrival; separate
@@ -218,7 +221,7 @@ enum kos_amp_op
     KOS_AMP_OP_DELIVER_FAULT = 27,
     /* () -> call slots from the first peer this node still holds: taken and not yet
      * released. A delivered call is held until its receiver has landed it and, where no
-     * reply capability reached that receiver, answered it. Root only.
+     * reply capability reached that receiver, answered it. Gated.
      */
     KOS_AMP_OP_CALL_HELD = 30,
     /* () -> 1 while a thread is parked in receive on the endpoint bound to this node's first
@@ -246,6 +249,10 @@ enum kos_amp_op
      */
     KOS_AMP_OP_MAX
 };
+
+// KOS_AMP_OP_MINT's argument bit keeping the minted capability.
+// Selftest-only, as the crossing-holder gate is: both bypass the composition's delegation.
+#define KOS_AMP_MINT_HOLD 0x80000000u
 
 /* KOS_AMP_OP_FORGE selectors. Unknown selectors return KOS_AMP_V_EMPTY. */
 enum

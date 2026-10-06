@@ -1739,6 +1739,11 @@ C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
 # A node composition with neither crossing nor partition region.
 LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    partition: true\n", ""),
         ("    uses: [/amp/3]\n", ""), ("    maps: { /shm/book: rw }\n", "")]
+# The arm64 node 0 holding its crossing and no partition region, and the build of a shared image,
+# whose peers run no kernel.
+ARM64_CROSSING_ONLY = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: uncached\n    partition: true\n", ""),
+                       ("    maps: { /shm/book: rw }\n", "")]
+ARM64_SHARED = mutate(ARM64_AMP, [("    share_cache: uncached\n", "    share_cache: uncached\n    image: shared\n")])[0]
 
 
 def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=None):
@@ -2046,6 +2051,9 @@ SCENARIOS = [
                                    [(0, "  - name: /shm/book", "partition.lone")], C6_AMP, paths=single_emit)),
     ("partition.lone", partitioned("c6", C6_PAIR, {0: [LONE[0], LONE[2]]},
                                    [(0, "    uses: ", "partition.lone")], C6_AMP, paths=single_emit)),
+    ("partition.lone", partitioned("arm64", ARM64_PAIR, {0: ARM64_CROSSING_ONLY},
+                                   [(0, "    uses: ", "partition.lone")], ARM64_AMP, paths=single_emit)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: ARM64_CROSSING_ONLY}, [], ARM64_SHARED, paths=single_emit)),
     ("partition.port", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    uses: [/amp/3]\n")]},
                                    [(1, "    uses: ", "partition.port")], C6_AMP)),
     ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [("    uses: [/amp/3]\n", "")]},

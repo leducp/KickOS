@@ -235,16 +235,16 @@ namespace kickos
             return true;
         }
 
-        // Copy data from the live root, or from the snapshot where `from_snapshot` or once root
-        // is gone, under IrqLock.
+        // Copy data from the live `home`, or from the snapshot where `from_snapshot` or once
+        // `home` is gone, under IrqLock.
         bool data_copy(struct arch_aspace* space, VirtualRanges* ranges, Extent const& data,
-                       size_t g, bool from_snapshot)
+                       size_t g, bool from_snapshot, struct arch_aspace* home)
         {
             if (from_snapshot and not data_template_fill(data, g))
             {
                 return false;
             }
-            bool const live = g_data_home != nullptr and not from_snapshot;
+            bool const live = home != nullptr and not from_snapshot;
             if (not live and not g_data_template_filled)
             {
                 return false;
@@ -268,7 +268,7 @@ namespace kickos
                 bool held = false;
                 if (live)
                 {
-                    src = acquire_page(g_data_home, va);
+                    src = acquire_page(home, va);
                     held = src != nullptr;
                 }
                 else
@@ -280,7 +280,7 @@ namespace kickos
                 {
                     if (held)
                     {
-                        release_page(g_data_home, va);
+                        release_page(home, va);
                     }
                     frame_pool_free_run(run, data.pages, g);
                     (void)ranges->release(data.base);
@@ -289,7 +289,7 @@ namespace kickos
                 kmemcpy(dst, src, g);
                 if (held)
                 {
-                    release_page(g_data_home, va);
+                    release_page(home, va);
                 }
             }
             if (arch_aspace_map(space, data.base, run, data.pages, ARCH_MAP_R | ARCH_MAP_W,
@@ -305,7 +305,8 @@ namespace kickos
         }
     }
 
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot)
+    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot,
+                           struct arch_aspace* spawner)
     {
         size_t const g = arch_aspace_granule();
         if (not ranges->init(g))
@@ -337,7 +338,12 @@ namespace kickos
         }
         if (g_data_home != nullptr or g_data_template_filled)
         {
-            return data_copy(space, ranges, data, g, from_snapshot);
+            struct arch_aspace* home = spawner;
+            if (home == nullptr)
+            {
+                home = g_data_home;
+            }
+            return data_copy(space, ranges, data, g, from_snapshot, home);
         }
         // The first space uses the image data initialized by root constructors.
         // A nonzero template with no live root means snapshot creation failed.
