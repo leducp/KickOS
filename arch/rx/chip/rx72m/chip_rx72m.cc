@@ -6,9 +6,8 @@
 // with the arch layer's clean-room regs.h.
 //
 // Board: RX72M CPU Card with RDC-IC (RTK0EMXDE0C00000BJ), R5F572MNDDBD, 24 MHz
-// main crystal (board UM r12uz0098ej0110 Table 1-1). Console = SCI6 on PB1/TXD6
-// + PB0/RXD6 (board Table 5-4, CN6/CN7 "Renesas Motor Workbench" serial). Diag
-// LED = LED6 on P80, active-low (board Table 5-9).
+// main crystal (board UM r12uz0098ej0110 Table 1-1). Console = SCI6, on the pins the board
+// file names.
 //
 // Clock target: ICLK 240 MHz from the 24 MHz crystal via PLL (the part's max; UM sec.9,
 // datasheet fPLL 120-240, ICLK max 240). PLL VCO = 24 MHz /1 x10 = 240; ICLK = /1. Above
@@ -18,6 +17,7 @@
 // is the SCI + CMTW clock.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
@@ -25,6 +25,7 @@
 
 // Bases in mmap.h, IRQ vectors in irq.h, per-peripheral offsets/fields in regs/.
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "irq.h"
 #include "routing.h"
 #include "regs/cgc.h"
@@ -269,16 +270,50 @@ namespace
         r16(flash::ROMCE) = flash::ROMCE_ROMCEN;
     }
 
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::SCI6, "the board's console is not the SCI this backend drives");
+
+    constexpr uint32_t TXD_PORT = port::port_of(KICKOS_BOARD_CONSOLE_TXD_BIT);
+    constexpr uint32_t RXD_PORT = port::port_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
+    constexpr uint8_t TXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_TXD_BIT);
+    constexpr uint8_t RXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or ((port_base) == mmap::PORT and p * 8u + pin >= (first) and p * 8u + pin <= (last))
+    constexpr bool rx72m_pin_kernel_owned(uint32_t p, uint32_t pin)
+    {
+        return (p == TXD_PORT and pin == KICKOS_BOARD_CONSOLE_TXD_BIT % 8u)
+               or (p == RXD_PORT and pin == KICKOS_BOARD_CONSOLE_RXD_BIT % 8u)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::PORT and p * 8u + pin == (bit))
+    constexpr bool rx72m_pin_listed(uint32_t p, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(rx72m_pin_kernel_owned, rx72m_pin_listed, port::PORT_INDEX_MAX + 1u,
+                                          port::PIN_MAX + 1u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
+
     void sci6_console_init()
     {
-        // Pin mux: route PB1->TXD6, PB0->RXD6 (UM sec.23.4.1 procedure). PSEL is only
-        // writable while the pin's PMR bit is 0, which it is at reset. Without the PMR
-        // step the pins stay GPIO.
+        // Pin mux (UM sec.23.4.1 procedure). PSEL is only writable while the pin's PMR bit
+        // is 0, which it is at reset. Without the PMR step the pins stay GPIO.
         mpc_pfs_unlock(true);
-        r8(mpc::PB1PFS) = mpc::PFS_PSEL_SCI6; // TXD6
-        r8(mpc::PB0PFS) = mpc::PFS_PSEL_SCI6; // RXD6
+        r8(mpc::pfs(TXD_PORT, KICKOS_BOARD_CONSOLE_TXD_BIT % 8u)) = KICKOS_BOARD_CONSOLE_TXD_SELECT;
+        r8(mpc::pfs(RXD_PORT, KICKOS_BOARD_CONSOLE_RXD_BIT % 8u)) = KICKOS_BOARD_CONSOLE_RXD_SELECT;
         mpc_pfs_unlock(false);
-        r8(port::PORTB_PMR) |= port::PB1 | port::PB0; // PB1,PB0 -> peripheral function
+        if constexpr (TXD_PORT == RXD_PORT)
+        {
+            r8(port::pmr(TXD_PORT)) |= TXD_MASK | RXD_MASK;
+        }
+        else
+        {
+            r8(port::pmr(TXD_PORT)) |= TXD_MASK;
+            r8(port::pmr(RXD_PORT)) |= RXD_MASK;
+        }
 
         // SMR, SCMR, SEMR and BRR are all writable only with TE and RE both 0
         // (UM sec.42.2.9/12/13/15 notes).
@@ -626,32 +661,6 @@ void arch_console_reclaim(void)
 
     // TX only, TIE off, and LAST.
     r8(sci::SCR) = sci::SCR_TE;
-}
-
-void arch_diag_led_init(void)
-{
-    r8(port::PORT8_PMR) &= ~port::LED6;   // GPIO (not peripheral)
-    r8(port::PORT8_PODR) |= port::LED6;   // drive high => LED off (active-low, board Table 5-9)
-    r8(port::PORT8_PDR) |= port::LED6;    // output
-}
-
-void arch_diag_led_set(int on)
-{
-    if (on != 0)
-    {
-        r8(port::PORT8_PODR) &= ~port::LED6; // low => LED on
-    }
-    else
-    {
-        r8(port::PORT8_PODR) |= port::LED6;  // high => LED off
-    }
-}
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map or an app cannot dark the
-// console: PB1/TXD6 + PB0/RXD6, muxed for life by sci6_console_init.
-static bool rx72m_pin_kernel_owned(uint32_t p, uint32_t pin)
-{
-    return p == 0x0Bu and pin <= 1u;
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH mux stages an RX

@@ -27,9 +27,6 @@ constexpr uintptr_t UNDER_INIT = 1u;
 // Written by this space's own driver threads through thread_start, never by the bring-up: on a
 // translating board the bring-up runs in the init's space, not the driver's.
 Atomic<uint32_t, Order::RELAXED> g_under_init{0u};
-
-// What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
-constexpr uint32_t HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 }
 
 int fail(char const* tag, char const* msg)
@@ -81,7 +78,7 @@ int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task,
 {
     if (instance != nullptr)
     {
-        (void)kos_cap_narrow(ep, HANDOVER_KEPT);
+        (void)kos_cap_narrow(ep, KOS_DRV_HANDOVER_KEPT);
         int const probe = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
         if (probe >= 0)
         {
@@ -270,7 +267,7 @@ int instance_failed(Descriptor const& d, struct kos_driver_instance const& in, k
     }
     if (d.ep_posture == KOS_DRV_EP_HANDOVER)
     {
-        (void)kos_cap_narrow(in.endpoint, HANDOVER_KEPT);
+        (void)kos_cap_narrow(in.endpoint, KOS_DRV_HANDOVER_KEPT);
     }
     return fail(d.tag, msg);
 }
@@ -336,15 +333,7 @@ int instance_bring_up(Descriptor const& d, struct kos_service_cfg const* cfg,
         return instance_failed(d, in, line, 0, note, "ERROR: task_create failed\n");
     }
     in.task = task;
-    int8_t top = d.threads[0].prio_delta;
-    for (uint8_t i = 1; i < d.thread_count; i++)
-    {
-        if (d.threads[i].prio_delta > top)
-        {
-            top = d.threads[i].prio_delta;
-        }
-    }
-    if (kos_task_sched_grant(task, static_cast<uint8_t>(cfg->prio + top), in.core_mask) != 0)
+    if (kos_task_sched_grant(task, in.ceiling, in.core_mask) != 0)
     {
         return instance_failed(d, in, line, 0, note, "ERROR: task_sched_grant refused the declaration\n");
     }

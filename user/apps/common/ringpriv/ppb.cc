@@ -60,7 +60,7 @@ int main(int, char**)
     // (arch/arm/armv7m/arch_armv7m.cc) while privileged, so the dump that follows could
     // not be printed at all unless privileged PPB reads work.
     ksnprintf(msg, sizeof(msg),
-              "[ringppb] root: reading privileged-only SCB->CPUID at 0x%x "
+              "[ringppb] main: reading privileged-only SCB->CPUID at 0x%x "
               "(expect BusFault)\n",
               static_cast<unsigned int>(SCB_CPUID));
     emit(msg);

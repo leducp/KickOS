@@ -24,6 +24,7 @@
 #if !KICKOS_C6_LP_NODE
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/arch/amp_shared.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
@@ -36,6 +37,7 @@
 
 #include <kickos/chip_mmap.h>
 #include "apm_rows.h"
+#include "board_pins.h"
 #include "irq.h"
 #include "mtime_conv.h"
 #include "regs/apm.h"
@@ -111,8 +113,8 @@ namespace
     using kickos::esp32c6::mtime_ns_to_ticks;
     using kickos::esp32c6::mtime_ticks_to_ns;
 
-    // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on GPIO16/17 behind
-    //     the board's CH343P (U4). The ROM already sets UART0 up (baud/pins) for its own
+    // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on the board's console
+    //     pins. The ROM already sets UART0 up (baud/pins) for its own
     //     boot log, so pushing bytes needs no setup: poll STATUS.TXFIFO_CNT for room,
     //     write the FIFO. FIFO depth 128.
 
@@ -152,6 +154,9 @@ namespace
     // reaching outside the window it reports would rewrite registers whose holder was
     // never checked. UART1 sits at base + 0x1000, outside it.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == CONSOLE_WIN_BASE, "the board's console is not the UART this backend drives");
+    static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
+                  "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
     constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
 
     // Every offset the reclaim body writes must lie inside that window. Adding a store
@@ -317,8 +322,8 @@ namespace
         __asm volatile("csrs mie, %0" ::"r"(1u << DOORBELL_CPU_INT) : "memory");
     }
 
-    // --- Diagnostic LED: onboard WS2812B (board LED2, DI on GPIO8, VDD tied to 3V3,
-    //     no enable pin). GPIO bit-bang FAILS here: the register-write latency exceeds
+    // --- Diagnostic LED: the board's addressable WS2812B (VDD tied to 3V3, no enable pin).
+    //     GPIO bit-bang FAILS here: the register-write latency exceeds
     //     the WS2812B ~400 ns bit high-time even at 160 MHz, so software cannot form
     //     valid bits (LED latched solid white). The RMT peripheral (regs/rmt.h) clocks
     //     the pulse train in hardware. Panic path: single frame, polled, no
@@ -383,6 +388,24 @@ namespace
             }
         }
     }
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) or ((port_base) == mmap::GPIO_BASE and pin >= (first) and pin <= (last))
+    constexpr bool c6_pin_kernel_owned(uint32_t pin)
+    {
+        return pin == KICKOS_BOARD_LED_BIT or pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT
+            KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::GPIO_BASE and pin == (bit))
+    constexpr bool c6_pin_listed(uint32_t, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return c6_pin_kernel_owned(pin); },
+                                          c6_pin_listed, 1u, 31u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -692,7 +715,9 @@ void kickos_rv_ext_dispatch_dev(void)
     }
 }
 
-// --- Kernel diagnostic LED: onboard WS2812B on GPIO8, driven by RMT channel 0.
+static_assert(KICKOS_BOARD_LED_ADDRESSABLE == 1, "this backend drives a WS2812, an addressable LED");
+
+// --- Kernel diagnostic LED: the board's WS2812B, driven by RMT channel 0.
 void arch_diag_led_init(void)
 {
     // Ungate + reset the RMT, then select its source clock. PCR owns both on the C6.
@@ -709,11 +734,11 @@ void arch_diag_led_init(void)
     r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG;                     // carrier_en defaults 1 -> cleared here
     r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;
 
-    // Route RMT ch-0 TX -> GPIO8: GPIO matrix out-sel = signal 71, output enable,
+    // Route RMT ch-0 TX to the LED's pin: GPIO matrix out-sel = signal 71, output enable,
     // IO_MUX pad on the GPIO function with a driver.
-    r32(reg::gpio::func_out_sel_cfg(8)) = reg::gpio::RMT_SIG_OUT0_IDX;
-    r32(reg::gpio::ENABLE_W1TS) = 1u << 8;
-    r32(reg::io_mux::GPIO8) = reg::io_mux::MCU_SEL_GPIO | reg::io_mux::FUN_DRV_2;
+    r32(reg::gpio::func_out_sel_cfg(KICKOS_BOARD_LED_BIT)) = reg::gpio::RMT_SIG_OUT0_IDX;
+    r32(reg::gpio::ENABLE_W1TS) = 1u << KICKOS_BOARD_LED_BIT;
+    r32(reg::io_mux::gpio(KICKOS_BOARD_LED_BIT)) = reg::io_mux::MCU_SEL_GPIO | reg::io_mux::FUN_DRV_2;
 
     rmt_send_ws2812(0); // start dark
 }
@@ -730,18 +755,11 @@ void arch_diag_led_set(int on)
     rmt_send_ws2812(rgb);
 }
 
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot steal the console
-// or the diag LED. GPIO16/17 = UART0 TX/RX (CH343P bridge); GPIO8 = WS2812 diag LED.
-static bool c6_pin_kernel_owned(uint32_t pin)
-{
-    return pin == 8u or pin == 16u or pin == 17u;
-}
-
 // One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH permission stages a
 // pad passes on this family: the IO_MUX pad function and the GPIO matrix out-sel that
 // picks which internal signal drives it. Leaving the matrix stage out would make the
 // kernel-owned refusal below bypassable: a caller could aim a peripheral signal at
-// GPIO16/17 or GPIO8 without ever touching their IO_MUX word. func packs both stages;
+// the console pins or the LED's without ever touching their IO_MUX word. func packs both stages;
 // the encoding is chip-local (reg::gpio::PINMUX_*).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {

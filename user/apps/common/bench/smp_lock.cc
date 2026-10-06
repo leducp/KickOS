@@ -23,7 +23,7 @@ namespace
     static_assert(ROUNDS > 0, "the lock benchmark needs at least one yield per core");
     constexpr uint64_t READY_LIMIT_NS = 5000000000ull;
     static_assert(KICKOS_MAX_THREADS >= KICKOS_KERNEL_CORES + 1,
-                  "one root and one worker per kernel core must fit the thread pool");
+                  "main and one worker per kernel core must fit the thread pool");
 
     struct alignas(64) Worker
     {
@@ -61,8 +61,6 @@ namespace
         kickos::emit(out);
     }
 }
-
-KICKOS_APP_AUTHORITY(KOS_AUTH_SYSTEM);
 
 int main(int, char**)
 {

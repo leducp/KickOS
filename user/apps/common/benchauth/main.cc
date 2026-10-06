@@ -11,8 +11,8 @@
 // distributions. CLOSE answers -KOS_EPERM to a thread that is not the armed waiter and counts
 // the span into `dropped`, but ends the span either way.
 //
-// Root declares KOS_AUTH_IRQ and the child declares nothing, so each root arm is the positive
-// control for the child arm beside it.
+// Main's composition grants KOS_AUTH_IRQ and the child holds no authority, so each arm of
+// main's is the positive control for the child arm beside it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -24,16 +24,14 @@
 
 using kickos::emit;
 
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
-
 namespace
 {
     constexpr int SETUP_LINE = KICKOS_IRQ_FREE_BASE + 0;
     constexpr int ARM_LINE = KICKOS_IRQ_FREE_BASE + 1;
-    // Root holds no cap at this index: its table has slot 0 (the console) and whatever the
+    // Main holds no cap at this index: its table has slot 0 (the console) and whatever the
     // claim below installs, so the arm reaches the resolve and is refused there.
     constexpr uint32_t NO_SUCH_CAP = 30;
-    // The child's only cap: a signal-only copy of the line root claimed. It cannot wait, so
+    // The child's only cap: a signal-only copy of the line main claimed. It cannot wait, so
     // the arm must refuse a holder that cannot wait on the line it would name.
     constexpr int CH_IRQ_SIGNAL = 1;
 
@@ -98,7 +96,7 @@ namespace
         report_rc("child e2e_arm (SIGNAL-only cap)", rc);
         check(rc == -KOS_EACCES, "a cap without WAIT cannot name the span's line");
 
-        // Over the span root re-armed: the raise and the reset leave it open, the close ends it.
+        // Over the span main re-armed: the raise and the reset leave it open, the close ends it.
         rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
         report_rc("child e2e_raise", rc);
         check(rc == -KOS_EAGAIN, "a raise the parked waiter has not invited injects nothing");
@@ -115,37 +113,37 @@ namespace
 
 int main(int, char**)
 {
-    // --- Root holds KOS_AUTH_IRQ: the positive control for every child arm below ---------
+    // --- Main holds KOS_AUTH_IRQ: the positive control for every child arm below ---------
     int64_t rc = kos_bench(KOS_BENCH_OP_IRQ_SETUP, SETUP_LINE, 0);
-    report_rc("root irq_setup", rc);
+    report_rc("main irq_setup", rc);
     check(rc != -KOS_EPERM, "KOS_AUTH_IRQ reaches the tier-2 attach");
 
     rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX, 0);
-    report_rc("root irq_sweep at the ceiling", rc);
+    report_rc("main irq_sweep at the ceiling", rc);
     check(rc >= 0, "a sweep at KOS_BENCH_SAMPLES_MAX is admitted");
 
     // --- No caller asks the kernel for unbounded work -----------------------------------
     rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX + 1u, 0);
-    report_rc("root irq_sweep above the ceiling", rc);
+    report_rc("main irq_sweep above the ceiling", rc);
     check(rc == -KOS_EINVAL, "a sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
     rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, KOS_BENCH_SAMPLES_MAX + 1u, 0);
-    report_rc("root irq_wcase above the ceiling", rc);
+    report_rc("main irq_wcase above the ceiling", rc);
     check(rc == -KOS_EINVAL, "a masked-span sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
     rc = kos_bench(KOS_BENCH_OP_DOORBELL_PROBE, 0, KOS_BENCH_ROUNDS_MAX + 1u);
-    report_rc("root doorbell_probe above the ceiling", rc);
+    report_rc("main doorbell_probe above the ceiling", rc);
     check(doorbell_refused(rc, -KOS_EINVAL),
           "doorbell rounds above KOS_BENCH_ROUNDS_MAX are refused");
 
     // --- The end-to-end arm takes a cap, not a line number ------------------------------
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, NO_SUCH_CAP, 0);
-    report_rc("root e2e_arm (no such cap)", rc);
+    report_rc("main e2e_arm (no such cap)", rc);
     check(rc == -KOS_EBADF, "KOS_AUTH_IRQ alone does not name a line to arm");
 
     kos_cap_t irq = KOS_CAP_NONE;
 #if KICKOS_KERNEL_CORES > 1
-    // A line is claimed by a thread pinned where it runs; only the claim needs root there.
+    // A line is claimed by a thread pinned where it runs; only the claim needs main there.
     kos_thread_t const self = kos_thread_self();
     (void)kos_thread_set_affinity(self, 1u << 0);
 #endif
@@ -153,29 +151,29 @@ int main(int, char**)
 #if KICKOS_KERNEL_CORES > 1
     (void)kos_thread_set_affinity(self, 0);
 #endif
-    report_rc("root irq_claim", crc);
-    check(crc == 0, "root claims the line the arm will name");
+    report_rc("main irq_claim", crc);
+    check(crc == 0, "main claims the line the arm will name");
 
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, irq, 0);
-    report_rc("root e2e_arm (own cap)", rc);
+    report_rc("main e2e_arm (own cap)", rc);
     check(rc == 0, "the line the caller may wait on is armed");
 
     // --- What RAISE, RESET and CLOSE answer, none of them taking authority --------------
     rc = kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
-    report_rc("root e2e_close (armed, never raised)", rc);
+    report_rc("main e2e_close (armed, never raised)", rc);
     check(rc == -KOS_EBUSY, "the armed waiter's close of a span that never woke is dropped");
 
     rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
-    report_rc("root e2e_raise (no span open)", rc);
+    report_rc("main e2e_raise (no span open)", rc);
     check(rc == -KOS_EAGAIN, "KOS_AUTH_IRQ does not make a raise land either");
 
     rc = kos_bench(KOS_BENCH_OP_RESET, 0, 0);
-    report_rc("root reset", rc);
+    report_rc("main reset", rc);
     check(rc == 0, "reset answers 0 and leaves the e2e state alone");
 
     // The child's close needs a live span to be refused over.
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, irq, 0);
-    report_rc("root e2e_arm (re-armed for the child)", rc);
+    report_rc("main e2e_arm (re-armed for the child)", rc);
     check(rc == 0, "the span is open again");
 
     // --- The same ops from a thread that declared nothing -------------------------------
@@ -190,8 +188,8 @@ int main(int, char**)
     // -KOS_EINVAL and not the -KOS_EBUSY the same call answered over an armed span above: the
     // child's refused close ended it.
     rc = kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
-    report_rc("root e2e_close (after the child's)", rc);
-    check(rc == -KOS_EINVAL, "a refused close still consumed the span root had armed");
+    report_rc("main e2e_close (after the child's)", rc);
+    check(rc == -KOS_EINVAL, "a refused close still consumed the span main had armed");
 
     char msg[96];
     if (failures == 0)

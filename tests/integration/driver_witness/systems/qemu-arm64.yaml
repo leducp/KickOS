@@ -34,6 +34,7 @@ tasks:
     entry: exits_client_main
     stack: 12288
     priority: 8
+    ceiling: 8
     core: 1
     uses: [/svc/exits]
 
@@ -41,6 +42,7 @@ tasks:
     entry: traps_client_main
     stack: 12288
     priority: 8
+    ceiling: 8
     core: 1
     uses: [/svc/traps]
 
@@ -48,11 +50,13 @@ tasks:
     entry: fails_client_main
     stack: 12288
     priority: 8
+    ceiling: 8
     uses: [/svc/fails]
 
   - name: watcher
     entry: watcher_main
     stack: 12288
     priority: 9
+    ceiling: 9
     core: 1
     watches: [exits, traps, fails, fails_client]

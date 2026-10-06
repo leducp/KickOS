@@ -54,12 +54,26 @@
 #
 #   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
 #     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
+#
+# A board app is judged by the gate script its CMake names (kickos_app_judge) unless JUDGE names
+# another, and LIST_APPS=1 prints its configure's apps as `<image>|<judge>` rows:
+#
+#   VARIANT=st APP=xmcspi tools/bench/bench.sh xmc4800-relax
+#
+# An image other than a selftest that no row and no JUDGE judges is refused; JUDGE=none takes
+# the capture unjudged.
 set -u
 # HOW MANY IMAGES THE SUITE SHIPS AS ON THIS BOARD IS A PROPERTY OF ITS CONFIGURE, and
 # LIST_IMAGES=1 is how a caller asks: configure, print the names one per line, flash nothing.
 # Everything this script narrates goes to stderr in that mode, so the caller's $(...) holds the
-# list and nothing else.
-if [ "${LIST_IMAGES:-0}" = "1" ]; then
+# list and nothing else. LIST_APPS=1 asks the same of the board apps.
+LISTING=0
+if [ "${LIST_IMAGES:-0}" = "1" ] && [ "${LIST_APPS:-0}" = "1" ]; then
+  echo "REFUSING: LIST_IMAGES and LIST_APPS each print one list; set one" >&2
+  exit 2
+fi
+if [ "${LIST_IMAGES:-0}" = "1" ] || [ "${LIST_APPS:-0}" = "1" ]; then
+  LISTING=1
   exec 3>&1 1>&2
 fi
 # readlink, because .session/ carries a SYMLINK to this script for muscle memory: without
@@ -85,7 +99,7 @@ echo "=== tree $TREE"
 
 TAG="${TAG:-m475}"
 BOARD="${1:?usage: bench.sh <board> [jlink-sn]}"
-if [ -n "${JUDGE:-}" ] && [ ! -f "$JUDGE" ]; then
+if [ -n "${JUDGE:-}" ] && [ "$JUDGE" != none ] && [ ! -f "$JUDGE" ]; then
   echo "REFUSING: JUDGE $JUDGE names no gate script in $TREE" >&2
   exit 2
 fi
@@ -101,7 +115,7 @@ bench_host_select "${BENCH_HOST:-}"
 #
 # Not in LIST_IMAGES mode: asking which images a board ships must not fail for a board that is
 # unplugged, or the caller is left choosing between a stale list of its own and nothing.
-if [ -z "$SN" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
+if [ -z "$SN" ] && [ "$LISTING" != "1" ]; then
   PROBE_ID=$(board_probe_rows "$BOARD" 2>/dev/null | awk -F '|' '$2 == "sn" { print $1; exit }')
   if [ -n "$PROBE_ID" ]; then
     bench_bus_read || {
@@ -214,6 +228,8 @@ case $APP in
 esac
 if [ "${LIST_IMAGES:-0}" = "1" ]; then
   MANIFEST_OWED=1
+elif [ "${LIST_APPS:-0}" = "1" ]; then
+  MANIFEST_OWED=0
 fi
 if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
   echo "REFUSING: $PRESET configured but published no selftest manifest at $MANIFEST." >&2
@@ -221,6 +237,27 @@ if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
   echo "  KICKOS_BUILD_TESTS is off. Without it the capture has no arm count and no permission" >&2
   echo "  sets, and a TAP stream nothing checks is a count of the lines that survived." >&2
   exit 1
+fi
+
+# The board apps this configure builds, one `<image>|<judge>` row each, written by
+# user/apps/CMakeLists.txt.
+APP_MANIFEST="$BUILD/kickos-app-manifest.txt"
+if [ "${LIST_APPS:-0}" = "1" ]; then
+  [ -f "$APP_MANIFEST" ] || { echo "REFUSING: $PRESET configured but wrote no $APP_MANIFEST" >&2; exit 1; }
+  cat "$APP_MANIFEST" >&3
+  exit 0
+fi
+if [ -z "${JUDGE:-}" ] && [ -f "$APP_MANIFEST" ]; then
+  JUDGE=$(awk -F '|' -v app="$APP" '$1 == app { print $2; exit }' "$APP_MANIFEST")
+fi
+if [ -z "${JUDGE:-}" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
+  case $APP in
+    selftest*) ;;
+    *)
+      echo "REFUSING: no judge for $APP (JUDGE=none to waive)" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # Refused rather than defaulted to the first image: a caller that took silence for "one image"
@@ -335,7 +372,7 @@ fi
 
 # The capture's verdict, from the gate script JUDGE names; none without one.
 judge() {
-  if [ -z "${JUDGE:-}" ]; then
+  if [ -z "${JUDGE:-}" ] || [ "$JUDGE" = none ]; then
     return 0
   fi
   echo "=== judging $LOG with $JUDGE"

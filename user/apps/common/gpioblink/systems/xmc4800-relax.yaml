@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The blinker as the task's entry, holding P5's port block, whose P5.9 the kernel's diagnostic
+# LED spends, and `pinmux` to mux its own pin.
+
+version: 1
+board: xmc4800-relax
+stdout: kernel
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: main
+    entry: gpioblink_main
+    stack: 4096
+    priority: 10
+    ceiling: 10
+    devices: [/dev/port/5]
+    accepts: [coarse_gate]
+    authority: [pinmux]

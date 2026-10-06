@@ -37,7 +37,7 @@ using kickos::emit;
 
 namespace
 {
-    // Root's semaphore, delegated to both members at their table index 1.
+    // Main's semaphore, delegated to both members at their table index 1.
     constexpr int SIG = 1;
 
     constexpr int ROUNDS = 8;
@@ -99,7 +99,7 @@ int main(int, char**)
             emit("[taskleave] ERROR: a member never came back\n");
             return 1;
         }
-        // The group is empty, so this drops root's creator hold and releases the slot.
+        // The group is empty, so this drops main's creator hold and releases the slot.
         (void)kos_task_kill(group);
         (void)kos_handle_close(sig);
     }

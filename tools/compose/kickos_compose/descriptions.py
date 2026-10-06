@@ -47,6 +47,11 @@ ADDRESS_BITS = {
 TEXT = re.compile(r"[ -~]*")
 BOARD_FIELDS = ("version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins", "memory")
 BOARD_MEMORY_FIELDS = ("size", "base", "cluster", "link", "ref", "symbol")
+# A pin function stated as a mapping: the value its device's input-select register takes to pick
+# this pin, where the device has one.
+PIN_FUNCTION_FIELDS = ("function", "input_select", "ref")
+# A level LED lights at its `active` level; an addressable one is sent its state as data.
+LED_KINDS = ("level", "addressable")
 
 
 class Window:
@@ -161,10 +166,27 @@ class Board:
     def __init__(self, chip, console):
         self.chip = chip
         self.console = console
+        # [(role, pin, selector)] of the console's pins, in the board file's order.
+        self.console_pins = []
+        # (pin, active, kind) of the LED the kernel owns, or None; active is None when addressable.
+        self.kernel_led = None
+        # [pin] the board reserves, in the board file's order.
+        self.reserved = []
         # [Memory] soldered on the board, in the board file's order.
         self.memory = []
         # {pin: what the board spends it on}
         self.wired = {}
+        # [Bus], in the board file's order.
+        self.buses = []
+
+
+class Bus:
+    def __init__(self, name, path, function_prefix, pins, chip_selects):
+        self.name = name
+        self.path = path
+        self.function_prefix = function_prefix
+        self.pins = pins
+        self.chip_selects = chip_selects
 
 
 class Protection:
@@ -195,6 +217,8 @@ class Chip:
         self.gates = {}
         # {pin: {selector: function}}, or None when `pins` could not be read.
         self.pins = {}
+        # {(pin, selector): (input_select, ref)} of each function stated as a mapping.
+        self.pin_details = {}
         self.manual = None
         self.arch = None
         # {cluster: arch} for a part whose clusters carry their own
@@ -207,6 +231,8 @@ class Chip:
         self.refs = {}
         self.namespace = None
         self.line_enum = None
+        # The LED kind the chip's code drives as the kernel's.
+        self.led_kind = "level"
         # [Memory], in the chip file's order.
         self.memory = []
         # [Window] of every device and memory entry, and {(view, region): node} of each link region.
@@ -546,13 +572,15 @@ def check_named(f, values, what):
 
 
 def check_c(f, node, chip):
-    values = f.fields(node, "`c`", ("namespace", "line_enum"), ())
+    values = f.fields(node, "`c`", ("namespace", "line_enum", "led"), ())
     if values is None:
         return
     if "namespace" in values:
         chip.namespace = f.name(values["namespace"], "`c` namespace", NAMESPACE)
     if "line_enum" in values:
         chip.line_enum = f.name(values["line_enum"], "`c` line_enum", LINE_ENUM)
+    if "led" in values:
+        chip.led_kind = f.enum(values["led"], "`c` led", LED_KINDS)
 
 
 def check_interrupts(f, node, chip):
@@ -1149,6 +1177,10 @@ def check_chip_pins(f, node, chip, devices):
             pattern = FUNCTION
             if selector == "gpio":
                 pattern = GPIO_FUNCTION
+            if isinstance(svalue, MappingNode):
+                svalue = check_pin_function(f, svalue, chip, pin_name, selector)
+                if svalue is None:
+                    continue
             function = f.name(svalue, "pin `%s` function" % pin_name, pattern)
             if function is None:
                 continue
@@ -1160,6 +1192,23 @@ def check_chip_pins(f, node, chip, devices):
             if selector == "gpio" and not check_gpio_port(f, chip, svalue, pin_name, function):
                 continue
             chip.pins[pin][selector] = function
+
+
+def check_pin_function(f, node, chip, pin_name, selector):
+    """The `function` node of a function stated as a mapping, its `input_select` and `ref` kept in
+    chip.pin_details, or None when refused."""
+    what = "pin `%s` function `%s`" % (pin_name, selector)
+    values = f.fields(node, what, PIN_FUNCTION_FIELDS, ("function",))
+    if values is None or "function" not in values:
+        return None
+    if selector == "gpio":
+        f.refuse(node, "form.inapplicable", "%s is a port bit, which selects no input" % what)
+        return None
+    select = None
+    if "input_select" in values:
+        select = f.integer(values["input_select"], "%s input_select" % what, 32)
+    chip.pin_details[(pin_name, selector)] = (select, check_ref(f, values))
+    return values["function"]
 
 
 def check_gpio_port(f, chip, node, pin_name, function):
@@ -1309,6 +1358,8 @@ def check_board(path, text, report, chips, boards):
     # {id(node): bus device} of each part's bus pin, which every part on that bus shares.
     bus_lines = {}
     console_path = None
+    console_pins = []
+    kernel_led = None
 
     if "console" in top:
         console = f.fields(top["console"], "`console`", ("device", "pins", "semihosting"), ())
@@ -1334,7 +1385,10 @@ def check_board(path, text, report, chips, boards):
                 if pins is not None:
                     for role, (rkey, rvalue) in pins.items():
                         f.name(rkey, "console pin role", IDENTIFIER)
-                        check_board_pin(f, chip, rvalue, "console pin `%s`" % role, device, used, role)
+                        what = "console pin `%s`" % role
+                        selector = check_board_pin(f, chip, rvalue, what, device, used, role)
+                        if selector is not None and has_gpio(f, chip, rvalue, what, rvalue.value):
+                            console_pins.append((role, rvalue.value, selector))
 
     if "leds" in top:
         leds = f.mapping(top["leds"], "`leds`")
@@ -1342,15 +1396,36 @@ def check_board(path, text, report, chips, boards):
             for led_name, (key, value) in leds.items():
                 f.name(key, "led", IDENTIFIER)
                 what = "led `%s`" % led_name
-                values = f.fields(value, what, ("pin", "active", "owner"), ("pin", "active"))
+                values = f.fields(value, what, ("pin", "kind", "active", "owner"), ("pin",))
                 if values is None:
                     continue
+                pin = None
                 if "pin" in values:
-                    check_gpio_pin(f, chip, values["pin"], "%s pin" % what, used)
-                if "active" in values:
-                    f.enum(values["active"], "%s active level" % what, ("high", "low"))
+                    pin = check_gpio_pin(f, chip, values["pin"], "%s pin" % what, used)
+                kind = "level"
+                if "kind" in values:
+                    kind = f.enum(values["kind"], "%s kind" % what, LED_KINDS)
+                active = None
+                if kind == "addressable" and "active" in values:
+                    f.refuse(values["active"], "form.inapplicable",
+                             "%s is addressable, whose state is data and not a level, so it has no `active`" % what)
+                elif kind == "level" and "active" not in values:
+                    f.refuse(value, "form.missing", "%s needs `active`, the level that lights it" % what)
+                elif "active" in values:
+                    active = f.enum(values["active"], "%s active level" % what, ("high", "low"))
+                owner = None
                 if "owner" in values:
-                    f.enum(values["owner"], "%s owner" % what, ("kernel",))
+                    owner = f.enum(values["owner"], "%s owner" % what, ("kernel",))
+                if owner is not None and kernel_led is not None:
+                    f.refuse(values["owner"], "board.led-owner",
+                             "%s is the kernel's, and led `%s` on line %d already is: the kernel drives one LED"
+                             % (what, kernel_led[2], line_of(kernel_led[3])))
+                elif owner is not None:
+                    kernel_led = (pin, active, led_name, values["owner"], kind)
+                    if chip is not None and kind is not None and kind != chip.led_kind:
+                        f.refuse(values.get("kind", value), "board.led-kind",
+                                 "%s is the kernel's and `kind: %s`, and chip `%s` drives the kernel's LED "
+                                 "as `led: %s`" % (what, kind, chip.name, chip.led_kind))
 
     if "parts" in top:
         parts = f.mapping(top["parts"], "`parts`")
@@ -1372,6 +1447,7 @@ def check_board(path, text, report, chips, boards):
                     for pin, node, pin_what in used[first:]:
                         bus_lines[id(node)] = bus
 
+    wired_buses = []
     if "buses" in top:
         buses = f.mapping(top["buses"], "`buses`")
         if buses is not None:
@@ -1384,12 +1460,19 @@ def check_board(path, text, report, chips, boards):
                 device = None
                 if "device" in values:
                     device = resolve_device(f, chip, values["device"], "%s device" % what)
+                first = len(used)
                 if "pins" in values:
                     check_pin_list(f, chip, values["pins"], "%s pin" % what, device, used)
+                pins = [pin for pin, node, pin_what in used[first:]]
+                first = len(used)
                 if "chip_selects" in values:
                     items = f.sequence(values["chip_selects"], "%s chip selects" % what)
                     for item in items or ():
                         check_gpio_pin(f, chip, item, "%s chip select" % what, used)
+                chip_selects = [pin for pin, node, pin_what in used[first:]]
+                if device is not None:
+                    wired_buses.append(Bus(bus_name, f.path(values["device"], "%s device" % what), device,
+                                           pins, chip_selects))
 
     reserved = None
     if "reserved_pins" in top:
@@ -1398,8 +1481,8 @@ def check_board(path, text, report, chips, boards):
             for pin_name, (key, value) in reserved.items():
                 pin = f.name(key, "reserved pin", PIN)
                 f.string(value, "the reason pin `%s` is reserved" % pin_name)
-                if pin is not None:
-                    chip_pin(f, chip, key, "reserved pin", pin)
+                if pin is not None and chip_pin(f, chip, key, "reserved pin", pin) is not None:
+                    has_gpio(f, chip, key, "reserved pin", pin)
             for pin, node, what in used:
                 if pin in reserved:
                     f.refuse(node, "board.reserved-pin-used",
@@ -1416,6 +1499,12 @@ def check_board(path, text, report, chips, boards):
         else:
             seen[pin] = (node, what)
     board = Board(chip, console_path)
+    board.console_pins = console_pins
+    if kernel_led is not None:
+        pin, active, led_name, node, kind = kernel_led
+        if pin is not None and kind is not None and (active is not None or kind == "addressable"):
+            board.kernel_led = (pin, active, kind)
+    board.buses = wired_buses
     if "memory" in top:
         check_board_memory(f, top["memory"], chip, board)
     for pin, node, what in used:
@@ -1423,6 +1512,8 @@ def check_board(path, text, report, chips, boards):
     if "reserved_pins" in top and reserved is not None:
         for pin_name, (key, value) in reserved.items():
             board.wired.setdefault(pin_name, "reserved pin")
+            if chip is not None and chip.pins is not None and pin_name in chip.pins:
+                board.reserved.append(pin_name)
     return board
 
 
@@ -1582,35 +1673,49 @@ def chip_pin(f, chip, node, what, pin):
 
 
 def check_board_pin(f, chip, node, what, device, used, signal=None):
-    """A pin wired to `device`, carrying `signal` of it where the role names one."""
+    """A pin wired to `device`, carrying `signal` of it where the role names one. The selector
+    of that signal, or None."""
     pin = f.name(node, what, PIN)
     if pin is None:
-        return
+        return None
     used.append((pin, node, what))
     functions = chip_pin(f, chip, node, what, pin)
     if functions is None or device is None:
-        return
+        return None
     carried = [function for selector, function in functions.items()
                if selector != "gpio" and function.startswith(device + ".")]
     if not carried:
         f.refuse(node, "board.pin-function",
                  "%s `%s` has no function of `%s` on chip `%s`" % (what, pin, device.replace(".", "/"), chip.name))
-        return
-    if signal is not None and "%s.%s" % (device, signal) not in carried:
-        f.refuse(node, "board.pin-signal",
-                 "%s `%s` carries %s, not `%s.%s`: a console pin's role names the signal it carries"
-                 % (what, pin, ", ".join("`%s`" % c for c in carried), device, signal))
+        return None
+    if signal is None:
+        return None
+    for selector, function in functions.items():
+        if selector != "gpio" and function == "%s.%s" % (device, signal):
+            return selector
+    f.refuse(node, "board.pin-signal",
+             "%s `%s` carries %s, not `%s.%s`: a console pin's role names the signal it carries"
+             % (what, pin, ", ".join("`%s`" % c for c in carried), device, signal))
+    return None
 
 
 def check_gpio_pin(f, chip, node, what, used):
+    """The pin, or None when it has no `gpio` function on its chip."""
     pin = f.name(node, what, PIN)
     if pin is None:
-        return
+        return None
     used.append((pin, node, what))
-    functions = chip_pin(f, chip, node, what, pin)
-    if functions is not None and "gpio" not in functions:
-        f.refuse(node, "board.pin-not-gpio",
-                 "%s `%s` has no `gpio` function on chip `%s`" % (what, pin, chip.name))
+    if chip_pin(f, chip, node, what, pin) is None or not has_gpio(f, chip, node, what, pin):
+        return None
+    return pin
+
+
+def has_gpio(f, chip, node, what, pin):
+    """Whether `pin`, a pin of its chip, has a `gpio` function, refused where it has none."""
+    if "gpio" in chip.pins[pin]:
+        return True
+    f.refuse(node, "board.pin-not-gpio", "%s `%s` has no `gpio` function on chip `%s`" % (what, pin, chip.name))
+    return False
 
 
 def description_files(paths, report):

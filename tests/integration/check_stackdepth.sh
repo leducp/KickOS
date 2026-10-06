@@ -70,7 +70,7 @@ rc=0
 if read_reading "$elf0" "mode 0"; then
     U0="$USED"
     C0="$CAPACITY"
-    echo "ok 1 - kos_panic from root reached $U0 of $C0 bytes on one thread's block"
+    echo "ok 1 - kos_panic from main reached $U0 of $C0 bytes on one thread's block"
 else
     echo "not ok 1 - panic arm produced no reading"
     rc=1
@@ -110,8 +110,8 @@ if [ "$U1" -gt "$U0" ]; then
 fi
 MARGIN=$((CAP - DEEPEST))
 
-echo "# arms driven, and NOTHING else was: kos_panic from root; a grant-carrying"
-echo "# kos_thread_create followed by kos_panic. Both on root's own kernel block."
+echo "# arms driven, and NOTHING else was: kos_panic from main; a grant-carrying"
+echo "# kos_thread_create followed by kos_panic. Both on main's own kernel block."
 echo "# deepest arm: $ARM, $DEEPEST bytes of $CAP above the canary"
 echo "# spawn arm minus panic arm: $((U1 - U0)) bytes"
 echo "# NOT DRIVEN by either arm, so absent from the figure below: every interrupt and"

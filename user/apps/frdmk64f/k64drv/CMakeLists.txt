@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# K64F first unprivileged driver over the MMIO-grant seam: a PIT timer driver that exercises
-# unprivileged peripheral MMIO plus the tier-1 IRQ path.
-# No CTest gate: it answers a HARDWARE question (SYSMPU peripheral gating) and is validated by
-# the operator on silicon, not by the in-env sim/QEMU.
+# K64F LPTMR0 driver over the window and line its composition grants: ten ticks of the 1 kHz LPO,
+# then a thread holding no window reads the timer, which the AIPS slot lets through. Judged from
+# a silicon capture.
 add_executable(k64drv main.cc)
-target_link_libraries(k64drv PRIVATE kickos)
+kickos_app_system(k64drv COMPOSITION system.yaml)
 kickos_emit_image(k64drv)
+kickos_app_judge(k64drv tests/integration/check_k64drv.sh)

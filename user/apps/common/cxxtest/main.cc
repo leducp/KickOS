@@ -8,7 +8,7 @@
 // CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean
 // exit -> QEMU SYS_EXIT).
 //
-// The checks run in a spawned UNPRIVILEGED worker, not inline in main: root's grant
+// The checks run in a spawned UNPRIVILEGED worker, not inline in main: main's grant
 // is composed at boot from the whole app image, so an inline throw would prove
 // nothing about a thread whose grant is composed at spawn from what this app asks
 // for. Under enforcement the worker's throw/catch drives the DWARF/EHABI/SjLj
@@ -184,11 +184,10 @@ int main(int, char**)
     kos::print("KickOS full-C++ opt-in test\n");
 
     (void)kos_sem_create(0, &g_done);
-    // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above root
-    // (KICKOS_PRIO_MIN+1), so once main blocks on g_done the worker runs to completion
-    // and root wakes as the last live thread (the selftest orchestration shape). The stack
-    // is the board's own KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so
-    // the EH unwind and the libstdc++ working set are charged to that arena.
+    // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above main's 2, so the
+    // worker runs to completion once main blocks on g_done. The stack is the board's own
+    // KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so the EH unwind and the
+    // libstdc++ working set are charged to that arena.
     kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1
     auto w = kos::thread::create_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
     if (not w.valid())

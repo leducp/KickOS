@@ -17,8 +17,8 @@
 // rate/monotonicity + idle-keeps-counting run). Set it with -DKICKOS_CLOCKSOAK_WRAP_MS
 // (default 60000): F411 TIM2 ~= 51 s, F302 ~= 67 s, F103 chain ~= 59 s, SAM3X TC0 ~= 102 s.
 //
-// Runs on the kernel root thread (kickos_app_main), single-shot: it returns, so
-// root_entry flushes the console before shutdown. Uses only clock_now/sleep_ns.
+// Runs as the default composition's main, single-shot: it returns, so the shutdown its
+// task's end leads to flushes the console. Uses only clock_now/sleep_ns.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>

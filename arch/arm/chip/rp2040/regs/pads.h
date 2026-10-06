@@ -19,10 +19,6 @@ namespace kickos::rp2040::reg::pads
 
     constexpr uintptr_t gpio(uint32_t n) { return mmap::PADS_BANK0_BASE + GPIO_BASE_OFFSET + n * STRIDE; }
 
-    constexpr uintptr_t GPIO0 = gpio(0);
-    constexpr uintptr_t GPIO1 = gpio(1);
-    constexpr uintptr_t GPIO25 = gpio(25);
-
     constexpr uint32_t OD = 1u << 7; // output disable
     constexpr uint32_t IE = 1u << 6; // input enable
 }

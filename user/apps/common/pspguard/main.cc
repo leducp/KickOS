@@ -191,7 +191,7 @@ namespace
         uintptr_t stack_hi;
         uintptr_t target;
 #if KICKOS_PSPGUARD_MODE == 6
-        // Read by the wild thread before it parks and by root after the refusal, so the verdict
+        // Read by the wild thread before it parks and by main after the refusal, so the verdict
         // needs no kernel constant: the claim is that the word did not MOVE.
         uintptr_t canary_at;
         uint32_t canary_was;
@@ -287,7 +287,7 @@ namespace
         emit(msg);
 
 #if KICKOS_PSPGUARD_MODE == 6
-        // The block top is this thread's own, so it is read HERE and not by root.
+        // The block top is this thread's own, so it is read HERE and not by main.
         Arm* const aw = static_cast<Arm*>(arg);
         uintptr_t const top = kickos_fault_stack_top();
         if (top == 0 or top <= KICKOS_KERNEL_STACK_SIZE)
@@ -463,7 +463,7 @@ int main(int, char**)
 #endif
     if (st == nullptr)
     {
-        emit("[pspguard] ERROR: arena ram_alloc refused (root AUTH_MEMORY seat?)\n");
+        emit("[pspguard] ERROR: arena ram_alloc refused (main AUTH_MEMORY seat?)\n");
         return 1;
     }
     g_arm.stack_lo = reinterpret_cast<uintptr_t>(st);
@@ -513,8 +513,8 @@ int main(int, char**)
 #else
 #if KICKOS_PSPGUARD_MODE == 1
     // THE INNOCENT FP THREAD, spawned only once the join above says containment is done, so
-    // the ordering is root's and not a race. It is granted the dead thread's stack as its
-    // DOMAIN region because that is the one way to read the reservation: root has no grant on
+    // the ordering is main's and not a race. It is granted the dead thread's stack as its
+    // DOMAIN region because that is the one way to read the reservation: main has no grant on
     // it and faults (MMFSR DACCVIOL), the wild thread that owned it is gone, and the
     // reservation must live where the refused frame put it.
     kos::thread::Handle const fc =
@@ -544,11 +544,11 @@ int main(int, char**)
     }
     emit("[pspguard] [kcanary] INTACT: the block leg refused the PSP before the save\n");
 #endif
-    // ROOT OUTLIVING THE REFUSAL IS THE CLAIM, and the join is what carries it: the wild
+    // MAIN OUTLIVING THE REFUSAL IS THE CLAIM, and the join is what carries it: the wild
     // thread reached its death point instead of the whole system reaching one. That the
     // thread died SLAIN and not by returning normally is the wild arm's own verdicts, none of
     // which reached the wire. A backend that does not contain never gets here at all.
-    emit("[pspguard] contained: the wild thread was slain and root outlived it\n");
+    emit("[pspguard] contained: the wild thread was slain and main outlived it\n");
     return 0;
 #endif
 }

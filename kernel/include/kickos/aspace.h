@@ -13,28 +13,64 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The kernel can reach user memory a task holds non-cacheable through a cacheable view of its own.
+#define KICKOS_ALIAS_DCACHE (KICKOS_ARCH_ALIAS_DCACHE or KICKOS_ARCH_ARENA_DCACHE)
+
 namespace kickos
 {
     struct Thread;
     struct Domain;
+    class MpuSet;
+
+    // What answers for a user end: its space where the backend translates, else the thread
+    // whose region set holds it. Null names kernel storage, and every user end of a region
+    // backend with no data cache over the arena.
+#if KICKOS_HAVE_ASPACE
+    using UserOwner = struct arch_aspace*;
+#else
+    using UserOwner = Thread const*;
+#endif
 
     // Copy through each owning space's acquire interface, one granule at a time.
     // Failure can leave a copied prefix. Return an error rather than panic;
     // the fault reporter also uses these functions.
-    [[nodiscard]] bool kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc,
-                                         size_t n);
-    [[nodiscard]] bool kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst,
-                                       void const* ksrc, size_t n);
+    [[nodiscard]] bool kaccess_from_user(void* kdst, UserOwner sspace, uintptr_t usrc, size_t n);
+    [[nodiscard]] bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc,
+                                       size_t n);
 
     // Copy one naturally aligned pointer-sized word through one acquire.
     // Return false for misalignment or failed acquisition.
-    [[nodiscard]] bool kaccess_word_to_user(struct arch_aspace* dspace, uintptr_t udst,
-                                            void const* kword);
+    [[nodiscard]] bool kaccess_word_to_user(UserOwner dspace, uintptr_t udst, void const* kword);
 
     // Copy between user ranges, each with its own space.
     // Reject overlapping ranges in the same space.
-    [[nodiscard]] bool ep_copy(struct arch_aspace* dspace, uintptr_t dst,
-                               struct arch_aspace* sspace, uintptr_t src, size_t n);
+    [[nodiscard]] bool ep_copy(UserOwner dspace, uintptr_t dst, UserOwner sspace, uintptr_t src,
+                               size_t n);
+
+#if KICKOS_ALIAS_DCACHE
+    // Maintain the data cache over a kernel pointer that reaches non-cacheable user memory
+    // cacheably: before the kernel reads or writes through it, and again after it writes.
+    void alias_sync(void const* p, size_t n);
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // alias_sync calls since boot, 0 where none is compiled.
+    uint32_t alias_sync_count();
+#endif
+
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+    // Ahead of a region of `attr` over [base, base + size): one that is non-cacheable, or that
+    // retypes a region `held` names at exactly that extent, has the block's lines cleaned to
+    // memory then dropped, so none an earlier use left is evicted over it or read through it.
+    void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr);
+#else
+    inline void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr)
+    {
+        (void)held;
+        (void)base;
+        (void)size;
+        (void)attr;
+    }
+#endif
 
 #if KICKOS_HAVE_ASPACE
 
@@ -71,6 +107,17 @@ namespace kickos
     // `memtype`: one block mapped cacheable in one place and not in another is incoherent.
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
                                VirtualRange const* self);
+
+    // Whether mapping `e`'s frames with `memtype` owes the kernel's cacheable view of them a
+    // sync: a non-cacheable mapping, or any change of type over a granted range.
+    inline bool aspace_grant_syncs(VirtualRange const* e, uint8_t memtype)
+    {
+        if (memtype == static_cast<uint8_t>(ARCH_MAP_NOCACHE))
+        {
+            return true;
+        }
+        return e != nullptr and e->state == VirtualState::Granted and e->memtype != memtype;
+    }
 
     // The self-grant: map a range the caller reserved, at the address it reserved.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;

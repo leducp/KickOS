@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The entry re-delegates the channel's window to a storm thread it spawns, which takes `memory`.
+
+version: 1
+stdout: kernel
+ends: never
+
+tasks:
+  - name: inprstorm
+    entry: inprstorm_main
+    priority: 2
+    ceiling: 2
+    devices: [/dev/usic0/ch1]
+    authority: [memory]

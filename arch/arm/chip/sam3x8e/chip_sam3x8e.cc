@@ -9,12 +9,14 @@
 // imprecise 4 MHz fast RC, at which 115200 is unreachable.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "irq.h"
 
 #include <stdint.h>
@@ -253,11 +255,11 @@ namespace
     // PMC (sec.28): per-peripheral clock enable by peripheral ID.
     constexpr uintptr_t PMC_PCER0 = mmap::PMC_BASE + 0x10;
     constexpr uint32_t PID_UART = 1u << 8;
-    constexpr uint32_t PID_PIOA = 1u << 11;
 
-    // PIOA (sec.31): route PA8/PA9 to the UART (peripheral A).
-    constexpr uintptr_t PIOA_PDR = mmap::PIOA_BASE + 0x04; // give pins to the peripheral
-    constexpr uint32_t PA8_PA9 = (1u << 8) | (1u << 9);
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART_BASE,
+                  "the board's console is not the UART this backend drives");
+    static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
+                  "the console pins stay on peripheral A, the ABSR reset value this backend leaves");
 
     // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
     // One PIO controller per port: PIOA + port * PIO_STRIDE (A=0..D=3). PMC_PCER0 clock
@@ -273,20 +275,60 @@ namespace
     constexpr uintptr_t PIO_PDR_OFF = 0x04;
     constexpr uintptr_t PIO_OER_OFF = 0x10;
     constexpr uintptr_t PIO_ODR_OFF = 0x14;
+    constexpr uintptr_t PIO_SODR_OFF = 0x30;
+    constexpr uintptr_t PIO_CODR_OFF = 0x34;
     constexpr uintptr_t PIO_ABSR_OFF = 0x70;
     constexpr uint32_t PMC_PID_PIO_SHIFT = 11u;
     constexpr uint32_t PINMUX_PORT_MAX = 3u; // PIOA..PIOD
-    constexpr uintptr_t PIOB_BASE = mmap::PIOA_BASE + mmap::PIO_STRIDE;
     constexpr uint32_t PINMUX_FUNC_GPIO_OUT = 0x00u;
     constexpr uint32_t PINMUX_FUNC_GPIO_IN = 0x01u;
     constexpr uint32_t PINMUX_FUNC_PERIPH_A = 0x10u;
     constexpr uint32_t PINMUX_FUNC_PERIPH_B = 0x11u;
 
-    // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
-    // console or steal the diag LED. PA8/PA9 = console UART; PB27 = "L" LED.
-    bool sam_pin_kernel_owned(uint32_t port, uint32_t pin)
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or (mmap::PIOA_BASE + port * mmap::PIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
+    constexpr bool sam_pin_kernel_owned(uint32_t port, uint32_t pin)
     {
-        return (port == 0u and (pin == 8u or pin == 9u)) or (port == 1u and pin == 27u);
+        return (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
+               or (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
+               or (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::PIOA_BASE + port * mmap::PIO_STRIDE == (port_base) and pin == (bit))
+    constexpr bool sam_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(sam_pin_kernel_owned, sam_pin_listed, PINMUX_PORT_MAX + 1u, 32u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
+
+    constexpr uintptr_t led_out(bool level)
+    {
+        if (level)
+        {
+            return KICKOS_BOARD_LED_PORT_BASE + PIO_SODR_OFF;
+        }
+        return KICKOS_BOARD_LED_PORT_BASE + PIO_CODR_OFF;
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+    void console_pins_init()
+    {
+        constexpr uint32_t tx = 1u << KICKOS_BOARD_CONSOLE_TX_BIT;
+        constexpr uint32_t rx = 1u << KICKOS_BOARD_CONSOLE_RX_BIT;
+        if constexpr (KICKOS_BOARD_CONSOLE_TX_PORT_BASE == KICKOS_BOARD_CONSOLE_RX_PORT_BASE)
+        {
+            r32(KICKOS_BOARD_CONSOLE_TX_PORT_BASE + PIO_PDR_OFF) = tx | rx;
+        }
+        else
+        {
+            r32(KICKOS_BOARD_CONSOLE_TX_PORT_BASE + PIO_PDR_OFF) = tx;
+            r32(KICKOS_BOARD_CONSOLE_RX_PORT_BASE + PIO_PDR_OFF) = rx;
+        }
     }
 
     // UART (sec.34), dedicated simple UART.
@@ -396,8 +438,9 @@ namespace
 
     void uart_init()
     {
-        r32(PMC_PCER0) = PID_UART | PID_PIOA; // clock the UART + its port
-        r32(PIOA_PDR) = PA8_PA9;              // PA8/PA9 -> peripheral A (ABSR=0 at reset)
+        r32(PMC_PCER0) = PID_UART | (1u << (PMC_PID_PIO_SHIFT + KICKOS_BOARD_CONSOLE_TX_PORT))
+                         | (1u << (PMC_PID_PIO_SHIFT + KICKOS_BOARD_CONSOLE_RX_PORT));
+        console_pins_init();
         r32(UART_CR) = CR_RSTRX_RSTTX;
         r32(UART_MR) = MR_NO_PARITY;
         r32(UART_BRGR) = uart_brgr_cd(SystemCoreClock, CONSOLE_BAUD);
@@ -481,27 +524,22 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &sam_console_backend;
 }
 
-// Kernel diagnostic LED: "L" LED = PB27 via PIO controller B, active-high.
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t PIOB_PER = PIOB_BASE + 0x00;
-    constexpr uintptr_t PIOB_OER = PIOB_BASE + 0x10;
-    r32(PMC_PCER0) = 1u << 12; // clock PIOB (peripheral ID 12)
-    r32(PIOB_PER) = 1u << 27;  // pin controlled by the PIO
-    r32(PIOB_OER) = 1u << 27;  // output enabled
+    r32(PMC_PCER0) = 1u << (PMC_PID_PIO_SHIFT + KICKOS_BOARD_LED_PORT);
+    r32(KICKOS_BOARD_LED_PORT_BASE + PIO_PER_OFF) = 1u << KICKOS_BOARD_LED_BIT; // pin controlled by the PIO
+    r32(KICKOS_BOARD_LED_PORT_BASE + PIO_OER_OFF) = 1u << KICKOS_BOARD_LED_BIT;
 }
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t PIOB_SODR = PIOB_BASE + 0x30;
-    constexpr uintptr_t PIOB_CODR = PIOB_BASE + 0x34;
     if (on)
     {
-        r32(PIOB_SODR) = 1u << 27;
+        r32(led_out(LED_LIT)) = 1u << KICKOS_BOARD_LED_BIT;
     }
     else
     {
-        r32(PIOB_CODR) = 1u << 27;
+        r32(led_out(not LED_LIT)) = 1u << KICKOS_BOARD_LED_BIT;
     }
 }
 

@@ -43,6 +43,7 @@ namespace kickos::init::driver_path
         instance.block_size = t.block;
         instance.block_flags = block_flags(t);
         instance.core_mask = t.core_mask;
+        instance.ceiling = t.ceiling;
         instance.endpoint = r.endpoint;
         instance.watch = badged;
         instance.task = KOS_TASK_NONE;

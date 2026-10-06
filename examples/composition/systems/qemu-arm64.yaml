@@ -37,6 +37,7 @@ tasks:
     entry: sensor_main
     stack: 4096
     priority: 9
+    ceiling: 9
     core: 1
     devices: [/dev/rtc]
     serves: /svc/sensor
@@ -49,6 +50,7 @@ tasks:
     entry: app_main
     stack: 8192
     priority: 8
+    ceiling: 8
     core: 2
     uses: [/svc/sensor]
 
@@ -57,5 +59,6 @@ tasks:
     entry: health_main
     stack: 4096
     priority: 10
+    ceiling: 10
     watches: [sensor]
     maps: { /shm/history: ro }

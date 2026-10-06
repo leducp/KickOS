@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with irq added to main's authority, for the soft-only line it
+# claims at run time and injects into; tasks keeps the deep spawn's refusal in
+# grant_region_admissible rather than at the task gate before it.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 20
+    authority: [memory, system, irq, tasks]

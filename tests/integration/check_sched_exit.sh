@@ -2,21 +2,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Three regression gates on one boot of sched_exit (natively for the sim, on QEMU when
-# QEMU_MACHINE is set).
+# Two regression gates on one boot of sched_exit on the default system (natively for the sim,
+# on QEMU when QEMU_MACHINE is set).
 #
 # 1. A non-last thread that exits must not panic. Assert the worker actually ran and
-# exited AND that root ran past it: requiring only the survival marker passes with the
-# spawn deleted, root surviving an exit that never happened.
+# exited AND that main ran past it: requiring only the survival marker passes with the
+# spawn deleted, main surviving an exit that never happened.
 #
-# 2. Wait-until-last releases the parked root when its child exits, and refuses a NON-ROOT
-# caller -KOS_EPERM. Both markers are required: the refusal alone would pass with root's
-# own wait never satisfied, and the release alone would pass with the root-only rule gone.
-# A never-released root shows up as the 124 timeout below.
+# The root-only last-thread wait answers main -KOS_EPERM, main not being root.
 #
-# 3. Root's own exit must end the SYSTEM while a child is still alive. arch_shutdown
-# forwards the status, so the exit code IS the witness: 7 means root's exit reached
-# kickos_terminate carrying its argument, 124 means the system ran on with a dead init
+# 2. Main's own exit must end the SYSTEM while a child is still alive. The init forwards the
+# status of the task the composition `ends` on, so the exit code IS the witness: 7 means
+# main's exit reached the init's shutdown carrying its argument, 124 means the system ran on
 # and the image had to be killed.
 
 set -u
@@ -35,33 +32,27 @@ fi
 if ! has "worker: exiting"; then
     fail "the worker never reached its exit"
 fi
-if ! has "root: survived worker exit"; then
-    fail "root did not survive the worker's exit"
+if ! has "main: survived worker exit"; then
+    fail "main did not survive the worker's exit"
 fi
-if has "wait_last spawn refused"; then
-    fail "the non-root waiter could not be spawned; the wait-until-last arm witnessed nothing"
+if has "main: wait_last NOT refused"; then
+    fail "main's last-thread wait was accepted instead of -KOS_EPERM"
 fi
-if has "child: wait_last NOT refused"; then
-    fail "a non-root wait-until-last caller was accepted instead of -KOS_EPERM"
-fi
-if ! has "child: wait_last refused"; then
-    fail "the non-root caller never reported (it parked instead of being refused?)"
-fi
-if ! has "root: last thread standing"; then
-    fail "root's wait-until-last was not released by its child's exit"
+if ! has "main: wait_last refused"; then
+    fail "main never reported its last-thread wait"
 fi
 if has "parked spawn refused"; then
-    fail "the never-exiting child was refused; root's exit arm witnessed nothing"
+    fail "the never-exiting child was refused; main's exit arm witnessed nothing"
 fi
-if ! has "root: exiting with a child alive"; then
-    fail "root never reached its own exit"
+if ! has "main: exiting with a child alive"; then
+    fail "main never reached its own exit"
 fi
 if [ "$RC" -eq 124 ]; then
-    fail "root's exit left the system running with a dead init (timed out)"
+    fail "main's exit left the system running (timed out)"
 fi
 if [ "$RC" -ne 7 ]; then
-    fail "root's exit shut down with status $RC, not the 7 it passed"
+    fail "main's exit shut down with status $RC, not the 7 it passed"
 fi
 
-echo "PASS: a non-last thread exit did not panic, wait-until-last released root and refused a non-root caller, and root's exit shut the system down"
+echo "PASS: a non-last thread exit did not panic, and main's exit with a child alive shut the system down with its status"
 exit 0

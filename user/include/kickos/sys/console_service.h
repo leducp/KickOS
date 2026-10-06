@@ -5,7 +5,8 @@
 // See console_ring.h for buffering, budgets, and CRLF handling.
 // Transport must provide:
 //   MODE_REQUIRED: mode bits that cannot be cleared.
-//   inflight(Shared*): pending TX byte counter, or nullptr if unused.
+//   flush(Shared*): drain the ring and the device's transmit path, bounded; 0 once drained,
+//     -KOS_EBUSY when the bound expired first.
 //   tx_lost(Shared const*): transport TX losses added to reported drops.
 // Shared must contain tx, rx, stats, mode, tx_buf, and rx_buf.
 
@@ -170,9 +171,11 @@ int32_t console_serve_loop(Shared* sh)
             reply_cap = opts.info.reply_cap;
             continue;
         }
+        // A zero-length plain send is a FLUSH: its sender learns it finished when its next
+        // send is taken.
         if (n == 0)
         {
-            (void)flush(&sh->tx, Transport::inflight(sh)); // zero-length plain send == flush
+            (void)Transport::flush(sh);
             continue;
         }
         uint32_t const took =

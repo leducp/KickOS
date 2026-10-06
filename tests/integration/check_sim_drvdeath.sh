@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for CONSOLE RECLAIM ON DRIVER DEATH: build the sim with the publishing service
-# list, bound its console driver to TWO served messages (-DKICKOS_SIMCON_EXIT_AFTER=2),
-# and require the kernel console comes BACK when that driver exits. TWO, not one:
-# console_handover_finish probes the route with a zero-length rendezvous before any
-# client runs, so EXIT_AFTER=1 would exit the driver during bring-up and the app would
-# never see a published console at all.
+# CI gate for CONSOLE RECLAIM ON DRIVER DEATH: build drvdeath, whose composition names the
+# packaged simcon as stdout with no restart, with the console driver bounded to TWO served
+# messages (-DKICKOS_SIMCON_EXIT_AFTER=2), and require the kernel console comes BACK when that
+# driver exits, the init reporting the death on it. TWO, not one: console_handover_finish
+# probes the route with a zero-length rendezvous before any client runs, so EXIT_AFTER=1
+# would exit the driver during its start and the app would never see a published console.
 #
 # What it defends: while a userspace driver owns the console, console_emit DROPS every
 # kernel write (USER_OWNED). Without the reclaim hook a driver that exits leaves the
@@ -18,12 +18,15 @@
 # The assertion is a PAIR from the SAME kos_print call site:
 #   BEFORE the death: absent  (dropped; proves the handover really happened)
 #   AFTER  the death: present (the reclaimed polled route carries it)
-# Either half alone is passable by a regression. The app also requires -KOS_ECONNREFUSED from a
-# send, so no timing assumption stands in for proof the driver is gone.
+# Either half alone is passable by a regression. The app waits for the init's report of the
+# death on /init/events and then requires -KOS_ECONNREFUSED from a send, so no timing
+# assumption stands in for proof the driver is gone.
 #
 # What this witnesses is the OWNERSHIP STATE MACHINE. The sim's "device" is host fd 1, with
 # no register state a dead driver could garble, so arch_console_reclaim is the no-op
 # fallback; the per-chip reclaim bodies stay silicon-gated on mk64f and xmc4800.
+#
+# Each death knob is a build-wide option on the driver, so each case configures its own tree.
 #
 # usage: check_sim_drvdeath.sh <kickos-source-dir> <cmake>
 
@@ -36,20 +39,18 @@ CMAKE="${2:-cmake}"
 # grep -c exits 1 on zero matches, which under `set -e` kills the script before its fail
 # message prints: red for the right reason, with no diagnostic.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
-# First matching line number, empty when absent. Two markers written by different threads
-# both land on fd 1 unbuffered, so their order on the wire is program order.
-line_of() { printf '%s\n' "$OUT" | grep -n "$1" | head -1 | cut -d: -f1; }
-# Whether a configured build's catalogue lists simcon, which a composition may then start.
-catalogued() { grep -q '^  simcon:$' "$1/export/manifest.yaml"; }
+# The init's one line per death it releases and per start that failed.
+DEATH_LINE='init: `simcon` is dead and released'
+FAILED_LINE='init: `simcon` failed to start'
+# KOS_EXIT_CANCELLED, the status a system ends with when the task it ends on never ran.
+CANCELLED_STATUS=130
 
 scratch_dir
 
-echo "== configuring the sim: publishing service list, driver bounded to 2 messages =="
+echo "== configuring the sim: console driver bounded to 2 messages =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_EXIT_AFTER=2 >/dev/null ) \
-  || fail "configure with kickos_services_sim failed"
-catalogued "$TMP/build" || fail "simcon is missing from the catalogue of a build with no window-thread posture"
+  || fail "configure with the bounded console driver failed"
 
 echo "== building drvdeath =="
 "$CMAKE" --build "$TMP/build" --target drvdeath >/dev/null \
@@ -83,6 +84,9 @@ fi
 has '\[simcon\] driver exiting (bounded serve)' \
   || fail "the driver never announced its exit (bounded-serve knob not applied?)"
 
+[ "$(count_of "$DEATH_LINE")" -eq 1 ] \
+  || fail "the init did not report the driver's death exactly once on the reclaimed console"
+
 # The positive half: the same call site, now carried by the reclaimed polled route.
 COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$COUNT" -ne 0 ] \
@@ -93,14 +97,14 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$RC" -eq 0 ] || fail "expected a clean exit 0, got $RC"
 
 # ---------------------------------------------------------------------------------
-# Case 2: the driver dies BEFORE it ever receives, i.e. bring-up fails. The probe notices
+# Case 2: the driver dies BEFORE it ever receives, i.e. its start fails. The probe notices
 # because a rendezvous on a receiver-less endpoint is refused, the death gives the console
-# back so the service can REPORT it, and init returns nonzero so no app runs on a dark
-# console. Without the probe the service returns 0 and the app runs against a console nothing
-# is serving.
-echo "== case 2: the driver dies during bring-up =="
+# back so the start can REPORT it, and the init counts a failed start, reports it and, with no
+# restart, marks main, which uses the console, dependency-down: no app runs on a dark console,
+# and the system ends with KOS_EXIT_CANCELLED. Without the probe the start returns 0 and the
+# app runs against a console nothing is serving.
+echo "== case 2: the driver dies during its start =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build2" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_DIE_AT_BRINGUP=1 >/dev/null ) \
   || fail "case 2: configure failed"
 "$CMAKE" --build "$TMP/build2" --target drvdeath >/dev/null \
@@ -117,19 +121,22 @@ printf '%s\n' "$OUT"
 
 has '\[simcon\] driver dying during bring-up' \
   || fail "case 2: the driver never reached its bring-up death"
-has '\[simcon\] ERROR: a driver thread died during bring-up' \
+has '\[simcon\] ERROR: the console handover probe was not taken' \
   || fail "case 2: the failed handover was NOT reported; either the probe missed the dead driver, or the console never came back to report on"
-# The app must not have run at all: a nonzero service-list result aborts init before it.
+[ "$(count_of "$FAILED_LINE")" -eq 1 ] \
+  || fail "case 2: the init did not report the failed start exactly once"
+# The app must not have run at all: the server it uses is dead for good.
 if has '\[drvdeath\]'; then
     fail "case 2: the app ran anyway, on a console with no driver; the failure was not loud"
 fi
-[ "$RC" -ne 0 ] || fail "case 2: expected a nonzero exit from a failed bring-up, got 0"
+[ "$RC" -eq "$CANCELLED_STATUS" ] \
+  || fail "case 2: expected KOS_EXIT_CANCELLED ($CANCELLED_STATUS) from a main that never ran, got $RC"
 
 # ---------------------------------------------------------------------------------
 # Case 3: a TWO-THREAD driver, which is the shape every silicon console driver has. A
-# service thread receives; a second thread holds the register window and parks in
-# the notification wait. This is the only case that reaches the reclaim's device precondition, since
-# the driver in cases 1 and 2 is one thread with no window.
+# service thread receives; the task's entry thread holds the register window and parks in
+# the notification wait. This is the only case that reaches the reclaim's device precondition,
+# since the driver in cases 1 and 2 is one thread with no window.
 #
 # The three markers are ONE assertion, not three:
 #   BEFORE the service thread dies : absent  (the handover really happened)
@@ -141,17 +148,15 @@ fi
 # It is also self-anti-vacuous: if the second thread never took the window, the middle
 # marker appears too.
 #
-# The third marker is what proves the KILL primitive: without it the window thread parks
-# in that wait forever, nothing releases the window, and the console never returns.
+# The window thread is the driver task's entry, which only the init may end, so the app ends
+# it through the driver's test hook (kickos_simcon_window_release) and its exit ends the task.
+# The kill gate is the app's own: no thread of it can kill root, which runs the init, a
+# stranger is refused, a spawner may cancel its child, and a second kill answers EBADF.
 echo "== case 3: a two-thread driver, the register window outliving the receiver =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build3" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_EXIT_AFTER=2 \
     -DKICKOS_SIMCON_WINDOW_THREAD=1 >/dev/null ) \
   || fail "case 3: configure failed"
-if catalogued "$TMP/build3"; then
-    fail "case 3: the window-thread posture leaves simcon in the catalogue, where a composition could start it"
-fi
 "$CMAKE" --build "$TMP/build3" --target drvdeath >/dev/null \
   || fail "case 3: drvdeath build failed"
 
@@ -185,11 +190,13 @@ if has '\[drvdeath\] kernel console AFTER death, window HELD'; then
     fail "case 3: the console came BACK while a live thread still held the UART register window; reclaim is keyed on the last receiver, not on the device"
 fi
 
-# The kill primitive did its job: cancelled, exited, window released.
-has '\[simcon\] window thread cancelled, releasing the registers' \
-  || fail "case 3: the window thread was never cancelled out of its notification wait"
+# The holder left its wait and exited, releasing the window.
+has '\[simcon\] window thread done, releasing the registers' \
+  || fail "case 3: the window thread never left its notification wait"
 has '\[drvdeath\] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted' \
   || fail "case 3: the thread_kill gate matrix did not pass"
+[ "$(count_of "$DEATH_LINE")" -eq 1 ] \
+  || fail "case 3: the init did not report the driver's death exactly once on the reclaimed console"
 
 COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$COUNT" -ne 0 ] \
@@ -201,36 +208,32 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 
 # ---------------------------------------------------------------------------------
 # Case 4: the READY TIMEOUT, the expiry of the bounded loop every silicon console driver
-# waits its IRQ thread's bring-up with. KICKOS_SIMCON_IRQ_WEDGE gives the sim an IRQ thread
-# that takes the register window and never sets `ready`, with a bring-up ordered like the
+# waits its IRQ thread's start with. KICKOS_SIMCON_IRQ_WEDGE gives the sim an IRQ thread
+# that takes the register window and never sets `ready`, with a start ordered like the
 # silicon drivers (publish, claim, IRQ thread, wait, service thread).
 #
 # The ORDER is what this defends, on three counts:
-#   - the wait precedes the SERVICE spawn: root is still E's only receiver holder, so
-#     closing E takes recv_holders to 0 and notes the console dead. Waiting after both
-#     spawns leaves the service thread holding a WAIT cap on E, and that close reclaims
+#   - the wait precedes the SERVICE spawn: the init's capability is still E's only receiving
+#     right, so dropping it takes recv_holders to 0 and notes the console dead. Waiting after
+#     both spawns leaves the service thread holding a WAIT cap on E, and the drop reclaims
 #     nothing.
-#   - kos_handle_close(ep) precedes kos_task_kill: the note must be set before the
+#   - the drop precedes the init's slay of the failed start: the note must be set before the
 #     slain thread's exit re-runs the reclaim.
-#   - the kill is not optional: the note alone leaves the console USER_OWNED because the
+#   - the slay is not optional: the note alone leaves the console USER_OWNED because the
 #     wedged thread still holds the window (dev_window_free in kernel/init/console.cc).
 #
-# The task kill slays the wedged thread in its notification wait: it never runs past that wait,
+# The slay stops the wedged thread in its notification wait: it never runs past that wait,
 # and its exit releases the window.
 #
-# The assertion is a PAIR from the SAME kos::print mechanism, as in case 1:
-#   after the publish, before the timeout : absent  (USER_OWNED drops it)
-#   the timeout tag itself               : present (only a reclaim can carry it)
+# The assertion is a PAIR, as in case 1:
+#   after the publish, before the timeout     : absent  (USER_OWNED drops it)
+#   the init's report of the failed start     : present (only a reclaim can carry it)
 # Absent-then-present is what proves a reclaim happened in between. Either half alone
 # passes on a build where the publish never took, and then nothing is being tested.
-echo "== case 4: the IRQ thread never reaches its loop, so root's ready-wait expires =="
+echo "== case 4: the IRQ thread never reaches its loop, so the start's ready-wait expires =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build4" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_IRQ_WEDGE=1 >/dev/null ) \
   || fail "case 4: configure failed"
-if catalogued "$TMP/build4"; then
-    fail "case 4: the wedge posture leaves simcon in the catalogue, where a composition could start it"
-fi
 "$CMAKE" --build "$TMP/build4" --target drvdeath >/dev/null \
   || fail "case 4: drvdeath build failed"
 
@@ -263,30 +266,30 @@ fi
 
 # The wait ran BEFORE the service spawn: no service thread was ever created.
 if has '\[simcon\] driver up (host fd 1)'; then
-    fail "case 4: the service thread was spawned before the ready-wait expired, so root is not E's only receiver holder, closing E reclaims nothing and the timeout is unreportable (the rpusb bug)"
+    fail "case 4: the service thread was spawned before the ready-wait expired, so the init's capability is not E's only receiving right, dropping it reclaims nothing and the timeout is unreportable (the rpusb bug)"
 fi
 
-# THE POSITIVE HALF: the diagnostic reached the wire, which only a reclaim allows.
-COUNT="$(count_of '\[simcon\] ERROR: IRQ thread never reached its loop')"
+# THE POSITIVE HALF: the init's report reached the wire, which only a reclaim allows.
+COUNT="$(count_of "$FAILED_LINE")"
 [ "$COUNT" -ne 0 ] \
-  || fail "case 4: the timeout tag never reached the wire: the console was not given back, so the failure is silent"
+  || fail "case 4: the failed start was never reported on the wire: the console was not given back, so the failure is silent"
 [ "$COUNT" -eq 1 ] \
-  || fail "case 4: the timeout tag appeared $COUNT times (double-routed?)"
+  || fail "case 4: the failed start was reported $COUNT times (double-routed?)"
 
-# The kill stops the wedged thread at once: it never gets back to its own code past the wait.
+# The slay stops the wedged thread at once: it never gets back to its own code past the wait.
 if has '\[simcon\] wedge irq thread woke from its wait'; then
-    fail "case 4: the wedged irq thread ran its own code past its wait, so the task kill did not stop it at once"
+    fail "case 4: the wedged irq thread ran its own code past its wait, so the slay did not stop it at once"
 fi
 
-# Bounded: root returned. 124 is the outer timeout, i.e. a hang.
+# Bounded: the start returned. 124 is the outer timeout, i.e. a hang.
 [ "$RC" -ne 124 ] \
-  || fail "case 4: root never returned from its ready-wait, so the bound did not hold"
-[ "$RC" -ne 0 ] \
-  || fail "case 4: a console bring-up that timed out still exited 0"
+  || fail "case 4: the start never returned from its ready-wait, so the bound did not hold"
+[ "$RC" -eq "$CANCELLED_STATUS" ] \
+  || fail "case 4: expected KOS_EXIT_CANCELLED ($CANCELLED_STATUS) from a main that never ran, got $RC"
 
 # No app may run on a console nothing is serving.
 if has '\[drvdeath\]'; then
     fail "case 4: the app ran anyway, on a dark console"
 fi
 
-echo "PASS: the console returns to the kernel on driver death, a failed handover is loud, a two-thread driver's console waits for its register owner, and a ready-timeout reports itself"
+echo "PASS: the console returns to the kernel on driver death, a failed handover is loud, a two-thread driver's console waits for its register owner, and a ready-timeout is reported"

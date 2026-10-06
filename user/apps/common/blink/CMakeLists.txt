@@ -6,5 +6,5 @@
 # user/apps/common/CMakeLists.txt: on a chip whose arch_diag_led_set is the no-op fallback
 # it would blink nothing and read as a dead board.
 add_executable(blink main.cc)
-target_link_libraries(blink PRIVATE kickos)
+target_link_libraries(blink PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(blink)

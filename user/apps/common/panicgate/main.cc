@@ -13,7 +13,7 @@
 //   5  control bytes in the message must be replaced in place, so the panic cannot
 //      continue onto lines that read as kernel output
 //
-// Case 3 discriminates only while root is UNPRIVILEGED: a privileged caller passes
+// Case 3 discriminates only while main is UNPRIVILEGED: a privileged caller passes
 // user_readable_ok wholesale.
 
 #include <kickos/kos.h>

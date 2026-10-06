@@ -30,6 +30,17 @@ kickos_add_unit_test(NAME drv_thread_trap
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
+# A zero-length send to a buffered UART console is a flush: the service and IRQ loops of
+# uart_service.h on two host threads over a fake device. HOST-ONLY: uart_flush.cc defines public
+# kos_* names.
+kickos_add_unit_test(NAME drv_uart_flush
+  SOURCES uart_flush.cc
+          "${PROJECT_SOURCE_DIR}/user/src/uart_service.cc"
+          "${PROJECT_SOURCE_DIR}/user/src/uart_service_dev.cc"
+          "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
 # The USIC SSC engine's and UART backend's routing of their events onto their line's index, over
 # a host buffer for a window. HOST-ONLY: usic_route.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_usic_route
@@ -62,3 +73,23 @@ kickos_add_unit_test(NAME init_flush
 # The same bring-up built for more than one kernel core, in a directory of its own: its posture
 # scrubs the build's core count from the directory it is declared in.
 add_subdirectory(cores)
+
+# The ESP UART family's flush over a host buffer for its window, once per chip. HOST-ONLY:
+# uart_esp.cc defines the public kos_uart_* names.
+foreach(_esp_chip "esp32c6;riscv" "esp32;xtensa")
+  list(GET _esp_chip 0 _esp_name)
+  list(GET _esp_chip 1 _esp_arch)
+  kickos_add_unit_test(NAME drv_esp_uart_flush_${_esp_name} TEST_PREFIX "${_esp_name}."
+    SOURCES esp_uart_flush.cc "${PROJECT_SOURCE_DIR}/system/driver/espuart/uart_esp.cc"
+    INCLUDES "${PROJECT_SOURCE_DIR}/arch/${_esp_arch}/chip/${_esp_name}"
+             "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include")
+  target_compile_options(drv_esp_uart_flush_${_esp_name} PRIVATE
+    -include "${CMAKE_CURRENT_SOURCE_DIR}/esp_mmap.h")
+endforeach()
+
+# The USB CDC class layer's bulk IN pump and the service's flush over a recording fake
+# controller. HOST-ONLY: usb_zlp.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_usb_zlp
+  SOURCES usb_zlp.cc "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")

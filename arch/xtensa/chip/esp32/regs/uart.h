@@ -68,9 +68,10 @@ namespace kickos::esp32::reg::uart
     // Transmitter finite state machine, same register (TRM Register 19.8), whose states the
     // TRM enumerates: 0 TX_IDLE, 1 TX_STRT, 2-9 TX_DAT0..7, 10 TX_PRTY, 11 TX_STP1,
     // 12 TX_STP2, 13 TX_DL0, 14 TX_DL1.
+    constexpr uintptr_t OFF_TX_FSM = OFF_STATUS;
     constexpr uint32_t ST_UTX_OUT_S = 24; // [27:24]
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
-    constexpr uint32_t ST_UTX_OUT_TX_IDLE = 0u;
+    constexpr uint32_t ST_UTX_OUT_IDLE = 0u;
 
     // CONF0 framing (TRM Register 19.9).
     constexpr uint32_t CONF0_PARITY = 1u << 0; // 0 even, 1 odd

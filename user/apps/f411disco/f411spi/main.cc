@@ -1,29 +1,24 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 SPI1 loopback diagnostic; requires a PA7-to-PA6 jumper.
-// The unprivileged driver gets a 32-byte SPI1 window at 0x40013000 and IRQ 35.
-// It enables the peripheral through kos_periph_enable and configures SPI1.
-// Root sets pin mux through a syscall; RCC and GPIO windows stay ungranted.
-// A final GPIOB access must cause MemManage. Validate on hardware.
+// STM32F411 SPI1 loopback through a PA7-to-PA6 jumper, run by the task's entry over the SPI1
+// window and line its composition grants. It muxes its own pins, clocks SPI1 through
+// kos_periph_enable, echoes four words, then reads GPIOB, which nothing grants, and must fault.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 
-// Anti-vacuity: without enforcement the MPU is a no-op, the ungranted poke below
-// succeeds and the console prints the isolation-FAILURE line, a false "PMSA does not
-// gate peripherals" verdict.
+// Without enforcement the ungranted read lands and prints an isolation-failure line.
 #if !KICKOS_HAVE_MPU
 #error "f411spi requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace
 {
-    // RM0383: GPIO (8.4), SPI1 (20.5). Absolute addresses, no CMSIS.
-
     // kos_pinmux_set port index on stm32f411: (port base - GPIOA_BASE) / 0x400.
     constexpr uint32_t PORT_A = 0u;
     constexpr uint32_t PORT_E = 4u;
@@ -31,258 +26,159 @@ namespace
     constexpr uint32_t PIN_MISO = 6u;
     constexpr uint32_t PIN_MOSI = 7u;
 
-    // The F411E-DISCO onboard gyro (L3GD20/I3G4250D) chip-select is PE3 ("CS_I2C/SPI",
-    // UM1842 pin table). It shares SPI1 with PA5/6/7 and its SDO drives PA6/MISO, so it
-    // MUST be held deselected (PE3 high) or it fights the PA7->PA6 loopback jumper.
+    // The on-board gyro's chip select (UM1842). Its SDO drives PA6, so it must be held
+    // deselected or it fights the jumper.
     constexpr uint32_t PIN_GYRO_CS = 3u;
 
-    // stm32f411 func encoding: bits[1:0] are the MODER field (00 in, 01 out, 10 AF,
-    // 11 analog), bits[7:4] the AF number, bit 8 presets an output high. OSPEEDR/PUPDR
-    // are not reachable and stay at reset; at /64 (~1.3 MHz) the reset slew carries SCK.
+    // stm32f411 func encoding: bits[1:0] MODER, bits[7:4] the AF number, bit 8 presets an output
+    // high.
     constexpr uint32_t MUX_OUTPUT = 0x01u;
     constexpr uint32_t MUX_OUT_HIGH = 0x100u;
     constexpr uint32_t MUX_AF5 = 0x52u; // AF5 = SPI1
 
-    // 32 B is the minimal PMSA-encodable window (pow2 >= 32, base 32-aligned) that still
-    // covers CR1/CR2/SR/DR at 0x00/0x04/0x08/0x0C (RM0383 memory map: SPI1 @
-    // 0x4001_3000).
-    constexpr uintptr_t SPI1_BASE = 0x40013000u;
-    constexpr uint32_t SPI1_WINDOW = 32u;
+    constexpr uint32_t WINDOW_BYTES = 0x10u;
     constexpr uint32_t CR1_OFFSET = 0x00u;
     constexpr uint32_t CR2_OFFSET = 0x04u;
     constexpr uint32_t SR_OFFSET = 0x08u;
     constexpr uint32_t DR_OFFSET = 0x0Cu;
 
-    // SPI_CR1 (RM0383 20.5.1). CPOL/CPHA/DFF/LSBFIRST all 0 => mode 0, 8-bit, MSB.
-    constexpr uint32_t CR1_MSTR = 1u << 2;       // master
-    constexpr uint32_t CR1_SPE = 1u << 6;        // SPI enable
-    constexpr uint32_t CR1_SSI = 1u << 8;        // internal NSS level (high => not deselected)
-    constexpr uint32_t CR1_SSM = 1u << 9;        // software NSS (loopback needs no real CS)
+    // SPI_CR1 (RM0383 20.5.1): mode 0, 8-bit, MSB first.
+    constexpr uint32_t CR1_MSTR = 1u << 2;
+    constexpr uint32_t CR1_SPE = 1u << 6;
+    constexpr uint32_t CR1_SSI = 1u << 8;
+    constexpr uint32_t CR1_SSM = 1u << 9;
     constexpr uint32_t CR1_BR_DIV64 = 0x5u << 3; // 84 MHz APB2 / 64 ~= 1.3 MHz
-    // SPI_CR2 (20.5.2) / SPI_SR (20.5.3).
-    constexpr uint32_t CR2_RXNEIE = 1u << 6; // RX-buffer-not-empty interrupt enable
-    constexpr uint32_t SR_RXNE = 1u << 0;
+    constexpr uint32_t CR2_RXNEIE = 1u << 6;
     constexpr uint32_t SR_TXE = 1u << 1;
 
-    constexpr int SPI1_IRQ = 35; // RM0383 vector table: SPI1 global interrupt
-
-    // Negative-test target (RM0383 memory map): GPIOB base, outside the 32 B SPI1
-    // window. On PMSA an unprivileged access MUST MemManage.
+    // GPIOB (RM0383 memory map): kernel-owned, so outside every window a task holds.
     constexpr uintptr_t GPIOB_BASE = 0x40020400u;
 
     constexpr uint32_t POLL_TIMEOUT = 1000000u;
 
-    inline volatile uint32_t& r32(uintptr_t a)
+    [[noreturn]] void give_up(char const* what, int rc)
     {
-        return *reinterpret_cast<volatile uint32_t*>(a);
+        char m[80];
+        ksnprintf(m, sizeof(m), "[f411spi] ERROR: %s rc %d\n", what, rc);
+        kos::print(m);
+        exit(1);
     }
 
     void mux_pin(char const* what, uint32_t port, uint32_t pin, uint32_t func)
     {
-        int rc = kos_pinmux_set(port, pin, func);
+        int const rc = kos_pinmux_set(port, pin, func);
         if (rc != 0)
         {
-            // Name the pin: a refused mux leaves that signal on the wrong function, and
-            // the loopback verdict below would then read as a result.
-            char m[64];
-            ksnprintf(m, sizeof(m), "[f411spi] ERROR: pinmux %s failed rc %d\n", what, rc);
-            kos::print(m);
-        }
-    }
-
-    // Unprivileged, granted only app code+data, the SPI1 window and a cap on the SPI1
-    // IRQ. It must touch no file-scope mutable state under enforcement: the window base
-    // arrives as the thread arg VALUE (never dereferenced as memory) and buffers live on
-    // the granted stack.
-    void spi_driver(void* arg)
-    {
-        uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // SPI1 window base
-        volatile uint32_t* cr1 = reinterpret_cast<volatile uint32_t*>(win + CR1_OFFSET);
-        volatile uint32_t* cr2 = reinterpret_cast<volatile uint32_t*>(win + CR2_OFFSET);
-        volatile uint32_t* sr = reinterpret_cast<volatile uint32_t*>(win + SR_OFFSET);
-        volatile uint32_t* dr = reinterpret_cast<volatile uint32_t*>(win + DR_OFFSET);
-
-        // Must precede every register write below: while SPI1 is clock-gated those
-        // writes are silently discarded. Authorised by POSSESSION of this exact window.
-        int rc = kos_periph_enable(win);
-        if (rc != 0)
-        {
-            char m[64];
-            ksnprintf(m, sizeof(m), "[f411spi] ERROR: periph_enable(SPI1) rc %d\n", rc);
-            kos::print(m);
-            while (true)
-            {
-                kos_sleep_ns(1000000000ull);
-            }
-        }
-
-        // The line is delegated at slot 0 and never named here: the wait below re-arms it,
-        // so this driver owes no explicit ack.
-        int const n = KOS_SPAWN_DELEGATED_CAP0 + 1; // the object the line raises, on bit 0
-        if (kos_notify_bind(n) != 0)
-        {
-            kos_panic("[f411spi] notify_bind refused the delegated object");
-        }
-
-        // SSM|SSI must hold internal NSS high or the master takes a MODF. Configure with
-        // SPE=0, then enable.
-        *cr1 = CR1_MSTR | CR1_SSM | CR1_SSI | CR1_BR_DIV64;
-        *cr2 = CR2_RXNEIE; // arm RX interrupt (only source that wakes line 35)
-        *cr1 |= CR1_SPE;
-
-        // Must print before the first blocking wait: a misrouted line hangs the driver in the
-        // notification wait, and this line is what tells that apart from a dead board or a
-        // missing console adapter.
-        kos::print("[f411spi] starting loopback (blocking on SPI1 IRQ 35)\n");
-
-        // Known pattern; each word round-trips through the PA7->PA6 jumper equal.
-        uint8_t const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
-        int fails = 0;
-        for (unsigned i = 0; i < sizeof(pattern); i++)
-        {
-            uint32_t tx = pattern[i];
-
-            uint32_t spin = 0;
-            bool txe_timeout = false;
-            while ((*sr & SR_TXE) == 0)
-            {
-                if (++spin > POLL_TIMEOUT)
-                {
-                    txe_timeout = true;
-                    break;
-                }
-            }
-            if (txe_timeout)
-            {
-                // Say which word wedged: else the unbounded RXNE wait below hangs mute.
-                char t[48];
-                ksnprintf(t, sizeof(t), "[f411spi] TXE timeout on word %u\n", i);
-                kos::print(t);
-            }
-            *dr = tx; // load TX buffer; master starts clocking the frame out on MOSI
-
-            // Blocks until RXNE raises line 35; the return re-arms the line.
-            (void)kos_notify_wait(n, 1u, KOS_TIMEOUT_NONE, nullptr);
-            // SPI has no W1C flag, so this DR read is the only way to clear RXNE; without
-            // it the level storms when the next wait re-arms the line.
-            uint32_t rx = *dr & 0xFFu;
-
-            char s[64];
-            char const* verdict = "PASS";
-            if (rx != tx)
-            {
-                verdict = "FAIL";
-                fails++;
-            }
-            ksnprintf(s, sizeof(s), "[f411spi] word %u: tx=0x%x rx=0x%x %s\n",
-                      i, static_cast<unsigned>(tx), static_cast<unsigned>(rx), verdict);
-            kos::print(s);
-        }
-
-        if (fails == 0)
-        {
-            kos::print("[f411spi] loopback PASS (all words echoed equal)\n");
-        }
-        else
-        {
-            kos::print("[f411spi] loopback FAIL (word mismatch)\n");
-        }
-
-        // Negative test: on PMSA this ungranted access faults BEFORE any bus access.
-        // armv7m opted into fault isolation, so this KILLS the thread
-        // ("=== THREAD FAULT === thread 'f411spi' killed", ADDR=0x40020400) rather than
-        // panicking. Terminal for this thread, so it must stay the LAST thing it does,
-        // and the announce must precede the poke or the console shows only the fault.
-        kos::print("[f411spi] poking UNGRANTED GPIOB @ 0x40020400 (expect MPU FAULT)\n");
-        uint32_t leaked = r32(GPIOB_BASE);
-
-        // Reached only if PMSA did NOT enforce: an isolation failure, not a pass.
-        char s[72];
-        ksnprintf(s, sizeof(s),
-                  "[f411spi] UNGRANTED ACCESS DID NOT FAULT (GPIOB=0x%x)\n",
-                  static_cast<unsigned>(leaked));
-        kos::print(s);
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
+            give_up(what, rc);
         }
     }
 }
 
-// KOS_AUTH_PINMUX for the four mux_pin calls; KOS_AUTH_IRQ because the line mint is
-// namespace-wide, so root claims the cap and delegates it. main never returns.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
-
-int main(int, char**)
+extern "C" void f411spi_main(kos_self_t const* self)
 {
-    // Deselect the onboard gyro FIRST, before any SCK activity, so its SDO stays
-    // tri-stated and the PA7->PA6 jumper owns MISO. One call: the seam gates the GPIOE
-    // clock, presets PE3 high, then switches it to output, so it never drives low.
-    mux_pin("PE3", PORT_E, PIN_GYRO_CS, MUX_OUTPUT | MUX_OUT_HIGH);
+    // Deselect the gyro before any SCK activity: one call gates GPIOE's clock, presets PE3 high,
+    // then switches it to output, so it never drives low.
+    mux_pin("pinmux PE3", PORT_E, PIN_GYRO_CS, MUX_OUTPUT | MUX_OUT_HIGH);
+    // Glitch-free ahead of CR1 only because CPOL=0 is CR1's reset value; a CPOL=1 variant must
+    // write CR1 first.
+    mux_pin("pinmux PA5/SCK", PORT_A, PIN_SCK, MUX_AF5);
+    mux_pin("pinmux PA6/MISO", PORT_A, PIN_MISO, MUX_AF5);
+    mux_pin("pinmux PA7/MOSI", PORT_A, PIN_MOSI, MUX_AF5);
 
-    // PA5/PA6/PA7 -> AF5 (SPI1). Muxing SCK before CR1 is glitch-free ONLY because
-    // CPOL=0 is the CR1 reset value, so SCK's idle level is already correct at mux
-    // time; a CPOL=1 variant MUST write CR1 before muxing.
-    mux_pin("PA5/SCK", PORT_A, PIN_SCK, MUX_AF5);
-    mux_pin("PA6/MISO", PORT_A, PIN_MISO, MUX_AF5);
-    mux_pin("PA7/MOSI", PORT_A, PIN_MOSI, MUX_AF5);
-
-    // EDGE is safe only because the driver's DR read clears RXNE before the next
-    // notification wait re-arms the line.
-    kos_cap_t irq = KOS_CAP_NONE;
-    if (kos_irq_claim(SPI1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
+    kos_window_t const window = kos_grant_mmio(self, "/dev/spi1");
+    kos_line_t const line = kos_grant_irq(self, "irq");
+    uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
+    if (win == 0u or kos_window_size(window) < WINDOW_BYTES or line.cap == KOS_CAP_NONE)
     {
-        kos::print("[f411spi] ERROR: irq_claim(SPI1) failed\n");
+        give_up("no /dev/spi1 window or irq line", -KOS_EBADF);
     }
+
+    // Every register write below is discarded while SPI1 is clock-gated.
+    int rc = kos_periph_enable(win);
+    if (rc != 0)
+    {
+        give_up("periph_enable(SPI1)", rc);
+    }
+
     kos_cap_t note = KOS_CAP_NONE;
-    if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    rc = kos_notify_create(&note);
+    if (rc == 0)
     {
-        kos::print("[f411spi] ERROR: the line could not be attached to a notification\n");
+        rc = kos_notify_bind(note);
     }
-    kos_cap_grant const caps[2] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
-
-    // The driver ends on the negative test's fault, and a fault cancels the faulting
-    // thread's whole TASK: spawned plain it would join root's task and take root with it,
-    // leaving no survivor to keep the board up. Root holds the handle for the life of the
-    // image, since it never reaches a point past the driver.
-    kos_task_t victim = KOS_TASK_NONE;
-    if (kos_task_create(nullptr, 0, 0, &victim) != 0)
+    if (rc == 0)
     {
-        // The console is the only oracle at the bench: without this line a failed spawn
-        // and a dead board read the same.
-        kos::print("[f411spi] ERROR: no task slot for the driver\n");
+        rc = kos_irq_bind_notify(line.cap, note);
+    }
+    if (rc != 0)
+    {
+        give_up("the line's notification", rc);
+    }
+
+    volatile uint32_t* const cr1 = reinterpret_cast<volatile uint32_t*>(win + CR1_OFFSET);
+    volatile uint32_t* const cr2 = reinterpret_cast<volatile uint32_t*>(win + CR2_OFFSET);
+    volatile uint32_t* const sr = reinterpret_cast<volatile uint32_t*>(win + SR_OFFSET);
+    volatile uint32_t* const dr = reinterpret_cast<volatile uint32_t*>(win + DR_OFFSET);
+
+    // SSM|SSI hold internal NSS high, or the master takes a MODF.
+    *cr1 = CR1_MSTR | CR1_SSM | CR1_SSI | CR1_BR_DIV64;
+    *cr2 = CR2_RXNEIE;
+    *cr1 |= CR1_SPE;
+
+    // Before the first wait: a misrouted line hangs there, and this line tells that apart from
+    // a dead board.
+    kos::print("[f411spi] starting loopback (blocking on the SPI1 line)\n");
+
+    uint8_t const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
+    int fails = 0;
+    for (unsigned i = 0; i < sizeof(pattern); i++)
+    {
+        uint32_t const tx = pattern[i];
+        uint32_t spin = 0;
+        while ((*sr & SR_TXE) == 0u and spin < POLL_TIMEOUT)
+        {
+            spin++;
+        }
+        if (spin == POLL_TIMEOUT)
+        {
+            char t[48];
+            ksnprintf(t, sizeof(t), "[f411spi] TXE timeout on word %u\n", i);
+            kos::print(t);
+        }
+        *dr = tx;
+
+        (void)kos_notify_wait(note, 1u, KOS_TIMEOUT_NONE, nullptr);
+        // The only way to clear RXNE: without it the level storms once the next wait rearms the
+        // edge-claimed line.
+        uint32_t const rx = *dr & 0xFFu;
+
+        char s[64];
+        char const* verdict = "PASS";
+        if (rx != tx)
+        {
+            verdict = "FAIL";
+            fails++;
+        }
+        ksnprintf(s, sizeof(s), "[f411spi] word %u: tx=0x%x rx=0x%x %s\n", i,
+                  static_cast<unsigned>(tx), static_cast<unsigned>(rx), verdict);
+        kos::print(s);
+    }
+    if (fails == 0)
+    {
+        kos::print("[f411spi] loopback PASS (all words echoed equal)\n");
     }
     else
     {
-        kos_window const win = {SPI1_BASE, SPI1_WINDOW, KOS_WINDOW_DEVICE, 0};
-        auto drv = kos::thread::create(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
-                                       "f411spi", 10, KOS_POLICY_FIFO, 0,
-                                       /*privileged=*/false,
-                                       /*mem=*/nullptr, /*mem_size=*/0,
-                                       /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*windows=*/&win, 1,
-                                       caps, 2, /*authority=*/0, /*cap_dest=*/nullptr, victim);
-        if (not drv.valid())
-        {
-            kos::print("[f411spi] ERROR: driver spawn failed\n");
-        }
-    }
-    if (irq != KOS_CAP_NONE)
-    {
-        kos_handle_close(irq); // the driver is the sole holder from here
+        kos::print("[f411spi] loopback FAIL (word mismatch)\n");
     }
 
-    // Sleep park when the semaphore could not be created: an unmintable handle would spin
-    // a hot loop of failing sem_wait syscalls.
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
-    while (true)
-    {
-        if (idle == KOS_CAP_NONE)
-        {
-            kos_sleep_ns(1000000000ull);
-            continue;
-        }
-        kos_sem_wait(idle);
-    }
+    // Terminal: the announce must precede the read, or the console shows only the fault.
+    kos::print("[f411spi] poking UNGRANTED GPIOB @ 0x40020400 (expect MPU FAULT)\n");
+    uint32_t const leaked = *reinterpret_cast<volatile uint32_t*>(GPIOB_BASE);
+
+    char s[72];
+    ksnprintf(s, sizeof(s), "[f411spi] UNGRANTED ACCESS DID NOT FAULT (GPIOB=0x%x)\n",
+              static_cast<unsigned>(leaked));
+    kos::print(s);
+    exit(1);
 }

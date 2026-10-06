@@ -50,9 +50,9 @@ namespace
 
     // THE CHILD ANSWERS DOWN AN ENDPOINT AND NOT THROUGH A GLOBAL. Its task holds an address
     // space of its own on a translating board, so a global it writes is its own copy of the
-    // page and root reads the value it started with, which reads as a child that never ran.
-    // The endpoint is one ROOT already created and delegated SIGNAL-only, so the reporting
-    // channel costs the pool nothing and leaves root at its ceiling while the child creates.
+    // page and main reads the value it started with, which reads as a child that never ran.
+    // The endpoint is one MAIN already created and delegated SIGNAL-only, so the reporting
+    // channel costs the pool nothing and leaves main at its ceiling while the child creates.
     constexpr kos_cap_t REPLY_EP = 1; // grants land at child indices 1..cap_count
 
     void child_creates_an_endpoint(void*)

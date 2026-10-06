@@ -65,6 +65,13 @@ SECTIONS
     {
         *(.rodata .rodata.*)
         *(.rodata_wlog .rodata_wlog.*)
+        KEEP(*(.gcc_except_table .gcc_except_table.*))
+        /* DWARF EH, registered by Reset_Handler: -nostartfiles drops crtbegin's frame_dummy and
+           crtend's terminator, so the table is kept whole and ends in a zero-length CIE. */
+        . = ALIGN(4);
+        __eh_frame_start = .;
+        KEEP(*(.eh_frame))
+        LONG(0)
         . = ALIGN(4);
     } > DRAM
 

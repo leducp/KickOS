@@ -12,17 +12,12 @@
 #include <kickos/sys.h>
 #include <kickos/sys/abi.h>
 #include <kickos/sys/emit.h>
-#include <kickos/sys/init.h>
 
 #if !defined(__riscv)
 #error "trapnest moves sp with RISC-V asm and reads rv32imac's own figures; not for this ISA"
 #endif
 
 using kickos::emit;
-
-// IRQ claiming requires AUTH_IRQ, which the fallback authority mask lacks. AUTH_TASKS keeps the
-// deep spawn's refusal in grant_region_admissible rather than at the task gate before it.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 namespace
 {
@@ -232,7 +227,7 @@ int main(int, char**)
         return 1;
     }
 
-    // Root prints, the kernel only counts: a report written from kernel code would put the
+    // Main prints, the kernel only counts: a report written from kernel code would put the
     // console's varargs route on some syscall's path, inside the red zone that path is measured
     // against. traps is the POSITIVE control and must print with the verdict, never apart.
     unsigned const traps = static_cast<unsigned>(kos_nest_witness(KOS_NEST_TRAPS));
@@ -248,6 +243,6 @@ int main(int, char**)
                   static_cast<unsigned>(room));
         emit(msg);
     }
-    emit("[trapnest] root ran after the worker\n");
+    emit("[trapnest] main ran after the worker\n");
     return 0;
 }

@@ -412,7 +412,10 @@ enum kos_mem_flags
     // Map the block Normal non-cacheable, for a block a bus master reads or writes. A chip whose
     // region descriptors carry no memory type and whose data cache sits over the arena REFUSES it
     // with -KOS_ENOTSUP; a chip with no cache in that path accepts it; a chip that TRANSLATES
-    // answers from its page tables.
+    // answers from its page tables. The kernel's own copies into and out of the block, IPC
+    // included, maintain the data cache around themselves, as a translating chip's mapping does,
+    // so no line of the kernel's cacheable view of it is read in place of memory or evicted over
+    // it.
     KOS_MEM_NOCACHE = 1u << 0
 };
 #define KOS_MEM_FLAGS_ALL (KOS_MEM_NOCACHE)

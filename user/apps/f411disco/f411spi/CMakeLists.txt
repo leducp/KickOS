@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# STM32F411 SPI1 loopback driver over the MMIO-grant seam: the CANONICAL per-thread
-# peripheral-MMIO isolation reference on ARMv7-M PMSA, a real SPI1 window granted to an
-# unprivileged thread, proven both ways (granted works, ungranted faults MemManage).
-# No CTest gate: it answers a HARDWARE question (PMSA peripheral enforcement) and is validated
-# by the operator on silicon, not by the in-env sim/QEMU.
+# STM32F411 SPI1 loopback over the window and line its composition grants, then an ungranted
+# GPIOB read that must fault. Needs a PA7-to-PA6 jumper; judged from a silicon capture.
 add_executable(f411spi main.cc)
-target_link_libraries(f411spi PRIVATE kickos)
+kickos_app_system(f411spi COMPOSITION system.yaml)
 kickos_emit_image(f411spi)
+kickos_app_judge(f411spi tests/integration/check_f411spi.sh)

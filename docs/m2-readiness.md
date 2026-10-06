@@ -227,7 +227,7 @@ shared app-data region: it grants per-thread (the stack now, TLS at M3).
 
 | Chip | MPU flavour | State |
 |------|-------------|-------|
-| K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE -- silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F -- see `reference/architecture.md` Memory domains.** The PACR open is now the kernel's, through `arch_periph_enable` keyed on the window the caller holds; the slot's coarseness is unchanged. A slot spanning kernel-reserved registers is refused rather than opened, which is why the PIT has no entry -- and since root is unprivileged on every board, `k64drv` (whose bring-up shim opens PACR55 from `main`) has no path left and cannot run at all. The SYSMPU-vs-AIPS answer it produced (cited above) stands; the app itself is not runnable on a current image. |
+| K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE, silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F; see `reference/architecture.md` Memory domains.** The PACR open is now the kernel's, through `arch_periph_enable` keyed on the window the caller holds; the slot's coarseness is unchanged. A slot spanning kernel-reserved registers is refused rather than opened, which is why the PIT has no entry, and `k64drv` now drives LPTMR0, alone in its slot, as a composed task (`design-m10-fleet.md` section 4.3). The SYSMPU-vs-AIPS answer it produced (cited above) stands. |
 | XMC4800 | v7-M PMSA | **DONE -- silicon 17/17.** |
 | rp2040 (picopi) | v6-M PMSA (M0+, 8 regions) | **DONE -- v6-M PMSA cross-domain fault SILICON-PROVEN (2026-07-19):** under enforcement the unprivileged `domainA_worker`'s deliberate cross-domain store (`str r2,[r3,#0]` at PC 0x1000028E) FAULTED -- HardFault count=1, read over SWD -- it did NOT complete. So v6-M PMSA fires the trap on real silicon. Reuses the XMC PMSA backend. (U-mode cxxtest re-flash still pending -- a full-C++ nicety, not an enforcement gate.) |
 | STM32F411 (f411disco/blackpill) | v7-M PMSA | **DONE -- silicon-witnessed 2026-07-29 on f411disco** (`6646c8e`, ST-Link + USART2/PA2): enforcement selftest 62/62 with 0 skips, **+ mpu_fault cross-domain MemManage trap** (`CFSR=0x82` = DACCVIOL|MMARVALID, `MMFAR=0x2000b000`, one region past domain A's 4 KiB grant, `(PSP)` so thread mode). The backend is the shared `stm32f411` one, so this closes the debt for the chip, **blackpill included** (not separately re-run). Reuses the XMC PMSA backend unchanged. Captures + the A/B under an unprivileged root: `reference/boards.md`, *Unprivileged root* -> `f411disco`. The chip's **peripheral**-window proof (f411spi) stays open -- see below. |
@@ -294,11 +294,12 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
 | K64F -- SYSMPU (bus-slave-side) | **NO** | silicon-proven: SYSMPU does NOT gate the AIPS peripheral bridge; the AIPS PACR does (per privilege+master, per 4 KB slot, all-user once opened) -- no per-thread peripheral boundary |
 
 **Per-board driver status (truthful):**
-- **k64drv (K64F, PIT):** DONE on silicon -- the first unprivileged MMIO driver; it is what
-  ANSWERED the SYSMPU-vs-AIPS question above (SYSMPU inert for peripherals; AIPS gates,
-  coarse). Also added the `arch_fault_report_extra` hook, whose no-op fallback is
-  `arch/arm/armv7m/arch_fault_report_extra_default.cc` (K64F decodes SYSMPU CESR/EARn/
-  EDRn + BusFault). `user/apps/frdmk64f/k64drv/`.
+- **k64drv (K64F, LPTMR0):** retargeted from PIT channel 2 to LPTMR0 in M10.5.11, its own AIPS
+  slot; silicon owed. On PIT it was the first unprivileged MMIO driver, and it is what ANSWERED the
+  SYSMPU-vs-AIPS question above (SYSMPU inert for peripherals; AIPS gates, coarse). It also added
+  the `arch_fault_report_extra` hook, whose no-op fallback is
+  `arch/arm/armv7m/arch_fault_report_extra_default.cc` (K64F decodes SYSMPU CESR/EARn/EDRn and
+  BusFault). `user/apps/frdmk64f/k64drv/`.
 - **xmcspi (XMC4800, USIC0-CH1 SSC loopback):** DONE on silicon (2026-07-17) -- the CANONICAL
   per-thread PMSA MMIO-isolation proof: a granted 512-byte USIC DEV window does an internal SSC
   loopback (4 words tx==rx) AND an ungranted SCU poke faults MemManage (CFSR=0x82,

@@ -5,10 +5,10 @@
 #   Runs `kickos_compose chip` at configure on <description>, a board file or the chip file it
 #   names, for the cluster whose architecture is <arch>. It writes kickos/chip_mmap.h and
 #   kickos/chip_limits.h under ${PROJECT_BINARY_DIR}/generated/include, and irq.h, chip_layout.h,
-#   chip_tables.h and chip.cmake under ${PROJECT_BINARY_DIR}/generated/chip, each only when its
-#   bytes change. The description, the chip file beside it and the tool are configure
-#   dependencies. A refusal fails the configure with the tool's `<file>:<line>: <rule>: <message>`
-#   lines. Requires uv on PATH, as kickos_compose() does.
+#   chip_tables.h, chip.cmake, board_pins.h and board_buses.h under
+#   ${PROJECT_BINARY_DIR}/generated/chip, each only when its bytes change. The description, the chip
+#   file beside it and the tool are configure dependencies. A refusal fails the configure with the
+#   tool's `<file>:<line>: <rule>: <message>` lines. Requires uv on PATH, as kickos_compose() does.
 function(kickos_chip_generate description arch)
   set(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
   get_filename_component(_platform "${description}" DIRECTORY)
@@ -28,7 +28,8 @@ function(kickos_chip_generate description arch)
   set(_chip "${PROJECT_BINARY_DIR}/generated/chip")
   set(_state "${PROJECT_BINARY_DIR}/kickos_compose/chip")
   set(_outputs "${_include}/kickos/chip_mmap.h" "${_include}/kickos/chip_limits.h" "${_chip}/irq.h"
-               "${_chip}/chip_layout.h" "${_chip}/chip_tables.h" "${_chip}/chip.cmake")
+               "${_chip}/chip_layout.h" "${_chip}/chip_tables.h" "${_chip}/chip.cmake" "${_chip}/board_pins.h"
+               "${_chip}/board_buses.h")
   set(_recorded "")
   if(EXISTS "${_state}/inputs.sha256")
     file(READ "${_state}/inputs.sha256" _recorded)

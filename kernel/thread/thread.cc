@@ -3,6 +3,7 @@
 
 #include <kickos/kernel.h>
 #include <kickos/ampshare.h>
+#include <kickos/aspace.h>
 #include <kickos/instance_local.h>
 #include <kickos/sched.h>
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
@@ -294,6 +295,23 @@ namespace kickos
             }
             return fitted;
         }
+
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+        // Out of seat_windows and noinline: thread_create's other callees are the deeper chain.
+        __attribute__((noinline)) void sync_windows(Thread const* t)
+        {
+            for (uint32_t place = 0; place < KICKOS_MAX_THREAD_WINDOWS; place++)
+            {
+                uint8_t flags = 0;
+                arch_mpu_region const* const r = t->mpu.window(place, &flags);
+                if (r != nullptr
+                    and (r->attr & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) == ARCH_MPU_NOCACHE)
+                {
+                    alias_sync(reinterpret_cast<void const*>(r->base), r->size);
+                }
+            }
+        }
+#endif
     }
 
     // Code, static data, the task's data region and the stack come first.
@@ -412,6 +430,9 @@ namespace kickos
         if (not attr.privileged)
         {
             fitted = seat_windows(t, attr) and fitted;
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+            sync_windows(t);
+#endif
         }
         if (wants_stack)
         {

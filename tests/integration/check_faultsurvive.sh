@@ -52,9 +52,9 @@
 # rv32imac that sp is legal: the entry transfers to the thread's own kernel stack, so the
 # frame and every byte of C below it land there and nothing privileged is written under the
 # parked sp. So the claim is the STRONGER one, a clean thread kill AND the app's poisoned band
-# below stack_lo intact, which root reads back and prints either way. An entry that adopted
+# below stack_lo intact, which main reads back and prints either way. An entry that adopted
 # the sp instead would run the reporter chain privileged through that band, and the band says
-# so; an entry that refused the sp would panic and root would never run.
+# so; an entry that refused the sp would panic and main would never run.
 #
 # `misalign' (faultsurvive_misalign, KICKOS_FS_MODE 5): the worker drops sp two bytes, still
 # deep inside its own stack and in bounds, so bounds and extent both pass and only alignment
@@ -149,14 +149,14 @@ case "$arm" in
         fi
         survived="$(line_of "\[fs\] survivor ran after the fault")"
         if [ -z "$survived" ]; then
-            fail "root never ran again after the worker faulted"
+            fail "main never ran again after the worker faulted"
         fi
         if [ "$survived" -le "$killed" ]; then
-            fail "root's line is at $survived, not after the kill at $killed"
+            fail "main's line is at $survived, not after the kill at $killed"
         fi
         assert_no_panic "the worker was killed AND the system panicked"
         # The band, and BOTH directions are clauses. Corrupted names the privileged writes
-        # that went under the parked sp; a missing verdict line means root reached the readback
+        # that went under the parked sp; a missing verdict line means main reached the readback
         # and printed neither, which is the silent arm this pair exists to refuse.
         if [ "$arm" = lowedge ]; then
             if has "lowband] CORRUPTED"; then
@@ -164,7 +164,7 @@ case "$arm" in
             fi
             intact="$(line_of "\[fs\] \[lowband\] INTACT")"
             if [ -z "$intact" ]; then
-                fail "lowedge: root printed no band verdict, so nothing here witnessed the
+                fail "lowedge: main printed no band verdict, so nothing here witnessed the
     band at all: the readback is compiled out, or this is not the mode 4 image"
             fi
             if [ "$intact" -le "$killed" ]; then
@@ -174,12 +174,12 @@ case "$arm" in
         fi
         if [ "$CAPTURED" -eq 0 ]; then
             if [ "$RC" -ne 0 ]; then
-                fail "expected a clean exit 0 once root returned, got $RC"
+                fail "expected a clean exit 0 once main returned, got $RC"
             fi
         else
             echo "NOT EVALUATED: the clean exit 0. A capture carries no exit status." >&2
         fi
-        echo "PASS: 'faulter' died at line $killed and root ran at line $survived"
+        echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
         ;;
     overflow | offstack | kwrite | misalign)
         if has_e "$(thread_fault_re faulter)"; then
@@ -209,10 +209,10 @@ case "$arm" in
     thread's sp"
             fi
             if [ "$survived" -le "$refused" ]; then
-                fail "$arm: root's line is at $survived, not after the refusal at $refused"
+                fail "$arm: main's line is at $survived, not after the refusal at $refused"
             fi
             if [ "$CAPTURED" -eq 0 ] && [ "$RC" -ne 0 ]; then
-                fail "$arm: root outlived the refusal and the image still exited $RC"
+                fail "$arm: main outlived the refusal and the image still exited $RC"
             fi
             # ATTRIBUTION, and rv32imac is the arch that needs the clause: its trap entry
             # catches a thread that overflowed its own stack BEFORE the PMP-denial report that
@@ -231,7 +231,7 @@ case "$arm" in
     so the containment took the attribution the panic path used to carry"
                 fi
             fi
-            echo "PASS: $arm refused at line $refused and root ran at line $survived"
+            echo "PASS: $arm refused at line $refused and main ran at line $survived"
             exit 0
         fi
         if [ "$outcome" != terminated ]; then

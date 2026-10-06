@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Main holds console in place of tasks: it publishes its own console endpoint, which
+# stdout: kernel leaves free.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 12
+    authority: [memory, system, console]

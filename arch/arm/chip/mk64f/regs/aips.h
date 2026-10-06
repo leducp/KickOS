@@ -57,7 +57,8 @@ namespace kickos::mk64f::reg::aips
     }
 
     // Reproduces the known-good values: slot 106 (UART0) = PACRN 0x4000_0064 bit 22,
-    // slot 44 (DSPI0) = PACRF 0x4000_0044 bit 14, slot 55 (PIT) = PACRG 0x4000_0048 bit 2.
+    // slot 44 (DSPI0) = PACRF 0x4000_0044 bit 14, slot 55 (PIT) = PACRG 0x4000_0048 bit 2,
+    // slot 64 (LPTMR0) = PACRI 0x4000_0050 bit 30.
     static_assert(slot_of(mmap::UART0_BASE) == 106u);
     static_assert(pacr_of(106u) == 0x40000064u);
     static_assert(pacr_sp_bit(106u) == (1u << 22));
@@ -67,6 +68,9 @@ namespace kickos::mk64f::reg::aips
     static_assert(slot_of(mmap::PIT_BASE) == 55u);
     static_assert(pacr_of(55u) == 0x40000048u);
     static_assert(pacr_sp_bit(55u) == (1u << 2));
+    static_assert(slot_of(mmap::LPTMR0_BASE) == 64u);
+    static_assert(pacr_of(64u) == 0x40000050u);
+    static_assert(pacr_sp_bit(64u) == (1u << 30));
 
     // The bound itself: the last AIPS0 slot resolves, and the AIPS1 blocks (UART4, GPIOA)
     // do not.

@@ -43,7 +43,7 @@ namespace
     // is spawned READY, and a claim on a READY thread is the case this arm is not about.
     constexpr uint64_t SETTLE_NS = 200u * 1000u * 1000u;
 
-    // Written by the slayer, read by root after it joins, so no publication is owed beyond the
+    // Written by the slayer, read by main after it joins, so no publication is owed beyond the
     // join itself.
     int g_slay_rc = -1;
 

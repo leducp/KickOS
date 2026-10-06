@@ -10,6 +10,10 @@
 
 namespace kickos::x86_64
 {
+    // The smallest CLFLUSH line the floor admits (floor_x86_64.cc), and the stride a by-address
+    // flush steps by.
+    constexpr uintptr_t CLFLUSH_LINE = 64;
+
     // volatile keeps a read where it stands and keeps a second one from folding into the first.
     static inline uint64_t read_cr0(void)
     {

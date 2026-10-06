@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Main holds console, to publish the console to a driver thread of its own; stdout stays the
+# kernel's, which the witness needs.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 12
+    authority: [memory, console]

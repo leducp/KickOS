@@ -135,10 +135,10 @@ namespace kickos
         // is what a null owner names; the receiver's end is its own space.
         //
         // AHEAD of the commit below, unlike the copy in every other IPC path: this file
-        // compiles on non-translating arches ONLY, where access_copy is a bare kmemcpy and
-        // the one refusal ep_copy has left is the same-owner overlap test, which moves no
-        // byte. A receiver that named a range inside this caller's saved frame, reachable
-        // through a task-mate's regions, is that case, and it must not be a panic.
+        // compiles on non-translating arches ONLY, where access_copy cannot fail and the one
+        // refusal ep_copy has left is the overlap test, which moves no byte. A receiver that
+        // named a range inside this caller's saved frame, reachable through a task-mate's
+        // regions, is that case, and it must not be a panic.
         if (not ep_copy(ipc_buf_space(w), w->ipc.buf, nullptr,
                         reinterpret_cast<uintptr_t>(&args[3]), n))
         {

@@ -6,14 +6,14 @@
 // region, which must fault. What the trap DOES depends on the posture
 // (KICKOS_FAULT_OUTCOME): with no fault isolation the kernel reports "MPU FAULT: thread
 // 'domainA'" and shuts down; where the arch opted in, domainA alone is killed
-// ("=== THREAD FAULT === thread 'domainA' killed") and root parks forever.
+// ("=== THREAD FAULT === thread 'domainA' killed") and main parks forever.
 //
 // The worker is static-data-free by construction: it takes its region base through its
 // thread ARG, by value, and derives both cells from it, so the only memory it touches is
 // its code (flash, granted RX), region A (granted), and its own stack.
 //
-// The arg MUST be a value, not a struct in region A: root is not granted A, so filling a
-// struct there faults in root during setup and proves nothing about the child.
+// The arg MUST be a value, not a struct in region A: main is not granted A, so filling a
+// struct there faults in main during setup and proves nothing about the child.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -61,7 +61,7 @@ int main(int, char**)
         return 1;
     }
 
-    // Announced from root, which is not granted A and so may not touch it: the gate pins
+    // Announced from main, which is not granted A and so may not touch it: the gate pins
     // the reported fault address to this one, since a grant that never happened faults on
     // the worker's OWN write instead and prints the same banner.
     char msg[96];

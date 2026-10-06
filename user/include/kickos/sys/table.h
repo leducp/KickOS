@@ -99,7 +99,8 @@ struct kos_table_task
     uint32_t block; // a packaged driver's ring block in bytes, 0 for none or for user code
     union kos_table_entry entry;
     uint16_t driver; // catalogue index, or KOS_TABLE_NONE for user code
-    uint16_t rsv1;
+    uint8_t ceiling; // the highest priority the task's threads may take, at least `priority`
+    uint8_t rsv1;
     uint32_t stack;
     uint8_t priority;
     uint8_t restart_max;
@@ -192,7 +193,8 @@ KOS_TABLE_ASSERT(offsetof(struct kos_table_task, name) == 0, "task.name (table l
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, block) == 4, "task.block (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, entry) == 8, "task.entry (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, driver) == 16, "task.driver (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv1) == 18, "task.rsv1 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_task, ceiling) == 18, "task.ceiling (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv1) == 19, "task.rsv1 (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, stack) == 20, "task.stack (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, priority) == 24, "task.priority (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, restart_max) == 25, "task.restart_max (table layout)");

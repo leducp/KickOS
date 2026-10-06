@@ -42,6 +42,7 @@ struct kos_driver_instance
     uint32_t block_size;  // its bytes, 0 for none
     uint32_t block_flags; // its self-grant's kos_mem_flags, KOS_MEM_NOCACHE for an uncached one
     uint32_t core_mask;   // the declared core's bit, 0 for none
+    uint8_t ceiling;      // the task's priority ceiling the table carries
     kos_cap_t endpoint;   // the endpoint the init created at boot and keeps with HANDOUT
     kos_cap_t watch;      // this start's badged copy of the init's notification
     kos_task_t task;      // the task the bring-up created, written back; KOS_TASK_NONE before it
@@ -754,6 +755,9 @@ void* thread_start(void* arg);
 void trap_under_init();
 
 constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
+
+// What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
+constexpr uint32_t KOS_DRV_HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
 // The last two steps of a console handover: drop the caller's own WAIT on E, then probe with a
 // zero-length rendezvous on cap 0. Returns 0, or the probe's negative rc.

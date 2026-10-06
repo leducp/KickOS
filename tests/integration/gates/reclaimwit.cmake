@@ -7,12 +7,6 @@ if(NOT TARGET reclaimwit)
   return()
 endif()
 
-# The service list must be kickos_services_none or the app refuses at run time, so the gate
-# would fail by construction instead of witnessing anything.
-if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  return()
-endif()
-
 set(_reclaimwit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh")
 
 if(KICKOS_ARCH STREQUAL "sim")

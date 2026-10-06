@@ -22,7 +22,6 @@ namespace kickos::stm32f411::reg::rcc
     constexpr uintptr_t APB1LPENR = mmap::RCC_BASE + 0x60u; // keep-clocked-in-sleep gates
 
     // Peripheral clock-enable bits.
-    constexpr uint32_t AHB1ENR_GPIOAEN = 1u << 0;
     constexpr uint32_t APB1ENR_USART2EN = 1u << 17;
     constexpr uint32_t APB1ENR_TIM2EN = 1u << 0; // also the APB1LPENR TIM2 bit
     constexpr uint32_t APB2ENR_SPI1EN = 1u << 12;

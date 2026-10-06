@@ -136,7 +136,10 @@ enum kos_aspace_op
     // (which) -> the kernel address of a structure ring 3 must not reach: 0 is the caller's
     // own translation root, 1 the calling core's per-core block. Zero where the arch keeps no
     // such structure.
-    KOS_ASPACE_OP_KERNEL_STATE = 53
+    KOS_ASPACE_OP_KERNEL_STATE = 53,
+    // () -> data-cache maintenance calls the kernel has made since boot over its cacheable view
+    // of a page mapped non-cacheable.
+    KOS_ASPACE_OP_ALIAS_SYNCS = 54
 };
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect
@@ -426,8 +429,8 @@ enum
 #define KOS_ASPACE_UNWIND_MIN_DEPTH 4
 
 // `op` selector for KOS_SYS_GRANT_PROBE. Ops 0..4 return the predicate as 0/1; ops 5..7
-// return a raw count / reserved-block base / size; op 10 an address. A BAD op returns
-// -KOS_EINVAL.
+// return a raw count / reserved-block base / size; op 10 an address; op 11 a count. A BAD op
+// returns -KOS_EINVAL.
 enum kos_grant_op
 {
     KOS_GRANT_OP_HITS_RESERVED = 0,   // grant_hits_reserved(base, size)
@@ -443,7 +446,9 @@ enum kos_grant_op
     // Selftest kernels, AUTH_MEMORY: writes KOS_ARENA_SCRIBBLE over the `size` bytes the arena
     // has not handed out yet, as silicon leaves RAM, and answers the first one's address, or 0
     // where the arena is shorter (-KOS_EPERM without the authority).
-    KOS_GRANT_OP_ARENA_SCRIBBLE = 10
+    KOS_GRANT_OP_ARENA_SCRIBBLE = 10,
+    // Selftest kernels: KOS_ASPACE_OP_ALIAS_SYNCS's count, for a backend that does not translate.
+    KOS_GRANT_OP_ALIAS_SYNCS = 11
 };
 
 #define KOS_ARENA_SCRIBBLE 0xA5u

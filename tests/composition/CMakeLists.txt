@@ -9,16 +9,19 @@ if(KICKOS_ARCH STREQUAL "x86_64")
 endif()
 list(TRANSFORM _sources PREPEND "${PROJECT_SOURCE_DIR}/examples/composition/")
 add_library(composition_example_sources OBJECT ${_sources})
-target_link_libraries(composition_example_sources PRIVATE kickos)
+target_link_libraries(composition_example_sources PRIVATE KickOS::kernel)
 target_compile_options(composition_example_sources PRIVATE ${KICKOS_WARN_FLAGS})
 
-# kickos_image_leaves answers the in-tree spellings: the old leaf linked directly, and the
-# kernel leaf by its alias through an INTERFACE library.
+# kickos_image_leaves answers the in-tree spellings: the kernel leaf by its alias, linked
+# directly and through an INTERFACE library, and the old leaf.
 add_library(composition_through_kernel INTERFACE)
 target_link_libraries(composition_through_kernel INTERFACE KickOS::kernel)
+add_library(composition_through_leaf INTERFACE)
+target_link_libraries(composition_through_leaf INTERFACE kickos)
 kickos_image_leaves(composition_example_sources _direct)
 kickos_image_leaves(composition_through_kernel _through)
-if(NOT _direct STREQUAL "kickos" OR NOT _through STREQUAL "kernel")
-  message(FATAL_ERROR "kickos_image_leaves read '${_direct}' and '${_through}', not 'kickos' and "
-                      "'kernel'")
+kickos_image_leaves(composition_through_leaf _leaf)
+if(NOT _direct STREQUAL "kernel" OR NOT _through STREQUAL "kernel" OR NOT _leaf STREQUAL "kickos")
+  message(FATAL_ERROR "kickos_image_leaves read '${_direct}', '${_through}' and '${_leaf}', not "
+                      "'kernel', 'kernel' and 'kickos'")
 endif()

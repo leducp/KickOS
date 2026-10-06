@@ -118,7 +118,7 @@ namespace kickos
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[CONSOLE_CHUNK];
-            struct arch_aspace* const space = user_space_of(sched::current());
+            UserOwner const space = user_space_of(sched::current());
             if (len == 0)
             {
                 return 0;
@@ -161,7 +161,7 @@ namespace kickos
         {
             char buf[64];
             buf[0] = '\0';
-            struct arch_aspace* const space = user_space_of(sched::current());
+            UserOwner const space = user_space_of(sched::current());
             // A privileged caller passes user_readable_ok wholesale, so null must be
             // rejected here and not by the per-byte check.
             if (msg != 0)
@@ -933,6 +933,10 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return arena_scribble(size);
                 }
+                case KOS_GRANT_OP_ALIAS_SYNCS:
+                {
+                    return alias_sync_count();
+                }
 #endif
                 case KOS_GRANT_OP_RESERVED_COUNT:
                 {
@@ -974,6 +978,10 @@ uint64_t syscall_body(uintptr_t nr,
             if (a0 == KOS_GRANT_OP_ARENA_SCRIBBLE)
             {
                 return arena_scribble(static_cast<size_t>(a2));
+            }
+            if (a0 == KOS_GRANT_OP_ALIAS_SYNCS)
+            {
+                return alias_sync_count();
             }
             return static_cast<uint64_t>(-KOS_EINVAL);
         }
@@ -1232,6 +1240,7 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EBUSY);
             }
+            grant_sync(&c->mpu, base, rsz, attr);
             // Retype an existing block in place to avoid conflicting overlapping descriptors.
             // Keep the temporary region in MpuSet to limit syscall stack use.
             if (not c->mpu.add_enforced_retyping(base, rsz, attr))

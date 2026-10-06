@@ -10139,6 +10139,148 @@ namespace
         }
         TAP_CHECK(g_rz_dirty == 0);
     }
+
+    // The kernel's maintenance of the cache over a block a region holds non-cacheable, counted
+    // for each grant that seats one and for IPC into one; a cacheable block costs none.
+#if defined(KICKOS_SELFTEST_ARENA_DCACHE)
+    constexpr uint64_t UG_PER = 1;
+#else
+    constexpr uint64_t UG_PER = 0;
+#endif
+    constexpr uint32_t UG_BLK = 64;
+    constexpr size_t UG_LEN = 16;
+    constexpr uint32_t UG_US = 500000;
+    // [0] the non-cacheable self-grant, [1] the cacheable one, [2] and [3] the receives into
+    // each, [4] the first block's retype to cacheable; all ones where a call failed or a receive
+    // delivered the wrong bytes.
+    unsigned char* g_ug_blk[2] = {};
+    bool g_ug_nocache = false;
+    Atomic<uint32_t, Order::RELAXED> g_ug_syncs[5];
+    uint64_t ug_syncs()
+    {
+        return kos_grant_probe(KOS_GRANT_OP_ALIAS_SYNCS, 0, 0);
+    }
+    // A fresh region set of its own, which root's is not by this point of the run.
+    void ug_receiver(void*) // caps: done@1, E(WAIT)@2
+    {
+        uint32_t flags[2] = {0, 0};
+        if (g_ug_nocache)
+        {
+            flags[0] = KOS_MEM_NOCACHE;
+        }
+        for (int i = 0; i < 2; i++)
+        {
+            uint64_t const before = ug_syncs();
+            if (kos_mem_self_grant(g_ug_blk[i], UG_BLK, flags[i]) == 0)
+            {
+                g_ug_syncs[i] = static_cast<uint32_t>(ug_syncs() - before);
+            }
+        }
+        for (int i = 0; i < 2; i++)
+        {
+            uint64_t const before = ug_syncs();
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, 2, KOS_RECV_NO_INFO, UG_US);
+            if (kos_reply_recv(KOS_CAP_NONE, g_ug_blk[i], kos_call_lens_pack(0, UG_LEN), &o)
+                    == static_cast<int32_t>(UG_LEN)
+                and g_ug_blk[i][UG_LEN - 1] == 0x30u + UG_LEN - 1)
+            {
+                g_ug_syncs[2 + i] = static_cast<uint32_t>(ug_syncs() - before);
+            }
+        }
+        uint64_t const before = ug_syncs();
+        if (kos_mem_self_grant(g_ug_blk[0], UG_BLK, 0) == 0)
+        {
+            g_ug_syncs[4] = static_cast<uint32_t>(ug_syncs() - before);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void ug_noop(void*) {}
+    void t_uncached_grant_sync()
+    {
+        g_ug_blk[0] = static_cast<unsigned char*>(kos_ram_alloc(UG_BLK));
+        g_ug_blk[1] = static_cast<unsigned char*>(kos_ram_alloc(UG_BLK));
+        void* const win = kos_ram_alloc(UG_BLK);
+        void* const hand = kos_ram_alloc(UG_BLK);
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (g_ug_blk[0] == nullptr or g_ug_blk[1] == nullptr or win == nullptr or hand == nullptr
+            or kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("no blocks or endpoint left for the arm");
+            return;
+        }
+        TAP_CHECK(static_cast<int64_t>(ug_syncs()) >= 0);
+        // Where no non-cacheable region can be seated, the arm asks only that nothing is spent.
+        g_ug_nocache = kos_grant_probe(KOS_GRANT_OP_RAM_NOCACHE, reinterpret_cast<uintptr_t>(win),
+                                       UG_BLK)
+                       == 1;
+        uint64_t per = 0;
+        if (g_ug_nocache)
+        {
+            per = UG_PER;
+            uint64_t const c0 = ug_syncs();
+            kos_window const w = {reinterpret_cast<uintptr_t>(win), UG_BLK, KOS_WINDOW_MEMORY,
+                                  KOS_WINDOW_UNCACHED};
+            auto const holder = kos::thread::create(ug_noop, nullptr, "ugw", 10, KOS_POLICY_FIFO,
+                                                    0, false, nullptr, 0, nullptr, 0, &w, 1,
+                                                    nullptr, 0);
+            uint64_t const c1 = ug_syncs();
+            if (holder.valid())
+            {
+                (void)holder.join();
+            }
+            kos_task_t t = KOS_TASK_NONE;
+            int const trc = kos_task_create(hand, UG_BLK, KOS_MEM_NOCACHE, &t);
+            uint64_t const c2 = ug_syncs();
+            if (trc == 0)
+            {
+                (void)kos_task_kill(t);
+            }
+            tap::diag("alias syncs: window %lu, task data %lu", static_cast<unsigned long>(c1 - c0),
+                      static_cast<unsigned long>(c2 - c1));
+            TAP_CHECK(holder.valid() and c1 - c0 == UG_PER);
+            TAP_CHECK(trc == 0 and c2 - c1 == UG_PER);
+        }
+        for (int i = 0; i < 5; i++)
+        {
+            g_ug_syncs[i] = ~0u;
+        }
+        unsigned char msg[UG_LEN];
+        for (size_t i = 0; i < UG_LEN; i++)
+        {
+            msg[i] = static_cast<unsigned char>(0x30u + i);
+        }
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_WAIT}};
+        bool const spawned =
+            kos::thread::create_caps(ug_receiver, nullptr, "ugr", TAP_PRIO_PARKS, caps, 2,
+                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_MEMORY,
+                                     nullptr, KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE)
+                .valid();
+        int32_t sent[2] = {-1, -1};
+        if (spawned)
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                sent[i] = kos_send_timed(ep, msg, UG_LEN, UG_US);
+            }
+            wait_n(1);
+        }
+        (void)kos_handle_close(ep);
+        tap::diag("alias syncs: self-grant %lu, cacheable %lu, recv %lu, cacheable recv %lu, "
+                  "retype to cacheable %lu",
+                  static_cast<unsigned long>(g_ug_syncs[0].load()),
+                  static_cast<unsigned long>(g_ug_syncs[1].load()),
+                  static_cast<unsigned long>(g_ug_syncs[2].load()),
+                  static_cast<unsigned long>(g_ug_syncs[3].load()),
+                  static_cast<unsigned long>(g_ug_syncs[4].load()));
+        TAP_CHECK(spawned and sent[0] == static_cast<int32_t>(UG_LEN)
+                  and sent[1] == static_cast<int32_t>(UG_LEN));
+        TAP_CHECK(g_ug_syncs[0].load() == per);
+        TAP_CHECK(g_ug_syncs[1].load() == 0);
+        TAP_CHECK(g_ug_syncs[2].load() == 2u * per);
+        TAP_CHECK(g_ug_syncs[3].load() == 0);
+        TAP_CHECK(g_ug_syncs[4].load() == per);
+    }
 #endif
 
     // A member's memory is its TASK's, so a member bringing its own data grant is refused
@@ -11179,6 +11321,7 @@ int main(int, char**)
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
     TAP_ADD("ram_alloc_zeroed", t_ram_alloc_zeroed);
+    TAP_ADD("uncached_grant_sync", t_uncached_grant_sync);
 #endif
 #undef TAP_ADD
 // Region 6.
@@ -11233,6 +11376,7 @@ int main(int, char**)
     TAP_ADD("process_call_reply", t_process_call_reply);
     TAP_ADD("grant_kernel_word_refused", t_grant_kernel_word_refused);
     TAP_ADD("self_grant_retype", t_self_grant_retype);
+    TAP_ADD("uncached_alias_sync", t_uncached_alias_sync);
     TAP_ADD("reent_seating", t_reent_seating);
     TAP_ADD("aspace_acquire_balance", t_aspace_acquire_balance);
     TAP_ADD("map_tlbi_elided", t_map_tlbi_elided);

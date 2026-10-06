@@ -37,8 +37,8 @@ namespace kickos::stm32::chip
 
     inline uint32_t clk_counter() { return reg32(mmap::TIM2_BASE + TIM_CNT); }
 
-    // Console: USART2 on PA2/PA3 (AF7, the ST-LINK VCP), APB1. The NEWER USART
-    // model (ISR/TDR), though CR1.TXEIE is bit 7 as on the classic one.
+    // Console: USART2, APB1. The NEWER USART model (ISR/TDR), though CR1.TXEIE is bit 7 as on
+    // the classic one.
     constexpr uintptr_t USART_CR1 = mmap::USART2_BASE + 0x00;
     constexpr uintptr_t USART_BRR = mmap::USART2_BASE + 0x0C;
     constexpr uintptr_t USART_SR = mmap::USART2_BASE + 0x1C; // ISR

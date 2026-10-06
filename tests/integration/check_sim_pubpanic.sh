@@ -2,18 +2,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for TERMINAL REPORTING on a published console: build the sim with the
-# publishing service list (kickos_services_sim, where a userspace driver owns the
-# "wire"; see system/driver/sim/simcon/simcon.cc), then require both terminal reports to
-# still reach the wire:
+# CI gate for TERMINAL REPORTING on a published console: run the two pubpanic images, whose
+# composition names the packaged simcon as stdout (a userspace driver owns the "wire"; see
+# system/driver/sim/simcon/simcon.cc), and require both terminal reports to still reach the
+# wire:
 #   pubpanic1  kos_panic  -> "KERNEL PANIC: [pubpanic] banner after handover"
 #   pubpanic2  ud2/SIGILL -> "=== SIM FAULT (illegal instruction)", exactly once
 #
-# Case 2 inverts on a backend with fault isolation: root's illegal instruction kills root
-# alone, so the claim becomes survival AND reporting together. See the case-2 block.
-#
-# It needs its own build because KICKOS_SERVICE_LIST selects one provider per image, so the
-# published posture cannot coexist with the default one in a single tree.
+# Case 2 inverts on a backend with fault isolation: main's illegal instruction ends main's task,
+# which ends the system through the init. See the case-2 block.
 #
 # The sim is the fleet's one platform that is both BUFFERED and hardware-free, so a buffered
 # terminal report is witnessed here; every other panic gate runs semihosted and unbuffered.
@@ -24,33 +21,27 @@
 # USER_OWNED, so its absence is what proves the handover really happened. Without it a
 # regression that skipped the publish entirely would still pass here.
 #
-# usage: check_sim_pubpanic.sh <kickos-source-dir> <cmake>
+# usage: check_sim_pubpanic.sh <pubpanic1> <pubpanic2> [panic|thread-kill]
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-KICKOS_SRC="$1"
-CMAKE="${2:-cmake}"
+_usage="usage: check_sim_pubpanic.sh <pubpanic1> <pubpanic2> [panic|thread-kill]"
+APP1="${1:?$_usage}"
+APP2="${2:?$_usage}"
 # What a user-thread fault DOES is a property of the backend, so the caller passes it in;
-# case 2's illegal instruction is executed by root.
+# case 2's illegal instruction is executed by main.
 OUTCOME="${3:-panic}"
 
 FAULT_STATUS=132 # kfault_terminate -> arch_shutdown(132) on the host
+# KOS_EXIT_FAULT, the status the init ends the system with once main's task faulted. Restated
+# rather than computed, so the gate asserts the number the runtime reports.
+# A host SIGSEGV of the sim also exits 139; the kill record tells the two apart.
+TASK_FAULT_STATUS=139
 
 # grep -c exits 1 on zero matches, so without `|| true` set -e kills the script before its
 # fail message prints.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
-
-scratch_dir
-
-echo "== configuring the sim with the publishing service list =="
-( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim >/dev/null ) \
-  || fail "configure with kickos_services_sim failed"
-
-echo "== building pubpanic1 + pubpanic2 =="
-"$CMAKE" --build "$TMP/build" --target pubpanic1 pubpanic2 >/dev/null \
-  || fail "pubpanic build failed"
 
 common_asserts() {
     # First: a missing publish also strands the driver, so reporting that would name the
@@ -68,8 +59,8 @@ common_asserts() {
 }
 
 echo "== case 1: kos_panic on a published console =="
-APP="$TMP/build/user/apps/common/pubpanic/pubpanic1"
-[ -x "$APP" ] || fail "pubpanic1 binary not produced at $APP"
+APP="$APP1"
+[ -x "$APP" ] || fail "no pubpanic1 image at $APP"
 set +e
 OUT="$(timeout "${SIM_TIMEOUT:-30}" "$APP" 2>&1)"
 RC=$?
@@ -85,8 +76,8 @@ COUNT="$(count_of 'KERNEL PANIC: \[pubpanic\] banner after handover')"
   || fail "case 1: expected exit $FAULT_STATUS (kfault_terminate), got $RC"
 
 echo "== case 2: illegal instruction on a published console =="
-APP="$TMP/build/user/apps/common/pubpanic/pubpanic2"
-[ -x "$APP" ] || fail "pubpanic2 binary not produced at $APP"
+APP="$APP2"
+[ -x "$APP" ] || fail "no pubpanic2 image at $APP"
 
 if [ "$OUTCOME" = panic ]; then
     set +e
@@ -106,33 +97,22 @@ if [ "$OUTCOME" = panic ]; then
     exit 0
 fi
 
-# thread-kill: the illegal instruction is root's own fault, so it is no longer terminal.
-# The claim inverts with it. Two things must hold at once, and each is asserted positively:
-# the SYSTEM survives (the process is still alive after the settle, and the driver still
-# owns the wire), AND the kill record still reaches that wire.
+# thread-kill: the illegal instruction is main's own fault, so it is no longer terminal for the
+# kernel. It ends main's task, and the task the composition `ends` on ending ends the system
+# through the init with KOS_EXIT_FAULT. Both halves are asserted positively: the kill record
+# reaches the wire over the DRIVER, and the end is the init's shutdown, never the panic path.
 #
-# The record arrives over the DRIVER, not over the kernel chip path, which console_emit
-# drops while the console is USER_OWNED (kernel/init/console.cc). kprintf_fault hands it to
-# the published endpoint's parked receiver instead (cap_console_deliver), because the
-# thread-kill path may not call kpanic_enter: that reclaim is permanent and would take the
-# console away from a system that is meant to keep running.
-#
-# Both halves are load-bearing: without the survival assertion a permanent reclaim passes,
-# and without the record assertion a swallowed record passes.
-LOG="$TMP/case2.log"
-"$APP" >"$LOG" 2>&1 &
-APID=$!
-sleep "${SIM_SETTLE:-3}"
-ALIVE=0
-if kill -0 "$APID" 2>/dev/null; then
-    ALIVE=1
-fi
-{ kill "$APID"; wait "$APID"; } 2>/dev/null
-OUT="$(tr -d '\r' < "$LOG")"
+# The record arrives over the driver, not over the kernel chip path, which console_emit drops
+# while the console is USER_OWNED (kernel/init/console.cc). kprintf_fault hands it to the
+# published endpoint's parked receiver instead (cap_console_deliver), because the thread-kill
+# path may not call kpanic_enter. A status of 139 rather than 132 is what separates the init's
+# ending from kfault_terminate.
+set +e
+OUT="$(timeout "${SIM_TIMEOUT:-30}" "$APP" 2>&1)"
+RC=$?
+set -e
 printf '%s\n' "$OUT"
 common_asserts "case 2"
-[ "$ALIVE" -eq 1 ] \
-  || fail "case 2: the image died; root's fault was supposed to kill root alone"
 if has 'KERNEL PANIC'; then
     fail "case 2: a user-thread fault reached the panic path"
 fi
@@ -141,10 +121,14 @@ if has '=== SIM FAULT'; then
 fi
 # The record names the dead thread, so the name is matched too: a banner naming another
 # thread means the record was misattributed and not merely routed.
-COUNT="$(count_of "THREAD FAULT === thread 'root' killed")"
+COUNT="$(count_of "THREAD FAULT === thread 'main' killed")"
 [ "$COUNT" -ne 0 ] \
   || fail "case 2: the kill record never reached the wire; the published console swallowed it"
 [ "$COUNT" -eq 1 ] \
   || fail "case 2: the kill record appeared $COUNT times (routed AND emitted by the kernel?)"
+[ "$RC" -ne 124 ] \
+  || fail "case 2: the system never ended: the init did not act on main's fault"
+[ "$RC" -eq "$TASK_FAULT_STATUS" ] \
+  || fail "case 2: expected exit $TASK_FAULT_STATUS (KOS_EXIT_FAULT through the init), got $RC"
 
-echo "PASS: case 1 reaches the wire; case 2 kills root alone, the driver keeps the console, and the record still reaches the wire"
+echo "PASS: case 1 reaches the wire; case 2 ends main's task, its record reaches the wire over the driver, and the init ends the system with KOS_EXIT_FAULT"

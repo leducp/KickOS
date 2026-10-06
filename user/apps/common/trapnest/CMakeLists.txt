@@ -12,7 +12,7 @@
 # injected-IRQ bench measures. So is the arm, which would report traps=0 and fail for a
 # reason that is not a regression.
 add_executable(trapnest main.cc)
-target_link_libraries(trapnest PRIVATE kickos)
+kickos_app_system(trapnest COMPOSITION system.yaml)
 kickos_emit_image(trapnest)
 
 # arch-private include path, on this target only.

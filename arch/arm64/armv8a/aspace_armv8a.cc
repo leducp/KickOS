@@ -855,7 +855,7 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(boot_root());
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
 {
     if (space == nullptr)
     {
@@ -870,15 +870,20 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     // Protect the table walk from concurrent rollback and table reclamation.
     arch_irq_state_t const s = arch_irq_save();
     uint64_t const* const entry = leaf_entry(root_of(space), page);
-    arch_phys_addr_t out = 0;
+    uint64_t desc = 0;
     if (entry != nullptr)
     {
-        out = static_cast<arch_phys_addr_t>(*entry & DESC_OA_MASK);
+        desc = *entry;
     }
     arch_irq_restore(s);
     if (entry == nullptr)
     {
         return nullptr;
+    }
+    arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
+    if (uncached != nullptr)
+    {
+        *uncached = ((desc >> 2) & 7u) == ATTR_NOCACHE;
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(out) + va_base() +
                                    (va & (GRANULE - 1)));

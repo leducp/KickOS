@@ -6,15 +6,18 @@
 // buffered console live in ../stm32f1f3/chip_stm32f1f3.cc off family_map.h; here are the
 // timer chain, the older CRL/CRH GPIO model, the diagnostic LED and the reset path.
 //
-// Registers are clean-room from RM0008; hand-rolled, no vendor HAL/CMSIS. Console =
-// USART1 on PA9(TX)/PA10(RX). No FPU, no MPU, and no watchdog runs at reset, so the reset
-// path is just C-runtime.
+// Registers are clean-room from RM0008; hand-rolled, no vendor HAL/CMSIS. Console = USART1, on
+// the pins the board file names. No FPU, no MPU, and no watchdog runs at reset, so the reset path
+// is just C-runtime.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
+#include "board_pins.h"
 #include "family_map.h"
+#include "stm32_gpio.h"
 
 
 #include <stdint.h>
@@ -41,18 +44,20 @@ namespace
 
     constexpr uintptr_t RCC_APB2ENR = mmap::RCC_BASE + 0x18;
     constexpr uint32_t APB2ENR_AFIOEN = 1u << 0;
-    constexpr uint32_t APB2ENR_IOPAEN = 1u << 2;
     constexpr uint32_t APB2ENR_USART1EN = 1u << 14;
     constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
     constexpr uint32_t APB1ENR_TIM3EN = 1u << 1;
 
-    // GPIOA (sec.9), CRL/CRH model. USART1 TX=PA9, RX=PA10 live in CRH (pins 8-15).
-    constexpr uintptr_t GPIOA_CRH = mmap::GPIOA_BASE + 0x04;
-    // PA9  = AF push-pull, 50 MHz : CNF=10 MODE=11 -> nibble 0xB, bits [7:4]
-    // PA10 = input floating       : CNF=01 MODE=00 -> nibble 0x4, bits [11:8]
-    constexpr uint32_t CRH_PA9 = 0xBu << 4;
-    constexpr uint32_t CRH_PA10 = 0x4u << 8;
-    constexpr uint32_t CRH_PA9_PA10_MASK = (0xFu << 4) | (0xFu << 8);
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::USART1_BASE,
+                  "the board's console is not the USART this backend drives");
+    static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
+                  "this backend writes no AFIO remap, so the console pins are USART1's unremapped pair");
+
+    // The CRL/CRH nibble: AF push-pull 50 MHz drives TX, a floating input takes RX, and a
+    // push-pull output at 2 MHz drives the LED.
+    constexpr uint32_t CR_AF_PUSH_PULL = 0xBu;
+    constexpr uint32_t CR_INPUT_FLOATING = 0x4u;
+    constexpr uint32_t CR_OUTPUT_2MHZ = 0x2u;
 
     // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
     // GPIO ports: GPIOA + port * GPIO_STRIDE. RCC_APB2ENR IOPxEN = bit (2+port); AFIOEN
@@ -66,14 +71,46 @@ namespace
     constexpr uintptr_t GPIO_CRH_OFF = 0x04;
     constexpr uint32_t APB2ENR_IOP_SHIFT = 2u;
     constexpr uint32_t PINMUX_PORT_MAX = 4u; // GPIOA..GPIOE
-    constexpr uintptr_t GPIOC_BASE = mmap::GPIOA_BASE + 2u * mmap::GPIO_STRIDE;
 
-    // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
-    // console or steal the diag LED. PA9/PA10 = USART1 console; PC13 = LED.
-    bool f1_pin_kernel_owned(uint32_t port, uint32_t pin)
+    void console_pins_init()
     {
-        return (port == 0u and (pin == 9u or pin == 10u)) or (port == 2u and pin == 13u);
+        constexpr uintptr_t tx = nibble_reg(KICKOS_BOARD_CONSOLE_TX_PORT_BASE + GPIO_CRL_OFF, KICKOS_BOARD_CONSOLE_TX_BIT);
+        constexpr uintptr_t rx = nibble_reg(KICKOS_BOARD_CONSOLE_RX_PORT_BASE + GPIO_CRL_OFF, KICKOS_BOARD_CONSOLE_RX_BIT);
+        constexpr uint32_t tx_shift = nibble_shift(KICKOS_BOARD_CONSOLE_TX_BIT);
+        constexpr uint32_t rx_shift = nibble_shift(KICKOS_BOARD_CONSOLE_RX_BIT);
+        if constexpr (tx == rx)
+        {
+            rmw(tx, (0xFu << tx_shift) | (0xFu << rx_shift),
+                (CR_AF_PUSH_PULL << tx_shift) | (CR_INPUT_FLOATING << rx_shift));
+        }
+        else
+        {
+            rmw(tx, 0xFu << tx_shift, CR_AF_PUSH_PULL << tx_shift);
+            rmw(rx, 0xFu << rx_shift, CR_INPUT_FLOATING << rx_shift);
+        }
     }
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
+    constexpr bool f1_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
+               or (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
+               or (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin == (bit))
+    constexpr bool f1_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(f1_pin_kernel_owned, f1_pin_listed, PINMUX_PORT_MAX + 1u, 16u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
 
     void timer_clock_init()
     {
@@ -109,12 +146,10 @@ namespace
 
     void usart1_init()
     {
-        reg32(RCC_APB2ENR) |= APB2ENR_IOPAEN | APB2ENR_AFIOEN | APB2ENR_USART1EN;
-
-        uint32_t crh = reg32(GPIOA_CRH);
-        crh &= ~CRH_PA9_PA10_MASK;
-        crh |= CRH_PA9 | CRH_PA10;
-        reg32(GPIOA_CRH) = crh;
+        reg32(RCC_APB2ENR) |= (1u << (APB2ENR_IOP_SHIFT + KICKOS_BOARD_CONSOLE_TX_PORT))
+                              | (1u << (APB2ENR_IOP_SHIFT + KICKOS_BOARD_CONSOLE_RX_PORT)) | APB2ENR_AFIOEN
+                              | APB2ENR_USART1EN;
+        console_pins_init();
 
         reg32(chip::USART_CR1) = 0; // disable while configuring
         // USART1 is on APB2 and clock_init leaves HPRE=/1 PPRE2=/1, so PCLK2 equals
@@ -151,27 +186,27 @@ size_t arch_mpu_min_region(void)
     return 0u;
 }
 
-// Kernel diagnostic LED: PC13, active-LOW (lit when the pin is driven low).
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t GPIOC_CRH = GPIOC_BASE + 0x04;
-    reg32(RCC_APB2ENR) |= (1u << 4); // IOPCEN (GPIOC)
-    uint32_t crh = reg32(GPIOC_CRH);
-    crh &= ~(0xFu << 20);          // clear PC13 nibble
-    crh |= (0x2u << 20);          // general-purpose push-pull, 2 MHz
-    reg32(GPIOC_CRH) = crh;
+    constexpr uintptr_t led_cr = nibble_reg(KICKOS_BOARD_LED_PORT_BASE + GPIO_CRL_OFF, KICKOS_BOARD_LED_BIT);
+    constexpr uint32_t shift = nibble_shift(KICKOS_BOARD_LED_BIT);
+    reg32(RCC_APB2ENR) |= (1u << (APB2ENR_IOP_SHIFT + KICKOS_BOARD_LED_PORT));
+    uint32_t v = reg32(led_cr);
+    v &= ~(0xFu << shift);
+    v |= (CR_OUTPUT_2MHZ << shift);
+    reg32(led_cr) = v;
 }
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t GPIOC_BSRR = GPIOC_BASE + 0x10;
+    constexpr uintptr_t bsrr = KICKOS_BOARD_LED_PORT_BASE + 0x10;
     if (on)
     {
-        reg32(GPIOC_BSRR) = 1u << (13 + 16); // BR13 -> PC13 low -> LED on
+        reg32(bsrr) = bsrr_word(KICKOS_BOARD_LED_BIT, LED_LIT);
     }
     else
     {
-        reg32(GPIOC_BSRR) = 1u << 13;        // BS13 -> PC13 high -> LED off
+        reg32(bsrr) = bsrr_word(KICKOS_BOARD_LED_BIT, not LED_LIT);
     }
 }
 

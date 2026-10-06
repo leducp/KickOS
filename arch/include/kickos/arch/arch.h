@@ -64,6 +64,12 @@
 #define KICKOS_ARCH_ARENA_DCACHE 0
 #endif
 
+// A translating arch whose kernel view of a frame stays cacheable while a task's leaf maps it
+// ARCH_MAP_NOCACHE defines this in its context.h and provides arch_dcache_invalidate.
+#ifndef KICKOS_ARCH_ALIAS_DCACHE
+#define KICKOS_ARCH_ALIAS_DCACHE 0
+#endif
+
 // Architecture-specific MPU descriptors. Included only with KICKOS_HAVE_MPU;
 // otherwise the type stays incomplete and is used only through pointers.
 #if KICKOS_HAVE_MPU
@@ -649,8 +655,11 @@ void arch_aspace_activate(struct arch_aspace* space);
 // holds unless the backend reference-counts them.
 // Release only successful acquisitions. Ignore releases outside the valid
 // address range without counting a hold or a mispairing.
+// On success a non-null `uncached` receives whether the leaf maps the page ARCH_MAP_NOCACHE
+// where the returned pointer may reach it cacheably: the caller then maintains the data cache
+// around its access. Always false where the two views take one type.
 #define ARCH_ASPACE_ACQUIRE_MIN 6u
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va);
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
 // Return the granule-aligned physical frame containing va; discard its page
@@ -721,7 +730,7 @@ uintptr_t arch_cpu_block_addr(void);
 // Cache maintenance for noncoherent observers over [addr, addr + bytes).
 // Use a kernel pointer; callers split user ranges into pages. Backends round
 // to cache-line boundaries. Invalidate also cleans to preserve neighboring
-// bytes on partial lines. Flush leaves lines valid. No fallback is provided.
+// bytes on partial lines. Flush may leave lines valid. No fallback is provided.
 void arch_dcache_flush(void const* addr, size_t bytes);
 void arch_dcache_invalidate(void* addr, size_t bytes);
 

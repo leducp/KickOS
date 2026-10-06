@@ -4,6 +4,7 @@
 #include <kickos/task.h>
 
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
+#include <kickos/aspace.h>
 #include <kickos/cap.h>
 #include <kickos/domain.h>
 #include <kickos/endpoint.h>
@@ -208,6 +209,14 @@ namespace kickos
         domain_ref(d);
         t->creator_tag = static_cast<uint8_t>(creator_tag);
         kernel().task_holds++;
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+        // Not in domain_for, whose spawn chain is the deeper one and whose grant is always Normal.
+        if (domain_region_count(d) != 0)
+        {
+            arch_mpu_region const* const r = domain_region_at(d, 0);
+            grant_sync(nullptr, r->base, r->size, r->attr);
+        }
+#endif
         return t;
     }
 

@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with the packaged rt1062usb serving stdout, the USB CDC
+# console the witness writes through.
+
+version: 1
+board: teensy41
+stdout: /svc/console
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: rt1062usb
+    driver: rt1062usb
+    devices: [/dev/usb1]
+    lines: { irq: /dev/usb1/irq }
+    core: 0
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 8192
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, tasks]

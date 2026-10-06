@@ -1,31 +1,33 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// GPIO direct-MMIO demo: userspace owns GPIO. A bring-up main (the root thread,
-// unprivileged but seated with every authority) grants the LED port's block to an
-// UNPRIVILEGED worker as a spawn MMIO window; the worker toggles the pin by writing that
-// window DIRECTLY, with no syscall per edge. A syscall-per-toggle cannot serve a hot pin,
-// so the model is direct MMIO with a per-chip isolation ceiling on the granted window.
+// GPIO direct-MMIO demo: userspace owns GPIO. The composition grants the task the LED port's
+// block as a window and `pinmux`; the task's entry muxes its own pin and toggles it by
+// writing that window DIRECTLY, with no syscall per edge. A syscall-per-toggle cannot serve a
+// hot pin, so the model is direct MMIO with a per-chip isolation ceiling on the granted
+// window.
 //
-// The pin was already muxed by the default init's board pin-map (the clock->pinmux->gpio
-// bring-up DAG); this app only drives and reads back.
-//
-// PORT/PIN come from compile defs KICKOS_GPIOBLINK_PORT / _PIN. The register layout is per
-// chip (KICKOS_GPIOBLINK_XMC / _K64F, set by CMake from KICKOS_CHIP). Register offsets are
-// mirrored as local constexprs from the canonical per-chip regs/ headers (cited below),
-// because a cross-tree include from user/ would break the sim/qemu builds this app must
-// also compile on. A chip with no layout here builds a park-only stub.
+// PORT/PIN/MUX and the window's path come from compile defs KICKOS_GPIOBLINK_PORT / _PIN /
+// _MUX / _DEVICE. The register layout is per chip (KICKOS_GPIOBLINK_XMC / _K64F, set by
+// CMake from KICKOS_CHIP). Register offsets are mirrored as local constexprs from the
+// canonical per-chip regs/ headers (cited below).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+#if !defined(KICKOS_GPIOBLINK_XMC) && !defined(KICKOS_GPIOBLINK_K64F)
+#error "gpioblink drives the XMC4800's or the K64F's GPIO layout; not for this chip"
+#endif
 
 namespace
 {
     constexpr uint32_t PORT = KICKOS_GPIOBLINK_PORT;
     constexpr uint32_t PIN = KICKOS_GPIOBLINK_PIN;
+    constexpr uint32_t MUX = KICKOS_GPIOBLINK_MUX;
     constexpr int CYCLES = 10;
     constexpr uint64_t EDGE_NS = 200000000ull; // 0.2 s per edge -> ~2.5 Hz
 
@@ -40,14 +42,9 @@ namespace
 namespace
 {
     // XMC4800 P<port> block. Canonical: arch/arm/chip/xmc4800/regs/port.h (OMR set/reset,
-    // IN) + include/kickos/chip_mmap.h (PORT0_BASE 0x48028000, PORT_STRIDE 0x100).
-    // Direction lives in the IOCR mux (init set PC=0x10, output push-pull GP), so driving
-    // needs no direction write.
-    constexpr uintptr_t WINDOW_BASE = 0x48028000u + PORT * 0x100u;
-    // Whole port block: OMR is inseparable from IOCR (a sub-region cannot split them), so
-    // the grant is a TRUSTED OVER-GRANT, and that shared-port over-grant is the XMC limit.
-    // P5.9 (the kernel diag LED) co-resides on P5; this app must never touch it.
-    constexpr uint32_t WINDOW_SIZE = 0x100u;
+    // IN). Direction lives in the IOCR mux (MUX is PC=0x10, output push-pull GP), so driving
+    // needs no direction write. P5.9 (the kernel diag LED) co-resides on P5, which is why the
+    // composition accepts coarse_gate; this app must never touch it.
     constexpr uintptr_t OMR_OFF = 0x04u; // write 1<<pin = set high, 1<<(pin+16) = set low
     constexpr uintptr_t IN_OFF = 0x24u;  // read-only pad input (readable even as PP output)
 
@@ -71,21 +68,13 @@ namespace
     }
 }
 
-#define KICKOS_GPIOBLINK_HAVE_LAYOUT 1
-
 #elif defined(KICKOS_GPIOBLINK_K64F)
 
 namespace
 {
     // MK64F GPIO<port> block. Canonical: arch/arm/chip/mk64f/regs/gpio.h (PSOR/PCOR/PDIR/
-    // PDDR) + include/kickos/chip_mmap.h (GPIOA_BASE 0x400FF000, GPIO_STRIDE 0x40).
-    // Direction is a SEPARATE PDDR write: the worker sets output before driving.
-    constexpr uintptr_t WINDOW_BASE = 0x400FF000u + PORT * 0x40u;
-    // Whole GPIO instance block. The K64F GPIO block is unprotectable
-    // and this grant feeds no kos_periph_* syscall, so it authorises
-    // nothing. Kept for spawn-signature parity and portability to an
-    // enforcing chip.
-    constexpr uint32_t WINDOW_SIZE = 0x40u;
+    // PDDR). Direction is a SEPARATE PDDR write: the task sets output before driving. The K64F
+    // GPIO block is unprotectable, which the composition accepts as device_not_isolated.
     constexpr uintptr_t PSOR_OFF = 0x04u; // set -> high
     constexpr uintptr_t PCOR_OFF = 0x08u; // clear -> low
     constexpr uintptr_t PDIR_OFF = 0x10u; // input data
@@ -93,7 +82,7 @@ namespace
 
     void gpio_setup_out(uintptr_t win)
     {
-        r32(win + PDDR_OFF) |= (1u << PIN); // sole owner of the block: RMW is safe
+        r32(win + PDDR_OFF) |= (1u << PIN); // sole holder of the block: RMW is safe
     }
 
     void gpio_drive(uintptr_t win, uint32_t bit, int high)
@@ -114,105 +103,61 @@ namespace
     }
 }
 
-#define KICKOS_GPIOBLINK_HAVE_LAYOUT 1
-
 #endif
 
-#if defined(KICKOS_GPIOBLINK_HAVE_LAYOUT)
-
-namespace
-{
-    // UNPRIVILEGED worker: the granted window base arrives as the thread arg VALUE (never a
-    // pointer into mutable file-scope state, which the grant would not cover under
-    // enforcement).
-    void worker(void* arg)
-    {
-        uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
-        uint32_t const bit = 1u << PIN;
-
-        gpio_setup_out(win);
-
-        bool ok = true;
-        for (int i = 0; i < CYCLES; i++)
-        {
-            gpio_drive(win, bit, 1);
-            kos_sleep_ns(EDGE_NS);
-            int const r1 = gpio_read(win, PIN);
-            gpio_drive(win, bit, 0);
-            kos_sleep_ns(EDGE_NS);
-            int const r0 = gpio_read(win, PIN);
-            printf("[gpioblink] cycle %d led=1 readback=%d / led=0 readback=%d\n", i, r1, r0);
-            fflush(stdout);
-            if (r1 != 1 or r0 != 0)
-            {
-                ok = false;
-            }
-        }
-
-        if (ok)
-        {
-            printf("[gpioblink] PASS (%d cycles, readback ok)\n", CYCLES);
-        }
-        else
-        {
-            printf("[gpioblink] FAIL (readback did not track the drive)\n");
-        }
-        fflush(stdout);
-
-        // A granted pin is owned for the driver's life, so the worker keeps the window
-        // and slow-blinks on.
-        while (true)
-        {
-            gpio_drive(win, bit, 1);
-            kos_sleep_ns(EDGE_NS * 2u);
-            gpio_drive(win, bit, 0);
-            kos_sleep_ns(EDGE_NS * 2u);
-        }
-    }
-}
-
-int main(int, char**)
+extern "C" void gpioblink_main(kos_self_t const* self)
 {
     printf("[gpioblink] driving port %u pin %u via a direct MMIO grant\n",
            static_cast<unsigned>(PORT), static_cast<unsigned>(PIN));
     fflush(stdout);
 
-    kos_window const win = {WINDOW_BASE, WINDOW_SIZE, KOS_WINDOW_DEVICE, 0};
-    auto const w = kos::thread::create(
-        worker, reinterpret_cast<void*>(WINDOW_BASE), "gpioblink", 10,
-        KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-        /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
-        /*windows=*/&win, 1);
-    if (not w.valid())
+    int const mux_rc = kos_pinmux_set(PORT, PIN, MUX);
+    uintptr_t const win =
+        reinterpret_cast<uintptr_t>(kos_window_addr(kos_grant_mmio(self, KICKOS_GPIOBLINK_DEVICE)));
+    if (mux_rc != 0 or win == 0u)
     {
-        printf("[gpioblink] ERROR: worker spawn failed rc %d\n", w.error());
+        printf("[gpioblink] ERROR: pinmux rc %d, window %s\n", mux_rc,
+               KICKOS_GPIOBLINK_DEVICE);
         fflush(stdout);
+        exit(1);
     }
+    uint32_t const bit = 1u << PIN;
 
-    // Root parks so the worker owns the CPU; blocking here proves the switch.
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
-    while (true)
+    gpio_setup_out(win);
+
+    bool ok = true;
+    for (int i = 0; i < CYCLES; i++)
     {
-        if (idle == KOS_CAP_NONE)
-        {
-            kos_sleep_ns(EDGE_NS);
-            continue;
-        }
-        kos_sem_wait(idle);
-    }
-}
-
-#else // no known GPIO register layout for this chip
-
-int main(int, char**)
-{
-    printf("[gpioblink] no GPIO register layout for this board; parking\n");
-    fflush(stdout);
-    while (true)
-    {
+        gpio_drive(win, bit, 1);
         kos_sleep_ns(EDGE_NS);
+        int const r1 = gpio_read(win, PIN);
+        gpio_drive(win, bit, 0);
+        kos_sleep_ns(EDGE_NS);
+        int const r0 = gpio_read(win, PIN);
+        printf("[gpioblink] cycle %d led=1 readback=%d / led=0 readback=%d\n", i, r1, r0);
+        fflush(stdout);
+        if (r1 != 1 or r0 != 0)
+        {
+            ok = false;
+        }
+    }
+
+    if (ok)
+    {
+        printf("[gpioblink] PASS (%d cycles, readback ok)\n", CYCLES);
+    }
+    else
+    {
+        printf("[gpioblink] FAIL (readback did not track the drive)\n");
+    }
+    fflush(stdout);
+
+    // A granted pin is owned for the task's life, so it keeps the window and slow-blinks on.
+    while (true)
+    {
+        gpio_drive(win, bit, 1);
+        kos_sleep_ns(EDGE_NS * 2u);
+        gpio_drive(win, bit, 0);
+        kos_sleep_ns(EDGE_NS * 2u);
     }
 }
-
-#endif

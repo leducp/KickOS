@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Plumbing gate for kos_reboot: boot rebootdemo on a target whose arch_reboot fallback
-# declines, so the whole path (root's kos_reboot, the AUTH_SYSTEM gate, the synchronous
+# declines, so the whole path (main's kos_reboot, the AUTH_SYSTEM gate, the synchronous
 # console flush, the fallback itself) must come back with -KOS_ENOSYS and the app must then
 # shut down cleanly. arch_shutdown
 # forwards the status over semihosting, so QEMU's exit code IS the clean-exit half.

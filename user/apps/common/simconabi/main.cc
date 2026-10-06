@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The console endpoint's FRAMED arm, against kickos_services_sim's one-thread driver.
+// The console endpoint's FRAMED arm, against the packaged one-thread simcon driver.
 //
 // Every arm below is the same assertion: the call RETURNS. A console endpoint carries two
 // protocols, and a driver that does not tell a kos_call from a plain send leaves the caller

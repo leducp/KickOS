@@ -206,6 +206,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_vector_survives_migrate();
     KICKOS_SELFTEST_LOCAL void t_grant_kernel_word_refused();
     KICKOS_SELFTEST_LOCAL void t_self_grant_retype();
+    KICKOS_SELFTEST_LOCAL void t_uncached_alias_sync();
     KICKOS_SELFTEST_LOCAL void t_recv_buf_unmapped();
     KICKOS_SELFTEST_LOCAL void t_frame_run_slot_recycle();
     KICKOS_SELFTEST_LOCAL void t_call_reply_undisclosed();

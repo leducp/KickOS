@@ -82,7 +82,7 @@ uint32_t tx_write(struct kos_byte_ring* tx, struct kos_uart_stats* stats,
                          uint8_t const* p, uint32_t n);
 
 constexpr uint64_t KOS_CONSOLE_FLUSH_SLEEP_NS = 100000u; // ~1 byte time at 115200 baud
-// Bounds flush() ONLY. A write does not get a budget: see push_all.
+// Bounds a flush ONLY. A write does not get a budget: see push_all.
 constexpr uint32_t KOS_CONSOLE_FLUSH_MAX = 2000u;        // ~200 ms total
 
 // ---------------------------------------------------------------------------------

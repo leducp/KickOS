@@ -1,48 +1,34 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800/USIC0-CH1 SSC silicon validation through the SPI class <kickos/driver/spi.h>,
-// built BOTH WAYS from this one source (see the app's CMakeLists.txt): with KICKOS_SPI_LOCAL
-// the client owns the U0C1 window and the USIC0 SR1 line and does its own bring-up,
-// otherwise the same calls marshal onto the board's SSC service endpoint.
-//
-// Data path is the driver's INTERNAL LOOP-BACK (DX0 = own transmitter), so every byte
+// XMC4800/USIC0-CH1 SSC silicon validation through the SPI class <kickos/driver/spi.h>, run by the
+// task's entry over the grants its composition hands it. Built BOTH WAYS from this one source: with
+// KICKOS_SPI_LOCAL (KICKOS_SPI_LOCAL_ENGINE=ON) the client owns the channel window and its line and
+// links the local engine, otherwise the same calls marshal onto the packaged xmcssc service
+// endpoint. The data path is the engine's internal loop-back (DX0 = own transmitter), so every byte
 // echoes with no external SPI device on the bench.
-//
-// Build-only diagnostic: never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include <kickos/driver/spi.h>    // the SPI class: kos_spi_bus_open / device_open / transfer
-#include <kickos/driver/xmcssc.h> // xmc_spi0_take_endpoint()
+#include <kickos/driver/spi.h>
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 
-// Backstops the CMake enforcement-build gate: a granted DEV window is only a real capability
-// under PMSA.
 #if !KICKOS_HAVE_MPU
 #error "xmcssc requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace
 {
-    // The delegated caps land at child table indices 1 and up. Which they ARE is the build's
-    // choice: the service endpoint's SIGNAL copy, or the USIC0 SR1 line plus the notification
-    // it signals.
-    constexpr kos_cap_t CLIENT_CAP0 = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr kos_cap_t CLIENT_CAP1 = KOS_SPAWN_DELEGATED_CAP0 + 1;
-
     // The single device on the bench's bus; a slot is per device and stays < KOS_BUS_DEV_MAX.
     constexpr uint8_t SPI_SLOT = 0u;
 
 #if KICKOS_SPI_LOCAL
-    // USIC0 channel 1, the SSC channel; the console owns channel 0.
-    constexpr uintptr_t U0C1_BASE = 0x40030200u;
     constexpr uint32_t U0C1_WINDOW = 0x200u;
-    constexpr int USIC0_SR1_IRQ = 85; // RM Table 4-3
 #endif
 
     int g_fails = 0;
@@ -84,26 +70,10 @@ namespace
         return true;
     }
 
-    // UNPRIVILEGED client. IDENTICAL in both builds below the bus config.
-    void spi_client(void* arg)
+    // The client body, IDENTICAL in both builds below the bus config it is handed.
+    int run_client(struct kos_spi_bus_config const* bcfg_in)
     {
-        struct kos_spi_bus_config bcfg;
-#if KICKOS_SPI_LOCAL
-        bcfg.base = reinterpret_cast<uintptr_t>(arg); // the granted window, as a VALUE
-        bcfg.ep = KOS_CAP_NONE;
-        bcfg.irq = CLIENT_CAP0;
-        bcfg.notify = CLIENT_CAP1;
-        bcfg.notify_bit = 0;
-        bcfg.irq_index = 1u; // SR1
-#else
-        (void)arg;
-        bcfg.base = 0u;
-        bcfg.ep = CLIENT_CAP0;
-        bcfg.irq = KOS_CAP_NONE;
-        bcfg.notify = KOS_CAP_NONE;
-        bcfg.notify_bit = 0;
-        bcfg.irq_index = 0u;
-#endif
+        struct kos_spi_bus_config bcfg = *bcfg_in;
         struct kos_spi_bus bus;
         int32_t const brc = kos_spi_bus_open(&bus, &bcfg);
         report("bus open", brc == 0);
@@ -197,94 +167,63 @@ namespace
         if (g_fails == 0)
         {
             kos::print("[xmcssc] loopback PASS (the SSC bus echoes tx == rx)\n");
+            return 0;
         }
-        else
-        {
-            kos::print("[xmcssc] loopback FAIL (see per-case lines above)\n");
-        }
-
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
-        }
+        kos::print("[xmcssc] loopback FAIL (see per-case lines above)\n");
+        return 1;
     }
 }
 
-int main(int, char**)
+extern "C" void xmcssc_main(kos_self_t const* self)
 {
+    struct kos_spi_bus_config bcfg;
+    bcfg.notify_bit = 0;
 #if KICKOS_SPI_LOCAL
-    // Claim the line here: minting needs AUTH_IRQ and the client runs at authority 0. No SSC
-    // service may be running in this image, one owner per block.
-    kos_cap_t irq = KOS_CAP_NONE;
+    // The client owns the channel: the window and the USIC0 line its composition grants, and a
+    // notification it binds the line to.
+    kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
+    kos_line_t const line = kos_grant_irq(self, "irq");
+    uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
+    if (win == 0u or kos_window_size(window) < U0C1_WINDOW or line.cap == KOS_CAP_NONE)
+    {
+        kos::print("[xmcssc] ERROR: no /dev/usic0/ch1 window or irq line\n");
+        exit(1);
+    }
     kos_cap_t note = KOS_CAP_NONE;
-    if (kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
+    int rc = kos_notify_create(&note);
+    if (rc == 0)
     {
-        kos::print("[xmcssc] ERROR: irq_claim(USIC0 SR1) failed\n");
+        rc = kos_notify_bind(note);
     }
-    else if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(irq, note) != 0)
+    if (rc == 0)
     {
-        // The unbadged capability, so the line raises BIT 0.
-        kos::print("[xmcssc] ERROR: the line could not be attached to a notification\n");
-        kos_handle_close(note);
-        kos_handle_close(irq);
+        rc = kos_irq_bind_notify(line.cap, note);
     }
-    else
+    if (rc != 0)
     {
-        kos_cap_grant const caps[2] = {
-            { .source_cap = irq, .rights_mask = KOS_CAP_WAIT },
-            { .source_cap = note, .rights_mask = KOS_CAP_WAIT },
-        };
-        kos_window const win = {U0C1_BASE, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
-        auto const c = kos::thread::create(
-            spi_client, reinterpret_cast<void*>(U0C1_BASE), "xmcssc-cli", 9, KOS_POLICY_FIFO,
-            /*quantum_ns=*/0, /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
-            /*stack=*/nullptr, /*stack_size=*/0, /*windows=*/&win, 1,
-            caps, /*cap_count=*/2);
-        if (not c.valid())
-        {
-            kos::print("[xmcssc] ERROR: client spawn failed\n");
-        }
-        // Root drops its own copies so the line and the object go with the client.
-        kos_handle_close(note);
-        kos_handle_close(irq);
+        char e[64];
+        ksnprintf(e, sizeof(e), "[xmcssc] ERROR: the line's notification rc %d\n", rc);
+        kos::print(e);
+        exit(1);
     }
+    bcfg.base = win;
+    bcfg.ep = KOS_CAP_NONE;
+    bcfg.irq = line.cap;
+    bcfg.notify = note;
+    bcfg.irq_index = line.index;
 #else
-    // The SSC service is already up: take the endpoint the service list recorded.
-    kos_cap_t const ep = xmc_spi0_take_endpoint();
+    // The client reaches the channel over the endpoint the packaged xmcssc serves.
+    kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
-        kos::print("[xmcssc] ERROR: SPI service not up (endpoint unavailable)\n");
+        kos::print("[xmcssc] ERROR: no /svc/spi0 endpoint\n");
+        exit(1);
     }
-    else
-    {
-        // Delegate a SIGNAL-narrowed copy of E to the spawned client (child index 1).
-        kos_cap_grant const caps[1] = {
-            { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
-        };
-        auto const c = kos::thread::create_caps(spi_client, nullptr, "xmcssc-cli", 9,
-                                                caps, /*cap_count=*/1);
-        if (not c.valid())
-        {
-            kos::print("[xmcssc] ERROR: client spawn failed\n");
-        }
-        else
-        {
-            // Drop root's own cap, its handout right with it, so the driver is the sole recv
-            // holder: its death then wakes the client refused instead of leaving it parked.
-            kos_handle_close(ep);
-        }
-    }
+    bcfg.base = 0u;
+    bcfg.ep = ep;
+    bcfg.irq = KOS_CAP_NONE;
+    bcfg.notify = KOS_CAP_NONE;
+    bcfg.irq_index = 0u;
 #endif
-
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
-    while (true)
-    {
-        if (idle == KOS_CAP_NONE)
-        {
-            kos_sleep_ns(1000000000ull);
-            continue;
-        }
-        kos_sem_wait(idle);
-    }
+    exit(run_client(&bcfg));
 }

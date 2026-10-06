@@ -6,6 +6,7 @@
 // (EREFS0=0, RANGE0=2); check PRDIV, VDIV, and FRDIV /1536 encoding.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
@@ -17,6 +18,7 @@
 #include "bench_mpu.h" // arch/arm/common: MPU commit timing
 #include "regs.h"      // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "irq.h"
 #include "regs/aips.h"
 #include "regs/gpio.h"
@@ -58,9 +60,6 @@ namespace
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
     inline volatile uint8_t& r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
 
-    constexpr uintptr_t PORTB_BASE = mmap::PORTA_BASE + mmap::PORT_STRIDE;
-    constexpr uintptr_t GPIOB_BASE = mmap::GPIOA_BASE + mmap::GPIO_STRIDE;
-
     // Bus clock = core / BUS_DIV. Used by BOTH the OUTDIV2 field below AND the PIT
     // clock rate in arch_clock_now, so retuning the divider cannot silently rescale
     // kernel time.
@@ -73,18 +72,48 @@ namespace
     // Bounded: a missing external clock must degrade to the FEI fallback, not hang boot.
     constexpr uint32_t MCG_POLL_TIMEOUT = 1000000u;
 
-    // OpenSDA VCOM is PTB16/PTB17. Per the K64 signal-mux table these pins are
-    // UART0_RX/UART0_TX at ALT3 (PTB16 has no UART1 option). The FRDM-K64F user
-    // guide's "UART1" label is a doc typo; UART0 is what the silicon exposes.
-    constexpr uintptr_t PORTB_PCR16 = PORTB_BASE + 16u * reg::port::PCR_STRIDE; // UART0_RX (ALT3)
-    constexpr uintptr_t PORTB_PCR17 = PORTB_BASE + 17u * reg::port::PCR_STRIDE; // UART0_TX (ALT3)
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART0_BASE,
+                  "the board's console is not the UART this backend drives");
 
-    // FRDM-K64F onboard RGB, RED = PTB22, ACTIVE-LOW (pin low = lit).
-    constexpr uintptr_t PORTB_PCR22 = PORTB_BASE + 22u * reg::port::PCR_STRIDE;
-    constexpr uintptr_t GPIOB_PSOR = GPIOB_BASE + reg::gpio::PSOR_OFFSET;
-    constexpr uintptr_t GPIOB_PCOR = GPIOB_BASE + reg::gpio::PCOR_OFFSET;
-    constexpr uintptr_t GPIOB_PDDR = GPIOB_BASE + reg::gpio::PDDR_OFFSET;
-    constexpr uint32_t LED_RED_BIT = 1u << 22;
+    // A pin's PCR sits in the PORT instance its GPIO port index names.
+    constexpr uintptr_t pcr(uint32_t port, uint32_t pin)
+    {
+        return mmap::PORTA_BASE + port * mmap::PORT_STRIDE + pin * reg::port::PCR_STRIDE;
+    }
+
+    constexpr uint32_t pcr_mux(uint32_t select) { return select << reg::port::PCR_MUX_SHIFT; }
+
+    constexpr uint32_t LED_BIT = 1u << KICKOS_BOARD_LED_BIT;
+
+    constexpr uintptr_t led_out(bool level)
+    {
+        if (level)
+        {
+            return KICKOS_BOARD_LED_PORT_BASE + reg::gpio::PSOR_OFFSET;
+        }
+        return KICKOS_BOARD_LED_PORT_BASE + reg::gpio::PCOR_OFFSET;
+    }
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
+    constexpr bool mk64f_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
+               or (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
+               or (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin == (bit))
+    constexpr bool mk64f_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(mk64f_pin_kernel_owned, mk64f_pin_listed, 5u, 32u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 
     constexpr uintptr_t UART0_BDH = mmap::UART0_BASE + reg::uart::BDH_OFFSET;
     constexpr uintptr_t UART0_BDL = mmap::UART0_BASE + reg::uart::BDL_OFFSET;
@@ -283,10 +312,11 @@ namespace
 
     void uart0_init()
     {
-        r32(reg::sim::SCGC5) |= reg::sim::SCGC5_PORTB; // clock PORTB
+        r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_RX_PORT))
+                                | (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_TX_PORT));
         r32(reg::sim::SCGC4) |= reg::sim::SCGC4_UART0; // clock UART0
-        r32(PORTB_PCR16) = reg::port::PCR_MUX_ALT3;
-        r32(PORTB_PCR17) = reg::port::PCR_MUX_ALT3;
+        r32(pcr(KICKOS_BOARD_CONSOLE_RX_PORT, KICKOS_BOARD_CONSOLE_RX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_RX_SELECT);
+        r32(pcr(KICKOS_BOARD_CONSOLE_TX_PORT, KICKOS_BOARD_CONSOLE_TX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_TX_SELECT);
 
         r8(UART0_C2) = 0; // disable TX/RX while configuring
         // baud = clk / (16 x (SBR + BRFA/32)); UART0 is system-clocked, so derive
@@ -485,12 +515,17 @@ int arch_periph_enable(uintptr_t base)
     if (base == mmap::UART0_BASE)
     {
         scgc = reg::sim::SCGC4;
-        scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.13
+        scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.11
     }
     else if (base == mmap::DSPI0_BASE)
     {
         scgc = reg::sim::SCGC6;
         scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.13
+    }
+    else if (base == mmap::LPTMR0_BASE)
+    {
+        scgc = reg::sim::SCGC5;
+        scgc_bit = reg::sim::SCGC5_LPTMR0; // RM 12.2.12
     }
     else
     {
@@ -801,34 +836,28 @@ void arch_console_reclaim(void)
     r8(UART0_C2) = reg::uart::C2_TE; // TX enable only (the polled banner needs no RX)
 }
 
-// Kernel diagnostic LED = FRDM-K64F onboard RED (PTB22), active-low.
 void arch_diag_led_init(void)
 {
-    r32(reg::sim::SCGC5) |= reg::sim::SCGC5_PORTB; // clock PORTB (idempotent; uart0_init also sets it)
-    // No gate read-back here only because uart0_init already opened PORTB earlier in
-    // arch_init; with that ordering changed the PCR store below would be dropped.
-    r32(PORTB_PCR22) = reg::port::PCR_MUX_GPIO;
-    r32(GPIOB_PDDR) |= LED_RED_BIT; // PTB22 output
-    r32(GPIOB_PSOR) = LED_RED_BIT;  // start OFF: drive high (active-low)
+    r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_LED_PORT));
+    // The gate needs a bus transaction before the PCR store, or that store is dropped
+    // (pit_clock_init).
+    uint32_t const gate = r32(reg::sim::SCGC5);
+    __asm volatile("" ::"r"(gate) : "memory");
+    r32(pcr(KICKOS_BOARD_LED_PORT, KICKOS_BOARD_LED_BIT)) = reg::port::PCR_MUX_GPIO;
+    r32(KICKOS_BOARD_LED_PORT_BASE + reg::gpio::PDDR_OFFSET) |= LED_BIT;
+    r32(led_out(not LED_LIT)) = LED_BIT;
 }
 
 void arch_diag_led_set(int on)
 {
     if (on != 0)
     {
-        r32(GPIOB_PCOR) = LED_RED_BIT; // lit: drive low
+        r32(led_out(LED_LIT)) = LED_BIT;
     }
     else
     {
-        r32(GPIOB_PSOR) = LED_RED_BIT; // off: drive high
+        r32(led_out(not LED_LIT)) = LED_BIT;
     }
-}
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
-// or steal the diag LED. PTB16/17 = console RX/TX; PTB22 = diag LED.
-static bool mk64f_pin_kernel_owned(uint32_t port, uint32_t pin)
-{
-    return port == 1u and (pin == 16u or pin == 17u or pin == 22u);
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). PORTx base = 0x40049000 + port*0x1000

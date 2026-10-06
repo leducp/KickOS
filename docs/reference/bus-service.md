@@ -165,9 +165,10 @@ picks a mechanism it can realise on its controller:
   but its release clocks a trailing dummy byte -- HW CS on DSPI is for per-frame-CS-tolerant
   devices only.
 - **`CS_GPIO`** -- a software GPIO the driver owns, asserted before the first clock and
-  released after the last drain (the coherent-transaction answer). The K64F DSPI service
-  drives PTC4 via `GPIOC` `PSOR`/`PCOR` (write-only atomic set/clear) directly from the
-  unprivileged thread -- K64F GPIO is an ungated crossbar slave, so no grant is needed.
+  released after the last drain (the coherent-transaction answer). The K64F DSPI engine
+  drives the chip select the device's `cs_index` names among those the board file wires to its
+  bus, through that pin's GPIO port `PSOR`/`PCOR` (write-only atomic set/clear), directly from
+  the unprivileged thread: K64F GPIO is an ungated crossbar slave, so no grant is needed.
 - **`CS_NONE`** -- no chip-select managed.
 
 ## Device slots
@@ -268,8 +269,10 @@ its device's lines, read back with `line_index_of`, which the engine is handed a
 a doorbell badge below it: a badge inside the lines' range would read as a device interrupt. A bus takes
 the `KOS_DRV_EP_RETAIN` posture: root keeps the full-rights cap so the app can delegate a narrowed
 copy per client, which also means root never stops being a receiver, so NO failure path in the
-driver thread may `exit()` under it. The privileged, per-class bring-up (pinmux, clock, register
-init) stays in the caller.
+driver thread may `exit()` under it. The privileged, per-class bring-up stays in the driver's
+start, ahead of `bring_up`: `k64dspi_spi_start` muxes the pins the board file wires to its DSPI
+there (`k64dspi_bus_mux`, reading the generated `board_buses.h`), on the init's thread, because
+the driver's own threads hold no `pinmux` authority.
 
 ## The client side is the CLASS, not a wrapper (`<kickos/driver/spi.h>`)
 
@@ -280,7 +283,12 @@ image posture's decision rather than the client's: `system/CMakeLists.txt` selec
 rescan group, because every backend of one class defines the same four symbols and the ORDER
 would otherwise decide the engine. The default selection is `KickOS::kickos_spi_proxy`, whose
 four bodies marshal onto this protocol; `-DKICKOS_SPI_LOCAL_ENGINE=ON` selects the chip's local
-engine instead, and a client body is identical either way. The mapping IS the 1:1 rule:
+engine instead, and a client body is identical either way. An app built both ways carries two
+compositions and picks one on the same option, its source reading `KICKOS_SPI_LOCAL`: the proxy
+one runs the packaged service on `/svc/spi0`, the local one grants the client the peripheral's
+window, and its line where the engine is interrupt-paced (`xmcssc`, `k64dspi`; the K64F client
+also takes `pinmux` and calls `k64dspi_bus_mux` before `kos_spi_bus_open`). The mapping IS the
+1:1 rule:
 
 | class call | request |
 |---|---|
@@ -350,7 +358,8 @@ peripheral, the second could re-mux SPI onto or off arbitrary pins.
 The shipped service deviates from the design brief in two places, and the CODE is the contract:
 the granted window is **`0x40`**, not `0x100` (it still covers `MCR..SR` and the `PUSHR`/`POPR`
 pair the transfer path uses, and it is pow2 and 32-aligned so the same grant encodes on
-PMSA/PMP too), and CS is **`CS_GPIO` on PTC4**, not hardware `PCS0` -- a DSPI HW-PCS `CONT`
+PMSA/PMP too), and CS is **`CS_GPIO`** on a chip select the board file wires (`PTC4` on
+`frdmk64f`), not hardware `PCS0`, since a DSPI HW-PCS `CONT`
 window clocks a trailing dummy byte on release, so it suits only per-frame-CS-tolerant devices
 (see *Chip-select policy* above). The transfer path is polled on `SR.RXCTR` rather than blocking
 on IRQ 26; the IRQ row above is the silicon fact, not a claim that this service arms it.
@@ -359,9 +368,10 @@ on IRQ 26; the IRQ row above is the silicon fact, not a claim that this service 
 
 Nothing in the wire names a FIFO depth, a CTAR, a PCS count, or a shift unit: those are all
 engine-internal. The abstraction leaks are `cs_index` and `cs_policy`, and both are REFUSED
-rather than interpreted loosely. `k64dspi` drives one hardwired GPIO CS (`PTC4`) and `xmcssc`
-one fixed `SELO0`, so each accepts `cs_index == 0` only and answers `-KOS_ENOTSUP` otherwise; a
-driver with more than one CS line reads and bounds it. `cs_policy` is the real leak: the two
+rather than interpreted loosely. `k64dspi` bounds `cs_index` by the chip selects the board file
+wires to its bus (one, `PTC4`, on `frdmk64f`) and `xmcssc` drives one fixed `SELO0`, accepting
+`cs_index == 0` only; each answers `-KOS_ENOTSUP` past its bound. `cs_policy` is the real leak:
+the two
 engines accept DISJOINT subsets of it (`KOS_BUS_CS_HW` on the XMC, `KOS_BUS_CS_GPIO` on the
 K64F, each refusing the other with `-KOS_ENOTSUP`), so a consumer moving between them changes
 that one field. Recorded rather than papered over: see `../design-driver-era-scope.md` (the

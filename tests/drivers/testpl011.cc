@@ -20,7 +20,9 @@ namespace
 
     constexpr uintptr_t UART_DR = 0x00u;
     constexpr uintptr_t UART_FR = 0x18u;
+    constexpr uint32_t UART_FR_BUSY = 1u << 3;
     constexpr uint32_t UART_FR_TXFF = 1u << 5;
+    constexpr uint32_t FLUSH_POLL_MAX = 1000000u;
 
     void put(uintptr_t base, char c)
     {
@@ -30,6 +32,19 @@ namespace
         {
         }
         *dr = static_cast<uint8_t>(c);
+    }
+
+    // BUSY stays set until the last stop bit has left the shift register.
+    void drain(uintptr_t base)
+    {
+        volatile uint32_t* const fr = reinterpret_cast<volatile uint32_t*>(base + UART_FR);
+        for (uint32_t i = 0; i < FLUSH_POLL_MAX; i++)
+        {
+            if ((*fr & UART_FR_BUSY) == 0u)
+            {
+                return;
+            }
+        }
     }
 
     // The kernel console's line ending on this board, so a reader sees one wire either way.
@@ -100,6 +115,7 @@ namespace
             }
             if (n == 0)
             {
+                drain(base);
                 continue;
             }
             write(base, msg.bytes, static_cast<size_t>(n));

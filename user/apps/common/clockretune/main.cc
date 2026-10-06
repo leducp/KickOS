@@ -8,8 +8,8 @@
 // (kernel/time/clock_select.cc); the selftest cpu_clock_set case covers the
 // UNPRIVILEGED returns-0 path.
 //
-// kos_cpu_clock_set needs AUTH_PSTATE, carried only by this app's KICKOS_APP_AUTHORITY
-// below. It returns 0 rather than an errno when refused. The app is single-shot: it
+// kos_cpu_clock_set needs AUTH_PSTATE, which this app's composition grants main. It returns
+// 0 rather than an errno when refused. The app is single-shot: it
 // returns, so the terminal path flushes the console synchronously: every printed byte
 // reaches the wire.
 //
@@ -68,8 +68,6 @@ namespace
         emit(s);
     }
 }
-
-KICKOS_APP_AUTHORITY(KOS_AUTH_SYSTEM | KOS_AUTH_PSTATE);
 
 int main(int, char**)
 {

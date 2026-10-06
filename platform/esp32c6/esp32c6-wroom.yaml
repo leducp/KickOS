@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Values from the ESP32-C6 TRM v1.2 (IO MUX pin functions, the strapping pins of chapter 9)
-# and the tree's chip_esp32c6.cc.
+# and the board schematic, where the CH343P bridge (U4) takes GPIO16/17.
 
 version: 1
 board: esp32c6-wroom
@@ -12,9 +12,12 @@ console:
   device: /dev/uart0
   pins: { tx: GPIO16, rx: GPIO17 } # the USB bridge
 
+leds:
+  # LED2, a WS2812B on GPIO8, which is a strapping pin too.
+  led2: { pin: GPIO8, kind: addressable, owner: kernel }
+
 # Pins the board has already spent, which no composition may mux.
 reserved_pins:
-  GPIO8: strapping
   GPIO9: strapping
   GPIO15: strapping
   GPIO12: usb_jtag

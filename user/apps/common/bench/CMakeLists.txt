@@ -2,14 +2,14 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(bench main.cc)
-target_link_libraries(bench PRIVATE kickos)
+kickos_app_system(bench COMPOSITION system.yaml)
 kickos_emit_image(bench)
 
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "lx6") AND
     KICKOS_KERNEL_CORES GREATER 1))
   add_executable(bench_smp smp_lock.cc)
-  target_link_libraries(bench_smp PRIVATE kickos)
+  kickos_app_system(bench_smp COMPOSITION system.yaml SYSTEM bench_system)
   if(NOT KICKOS_ARCH STREQUAL "x86_64")
     if(KICKOS_KERNEL_CORES GREATER 4)
       target_compile_definitions(bench_smp PRIVATE KICKOS_SMP_LOCK_ROUNDS=50000)
@@ -23,7 +23,7 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    (KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_CONFIG_VARIANT STREQUAL "benchsmp12"))
   add_executable(bench_smp_ipc smp_ipc.cc)
-  target_link_libraries(bench_smp_ipc PRIVATE kickos)
+  kickos_app_system(bench_smp_ipc COMPOSITION system.yaml SYSTEM bench_system)
   set(KICKOS_M95_BENCH_PAIRS "${KICKOS_KERNEL_CORES}" CACHE STRING
       "Active pairs in the SMP IPC benchmark")
   set(KICKOS_M95_BENCH_REMOTE_PAIRS "0" CACHE STRING
@@ -42,7 +42,5 @@ if(KICKOS_ARCH STREQUAL "x86_64" OR
   if(KICKOS_ARCH STREQUAL "armv8a")
     target_compile_definitions(bench_smp_ipc PRIVATE KICKOS_M95_BENCH_ROUNDS=5000)
   endif()
-  # Root holds one endpoint per core; each server holds one reply cap at a time.
-  kickos_declare_app_capabilities(bench_smp_ipc ${KICKOS_M95_BENCH_PAIRS} 0 1)
   kickos_emit_image(bench_smp_ipc)
 endif()

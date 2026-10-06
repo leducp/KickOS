@@ -18,16 +18,19 @@ tasks:
     entry: prio_pulse_main
     stack: 2048
     priority: 7
+    ceiling: 7
     restart: { max: 1 }
 
   - name: high
     entry: prio_high_main
     stack: 4096
     priority: 6
+    ceiling: 6
     watches: [pulse]
 
   - name: low
     entry: prio_low_main
     stack: 4096
     priority: 4
+    ceiling: 4
     watches: [pulse]

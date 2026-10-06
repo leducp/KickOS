@@ -83,25 +83,24 @@ namespace kickos
     int port_reg_write_call(uintptr_t base, uintptr_t offset, uintptr_t value);
 
     // --- The owner of a user end -----------------------------------------------
-    // Every access below names the address space each user end belongs to, and a NULL
-    // space means the address is directly kernel-dereferenceable: kernel storage, and
-    // every backend that translates nothing. An owner cannot be recovered from an
-    // address once two processes hold different frames at one virtual address, so a
-    // site passes what it already holds.
+    // Every access below names the owner each user end belongs to (UserOwner), and a NULL
+    // owner means kernel storage. An owner cannot be recovered from an address once two
+    // processes hold different frames at one virtual address, or once two threads hold one
+    // block with different region sets, so a site passes what it already holds.
     struct Thread;
-#if KICKOS_HAVE_ASPACE
-    // The space a thread's own user pointers lie in.
-    struct arch_aspace* user_space_of(Thread const* t);
-    // The space a PARKED thread's ipc.buf lies in: its own, EXCEPT under the fastpath's
-    // park, whose buffer is the caller's saved trap frame and therefore kernel storage.
-    struct arch_aspace* ipc_buf_space(Thread const* t);
+#if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
+    // The owner of a thread's own user pointers.
+    UserOwner user_space_of(Thread const* t);
+    // The owner of a PARKED thread's ipc.buf: its own, EXCEPT under the fastpath's park, whose
+    // buffer is the caller's saved trap frame and therefore kernel storage.
+    UserOwner ipc_buf_space(Thread const* t);
 #else
-    inline struct arch_aspace* user_space_of(Thread const* t)
+    inline UserOwner user_space_of(Thread const* t)
     {
         (void)t;
         return nullptr;
     }
-    inline struct arch_aspace* ipc_buf_space(Thread const* t)
+    inline UserOwner ipc_buf_space(Thread const* t)
     {
         (void)t;
         return nullptr;
@@ -116,7 +115,7 @@ namespace kickos
     // KCAP_INVALID marks a plain send. Return whether the write succeeded.
     // Do not assert on failure: fault reporting uses this path and a panic would
     // re-enter console output. It would also add console stack use to syscall paths.
-    [[nodiscard]] bool write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
+    [[nodiscard]] bool write_recv_info(UserOwner ospace, uintptr_t out, uint32_t badge,
                                        uint32_t reply_cap);
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.

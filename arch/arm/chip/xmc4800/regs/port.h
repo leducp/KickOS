@@ -33,7 +33,7 @@ namespace kickos::xmc::reg::port
     // PC codes (RM Table 26-5 "Port I/O Control").
     constexpr uint32_t PC_INPUT_NOPULL = 0x00u; // input, direct, no internal pull device
     constexpr uint32_t PC_OUTPUT_PP_GP = 0x10u; // output push-pull, general purpose
-    constexpr uint32_t PC_PP_ALT2 = 0x12u;      // output push-pull, alternate function 2
+    constexpr uint32_t pc_pp_alt(uint32_t n) { return PC_OUTPUT_PP_GP + n; } // output push-pull, ALTn
 
     // Class boundary used by the GPIO backend: a PC code < this is an input
     // configuration, >= it is an output configuration.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# An ESP32-WROOM-32 DevKit. Values from the tree's chip_esp32.cc and docs/reference/boards.md.
+# An ESP32-WROOM-32 DevKit. Values from docs/reference/boards.md.
 
 version: 1
 board: esp32-wroom
@@ -13,7 +13,7 @@ console:
   pins: { tx: GPIO1, rx: GPIO3 }
 
 leds:
-  d2: { pin: GPIO2, active: high, owner: kernel } # the kernel's diagnostic LED
+  d2: { pin: GPIO2, active: high, owner: kernel } # the DevKit v1 / NodeMCU-32S blue LED; the kernel's diagnostic LED
 
 reserved_pins:
   GPIO6: flash

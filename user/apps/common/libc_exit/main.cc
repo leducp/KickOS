@@ -4,10 +4,11 @@
 // The C library's own exit(), end to end, on whatever libc the port carries.
 //
 // The WORKER's exit() proves the call reached KOS_SYS_EXIT: that dispatch ends only the
-// calling thread unless the caller is root, so root printing past it is the witness. Root's own
-// exit() then runs the handler it registered: newlib keeps one handler list for the whole
-// image and the worker's exit() consumes every entry already on it, so root registers only
-// after the worker has exited, just before its own exit().
+// calling thread unless the caller is its task's entry, so main printing past it is the
+// witness. Main's own exit() then ends its task, and the system with it, after running the
+// handler it registered: newlib keeps one handler list for the whole image and the worker's
+// exit() consumes every entry already on it, so main registers only after the worker has
+// exited, just before its own exit().
 
 #include <kickos/kos.h>
 
@@ -24,9 +25,9 @@ namespace
         exit(WORKER_CODE);
     }
 
-    void root_at_exit()
+    void main_at_exit()
     {
-        kos::print("root: atexit handler\n");
+        kos::print("main: atexit handler\n");
     }
 }
 
@@ -40,9 +41,9 @@ int main(int, char**)
         kos::print("worker spawn refused\n");
         return 0;
     }
-    kos::sleep_ns(300000000ull); // root blocks, so the worker runs and exits first
-    kos::print("root: survived worker exit()\n");
-    kos::print("root: exit()\n");
-    atexit(root_at_exit);
+    kos::sleep_ns(300000000ull); // main blocks, so the worker runs and exits first
+    kos::print("main: survived worker exit()\n");
+    kos::print("main: exit()\n");
+    atexit(main_at_exit);
     exit(EXIT_CODE);
 }

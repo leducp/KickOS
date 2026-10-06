@@ -984,6 +984,7 @@ _poll_until() { # <log>
 # grep OUT as a predicate, with `set -e` kept out of the way.
 has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 has_e() { printf '%s\n' "$OUT" | grep -qE "$1"; }
+has_f() { printf '%s\n' "$OUT" | grep -qF -- "$1"; }
 
 # Above one core the wire has no per-line atomicity: arch_console_write is a byte-at-a-time
 # device loop under no lock, so one core's line arrives shuffled into another's, character by
@@ -1166,13 +1167,21 @@ knob() { # <name>
 # carries a number ends in a token only its own writer prints.
 AT=0
 after() { # <from> <literal> <what> [part]
+    after_at "$1" "$2" "${4:-}"
+    if [ -z "$AT" ]; then
+        fail "no $3 at or after line $1 of the capture"
+    fi
+}
+
+# after's search alone: AT is the line, empty when the literal is absent.
+after_at() { # <from> <literal> [part]
     require_literal "$2" "the literal sought after line $1"
     case "$2" in
         *[0-9])
             fail "after: '$2' ends in a digit, which a foreign line completes across a split"
             ;;
     esac
-    AT="$(printf '%s\n' "$OUT" | KOS_AFTER_LIT="$2" awk -v from="$1" -v part="${4:-}" '
+    AT="$(printf '%s\n' "$OUT" | KOS_AFTER_LIT="$2" awk -v from="$1" -v part="${3:-}" '
         BEGIN { lit = ENVIRON["KOS_AFTER_LIT"] }
         NR >= from && ($0 == lit || (part != "" && index($0, lit) > 0)) { print NR; exit }')"
     if [ -n "$AT" ]; then
@@ -1194,7 +1203,6 @@ after() { # <from> <literal> <what> [part]
         done
         OUT="$_af_all"
     fi
-    fail "no $3 at or after line $1 of the capture"
 }
 
 # Whether every <literal> has reached the console log <log>, whole or, above one core (CORES),
@@ -1256,9 +1264,9 @@ require_drivers_up() { # <system> <before>
 # OUT: a silicon capture's last boot, from its last banner title on, CR stripped. A flash that
 # starts the image before the capture's own reset leaves an earlier boot ahead of it.
 capture_out() { # <log>
-    [ -s "$1" ] || fail "no capture at $1"
+    [ -s "$1" ] || jfail no-capture "no capture at $1"
     _co_at="$(tr -d '\r' < "$1" | awk '/^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { at = NR } END { print at }')"
-    [ -n "$_co_at" ] || fail "$1 carries no banner, so no boot in it can be read"
+    [ -n "$_co_at" ] || jfail no-banner "$1 carries no banner, so no boot in it can be read"
     OUT="$(tr -d '\r' < "$1" | sed -n "${_co_at},\$p")"
 }
 
@@ -1288,6 +1296,58 @@ reported_fault_addr() {
 # the wording, and four gates pin it through here.
 thread_fault_re() { # <thread-name>
     printf "=== THREAD FAULT === thread '%s' killed" "$1"
+}
+
+# A board app judge's refusal: `FAIL: <token>: <prose>`. The token is what a planted row in
+# tests/static/check_app_judges.sh names, so it stays stable when the prose is reworded.
+jfail() { # <token> <prose>
+    fail "$1: $2"
+}
+
+# A board app judge's capture, from its last banner on, into OUT.
+judge_capture() { # <app>
+    if [ -z "${KOS_CAPTURE:-}" ]; then
+        jfail no-capture "no KOS_CAPTURE: $1 is judged from a silicon capture only"
+    fi
+    capture_out "$KOS_CAPTURE"
+}
+
+jno_panic() { # <prose>
+    if has_e "$KOS_PANIC_RE"; then
+        jfail panic "$1"
+    fi
+}
+
+# after, refusing through jfail.
+jafter() { # <token> <from> <literal> <what> [part]
+    after_at "$2" "$3" "${5:-}"
+    if [ -z "$AT" ]; then
+        jfail "$1" "no $4 at or after line $2 of the capture"
+    fi
+}
+
+# A board app's last act read or wrote what nothing grants it: the thread <thread-name> was
+# killed for it, at <address> as the reporter recorded it below that thread's own kill banner,
+# and nothing panicked. Reads OUT. Refuses with the tokens killed, kill-address and panic.
+require_killed_at() { # <thread-name> <address>
+    _ka_at="$(printf '%s\n' "$OUT" | grep -nE "$(thread_fault_re "$1")" | head -n1 | cut -d: -f1)"
+    if [ -z "$_ka_at" ]; then
+        jfail killed "no thread kill of '$1' in the capture"
+    fi
+    _ka_all="$OUT"
+    OUT="$(printf '%s\n' "$_ka_all" | sed -n "$((_ka_at + 1)),\$p" \
+        | awk '/^=== / { exit } { print }')"
+    _ka_got="$(reported_fault_addr)"
+    OUT="$_ka_all"
+    if [ -z "$_ka_got" ]; then
+        jfail kill-address "the fault report of '$1' carries no address"
+    fi
+    if [ "$((0x$_ka_got))" -ne "$(($2))" ]; then
+        jfail kill-address "'$1' was killed at 0x$_ka_got, not at the ungranted $2"
+    fi
+    if has_e "$KOS_PANIC_RE"; then
+        jfail panic "'$1''s fault was answered by a panic as well as its kill"
+    fi
 }
 
 # What the rv64 fault gates share. Each caller keeps its own markers, its own scause constant,

@@ -1,43 +1,80 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The K64F DSPI0 backend of the SPI class <kickos/driver/spi.h>: the block bring-up plus the
-// polled full-duplex FIFO engine, for a thread that ALREADY HOLDS the DSPI0 register window.
+// The K64F DSPI backend of the SPI class <kickos/driver/spi.h>: the block bring-up plus the
+// polled full-duplex FIFO engine, for a thread that ALREADY HOLDS the DSPI register window, and
+// k64dspi_bus_mux, which muxes the pins the board file wires to that DSPI.
 //
-// CHIP SELECT IS A SOFTWARE GPIO ON PTC4, NOT hardware PCS0: DSPI's CONT/PCS model has no
-// zero-clock CS deassert, so releasing hardware PCS0 clocked a trailing dummy byte that
-// corrupted length-sensitive LAN9252 mailbox writes. The GPIO write path is ungated (K64 RM
-// 3.10.1.1: a direct crossbar slave with no PACR and no SYSMPU coverage), so the unprivileged
-// owner sets PTC4's direction and toggles PSOR/PCOR with no grant of its own. The PTC4 pin MUX
-// is NOT set here; it comes from the board pin map.
+// CHIP SELECT IS A SOFTWARE GPIO, NOT hardware PCS: DSPI's CONT/PCS model has no zero-clock CS
+// deassert, so releasing hardware PCS0 clocked a trailing dummy byte that corrupted
+// length-sensitive LAN9252 mailbox writes. A device's cs_index names one of the board bus's
+// chip selects. The GPIO write path is ungated (K64 RM 3.10.1.1: a direct crossbar slave with
+// no PACR and no SYSMPU coverage), so the unprivileged owner sets a chip select's direction and
+// toggles PSOR/PCOR with no grant of its own.
 //
 // Register addresses / bit fields are clean-room from the K64 Sub-Family Reference Manual;
 // "RM ch.NN" are its printed chapters.
 
+#include <kickos/driver/k64dspi.h>
 #include <kickos/driver/spi.h>
 
+#include <kickos/chip_mmap.h>
 #include <kickos/io/mmio.h>   // r32
-#include <kickos/sys.h>       // kos_periph_enable, kos_periph_clock_hz
+#include <kickos/sys.h>       // kos_periph_enable, kos_periph_clock_hz, kos_pinmux_set
 #include <kickos/sys/errno.h> // KOS_EPERM, KOS_EINVAL, KOS_ENOSYS, KOS_ENOTSUP
 
+#include <board_buses.h>
 #include <dspi_class.h> // shared DSPI RX-FIFO fill-level read
 
 #include <stdint.h>
 
 namespace
 {
-    // LAN9252 shield: SCS is on Arduino D9 = PTC4, muxed to GPIO (PTC4/ALT1) by the board pin
-    // map, NOT to hardware SPI0_PCS0 (PTC4/ALT2).
-    //
-    // GPIOC (K64 RM 55.2) is a direct crossbar slave at 0x400F_F080, system-clocked (RM
-    // 55.1.1) and NOT AIPS/MPU-gated (RM 3.10.1.1), so the unprivileged owner reaches it free.
-    // That is about GPIOC ONLY: the DSPI0 window grant is load-bearing, since possession of
-    // the window is the sole authorisation for the kos_periph_enable this driver calls.
-    constexpr uintptr_t GPIOC_BASE = 0x400FF080u;
-    constexpr uintptr_t GPIOC_PSOR = GPIOC_BASE + 0x04u; // set   -> PTC4 high (CS idle)
-    constexpr uintptr_t GPIOC_PCOR = GPIOC_BASE + 0x08u; // clear -> PTC4 low  (CS asserted)
-    constexpr uintptr_t GPIOC_PDDR = GPIOC_BASE + 0x14u; // 1 = output
-    constexpr uint32_t CS_PIN = 1u << 4;                 // PTC4
+    namespace board = kickos::mk64f::board;
+    namespace mmap = kickos::mk64f::mmap;
+
+    // The DSPI window grant is load-bearing even though GPIO needs none: possession of the
+    // window is the sole authorisation for the kos_periph_enable this driver calls.
+    constexpr uintptr_t GPIO_PSOR = 0x04u; // set   -> CS high (idle)
+    constexpr uintptr_t GPIO_PCOR = 0x08u; // clear -> CS low  (asserted)
+    constexpr uintptr_t GPIO_PDDR = 0x14u; // 1 = output
+
+    // PCR MUX[10:8] (RM 11.5.1); alternative 1 is GPIO on every pin.
+    constexpr uint32_t PCR_MUX_SHIFT = 8u;
+    constexpr uint32_t PCR_MUX_GPIO = 1u << PCR_MUX_SHIFT;
+
+    board::bus const* bus_over(uintptr_t base)
+    {
+        for (uint32_t i = 0u; i < board::bus_count; i++)
+        {
+            if (board::buses[i].base == base)
+            {
+                return &board::buses[i];
+            }
+        }
+        return nullptr;
+    }
+
+    uintptr_t gpio_port(uint32_t port)
+    {
+        return mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE;
+    }
+
+    // Preload PDOR high, THEN switch the pin to output, so it cannot glitch an assert.
+    void chip_selects_idle(uintptr_t base)
+    {
+        board::bus const* const bus = bus_over(base);
+        if (bus == nullptr)
+        {
+            return;
+        }
+        for (uint32_t k = 0u; k < bus->chip_select_count; k++)
+        {
+            board::gpio_pin const& pin = bus->chip_selects[k];
+            r32(gpio_port(pin.port) + GPIO_PSOR) = 1u << pin.bit;
+            r32(gpio_port(pin.port) + GPIO_PDDR) |= 1u << pin.bit;
+        }
+    }
 
     // DSPI register offsets within the granted window (RM ch.50).
     constexpr uintptr_t MCR_OFFSET = 0x00u;
@@ -75,8 +112,11 @@ namespace
     // wider FMSZ would leave the top bits of every frame unsourced.
     constexpr uint8_t FRAME_WORD_BITS = 8u;
 
-    // kos_spi_device.prog slots.
+    // kos_spi_device.prog slots. PROG_CS packs a GPIO chip select's port above its pin.
     constexpr unsigned PROG_CTAR = 0u;
+    constexpr unsigned PROG_CS = 1u;
+    constexpr uint32_t PROG_CS_PORT_SHIFT = 5u;
+    constexpr uint32_t PROG_CS_BIT_MASK = 0x1Fu;
 
     // The rate a CTAR word produces off `f_periph`: f * (1 + DBR) / (PBR * BR).
     uint32_t ctar_rate(uint32_t f_periph, uint32_t ctar)
@@ -115,21 +155,46 @@ namespace
         return ((best_pbr & 0x3u) << CTAR_PBR_SHIFT) | (best_br & 0xFu);
     }
 
-    void cs_low(bool on)
+    // PSOR/PCOR are write-only atomic set/clear: no RMW, so no race with the port's other bits.
+    void cs_write(struct kos_spi_device const* d, uintptr_t reg)
     {
-        // PSOR/PCOR are write-only atomic set/clear: no RMW, so no race with other PTC bits.
-        if (on)
+        if (d->cs_policy != KOS_BUS_CS_GPIO)
         {
-            r32(GPIOC_PCOR) = CS_PIN;
+            return;
+        }
+        uint32_t const cs = d->prog[PROG_CS];
+        r32(gpio_port(cs >> PROG_CS_PORT_SHIFT) + reg) = 1u << (cs & PROG_CS_BIT_MASK);
+    }
+}
+
+extern "C" int32_t k64dspi_bus_mux(uintptr_t base)
+{
+    board::bus const* const bus = bus_over(base);
+    if (bus == nullptr)
+    {
+        return -KOS_EINVAL;
+    }
+    // Glitch-free ahead of the DSPI config only because CTAR0 resets to CPOL=0, the pins' idle
+    // level.
+    for (uint32_t k = 0u; k < bus->pin_count; k++)
+    {
+        board::bus_pin const& pin = bus->pins[k];
+        int const rc = kos_pinmux_set(pin.port, pin.bit, pin.select << PCR_MUX_SHIFT);
+        if (rc != 0)
+        {
+            return rc;
         }
     }
-    void cs_high(bool on)
+    for (uint32_t k = 0u; k < bus->chip_select_count; k++)
     {
-        if (on)
+        board::gpio_pin const& pin = bus->chip_selects[k];
+        int const rc = kos_pinmux_set(pin.port, pin.bit, PCR_MUX_GPIO);
+        if (rc != 0)
         {
-            r32(GPIOC_PSOR) = CS_PIN;
+            return rc;
         }
     }
+    return 0;
 }
 
 extern "C"
@@ -145,11 +210,9 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     b->ep = cfg->ep;
     b->irq = cfg->irq; // the pump polls; recorded so the POD carries what it was opened with
 
-    // Preload PDOR high, THEN switch the pin to output, so it cannot glitch an assert. Kept
-    // BEFORE the periph_enable check: ordered after it, a refusal would leave the pin a
-    // floating input (PDDR resets to 0).
-    r32(GPIOC_PSOR) = CS_PIN;
-    r32(GPIOC_PDDR) |= CS_PIN;
+    // BEFORE the periph_enable check: ordered after it, a refusal would leave each chip select
+    // a floating input (PDDR resets to 0).
+    chip_selects_idle(b->base);
 
     // Until this returns, the window reads supervisor-only and the block is unclocked: it
     // ungates SPI0 and clears DSPI0's AIPS0 slot 44 SP bit (RM 20.2).
@@ -197,11 +260,6 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
         return -KOS_ENOTSUP;
     }
 
-    // ONE CS PIN, PTC4: a non-zero cs_index is a pin this driver does not drive.
-    if (cfg->cs_index != 0u)
-    {
-        return -KOS_ENOTSUP;
-    }
     if (cfg->cs_policy == KOS_BUS_CS_HW)
     {
         // Hardware PCS0 has no zero-clock deassert, so it cannot bracket a transaction
@@ -211,6 +269,17 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
     if (cfg->cs_policy != KOS_BUS_CS_GPIO and cfg->cs_policy != KOS_BUS_CS_NONE)
     {
         return -KOS_EINVAL;
+    }
+    uint32_t cs = 0u;
+    if (cfg->cs_policy == KOS_BUS_CS_GPIO)
+    {
+        board::bus const* const bus = bus_over(b->base);
+        if (bus == nullptr or cfg->cs_index >= bus->chip_select_count)
+        {
+            return -KOS_ENOTSUP; // a chip select the board file does not wire to this DSPI
+        }
+        board::gpio_pin const& pin = bus->chip_selects[cfg->cs_index];
+        cs = (pin.port << PROG_CS_PORT_SHIFT) | pin.bit;
     }
 
     uint32_t f = kos_periph_clock_hz(b->base);
@@ -259,7 +328,7 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
     d->bus = b;
     d->hz = rate;
     d->prog[PROG_CTAR] = ctar;
-    d->prog[1] = 0u;
+    d->prog[PROG_CS] = cs;
     d->slot = cfg->slot;
     d->mode = cfg->mode;
     d->word_bits = bits;
@@ -285,7 +354,6 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
         return -KOS_EINVAL;
     }
     uintptr_t const win = b->base;
-    bool const cs_gpio = (d->cs_policy == KOS_BUS_CS_GPIO);
 
     // CTAR0 is writable only while HALTed, and the same write flushes both FIFOs, which must
     // already be drained here (the pump below pops all it pushes). SCK idles at the PREVIOUS
@@ -298,7 +366,7 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
     volatile uint32_t* pushr = reinterpret_cast<volatile uint32_t*>(win + PUSHR_OFFSET);
     volatile uint32_t* popr = reinterpret_cast<volatile uint32_t*>(win + POPR_OFFSET);
 
-    cs_low(cs_gpio);
+    cs_write(d, GPIO_PCOR);
 
     // Drain FIRST: the 4-deep RX FIFO must never overflow, or the dropped byte hangs this
     // loop. Push only while fewer than RX_FIFO_DEPTH bytes are IN FLIGHT (TX FIFO + shifter +
@@ -320,7 +388,7 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
         }
     }
 
-    cs_high(cs_gpio);
+    cs_write(d, GPIO_PSOR);
     return static_cast<int32_t>(len);
 }
 
@@ -333,7 +401,7 @@ int32_t kos_spi_bus_close(struct kos_spi_bus* b)
     // HALT stops the clock generator with both FIFOs flushed. MDIS is left CLEAR so the window
     // stays readable for a later reopen.
     r32(b->base + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
-    r32(GPIOC_PSOR) = CS_PIN; // CS back to its idle level
+    chip_selects_idle(b->base);
     b->base = 0u;
     return 0;
 }

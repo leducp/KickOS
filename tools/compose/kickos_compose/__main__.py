@@ -86,7 +86,8 @@ def main(argv):
     headers.add_argument("--arch", required=True,
                          help="the kernel architecture of the build, which picks its cluster")
     headers.add_argument("--include-dir", help="where kickos/chip_mmap.h and kickos/chip_limits.h go")
-    headers.add_argument("--chip-dir", help="where irq.h, chip_layout.h, chip_tables.h and chip.cmake go")
+    headers.add_argument("--chip-dir",
+                         help="where irq.h, chip_layout.h, chip_tables.h, chip.cmake, board_pins.h and board_buses.h go")
     headers.add_argument("--compare",
                          help="a hand-written chip_mmap.h, irq.h or chip_limits.h to assert against")
     headers.add_argument("--cxx",

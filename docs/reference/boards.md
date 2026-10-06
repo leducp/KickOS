@@ -109,7 +109,7 @@ code wins, then this file.
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
-| `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
+| `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
@@ -190,8 +190,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   connect** (KickOS leaves the SWD pins PTA0/PTA3 alone). Its distinguishing feature -- the
   **SYSMPU** -- is the M2 enforcement backend, and it signed off there. The kernel
   diagnostic LED is the onboard RGB **red, PTB22, active-low**
-  (`arch_diag_led_init`/`_set`, `arch/arm/chip/mk64f/chip_mk64f.cc:767-787`), and
-  `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a board
+  (`arch_diag_led_init`/`_set` in `arch/arm/chip/mk64f/chip_mk64f.cc`, the pin from the board
+  file), and `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a board
   map cannot steal it. The board pin map additionally muxes PTB21 (blue) as plain GPIO.
 - **`teensy41`** -- the fleet's only **Cortex-M7**, and the M7 is the one core here that
   speculates. Under enforcement a dropped (non-pow2) whole-arena grant leaves a privileged
@@ -205,7 +205,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   gyro's SDO sits on PA6, which is MISO. Its chip-select is **PE3**. Anything driving SPI1 here
   must preset PE3 HIGH (GPIOE output, through the pinmux seam) before any SCK activity, so the
   gyro stays deselected and its SDO tri-stated off MISO. Confirmed against the UM1842 pin table;
-  `f411spi` does exactly this in root. A gyro fighting for MISO with PE3 high means the preset
+  `f411spi`'s task does exactly this. A gyro fighting for MISO with PE3 high means the preset
   did not take, not a wiring fault.
 - **`imx8mp-evk` IS THE FLEET'S FIRST MODEL OF A REAL PART RATHER THAN OF A BOARD, and every
   number below is emulator-grade.** There is no i.MX8MP on this bench; the witness is
@@ -450,8 +450,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
 - The diagnostic LED is a kernel-owned facility (`kdiag_led_*`, over the chip's
-  `arch_diag_led_*`); a chip with no known LED (`qemu`, `microbit`,
-  `pizero2350`) links the no-op fallback (`arch/common/arch_diag_led_set_default.cc`) and the LED
+  `arch_diag_led_*`); a board with no kernel LED (`qemu`, `microbit`,
+  `pizero2350`, `rx72m`) links the no-op fallback (`arch/common/arch_diag_led_set_default.cc`) and the LED
   silently does nothing -- not a failure.
   `blink` is built for every board regardless, so on those it is a legitimate no-op.
 
@@ -543,6 +543,14 @@ this one. Read only what follows the banner.
 Boot-image field values, recomputed register bases and the register-level gotchas that brick or
 silence a board if they are wrong. Each is checked against the chip source; the manual citations
 are the clean-room derivation the source carries.
+
+**A board's console pins and the kernel's LED are its board file's**, `platform/<chip>/<board>.yaml`:
+the `console` device and pins, and the one LED marked `owner: kernel`. The chip code reads them
+from the `board_pins.h` configure writes, muxes and drives them, and refuses them in
+`arch_pinmux_set`, so moving the console or the LED is an edit to the board file alone. The
+status matrix's LED and console columns repeat them for the reader. The F411 pair's crystal is
+the one wiring fact still hand-written, in `boards/<board>/include/kickos/board_wiring.h`. The pin
+guard also refuses the board file's `reserved_pins`, the ESP32 module's flash pins among them.
 
 ### `pizero2350` (RP2350) -- the boot block and the recomputed bases
 
@@ -681,7 +689,7 @@ register block:
 | clock gate | `CCM_CCGR3`, `CG3` = bits `[7:6]` | `0x400F_C074` | already enabled at reset; set explicitly anyway |
 | pin mux TX (pin 1) | `IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B0_02` | `0x401F_80C4` | ALT2 = `LPUART6_TX` |
 | pin mux RX (pin 0) | `IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B0_03` | `0x401F_80C8` | ALT2 = `LPUART6_RX` |
-| RX daisy | `IOMUXC_LPUART6_RX_SELECT_INPUT` | -- | daisy value selecting `AD_B0_03` |
+| RX daisy | `IOMUXC_LPUART6_RX_SELECT_INPUT` (RM 11.6.336) | `0x401F_8550` | `1` = `GPIO_AD_B0_03`; `0`, its reset value, is `GPIO_EMC_26` |
 | controller | LPUART6 (RM Table 3-3) | `0x4019_8000` | GLOBAL/BAUD/STAT/CTRL/DATA at `+0x08`/`0x10`/`0x14`/`0x18`/`0x1C` |
 
 LPUART6 is IRQ **25** (RM Table 4-2, combined TX/RX), buffered TX over the shared `console_tx`
@@ -902,7 +910,11 @@ the board".
   only the bootable `.app.bin` post-step needs it, and CI cannot boot the image anyway.
   `-smp` is the two-core image, both CPUs under one kernel; what it adds to the other two is the
   cross-core lock, the doorbell, and the gates that read them out of a linked image. What it
-  cannot add is a run: the SMP claims in its selftest suite are read off a serial capture.
+  cannot add is a run: the SMP claims in its selftest suite are read off a serial capture. Owed:
+  esp32-wroom-smp silicon selftest (5.14). Its capture witnesses the deleted `lx6smp` probe's two
+  findings, `S32C1I` taken from both cores on internal SRAM, under the cross-core lock, and each
+  core's `PRID`, whose two measured values `arch_cpu_id` (`arch/xtensa/chip/esp32/chip_esp32.cc`)
+  maps to the core index, parking a core that reads neither; this paragraph names it once taken.
 
 ### Cross toolchains
 
@@ -1413,6 +1425,15 @@ MPU FAULT: task 'c6blink' attempted write at 0x6009157c -- reported
 Identical in both postures, which is the point: the app is posture-independent, so its enforcement
 signal is attributable to PMP and not to the root posture.
 
+**On a composition** `c6blink` is one task holding the pin bank and `pinmux`
+(`user/apps/esp32c6-wroom/c6blink/system.yaml`), and the out-sel write moved to a child thread
+holding no window, which is first refused `kos_periph_enable` and is then the one killed, ending
+the system. The bank also holds the console's and the reserved pins, and the task still accepts no
+`coarse_gate`: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and
+admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture, and
+`tests/integration/check_c6lpprobe.sh` the LP probe's, which runs on the board's default
+composition in the flat build.
+
 #### `pizero2350` -- PMSAv8
 
 The third board flipped, and the first silicon witness for the boundary on **PMSAv8** -- a
@@ -1516,7 +1537,8 @@ operating-mode / low-power / LVD registers (sec.13.1.1) and does not cover the P
 **The unlock is not independently witnessed by `rxdrv`**: `P80PFS`'s reset value is already the
 `0x00` the app writes, so a dropped write would look identical. It is witnessed instead by the
 console itself -- `sci6_console_init` goes through the same unlock helper, and its `PSEL=001011b`
-writes to `PB1PFS`/`PB0PFS` are what put the banner on the wire at all.
+writes to the console pins' `PmnPFS` (`mpc::pfs`, `PB1PFS`/`PB0PFS` on this board) are what put the
+banner on the wire at all.
 
 `rxdrv`'s isolation oracle moved with the widened window and now pokes ungranted `PORT8.PMR`, the mux
 escalation surface the backend just took over:
@@ -1541,6 +1563,13 @@ since the unit wants a 16-aligned base and a 16-multiple size and no power of tw
 `PDR`/`PODR` for every port is an unavoidable over-grant (the RX interleaves ports inside each
 register block rather than blocking per port) but not an escalation: a pin at `PMR=1` ignores
 `PDR`/`PODR` entirely (UM Table 23.47), so the console pins stay unreachable through the window.
+
+**On a composition the window is the chip file's whole port block, `PMR` included**, so it reaches
+every pin's general-I/O switch, the console's and the kernel LED's with them, and the task accepts
+`coarse_gate` for it (`user/apps/rx72m/rxdrv/system.yaml`). The isolation oracle moved out of the
+port block: after the blink a child thread holding no window has `kos_periph_enable` refused, then
+writes the console pin's `PB1PFS` in the ungranted MPC and is killed for it, which ends the system.
+`tests/integration/check_rxdrv.sh` judges the capture.
 
 **`stress` was NOT run under the flip.** RX sign-off historically paired "selftest + stress", but
 `apps/common/stress` spawns privileged children at three sites and structurally cannot work with an
@@ -1592,13 +1621,15 @@ Do not condense it.**
 control ran on the same tip and board, completed the write and printed
 `cross-domain write completed: root is NOT confined` at the same `0x2000a000`.
 
-**`f411spi` stays unwitnessed on this board.** It writes no MMIO from root -- `main` muxes `PE3` and
-`PA5`/`PA6`/`PA7` through `kos_pinmux_set`, and the unprivileged driver thread holding the 32 B SPI1
-grant calls `kos_periph_enable(win)` as its first act, then configures SPI1 inside that window
-(`design-spi-driver-stm32f411.md`; the seam's contract is `archive/M4_unprivileged_root_record.md` stage 3).
-What is open is bench time, not code: the app has not run on silicon in either posture since that
-rework, and its loopback arm additionally needs the PA7->PA6 jumper fitted. So the chip's
-peripheral-window proof remains open and the canonical PMSA peripheral proof stays `xmcspi`.
+**`f411spi` stays unwitnessed on this board.** It is one composed task holding SPI1's window and
+its line and `pinmux` (`user/apps/f411disco/f411spi/system.yaml`): its entry muxes `PE3` and
+`PA5`/`PA6`/`PA7` through `kos_pinmux_set`, calls `kos_periph_enable` on its window, configures SPI1
+inside it and runs the loopback on the line, then reads ungranted `GPIOB` and is killed for it,
+which ends the system (`design-spi-driver-stm32f411.md`; the seam's contract is
+`archive/M4_unprivileged_root_record.md` stage 3). What is open is bench time, not code: the app has
+not run on silicon since that rework, and its loopback arm additionally needs the PA7->PA6 jumper
+fitted. `tests/integration/check_f411spi.sh` judges the capture. So the chip's peripheral-window
+proof remains open and the canonical PMSA peripheral proof stays `xmcspi`.
 
 **The pre-stage-3 fault, measured.** With the bring-up still in `main`, i.e. in root, the app faulted
 under the flip on its very first bring-up store -- `=== MPU FAULT === CFSR=0x82 MMFAR=0x40023830`,
@@ -1649,8 +1680,8 @@ tree:
 
 | grant | verdict |
 |---|---|
-| `system/driver/mk64f/k64uart`, `k64uartirq`, `k64dspi`; `user/apps/rx72m/rxdrv`; `user/apps/f411disco/f411spi`; `user/apps/xmc4800-relax/xmcspi` | **LOAD-BEARING** -- each calls `kos_periph_enable`. Deleting the grant breaks the device |
-| `user/apps/common/gpioblink`, `user/apps/frdmk64f/k64console`, `user/apps/frdmk64f/k64drv` | genuinely inert; kept for spawn-signature parity and portability to an enforcing chip |
+| `system/driver/mk64f/k64uart`, `k64uartirq`, `k64dspi`; `user/apps/frdmk64f/k64drv`; `user/apps/rx72m/rxdrv`; `user/apps/f411disco/f411spi`; `user/apps/xmc4800-relax/xmcspi` | **LOAD-BEARING**: each calls `kos_periph_enable`. Deleting the grant breaks the device |
+| `user/apps/common/gpioblink` | genuinely inert; kept for portability to an enforcing chip |
 
 `k64uart.cc` had already drifted into calling its own live grant inert. Deleting it on that comment's
 word would have silenced the K64F console, which is why the test above is stated in terms of the
@@ -2226,6 +2257,10 @@ and the console was `KERNEL_OWNED` when the channel died. The gate is now `state
 that widening is only safe because every chip reclaim body is idempotent absolute stores -- so this
 capture is simultaneously the witness for the fix and the reason that idempotence requirement is
 load-bearing rather than incidental. `archive/M4_unprivileged_root_record.md` section 8 carries the argument.
+That capture is of the app's earlier shape. It now takes its console from the test-owned
+`testusic` (`tests/drivers`, built with `-DKICKOS_TEST_DRIVERS=ON`), which scrambles the channel
+on main's request before main panics, so the console is published when it dies;
+`tests/integration/check_conreclaim.sh` judges a capture of that shape, and none is taken yet.
 No CTest gate exists or can: the XMC has no QEMU model, and PASS is an operator reading a banner.
 
 **`frdmk64f` `selftest` on its FULL service list (`k64uart` + `k64dspi`)** -- 66 cases, 65 `ok`,

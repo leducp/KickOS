@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the XMC4700/XMC4800 Relax Kit Series-V1 Board User Manual rev 1.6, section 2.4,
-# and the tree's chip_xmc4800.cc and usic_uart.cc.
+# Values from the XMC4700/XMC4800 Relax Kit Series-V1 Board User Manual rev 1.6, section 2.4 and
+# its Table 5, where the debug probe's UART takes P1.5 (U0C0.DOUT0) and feeds P1.4 (U0C0.DX0B),
+# the pins the RM's ASC bootstrap loader uses too (RM p.19-*).
 
 version: 1
 board: xmc4800-relax
@@ -11,7 +12,7 @@ chip: xmc4800
 # USIC0 channel 0 on the debug probe's virtual COM port.
 console:
   device: /dev/usic0/ch0
-  pins: { dout0: P1.5, dx0b: P1.4 }
+  pins: { dout0: P1.5, dx0: P1.4 }
 
 leds:
   led1: { pin: P5.9, active: high, owner: kernel } # the kernel's diagnostic LED

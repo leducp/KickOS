@@ -30,7 +30,7 @@ fi
 require_on_wire "slay rc: 0" \
     "the slay answered something other than 0 (or the run never reached it)"
 require_on_wire "SLAYPEER PASS" "the run never reached PASS"
-# PASS is printed from main and main then RETURNS: root's return, kickos_terminate, the
+# PASS is printed from main and main then RETURNS: its task's end, the init's shutdown, the
 # console flush and arch_shutdown all run after the last line this gate can read, so the
 # status is the only thing that covers them.
 if [ "$RC" -ne 0 ]; then

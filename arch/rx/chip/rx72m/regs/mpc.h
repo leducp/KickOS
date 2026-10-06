@@ -22,9 +22,6 @@ namespace kickos::rx::reg::mpc
     // The stride-8 formula holds across the whole file, PORT0 @0x0008C140 through
     // PORTQ @0x0008C1F8 (sec.23.2.2-23.2.24 address lists).
     constexpr uintptr_t PFS = mmap::MPC + 0x40;   // PFS block base (0x0008C140)
-    constexpr uintptr_t PB0PFS = PFS + 0x0B * 8 + 0; // PB0 pin function
-    constexpr uintptr_t PB1PFS = PFS + 0x0B * 8 + 1; // PB1 pin function
-    constexpr uint8_t PFS_PSEL_SCI6 = 0x0B;       // PSEL=001011b: PB0->RXD6, PB1->TXD6
 
     constexpr uintptr_t pfs(uint32_t port, uint32_t pin) { return PFS + port * 8u + pin; }
 

@@ -1037,6 +1037,46 @@ namespace
         EXPECT_EQ(outcome.message, "init: kos_endpoint_create for `sensor` answered -12");
     }
 
+    TEST_F(Walk, a_task_s_ceiling_is_its_grant_and_its_entry_runs_at_its_priority)
+    {
+        harness::Patched patched{systems::find("golden_arm64")};
+        patched.task("app").ceiling = 20u;
+        use(patched);
+        fake::script({step::ready_all()});
+        expect_idle(run());
+        fake::Thread const* const app = fake::spawned("app").at(0);
+        EXPECT_EQ(app->params.prio, 8u);
+        bool granted = false;
+        for (fake::Call const& c : fake::calls_of("kos_task_sched_grant"))
+        {
+            if (c.args[0] == app->task)
+            {
+                EXPECT_EQ(c.args[1], 20u);
+                granted = true;
+            }
+        }
+        EXPECT_TRUE(granted);
+
+        // The board default: main at 2 under the build's top priority.
+        use("default_qemu_arm64");
+        expect_idle(run());
+        fake::Thread const* const main = fake::spawned("main").at(0);
+        EXPECT_EQ(main->params.prio, 2u);
+        ASSERT_EQ(fake::calls_of("kos_task_sched_grant").size(), 1u);
+        EXPECT_EQ(fake::calls_of("kos_task_sched_grant")[0].args[1], 31u);
+    }
+
+    TEST_F(Walk, a_ceiling_below_the_task_s_priority_is_refused_at_boot)
+    {
+        harness::Patched patched{systems::find("golden_arm64")};
+        patched.task("app").ceiling = 7u;
+        use(patched);
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::PANIC);
+        EXPECT_EQ(outcome.message, "init: `app` has a ceiling 7 below its priority 8");
+        EXPECT_TRUE(fake::calls_of("kos_notify_create").empty());
+    }
+
     TEST_F(Walk, a_user_task_carrying_a_ring_block_is_refused_at_boot)
     {
         harness::Patched patched{systems::find("golden_arm64")};

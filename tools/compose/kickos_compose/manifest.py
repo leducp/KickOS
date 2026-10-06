@@ -27,7 +27,7 @@ INIT_FIELDS = ("status_record_size", "private_record_size", "free_regions")
 THREAD_ENTRY_FIELDS = ("name", "priority", "stack", "caps", "badged")
 CORES = 32
 # The layouts of the emitted table emit.py writes.
-TABLE_LAYOUTS = (5,)
+TABLE_LAYOUTS = (6,)
 
 
 class Manifest:
@@ -79,6 +79,8 @@ class Manifest:
         self.free_regions = None
         # The (chip file, board file) its `descriptions` names, by absolute path, or None.
         self.descriptions = None
+        # The board's default composition `default` names, by absolute path, or None.
+        self.default = None
         self.drivers = {}
 
 
@@ -178,7 +180,7 @@ def check_manifest(path, text, report):
     if "descriptions" in top and target is not None:
         manifest.descriptions = check_descriptions(f, top["descriptions"], target)
     if "default" in top and target is not None:
-        check_default(f, top["default"], target, "descriptions" in top)
+        manifest.default = check_default(f, top["default"], target, "descriptions" in top)
     if "drivers" in top:
         drivers = f.mapping(top["drivers"], "`drivers`")
         for name, (key, value) in (drivers or {}).items():
@@ -408,6 +410,8 @@ def check_default(f, node, target, described):
     if not os.path.isfile(path):
         f.refuse(values["composition"], "manifest.default-unknown",
                  "`default` composition names %s, which does not exist" % path)
+        return None
+    return path
 
 
 def word_or_integer(f, node, what, word, bits):

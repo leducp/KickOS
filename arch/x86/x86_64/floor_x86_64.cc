@@ -4,6 +4,7 @@
 // Check the x86-64-v3 floor before running code built for it. This file is compiled for the
 // base level so an older processor can report the refusal through firmware and return safely.
 
+#include <kickos/arch/regs.h>
 #include <kickos/arch/uefi.h>
 
 #include <stdint.h>
@@ -33,9 +34,9 @@ namespace
     }
 
     // CPUID features required through x86-64-v3. The kernel disables vector state separately.
-    // Leaf 1 EDX: FPU, CX8, CMOV, MMX, FXSR, SSE, SSE2.
-    constexpr uint32_t leaf1_edx = (1u << 0) | (1u << 8) | (1u << 15) | (1u << 23) | (1u << 24)
-                                   | (1u << 25) | (1u << 26);
+    // Leaf 1 EDX: FPU, CX8, CMOV, CLFSH, MMX, FXSR, SSE, SSE2.
+    constexpr uint32_t leaf1_edx = (1u << 0) | (1u << 8) | (1u << 15) | (1u << 19) | (1u << 23)
+                                   | (1u << 24) | (1u << 25) | (1u << 26);
     // Leaf 1 ECX: SSE3, SSSE3, FMA, CMPXCHG16B, SSE4.1, SSE4.2, MOVBE, POPCNT, XSAVE, AVX, F16C.
     constexpr uint32_t leaf1_ecx = (1u << 0) | (1u << 9) | (1u << 12) | (1u << 13) | (1u << 19)
                                    | (1u << 20) | (1u << 22) | (1u << 23) | (1u << 26) | (1u << 28)
@@ -55,7 +56,10 @@ namespace
         Regs const l1 = cpuid(1);
         Regs const l7 = cpuid(7);
         Regs const e1 = cpuid(0x80000001u);
-        return (l1.d & leaf1_edx) == leaf1_edx and (l1.c & leaf1_ecx) == leaf1_ecx
+        // Leaf 1 EBX bits 15:8: the CLFLUSH line in 8-byte units.
+        uint32_t const clflush_line = ((l1.b >> 8) & 0xFFu) * 8u;
+        return clflush_line >= kickos::x86_64::CLFLUSH_LINE and (l1.d & leaf1_edx) == leaf1_edx
+               and (l1.c & leaf1_ecx) == leaf1_ecx
                and (l7.b & leaf7_ebx) == leaf7_ebx and (e1.c & ext1_ecx) == ext1_ecx
                and (e1.d & ext1_edx) == ext1_edx;
     }

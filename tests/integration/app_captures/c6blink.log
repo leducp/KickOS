@@ -1,0 +1,38 @@
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     esp32c6
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[c6blink] PASS periph_enable holder rc -38 (want -38)
+[c6blink] GPIO_OUT readback 0x0
+[c6blink] blinking GPIO10 via the 64 B pin bank
+[c6blink] blink 1 pad=1/1 pad=0/0
+[c6blink] blink 2 pad=1/1 pad=0/0
+[c6blink] blink 3 pad=1/1 pad=0/0
+[c6blink] blink 4 pad=1/1 pad=0/0
+[c6blink] blink 5 pad=1/1 pad=0/0
+[c6blink] blink 6 pad=1/1 pad=0/0
+[c6blink] blink 7 pad=1/1 pad=0/0
+[c6blink] blink 8 pad=1/1 pad=0/0
+[c6blink] blink 9 pad=1/1 pad=0/0
+[c6blink] blink 10 pad=1/1 pad=0/0
+[c6blink] PASS (pad tracked the drive on every cycle)
+[c6blink] PASS periph_enable non-holder rc -1 (want -1)
+[c6blink] poking UNGRANTED out-sel @ 0x6009157c (expect MPU FAULT)
+
+=== THREAD FAULT === thread 'c6poke' killed, system continues
+  PC=0x42001234 mcause=0x7
+  ADDR=0x6009157c

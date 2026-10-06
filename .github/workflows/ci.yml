@@ -171,7 +171,7 @@ jobs:
       # Match the selftest timeout and provide a default for other scripts.
       QEMU_TIMEOUT: "180"
       # These images run until poll_image stops them.
-      POLLED: "hello|fp_switch|mpu_fault|rootfault|rootgone|reclaimwit_park"
+      POLLED: "hello|fp_switch|mpu_fault|reclaimwit_park"
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -224,7 +224,7 @@ jobs:
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 -E "$POLLED" -LE tree --no-tests=error --output-on-failure
           # The soft-float M3 does not register fp_switch.
-          tests/ci/ctest_named.sh 'hello|mpu_fault|rootfault|rootgone|reclaimwit_park' \
+          tests/ci/ctest_named.sh 'hello|mpu_fault|reclaimwit_park' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
@@ -233,7 +233,7 @@ jobs:
       # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
-          # Flat builds do not register mpu_fault, rootfault or rootgone.
+          # Flat builds do not register mpu_fault or rootfault.
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
             if [ "$b" = qemu-m3 ]; then
               flat_polled='hello|reclaimwit_park'
@@ -614,7 +614,7 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on PMP enforcement, the witnesses and the default system's.
-          out=$(tests/ci/ctest_named.sh 'mpu_fault|rootfault|rootgone|qemu_riscv_restart_witness|qemu_riscv_init_priority|qemu_riscv_driver_restart|^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_entry|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena|qemu_riscv_system_link_heap' \
+          out=$(tests/ci/ctest_named.sh 'mpu_fault|rootfault|qemu_riscv_restart_witness|qemu_riscv_init_priority|qemu_riscv_driver_restart|^qemu_riscv_sysdefault$|qemu_riscv_sysdefault_spin|qemu_riscv_sysdefault_fault|qemu_riscv_system_link_none|qemu_riscv_system_link_two|qemu_riscv_system_link_entry|qemu_riscv_system_link_refused|qemu_riscv_system_link_notool|qemu_riscv_system_link_nocc|qemu_riscv_system_link_rerun|qemu_riscv_system_link_noheap|qemu_riscv_system_link_stack|qemu_riscv_system_link_arena|qemu_riscv_system_link_heap' \
             --preset qemu-riscv --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -650,7 +650,7 @@ jobs:
           cmake --build --preset qemu-riscv64
           ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on memory enforcement, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'rootfault|rootgone|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'rootfault|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in

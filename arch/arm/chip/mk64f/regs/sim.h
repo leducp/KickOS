@@ -18,7 +18,7 @@ namespace kickos::mk64f::reg::sim
     constexpr uintptr_t CLKDIV1 = mmap::SIM_BASE + 0x44u;
 
     constexpr uint32_t SCGC4_UART0 = 1u << 10;
-    constexpr uint32_t SCGC5_PORTB = 1u << 10;
+    constexpr uint32_t SCGC5_LPTMR0 = 1u << 0; // RM 12.2.12
     constexpr uint32_t SCGC6_SPI0 = 1u << 12;
     constexpr uint32_t SCGC6_PIT = 1u << 23;
 

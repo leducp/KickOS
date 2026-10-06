@@ -2,5 +2,5 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(initdemo main.cc)
-target_link_libraries(initdemo PRIVATE kickos)
+kickos_app_system(initdemo COMPOSITION system.yaml)
 kickos_emit_image(initdemo)

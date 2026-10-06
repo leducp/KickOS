@@ -19,8 +19,9 @@
 #     under `accepts` (none is needed on the XMC4800);
 #   * a task writing stdout above the console's priority, the console rendezvous having no
 #     priority inheritance, or declared before the task `stdout` names;
-#   * a priority outside the kernel build's range, and counts and sizes past what the kernel
-#     build exports, a supply refusal naming the Kconfig knob that would have to grow.
+#   * a priority outside the kernel build's range, an `entry` task stating no `ceiling` or one
+#     below its `priority`, and counts and sizes past what the kernel build exports, a supply
+#     refusal naming the Kconfig knob that would have to grow.
 
 version: 1
 board: xmc4800-relax
@@ -69,11 +70,13 @@ tasks:
     priority: 11
     restart: { max: 3 }
 
-  # User code from here on. `entry` is a symbol in this project's sources.
+  # User code from here on. `entry` is a symbol in this project's sources, and `ceiling` the
+  # highest priority the task's threads may take, here the task's own.
   - name: sensor
     entry: sensor_main
     stack: 2048
     priority: 9
+    ceiling: 9
     uses: [/svc/spi0]
     serves: /svc/sensor
     maps: { /shm/history: rw }
@@ -83,6 +86,7 @@ tasks:
     entry: app_main
     stack: 4096
     priority: 8
+    ceiling: 8
     uses: [/svc/sensor]
 
   # A user task told of every death among the tasks it watches, after the init has applied
@@ -91,5 +95,6 @@ tasks:
     entry: health_main
     stack: 2048
     priority: 10
+    ceiling: 10
     watches: [spi0, sensor]
     maps: { /shm/history: ro }

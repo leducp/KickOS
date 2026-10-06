@@ -9,15 +9,13 @@ endif()
 
 set(_errnoprobe_script "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
 
-if(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_BOARD STREQUAL "qemu-riscv64"
-   OR KICKOS_ARCH STREQUAL "armv8a")
+if(NOT KICKOS_ARCH STREQUAL "x86_64")
   kickos_add_qemu_test(TARGET errnoprobe SCRIPT "${_errnoprobe_script}")
 endif()
 
-# q35 adds arm F, libc on root as a core's first thread, and names the core that must have
-# entered it: the boot core at one kernel core, the one core a root mask names, and otherwise
-# whichever core picked root first.
+# q35 adds arm F, libc on root, which runs the app's constructors, as a core's first thread, and
+# names the core that must have entered it: the boot core at one kernel core, the one core a
+# root mask names, and otherwise whichever core picked root first.
 if(KICKOS_ARCH STREQUAL "x86_64")
   set(_errnoprobe_core "any")
   if(KICKOS_KERNEL_CORES EQUAL 1)

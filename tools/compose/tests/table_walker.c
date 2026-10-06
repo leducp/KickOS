@@ -154,8 +154,8 @@ int main(void)
         }
         printf("task %u name=%s entry=%s", n, text_at(strings, h->strings_size, t->name), symbol_at(entry));
         print_index("driver", t->driver);
-        printf(" stack=%" PRIu32 " block=%" PRIu32 " priority=%u restart_max=%u", t->stack, t->block,
-               (unsigned)t->priority, (unsigned)t->restart_max);
+        printf(" stack=%" PRIu32 " block=%" PRIu32 " priority=%u ceiling=%u restart_max=%u", t->stack,
+               t->block, (unsigned)t->priority, (unsigned)t->ceiling, (unsigned)t->restart_max);
         print_bits("flags", t->flags, task_flag_names);
         printf(" core_mask=0x%" PRIX32, t->core_mask);
         print_bits("authority", t->authority, authority_names);

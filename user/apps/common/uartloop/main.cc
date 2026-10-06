@@ -1,42 +1,29 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// End-to-end exercise of the buffered userspace UART: a client drives the
-// <kickos/sys/uart.h> wire ABI against the REAL two-thread driver, over the sim's loopback
-// "device" (system/driver/sim/simuart/simuart.cc).
-//
-// The client must be a spawned thread: a kos_call parks its caller, and root has to stay
-// alive to report the verdict.
+// End-to-end exercise of the buffered userspace UART: the task drives the
+// <kickos/sys/uart.h> wire ABI against the REAL two-thread packaged simuart its composition
+// names, over the sim's loopback "device".
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/atomic.h>
-#include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
 #include <kickos/sys/console_ring.h> // stats_unpack
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
-
-extern "C" kos_cap_t kickos_sim_uart_take_endpoint(void);
+#include <stdlib.h>
 
 namespace
 {
-    using kickos::Atomic;
-    using kickos::Order;
-
-    constexpr int CH_DONE = 1; // delegated completion sem
-    constexpr int CH_EP = 2;   // delegated SIGNAL-only cap on the service endpoint
-
-    kos_cap_t g_done = KOS_CAP_NONE;
-    // Read by root, only after the CH_DONE handshake.
-    Atomic<int, Order::RELAXED> g_wrote{-99};
-    Atomic<int, Order::RELAXED> g_read{-99};
-    Atomic<int, Order::RELAXED> g_match{-99};
-    Atomic<int, Order::RELAXED> g_wakes{-99};
+    kos_cap_t g_ep = KOS_CAP_NONE;
+    int g_wrote = -99;
+    int g_read = -99;
+    int g_match = -99;
+    int g_wakes = -99;
     // bytes accepted by the SUSTAINED arm, or a negative error
-    Atomic<int, Order::RELAXED> g_sustained{-99};
+    int g_sustained = -99;
 
     // Several laps of the 512-byte TX ring, so it reaches FULL repeatedly and the client
     // is forced onto the short-accept retry path.
@@ -85,7 +72,7 @@ namespace
             }
             send_len += len;
         }
-        long const rc = kos_call(CH_EP, buf, send_len, sizeof(buf));
+        long const rc = kos_call(g_ep, buf, send_len, sizeof(buf));
         if (rc < 0)
         {
             return static_cast<int>(rc);
@@ -157,7 +144,7 @@ namespace
         g_sustained = static_cast<int>(sent);
     }
 
-    void client(void*)
+    void client()
     {
         int const n = payload_len();
         g_wrote = uart_call(KOS_UART_WRITE, 0, static_cast<uint16_t>(n),
@@ -214,34 +201,18 @@ namespace
             kickos::console::stats_unpack(&s, st);
             g_wakes = static_cast<int>(kos_counter_load(&s.irq_wakes));
         }
-        kos_sem_post(CH_DONE);
     }
 }
 
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM);
-
-int main(int, char**)
+extern "C" void uartloop_main(kos_self_t const* self)
 {
-    kos_cap_t const ep = kickos_sim_uart_take_endpoint();
-    if (ep == KOS_CAP_NONE)
+    g_ep = kos_grant_endpoint(self, "/svc/simuart");
+    if (g_ep == KOS_CAP_NONE)
     {
-        kos_print("[uartloop] ERROR: no UART service endpoint (wrong service list?)\n");
-        return 1;
+        kos_print("[uartloop] ERROR: no UART service endpoint in this task's grants\n");
+        exit(1);
     }
-    if (kos_sem_create(0, &g_done) != 0)
-    {
-        kos_print("[uartloop] ERROR: sem_create failed\n");
-        return 1;
-    }
-    kos_cap_grant const caps[2] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL},
-                                   {ep, KOS_CAP_SIGNAL}};
-    auto const cl = kos::thread::create_caps(client, nullptr, "uartcl", 10, caps, 2);
-    if (not cl.valid())
-    {
-        kos_print("[uartloop] ERROR: client spawn failed\n");
-        return 1;
-    }
-    kos_sem_wait(g_done);
+    client();
 
     int const n = payload_len();
     int const n_wrote = g_wrote;
@@ -250,7 +221,7 @@ int main(int, char**)
     int const sustained = g_sustained;
     char line[96];
     ksnprintf(line, sizeof(line), "[uartloop] wrote=%d read=%d match=%d wakes=%d\n",
-              n_wrote, n_read, matched, g_wakes.load());
+              n_wrote, n_read, matched, g_wakes);
     kos_print(line);
     ksnprintf(line, sizeof(line), "[uartloop] sustained=%d of %u\n", sustained,
               static_cast<unsigned>(SUSTAIN_TOTAL));
@@ -258,13 +229,13 @@ int main(int, char**)
     if (n_wrote != n or n_read != n or matched != 1)
     {
         kos_print("[uartloop] FAIL (loopback)\n");
-        return 1;
+        exit(1);
     }
     if (sustained != static_cast<int>(SUSTAIN_TOTAL))
     {
         kos_print("[uartloop] FAIL (sustained: the channel stopped and did not recover)\n");
-        return 1;
+        exit(1);
     }
     kos_print("[uartloop] PASS (loopback in order; sustained output past a full ring)\n");
-    return 0;
+    exit(0);
 }

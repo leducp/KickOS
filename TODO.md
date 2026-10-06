@@ -1276,12 +1276,12 @@ resolves inside the tree.
       image on one core, so the writer is an ISR of the same instruction stream.
       One annotation per file now says which exception, and style.md gained the clause that
       permits a per-file statement plus the sentence that an ISR write is the rule.
-      **AND THE ONE THAT IS GENUINELY CROSS-CORE IS OUTSIDE THE MECHANISM, NOT EXEMPT FROM IT.**
-      `user/apps/esp32-wroom/lx6smp/main.cc` 51: `counter` is the target of an `s32c1i`
-      compare-and-swap from BOTH cores, `pro_rounds` here and `app_cpu.S` CELL_COUNTER there.
-      `Atomic` exposes no read-modify-write surface at all and `check_atomic_rmw.sh` holds that,
-      so a contended cell cannot be one. Two writers on one word is what style.md sends to a
-      lock, and this app exists to measure the hardware primitive instead.
+      **AND THE ONE THAT WAS GENUINELY CROSS-CORE WAS OUTSIDE THE MECHANISM, NOT EXEMPT FROM IT.**
+      `lx6smp`'s `counter`, deleted with that app in M10.5.11, was the target of an `s32c1i`
+      compare-and-swap from BOTH cores. `Atomic` exposes no read-modify-write surface at all and
+      `check_atomic_rmw.sh` holds that, so a contended cell cannot be one. Two writers on one word
+      is what style.md sends to a lock, and that app existed to measure the hardware primitive
+      instead.
 
 - [x] **THE RP2xxx REGISTER HEADERS ARE NOT FOLDED, AND THE ARITHMETIC IS RECORDED SO IT IS NOT
       RE-DERIVED AS AN OPPORTUNITY.** Nine of eleven pairs share names between
@@ -2604,9 +2604,8 @@ reason, 310 lines out of the root and 319 into a module. Measured totals so far:
       `xmcuart.cc`, the polled TX consoles at 157 and 172 lines, sit at **0.86** -- 64 of 74 and
       88 normalised code lines identical, including private copies of `poll_put` and `win_puts`
       where the library already declares `kickos::uart::win_puts`, the whole recv loop, and a
-      descriptor differing only in tag and entry. It is a shared BODY rather than a descriptor
-      macro, `xmcuart` carries a `print_rate` the other does not, and no arrangement leaves the
-      emitted code where it is. Left for a later pass rather than widened into.
+      descriptor differing only in tag and entry. **The body is shared since M10.5.11:** both
+      run `kickos::uart::polled_console_loop` and `win_puts` (`user/src/uart_service_dev.cc`).
       Two traps the macro cost, worth carrying: its parameter is `svc_name` and not `name`,
       because `name` substitutes inside `.name = irq_thread_name`; and the invocation needs a
       trailing semicolon or `check_syscall_return_codes.sh` reads the file as one unfinished
@@ -5879,20 +5878,21 @@ milestone does not close while any of them still composes a system.
       with the toolchain's 2.47 as the bench does; the flag stays unconditional and CI's probe
       still reports whether it is load-bearing.
 
-- [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the
-      eight the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`,
-      `irq.h`, `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board
-      its minimal default composition, build the partition's compositions together (a partition
-      gate's assignment derived, a device two nodes grant refused, a region cached across nodes
-      unless accepted), and link
-      `KickOS::system_default` in the out-of-tree examples CI builds (`examples/oot-app`,
-      `examples/oot-mcu-app`; **DONE AT M10.5.6**, their gates running them where an emulator
-      runs). Move every board and
-      app onto compositions, packaged drivers taking
-      their lines from the composition rather than by number, and delete the mechanisms listed
-      above. The four apps whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`,
-      `rootfault`) declare their ending explicitly. Run the fleet sweep and the silicon witnesses
-      against the result.
+- [ ] **M10.5: THE CLEANUP.** Write a chip file for every chip the fleet builds, not only the eight
+      the M10.0 draft covers, and generate the kernel's chip headers (`chip_mmap.h`, `irq.h`,
+      `arch_reserved_blocks`) from them, deleting the hand-written ones. Give every board its
+      minimal default composition, build the partition's compositions together (a partition gate's
+      assignment derived, a device two nodes grant refused, a region cached across nodes unless
+      accepted), and link `KickOS::system_default` in the out-of-tree examples CI builds
+      (`examples/oot-app`, `examples/oot-mcu-app`; **DONE AT M10.5.6**, their gates running them
+      where an emulator runs). Move every board and app onto compositions (the common apps but the
+      selftest and `ampping`: **DONE AT M10.5.10**), packaged drivers taking their lines from the
+      composition rather than by number, and delete the mechanisms listed above. The four apps whose
+      child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) declare their ending
+      explicitly (**DONE AT M10.5.10**, `ends: main`). Run the fleet sweep and the silicon witnesses
+      against the result. Owed: esp32-wroom-smp silicon selftest (5.14), the witness `lx6smp`'s
+      deletion in M10.5.11 rests on (`S32C1I` from both cores, `PRID` per core); its capture is
+      named in `docs/reference/boards.md`.
 
 - [ ] **M10.6: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
@@ -5969,6 +5969,38 @@ by ruling and sits in `roadmap.md`'s `Later`.
       Found when the selftest outgrew one image's IRAM.
 
 
+## The toolchain release (maintainer, 2026-10-04)
+
+- [ ] **ONE DOWNLOAD PER TOOLCHAIN, NOT ONE ARCHIVE OF ALL OF THEM (maintainer, 2026-10-04).** A
+      user builds for one or two target families, not all six. `toolchain-release.yml`'s `release`
+      job merges every family's package from both hosts, every pinned source and `SHA256SUMS` into
+      the single artifact `kickos-toolchain-release`, beside the per-job artifacts named from the
+      runner (`kickos-toolchain-<family>-macOS-ARM64`) that hold the same `.tgz` under its
+      `uname` name (`kickos-toolchain-<family>-Darwin-arm64.tgz`). Split it so each toolchain
+      (family and host) is its own archive a user fetches alone, with the sources and their
+      checksums beside them, and one naming for the artifact and the file inside it.
+
+- [ ] **THE TOOLCHAIN PROBABLY SHOULD NOT REACH A USER AS A CONAN PACKAGE (maintainer,
+      2026-10-04).** To use a prebuilt toolchain today a user needs Conan:
+      `tools/kickos-toolchain.sh` runs `conan profile detect` and `conan cache restore` on the
+      release archive, and the build finds the compiler through the Conan cache. That is heavy for
+      someone who only wants to compile for one board. To settle: a plain archive a user unpacks
+      and points `KICKOS_TOOLCHAIN` at, with Conan kept for building the toolchain from source and
+      in CI if it still earns its place there.
+
+- [ ] **THE RELEASE SHIPS ONE ARCHIVE OF THE SOURCES AND PATCHES, XZ AT ITS HARDEST (maintainer,
+      2026-10-04).** `tools/kickos-toolchain-release.sh` stops laying the pinned sources and
+      KickOS's patches out as loose release files and packs them, with their checksums, into one
+      `kickos-toolchain-sources-<version>.tar.xz` at `xz -9e`. Built by hand for toolchain-1.0 from
+      the release artifact: 373 MB of loose files became 269 MB, almost all of it from repacking the
+      gzip archives (Espressif's GCC, binutils and overlays, newlib, MPC) as xz, the xz and bzip2
+      ones being already compressed. A repacked archive no longer matches its upstream sha256, so
+      the archive carries `TAR-SHA256`, the hash of each repacked one's uncompressed tar, which
+      the upstream file's decompressed stream reproduces; `conan/toolchain/conandata.yml` and the
+      in-tree fallback to the release (`tools/kickos-toolchain.sh`, CI's source restore) read
+      sources from that archive. This narrows "which the release mirrors" (maintainer,
+      2026-10-01; `docs/design-m10-toolchain.md` section 1) to one file beside the toolchains.
+
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
 
 - [ ] **ELEVEN OF THE TWELVE DAMAGING COLLISIONS LAND ON A VALUE, WHERE NO GATE-SIDE TOLERANCE
@@ -6010,25 +6042,20 @@ by ruling and sits in `roadmap.md`'s `Later`.
 ## Two polled console drivers discard a refused byte, and nothing anywhere counts it
 
 - [ ] **ORDINARY CONSOLE OUTPUT VANISHES A BYTE AT A TIME AND NO COUNTER MOVES.**
-      `system/driver/mk64f/k64uart/k64uart.cc:140` and
-      `system/driver/xmc4800/xmcuart/xmcuart.cc:156` are the real client-data serve loops of the
-      two polled console drivers, and both spell the write `(void)poll_put(&dev, ...)`.
-      `poll_put` spins the transmitter for a bounded budget and returns FALSE when the budget
-      expires with the byte still unsent, which the cast discards. The bound is deliberate and
-      right -- without it a mis-configured baud wedges the driver thread and every stdout client
-      parked on a send behind it -- so the defect is not the drop, it is that the drop is
-      unobservable. A line reaches the wire with a hole in it and the client, the driver and the
-      report all read as successful.
-      **Both drivers already have the honest version in front of them.** The same cast in
-      `win_puts` is a direct-to-device diagnostic and is a different case; the client-data loop is
-      not. And `user/include/kickos/sys/console_service.h` gets this right for the drivers wired
-      into it: a short take increments `stats.tx_dropped`, so a byte lost there is a figure
-      somebody can read. Neither of these two is wired into that framework.
+      `kickos::uart::polled_console_loop` (`user/src/uart_service_dev.cc`) is the client-data
+      serve loop both polled console drivers (`k64uart`, `xmcuart`) run since M10.5.11, and its
+      `put_polled` spins the transmitter for a bounded budget and drops the byte when the budget
+      expires with it still unsent. The bound is deliberate and right (without it a mis-configured
+      baud wedges the driver thread and every stdout client parked on a send behind it), so the
+      defect is not the drop, it is that the drop is unobservable. A line reaches the wire with a
+      hole in it and the client, the driver and the report all read as successful.
+      **The honest version is already in front of it.** The same drop in `win_puts` is a
+      direct-to-device diagnostic and is a different case; the client-data loop is not. And
+      `user/include/kickos/sys/console_service.h` gets this right for the drivers wired into it: a short take increments `stats.tx_dropped`, so a byte lost there is a figure
+      somebody can read. The shared polled loop is not wired into that framework.
       **THE OPEN QUESTION IS WHICH ANSWER, AND IT IS NOT A DETAIL.** A dropped-byte counter in
-      each driver is small and keeps both drivers standalone; porting them onto the console
-      service framework removes the second copy of the whole serve loop along with the
-      accounting, and is the larger change. Not M8.7's, and recorded rather than picked up so
-      that whoever owns this driver family decides once for both files instead of patching one.
+      the shared loop is small; porting the two drivers onto the console service framework
+      brings the accounting with it, and is the larger change.
 
 ## `ampping`'s serve loop reads the first payload byte without checking a byte arrived
 
@@ -9317,7 +9344,7 @@ margin is not one. Each was read against its own body before being filed.
       caught by re-running: the arm is vacuous exactly when the box is loaded, and a flake
       hunt looks for reds. Each already declines the half it cannot witness above one kernel
       core, so the shape is understood; the one-core sleep is what is unbounded.
-- [ ] **Whether a CI posture boots an AMP peer that answers: it does, so these arms are live and
+- [x] **Whether a CI posture boots an AMP peer that answers: it does, so these arms are live and
       not dead weight.** The hypothesis that they skip by name where no peer runs is WRONG and
       was checked: none of `amp_far_service`, `amp_inbound_reply` or `amp_far_undisclosed`
       appears in any `KICKOS_EXPECT_SKIPS` list in `tests/integration/gates/selftest.cmake`,
@@ -9326,11 +9353,9 @@ margin is not one. Each was read against its own body before being filed.
       publication on a single-image run, so they run and pass with no second kernel anywhere.
       Beyond that, `.github/workflows/ci.yml` runs the whole selftest verdict on a shared-image
       AMP posture over four cores, where the peers are the image's own cores and always answer.
-      What IS still open is the enforcement gap one level up:
-      `tests/integration/check_amp_peer_arms.sh` covers the merged partition, and its own header
-      says its named set is the whole enforcement because it never reads the run's final
-      verdict, so an arm outside that set failing in a merged partition leaves the gate green.
-      Three of the four far arms filed here are outside it.
+      The enforcement gap one level up is closed: `tests/integration/check_amp_peer_arms.sh`,
+      which covers the merged partition, fails on any `not ok` line of its capture and not only
+      on its named set, so the three far arms filed here outside that set are enforced there too.
 
 ## M4.6.1 IRQ consoles on silicon: ALL FIVE run the whole suite (2026-08-02)
 
@@ -12265,8 +12290,9 @@ shared case only.
       path where `kickos_fault_frame_trusted` does the checking. So `kickos_rx_bad_usp` is compiled
       into every RX image carrying fault isolation and reached by nothing that runs.
 - [ ] **`usbcdcwit` is built by no default configuration of any board.**
-      `user/apps/common/usbcdcwit/CMakeLists.txt` returns unless `KICKOS_SERVICE_LIST` matches
-      `_usbcdc$`, and no board defconfig or `Kconfig` sets such a list. The three that exist --
+      `user/apps/common/CMakeLists.txt` builds it only where `KICKOS_USB_CONSOLE` is set, which a
+      `_usbcdc` service list or `-DKICKOS_USB_CONSOLE=ON` on the configure line does, and no board
+      defconfig or `Kconfig` sets either. The three that exist --
       `kickos_services_picopi_usbcdc`, `kickos_services_pizero2350_usbcdc` and
       `kickos_services_teensy41_usbcdc` (`system/CMakeLists.txt`) -- are reachable only from a
       `-DKICKOS_SERVICE_LIST=` on the configure line, so the app compiles in no preset, no local

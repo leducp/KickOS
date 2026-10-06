@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from UM1842 and the tree's boards/f411disco/include/kickos/board_wiring.h and the
-# f411spi app.
+# Values from UM1842 and the f411spi app. The crystal, which this file has no field for, is in
+# boards/f411disco/include/kickos/board_wiring.h.
 
 version: 1
 board: f411disco

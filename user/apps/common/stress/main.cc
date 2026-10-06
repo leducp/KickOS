@@ -14,8 +14,8 @@
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and
 // sleepers to fit it, so it runs a real soak on ANY pool instead of SKIPping the small
-// boards. The probed budget is KICKOS_MAX_THREADS at most: the pool holds one slot more
-// than that, and root occupies it. The printed counts are NOT fixed: they shrink from
+// boards. The probed budget is KICKOS_MAX_THREADS less main's own slot at most. The printed
+// counts are NOT fixed: they shrink from
 // MAX_PAIRS/MAX_SLEEPERS with the probed budget, so any knob that moves the thread pool
 // moves them. Every create/spawn is still checked: a board too small even for one pair
 // SKIPs rather than hanging a join.
@@ -43,17 +43,18 @@ namespace
     kos_cap_t g_done = KOS_CAP_NONE; // completion counter (each worker posts once at exit), MAIN's cap
     kos_cap_t g_mtx = KOS_CAP_NONE;  // binary sem guarding the shared counters, MAIN's cap
     kos_cap_t g_gate = KOS_CAP_NONE; // budget-probe gate (probers park here until released), MAIN's cap
-
-    kos_cap_t g_pair_a[MAX_PAIRS];   // "ping waits A, posts B", MAIN's caps
-    kos_cap_t g_pair_b[MAX_PAIRS];
+    kos_cap_t g_start = KOS_CAP_NONE; // posted once per pair once every worker exists, MAIN's cap
 
     // Well-known child cap indices (fresh child table => handle == index; delegated
-    // cap i -> index i+1). MAIN owns the sems and delegates them per spawn in a fixed
-    // order so the worker helpers can name them by these constants.
+    // cap i -> index i+1). MAIN creates the sems and delegates them per spawn in a fixed
+    // order so the worker helpers can name them by these constants. Main closes its copies
+    // of a pair's two sems once the pair is spawned: its table is a child's, so it cannot
+    // hold every pair's at once.
     constexpr int CH_DONE = 1; // completion counter, delegated FIRST to every worker
     constexpr int CH_MTX = 2;  // counter mutex, delegated SECOND (all conservation workers)
     constexpr int CH_A = 3;    // ping-pong pair sem A (delegated THIRD to ping/pong)
     constexpr int CH_B = 4;    // ping-pong pair sem B (delegated FOURTH to ping/pong)
+    constexpr int CH_START = 5; // the start gate (delegated FIFTH, to ping alone)
     constexpr int CH_GATE = 2; // budget-probe gate for the prober (done@1, gate@2)
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
@@ -78,6 +79,9 @@ namespace
     {
         int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
         uint32_t seed = 0x9E3779B9u ^ (static_cast<uint32_t>(i) * 2654435761u);
+        // The kick: the token enters A only once every worker of the round exists.
+        kos_sem_wait(CH_START);
+        kos_sem_post(CH_A);
         for (int r = 0; r < ROUNDS; r++)
         {
             kos_sem_wait(CH_A);
@@ -179,10 +183,11 @@ namespace
 
 // One full conservation round, repeatable: resets the accumulators, allocates THIS
 // round's per-pair sems, spawns + kicks + joins the conservation set, runs the churn
-// phase, checks exact conservation, then destroys the per-pair sems it created so the
-// sem pool returns to exactly what it was on entry. g_done/g_mtx are MAIN's and are
-// NOT touched here (they self-balance: every worker posts g_done once and is joined;
-// g_mtx is released as often as taken). Returns the failure count for this round.
+// phase and checks exact conservation. A pair's sems go with the last of its two workers,
+// main having closed its copies at the spawn, so the sem pool returns to what it was on
+// entry. g_done/g_mtx/g_start are MAIN's and are NOT touched here (they self-balance: every
+// worker posts g_done once and is joined; g_mtx is released as often as taken; g_start is
+// posted once per ping, which takes it once). Returns the failure count for this round.
 int run_stress_round(int pairs, int sleepers, int live)
 {
     g_naps_done = 0;
@@ -190,20 +195,22 @@ int run_stress_round(int pairs, int sleepers, int live)
     g_churn_runs = 0;
 
     bool ok = true;
-    int made_pairs = 0; // pairs whose BOTH sems were created: destroy exactly these
     int spawned = 0;
 
     // Mixed priorities straddling the sleepers' band; the last pair is RR.
     for (int i = 0; ok and i < pairs; i++)
     {
-        int const a_rc = kos_sem_create(0, &g_pair_a[i]);
-        int const b_rc = kos_sem_create(0, &g_pair_b[i]);
+        kos_cap_t pair_a = KOS_CAP_NONE;
+        kos_cap_t pair_b = KOS_CAP_NONE;
+        int const a_rc = kos_sem_create(0, &pair_a);
+        int const b_rc = kos_sem_create(0, &pair_b);
         if (a_rc != 0 or b_rc != 0)
         {
+            kos_handle_close(pair_a);
+            kos_handle_close(pair_b);
             ok = false;
             break;
         }
-        made_pairs++;
         uint8_t prio = static_cast<uint8_t>(8 + i);
         uint8_t policy = KOS_POLICY_FIFO;
         uint32_t quantum = 0;
@@ -213,11 +220,13 @@ int run_stress_round(int pairs, int sleepers, int live)
             quantum = 300000u; // 300 us
         }
         kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL},
-                                 {g_pair_a[i], CH_FULL}, {g_pair_b[i], CH_FULL}};
+                                 {pair_a, CH_FULL}, {pair_b, CH_FULL}, {g_start, CH_FULL}};
         auto a = kos::thread::create_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
-                                          prio, pcaps, 4, policy, quantum);
+                                          prio, pcaps, 5, policy, quantum);
         auto b = kos::thread::create_caps(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
                                           prio, pcaps, 4, policy, quantum);
+        kos_handle_close(pair_a);
+        kos_handle_close(pair_b);
         if (not a.valid() or not b.valid())
         {
             ok = false;
@@ -241,22 +250,18 @@ int run_stress_round(int pairs, int sleepers, int live)
 
     // A mid-round create/spawn failure means the pool did not return to its start
     // state (a leak): a hard FAIL, not a SKIP: main already proved the budget fits
-    // on entry. Do NOT join a half-spawned set (a lone ping would hang the join);
-    // reclaim the sems we created and report the failure so the soak halts on it.
+    // on entry. Do NOT join a half-spawned set (a lone ping would hang the join), and
+    // leave every spawned ping parked on the start gate; report the failure so the soak
+    // halts on it.
     if (not ok or spawned != live)
     {
-        for (int i = 0; i < made_pairs; i++)
-        {
-            kos_sem_destroy(g_pair_a[i]);
-            kos_sem_destroy(g_pair_b[i]);
-        }
         return 1;
     }
 
     // Kick each pair once; the token then circulates ROUNDS times per side.
     for (int i = 0; i < pairs; i++)
     {
-        kos_sem_post(g_pair_a[i]);
+        kos_sem_post(g_start);
     }
 
     // Join every worker. A lost wakeup / dropped deadline hangs here -> the harness
@@ -311,13 +316,6 @@ int run_stress_round(int pairs, int sleepers, int live)
     {
         fails++;
     }
-
-    // Reclaim this round's per-pair sems (workers are all joined -> no user left).
-    for (int i = 0; i < made_pairs; i++)
-    {
-        kos_sem_destroy(g_pair_a[i]);
-        kos_sem_destroy(g_pair_b[i]);
-    }
     return fails;
 }
 
@@ -327,10 +325,11 @@ int main(int, char**)
 
     int const done_rc = kos_sem_create(0, &g_done);
     int const mtx_rc = kos_sem_create(1, &g_mtx);
+    int const start_rc = kos_sem_create(0, &g_start);
     // Every create/spawn is checked: a board with a smaller thread/sem pool than
     // this soak needs must SKIP cleanly, not hang a join on a thread that was never
     // created or race on a counter whose mutex silently failed to allocate.
-    bool ok = (done_rc == 0 and mtx_rc == 0);
+    bool ok = (done_rc == 0 and mtx_rc == 0 and start_rc == 0);
 
     // Size the soak to this board's pool: probe the concurrent budget, then shrink the
     // footprint until the live set fits. Shrink order matters: sleepers go first, then

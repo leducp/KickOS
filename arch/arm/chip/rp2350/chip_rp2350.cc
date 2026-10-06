@@ -32,6 +32,7 @@
 
 #include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
@@ -42,6 +43,7 @@
 
 #include <fatal_status.ld.h>
 
+#include "board_pins.h"
 #include "irq.h"
 #include "regs/clocks.h"
 #include "regs/io_bank0.h"
@@ -260,15 +262,17 @@ namespace
         }
     }
 
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == reg::uart::BASE,
+                  "the board's console is not the UART this backend drives");
+
     void uart1_init()
     {
-        // Route GP4/GP5 to UART1 and make the pads usable. The RP2350 pads reset
-        // ISOLATED (PAD_ISO set): clear it or the pad stays disconnected.
-        r32(reg::io_bank0::GPIO4_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::io_bank0::GPIO5_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::pads::GPIO4 + ATOMIC_CLR) = reg::pads::ISO | reg::pads::OD; // TX: connect, drive out
-        r32(reg::pads::GPIO5 + ATOMIC_CLR) = reg::pads::ISO;                 // RX: connect
-        r32(reg::pads::GPIO5 + ATOMIC_SET) = reg::pads::IE;                  // RX: input enable
+        // The pads reset isolated, and stay disconnected until ISO clears.
+        r32(reg::io_bank0::gpio_ctrl(KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
+        r32(reg::io_bank0::gpio_ctrl(KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
+        r32(reg::pads::gpio(KICKOS_BOARD_CONSOLE_TX_BIT) + ATOMIC_CLR) = reg::pads::ISO | reg::pads::OD;
+        r32(reg::pads::gpio(KICKOS_BOARD_CONSOLE_RX_BIT) + ATOMIC_CLR) = reg::pads::ISO;
+        r32(reg::pads::gpio(KICKOS_BOARD_CONSOLE_RX_BIT) + ATOMIC_SET) = reg::pads::IE;
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
         r32(reg::uart::IBRD) = g_uart_ibrd;
@@ -277,6 +281,25 @@ namespace
         r32(reg::uart::IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
         r32(reg::uart::CR) = reg::uart::CR_ENABLE;
     }
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or ((port_base) == kickos::rp2350::mmap::SIO_BASE and pin >= (first) and pin <= (last))
+    constexpr bool rp2350_pin_kernel_owned(uint32_t pin)
+    {
+        return pin == KICKOS_BOARD_CONSOLE_TX_BIT
+               or pin == KICKOS_BOARD_CONSOLE_RX_BIT KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == kickos::rp2350::mmap::SIO_BASE and pin == (bit))
+    constexpr bool rp2350_pin_listed(uint32_t, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return rp2350_pin_kernel_owned(pin); },
+                                          rp2350_pin_listed, 1u, 30u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 #if KICKOS_AMP_OWN_IMAGE
@@ -571,13 +594,6 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *irq_line = irq::UART1_IRQ;
     return &rp_console_backend;
 #endif
-}
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console.
-// GP4/GP5 = UART1 TX/RX (the only console pins on the Pi-Zero header). No diag LED.
-static bool rp2350_pin_kernel_owned(uint32_t pin)
-{
-    return pin == 4u or pin == 5u;
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). func packs the IO_BANK0 CTRL

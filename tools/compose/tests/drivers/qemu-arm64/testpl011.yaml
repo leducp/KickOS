@@ -20,4 +20,5 @@ tasks:
     entry: kickos_main
     stack: 20480
     priority: 2
+    ceiling: 2
     authority: [memory, system, tasks]

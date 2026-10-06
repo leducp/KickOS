@@ -5,6 +5,8 @@ import contextlib
 import io
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -14,6 +16,7 @@ from kickos_compose.subset import Report
 
 TREE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
 PLATFORM = os.path.join(TREE, "platform")
+COMPOSE = os.path.join(TREE, "tools", "compose")
 COMPILER = [shutil.which("g++") or "g++"]
 # The arch each described chip builds for, and on a multi-architecture part the one cluster it picks.
 ARCHES = {
@@ -332,6 +335,49 @@ class Generated(unittest.TestCase):
                 self.assertIn(line, board)
                 self.assertNotIn(line, alone)
 
+    def test_a_board_bus_names_its_pins_selectors_and_base(self):
+        board = chip.generate(self.view(os.path.join(PLATFORM, "mk64f", "frdmk64f.yaml")))["board_buses.h"]
+        for line in ("{3u, 1u, 2u}, /* PTD1 alt2: dspi0.sck */", "{3u, 3u, 2u}, /* PTD3 alt2: dspi0.sin */",
+                     "spi0_chip_selects[] = {\n        {2u, 4u}, /* PTC4 */",
+                     '{"spi0", 0x4002C000u, spi0_pins, 3u, spi0_chip_selects, 1u},', "bus_count = 1u;",
+                     "namespace kickos::mk64f::board", "and platform/mk64f/frdmk64f.yaml"):
+            with self.subTest(line=line):
+                self.assertIn(line, board)
+        alone = chip.generate(self.view(os.path.join(PLATFORM, "mk64f", "chip.yaml")))["board_buses.h"]
+        self.assertIn("inline constexpr bus const* buses = nullptr;\n    inline constexpr uint32_t bus_count = 0u;",
+                      alone)
+
+    def test_a_bus_over_a_channel_takes_the_channels_base(self):
+        board = self.small_board("PA1: { alt2: usic.ch0.sclk, gpio: port.0.1 }")
+        text = chip.generate(self.view(board))["board_buses.h"]
+        self.assertIn('{"spi0", 0x40020000u, spi0_pins, 1u, spi0_chip_selects, 1u},', text)
+        self.assertIn("{0u, 1u, 2u}, /* PA1 alt2: usic.ch0.sclk */", text)
+        self.assertIn("{0u, 2u}, /* PA2 */", text)
+
+    def test_a_bus_pin_carrying_its_device_twice_is_refused(self):
+        board = self.small_board("PA1: { alt1: usic.ch0.dout0, alt2: usic.ch0.sclk, gpio: port.0.1 }")
+        with self.assertRaisesRegex(chip.Failure, "bus `spi0` pin `PA1` carries `/dev/usic/ch0` at the "
+                                                  "selectors `alt1`, `alt2`"):
+            chip.generate(self.view(board))
+
+    def test_a_bus_pin_whose_selector_names_no_mux_value_is_refused(self):
+        board = self.small_board("PA1: { fn: usic.ch0.sclk, gpio: port.0.1 }")
+        with self.assertRaisesRegex(chip.Failure, "bus `spi0` pin `PA1` carries `/dev/usic/ch0` at `fn`, "
+                                                  "which names no mux value"):
+            chip.generate(self.view(board))
+
+    def test_a_bus_pin_with_no_gpio_function_is_refused(self):
+        board = self.small_board("PA1: { alt2: usic.ch0.sclk }")
+        with self.assertRaisesRegex(chip.Failure, "bus `spi0` pin `PA1` has no `gpio` function"):
+            chip.generate(self.view(board))
+
+    def small_board(self, pin):
+        self.write(self.path, SMALL + "pins:\n  %s\n  PA2: { gpio: port.0.2 }\n" % pin)
+        board = os.path.join(self.platform, "tiny.yaml")
+        self.write(board, "version: 1\nboard: tiny\nchip: small\nconsole: { device: /dev/uart }\nbuses:\n"
+                          "  spi0: { device: /dev/usic/ch0, pins: [PA1], chip_selects: [PA2] }\n")
+        return board
+
     def test_each_window_states_its_size(self):
         rp2040 = chip.generate(self.view(os.path.join(PLATFORM, "rp2040", "chip.yaml"), "armv6m"))["chip_mmap.h"]
         self.assertIn("USBCTRL_SIZE = 0x20000u;", rp2040)
@@ -349,3 +395,92 @@ class Generated(unittest.TestCase):
     def test_a_board_file_names_its_chip(self):
         board = os.path.join(PLATFORM, "xmc4800", "xmc4800-relax.yaml")
         self.assertEqual(self.view(board).chip.name, "xmc4800")
+
+    def test_the_board_pins_follow_the_board_file(self):
+        def pins(chip_name, board, arch="armv7m"):
+            return chip.generate(self.view(os.path.join(PLATFORM, chip_name, board + ".yaml"), arch))["board_pins.h"]
+
+        disco = pins("stm32f411", "f411disco")
+        for line in ("#define KICKOS_BOARD_CONSOLE_BASE 0x40004400 /* /dev/usart2 */",
+                     "#define KICKOS_BOARD_CONSOLE_TX_PORT 0\n", "#define KICKOS_BOARD_CONSOLE_TX_PORT_BASE 0x40020000\n",
+                     "#define KICKOS_BOARD_CONSOLE_TX_BIT 2\n", "#define KICKOS_BOARD_CONSOLE_RX_SELECT 7 ",
+                     "#define KICKOS_BOARD_LED_PORT 3\n", "#define KICKOS_BOARD_LED_PORT_BASE 0x40020C00\n",
+                     "#define KICKOS_BOARD_LED_BIT 12\n", "#define KICKOS_BOARD_LED_ACTIVE_LOW 0\n",
+                     "and platform/stm32f411/f411disco.yaml"):
+            with self.subTest(line=line):
+                self.assertIn(line, disco)
+        black = pins("stm32f411", "blackpill")
+        self.assertIn("#define KICKOS_BOARD_LED_PORT 2\n", black)
+        self.assertIn("#define KICKOS_BOARD_LED_ACTIVE_LOW 1\n", black)
+        # An input path selects no mux value.
+        xmc = pins("xmc4800", "xmc4800-relax")
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_DOUT0_SELECT 2 ", xmc)
+        self.assertNotIn("KICKOS_BOARD_CONSOLE_DX0_SELECT", xmc)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT 1 ", xmc)
+        # A port device that does not repeat names no index.
+        rp = pins("rp2040", "picopi", "armv6m")
+        self.assertNotIn("KICKOS_BOARD_LED_PORT ", rp)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 2 ", rp)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 0 ", pins("sam3x8e", "due"))
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT 1 ", pins("imxrt1062", "teensy41"))
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_TXD_SELECT 11 ", pins("rx72m", "rx72m", "rxv3"))
+        self.assertNotIn("KICKOS_BOARD_LED", pins("rp2350", "pizero2350"))
+        # An addressable LED has a pin and no level.
+        c6 = pins("esp32c6", "esp32c6-wroom", "rv32imac")
+        self.assertIn("#define KICKOS_BOARD_LED_BIT 8\n", c6)
+        self.assertIn("#define KICKOS_BOARD_LED_ADDRESSABLE 1\n", c6)
+        self.assertNotIn("KICKOS_BOARD_LED_ACTIVE_LOW", c6)
+        # Consecutive reserved bits of one port are one run.
+        esp32 = pins("esp32", "esp32-wroom", "lx6")
+        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) RUN(0x3FF44000, 6, 11) /*", esp32)
+        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) RUN(0x60091000, 9, 9) RUN(0x60091000, 12, 13) "
+                      "RUN(0x60091000, 15, 15) /*", c6)
+        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) /*", disco)
+        # The console pins, the kernel LED and every reserved pin, each by its port's base.
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x40020000, 2) PIN(0x40020000, 3) "
+                      "PIN(0x40020C00, 12) /*", disco)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x3FF44000, 1) PIN(0x3FF44000, 3) PIN(0x3FF44000, 2) "
+                      "PIN(0x3FF44000, 6) PIN(0x3FF44000, 7) PIN(0x3FF44000, 8) PIN(0x3FF44000, 9) "
+                      "PIN(0x3FF44000, 10) PIN(0x3FF44000, 11) /*", esp32)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x401B8000, 2) PIN(0x401B8000, 3) "
+                      "PIN(0x401BC000, 3) /*", pins("imxrt1062", "teensy41"))
+
+    def test_a_chip_file_alone_wires_no_pin(self):
+        alone = chip.generate(self.view(os.path.join(PLATFORM, "stm32f411", "chip.yaml")))["board_pins.h"]
+        self.assertNotIn("#define", alone.replace("#define KICKOS_BOARD_PINS_H", ""))
+
+    def test_a_selector_names_its_mux_value(self):
+        for selector, value in (("a", 0), ("c", 2), ("af7", 7), ("psel11", 11), ("f2", 2), ("remap0", 0),
+                                ("in", None), ("gpio", None), ("alt", None)):
+            with self.subTest(selector=selector):
+                self.assertEqual(chip.selector_value(selector), value)
+
+    def test_two_runs_write_the_same_bytes(self):
+        boards = sorted(os.path.join(PLATFORM, name, board) for name in os.listdir(PLATFORM)
+                        for board in os.listdir(os.path.join(PLATFORM, name)) if board != "chip.yaml")
+        self.assertGreater(len(boards), 15)
+        outputs = []
+        for seed in ("1", "2"):
+            out = os.path.join(self.scratch, "seed" + seed)
+            for board in boards:
+                name = os.path.basename(os.path.dirname(board))
+                stem = os.path.splitext(os.path.basename(board))[0]
+                env = dict(os.environ, PYTHONHASHSEED=seed)
+                subprocess.run([sys.executable, "-m", "kickos_compose", "chip", board, "--arch", ARCHES[name],
+                                "--include-dir", os.path.join(out, stem, "include"),
+                                "--chip-dir", os.path.join(out, stem, "chip")],
+                               check=True, env=env, cwd=COMPOSE, stdout=subprocess.DEVNULL)
+            outputs.append(tree_bytes(out))
+        self.assertGreater(len(outputs[0]), len(boards) * len(chip.CHIP_OUTPUTS))
+        self.assertEqual(outputs[0], outputs[1])
+
+
+def tree_bytes(root):
+    """{path under root: bytes} of every file under root."""
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            with open(path, "rb") as stream:
+                found[os.path.relpath(path, root)] = stream.read()
+    return found

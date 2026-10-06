@@ -7,6 +7,7 @@
 // chapters). Hand-rolled, no ESP-IDF/HAL sources.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/lx6_doorbell.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
@@ -18,6 +19,7 @@
 
 #include <kickos/chip_cpuid.h>
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "irq.h"
 #include "routing.h"
 #include "regs/uart.h"
@@ -52,6 +54,11 @@ extern "C"
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
+
+    // esp32.ld's DWARF EH table and libgcc's registrar, weak: an image that never unwinds does
+    // not pull the registrar, and the call is skipped.
+    extern uint32_t __eh_frame_start;
+    void __register_frame(void*) __attribute__((weak));
 
     // The ROM first-stage loader leaves the CPU on the 40 MHz crystal (no PLL,
     // since KickOS boots without the IDF second-stage bootloader). This is the
@@ -378,6 +385,9 @@ namespace
     // The window arch_console_reclaim rewrites. UART0 owns 0x3FF4_0000 to 0x3FF4_0FFF
     // (TRM Table 3.3-6); UART1 starts at 0x3FF5_0000.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == CONSOLE_WIN_BASE, "the board's console is not the UART this backend drives");
+    static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
+                  "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
     constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
 
     static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
@@ -522,8 +532,8 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // driver has owned the whole UART0 window. Straight-line ABSOLUTE stores only: no reads
 // of driver-mutable state, no loops, no baud derived from a clock the fault may have
 // left wrong, and running it twice lands on the same registers.
-// The pads are not restored because they cannot be lost: arch_pinmux_set refuses GPIO1
-// and GPIO3.
+// The pads are not restored because they cannot be lost: arch_pinmux_set refuses the console
+// pins.
 void arch_console_reclaim(void)
 {
     // Silence first. A stale enabled source would storm the level-1 handler through the
@@ -555,36 +565,64 @@ void arch_console_reclaim(void)
 
 }
 
+namespace
+{
+    static_assert(KICKOS_BOARD_LED_BIT < 32u, "the LED's OUT and ENABLE bits are in the low GPIO bank's registers");
+
+    constexpr uint32_t LED_BIT = 1u << KICKOS_BOARD_LED_BIT;
+
+    constexpr uintptr_t led_out(bool level)
+    {
+        if (level)
+        {
+            return reg::gpio::OUT_W1TS;
+        }
+        return reg::gpio::OUT_W1TC;
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+    // On a WROOM module the reserved pins include those of the SPI flash the image executes
+    // from (XIP), so remuxing ANY of them stops execution dead.
+#define KICKOS_RESERVED_RUN(port_base, first, last) or ((port_base) == mmap::GPIO_BASE and pin >= (first) and pin <= (last))
+    constexpr bool esp32_pin_kernel_owned(uint32_t pin)
+    {
+        return pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT or pin == KICKOS_BOARD_LED_BIT
+            KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::GPIO_BASE and pin == (bit))
+    constexpr bool esp32_pin_listed(uint32_t, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return esp32_pin_kernel_owned(pin); },
+                                          esp32_pin_listed, 1u, 40u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
+}
+
 extern "C"
 {
 
-// --- Kernel diagnostic LED: the onboard LED on GPIO2 (active-high; DOIT ESP32
-//     DevKit v1 / NodeMCU-32S blue LED). Register map in regs/gpio.h. ---
 void arch_diag_led_init(void)
 {
-    r32(reg::gpio::IO_MUX_GPIO2) = reg::gpio::IO_MUX_GPIO_FUNC;
-    r32(reg::gpio::ENABLE_W1TS) = reg::gpio::LED_BIT;
-    r32(reg::gpio::OUT_W1TC) = reg::gpio::LED_BIT; // start dark
+    r32(mmap::IO_MUX_BASE + reg::gpio::IO_MUX_OFF[KICKOS_BOARD_LED_BIT]) = reg::gpio::IO_MUX_GPIO_FUNC;
+    r32(reg::gpio::ENABLE_W1TS) = LED_BIT;
+    r32(led_out(not LED_LIT)) = LED_BIT;
 }
 
 void arch_diag_led_set(int on)
 {
     if (on)
     {
-        r32(reg::gpio::OUT_W1TS) = reg::gpio::LED_BIT;
+        r32(led_out(LED_LIT)) = LED_BIT;
     }
     else
     {
-        r32(reg::gpio::OUT_W1TC) = reg::gpio::LED_BIT;
+        r32(led_out(not LED_LIT)) = LED_BIT;
     }
-}
-
-// Pins arch_pinmux_set refuses (EBUSY). GPIO1/GPIO3 = the U0 console TX/RX.
-// GPIO6..11 drive the SPI flash the image executes from (XIP), so remuxing ANY of them
-// stops execution dead.
-static bool esp32_pin_kernel_owned(uint32_t pin)
-{
-    return pin == 1u or pin == 3u or (pin >= 6u and pin <= 11u);
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). port must be 0 (the WROOM has a
@@ -818,7 +856,7 @@ void arch_console_flush_sync(void)
         uint32_t const status = r32(reg::uart::STATUS);
         uint32_t const queued = (status >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
         uint32_t const tx_fsm = (status >> reg::uart::ST_UTX_OUT_S) & reg::uart::ST_UTX_OUT_MASK;
-        if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_TX_IDLE)
+        if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_IDLE)
         {
             return;
         }
@@ -862,6 +900,10 @@ void Reset_Handler(void)
     for (uint32_t* b = &_sbss; b < &_ebss; b++)
     {
         *b = 0;
+    }
+    if (__register_frame != nullptr)
+    {
+        __register_frame(&__eh_frame_start);
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

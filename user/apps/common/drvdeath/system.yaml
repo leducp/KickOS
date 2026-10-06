@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged simcon serving stdout with no restart, and main, which waits for its start and
+# watches its death.
+
+version: 1
+stdout: /svc/console
+ends: main
+
+tasks:
+  - name: simcon
+    driver: simcon
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: drvdeath_main
+    priority: 2
+    ceiling: 10
+    uses: [/svc/console]
+    watches: [simcon]
+    authority: [memory, system, tasks]

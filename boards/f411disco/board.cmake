@@ -7,8 +7,9 @@
 # the flags left unset here. Side-effect free: set only these.
 #
 # STM32F411E-DISCO (Cortex-M4F). Chip backend stm32f411, shared with blackpill; the two
-# differ in wiring facts (crystal, diag LED), which each states in its own
-# include/kickos/board_wiring.h. Their defconfigs differ only in CONFIG_BOARD_*.
+# differ in wiring facts: the console and LED pins their board files state, and the crystal
+# each states in its own include/kickos/board_wiring.h. Their defconfigs differ only in
+# CONFIG_BOARD_*.
 set(KICKOS_BOARD_ID "f411disco")
 set(KICKOS_ARCH "armv7m")
 set(KICKOS_CHIP "stm32f411")

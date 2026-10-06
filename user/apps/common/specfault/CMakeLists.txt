@@ -6,5 +6,5 @@
 # MemManage dump; a regression to a readable wrap (fable finding F1) would hang the core.
 # Silicon one-shot: the sim/qemu gates have no wrapped external aperture, so no ctest.
 add_executable(specfault main.cc)
-target_link_libraries(specfault PRIVATE kickos)
+target_link_libraries(specfault PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(specfault)

@@ -123,12 +123,14 @@ uint32_t kos_uart_write(struct kos_uart* u, unsigned char const* src, uint32_t n
 
 int32_t kos_uart_flush(struct kos_uart* u)
 {
-    // THE WEAK CONTRACT ON THIS FAMILY: drained means the FIFO emptied, and a byte may still
-    // be in the shifter. Neither TRM documents a shifter-empty indication, so a consumer that
-    // must not clip the final byte needs a delay of its own.
+    // Drained means the last stop bit has left the pin: the FIFO is empty AND the transmitter's
+    // state machine is idle, since an empty FIFO still leaves one frame in the shifter. ESP32
+    // TRM Register 19.8 enumerates ST_UTX_OUT, 0 TX_IDLE; the C6's Register 27.24 prints the
+    // field without its encodings, and idle is its reset value 0.
     for (uint32_t i = 0; i < kickos::espuart::POLL_MAX; i++)
     {
-        if (txfifo_cnt(u->base) == 0u)
+        uint32_t const fsm = (r32(u->base + ru::OFF_TX_FSM) >> ru::ST_UTX_OUT_S) & ru::ST_UTX_OUT_MASK;
+        if (txfifo_cnt(u->base) == 0u and fsm == ru::ST_UTX_OUT_IDLE)
         {
             return 0;
         }

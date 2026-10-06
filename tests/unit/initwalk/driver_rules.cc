@@ -178,6 +178,14 @@ namespace
         fake::Call const probe = probes().at(0);
         EXPECT_EQ(probe.args[0], static_cast<uint64_t>(KOS_CAP_STDOUT));
         EXPECT_EQ(probe.args[2], kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
+
+        // The grant is the table's figure, not one the bring-up derives.
+        harness::Patched patched{systems::find("golden_xmc")};
+        patched.task("console").ceiling = 20u;
+        use(patched);
+        fake::script({step::ready_all(), step::ready_all(), step::ready_all()});
+        ASSERT_EQ(run().kind, Outcome::Kind::IDLE);
+        EXPECT_EQ(fake::calls_of("kos_task_sched_grant").at(0).args[1], 20u);
     }
 
     TEST_F(Driver, every_driver_thread_runs_on_the_declared_core)

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Main declares irq in place of tasks: the authority benchauth's arms read against a child
+# holding none.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, irq]

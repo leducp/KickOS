@@ -8,5 +8,5 @@
 # hold on real silicon: flash-WS/voltage ordering, monotonic now, baud re-derivation)
 # validated by the operator on the wire, not by the in-env sim.
 add_executable(clockretune main.cc)
-target_link_libraries(clockretune PRIVATE kickos)
+kickos_app_system(clockretune COMPOSITION system.yaml)
 kickos_emit_image(clockretune)

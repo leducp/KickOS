@@ -66,7 +66,7 @@ user task the init:
 2. creates the task (`kos_task_create`): with no memory on a region board, and on a translating
    board with the task's stack block as its data region, which maps the block in the task's own
    space;
-3. narrows the task's priority ceiling to its declared priority and, for a declared `core`, its
+3. narrows the task's priority ceiling to its declared `ceiling`, and, for a declared `core`, its
    core grant to that core (`kos_task_sched_grant`), so threads the task creates stay within its
    declaration;
 4. arms the watch, `kos_task_watch(task, copy, served endpoint)`, with `KOS_CAP_NONE` for a task
@@ -163,8 +163,14 @@ a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marke
 dependency-down, or whose start fails, never runs its entry, and the system ends with
 `KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with two
 zero-length `kos_send_timed` on `KOS_CAP_STDOUT`, each bounded by `KOS_DRV_HANDOVER_PROBE_US`
-(1 s), the second completing once the driver has taken the first; a send that fails ends the
-drain, so a hung console driver delays the ending by at most 2 s and never hangs it. It then
+(1 s). A zero-length send to a console driver is a flush: the driver goes back to its receive
+only once its TX ring and the device's transmit path have drained, as far as the device can
+tell. That is the last stop bit leaving the pin on every UART, and on USB the host's
+acknowledgement of the last packet, a transfer ending on a full packet closed by a zero-length one. The driver bounds that wait itself, well under the probe, and goes back to its receive
+with bytes left rather than hang on a stuck device. So the second send is taken only once the
+first flush is over, and the last line has reached the wire before `kos_shutdown`. A send that
+fails ends the drain, so a hung console driver delays the ending by at most 2 s and never hangs
+it. It then
 calls `kos_shutdown(status)`, which its `KOS_AUTH_SYSTEM` allows. Nothing is torn down first, so
 no thread is classified as app or infrastructure. Admission refuses `restart` on the ending task.
 `kickos_main` is `exit(main(argc, argv))` running as the entry thread, so `main`'s return ends the
@@ -320,7 +326,7 @@ A step that fails narrows the init's capability the same way before it prints or
 `kickos::emit` is a blocking send on index 0, which parks while a WAIT holder exists with no
 receiver, so the init would otherwise park on its own endpoint. `console_handover_finish`
 narrows given an instance; on a service list it closes the capability, as
-`user/apps/common/drvdeath/main.cc` and `tests/unit/drvbringup/bringup_unwind.cc` expect.
+`tests/unit/drvbringup/bringup_unwind.cc` expects.
 
 A driver that dies before step 3, or a start that fails before its receiver exists, is reclaimed
 when the init drops its receive right, the last WAIT going, so the kernel console comes back; a
@@ -366,7 +372,8 @@ The status grant is a grant kind of its own, `status`, named `/init/status`, whi
 writes after `/init/events` for every task that watches. Every window-kind grant (`window`,
 `ports`, `region`, `status`) records its place in the spawn's window list in the grant's `window`
 field, which takes the reserved field after `target`. The header carries the init's priority,
-which grows it to 32 bytes. Each changes the layout, so `KICKOS_TABLE_VERSION` is 3. A packaged
+which grows it to 32 bytes. Each changed the layout, which was version 3 then; every later
+change took the next, and `KICKOS_TABLE_VERSION` is 6 with the task's `ceiling`. A packaged
 driver's grants record no window place, its `Descriptor` placing each thread's window.
 
 ## 4. The lookups

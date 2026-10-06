@@ -22,6 +22,7 @@
 // flash. See boot2.S and cmake/rp2040_checksum.py.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
@@ -31,6 +32,7 @@
 
 #include <fatal_status.ld.h>
 
+#include "board_pins.h"
 #include "irq.h"
 #include "regs/clocks.h"
 #include "regs/io_bank0.h"
@@ -196,13 +198,15 @@ namespace
         }
     }
 
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == reg::uart::BASE,
+                  "the board's console is not the UART this backend drives");
+
     void uart0_init()
     {
-        // Route GP0/GP1 to UART0 and make the pads usable (TX drives out, RX in).
-        r32(reg::io_bank0::GPIO0_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::io_bank0::GPIO1_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::pads::GPIO0 + ATOMIC_CLR) = reg::pads::OD;
-        r32(reg::pads::GPIO1 + ATOMIC_SET) = reg::pads::IE;
+        r32(reg::io_bank0::gpio_ctrl(KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
+        r32(reg::io_bank0::gpio_ctrl(KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
+        r32(reg::pads::gpio(KICKOS_BOARD_CONSOLE_TX_BIT) + ATOMIC_CLR) = reg::pads::OD;
+        r32(reg::pads::gpio(KICKOS_BOARD_CONSOLE_RX_BIT) + ATOMIC_SET) = reg::pads::IE;
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
         r32(reg::uart::IBRD) = g_uart_ibrd;
@@ -225,6 +229,36 @@ namespace
     char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
+
+    constexpr uintptr_t led_out(bool level)
+    {
+        if (level)
+        {
+            return reg::sio::GPIO_OUT_SET;
+        }
+        return reg::sio::GPIO_OUT_CLR;
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or ((port_base) == kickos::rp2040::mmap::SIO_BASE and pin >= (first) and pin <= (last))
+    constexpr bool rp2040_pin_kernel_owned(uint32_t pin)
+    {
+        return pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT
+               or pin == KICKOS_BOARD_LED_BIT KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == kickos::rp2040::mmap::SIO_BASE and pin == (bit))
+    constexpr bool rp2040_pin_listed(uint32_t, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return rp2040_pin_kernel_owned(pin); },
+                                          rp2040_pin_listed, 1u, 30u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -255,31 +289,23 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &rp_console_backend;
 }
 
-// Kernel diagnostic LED: GP25 via SIO, active-high (NOT the Pico W CYW43 LED).
 void arch_diag_led_init(void)
 {
-    r32(reg::io_bank0::GPIO25_CTRL) = reg::io_bank0::FUNCSEL_SIO;   // funcsel = SIO
-    r32(reg::pads::GPIO25 + ATOMIC_CLR) = reg::pads::OD; // clear output-disable
-    r32(reg::sio::GPIO_OE_SET) = 1u << 25;                     // output enable
+    r32(reg::io_bank0::gpio_ctrl(KICKOS_BOARD_LED_BIT)) = reg::io_bank0::FUNCSEL_SIO;
+    r32(reg::pads::gpio(KICKOS_BOARD_LED_BIT) + ATOMIC_CLR) = reg::pads::OD;
+    r32(reg::sio::GPIO_OE_SET) = 1u << KICKOS_BOARD_LED_BIT;
 }
 
 void arch_diag_led_set(int on)
 {
     if (on)
     {
-        r32(reg::sio::GPIO_OUT_SET) = 1u << 25;
+        r32(led_out(LED_LIT)) = 1u << KICKOS_BOARD_LED_BIT;
     }
     else
     {
-        r32(reg::sio::GPIO_OUT_CLR) = 1u << 25;
+        r32(led_out(not LED_LIT)) = 1u << KICKOS_BOARD_LED_BIT;
     }
-}
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
-// or steal the diag LED. GP0/GP1 = UART0 TX/RX; GP25 = diag LED via SIO.
-static bool rp2040_pin_kernel_owned(uint32_t pin)
-{
-    return pin == 0u or pin == 1u or pin == 25u;
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). func packs the IO_BANK0 CTRL

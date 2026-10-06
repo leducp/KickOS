@@ -15,7 +15,7 @@ COMPOSITION_VERSIONS = (1,)
 COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "init", "shared", "tasks")
 INIT_FIELDS = ("priority",)
 TASK_FIELDS = (
-    "name", "entry", "driver", "stack", "priority", "core", "devices", "lines", "serves", "uses",
+    "name", "entry", "driver", "stack", "priority", "ceiling", "core", "devices", "lines", "serves", "uses",
     "maps", "watches", "authority", "accepts", "restart",
 )
 SHARED_FIELDS = ("name", "size", "cache", "partition")
@@ -111,6 +111,7 @@ class Task:
         self.nodes = {}
         self.stack = None
         self.priority = None
+        self.ceiling = None
         self.core = None
         self.device_count = 0
         self.line_names = []
@@ -208,31 +209,49 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     root = f.load(text)
     if root is None:
         return
-    top = f.fields(root, "the composition", COMPOSITION_FIELDS, ("version", "board", "stdout", "ends", "heap", "tasks"))
+    top = f.fields(root, "the composition", COMPOSITION_FIELDS, ("version", "stdout", "ends", "tasks"))
     if top is None or not f.version(top, "the composition", COMPOSITION_VERSIONS):
         return
     board = None
+    base = None
     if "board" in top:
         board, clean = find_board(f, top["board"], platform, cache, manifest)
         if not clean:
             return
+    elif manifest is not None:
+        board, clean = built_board(f, root, cache, manifest)
+        if not clean:
+            return
+        base = board_default(f.report, manifest)
+    # Whether the figures it leaves out are its build board default's, or unknown to an admission
+    # without a manifest.
+    board_less = "board" not in top and (manifest is None or base is not None)
     chip = None
     if board is not None:
         chip = board.chip
-    cluster = check_cluster(f, top, root, chip)
+    cluster = check_cluster(f, top, root, chip, base)
     accepts = []
     if "accepts" in top:
         accepts = check_accepts(f, top["accepts"], "the composition's `accepts`", COMPOSITION_LIMITATIONS)
+    elif base is not None:
+        accepts = [(name, root) for name in base.accepts]
     heap = None
     if "heap" in top:
         heap = f.integer(top["heap"], "`heap`", 32)
+    elif base is not None:
+        heap = base.heap
+    elif not board_less:
+        f.refuse(root, "form.missing", "the composition needs `heap`")
+    stack = None
+    if base is not None:
+        stack = base.stack
     init_priority, init_node = read_init(f, top)
     shared = check_shared(f, top)
     tasks = []
     if "tasks" in top:
         items = f.sequence(top["tasks"], "`tasks`")
         for index, item in enumerate(items or ()):
-            tasks.append(check_task(f, item, index, chip, cluster))
+            tasks.append(check_task(f, item, index, chip, cluster, board_less, stack))
     named = name_tasks(f, tasks)
     served = serve_endpoints(f, tasks)
     stdout = check_order(f, top, tasks, named, served, shared)
@@ -240,7 +259,7 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     if chip is not None:
         check_ownership(f, tasks, chip, cluster, board, stdout)
     if chip is not None and manifest is not None:
-        check_window_rule(f, top["board"], chip, cluster, manifest)
+        check_window_rule(f, top.get("board", root), chip, cluster, manifest)
         check_encoding(f, tasks, chip, cluster, manifest)
         needed = check_enforcement(f, root, tasks, chip, cluster, board, manifest, accepts)
         check_memory_type(f, tasks, shared, chip, cluster, manifest, accepts, needed)
@@ -305,6 +324,64 @@ def find_board(f, node, platform, cache, manifest):
         path = platform_board(f, node, name, platform)
         if path is None:
             return None, True
+    return load_board(f, path, cache)
+
+
+def built_board(f, node, cache, manifest):
+    """(the Board of the build a composition naming no board is admitted against, or None; whether
+    its board and chip files were admitted)."""
+    if manifest.descriptions is None:
+        f.refuse(node, "manifest.target",
+                 "the composition names no board and is admitted against a manifest of board `%s`, which "
+                 "names no chip and board files to admit it against" % manifest.board)
+        return None, True
+    return load_board(f, manifest.descriptions[1], cache)
+
+
+class BoardDefault:
+    """What a composition naming no board takes from its build board's default composition when it
+    states none of it: the `heap`, the `accepts`, the `cluster`, and the stack of its entry task."""
+
+    def __init__(self):
+        self.heap = None
+        self.accepts = []
+        self.cluster = None
+        self.stack = None
+
+
+def board_default(report, manifest):
+    """The BoardDefault of the default composition `manifest` names, or None where it names none or
+    the file is refused."""
+    if manifest.default is None:
+        return None
+    text = read_composition(manifest.default, report)
+    if text is None:
+        return None
+    g = File(manifest.default, report)
+    root = g.load(text)
+    if root is None:
+        return None
+    top = g.fields(root, "the composition", COMPOSITION_FIELDS, ("heap", "tasks"))
+    if top is None:
+        return None
+    base = BoardDefault()
+    if "heap" in top:
+        base.heap = g.integer(top["heap"], "`heap`", 32)
+    if "accepts" in top:
+        base.accepts = [name for name, _ in check_accepts(g, top["accepts"], "the composition's `accepts`",
+                                                          COMPOSITION_LIMITATIONS)]
+    if "cluster" in top:
+        base.cluster = g.name(top["cluster"], "`cluster`", IDENTIFIER)
+    for item in g.sequence(top["tasks"], "`tasks`") or ():
+        values = g.mapping(item, "a task")
+        if values is not None and "entry" in values and "stack" in values:
+            base.stack = g.integer(values["stack"][1], "the entry task's stack", 32)
+            break
+    return base
+
+
+def load_board(f, path, cache):
+    """(the Board the file at `path` describes, or None; whether it and its chip file were admitted)."""
     if path not in cache.boards:
         try:
             with open(path, encoding="utf-8") as stream:
@@ -355,8 +432,9 @@ def platform_board(f, node, name, platform):
     return found[0]
 
 
-def check_cluster(f, top, root, chip):
-    """The cluster this image runs on, or None on a part that has no choice of one."""
+def check_cluster(f, top, root, chip, base):
+    """The cluster this image runs on, or None on a part that has no choice of one. A composition
+    naming no board and no cluster runs on its build board default's."""
     if chip is None:
         if "cluster" in top:
             f.name(top["cluster"], "`cluster`", IDENTIFIER)
@@ -367,6 +445,8 @@ def check_cluster(f, top, root, chip):
                      "`cluster` is for a part whose clusters each carry their own `arch`, which chip "
                      "`%s` is not" % chip.name)
         return None
+    if "cluster" not in top and base is not None and base.cluster in chip.clusters:
+        return base.cluster
     if "cluster" not in top:
         f.refuse(root, "form.missing",
                  "the composition needs `cluster`, one of chip `%s`'s %s" % (chip.name, ", ".join(chip.clusters)))
@@ -492,7 +572,9 @@ def check_shared(f, top):
     return shared
 
 
-def check_task(f, item, index, chip, cluster):
+def check_task(f, item, index, chip, cluster, board_less, base_stack):
+    """The Task `item` declares; where `board_less`, an entry task stating no `stack` takes
+    `base_stack`."""
     task = Task(index, item)
     values = f.fields(item, "task %d" % (index + 1), TASK_FIELDS, ("name", "priority"))
     if values is None:
@@ -520,8 +602,10 @@ def check_task(f, item, index, chip, cluster):
                      "and KICKOS_ names its headers declare" % (what, task.entry_name))
             task.entry_name = None
         task.entry = task.entry_name is not None
-        if "stack" not in values and "driver" not in values:
+        if "stack" not in values and "driver" not in values and not board_less:
             f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `stack`" % what)
+        elif "stack" not in values and "driver" not in values:
+            task.stack = base_stack
     if "driver" in values and "entry" not in values:
         task.driver = f.name(values["driver"], "%s driver" % what, IDENTIFIER)
     elif "driver" in values:
@@ -540,6 +624,18 @@ def check_task(f, item, index, chip, cluster):
         task.stack = f.integer(values["stack"], "%s stack" % what, 32)
     if "priority" in values:
         task.priority = f.integer(values["priority"], "%s priority" % what, 8)
+    if "ceiling" in values and "driver" in values and "entry" not in values:
+        f.refuse(values["ceiling"], "form.inapplicable",
+                 "%s runs a packaged driver, whose ceiling is its priority plus its threads' highest "
+                 "offset, so it has no `ceiling`" % what)
+    elif "ceiling" in values:
+        task.ceiling = f.integer(values["ceiling"], "%s ceiling" % what, 8)
+        if task.ceiling is not None and task.priority is not None and task.ceiling < task.priority:
+            f.refuse(values["ceiling"], "scheduling.ceiling",
+                     "%s ceiling %d is below its priority %d, which its entry thread runs at"
+                     % (what, task.ceiling, task.priority))
+    elif "entry" in values and "driver" not in values:
+        f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `ceiling`" % what)
     if "core" in values:
         core = f.integer(values["core"], "%s core" % what, 16)
         if core is not None and core >= CORES:

@@ -91,9 +91,12 @@ memory:
     link: { region: RAM, access: rwx }
     ref: "Table 7-2 Memory Map, p.7-4"
 
-# Pins are PORT.PIN. A function is what the pin's IOCR selects; `in:` names an input path.
+# Pins are PORT.PIN. A function is what the pin's IOCR selects; `in:` names an input path, and
+# its `input_select` is the DXnCR.DSEL value that picks the pin, DXnA being 0.
 pins:
   P1.5: { alt2: usic0.ch0.dout0, gpio: port.1.5 }
-  P1.4: { in: usic0.ch0.dx0b, gpio: port.1.4 }
+  P1.4:
+    in: { function: usic0.ch0.dx0, input_select: 1, ref: "DX0B, DXnCR.DSEL, p.18-173" }
+    gpio: port.1.4
   P5.8: { gpio: port.5.8 }
   P5.9: { gpio: port.5.9 }

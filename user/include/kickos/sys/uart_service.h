@@ -74,6 +74,11 @@ struct Shared
     // its only writer. Zero, so BLOCKING: a UART drains whether or not anything is
     // listening. A transport whose consumer may never exist must seat KOS_UART_F_NONBLOCK.
     Atomic<uint32_t, Order::RELAXED> mode;
+    // The flush handshake: the service thread writes flush_req, the IRQ thread flush_ack.
+    // RELAXED suffices because a request is raised only once the ring is empty, and only the
+    // IRQ thread empties it.
+    Atomic<uint32_t, Order::RELAXED> flush_req;
+    Atomic<uint32_t, Order::RELAXED> flush_ack;
     uint8_t tx_buf[KOS_UART_TX_SIZE];
     uint8_t rx_buf[KOS_UART_RX_SIZE];
 };
@@ -144,6 +149,37 @@ inline void dev_shutdown(Uart*)
 {
 }
 
+// Drain the device's transmit path: kos_uart_flush, as strong as its backend states. Declared
+// ahead of the template for the same reason as irq_pass.
+int32_t dev_flush(struct kos_uart* dev);
+
+// Pairs with the irq_pass arm above: such a backend's pass hands its bytes to the host
+// synchronously, so nothing is left in flight once the ring is empty.
+template <typename Uart>
+inline int32_t dev_flush(Uart*)
+{
+    return 0;
+}
+
+// The IRQ thread's half of the flush handshake, run after each pass. `*seen` is the last
+// request this thread attempted, so a device whose flush fails costs one attempt per
+// request rather than one per wake. Returns whether a request was attempted.
+template <typename Uart>
+bool flush_answer(Uart& dev, Shared* sh, uint32_t* seen)
+{
+    uint32_t const req = sh->flush_req;
+    if (req == *seen or kos_byte_ring_used(&sh->tx) != 0u)
+    {
+        return false;
+    }
+    *seen = req;
+    if (dev_flush(&dev) == 0)
+    {
+        sh->flush_ack = req;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------------
 // The IRQ thread. It alone touches the device.
 template <typename Uart>
@@ -159,6 +195,8 @@ void irq_loop(Uart& dev, Shared* sh)
         return;
     }
     sh->ready = 1;
+    // Seeded from the ack: a request raised before this thread's first wait is still pending.
+    uint32_t flush_seen = sh->flush_ack;
     int waited = 0;
     while (true)
     {
@@ -176,7 +214,9 @@ void irq_loop(Uart& dev, Shared* sh)
         uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         irq_pass(&dev, sh);
-        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work)
+        bool const flushed = flush_answer(dev, sh, &flush_seen);
+        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work
+            and not flushed)
         {
             // A doorbell with an empty ring, or a stray raise.
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
@@ -229,16 +269,26 @@ void irq_thread(Ctx* ctx, UartParams const& p)
     irq_loop(dev, &ctx->sh); // parks in irq_wait; never returns
 }
 
+// The single-thread polled console over the UART class: plain sends only, each byte polled
+// out, a zero-length send answered by kos_uart_flush. Flushes and closes the device, then
+// returns, once the endpoint dies.
+void polled_console_loop(struct kos_uart* dev);
+
 // ---------------------------------------------------------------------------------
+// The service thread's flush: the ring, then the device's transmit path through the IRQ
+// thread, each stage bounded by the console::flush budget. Returns 0 once both drained,
+// -KOS_EBUSY when either budget expired first, the IRQ thread being dead included.
+int32_t flush(Shared* sh);
+
 // The request side of the console is <kickos/sys/console_service.h>. This is what a UART
 // changes about it: a UART drains whether or not anything is listening, so no mode bit is
 // required and a blocking write is honourable; bytes leave the ring into the device's own
-// FIFO and shift register, which `kos_uart_flush` drains on close and no ring test can see,
-// so there is no in-flight count to wait on; and no TX loss is counted outside the ring.
+// FIFO and shift register, which only the IRQ thread can drain; and no TX loss is counted
+// outside the ring.
 struct Transport
 {
     static constexpr uint32_t MODE_REQUIRED = 0u;
-    static Atomic<uint32_t, Order::RELAXED> const* inflight(Shared*) { return nullptr; }
+    static int32_t flush(Shared* sh) { return uart::flush(sh); }
     static uint32_t tx_lost(Shared const*) { return 0u; }
 };
 

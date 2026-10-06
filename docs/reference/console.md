@@ -494,6 +494,17 @@ refusing costs the caller an error, ignoring costs it the system.
 | `KOS_UART_SET_MODE` | the write policy below |
 | `KOS_UART_CONFIGURE` | refused `-KOS_ENOSYS` where the device belongs to another thread |
 
+**A zero-length plain send is a flush.** The driver goes back to its receive only once its TX
+ring and the device's transmit path have drained, so a sender knows its earlier bytes have left
+when its next send on the endpoint is taken. The init ends the system on exactly that, with two
+zero-length sends ([design-m10-target.md](../design-m10-target.md), section 1.5). Drained is as
+strong as the device allows: the last stop bit on every UART, and the host's acknowledgement of
+the last bulk IN packet on USB CDC, where a transfer ending on a full packet is closed by a
+zero-length one. The wait is bounded inside the driver, so a device that never drains costs that bound and
+never the endpoint. In a two-thread driver only the IRQ thread may touch the device, so the
+service thread drains the ring, then asks the IRQ thread for the device's half through the shared
+block and waits for its answer under the same bound.
+
 ### `KOS_UART_SET_MODE` and the write policy
 
 `req.flags` carries `kos_uart_flags`. `KOS_UART_F_NONBLOCK` is `O_NONBLOCK` **for the

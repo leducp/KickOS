@@ -2801,6 +2801,138 @@ namespace selftest
         TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_BALANCE, 0) == 0);
     }
 
+    // The kernel's maintenance of its cacheable view of a non-cacheable block, counted for a map
+    // and for IPC into and out of it; a cacheable block costs none.
+#if defined(__riscv)
+    constexpr uint64_t UA_PER = 0; // the PMAs type a frame for the kernel's view too
+#else
+    constexpr uint64_t UA_PER = 1;
+#endif
+    constexpr size_t UA_LEN = 16;
+    constexpr uint32_t UA_BLK = 128;
+    constexpr int UA_ROUNDS = 3;
+    constexpr uint32_t UA_US = 500000;
+    constexpr int CH_UA_EP = 2;
+    unsigned char* g_ua_dst[UA_ROUNDS] = {};
+    Atomic<int32_t, Order::RELAXED> g_ua_got[UA_ROUNDS];
+    void ua_receiver(void*) // caps: done@1, E(WAIT)@2
+    {
+        for (int r = 0; r < UA_ROUNDS; r++)
+        {
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, CH_UA_EP, KOS_RECV_NO_INFO, UA_US);
+            g_ua_got[r] = kos_reply_recv(KOS_CAP_NONE, g_ua_dst[r],
+                                         kos_call_lens_pack(0, UA_LEN), &o);
+            kos_sem_post(CH_DONE);
+        }
+    }
+    uint64_t ua_syncs()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_ALIAS_SYNCS, 0);
+    }
+    void t_uncached_alias_sync()
+    {
+        settle_exits();
+        if (kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) == 0)
+        {
+            tap::skip("this backend honours no non-cacheable type");
+            return;
+        }
+        unsigned char* const unc = static_cast<unsigned char*>(kos_ram_alloc(UA_BLK));
+        unsigned char* const cac = static_cast<unsigned char*>(kos_ram_alloc(UA_BLK));
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (unc == nullptr or cac == nullptr or kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("no reservation or endpoint left for the pair");
+            return;
+        }
+        uint64_t const at_cac = ua_syncs();
+        TAP_CHECK(kos_mem_self_grant(cac, UA_BLK, 0) == 0);
+        uint64_t const at_unc = ua_syncs();
+        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE) == 0);
+        uint64_t const mapped = ua_syncs();
+        tap::diag("alias syncs: cacheable map %lu, non-cacheable map %lu",
+                  static_cast<unsigned long>(at_unc - at_cac),
+                  static_cast<unsigned long>(mapped - at_unc));
+        TAP_CHECK(at_unc - at_cac == 0);
+        TAP_CHECK(mapped - at_unc == UA_PER);
+        for (size_t i = 0; i < UA_LEN; i++)
+        {
+            cac[UA_LEN * 2 + i] = static_cast<unsigned char>(0x40u + i);
+            unc[UA_LEN * 2 + i] = static_cast<unsigned char>(0x80u + i);
+        }
+        unsigned char const* const src[UA_ROUNDS] = {cac + UA_LEN * 2, unc + UA_LEN * 2,
+                                                     cac + UA_LEN * 2};
+        g_ua_dst[0] = unc;
+        g_ua_dst[1] = cac;
+        g_ua_dst[2] = cac + UA_LEN * 4;
+        uint64_t const want[UA_ROUNDS] = {2u * UA_PER, UA_PER, 0u};
+        for (int r = 0; r < UA_ROUNDS; r++)
+        {
+            g_ua_got[r] = 99;
+        }
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_WAIT}};
+        if (not kos::thread::create_caps(ua_receiver, nullptr, "uarcv", TAP_PRIO_PARKS, caps, 2,
+                                         KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                         KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE)
+                    .valid())
+        {
+            (void)kos_handle_close(ep);
+            tap::skip("thread pool too small for the receiver");
+            return;
+        }
+        for (int r = 0; r < UA_ROUNDS; r++)
+        {
+            uint64_t const before = ua_syncs();
+            int32_t const sent = kos_send_timed(ep, src[r], UA_LEN, UA_US);
+            wait_n(1);
+            uint64_t const copied = ua_syncs() - before;
+            tap::diag("round %d: sent %ld, received %ld, alias syncs %lu", r,
+                      static_cast<long>(sent), static_cast<long>(g_ua_got[r].load()),
+                      static_cast<unsigned long>(copied));
+            TAP_CHECK(sent == static_cast<int32_t>(UA_LEN));
+            TAP_CHECK(g_ua_got[r].load() == static_cast<int32_t>(UA_LEN));
+            TAP_CHECK(copied == want[r]);
+            bool same = true;
+            for (size_t i = 0; i < UA_LEN; i++)
+            {
+                if (g_ua_dst[r][i] != src[r][i])
+                {
+                    same = false;
+                }
+            }
+            TAP_CHECK(same);
+        }
+        settle_exits();
+        (void)kos_handle_close(ep);
+        // Back to cacheable: the lines the kernel's reads left are stale to the new mapping.
+        uint64_t const at_back = ua_syncs();
+        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, 0) == 0);
+        uint64_t const back = ua_syncs() - at_back;
+        tap::diag("alias syncs: retype to cacheable %lu", static_cast<unsigned long>(back));
+        TAP_CHECK(back == UA_PER);
+        // A frame capability's run outlives its non-cacheable leaf, so the unmap owes it too.
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
+        uintptr_t const fva = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0);
+        TAP_CHECK(seed != 0 and fva != 0);
+        if (seed != 0 and fva != 0)
+        {
+            kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+            kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+            uint64_t const c0 = ua_syncs();
+            TAP_CHECK(kos_frame_map(fcap, acap, fva, KOS_MEM_NOCACHE) == 0);
+            uint64_t const c1 = ua_syncs();
+            TAP_CHECK(kos_frame_unmap(fcap, acap, fva) == 0);
+            uint64_t const c2 = ua_syncs();
+            (void)kos_handle_close(fcap);
+            (void)kos_handle_close(acap);
+            tap::diag("alias syncs: frame map %lu, frame unmap %lu",
+                      static_cast<unsigned long>(c1 - c0), static_cast<unsigned long>(c2 - c1));
+            TAP_CHECK(c1 - c0 == UA_PER);
+            TAP_CHECK(c2 - c1 == UA_PER);
+        }
+    }
+
     // New processes copy the saved startup globals, never a live process's mutable data.
     volatile uint64_t g_dt_word = 0xC0FFEEull;
     constexpr uint64_t DT_A = 0xC0FFEEull;

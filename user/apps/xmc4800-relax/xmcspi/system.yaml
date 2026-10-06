@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+stdout: kernel
+ends: xmcspi
+
+tasks:
+  - name: xmcspi
+    entry: xmcspi_main
+    priority: 10
+    ceiling: 10
+    devices: [/dev/usic0/ch1]
+    lines: { irq: /dev/usic0/sr1 }

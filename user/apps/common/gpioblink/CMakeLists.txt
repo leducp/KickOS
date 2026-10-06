@@ -1,30 +1,19 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# A bring-up main grants the LED port's register block to an UNPRIVILEGED worker as a spawn
-# MMIO window; the worker toggles the pin by writing that window directly. The demo prints
-# through the C library.
+# GPIO direct-MMIO demo on the board's user LED, its port's window and `pinmux` granted by its
+# composition. The parent builds it on the two boards whose GPIO layout main.cc carries.
 add_executable(gpioblink main.cc)
-target_link_libraries(gpioblink PRIVATE kickos)
+kickos_app_system(gpioblink COMPOSITION systems/${KICKOS_BOARD}.yaml)
 kickos_emit_image(gpioblink)
-
-# Demo pin per board (matches system/init/<board>/pinmap.cc); 5,8 is harmless where no layout
-# is known.
 if(KICKOS_BOARD STREQUAL "frdmk64f")
-  set(_gpioblink_port 1)   # PTB21 = blue LED (muxed ALT1 = GPIO by the K64F pin-map)
-  set(_gpioblink_pin 21)
-else()
-  set(_gpioblink_port 5)   # xmc4800-relax: P5.8 = LED2; also the harmless default elsewhere
-  set(_gpioblink_pin 8)
-endif()
-target_compile_definitions(gpioblink PRIVATE
-  KICKOS_GPIOBLINK_PORT=${_gpioblink_port}
-  KICKOS_GPIOBLINK_PIN=${_gpioblink_pin})
-
-# Per-chip register-layout selector: the worker drives the granted window directly, so it needs
-# the chip's port-block offsets. Any other chip compiles the park-only stub.
-if(KICKOS_CHIP STREQUAL "xmc4800")
-  target_compile_definitions(gpioblink PRIVATE KICKOS_GPIOBLINK_XMC=1)
-elseif(KICKOS_CHIP STREQUAL "mk64f")
-  target_compile_definitions(gpioblink PRIVATE KICKOS_GPIOBLINK_K64F=1)
+  # PTB21, the blue LED, at MUX ALT1 = GPIO.
+  target_compile_definitions(gpioblink PRIVATE KICKOS_GPIOBLINK_K64F=1
+    KICKOS_GPIOBLINK_PORT=1 KICKOS_GPIOBLINK_PIN=21 KICKOS_GPIOBLINK_MUX=0x100
+    KICKOS_GPIOBLINK_DEVICE="/dev/gpio/1")
+elseif(KICKOS_BOARD STREQUAL "xmc4800-relax")
+  # P5.8, LED2, at PC=0x10 = output push-pull general purpose.
+  target_compile_definitions(gpioblink PRIVATE KICKOS_GPIOBLINK_XMC=1
+    KICKOS_GPIOBLINK_PORT=5 KICKOS_GPIOBLINK_PIN=8 KICKOS_GPIOBLINK_MUX=0x10
+    KICKOS_GPIOBLINK_DEVICE="/dev/port/5")
 endif()

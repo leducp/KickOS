@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU regression gate: a root pre-publish printf must not poison a post-publish worker's
+# QEMU regression gate: main's pre-publish printf must not poison a post-publish worker's
 # stdout route. Boot initdemo on QEMU via semihosting. The console is DARK after publish, so
 # the verdict rides the EXIT STATUS: initdemo returns 0 iff the software console driver
 # received exactly the worker's payload byte count, else 1. arch_shutdown forwards that via

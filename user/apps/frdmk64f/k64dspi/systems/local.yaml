@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# One task holding DSPI0's window, muxing the bus pins the board file wires and linking the local
+# DSPI engine, clocking the bus inline with no service and no IPC.
+
+version: 1
+stdout: kernel
+ends: client
+
+tasks:
+  - name: client
+    entry: k64dspi_main
+    priority: 9
+    ceiling: 9
+    devices: [/dev/dspi0]
+    accepts: [coarse_gate, device_not_isolated]
+    authority: [pinmux]

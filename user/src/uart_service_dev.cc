@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The DEVICE-TOUCHING bodies of the buffered-UART service. Every function here calls the raw
+// The DEVICE-TOUCHING bodies of the UART services. Every function here calls the raw
 // UART class, whose implementation the LINK chooses, so folding them into uart_service.cc
 // would make the ring side undefined on a board with no UART backend. The contract for each
 // is stated at its declaration in <kickos/sys/uart_service.h>.
@@ -47,19 +47,60 @@ void dev_shutdown(struct kos_uart* dev)
     (void)kos_uart_close(dev);
 }
 
-void win_puts(struct kos_uart* dev, char const* s)
+int32_t dev_flush(struct kos_uart* dev)
 {
-    for (; *s != '\0'; s++)
+    return kos_uart_flush(dev);
+}
+
+namespace
+{
+    // On expiry the byte is dropped.
+    void put_polled(struct kos_uart* dev, uint8_t b)
     {
-        uint8_t const b = static_cast<uint8_t>(*s);
         for (uint32_t i = 0; i < KOS_UART_TX_SPIN_MAX; i++)
         {
             if (kos_uart_write(dev, &b, 1u) == 1u)
             {
-                break;
+                return;
             }
         }
     }
+}
+
+void win_puts(struct kos_uart* dev, char const* s)
+{
+    for (; *s != '\0'; s++)
+    {
+        put_polled(dev, static_cast<uint8_t>(*s));
+    }
+}
+
+void polled_console_loop(struct kos_uart* dev)
+{
+    uint8_t buf[KOS_EP_MSG_MAX];
+    struct kos_reply_recv_opts opts;
+    while (true)
+    {
+        // Info-less: a client kos_call bounces -KOS_ENOTSUP instead of minting a reply cap here.
+        kos_reply_recv_opts_init(&opts, console::KOS_CONSOLE_CAP_EP, KOS_RECV_NO_INFO,
+                                 KOS_TIMEOUT_NONE);
+        int const n =
+            kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
+        if (n < 0)
+        {
+            break;
+        }
+        if (n == 0)
+        {
+            (void)kos_uart_flush(dev);
+            continue;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            put_polled(dev, buf[i]);
+        }
+    }
+    dev_shutdown(dev);
 }
 
 }

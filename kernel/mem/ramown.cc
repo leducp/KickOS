@@ -7,6 +7,7 @@
 
 #include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
+#include <kickos/instance_local.h>
 #include <kickos/task.h> // task_handle: the owner's identity, index AND generation
 
 namespace kickos
@@ -22,7 +23,12 @@ namespace kickos
             kos_task_t owner = KOS_TASK_NONE;
         };
 
-        RamBlock g_blocks[KICKOS_RAM_OWNER_SLOTS];
+        constinit InstanceLocal<RamBlock[KICKOS_RAM_OWNER_SLOTS]> g_owners = {};
+
+        RamBlock (&blocks())[KICKOS_RAM_OWNER_SLOTS]
+        {
+            return g_owners.get();
+        }
 
         static_assert(KICKOS_RAM_OWNER_SLOTS > 0,
                       "KICKOS_RAM_OWNER_SLOTS is 0: every kos_ram_alloc on this board would "
@@ -45,7 +51,7 @@ namespace kickos
         // back, so recording after allocating would drain the arena one lost block per call
         // once the table filled.
         RamBlock* slot = nullptr;
-        for (RamBlock& b : g_blocks)
+        for (RamBlock& b : blocks())
         {
             if (b.size == 0)
             {
@@ -88,7 +94,7 @@ namespace kickos
         {
             return false; // the committed window wraps
         }
-        for (RamBlock const& b : g_blocks)
+        for (RamBlock const& b : blocks())
         {
             if (b.size == 0 or b.owner != tag)
             {
@@ -112,7 +118,7 @@ namespace kickos
         {
             return false;
         }
-        for (RamBlock& b : g_blocks)
+        for (RamBlock& b : blocks())
         {
             if (b.size == 0)
             {
@@ -129,7 +135,7 @@ namespace kickos
     bool ram_owner_extent(Task const* owner, uintptr_t addr, uintptr_t* base, size_t* size)
     {
         kos_task_t const tag = task_handle(owner);
-        for (RamBlock const& b : g_blocks)
+        for (RamBlock const& b : blocks())
         {
             if (tag != KOS_TASK_NONE and b.size != 0 and b.owner == tag and addr >= b.base
                 and addr <= b.base + (b.size - 1u))

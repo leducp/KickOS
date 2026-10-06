@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Sustained-output witness for a published USB CDC console. Without a CDC driver cap 0 is the
-# kernel console and the app measures nothing, so the parent builds it only for a service list
-# that provides one.
+# Sustained-output witness for a published USB CDC console, the packaged driver its composition
+# names as stdout. The parent builds it only where the kernel brings up the USB console's clock.
 add_executable(usbcdcwit main.cc)
-target_link_libraries(usbcdcwit PRIVATE kickos)
+kickos_app_system(usbcdcwit COMPOSITION systems/${KICKOS_BOARD}.yaml)
 kickos_emit_image(usbcdcwit)

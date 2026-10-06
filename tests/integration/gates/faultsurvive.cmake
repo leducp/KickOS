@@ -21,14 +21,10 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
             "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH} terminated)
   set_tests_properties(${_tag}_faultsurvive PROPERTIES TIMEOUT 30)
-  # The gate builds its own tree, one service-list provider linking per image; the
-  # services_none guard keeps it from registering inside the tree it configures and recursing.
-  if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-    add_test(NAME ${_tag}_faultsurvive_published
-      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_faultsurvive_pub.sh"
-              "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-    set_tests_properties(${_tag}_faultsurvive_published PROPERTIES TIMEOUT 300)
-  endif()
+  add_test(NAME ${_tag}_faultsurvive_published
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_faultsurvive_pub.sh"
+            "$<TARGET_FILE:faultsurvive_published>")
+  set_tests_properties(${_tag}_faultsurvive_published PROPERTIES TIMEOUT 60)
 else()
   kickos_add_qemu_test(TARGET faultsurvive
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"

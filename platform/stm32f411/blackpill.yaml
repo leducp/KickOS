@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the tree's boards/blackpill/include/kickos/board_wiring.h, chip_stm32f411.cc and
-# docs/flashing.md.
+# Values from docs/flashing.md. The crystal, which this file has no field for, is in
+# boards/blackpill/include/kickos/board_wiring.h.
 
 version: 1
 board: blackpill

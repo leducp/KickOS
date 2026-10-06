@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from RM0008 Table 54 and the tree's chip_stm32f103.cc and docs/flashing.md.
+# Values from RM0008 Table 54 and docs/flashing.md.
 
 version: 1
 board: bluepill-c8

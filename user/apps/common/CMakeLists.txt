@@ -4,8 +4,8 @@
 # THIS FILE SELECTS. Every app below is entered only on a posture where it applies, so no app
 # file asks whether it applies: an app declares its target and stops. What an app file may
 # still hold is a precondition that is the APP's own and carries operator instructions with it
-# (a service list that must publish a console, a knob that shapes the image), never a
-# board-level fact that is readable here.
+# (a console the kernel must own, a knob that shapes the image), never a board-level fact that
+# is readable here.
 #
 # Two board groupings recur, and both are arch/chip facts rather than lists to maintain:
 #   the four QEMU MPS2 FPGA images (an386/M4F, an505/M33, an500/M7, an385/M3) are exactly the
@@ -26,10 +26,9 @@ kickos_add_diagnostic_apps(fault panicgate specfault)
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
-  add_subdirectory(gpioblink)
   add_subdirectory(libc_exit)
   add_subdirectory(sysdefault)
-  kickos_add_diagnostic_apps(mpu_fault rootfault rootgone rootauth rebootdemo reclaimwit
+  kickos_add_diagnostic_apps(mpu_fault rootfault rootauth rebootdemo reclaimwit
                              objbudget)
 endif()
 
@@ -65,8 +64,9 @@ endif()
 if(KICKOS_TLS)
   add_subdirectory(tlsprobe)
 endif()
-# The reentrancy seat is a target-libc notion; the sim bridges to the host's.
-if(NOT KICKOS_ARCH STREQUAL "sim")
+# Built only where an emulator runs it: its only witness is a QEMU gate.
+kickos_qemu_machine("${KICKOS_BOARD}" _kos_errno_env _kos_errno_machine)
+if(NOT _kos_errno_machine STREQUAL "")
   add_subdirectory(errnoprobe)
 endif()
 # Double classification and printf through the compiler and newlib: on rxv3, whose DFPU
@@ -120,7 +120,8 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
        AND KICKOS_HAVE_MPU)
    OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
    OR KICKOS_BOARD STREQUAL "qemu-riscv64"
-   OR KICKOS_BOARD STREQUAL "qemu-x86_64")
+   OR KICKOS_BOARD STREQUAL "qemu-x86_64"
+   OR KICKOS_BOARD STREQUAL "esp32-wroom")
   add_subdirectory(cxxtest)
   add_subdirectory(cxxterm)
 endif()
@@ -153,6 +154,11 @@ if(KICKOS_BENCH)
   endif()
 endif()
 
+# --- GPIO from userspace: the two boards whose layout gpioblink carries ---------------------
+if(KICKOS_BOARD STREQUAL "frdmk64f" OR KICKOS_BOARD STREQUAL "xmc4800-relax")
+  add_subdirectory(gpioblink)
+endif()
+
 # --- Bring-up LED blink -------------------------------------------------------------------
 # An ALLOWLIST: on a chip whose arch_diag_led_set is the no-op fallback it would blink nothing
 # and read as a dead board.
@@ -169,8 +175,9 @@ if(KICKOS_BOARD STREQUAL "picopi"
   add_subdirectory(blink)
 endif()
 
-# Without a CDC driver cap 0 is the kernel console and the app measures nothing.
-if(KICKOS_SERVICE_LIST MATCHES "_usbcdc$")
+# Its composition names the board's packaged USB CDC console driver, which runs only where the
+# kernel brought the USB clock up.
+if(KICKOS_USB_CONSOLE)
   add_subdirectory(usbcdcwit)
 endif()
 

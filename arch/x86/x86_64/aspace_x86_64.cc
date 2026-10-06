@@ -59,6 +59,7 @@ namespace
     constexpr uint64_t PTE_PS = 1ull << 7;
     // Bit 7 selects PAT only in 4 KiB leaves. Larger leaves use bit 12.
     constexpr uint64_t PTE_PAT_4K = 1ull << 7;
+    constexpr uint64_t PTE_PAT_LARGE = 1ull << 12;
     constexpr uint64_t PTE_XD = 1ull << 63;
     constexpr uint64_t PTE_ADDR_MASK = 0x000ffffffffff000ull;
 
@@ -85,6 +86,10 @@ namespace
     uint64_t* g_boot_root = nullptr;
     // The top of the conventional run, which is the widest output address this port programs.
     arch_phys_addr_t g_ram_hi = 0;
+
+    // The leaf bits ARCH_MAP_NOCACHE selects under the PAT, which nothing writes after boot;
+    // all ones where the PAT cannot encode it.
+    uint64_t g_nocache_bits = ~0ull;
     uintptr_t g_user_lo = 0;
     uintptr_t g_user_hi = 0;
     unsigned g_kernel_slots = 0;
@@ -368,8 +373,10 @@ namespace
         return static_cast<uint64_t>(frame) | PTE_P | PTE_RW | PTE_US;
     }
 
-    // Walk any leaf size. Leave *pa unchanged on failure.
-    bool resolve(uint64_t const* root, uintptr_t va, arch_phys_addr_t* pa)
+    // Walk any leaf size. Leave *pa unchanged on failure. A non-null `type` receives the
+    // leaf's memory-type bits in their 4 KiB positions.
+    __attribute__((always_inline)) inline bool walk(uint64_t const* root, uintptr_t va,
+                                                    arch_phys_addr_t* pa, uint64_t* type)
     {
         uint64_t const* table = root;
         for (int level = static_cast<int>(g_levels); level >= LEVEL_LEAF; level--)
@@ -385,11 +392,34 @@ namespace
                 // gives the leaf's base and the offset inside it comes from `va`.
                 uintptr_t const inside = va & (span_at(level) - 1);
                 *pa = pte_pa(desc) + static_cast<arch_phys_addr_t>(inside & ~(GRANULE - 1));
+                if (type != nullptr)
+                {
+                    uint64_t bits = desc & (PTE_PWT | PTE_PCD);
+                    if (level == LEVEL_LEAF)
+                    {
+                        bits |= desc & PTE_PAT_4K;
+                    }
+                    else if ((desc & PTE_PAT_LARGE) != 0)
+                    {
+                        bits |= PTE_PAT_4K;
+                    }
+                    *type = bits;
+                }
                 return true;
             }
             table = table_at(pte_pa(desc));
         }
         return false;
+    }
+
+    bool resolve(uint64_t const* root, uintptr_t va, arch_phys_addr_t* pa)
+    {
+        return walk(root, va, pa, nullptr);
+    }
+
+    bool resolve_typed(uint64_t const* root, uintptr_t va, arch_phys_addr_t* pa, uint64_t* type)
+    {
+        return walk(root, va, pa, type);
     }
 
     // Return a 4 KiB leaf or null. This editor cannot split large leaves.
@@ -686,6 +716,12 @@ namespace kickos::x86_64
         if ((efer & EFER_NXE) == 0)
         {
             write_msr(MSR_EFER, efer | EFER_NXE);
+        }
+
+        uint64_t nocache = 0;
+        if (memtype_bits(ARCH_MAP_NOCACHE, &nocache))
+        {
+            g_nocache_bits = nocache;
         }
 
         g_boot_root = table_at(static_cast<arch_phys_addr_t>(read_cr3() & PTE_ADDR_MASK));
@@ -1192,7 +1228,7 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
 {
     if (space == nullptr)
     {
@@ -1206,8 +1242,9 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     uintptr_t const off = va & static_cast<uintptr_t>(GRANULE - 1);
     arch_irq_state_t const s = arch_irq_save();
     arch_phys_addr_t frame = 0;
-    bool const mapped = resolve(root_of(space), va & ~static_cast<uintptr_t>(GRANULE - 1),
-                                &frame);
+    uint64_t type = 0;
+    bool const mapped = resolve_typed(root_of(space),
+                                      va & ~static_cast<uintptr_t>(GRANULE - 1), &frame, &type);
     bool reachable = false;
     if (mapped)
     {
@@ -1217,6 +1254,10 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
     if (not reachable)
     {
         return nullptr;
+    }
+    if (uncached != nullptr)
+    {
+        *uncached = type == g_nocache_bits;
     }
     return reinterpret_cast<void*>(static_cast<uintptr_t>(frame) + off);
 }

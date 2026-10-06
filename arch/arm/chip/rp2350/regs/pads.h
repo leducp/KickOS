@@ -17,8 +17,6 @@ namespace kickos::rp2350::reg::pads
     // GPIOn = PADS_BANK0_BASE + 0x04 + n*0x04.
     constexpr uintptr_t GPIO_BASE = mmap::PADS_BANK0_BASE + 0x04u;
     constexpr uintptr_t GPIO_STRIDE = 0x04u;
-    constexpr uintptr_t GPIO4 = mmap::PADS_BANK0_BASE + 0x14u;
-    constexpr uintptr_t GPIO5 = mmap::PADS_BANK0_BASE + 0x18u;
 
     constexpr uintptr_t gpio(uint32_t n) { return GPIO_BASE + n * GPIO_STRIDE; }
 

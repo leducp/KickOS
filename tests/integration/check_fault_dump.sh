@@ -24,11 +24,11 @@
 # bounded in-order match would have to guess at.
 #
 # Which marker/status PAIR is right is a property of the backend, so the caller passes it in.
-# `fault` runs its illegal instruction from root, and
-# root is unprivileged in every posture, so a backend that opted into fault isolation
-# kills the thread ("THREAD FAULT", KOS_EXIT_FAULT) where the others panic ("HARD
-# FAULT" / "SIM FAULT" / "RISC-V TRAP", 132 from kfault_terminate). Root is the only
-# live thread here, so exit_current still ends the process either way.
+# `fault` runs its illegal instruction from main, the default composition's task, which is
+# unprivileged in every posture, so a backend that opted into fault isolation kills the
+# thread ("THREAD FAULT", KOS_EXIT_FAULT, which ends main's task and the system through the
+# init) where the others panic ("HARD FAULT" / "SIM FAULT" / "RISC-V TRAP", 132 from
+# kfault_terminate).
 #
 # Coverage: the sim is the one wired target that ARMS a console ring, so it is the armed-ring
 # path this gate witnesses; the other wired targets are polled semihosting. The ring-arming

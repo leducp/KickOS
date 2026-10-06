@@ -41,6 +41,7 @@ tasks:
     entry: sensor_main
     stack: 4096
     priority: 9
+    ceiling: 9
     serves: /svc/sensor
     restart: { max: 2 }
 
@@ -48,12 +49,14 @@ tasks:
     entry: slow_main
     stack: 4096
     priority: 9
+    ceiling: 9
     serves: /svc/slow
 
   - name: mid
     entry: mid_main
     stack: 4096
     priority: 8
+    ceiling: 8
     uses: [/svc/sensor]
     serves: /svc/mid
     restart: { max: 1 }
@@ -62,28 +65,31 @@ tasks:
     entry: late_main
     stack: 4096
     priority: 8
+    ceiling: 8
     uses: [/svc/sensor, /svc/slow]
 
   - name: top
     entry: top_main
     stack: 4096
     priority: 7
+    ceiling: 7
     uses: [/svc/mid]
 
   - name: watcher
     entry: watcher_main
     stack: 4096
     priority: 10
+    ceiling: 10
     watches: [sensor, mid, top, late]
 """
 
 
 # A client of seven servers on a kernel build that delegates eight capabilities at a spawn, past
 # the six of the host build the tests compile the walk for.
-WIDE = "".join("  - name: s%d\n    entry: sensor_main\n    stack: 4096\n    priority: 9\n    serves: /svc/s%d\n\n"
+WIDE = "".join("  - name: s%d\n    entry: sensor_main\n    stack: 4096\n    priority: 9\n    ceiling: 9\n    serves: /svc/s%d\n\n"
                % (n, n) for n in range(7))
 WIDE = (CHAIN[:CHAIN.index("tasks:\n")] + "tasks:\n" + WIDE + "  - name: wide\n    entry: app_main\n    stack: 4096\n"
-        "    priority: 8\n    uses: [%s]\n" % ", ".join("/svc/s%d" % n for n in range(7)))
+        "    priority: 8\n    ceiling: 8\n    uses: [%s]\n" % ", ".join("/svc/s%d" % n for n in range(7)))
 WIDE_MANIFEST = MANIFESTS["qemu-x86_64.yaml"].replace("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 8\n")
 
 
@@ -124,12 +130,14 @@ tasks:
     entry: app_main
     stack: 2048
     priority: 8
+    ceiling: 8
     uses: [/svc/test]
 
   - name: watcher
     entry: health_main
     stack: 2048
     priority: 10
+    ceiling: 10
     watches: [drv]
 """
 

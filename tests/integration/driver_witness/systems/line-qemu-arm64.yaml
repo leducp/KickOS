@@ -23,4 +23,5 @@ tasks:
     entry: line_client_main
     stack: 12288
     priority: 8
+    ceiling: 8
     uses: [/svc/line]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Check that root's failed stdout send before publication does not redirect
+// Check that main's failed stdout send before publication does not redirect
 // later workers away from their valid console capability.
 // The counting console driver does not print, so exit status reports whether
 // it received the expected payload. QEMU reads the semihosting exit code.
@@ -71,12 +71,10 @@ namespace
     }
 }
 
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE);
-
 int main(int, char**)
 {
-    // The poison write: root's cap 0 is EMPTY (root predates any publish), so this send
-    // fails and falls back to the debug console. Must run BEFORE publish.
+    // The poison write: main's cap 0 is EMPTY (main was spawned before any publish), so this
+    // send fails and falls back to the debug console. Must run BEFORE publish.
     printf("[init] pre-publish\n");
     fflush(stdout);
 
@@ -88,7 +86,7 @@ int main(int, char**)
     }
 
     // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
-    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which root holds.
+    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which main's composition grants.
     if (kos_console_publish(ep) != 0)
     {
         kos::print("[initdemo] ERROR: console_publish failed\n");
@@ -108,7 +106,7 @@ int main(int, char**)
         return 2;
     }
 
-    // Drop root's own WAIT cap so the sink is the sole receiver. g_stdout_target
+    // Drop main's own WAIT cap so the sink is the sole receiver. g_stdout_target
     // holds the endpoint alive on the kernel ref, so this does not tear it down.
     kos_handle_close(ep);
 

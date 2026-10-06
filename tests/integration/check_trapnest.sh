@@ -61,8 +61,8 @@ fi
 if ! has "\[trapnest\] worker done"; then
     fail "the worker never finished its injects"
 fi
-if ! has "\[trapnest\] root ran after the worker"; then
-    fail "root never ran again, so the join never returned"
+if ! has "\[trapnest\] main ran after the worker"; then
+    fail "main never ran again, so the join never returned"
 fi
 assert_no_panic "the arm ended in a panic"
 

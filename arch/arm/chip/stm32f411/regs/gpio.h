@@ -21,9 +21,6 @@ namespace kickos::stm32f411::reg::gpio
     // MODER 2-bit field encodings.
     constexpr uint32_t MODER_OUTPUT = 0x1u; // general-purpose output
     constexpr uint32_t MODER_AF = 0x2u;     // alternate function
-
-    // AFRL/AFRH 4-bit field: USART2 pins (PA2/PA3) are AF7.
-    constexpr uint32_t AF7 = 7u;
 }
 
 #endif

@@ -1,0 +1,41 @@
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)
+[pvprobe] unprivileged probe up (granted U0C1 window 0x200)
+[pvprobe] unpriv KSCFG=0x1
+[pvprobe] baseline through the seam: pattern B
+[pvprobe] seam FDR: rc=0 wrote=0x2aa read=0x2aa exact
+[pvprobe] seam BRG: rc=0 wrote=0x2aa0000 read=0x2aa0000 exact
+[pvprobe] seam CCR: rc=0 wrote=0x4000 read=0x4000 exact
+[pvprobe] unpriv SCTR[U,PV control]: pre=0x3030100 writing 0x7070101 ...
+[pvprobe] unpriv SCTR[U,PV control]: post=0x7070101 LANDED (post == written)
+[pvprobe] unpriv FDR[PV]: pre=0x2aa writing 0x155 ...
+[pvprobe] unpriv FDR[PV]: post=0x2aa DROPPED (post == pre)
+[pvprobe] unpriv BRG[PV]: pre=0x2aa0000 writing 0x1550000 ...
+[pvprobe] unpriv BRG[PV]: post=0x2aa0000 DROPPED (post == pre)
+[pvprobe] unpriv CCR[PV]: pre=0x4000 writing 0xc001 ...
+[pvprobe] unpriv CCR[PV]: post=0x4000 DROPPED (post == pre)
+[pvprobe] pattern A through the seam (expect exact)
+[pvprobe] seam FDR: rc=0 wrote=0x155 read=0x155 exact
+[pvprobe] seam BRG: rc=0 wrote=0x1550000 read=0x1550000 exact
+[pvprobe] seam CCR: rc=0 wrote=0xc001 read=0xc001 exact
+[pvprobe] mask refusal: CCR|TBIEN rc=-22 (want -22), pre=0xc001 post=0xc001 unchanged
+[pvprobe] refusals: off-allowlist rc=-22 (want -22), unheld-window rc=-1 (want -1)
+[pvprobe] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)
+
+=== THREAD FAULT === thread 'pvprobe' killed, system continues
+  PC=0x08000def
+  ADDR=0x50004648

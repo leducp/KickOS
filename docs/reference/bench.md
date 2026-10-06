@@ -1060,6 +1060,14 @@ closed span is a board that cannot deliver an injected line, which is refused.
   `LIST_IMAGES=1 bench.sh <board>` rather than naming boards. It named them once, went two
   splits stale on two of them and named a third nowhere at all, and a fleet pass then flashed
   one image of three while reading green.
+- a board app is judged by the gate script its CMake names through `kickos_app_judge`
+  (`user/apps/CMakeLists.txt`), which configure writes beside the build as
+  `kickos-app-manifest.txt`, one `<image>|<judge>` row per app. `bench.sh` runs that script over
+  the capture unless `JUDGE` names another, and `LIST_APPS=1 bench.sh <board>` prints the rows.
+  An image other than a selftest that neither a row nor `JUDGE` judges is refused, and
+  `JUDGE=none` takes its capture unjudged. `tests/static/check_app_judges.sh` holds each judge to
+  a planted capture it passes and to damaged copies of it that it refuses, each with the token
+  its row names, and every app a board directory builds to a judge or its waiver list.
 - a board absent from the bus is REPORTED as absent. It is never silently skipped, and an
   absent board is not a pass.
 - a cycle figure is claimable only where the counter MOVED, and the capture says so or

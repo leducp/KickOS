@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Asserts kickos_default_init_run narrowed root's authority cap to this app's declared
-// mask before calling main.
+// Asserts the init spawned main with exactly the authority its composition declares,
+// [memory, system, pinmux].
 //
-// The mask below adds KOS_AUTH_PINMUX, which the fallback (KOS_AUTH_MEMORY |
-// KOS_AUTH_SYSTEM) lacks. Asserting a MISSING bit is refused would also pass with the
-// declaration ignored, so arm 1 asserts a bit only the declaration can supply.
-//
-// KOS_AUTH_SYSTEM is mandatory here: main returns, and root_entry's kos_shutdown
-// panics "root: shutdown refused" without it.
+// The board's default composition lacks KOS_AUTH_PINMUX. Asserting a MISSING bit is refused
+// would also pass with the declaration ignored, so arm 1 asserts a bit only the declaration
+// can supply.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -19,8 +16,6 @@
 #include <kickos/sys/emit.h>
 
 using kickos::emit;
-
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX);
 
 namespace
 {
@@ -58,27 +53,26 @@ namespace
 
 int main(int, char**)
 {
-    // -KOS_EPERM here means the declaration was ignored and root ran on the fallback.
-    // Any other rc is the backend answering past the authority gate.
+    // -KOS_EPERM here means the declaration did not reach the spawn. Any other rc is the
+    // backend answering past the authority gate.
     int rc = kos_pinmux_set(BAD_PORT, BAD_PIN, 0);
     report_rc("pinmux_set (declared bit)", rc);
-    check(rc != -KOS_EPERM, "declared KOS_AUTH_PINMUX survived the narrow");
+    check(rc != -KOS_EPERM, "declared KOS_AUTH_PINMUX reached the spawn");
 
     // The authority gate precedes the cap lookup, so the handle must stay bogus: a
     // -KOS_EBADF here would mean the gate let the call through to the lookup.
     rc = kos_console_publish(-1);
     report_rc("console_publish (undeclared bit)", rc);
-    check(rc == -KOS_EPERM, "undeclared KOS_AUTH_CONSOLE was dropped by the narrow");
+    check(rc == -KOS_EPERM, "undeclared KOS_AUTH_CONSOLE was not granted");
 
     // Must precede the narrow below, which drops KOS_AUTH_MEMORY. Leaks one block of
     // arch_ram_region_size(1); kos_ram_alloc never frees.
     void* mem = kos_ram_alloc(1);
     check(mem != nullptr, "declared KOS_AUTH_MEMORY reached kos_ram_alloc");
 
-    // Keeps KOS_AUTH_SYSTEM: main returns, and root_entry's kos_shutdown needs it.
     rc = kos_cap_narrow(KOS_CAP_AUTHORITY, KOS_AUTH_SYSTEM);
     report_rc("cap_narrow to KOS_AUTH_SYSTEM", rc);
-    check(rc == 0, "root narrowed its own cap further");
+    check(rc == 0, "main narrowed its own cap further");
 
     // Separates a narrow that took effect from one that returned 0 and changed nothing.
     rc = kos_pinmux_set(BAD_PORT, BAD_PIN, 0);

@@ -96,10 +96,10 @@ int main(int, char**)
 {
     kos::print("[tlsprobe] start\n");
 
-    unsigned const root_addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
+    unsigned const main_addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
     {
         char d[72];
-        ksnprintf(d, sizeof(d), "[tlsprobe] root tp %x sp %x\n", root_addr, read_sp());
+        ksnprintf(d, sizeof(d), "[tlsprobe] main tp %x sp %x\n", main_addr, read_sp());
         kos::print(d);
     }
     g_written = 0x4F4F5400u;
@@ -164,9 +164,9 @@ int main(int, char**)
             verdict = "TEMPLATE MISSING";
             bad++;
         }
-        else if (g_report[k].addr == root_addr)
+        else if (g_report[k].addr == main_addr)
         {
-            verdict = "SHARED WITH ROOT";
+            verdict = "SHARED WITH MAIN";
             bad++;
         }
         // THE BLOCK MUST BE THE ONE THIS THREAD IS STANDING ON: a thread pointer derived from SP
@@ -205,10 +205,10 @@ int main(int, char**)
     }
     if (g_written != 0x4F4F5400u)
     {
-        kos::print("[tlsprobe] ROOT COPY CLOBBERED\n");
+        kos::print("[tlsprobe] MAIN COPY CLOBBERED\n");
         bad++;
     }
-    ksnprintf(b, sizeof(b), "[tlsprobe] root addr %x read %x\n", root_addr, g_written);
+    ksnprintf(b, sizeof(b), "[tlsprobe] main addr %x read %x\n", main_addr, g_written);
     kos::print(b);
 
     if (bad == 0)
