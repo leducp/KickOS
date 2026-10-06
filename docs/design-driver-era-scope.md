@@ -122,8 +122,8 @@ the fallback and document it. Mostly **HW**. This is the MECHANISM seam only; PO
 power-manager service (G7, sections 3 and 6).
 
 ### G5. Peripheral-isolation prereqs (PARTLY CLOSED)
-- **ESP32-C6 APM/PMS global open: CLOSED.** `arch_init` (`chip_esp32c6.cc`, `apm_open_ree0`) programs
-  the REE0 background permit at boot on every board, so it is no longer per-app. That bus-side unit
+- **ESP32-C6 APM/PMS global open: CLOSED.** `arch_init` (`chip_esp32c6.cc`, `apm_program_gate`)
+  programs the gate assignment's REE0 rows at boot on every board, so it is no longer per-app. That bus-side unit
   is independent of PMP and defaults DENY-USER on peripheral targets, so a C6 userspace peripheral
   driver needs BOTH the per-thread PMP grant and the one-time global open; the register-level model
   is `reference/architecture.md` (the peripheral-MMIO matrix). An APM denial does NOT trap the way a

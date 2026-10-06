@@ -13,9 +13,9 @@
 # FIRST peer the partition names and no other.
 #
 # The peer's app announcement is also a console-contract witness: a normal claimant must
-# deliver one intact line even while other images print their own banners. The shared record
-# remains the authority for app liveness and crossings; the console can drop a line if its
-# bounded claim fails, so its contents cannot prove a peer ran.
+# deliver one intact line even while other images print their own banners. The partition region
+# every node's task maps, `/shm/ampbook`, remains the authority for app liveness and crossings;
+# the console can drop a line if its bounded claim fails, so its contents cannot prove a peer ran.
 #
 # The order in which kernels reach the UART changes each run, so a change to this gate or its
 # image owes ten green runs:
@@ -67,9 +67,9 @@ while [ "$peer" -lt "$NODES" ]; do
 done
 echo "== console: $((NODES - 1)) peer announcement(s) arrived as whole lines"
 
-# EVERY NODE'S APP RAN, on node 0's own reading of the shared record. Each node's app asks its
-# own kernel to publish the port the partition names it, biased by one; node 0 derives that port
-# from its own copy of the list and counts the rows that agree, its OWN row included as the
+# EVERY NODE'S APP RAN, on node 0's own reading of the partition region. Each node's task writes
+# the port the partition names it, biased by one, into its own row; node 0 derives that port from
+# its own copy of the list and counts the rows that agree, its OWN row included as the
 # known-value control. Which index a node carries is the partition's, so this counts rather
 # than naming one, and the total is compared against the width the partition states.
 #
@@ -77,7 +77,7 @@ alive="$(printf '%s\n' "$OUT" \
     | sed -n 's/^ampping: \([0-9]*\) of \([0-9]*\) node app(s) alive on the port the partition names, own row \([0-9]*\)$/\1 \2 \3/p' \
     | tail -1)"
 [ -n "$alive" ] || fail "node 0 never reported which nodes' apps published their own port.
-  This line is node 0's own reading of the shared record and is the only witness that an app
+  This line is node 0's own reading of the partition region and is the only witness that an app
   ran on a node this demo never calls."
 alive_ok="$(echo "$alive" | cut -d' ' -f1)"
 alive_of="$(echo "$alive" | cut -d' ' -f2)"
@@ -99,13 +99,13 @@ echo "== node apps: $alive_ok of $NODES published the port the partition names, 
 printf '%s\n' "$OUT" | grep -qE '^ampping: node [0-9]+ calls node [0-9]+ port [0-9]+$' \
     || fail "node 0 never announced the far port the partition handed it"
 
-# THE ANSWER AND NOT MERELY A WAKE, READ OUT OF THE SHARED RECORD AND NOT OFF THIS CONSOLE.
+# THE ANSWER AND NOT MERELY A WAKE, READ OUT OF THE PARTITION REGION AND NOT OFF THIS CONSOLE.
 # A peer is witnessed through a counter the OTHER node reads, never through what it printed,
 # and the per-round lines both apps still print are read by nothing here. Node 0 checks every
 # round's answer itself, the peer's own transformation of the payload, and refuses before this
-# line where one is wrong; what the line adds is the peer's OWN row, which its serving app bumps
-# ahead of every reply it sends. That row is the same record the app-alive sweep reads, under the
-# same one-writer-per-row rule.
+# line where one is wrong; what the line adds is the peer's OWN row, which its serving task
+# stores ahead of every reply it sends. That row is the same region the app-alive sweep reads,
+# under the same one-writer-per-row rule.
 cross="$(printf '%s\n' "$OUT" \
     | sed -n 's/^ampping: node \([0-9]*\) answered \([0-9]*\) round(s), its own record says \([0-9]*\)$/\1 \2 \3/p' \
     | tail -1)"

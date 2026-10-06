@@ -13,9 +13,12 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/doorbell_cells.h>
 
+#include "accessctrl_rows.h"
+#include "regs/accessctrl.h"
 #include "regs/sio_mc.h"
 
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/partition_gate.h>
 
 #include <stdint.h>
 
@@ -25,10 +28,18 @@
 
 namespace reg = kickos::rp2350::reg;
 
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
     void kickos_rp2350_doorbell_service(void);
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
+    uint32_t kickos_armv7m_probe_read(uintptr_t at, uint32_t* value);
+#endif
 }
 
 namespace
@@ -162,6 +173,66 @@ namespace
         arch_console_write(&digit, 1);
         arch_console_write(tail, tail_len);
         kfault_terminate();
+    }
+#endif
+
+#if KICKOS_AMP_OWN_IMAGE && (KICKOS_AMP_NODE_ID == 0)
+    namespace gate = reg::accessctrl;
+    namespace accessctrl = kickos::rp2350::accessctrl;
+
+    constexpr uint32_t NODE_CORE[] = KICKOS_AMP_NODE_CORE_LIST;
+    constexpr uint32_t NODE_CORE_COUNT = sizeof(NODE_CORE) / sizeof(NODE_CORE[0]);
+
+    // ACCESSCTRL is reset by the bootrom on every boot path (Table 911, CFGRESET), so the image
+    // is written on every boot. A peripheral no row names keeps its reset image, and LOCK is
+    // never written: a lock bit holds until reset (Table 912).
+    void gate_program(void)
+    {
+        uint16_t at = 0;
+        accessctrl::Refusal const refusal =
+            accessctrl::refusal_of(kickos_gate_rows, kickos_gate_row_count, NODE_CORE, NODE_CORE_COUNT, at);
+        char const* why = nullptr;
+        switch (refusal)
+        {
+            case accessctrl::Refusal::NONE:
+            {
+                break;
+            }
+            case accessctrl::Refusal::NODE:
+            {
+                why = "is granted to a node that runs on no core";
+                break;
+            }
+            case accessctrl::Refusal::REGISTER:
+            {
+                why = "is no bus access register";
+                break;
+            }
+            case accessctrl::Refusal::NEVER:
+            {
+                why = "is one no node is assigned";
+                break;
+            }
+            case accessctrl::Refusal::TWICE:
+            {
+                why = "is named by two rows";
+                break;
+            }
+        }
+        if (why != nullptr)
+        {
+            kickos::kprintf("KickOS: RP2350 ACCESSCTRL 0x%x %s\n", static_cast<unsigned>(kickos_gate_rows[at].reg),
+                            why);
+            kfault_terminate();
+        }
+        for (uint32_t i = 0; i < kickos_gate_row_count; i++)
+        {
+            kickos_gate_row const& row = kickos_gate_rows[i];
+            uintptr_t const reg_at = gate::BASE + row.reg;
+            r32(reg_at) = accessctrl::image_of(r32(reg_at), NODE_CORE[row.node]);
+            kickos::kprintf("# accessctrl: 0x%x = 0x%x\n", static_cast<unsigned>(row.reg),
+                            static_cast<unsigned>(r32(reg_at)));
+        }
     }
 #endif
 }
@@ -363,6 +434,10 @@ void arch_amp_release_peers(void)
                   "the RP2350 has two cores and one SIO FIFO pair, so a partition spanning "
                   "more cores cannot launch its peers");
 
+#if KICKOS_AMP_NODE_ID == 0
+    gate_program();
+#endif
+
     // Every write this node made for a peer, ahead of the release that lets it read them.
     __asm volatile("dsb" ::: "memory");
 
@@ -428,6 +503,30 @@ void arch_amp_release_peers(void)
             }
         }
     }
+}
+#endif
+
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE && (KICKOS_AMP_NODE_ID != 0)
+// UART0's UARTPERIPHID0: the device the ampping partition gives node 0.
+int arch_amp_gate_probe(void)
+{
+    constexpr uintptr_t AT = kickos::rp2350::mmap::UART0_BASE + 0xFE0u;
+    constexpr uint32_t UART0_REG = 0xA0u;
+    uint32_t const image = r32(reg::accessctrl::BASE + UART0_REG);
+    uint32_t got = 0;
+    uint32_t const cfsr = kickos_armv7m_probe_read(AT, &got);
+    if (cfsr != 0u)
+    {
+        kickos::kprintf("# accessctrl probe: 0x%x = 0x%x, node %u read 0x%x: fault CFSR=0x%x BFAR=0x%x\n",
+                        static_cast<unsigned>(UART0_REG), static_cast<unsigned>(image),
+                        static_cast<unsigned>(KICKOS_AMP_NODE_ID), static_cast<unsigned>(AT),
+                        static_cast<unsigned>(cfsr), static_cast<unsigned>(got));
+        return 1;
+    }
+    kickos::kprintf("# accessctrl probe: 0x%x = 0x%x, node %u read 0x%x: 0x%x\n", static_cast<unsigned>(UART0_REG),
+                    static_cast<unsigned>(image), static_cast<unsigned>(KICKOS_AMP_NODE_ID),
+                    static_cast<unsigned>(AT), static_cast<unsigned>(got));
+    return 0;
 }
 #endif
 

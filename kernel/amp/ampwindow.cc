@@ -349,18 +349,6 @@ namespace kickos
             count_up(g_counts[self()].deliver_fault);
         }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-        void app_alive_set(uint32_t mark)
-        {
-            g_counts[self()].app_alive.store(mark);
-        }
-
-        void app_served_bump(void)
-        {
-            count_up(g_counts[self()].app_served);
-        }
-#endif
-
         namespace
         {
             // A send once the ring is chosen. The ring is a parameter so the selftest forge can

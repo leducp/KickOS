@@ -18,7 +18,8 @@ TASK_FIELDS = (
     "name", "entry", "driver", "stack", "priority", "core", "devices", "lines", "serves", "uses",
     "maps", "watches", "authority", "accepts", "restart",
 )
-SHARED_FIELDS = ("name", "size", "cache")
+SHARED_FIELDS = ("name", "size", "cache", "partition")
+SHARED_REQUIRED = ("name", "size", "cache")
 AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks")
 NOT_NEEDED = {
     "no_protection": ("a build that enforces nothing or a unit `none`, and every unit here translates, "
@@ -41,6 +42,10 @@ TASK_LIMITATIONS = ("device_not_isolated", "coarse_gate", "bus_master")
 CORES = 32
 # The bits of a watcher's notification, the i-th task it watches raising bit i.
 WATCH_BITS = 32
+# The ports an /amp crossing names: the window layer carries one in a byte.
+AMP_PORTS = 256
+# The port the window layer keeps for replies, which no crossing names.
+AMP_PORT_REPLY = 1
 # KOS_TABLE_NONE, which no line of the table may be.
 LINE_NONE = 0xFFFF
 # What the emitted table's C source defines, and the prefixes its headers declare and define in.
@@ -78,8 +83,9 @@ class Line:
     def __init__(self, task, source, index, path, node):
         self.task = task
         self.source = source
-        # The line's position among its device's lines.
+        # The line's position among its device's lines, and their names in that order.
         self.index = index
+        self.device_lines = []
         self.path = path
         self.node = node
         self.name = None
@@ -126,6 +132,8 @@ class Region:
         self.size_node = None
         self.cache = None
         self.cache_node = None
+        # Whether it lives in the partition's user share.
+        self.partition = False
 
 
 class Cache:
@@ -137,7 +145,8 @@ class Cache:
 class Admitted:
     """What a composition checked against a manifest leaves for the emitter."""
 
-    def __init__(self, root, tasks, shared, ends, heap, init_priority, chip, cluster, manifest, translating):
+    def __init__(self, root, tasks, shared, ends, heap, init_priority, chip, cluster, manifest, translating,
+                 accepts):
         self.root = root
         self.tasks = tasks
         self.shared = shared
@@ -152,6 +161,10 @@ class Admitted:
         self.manifest = manifest
         # Whether each task runs in an address space of its own.
         self.translating = translating
+        # The composition's `accepts`, as (name, node).
+        self.accepts = accepts
+        # Each partition region's offset in the user share, which the partition build places.
+        self.offsets = {}
 
 
 def admit(paths, platform, manifest_path=None):
@@ -188,8 +201,9 @@ def read_composition(path, report):
         return None
 
 
-def admit_composition(path, text, platform, report, cache, manifest):
-    """The Admitted composition once every rule was checked against `manifest`, or None."""
+def admit_composition(path, text, platform, report, cache, manifest, partition=False):
+    """The Admitted composition once every rule was checked against `manifest`, or None. `partition`
+    is whether it is admitted as one node of a partition."""
     f = File(path, report)
     root = f.load(text)
     if root is None:
@@ -239,8 +253,10 @@ def admit_composition(path, text, platform, report, cache, manifest):
         init_priority = check_init_priority(f, root, init_priority, init_node, manifest)
         translating = any(unit.page is not None for view, unit in unit_views(chip, cluster))
         check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size)
+        check_ports(f, tasks, manifest)
+        check_partitioned(f, tasks, shared, manifest, partition)
         return Admitted(root, tasks, shared, top.get("ends"), heap, init_priority, chip, cluster, manifest,
-                        translating)
+                        translating, accepts)
     return None
 
 
@@ -401,8 +417,8 @@ def check_accepts(f, node, what, scope):
     return values
 
 
-def declared_path(f, node, what, space):
-    """The path `/<space>/<name>`, or None once refused."""
+def declared_path(f, node, what, space, crossing=False):
+    """The path `/<space>/<name>`, or with `crossing` an /amp/<port> path too, or None once refused."""
     path = f.path(node, what)
     if path is None:
         return None
@@ -410,11 +426,26 @@ def declared_path(f, node, what, space):
         f.refuse(node, "name.reserved", "%s `%s` is under /init, which the init alone defines" % (what, path))
         return None
     parts = path.split("/")
-    if len(parts) != 3 or parts[1] != space or not IDENTIFIER.fullmatch(parts[2]):
+    named = len(parts) == 3 and parts[1] == space and IDENTIFIER.fullmatch(parts[2])
+    if crossing and len(parts) == 3 and parts[1] == "amp":
+        named = amp_port(path) is not None
+    if not named:
+        also = ""
+        if crossing:
+            also = ", or a crossing /amp/<port>, its port a decimal below %d" % AMP_PORTS
         f.refuse(node, "name.namespace",
-                 "%s `%s` is not a path /%s/<name>, its name of the form %s" % (what, path, space, IDENTIFIER.pattern))
+                 "%s `%s` is not a path /%s/<name>, its name of the form %s%s"
+                 % (what, path, space, IDENTIFIER.pattern, also))
         return None
     return path
+
+
+def amp_port(path):
+    """The port of a crossing path /amp/<port>, or None for any other path."""
+    parts = path.split("/")
+    if len(parts) != 3 or parts[0] != "" or parts[1] != "amp":
+        return None
+    return index_below(parts[2], AMP_PORTS)
 
 
 def check_shared(f, top):
@@ -425,7 +456,7 @@ def check_shared(f, top):
     items = f.sequence(top["shared"], "`shared`")
     for n, item in enumerate(items or ()):
         what = "shared region %d" % (n + 1)
-        values = f.fields(item, what, SHARED_FIELDS, SHARED_FIELDS)
+        values = f.fields(item, what, SHARED_FIELDS, SHARED_REQUIRED)
         if values is None:
             continue
         name = None
@@ -442,6 +473,9 @@ def check_shared(f, top):
         cache = None
         if "cache" in values:
             cache = f.enum(values["cache"], "%s cache" % what, ("cached", "uncached"))
+        partition = False
+        if "partition" in values:
+            partition = f.boolean(values["partition"], "%s partition" % what) is True
         if name is None:
             continue
         region = Region(name, values["name"])
@@ -449,6 +483,7 @@ def check_shared(f, top):
         region.cache = cache
         region.cache_node = values.get("cache")
         region.size_node = values.get("size")
+        region.partition = partition
         if name in shared:
             f.refuse(values["name"], "name.duplicate",
                      "shared region `%s` is declared twice, first on line %d" % (name, line_of(shared[name].node)))
@@ -533,13 +568,18 @@ def check_task(f, item, index, chip, cluster):
                 line.name = name
                 task.lines.append(line)
     if "serves" in values:
-        path = declared_path(f, values["serves"], "%s served endpoint" % what, "svc")
+        path = declared_path(f, values["serves"], "%s served endpoint" % what, "svc", True)
+        if path is not None and amp_port(path) is not None and "driver" in values:
+            f.refuse(values["serves"], "partition.port",
+                     "%s runs a packaged driver, whose descriptor creates the endpoint it serves, so it "
+                     "serves no crossing `%s`" % (what, path))
+            path = None
         if path is not None:
             task.serves = (path, values["serves"])
     if "uses" in values:
         items = f.sequence(values["uses"], "%s uses" % what)
         for node in items or ():
-            path = declared_path(f, node, "%s used endpoint" % what, "svc")
+            path = declared_path(f, node, "%s used endpoint" % what, "svc", True)
             if path is not None:
                 task.uses.append((path, node))
         unique(f, task.uses, "%s uses" % what)
@@ -679,7 +719,9 @@ def resolve_line(f, chip, cluster, task, node, what):
                  "%s, `%s`, is source %d, past the %d the table carries a line as, %d meaning none"
                  % (what, path, source, LINE_NONE - 1, LINE_NONE))
         return None
-    return Line(task, source, list(device.sources).index(parts[-1]), path, node)
+    line = Line(task, source, list(device.sources).index(parts[-1]), path, node)
+    line.device_lines = list(device.sources)
+    return line
 
 
 def kernel_line(chip, cluster, source):
@@ -763,12 +805,18 @@ def name_tasks(f, tasks):
 
 
 def serve_endpoints(f, tasks):
+    """Each endpoint and crossing a task serves, mapped to that task."""
     served = {}
     for task in tasks:
         if task.serves is None:
             continue
         path, node = task.serves
-        if path in served:
+        if path in served and amp_port(path) is not None:
+            first = served[path]
+            f.refuse(node, "partition.port",
+                     "crossing `%s` is served by %s and by %s on line %d, and the init hands its one port "
+                     "to one server" % (path, task.label(), first.label(), line_of(first.serves[1])))
+        elif path in served:
             first = served[path]
             f.refuse(node, "name.duplicate",
                      "`%s` is served by %s and by %s on line %d"
@@ -782,6 +830,8 @@ def check_order(f, top, tasks, named, served, shared):
     """References point backward. Returns `stdout`: "kernel", its server, or None when unknown."""
     for task in tasks:
         for path, node in task.uses:
+            if amp_port(path) is not None:
+                continue
             server = served.get(path)
             if server is None:
                 f.refuse(node, "order.undeclared", "%s uses `%s`, which no task serves" % (task.label(), path))
@@ -818,6 +868,66 @@ def check_order(f, top, tasks, named, served, shared):
         f.refuse(top["stdout"], "order.undeclared", "`stdout: %s` names an endpoint no task serves" % path)
         return None
     return served[path]
+
+
+def check_ports(f, tasks, manifest):
+    """Each crossing a task serves or uses, against the partition's port list and this node's index."""
+    servers = {}
+    for node, port in manifest.amp_list:
+        servers.setdefault(port, []).append(node)
+    for task in tasks:
+        crossings = [(path, node, "uses") for path, node in task.uses]
+        if task.serves is not None:
+            crossings.insert(0, (task.serves[0], task.serves[1], "serves"))
+            if amp_port(task.serves[0]) is not None:
+                for path, node in task.uses:
+                    if path == task.serves[0]:
+                        f.refuse(node, "partition.port",
+                                 "%s uses `%s`, which it serves, so its calls would wait on its own receive"
+                                 % (task.label(), path))
+        for path, node, verb in crossings:
+            port = amp_port(path)
+            if port is None:
+                continue
+            nodes = servers.get(port, [])
+            reason = None
+            if port == AMP_PORT_REPLY:
+                reason = "port %d, which the window layer keeps for replies" % AMP_PORT_REPLY
+            elif not nodes:
+                reason = "a port the kernel build's partition list does not name"
+            elif len(nodes) > 1:
+                reason = "a port the partition list names for nodes %s, so no one node serves it" % (
+                    ", ".join(str(n) for n in nodes))
+            elif verb == "serves" and nodes[0] != manifest.amp_node:
+                reason = "which the partition list names for node %d, and this composition is node %s's" % (
+                    nodes[0], manifest.amp_node)
+            if reason is not None:
+                f.refuse(node, "partition.port", "%s %s `%s`, %s" % (task.label(), verb, path, reason))
+
+
+def check_partitioned(f, tasks, shared, manifest, partition):
+    """A partition region where the kernel build states no shared window, and on an AMP build a
+    crossing or a partition region in a composition admitted apart from its partition."""
+    for region in shared.values():
+        if region.partition and manifest.amp_window is None:
+            f.refuse(region.node, "partition.region",
+                     "partition region `%s` lives in the partition's user share, and the kernel build states no "
+                     "AMP shared window to carve one from" % region.path)
+        elif region.partition and manifest.amp_nodes is not None and not partition:
+            f.refuse(region.node, "partition.lone",
+                     "partition region `%s` is placed by the partition build, and this composition is admitted "
+                     "apart from its partition: name every node's with PARTITION" % region.path)
+    if manifest.amp_nodes is None or partition:
+        return
+    for task in tasks:
+        crossings = list(task.uses)
+        if task.serves is not None:
+            crossings.insert(0, task.serves)
+        for path, node in crossings:
+            if amp_port(path) is not None:
+                f.refuse(node, "partition.lone",
+                         "%s names crossing `%s`, which the partition build delegates, and this composition is "
+                         "admitted apart from its partition: name every node's with PARTITION" % (task.label(), path))
 
 
 def check_restart(f, top, named):
@@ -1122,6 +1232,14 @@ def nocache_support(chip, unit, manifest):
     return NOCACHE_REFUSED
 
 
+def incoherent_part(chip):
+    """Whether some two nodes of a partition of this chip can map one memory incoherently."""
+    if not chip.data_cache:
+        return False
+    every = views(chip, None)
+    return len(every) != 1 or not chip.smp.get(every[0], False)
+
+
 def check_memory_type(f, tasks, shared, chip, cluster, manifest, accepts, needed):
     master = None
     for task in tasks:
@@ -1141,6 +1259,13 @@ def check_memory_type(f, tasks, shared, chip, cluster, manifest, accepts, needed
                          % (task.label(), task.driver, view_name(chip, view)))
                 break
     for region in shared.values():
+        if (region.partition and manifest.amp_window is not None and region.cache is not None
+                and region.cache != manifest.amp_share_cache):
+            f.refuse(region.cache_node, "partition.region",
+                     "partition region `%s` is `%s`, and the partition's user share it lives in is `%s`, the one "
+                     "memory type every mapping of it carries" % (region.path, region.cache, manifest.amp_share_cache))
+        if region.partition and region.cache == "cached" and incoherent_part(chip):
+            needed.add("cached_incoherent")
         if region.cache == "uncached":
             for view, unit in unit_views(chip, cluster):
                 if nocache_support(chip, unit, manifest) == NOCACHE_REFUSED:

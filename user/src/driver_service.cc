@@ -153,7 +153,7 @@ void drop_minted(kos_cap_t* minted)
 }
 
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, uint16_t line0_index,
+                              kos_cap_t ep, kos_cap_t const* line, LineIndex line0_index,
                               kos_cap_t note, kos_task_t task, uint32_t core_mask, bool under_init)
 {
     kos_cap_grant grants[KOS_DRV_CAPS_MAX] = {};
@@ -318,7 +318,8 @@ int instance_admits(Descriptor const& d, struct kos_service_cfg const* cfg, stru
     }
     if (in.line_count != d.line_count)
     {
-        return instance_failed(d, in, line, 0, note, "ERROR: the table's lines are not as many as this driver's roles\n");
+        return instance_failed(d, in, line, 0, note,
+                               "ERROR: the table's lines are not as many as this driver's roles\n");
     }
     return 0;
 }
@@ -417,8 +418,9 @@ int instance_bring_up(Descriptor const& d, struct kos_service_cfg const* cfg,
         {
             break;
         }
-        kos::thread::Handle const h = spawn_one(d.threads[i], cfg, in.block, in.endpoint, line, in.lines[0].index,
-                                                note, task, in.core_mask, true);
+        LineIndex const index{in.lines[0].index};
+        kos::thread::Handle const h =
+            spawn_one(d.threads[i], cfg, in.block, in.endpoint, line, index, note, task, in.core_mask, true);
         if (not h.valid())
         {
             return instance_failed(d, in, line, claimed, note, "ERROR: driver thread spawn failed\n");
@@ -642,7 +644,8 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         {
             break;
         }
-        if (not spawn_one(d.threads[i], cfg, blk, ep, line, d.lines[0].index, note, task, 0u, false).valid())
+        LineIndex const index{d.lines[0].index};
+        if (not spawn_one(d.threads[i], cfg, blk, ep, line, index, note, task, 0u, false).valid())
         {
             unwind(line, claimed, ep, note, task);
             return fail(d.tag, "ERROR: driver thread spawn failed\n");

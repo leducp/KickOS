@@ -122,6 +122,7 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "qemu-riscv64"
    OR KICKOS_BOARD STREQUAL "qemu-x86_64")
   add_subdirectory(cxxtest)
+  add_subdirectory(cxxterm)
 endif()
 
 # --- Telemetry ----------------------------------------------------------------------------

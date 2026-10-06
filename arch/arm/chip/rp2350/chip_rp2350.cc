@@ -614,6 +614,24 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
+// Must stay in this TU: arch_init anchors it here, and anywhere else the arch/common fallback
+// resolves the call first and the link still succeeds.
+//
+// UART0's RESET_DONE asserts only while clk_peri runs (datasheet 7.5, Table 535).
+int arch_periph_enable(uintptr_t base)
+{
+    if (base != kickos::rp2350::mmap::UART0_BASE)
+    {
+        return -KOS_EINVAL;
+    }
+    r32(reg::resets::RESET + ATOMIC_CLR) = reg::resets::UART0;
+    if (not wait_mask(reg::resets::RESET_DONE, reg::resets::UART0))
+    {
+        return -KOS_EIO;
+    }
+    return 0;
+}
+
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Reboot into BOOTSEL (firmware-download) mode via the bootrom `reboot` entry. The
 // header differs from the RP2040's: the magic third byte is 0x02, and the Arm lookup

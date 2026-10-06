@@ -1508,45 +1508,6 @@ namespace selftest
         // partition never re-enters this window.
     }
 
-    // --- A node's own app declaring itself into the record every node shares ----------------
-    // The one field of a window row that moves without traffic.
-    //
-    // The kernel derives the row from the core it runs on and the value from the partition list,
-    // so no caller can speak for a peer or record another port.
-    void t_amp_app_alive()
-    {
-        uint32_t const port = amp_local_port();
-        if (port == KOS_AMP_NO_ENTRY)
-        {
-            tap::skip("the partition names this node no port to publish");
-            return;
-        }
-        // Every row before the write, so the rows that must not move are compared across it.
-        int64_t before[KICKOS_AMP_NODES];
-        for (uint32_t row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
-        {
-            before[row] = amp_count(KOS_AMP_OP_APP_ALIVE, row);
-            TAP_CHECK(before[row] >= 0);
-        }
-        // A port the list does not name for this node is refused before the row moves.
-        TAP_CHECK(static_cast<intptr_t>(kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port + 1u)) < 0);
-        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, AMP_SELF_ROW) == before[AMP_SELF_ROW]);
-        // Biased by one, so a node named port 0 differs from one that never published.
-        TAP_CHECK(kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port) == 0);
-        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, AMP_SELF_ROW)
-                  == static_cast<int64_t>(port) + 1);
-        for (uint32_t row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
-        {
-            if (row == (uint32_t)AMP_SELF_ROW)
-            {
-                continue;
-            }
-            TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, row) == before[row]);
-        }
-        // A row outside the built width answers zero, so a reader may sweep a fixed count.
-        TAP_CHECK(amp_count(KOS_AMP_OP_APP_ALIVE, KICKOS_AMP_NODES) == 0);
-    }
-
     // --- A far caller answered through the ordinary reply call -----------------------------
     // kos_reply on a capability naming a far caller's record puts exactly one publication on
     // the peer's reply ring, and the capability is spent whatever the outcome.
@@ -1713,14 +1674,16 @@ namespace selftest
 
     // --- Whose table the partition seated, and whose the forge answers ---------------------
     // The partition's capabilities live in root's table, so their index names something else
-    // in another task; and KOS_AMP_OP_FORGE answers root's task alone, root's workers included.
+    // in another task; and KOS_AMP_OP_FORGE answers root's task alone, root's workers included,
+    // where AUTH_SYSTEM admits KOS_AMP_OP_DEFER and no mutating op.
     enum
     {
         AG_RAN = 0,
         AG_PORT_CAP = 1,
         AG_FORGE = 2,
         AG_ROUND = 3,
-        AG_WORDS = 4
+        AG_DEFER = 4,
+        AG_WORDS = 5
     };
     void amp_gate_worker(void* arg) // caps: done@1
     {
@@ -1734,6 +1697,8 @@ namespace selftest
             kos_amp_probe(KOS_AMP_OP_FORGE, KOS_AMP_FORGE_WELL_FORMED))));
         out[AG_ROUND] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<intptr_t>(
             kos_amp_probe(KOS_AMP_OP_ROUND, amp_round_peer()))));
+        out[AG_DEFER] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<intptr_t>(
+            kos_amp_probe(KOS_AMP_OP_DEFER, 0))));
         out[AG_RAN] = 1u;
         kos_sem_post(CH_DONE);
     }
@@ -1763,9 +1728,11 @@ namespace selftest
             tap::skip("task pool too small");
             return;
         }
+        int64_t const sent0 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
         if (not kos::thread::create_caps(amp_gate_worker, blk, "ampgat", 10, caps, 1,
-                                         KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t)
+                                         KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_SYSTEM,
+                                         nullptr, t)
                     .valid())
         {
             (void)kos_task_kill(t);
@@ -1774,12 +1741,14 @@ namespace selftest
         }
         wait_n(1);
         (void)kos_task_kill(t);
-        tap::diag("amp from a non-root task: partition slot %ld, forge %ld, round %ld; "
-                  "root's own round %ld",
+        int64_t const sent1 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
+        tap::diag("amp from a non-root task holding AUTH_SYSTEM: partition slot %ld, forge %ld, "
+                  "round %ld, defer %ld sending %ld; root's own round %ld",
                   static_cast<long>(static_cast<int64_t>(out[AG_PORT_CAP])),
                   static_cast<long>(static_cast<int64_t>(out[AG_FORGE])),
                   static_cast<long>(static_cast<int64_t>(out[AG_ROUND])),
-                  static_cast<long>(mine));
+                  static_cast<long>(static_cast<int64_t>(out[AG_DEFER])),
+                  static_cast<long>(sent1 - sent0), static_cast<long>(mine));
         TAP_CHECK(out[AG_RAN] == 1u);
         // The first dynamic index in another task's table is that task's own, naming no
         // endpoint.
@@ -1791,6 +1760,9 @@ namespace selftest
         TAP_CHECK(mine == 0);
         // The gate's refusal: root's answer is amp::send's, and no send produces this code.
         TAP_CHECK(static_cast<int64_t>(out[AG_ROUND]) != mine);
+        // A refused defer answers zero and sends nothing; an admitted one answers zero only for
+        // peer 0 with no raise skipped, and has sent.
+        TAP_CHECK(out[AG_DEFER] != 0u or sent1 == sent0 + 1);
     }
 
     // KICKOS_MAX_ENDPOINTS' Kconfig ceiling: the pool cannot be wider than this, so the fill

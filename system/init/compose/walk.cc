@@ -6,6 +6,7 @@
 #include "driver_path.h"
 #include "message.h"
 
+#include <kickos/amp.h>
 #include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE_US
 #include <kickos/sys/emit.h> // kconsole_write_all
 #include <kickos/sys/errno.h>
@@ -21,6 +22,18 @@ namespace kickos::init
         }
 
         static_assert(Message::CAPACITY <= KOS_EP_MSG_MAX, "a diagnostic line is one send");
+
+        // The capability the kernel seated in root for crossing `port` of `node`, or KOS_CAP_NONE.
+        kos_cap_t seated_port(uint64_t node, uint64_t port)
+        {
+#if KOS_AMP_PORT_COUNT > 0
+            return kos_amp_port(static_cast<uint32_t>(node), static_cast<uint32_t>(port));
+#else
+            (void)node;
+            (void)port;
+            return KOS_CAP_NONE;
+#endif
+        }
 
         // One diagnostic line on stdout, then `m` emptied for the next. Bounded: a console driver
         // the init holds slain or stalled never parks it, and what is not taken goes to the
@@ -213,6 +226,11 @@ namespace kickos::init
         }
         for (uint16_t r = 0; r < header_->region_count; r++)
         {
+            if ((regions_[r].flags & KOS_TABLE_REGION_PARTITION) != 0u)
+            {
+                private_[count + r].region = reinterpret_cast<void*>(KOS_AMP_SHARE_BASE + regions_[r].offset);
+                continue;
+            }
             private_[count + r].region = reserve(regions_[r].size, "kos_ram_alloc of a shared region",
                                                  KOS_TABLE_NONE);
         }
@@ -320,6 +338,11 @@ namespace kickos::init
             if (g.window != KOS_TABLE_NONE and g.window >= windows)
             {
                 m.add("places a window at ").add(g.window).add(", past its ").add(windows);
+                kos_panic(m.text());
+            }
+            if (g.kind == KOS_GRANT_PORT and seated_port(g.target, g.base) == KOS_CAP_NONE)
+            {
+                m.add("names crossing ").add(&strings_[g.path]).add(", which the kernel seated no port for");
                 kos_panic(m.text());
             }
             if (g.cap_slot != KOS_TABLE_NONE
@@ -543,6 +566,11 @@ namespace kickos::init
             {
                 c.source_cap = r.notify;
                 c.rights_mask = KOS_CAP_WAIT;
+            }
+            else if (g.kind == KOS_GRANT_PORT)
+            {
+                c.source_cap = seated_port(g.target, g.base);
+                c.rights_mask = g.flags;
             }
             else
             {

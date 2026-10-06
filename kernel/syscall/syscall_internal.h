@@ -145,7 +145,7 @@ namespace kickos
     int amp_endpoint_create(uint32_t node, uint32_t port, uint32_t* out_cap);
 #if KICKOS_AMP_NODE
     // The same mint with the privilege gate left to the caller. Caller holds IrqLock.
-    int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint32_t* out_cap);
+    int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
 #endif
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.

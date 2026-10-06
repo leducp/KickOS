@@ -15,14 +15,21 @@ import sys
 import tempfile
 import unittest
 
-from kickos_compose import emit
-from test_arms import MANIFESTS, PLATFORM, SYSTEMS, TREE, VIRTIO, mutate, read, write
+from kickos_compose import emit, partition
+from test_arms import ARM64_AMP, ARM64_UNPINNED, MANIFESTS, PLATFORM, PONG, SYSTEMS, TREE, VIRTIO, mutate, read, write
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..")
 
 # A golden system granting what none of the three does: an instance's window and line, an
-# uncached region, authority, a task whose return ends the system, and the init's priority.
+# uncached region, authority, a task whose return ends the system, and the init's priority; and
+# one on a node of a partition, using a crossing and mapping a partition region. Each is
+# (golden, its name, edits, its manifest or None for the golden's).
+PARTITION_REGION = ("    cache: cached # shared by tasks of this image only, on coherent memory\n",
+                    "    cache: cached # shared by tasks of this image only, on coherent memory\n"
+                    "  - name: /shm/book\n    size: 64\n    cache: uncached\n    partition: true\n")
+# The node 1 composition each partitioned variant is emitted with.
+PARTNERS = {"qemu-arm64-node.yaml": PONG % ("qemu-arm64", "", "uncached", 8192)}
 VARIANTS = [
     ("qemu-arm64.yaml", "qemu-arm64-variant.yaml", [
         ("devices: [/dev/rtc]", VIRTIO % "bus_master, coarse_gate" + "\n    lines: { irq: /dev/virtio/3/irq }"),
@@ -30,7 +37,13 @@ VARIANTS = [
         ("ends: never", "ends: health"),
         ("heap: 65536\n", "heap: 65536\ninit: { priority: 5 }\n"),
         ("    watches: [sensor]\n", "    watches: [sensor]\n    authority: [system, memory]\n"),
-    ]),
+    ], None),
+    # Node 0 of a partition, emitted with the node 1 composition PARTNERS names.
+    ("qemu-arm64.yaml", "qemu-arm64-node.yaml", ARM64_UNPINNED + [
+        PARTITION_REGION,
+        ("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /amp/3]\n    maps: { /shm/book: rw }\n"),
+    ], ARM64_AMP.replace("KICKOS_TASK_ENDPOINT_BUDGET: 3", "KICKOS_TASK_ENDPOINT_BUDGET: 4")
+     .replace("KICKOS_MAX_ENDPOINTS: 4", "KICKOS_MAX_ENDPOINTS: 5")),
 ]
 
 # Hand-written from the chip files and the compositions, never from the tool: each is (record,
@@ -88,6 +101,15 @@ EXPECTED = {
         ("header", {}, {"flags": "ends_task", "ends_task": "2", "init_priority": "5"}),
         ("region", {"#": "0"}, {"flags": "uncached"}),
     ],
+    "qemu-arm64-node.yaml": [
+        ("grant", {"kind": "port"}, {"path": "/amp/3", "flags": "signal", "base": "0x3", "target": "1",
+                                     "cap_slot": "cap0+1", "window": "none"}),
+        ("grant", {"kind": "endpoint_use"}, {"cap_slot": "cap0+0"}),
+        ("task", {"name": "app"}, {"uses": "0+1", "grants": "3+3"}),
+        ("region", {"name": "/shm/book"}, {"size": "0x1000", "offset": "0x0", "flags": "uncached,partition"}),
+        ("region", {"name": "/shm/history"}, {"offset": "0x0", "flags": "-"}),
+        ("grant", {"kind": "region", "flags": "uncached"}, {"target": "1", "window": "0"}),
+    ],
 }
 
 COMPILER = None
@@ -133,12 +155,25 @@ def stub_source(table):
     return "\n".join(out) + "\n"
 
 
-def emit_with_seed(path, manifest, output, seed):
+def emit_with_seed(paths, manifest, output, seed):
     env = dict(os.environ)
     env["PYTHONHASHSEED"] = seed
     env["PYTHONPATH"] = TOOL
-    return subprocess.run([sys.executable, "-m", "kickos_compose", "emit", path, "--manifest", manifest,
+    named = paths
+    if len(paths) > 1:
+        named = ["--partition"] + paths
+    return subprocess.run([sys.executable, "-m", "kickos_compose", "emit"] + named + ["--manifest", manifest,
                            "-o", output], env=env, capture_output=True, text=True)
+
+
+def table_of(paths, manifest):
+    """(the Report, the Table of paths[0], admitted with the rest as node 0 of their partition)."""
+    if len(paths) == 1:
+        return emit.table_of(paths[0], manifest)
+    report, found = partition.admit_partition(paths, manifest, 0)
+    if found is None:
+        return report, None
+    return report, emit.build(found.admitted[0])
 
 
 class RoundTrip(unittest.TestCase):
@@ -154,13 +189,15 @@ class RoundTrip(unittest.TestCase):
             shutil.copytree(PLATFORM, root)
             systems = os.path.join(scratch, "systems")
             shutil.copytree(SYSTEMS, systems)
-            cases = [(name, name) for name in sorted(MANIFESTS)]
-            for base, name, edits in VARIANTS:
+            cases = [(name, MANIFESTS[name]) for name in sorted(MANIFESTS)]
+            for base, name, edits, manifest in VARIANTS:
                 write(os.path.join(systems, name), mutate(read(os.path.join(SYSTEMS, base)), edits)[0])
-                cases.append((base, name))
-            for base, name in cases:
+                if manifest is None:
+                    manifest = MANIFESTS[base]
+                cases.append((name, manifest))
+            for name, manifest in cases:
                 with self.subTest(composition=name):
-                    self.round_trip(scratch, os.path.join(systems, name), MANIFESTS[base])
+                    self.round_trip(scratch, os.path.join(systems, name), manifest)
         finally:
             shutil.rmtree(scratch)
 
@@ -170,16 +207,21 @@ class RoundTrip(unittest.TestCase):
         manifest = os.path.join(scratch, "manifest.yaml")
         write(manifest, manifest_text)
 
+        paths = [path]
+        if os.path.basename(path) in PARTNERS:
+            partner = os.path.join(work, "partner.yaml")
+            write(partner, PARTNERS[os.path.basename(path)])
+            paths.append(partner)
         outputs = []
         for seed in ("0", "1"):
             os.makedirs(os.path.join(work, "seed-" + seed))
             output = os.path.join(work, "seed-" + seed, "table.c")
-            run = emit_with_seed(path, manifest, output, seed)
+            run = emit_with_seed(paths, manifest, output, seed)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             outputs.append(read(output))
         self.assertEqual(outputs[0], outputs[1], "two emits of one composition differ")
 
-        report, table = emit.table_of(path, manifest)
+        report, table = table_of(paths, manifest)
         self.assertEqual([str(r) for r in report.refusals], [])
         self.assertEqual(emit.render(table, os.path.basename(path), path), outputs[0])
 
@@ -248,7 +290,7 @@ class RoundTrip(unittest.TestCase):
             manifest = os.path.join(scratch, "manifest.yaml")
             write(manifest, MANIFESTS["qemu-arm64.yaml"])
             source = os.path.join(scratch, "table.c")
-            run = emit_with_seed(path, manifest, source, "0")
+            run = emit_with_seed([path], manifest, source, "0")
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             line = read(path).splitlines().index("    entry: sensor_main") + 1
             # The app declaring the entry as something else, as a missing or mistyped one would be.

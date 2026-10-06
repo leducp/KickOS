@@ -7,9 +7,10 @@
 
 import os
 
-from .composition import AUTHORITIES, Cache, admit_composition, read_composition, region_size
-from .descriptions import host_runs
+from .composition import AUTHORITIES, Cache, admit_composition, amp_port, read_composition, region_size
+from .descriptions import check_chip, host_runs
 from .manifest import read_manifest
+from .partition import admit_partition, derive_gate, place_regions
 from .subset import File, Report, line_of
 from .supply import arena_blocks, ram_align, ram_size, ring_block, status_block
 
@@ -20,13 +21,16 @@ FIELD_LIMIT = 0xFFFE
 STRINGS_LIMIT = 0xFFFFFFFF
 EVENTS = "/init/events"
 STATUS = "/init/status"
-CAPABILITY_KINDS = ("endpoint_serve", "endpoint_use", "notification", "line")
+CAPABILITY_KINDS = ("endpoint_serve", "endpoint_use", "notification", "line", "port")
 WINDOW_KINDS = ("window", "ports", "region", "status")
 # A privileged register's width is the kernel call that writes it: a port register one byte
 # through kos_port_reg_write, a memory register a 32-bit word through kos_periph_reg_write.
 WIDTHS = {"port": 1, "mem": 4}
-GRANT_FLAGS = {"ro": "KOS_WINDOW_RO", "uncached": "KOS_WINDOW_UNCACHED"}
+GRANT_FLAGS = {"ro": "KOS_WINDOW_RO", "uncached": "KOS_WINDOW_UNCACHED", "wait": "KOS_CAP_WAIT",
+               "signal": "KOS_CAP_SIGNAL"}
+REGION_FLAGS = {"uncached": "KOS_MEM_NOCACHE", "partition": "KOS_TABLE_REGION_PARTITION"}
 AUTHORITY_BITS = {name: "KOS_AUTH_%s" % name.upper() for name in AUTHORITIES}
+ACCESS_SPELLED = {"r": "KICKOS_GATE_R", "w": "KICKOS_GATE_W", "x": "KICKOS_GATE_X"}
 # The entry KickOS::main defines, which calls the app's main.
 PACKAGED_MAIN = "kickos_main"
 
@@ -88,10 +92,12 @@ class GrantEntry:
 
 
 class RegionEntry:
-    def __init__(self, name, size, uncached):
+    def __init__(self, name, size, uncached, offset=None):
         self.name = name
         self.size = size
         self.uncached = uncached
+        # A partition region's offset in the partition's user share, or None.
+        self.offset = offset
 
 
 class Table:
@@ -119,18 +125,120 @@ def emit(path, manifest_path):
     return report, render(table, os.path.basename(path), path)
 
 
-def emit_system(path, manifest_path, output="table.c"):
-    """(the Report, None once refused, or the (C source, asserts script, CMake fragment) a system
-    target is built from); `output` is the name the C source is compiled under."""
-    report, admitted = admitted_of(path, manifest_path)
-    if admitted is None:
-        return report, None
+def emit_system(path, manifest_path, output="table.c", partition=None):
+    """(the Report, None once refused, or the (C source, asserts script, CMake fragment, gate C source
+    or None) a system target is built from); `output` is the name the C source is compiled under.
+    With `partition`, the node compositions in node order, the composition is the one at this
+    build's node index, admitted with every other."""
+    if partition is not None:
+        report, found = admit_partition(partition, manifest_path, node_of(manifest_path))
+        if found is None:
+            return report, None
+        path = partition[found.manifest.amp_node]
+        admitted = found.admitted[found.manifest.amp_node]
+        rows = found.rows
+    else:
+        report, admitted = admitted_of(path, manifest_path)
+        if admitted is None:
+            return report, None
+        rows = single_gate(File(path, report), admitted)
+        if report.refusals:
+            return report, None
     table = build(admitted)
     if not check_table(File(path, report), admitted.root, table):
         return report, None
     source = os.path.basename(path)
+    gate = None
+    if emits_gate(admitted.manifest, admitted.chip):
+        gate = render_gate(rows, source)
     return report, (render(table, source, path, output), render_asserts(admitted, path),
-                    render_fragment(admitted, table, source))
+                    render_fragment(admitted, table, source, gate is not None), gate)
+
+
+def node_of(manifest_path):
+    """The node index the manifest at `manifest_path` states, or None."""
+    manifest = read_manifest(manifest_path, Report())
+    if not manifest:
+        return None
+    return manifest.amp_node
+
+
+def emits_gate(manifest, chip):
+    """Whether this build's system target carries the gate assignment: node 0 of a partition, or
+    a build outside any partition of a chip stating a partition gate."""
+    return manifest.amp_node == 0 or (manifest.amp_node is None and chip.partition_gate is not None)
+
+
+def single_gate(f, admitted):
+    """The gate rows of one composition, the node its manifest states holding its grants."""
+    manifest = admitted.manifest
+    own = manifest.amp_node or 0
+    grants = [(own, grant) for task in admitted.tasks for grant in task.grants if grant.space == "mem"]
+
+    def refuse(k, grant, message):
+        node = admitted.root
+        if grant is not None:
+            node = grant.node
+        f.refuse(node, "partition.gate-budget", message)
+
+    return derive_gate(admitted.chip, manifest, grants, manifest.amp_nodes or 1, refuse)
+
+
+def emit_gate(manifest_path):
+    """(the Report, the gate C source of a build linking no composition, or None once refused or
+    where the build carries none)."""
+    report = Report()
+    manifest = read_manifest(manifest_path, report)
+    if not manifest:
+        return report, None
+    chip = None
+    if manifest.descriptions is not None:
+        chip = check_chip(manifest.descriptions[0], read_text(manifest.descriptions[0]), report)
+    if report.refusals:
+        return report, None
+    if chip is None:
+        if manifest.amp_node == 0:
+            return report, render_gate([], os.path.basename(manifest_path))
+        return report, None
+    if not emits_gate(manifest, chip):
+        return report, None
+
+    def refuse(k, grant, message):
+        report.refuse(manifest_path, 1, "partition.gate-budget", message)
+
+    rows = derive_gate(chip, manifest, [], manifest.amp_nodes or 1, refuse)
+    if report.refusals:
+        return report, None
+    return report, render_gate(rows, os.path.basename(manifest_path))
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as stream:
+        return stream.read()
+
+
+def render_gate(rows, source):
+    """The gate assignment as C over <kickos/sys/partition_gate.h>, `source` naming what it came from."""
+    out = [
+        "// SPDX-License-Identifier: CECILL-C",
+        "// Copyright (c) 2026 Philippe Leduc",
+        "//",
+        "// GENERATED by kickos_compose from %s; edits are overwritten by the next emit." % printable(source),
+        "",
+        "#include <kickos/sys/partition_gate.h>",
+        "",
+    ]
+    if not rows:
+        out.append("struct kickos_gate_row const kickos_gate_rows[1] = {{0}};")
+    else:
+        out.append("struct kickos_gate_row const kickos_gate_rows[%d] = {" % len(rows))
+        for row in rows:
+            access = [ACCESS_SPELLED[letter] for letter in row.access]
+            out.append("    { .base = 0x%Xull, .size = 0x%Xull, .gate = %d, .reg = 0x%Xu, .node = %d, .access = %s },"
+                       % (row.base, row.size, row.gate, row.register, row.node, " | ".join(access)))
+        out.append("};")
+    out.append("uint16_t const kickos_gate_row_count = %d;" % len(rows))
+    return "\n".join(out) + "\n"
 
 
 def admitted_of(path, manifest_path):
@@ -144,6 +252,9 @@ def admitted_of(path, manifest_path):
         return report, None
     admitted = admit_composition(path, text, None, report, Cache(), manifest)
     if admitted is None or report.refusals:
+        return report, None
+    place_regions([File(path, report)], [admitted], manifest)
+    if report.refusals:
         return report, None
     return report, admitted
 
@@ -168,7 +279,7 @@ def build(admitted):
     index = {}
     for task in admitted.tasks:
         index[task.name] = task.index
-        if task.serves is not None:
+        if task.serves is not None and amp_port(task.serves[0]) is None:
             served[task.serves[0]] = task.index
     regions = list(admitted.shared)
     if admitted.ends.value != "never":
@@ -214,11 +325,16 @@ def build(admitted):
             return made
 
         for field in task.nodes:
-            if field == "serves":
+            if field == "serves" and amp_port(task.serves[0]) is not None:
+                crossing(grant, task.serves[0], "wait", manifest)
+            elif field == "serves":
                 grant("endpoint_serve", task.serves[0], task.serves[0]).target = task.index
             elif field == "uses":
                 for used, node in task.uses:
-                    grant("endpoint_use", used, used).target = served[used]
+                    if amp_port(used) is not None:
+                        crossing(grant, used, "signal", manifest)
+                    else:
+                        grant("endpoint_use", used, used).target = served[used]
             elif field == "watches" and task.watches:
                 grant("notification", EVENTS, EVENTS)
                 made = grant("status", STATUS, STATUS)
@@ -263,8 +379,9 @@ def build(admitted):
 
         entry.grant_count = len(table.grants) - entry.first_grant
         entry.first_use = len(table.refs)
-        table.refs.extend(served[used] for used, node in task.uses)
-        entry.use_count = len(task.uses)
+        local = [used for used, node in task.uses if amp_port(used) is None]
+        table.refs.extend(served[used] for used in local)
+        entry.use_count = len(local)
         entry.first_watch = len(table.refs)
         table.refs.extend(index[name] for name, node in task.watches)
         entry.watch_count = len(task.watches)
@@ -272,8 +389,18 @@ def build(admitted):
 
     for path, region in admitted.shared.items():
         size = region_size(region.size, admitted.chip, admitted.cluster, manifest)
-        table.regions.append(RegionEntry(pool.add(path), size, region.cache == "uncached"))
+        table.regions.append(RegionEntry(pool.add(path), size, region.cache == "uncached",
+                                         admitted.offsets.get(path)))
     return table
+
+
+def crossing(grant, path, right, manifest):
+    """The port grant of crossing `path`: the port, its server's node and the right the init delegates."""
+    port = amp_port(path)
+    made = grant("port", path, path)
+    made.flags.append(right)
+    made.base = port
+    made.target = [node for node, listed in manifest.amp_list if listed == port][0]
 
 
 def check_table(f, root, table):
@@ -473,11 +600,15 @@ def render(table, source, composition=None, output="table.c"):
     if table.regions:
         out.append("    .region = {")
         for n, region in enumerate(table.regions):
-            flags = "0"
+            flags = []
             if region.uncached:
-                flags = "KOS_MEM_NOCACHE"
-            out.append("        [%d] = { .name = %d, .size = 0x%Xu, .flags = %s },"
-                       % (n, pool.offsets[region.name], region.size, flags))
+                flags.append("uncached")
+            offset = 0
+            if region.offset is not None:
+                flags.append("partition")
+                offset = region.offset
+            out.append("        [%d] = { .name = %d, .size = 0x%Xu, .offset = 0x%Xu, .flags = %s },"
+                       % (n, pool.offsets[region.name], region.size, offset, bits(flags, REGION_FLAGS)))
         out.append("    },")
     if pool.texts:
         # The literal's own terminator is the last string's, so the array holds the pool exactly.
@@ -583,7 +714,7 @@ def heap_asserts(admitted, name, hosted):
     return out
 
 
-def render_fragment(admitted, table, source):
+def render_fragment(admitted, table, source, gate=False):
     """The CMake fragment kickos_compose reads: the packaged drivers the composition names and the
     libraries their clients link, whether it names KickOS::main's entry, and its heap."""
     drivers = []
@@ -607,6 +738,7 @@ def render_fragment(admitted, table, source):
         "set(KICKOS_COMPOSE_CLIENTS \"%s\")" % ";".join(clients),
         "set(KICKOS_COMPOSE_MAIN %d)" % main,
         "set(KICKOS_COMPOSE_HEAP %d)" % admitted.heap,
+        "set(KICKOS_COMPOSE_GATE %d)" % int(gate),
     ]
     return "\n".join(out) + "\n"
 
@@ -656,10 +788,15 @@ def dump(table):
     for n, (offset, width) in enumerate(table.privs):
         out.append("priv %d offset=0x%X width=%d" % (n, offset, width))
     for n, region in enumerate(table.regions):
-        flags = "-"
+        names = []
         if region.uncached:
-            flags = "uncached"
-        out.append("region %d name=%s size=0x%X flags=%s" % (n, region.name, region.size, flags))
+            names.append("uncached")
+        offset = 0
+        if region.offset is not None:
+            names.append("partition")
+            offset = region.offset
+        out.append("region %d name=%s size=0x%X offset=0x%X flags=%s"
+                   % (n, region.name, region.size, offset, names_or_dash(names)))
     for text in pool.texts:
         out.append("string %d %s" % (pool.offsets[text], text))
     return "\n".join(out) + "\n"

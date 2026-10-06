@@ -29,11 +29,15 @@ PROTECTION_FIELDS = (
 CLUSTER_FIELDS = ("arch", "count", "smp", "protection", "line_offset")
 DEVICE_FIELDS = (
     "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg", "host",
-    "privileged_registers", "cluster", "ref", "symbol",
+    "privileged_registers", "cluster", "ref", "symbol", "gate_register",
 )
 MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
 INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors")
 CYCLE_COUNTER_FIELDS = ("hz", "glitches")
+# The kinds of `partition_gate`: a region gate per security mode, a register per peripheral, and
+# one the tree programs nowhere.
+GATE_KINDS = ("apm", "accessctrl", "rdc")
+GATE_FIELDS = ("regions", "ranges", "memory", "kernel")
 # The width of each architecture's addresses, which a window the generated headers name must fit.
 ADDRESS_BITS = {
     "armv6m": 32, "armv7m": 32, "rv32imac": 32, "rxv3": 32, "lx6": 32, "armv8a": 64, "rv64imac": 64,
@@ -90,9 +94,38 @@ class Device:
         self.symbol = None
         # [Block], in the chip file's order.
         self.blocks = []
+        # The offset of the register a per-peripheral partition gate assigns it by, or None.
+        self.gate_register = None
+        self.gate_register_node = None
         # {channel or line: Named}
         self.channel_names = {}
         self.line_names = {}
+
+
+class Gate:
+    """One unit of a region `partition_gate`."""
+
+    def __init__(self, name):
+        self.name = name
+        # The regions it holds, the reset catch-all among them.
+        self.regions = None
+        # The device windows it fronts, and the memory it fronts for every node but node 0, each a
+        # (base, size).
+        self.ranges = []
+        self.memory = []
+        # What every node but node 0 has its kernel hold through it, each a (base, size, access).
+        self.kernel = []
+
+
+class PartitionGate:
+    def __init__(self, kind):
+        self.kind = kind
+        # The device a per-peripheral gate is programmed through, or None.
+        self.device = None
+        # {name: Gate} of a region gate, in the chip file's order.
+        self.gates = {}
+        # {register offset: name} of a per-peripheral gate's registers no node is ever assigned.
+        self.never_assigned = {}
 
 
 class Named:
@@ -179,6 +212,10 @@ class Chip:
         # [Window] of every device and memory entry, and {(view, region): node} of each link region.
         self.windows = []
         self.links = {}
+        # {cluster or PART: whether its cores share one kernel's memory coherently}
+        self.smp = {}
+        # The PartitionGate, or None.
+        self.partition_gate = None
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -238,15 +275,7 @@ def check_chip(path, text, report):
                 chip.devices[device_name] = device
 
     if "partition_gate" in top:
-        gate = f.fields(top["partition_gate"], "`partition_gate`", ("kind", "device"), ("kind", "device"))
-        if gate is not None:
-            if "kind" in gate:
-                f.name(gate["kind"], "`partition_gate` kind", IDENTIFIER)
-            if "device" in gate:
-                target = f.name(gate["device"], "`partition_gate` device", IDENTIFIER)
-                if target is not None and devices is not None and target not in devices:
-                    f.refuse(gate["device"], "chip.device-unknown",
-                             "`partition_gate` names `%s`, which is no device of this chip" % target)
+        chip.partition_gate = check_partition_gate(f, top["partition_gate"], chip, devices)
 
     check_memory(f, top, root, chip, translates, windows)
     if "pins" in top:
@@ -260,6 +289,78 @@ def check_chip(path, text, report):
     check_reserved(f, top, root, chip)
     check_address_width(f, chip, windows)
     return chip
+
+
+def check_partition_gate(f, node, chip, devices):
+    gate = f.fields(node, "`partition_gate`", ("kind", "device", "gates", "never_assigned"), ("kind",))
+    if gate is None or "kind" not in gate:
+        return None
+    kind = f.enum(gate["kind"], "`partition_gate` kind", GATE_KINDS)
+    if kind is None:
+        return None
+    found = PartitionGate(kind)
+    named = []
+    if "device" in gate:
+        found.device = f.name(gate["device"], "`partition_gate` device", IDENTIFIER)
+        named.append((found.device, gate["device"]))
+    units = {}
+    if "gates" in gate:
+        units = f.mapping(gate["gates"], "`partition_gate` gates") or {}
+    for name, (key, value) in units.items():
+        what = "partition gate `%s`" % name
+        named.append((f.name(key, what, IDENTIFIER), key))
+        values = f.fields(value, what, GATE_FIELDS, ("regions", "ranges"))
+        if values is None:
+            continue
+        unit = Gate(name)
+        if "regions" in values:
+            unit.regions, _ = check_valued(f, values["regions"], "%s regions" % what,
+                                           lambda item, label: check_size(f, item, label, 8))
+        for field in ("ranges", "memory"):
+            if field in values:
+                setattr(unit, field, check_gate_ranges(f, values[field], "%s %s range" % (what, field)) or [])
+        items = []
+        if "kernel" in values:
+            items = f.sequence(values["kernel"], "%s kernel" % what) or []
+        for item in items:
+            held = f.fields(item, "%s kernel range" % what, ("window", "access", "ref"), ("window", "access"))
+            if held is None or "window" not in held or "access" not in held:
+                continue
+            window = check_range(f, held["window"], "%s kernel window" % what, "size")
+            access = f.name(held["access"], "%s kernel access" % what, ACCESS)
+            if "ref" in held:
+                check_text(f, held["ref"], "%s kernel ref" % what)
+            if window is not None and access is not None:
+                unit.kernel.append((window[0], window[1], access))
+        found.gates[name] = unit
+    for target, at in named:
+        if target is not None and devices is not None and target not in devices:
+            f.refuse(at, "chip.device-unknown",
+                     "`partition_gate` names `%s`, which is no device of this chip" % target)
+    never = {}
+    if "never_assigned" in gate:
+        never = f.mapping(gate["never_assigned"], "`partition_gate` never_assigned") or {}
+    for name, (key, value) in never.items():
+        f.name(key, "`partition_gate` never_assigned", IDENTIFIER)
+        offset = f.integer(value, "`partition_gate` never_assigned `%s`" % name, 16)
+        if offset is not None:
+            found.never_assigned[offset] = name
+    claimed = {}
+    for name, device in chip.devices.items():
+        register = device.gate_register
+        if register is None:
+            continue
+        if register in found.never_assigned:
+            f.refuse(device.gate_register_node, "chip.gate-register",
+                     "device `%s` names gate register 0x%X, which is %s's, and `partition_gate` never_assigned "
+                     "names it" % (name, register, found.never_assigned[register]))
+        elif register in claimed:
+            f.refuse(device.gate_register_node, "chip.gate-register",
+                     "device `%s` names gate register 0x%X, which device `%s` names too, so one register would "
+                     "assign both" % (name, register, claimed[register]))
+        else:
+            claimed[register] = name
+    return found
 
 
 def check_valued(f, node, what, read):
@@ -577,7 +678,7 @@ def check_cores(f, top, root, chip):
         if "count" in values:
             check_count_range(f, values["count"], "`cores` count")
         if "smp" in values:
-            f.boolean(values["smp"], "`cores` smp")
+            chip.smp[PART] = f.boolean(values["smp"], "`cores` smp") is True
     if not per_cluster:
         if "arch" not in top:
             f.refuse(root, "form.missing", "the chip file needs `arch`, or one per cluster in `cores`")
@@ -623,7 +724,9 @@ def check_cores(f, top, root, chip):
         if "count" in values:
             check_count_range(f, values["count"], "%s count" % what)
         if "smp" in values:
-            f.boolean(values["smp"], "%s smp" % what)
+            smp = f.boolean(values["smp"], "%s smp" % what)
+            if cluster is not None:
+                chip.smp[cluster] = smp is True
         if "protection" in values:
             unit = check_protection(f, values["protection"], "%s protection" % what, chip, cluster)
             if unit is not None and cluster is not None:
@@ -678,6 +781,22 @@ def device_reach(chip, cluster):
     if chip.clusters:
         return tuple(chip.clusters)
     return (PART,)
+
+
+def check_line_order(f, lines, name):
+    """A line's index is its position among its device's lines, so where a device's lines are all
+    one prefix and a number, the line numbered k sits at position k."""
+    if len(lines) < 2:
+        return
+    numbered = [re.fullmatch(r"([a-z_]*[a-z_])([0-9]+)", line) for line in lines]
+    if any(m is None for m in numbered) or len(set(m.group(1) for m in numbered)) != 1:
+        return
+    for position, (line, m) in enumerate(zip(lines, numbered)):
+        if int(m.group(2)) != position:
+            f.refuse(lines[line], "chip.line-order",
+                     "line `/dev/%s/%s` is at position %d among its device's lines, and a line's index is its "
+                     "position, so `%s%d` must sit at position %d" % (name, line, position, m.group(1),
+                                                                      int(m.group(2)), int(m.group(2))))
 
 
 def check_device(f, chip, key, value, windows):
@@ -764,6 +883,7 @@ def check_device(f, chip, key, value, windows):
                     device.lines[line] = lkey
                     device.sources[line] = number
                     device.line_names[line] = named
+    check_line_order(f, device.lines, name)
     for line, lkey in device.lines.items():
         if line in device.channels:
             f.refuse(lkey, "chip.name-collision",
@@ -805,6 +925,9 @@ def check_device(f, chip, key, value, windows):
                 if offset is not None:
                     check_register(f, rvalue, rwhat, offset, shapes, spans)
                     device.registers.append(offset)
+    if "gate_register" in values:
+        device.gate_register = f.integer(values["gate_register"], "%s gate_register" % what, 16)
+        device.gate_register_node = values["gate_register"]
     return device
 
 
@@ -1092,7 +1215,7 @@ def check_overlaps(f, chip, windows):
 
 
 def check_gate_edges(f, chip, windows):
-    """A device window a `device_gate` range covers only in part."""
+    """A device window a `device_gate` or `partition_gate` range covers only in part."""
     for w in windows:
         if w.space != "mem" or not w.label.startswith("/dev/"):
             continue
@@ -1106,6 +1229,16 @@ def check_gate_edges(f, chip, windows):
                 f.refuse(w.node, "chip.gate-straddle",
                          "the window of %s at 0x%X crosses the edge of the `device_gate` range [0x%X, 0x%X]"
                          % (w.name(k), w.start(k), base, size))
+                break
+        if chip.partition_gate is None:
+            continue
+        for gate in chip.partition_gate.gates.values():
+            edge = straddled(gate.ranges, w)
+            if edge is not None:
+                k, base, size = edge
+                f.refuse(w.node, "chip.gate-straddle",
+                         "the window of %s at 0x%X crosses the edge of partition gate `%s`'s range [0x%X, 0x%X]"
+                         % (w.name(k), w.start(k), gate.name, base, size))
                 break
 
 

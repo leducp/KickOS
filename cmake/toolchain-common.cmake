@@ -24,6 +24,18 @@ macro(kickos_toolchain_board_descriptor _kos_tc_label)
     message(FATAL_ERROR
       "KickOS ${_kos_tc_label} toolchain: no board descriptor for '${KICKOS_BOARD}'")
   endif()
+  # Only the Arm family carries a nano profile beside the full one.
+  if(DEFINED KICKOS_BOARD_NEWLIB
+     AND NOT (KICKOS_BOARD_NEWLIB STREQUAL "nano" AND "${_kos_tc_label}" STREQUAL "arm"))
+    message(FATAL_ERROR "KickOS ${_kos_tc_label} toolchain: board '${KICKOS_BOARD}' names "
+      "newlib profile '${KICKOS_BOARD_NEWLIB}'; a descriptor names `nano`, on an Arm board, or "
+      "nothing")
+  endif()
+  if(DEFINED KICKOS_FULL_NEWLIB AND NOT KICKOS_BOARD_NEWLIB STREQUAL "nano")
+    message(FATAL_ERROR "KickOS ${_kos_tc_label} toolchain: KICKOS_FULL_NEWLIB chooses between "
+      "the profiles of a board whose descriptor names nano, and board '${KICKOS_BOARD}' links "
+      "the full newlib only")
+  endif()
 endmacro()
 
 # kickos_toolchain_cpu_baseline(<label> <arch-dir>)

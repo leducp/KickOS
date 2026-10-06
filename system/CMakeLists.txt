@@ -57,13 +57,20 @@ target_include_directories(kickos_root_lower PRIVATE
 add_library(kickos_init_compose OBJECT
   init/compose/entry.cc
   init/compose/walk.cc
-  init/compose/driver_path.cc
   init/compose/message.cc)
-kickos_apply_freestanding(kickos_init_compose)
-target_link_libraries(kickos_init_compose PRIVATE kickos_user)
-target_include_directories(kickos_init_compose PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# The walk's driver path, KickOS::init_drivers where the composition names a packaged driver and
+# KickOS::init_no_drivers where it names none.
+add_library(kickos_init_drivers OBJECT init/compose/driver_path.cc)
+add_library(kickos_init_no_drivers OBJECT init/compose/driver_path_none.cc)
+foreach(_init kickos_init_compose kickos_init_drivers kickos_init_no_drivers)
+  kickos_apply_freestanding(${_init})
+  target_link_libraries(${_init} PRIVATE kickos_user)
+  target_include_directories(${_init} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+endforeach()
 set_target_properties(kickos_init_compose PROPERTIES EXPORT_NAME init)
-kickos_export_targets(kickos_init_compose)
+set_target_properties(kickos_init_drivers PROPERTIES EXPORT_NAME init_drivers)
+set_target_properties(kickos_init_no_drivers PROPERTIES EXPORT_NAME init_no_drivers)
+kickos_export_targets(kickos_init_compose kickos_init_drivers kickos_init_no_drivers)
 
 # KickOS::main: kickos_main, the entry of a composition's task that runs the app's main. A system
 # target carries its object where its composition names it.

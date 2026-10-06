@@ -580,8 +580,11 @@ somebody else is affected by breaking it. A node that only CALLS may return as a
 **Which capability a node gets is its own reading of the same entry.** An entry naming this node
 is a LOCAL endpoint carrying `CAP_WAIT | CAP_SIGNAL`, with the port bound to it, so a call
 arriving on that port reaches a thread parked in an ordinary receive. An entry naming another
-node is a FAR endpoint carrying `CAP_SIGNAL` alone, which is what refuses it at that receive's
-resolve with no branch of `endpoint_recv_locked` having to learn about locality.
+node is a FAR endpoint carrying `CAP_SIGNAL` and no `CAP_WAIT`, which is what refuses it at that
+receive's resolve with no branch of `endpoint_recv_locked` having to learn about locality. Each
+seated entry also carries `CAP_TRANSFER`, so root, the init, delegates it to the task a
+composition's crossing names (`docs/design-m10-fleet.md` section 9.2), narrowed to WAIT for its
+server and SIGNAL for a user; `KOS_SYS_AMP_ENDPOINT_CREATE` mints `CAP_SIGNAL` alone.
 
 **A pooled slot keeps its last occupant's fields**, so a far endpoint that is closed would
 leave its route standing for whatever local endpoint lands on that slot next. Both fields
@@ -593,7 +596,7 @@ being incomplete the moment a field is added.
 **Placement is load-bearing.** In both `endpoint_send` and `endpoint_call` the
 locality decision is taken immediately after the capability resolve and AHEAD of the
 no-receiver test. A far endpoint carries no local receiver: its capability is minted with
-`CAP_SIGNAL` alone, so it has no holder of `CAP_WAIT` or `KOS_CAP_HANDOUT`, and the no-receiver
+neither `CAP_WAIT` nor `KOS_CAP_HANDOUT`, so it has no holder of either, and the no-receiver
 test taken first would answer `-KOS_ECONNREFUSED` to every far send and every far call. Past the
 resolve, `far_publish` answers a far send `-KOS_EFAULT` for a buffer it cannot read, and maps the
 window's refusals: `-KOS_EAGAIN` for a full peer ring, `-KOS_EPIPE` for a far index this node

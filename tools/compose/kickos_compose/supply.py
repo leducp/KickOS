@@ -38,6 +38,12 @@ def check_drivers(f, tasks, manifest):
                 f.refuse(key, "driver.line-role",
                          "%s binds line `%s`, which is no line role of driver `%s`; its roles are %s"
                          % (what, name, task.driver, roles_prose(driver.lines)))
+        for held in task.lines:
+            named = held.path.split("/")[-1]
+            if held.name in held.device_lines and held.name != named:
+                f.refuse(held.node, "driver.line-name",
+                         "%s binds line role `%s` of driver `%s` to `%s`, and its device names a line `%s`, the "
+                         "line that role is named for" % (what, held.name, task.driver, held.path, held.name))
         for role in driver.lines:
             if role not in bound:
                 f.refuse(task.nodes.get("lines", task.node), "driver.line-role",
@@ -145,8 +151,8 @@ def held_by(task):
 
 
 def kept_by_init(tasks, manifest):
-    """What the init holds for life: its notification, each AMP port, every served endpoint, a
-    console driver's included, and each watcher's notification."""
+    """What the init holds for life: its notification, each AMP port, every endpoint it creates for a
+    served /svc path, a console driver's included, and each watcher's notification."""
     kept = Held()
     kept.notifications = 1
     kept.endpoints = manifest.amp_ports
@@ -154,7 +160,7 @@ def kept_by_init(tasks, manifest):
         if task.catalogue is not None:
             kept.endpoints = kept.endpoints + task.catalogue.endpoints
         elif task.driver is None:
-            if task.serves is not None:
+            if task.serves is not None and not task.serves[0].startswith("/amp/"):
                 kept.endpoints = kept.endpoints + 1
             if task.watches:
                 kept.notifications = kept.notifications + 1
@@ -232,13 +238,14 @@ def notification_count(tasks, manifest):
 def init_reserved_blocks(tasks, shared, manifest):
     """Each block the init reserves at boot as (what, bytes, the figure that sizes it), in the
     order it reserves them: its private block, each watcher's status block, each shared region,
-    each ring block and, where the thread pointer is not SP masked, each user task's stack."""
+    each ring block and, where the thread pointer is not SP masked, each user task's stack. A
+    partition region is the user share's, never reserved."""
     reserved = [("the init's private block", private_block(tasks, shared, manifest),
                  "the task and shared region count")]
     for task in watchers(tasks):
         reserved.append(("%s's status block" % task.label(), status_block(task, manifest), "its `watches`"))
     for path, region in shared.items():
-        if region.size is not None:
+        if region.size is not None and not region.partition:
             reserved.append(("shared region `%s`" % path, region.size, "its `size`"))
     for task in tasks:
         if ring_block(task) is not None:

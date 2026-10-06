@@ -27,7 +27,7 @@ INIT_FIELDS = ("status_record_size", "private_record_size", "free_regions")
 THREAD_ENTRY_FIELDS = ("name", "priority", "stack", "caps", "badged")
 CORES = 32
 # The layouts of the emitted table emit.py writes.
-TABLE_LAYOUTS = (4,)
+TABLE_LAYOUTS = (5,)
 
 
 class Manifest:
@@ -40,6 +40,14 @@ class Manifest:
         self.kernel_cores = None
         self.isolated_cores = 0
         self.amp_ports = 0
+        # This node's index and the partition's node count, None outside a partition, and its
+        # port list as (node, port) pairs.
+        self.amp_node = None
+        self.amp_nodes = None
+        self.amp_list = []
+        # The partition's node slices as (base, stride) and its shared window as (base, size).
+        self.amp_slices = None
+        self.amp_window = None
         # Bytes of the partition's user share, the top of the region every node writes.
         self.amp_share = 0
         # Its one memory type, in a region's `cache` vocabulary.
@@ -221,7 +229,7 @@ def check_target(f, node, manifest):
 
 
 def check_amp(f, node, manifest):
-    values = f.fields(node, "`target` amp", ("node", "nodes", "ports", "share", "share_cache"),
+    values = f.fields(node, "`target` amp", ("node", "nodes", "ports", "share", "share_cache", "slices", "window"),
                       ("node", "nodes", "ports", "share", "share_cache"))
     if values is None:
         return
@@ -230,11 +238,17 @@ def check_amp(f, node, manifest):
     if "share_cache" in values:
         manifest.amp_share_cache = f.enum(values["share_cache"], "`target` amp share_cache",
                                           ("cached", "uncached")) or "cached"
+    if "slices" in values:
+        manifest.amp_slices = f.pair(values["slices"], "`target` amp slices", "base", "stride", (64, 64))
+    if "window" in values:
+        manifest.amp_window = f.pair(values["window"], "`target` amp window", "base", "size", (64, 64))
     if "nodes" not in values:
         return
     nodes = f.integer(values["nodes"], "`target` amp nodes", 8)
+    manifest.amp_nodes = nodes
     if "node" in values:
         own = f.integer(values["node"], "`target` amp node", 8)
+        manifest.amp_node = own
         if own is not None and nodes is not None and own >= nodes:
             f.refuse(values["node"], "manifest.amp",
                      "`target` amp node %d is not one of the partition's %d" % (own, nodes))
@@ -243,6 +257,8 @@ def check_amp(f, node, manifest):
         manifest.amp_ports = len(ports)
         for item in ports:
             pair = f.pair(item, "`target` amp port", "node", "port", (8, 8))
+            if pair is not None:
+                manifest.amp_list.append(pair)
             if pair is not None and nodes is not None and pair[0] >= nodes:
                 f.refuse(item, "manifest.amp",
                          "`target` amp port %d is served by node %d, not one of the partition's %d"

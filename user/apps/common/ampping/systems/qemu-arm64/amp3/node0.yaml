@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+board: qemu-arm64
+stdout: kernel
+ends: main
+heap: 16384
+
+shared:
+  - name: /shm/ampbook
+    size: 256
+    cache: cached
+    partition: true
+
+tasks:
+  - name: main
+    entry: ampping_main
+    stack: 16384
+    priority: 5
+    authority: [system]
+    uses: [/amp/3, /amp/5]
+    maps: { /shm/ampbook: rw }

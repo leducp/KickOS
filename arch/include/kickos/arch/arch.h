@@ -218,6 +218,13 @@ void arch_amp_release_peers(void);
 #define arch_amp_release_peers() ((void)0)
 #endif
 
+#if KICKOS_AMP_OWN_IMAGE && defined(KICKOS_ENABLE_SELFTEST)
+// A privileged read, its fault caught, of a device the partition gate gives another node's core
+// alone, printed: 1 when it faulted, 0 when it returned, or -KOS_ENOSYS where this node has no
+// such device.
+int arch_amp_gate_probe(void);
+#endif
+
 // Cross-core kernel lock covering capability resolution through use.
 // Nonrecursive. Callers mask local interrupts separately to prevent re-entry.
 // Acquisition must service pending doorbells while spinning.
@@ -297,7 +304,8 @@ uint32_t arch_periph_clock_hz(uintptr_t base);
 
 // Ungate and remove bus supervisor protection for an exact allowlisted block
 // base. Refuse gates that expose kernel-reserved registers. Idempotent.
-// Return 0, -KOS_EINVAL for an unknown base, or -KOS_ENOSYS without a backend.
+// Return 0, -KOS_EINVAL for an unknown base, -KOS_EIO for a block that never leaves reset, or
+// -KOS_ENOSYS without a backend.
 int arch_periph_enable(uintptr_t base);
 
 // Write value to a privileged register at base + offset. Both must match

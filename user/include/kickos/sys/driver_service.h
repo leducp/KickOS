@@ -87,11 +87,20 @@ struct Cap
     uint8_t badge;
 };
 
+// The index a service-list Line leaves unstated, which no ARG_LINE0_INDEX thread may take.
+constexpr uint16_t KOS_DRV_LINE_INDEX_NONE = 0xFFFFu;
+
+// A line's index among its device's lines, as a spawn hands it on.
+struct LineIndex
+{
+    uint16_t value;
+};
+
 struct Line
 {
     int32_t number;  // the chip vector, claimed on a service list only; REGDIR-private
     uint8_t trigger; // KOS_IRQ_EDGE or KOS_IRQ_LEVEL
-    uint16_t index = 0; // its index among its device's lines, on a service list only
+    uint16_t index = KOS_DRV_LINE_INDEX_NONE; // among its device's lines, on a service list only
 };
 
 // Which pointer the entry receives, and nothing about reach: the block is the group's
@@ -105,9 +114,9 @@ enum kos_drv_arg
 };
 
 // Shifted past bit 0, which carries the posture under an instance (thread_start).
-constexpr uintptr_t line_index_arg(uint16_t index)
+constexpr uintptr_t line_index_arg(LineIndex index)
 {
-    return static_cast<uintptr_t>(index) << 1u;
+    return static_cast<uintptr_t>(index.value) << 1u;
 }
 
 // What an ARG_LINE0_INDEX thread reads from the arg thread_start returns.
@@ -303,8 +312,8 @@ constexpr bool valid_l1(Descriptor const& d)
     return d.thread_count <= KOS_DRV_THREADS_MAX and d.line_count <= KOS_DRV_LINES_MAX;
 }
 
-// L2. A cap or an arg naming a line the descriptor does not claim, or a cap granting no right
-// at all.
+// L2. A cap or an arg naming a line the descriptor does not claim, an ARG_LINE0_INDEX thread
+// whose line 0 states no index for a service list, or a cap granting no right at all.
 constexpr bool valid_l2(Descriptor const& d)
 {
     for (uint8_t i = 0; i < d.thread_count; i++)
@@ -313,7 +322,8 @@ constexpr bool valid_l2(Descriptor const& d)
         {
             return false;
         }
-        if (d.threads[i].arg == KOS_DRV_ARG_LINE0_INDEX and d.line_count == 0u)
+        if (d.threads[i].arg == KOS_DRV_ARG_LINE0_INDEX
+            and (d.line_count == 0u or d.lines[0].index == KOS_DRV_LINE_INDEX_NONE))
         {
             return false;
         }
@@ -787,7 +797,7 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note
 // for its task's default set. `under_init` sets bit 0 of the thread's arg, the posture
 // thread_start records.
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, uint16_t line0_index,
+                              kos_cap_t ep, kos_cap_t const* line, LineIndex line0_index,
                               kos_cap_t note, kos_task_t task, uint32_t core_mask, bool under_init);
 
 // The catalogue states what bring_up creates from the build's declaration of it.

@@ -2,8 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # The gates riding the own-image AMP partition. Two boot the merged artefact, one reads link
-# geometry out of every node's ELF. The artefacts themselves are BUILD targets assembled in
-# the app file, which records each path on ampping_n0 so this side states no path of its own.
+# geometry out of every node's ELF, one builds the partition with the self-test off. The
+# artefacts themselves are BUILD targets assembled in the app file, which records each path on
+# ampping_n0 so this side states no path of its own.
 
 if(NOT TARGET ampping_n0)
   return()
@@ -53,6 +54,14 @@ add_test(NAME amp_elf_agree
           "$<TARGET_FILE:ampping_n0>" "${CMAKE_BINARY_DIR}/amp-peers"
           "${KICKOS_AMP_NODES}" ampserve)
 kickos_host_gate(amp_elf_agree TIMEOUT 900)
+
+# Not on an address-space board, whose selftest app does not build with the self-test off.
+if(KICKOS_ENABLE_SELFTEST AND NOT KICKOS_HAVE_ASPACE)
+  add_test(NAME amp_prod_build
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_prod_build.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}")
+  kickos_host_gate(amp_prod_build TIMEOUT 1800)
+endif()
 
 if(_amp_emulated)
   # The gate boots the ARTEFACT, and building it is the first thing the script does.

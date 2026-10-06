@@ -809,13 +809,22 @@ config KICKOS_ROOT_STACK_SIZE
 	  Root runs userspace's ctors and main, so it makes syscalls and is bound by
 	  KICKOS_MIN_STACK_SIZE the way a spawned thread is. kmain.cc asserts it.
 
+config KICKOS_NEWLIB_NANO
+	bool "The C library is newlib's nano profile"
+	help
+	  Requested by the build on every configure from the profile the toolchain file
+	  selected: nano where the board descriptor names it (KICKOS_BOARD_NEWLIB) and
+	  KICKOS_FULL_NEWLIB does not ask for the full one. Any other request for it is refused
+	  as a second one. Nano takes each thread's libc scratch from the heap; full newlib
+	  keeps it inside the thread's _reent.
+
 config KICKOS_USER_HEAP_SIZE
 	int "Userspace heap the linker script carves"
 	range 0 1048576
 	# Nano takes each thread's strtok, time and rand scratch from here, 200 B a thread on
 	# microbit, so 1 KiB seats root and its four pool threads. It must stay under the
 	# 1,032 B the first buffered stdout write asks for, or that buffer takes it.
-	default 1024 if BOARD_MICROBIT && !KICKOS_MICROBIT_FULL_NEWLIB
+	default 1024 if BOARD_MICROBIT && KICKOS_NEWLIB_NANO
 	default 0 if CHIP_NRF51
 	default 2048 if CHIP_STM32F302
 	# 20 KiB of SRAM: at 8192 the heaviest stm32f103 image has no arena past the two

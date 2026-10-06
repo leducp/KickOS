@@ -179,7 +179,8 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     r32(win + ru::off::DX0CR) = ru::DX0CR_INSW | ru::DX0CR_DSEL_G;
 
     // Receive / alternative-receive interrupts to the service request `irq` is.
-    r32(win + ru::off::INPR) = (cfg->irq_index << ru::INPR_RINP_SHIFT) | (cfg->irq_index << ru::INPR_AINP_SHIFT);
+    r32(win + ru::off::INPR) =
+        (cfg->irq_index << ru::INPR_RINP_SHIFT) | (cfg->irq_index << ru::INPR_AINP_SHIFT);
 
     if (not priv_write_verify(win, ru::off::CCR, CCR_WORD, 0xFFFFFFFFu))
     {

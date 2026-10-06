@@ -127,6 +127,11 @@ if(KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs spi_mock.cc)
 endif()
 
+# No arm throws or reads a type at run time. A source property, so it follows the leaf's own
+# options and holds on a leaf that compiles with exceptions and RTTI.
+set_source_files_properties(${_selftest_srcs} PROPERTIES
+  COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
+
 set(_img_index 0)
 foreach(_img IN LISTS _selftest_images)
   list(GET _selftest_region_lo ${_img_index} _img_lo)
@@ -162,8 +167,15 @@ set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
 #
 # Recorded on the target: the gates that read the map live on the test side, and a path
 # restated there would be a second truth that drifts from the -Map this link actually passed.
-set(_selftest_elf "$<TARGET_FILE:selftest>")
-set(_selftest_map "${_selftest_elf}.map")
+foreach(_img IN LISTS _selftest_images)
+  set(_img_elf "$<TARGET_FILE:${_img}>")
+  if(NOT KICKOS_ARCH STREQUAL "x86_64")
+    target_link_options(${_img} PRIVATE "-Wl,-Map=${_img_elf}.map")
+    set_property(TARGET ${_img} APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_img_elf}.map")
+  endif()
+  set_target_properties(${_img} PROPERTIES
+    KICKOS_IMAGE_ELF "${_img_elf}" KICKOS_IMAGE_MAP "${_img_elf}.map")
+endforeach()
 if(KICKOS_ARCH STREQUAL "x86_64")
   # OVMF places an image at its preferred base when it can, so every other image boots with
   # firmware's relocation pass idle. 1 TiB is past any q35 RAM this tree boots, so firmware
@@ -176,12 +188,7 @@ if(KICKOS_ARCH STREQUAL "x86_64")
                                                "LINKER:--image-base=0x10000000000")
   set_target_properties(selftest PROPERTIES
     KICKOS_REBASED_IMAGE_FILE "$<TARGET_FILE:selftest_rebased>")
-else()
-  target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
-  set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
 endif()
-set_target_properties(selftest PROPERTIES
-  KICKOS_IMAGE_ELF "${_selftest_elf}" KICKOS_IMAGE_MAP "${_selftest_map}")
 
 # An arm whose body left main.cc has EXTERNAL linkage, so the compiler no longer reports it
 # unused when its TAP_ADD line goes. Every such arm is declared in selftest.h and registered in
@@ -296,7 +303,7 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # amp_far_call and amp_far_reply_guard are in this count on every posture: they skip by name
   # where no peer answers rather than being compiled out.
-  math(EXPR _tap_arms "${_tap_arms} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
+  math(EXPR _tap_arms "${_tap_arms} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # amp_share_crossing
@@ -398,7 +405,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
   math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # vector_survives_migrate
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
+  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 23") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # amp_share_crossing

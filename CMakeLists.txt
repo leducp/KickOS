@@ -103,6 +103,13 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     string(TOUPPER "${KICKOS_CONSOLE}" _kcfg_console)
     list(APPEND _kcfg_req "CONFIG_CONSOLE_${_kcfg_console}=y")
   endif()
+  # Each node of an AMP partition derives these itself, so the peer seed carries none.
+  set(KICKOS_KCONFIG_DERIVED KICKOS_NEWLIB_NANO)
+  if(KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
+    list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=y")
+  else()
+    list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=n")
+  endif()
   if(DEFINED KICKOS_TELEMETRY)
     string(TOUPPER "${KICKOS_TELEMETRY}" _kcfg_telem)
     list(APPEND _kcfg_req "CONFIG_TELEMETRY_${_kcfg_telem}=y")
@@ -939,10 +946,10 @@ if(KICKOS_BUILD_TESTS)
                       "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
                       "${_fs_redzone_preset}" "${KICKOS_ARCH}")
     set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
-    if(KICKOS_BOARD STREQUAL "microbit" AND KICKOS_MICROBIT_FULL_NEWLIB)
+    if(KICKOS_FULL_NEWLIB)
       # The callgraph scratch tree must use the same explicit comparison profile.
       set_tests_properties(trap_redzone PROPERTIES
-                           ENVIRONMENT "KICKOS_MICROBIT_FULL_NEWLIB=ON")
+                           ENVIRONMENT "KICKOS_FULL_NEWLIB=ON")
     endif()
   endif()
 
@@ -1315,6 +1322,7 @@ if(TARGET kickos_kernel)
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/kernel/kernel_leaf.ld>")
     install(FILES cmake/kernel_leaf.ld DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos/kernel")
   endif()
+  kickos_export_name(kickos_cxx_throw _kickos_cxx_throw_name)
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
   if(KICKOS_ARCH STREQUAL "sim")
@@ -1325,9 +1333,10 @@ if(TARGET kickos_kernel)
   elseif(KICKOS_ARCH STREQUAL "x86_64")
     # No compiler driver appends the toolchain's libraries, so each leaf's group names them.
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c,m,gcc>")
+    set(_kickos_cxx_libs "stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}")
     foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
       target_link_libraries(${_kickos_leaf} INTERFACE
-        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},stdc++,supc++,c,m,gcc>")
+        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},${_kickos_cxx_libs}>")
     endforeach()
   else()
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
@@ -1350,13 +1359,19 @@ if(TARGET kickos_kernel)
     endif()
 
     # Link the custom terminate handler as an object before libstdc++.
-    # This source requires exceptions and RTTI.
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
-    target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
+    target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fno-exceptions -fno-rtti)
     # An object library links nothing: kickos_user/kickos_kernel here are usage
     # requirements (include dirs) only, and PRIVATE keeps them off consumers.
     target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
+    # Extracted only through --wrap=__cxa_allocate_exception; nothing may reference it directly.
+    add_library(kickos_cxx_throw_objects OBJECT system/cxx/exception_report.cc)
+    target_compile_features(kickos_cxx_throw_objects PRIVATE cxx_std_20)
+    target_compile_options(kickos_cxx_throw_objects PRIVATE
+      ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
+    target_link_libraries(kickos_cxx_throw_objects PRIVATE kickos_core kickos_user kickos_kernel)
+    add_library(kickos_cxx_throw STATIC $<TARGET_OBJECTS:kickos_cxx_throw_objects>)
 
     kickos_export_name(kickos_user _kickos_user_name)
     kickos_export_name(kickos_cxx_rt _kickos_cxx_rt_name)
@@ -1379,16 +1394,17 @@ if(TARGET kickos_kernel)
       # x86_64 has no driver, and its first group holds the C++ libraries.
       if(NOT KICKOS_ARCH STREQUAL "x86_64")
         target_link_libraries(${_kickos_leaf} INTERFACE
-          "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name}>")
+          "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name},${_kickos_cxx_throw_name}>")
       endif()
       target_link_libraries(${_kickos_leaf} INTERFACE "${_kickos_cxx_rt_link}")
+      target_link_options(${_kickos_leaf} INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
     endforeach()
   endif()
 
   # kickos_core is a link dependency of every leaf, so it must be in the export set.
   kickos_export_targets(kickos_core kickos kickos_cxx kickos_kernel_leaf)
   if(TARGET kickos_cxx_rt)
-    kickos_export_targets(kickos_cxx_rt)
+    kickos_export_targets(kickos_cxx_rt kickos_cxx_throw)
   endif()
   if(TARGET kickos_cxx_core)
     kickos_export_targets(kickos_cxx_core)
@@ -1521,6 +1537,15 @@ if(TARGET kickos_kernel_leaf)
   kickos_compose(kickos_system_default
                  "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml"
                  EXPORT_NAME system_default)
+  # The old leaves link no system target, so they carry the gate assignment of no composition.
+  kickos_compose_gate(kickos_gate)
+  if(TARGET kickos_gate)
+    kickos_export_targets(kickos_gate)
+    kickos_export_name(kickos_gate _kickos_gate_name)
+    foreach(_kickos_leaf kickos kickos_cxx)
+      target_link_libraries(${_kickos_leaf} INTERFACE "$<TARGET_OBJECTS:${_kickos_gate_name}>")
+    endforeach()
+  endif()
 endif()
 if(KICKOS_BUILD_TESTS)
   _add_test(NAME platform_manifest
@@ -1528,14 +1553,12 @@ if(KICKOS_BUILD_TESTS)
                     "${PROJECT_BINARY_DIR}" manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(platform_manifest PROPERTIES TIMEOUT 300 LABELS host)
-  # Each packaged driver of this board's catalogue in a composition the board admits.
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/tests/drivers/${KICKOS_BOARD}")
-    _add_test(NAME platform_drivers
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                      "${PROJECT_BINARY_DIR}" drivers "${PROJECT_BINARY_DIR}/export/manifest.yaml" "${KICKOS_BOARD}"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(platform_drivers PROPERTIES TIMEOUT 300 LABELS host)
-  endif()
+  # Each packaged driver of this build's catalogue in a composition the board admits.
+  _add_test(NAME platform_drivers
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                    "${PROJECT_BINARY_DIR}" drivers "${PROJECT_BINARY_DIR}/export/manifest.yaml" "${KICKOS_BOARD}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(platform_drivers PROPERTIES TIMEOUT 300 LABELS host)
   set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
       "A golden composition this build targets, relative to the source root, admitted against its manifest")
   if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")
@@ -1728,8 +1751,8 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
       "# comes from arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake.\n"
       "${_kos_bake}")
   endif()
-  if(KICKOS_BOARD STREQUAL "microbit")
-    if(KICKOS_MICROBIT_FULL_NEWLIB)
+  if(KICKOS_BOARD_NEWLIB STREQUAL "nano")
+    if(KICKOS_FULL_NEWLIB)
       set(_kos_package_newlib full)
     else()
       set(_kos_package_newlib nano)
@@ -1737,7 +1760,7 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
     string(APPEND _kos_desc
       "\n# Appended at install: the newlib profile this package's libraries were built with,\n"
       "# the only one the shipped toolchain file accepts.\n"
-      "set(KICKOS_MICROBIT_PACKAGE_NEWLIB ${_kos_package_newlib})\n")
+      "set(KICKOS_PACKAGE_NEWLIB ${_kos_package_newlib})\n")
   endif()
   file(WRITE "${_kos_baked}" "${_kos_desc}")
   install(FILES "${_kos_baked}" DESTINATION "${KICKOS_CMAKE_DIR}")

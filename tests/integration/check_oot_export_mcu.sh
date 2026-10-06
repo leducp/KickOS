@@ -366,7 +366,7 @@ tr -s ' \n' '  ' < "$TMP/archless.log" | grep -q 'provides no KickOS::kickos_arc
   || fail "the arch-less configure failed for another reason: \
 $(sed -n '/CMake Error/,$p' "$TMP/archless.log" | sed -n '1,6p' | tr '\n' ' ')"
 
-PKG_NEWLIB="$(sed -n 's/^set(KICKOS_MICROBIT_PACKAGE_NEWLIB \([a-z]*\)).*/\1/p' "$DESC" | head -1)"
+PKG_NEWLIB="$(sed -n 's/^set(KICKOS_PACKAGE_NEWLIB \([a-z]*\)).*/\1/p' "$DESC" | head -1)"
 PROFILE_NOTE=""
 if [ -n "$PKG_NEWLIB" ]; then
   if [ "$PKG_NEWLIB" = nano ]; then
@@ -374,11 +374,11 @@ if [ -n "$PKG_NEWLIB" ]; then
   else
     OTHER_FULL=OFF
   fi
-  echo "== profile guard: a $PKG_NEWLIB package must refuse KICKOS_MICROBIT_FULL_NEWLIB=$OTHER_FULL =="
+  echo "== profile guard: a $PKG_NEWLIB package must refuse KICKOS_FULL_NEWLIB=$OTHER_FULL =="
   if "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/profile" -G "$GEN" \
        -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \
-       -DKICKOS_MICROBIT_FULL_NEWLIB="$OTHER_FULL" >"$TMP/profile.log" 2>&1; then
-    fail "a $PKG_NEWLIB package configured a consumer with KICKOS_MICROBIT_FULL_NEWLIB=$OTHER_FULL \
+       -DKICKOS_FULL_NEWLIB="$OTHER_FULL" >"$TMP/profile.log" 2>&1; then
+    fail "a $PKG_NEWLIB package configured a consumer with KICKOS_FULL_NEWLIB=$OTHER_FULL \
 (the package's newlib profile guard is gone)"
   fi
   grep -q "this KickOS package was built with $PKG_NEWLIB newlib" "$TMP/profile.log" \

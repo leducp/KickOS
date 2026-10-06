@@ -4,8 +4,10 @@
 # python -m kickos_compose platform <file or directory>...
 # python -m kickos_compose admit <composition>... --manifest <manifest> | --platform <platform directory>
 # python -m kickos_compose manifest <manifest>...
-# python -m kickos_compose emit <composition> --manifest <manifest> -o <file.c> [--asserts <file.ld>]
-#                               [--fragment <file.cmake>]
+# python -m kickos_compose partition <composition>... --manifest <manifest> --node <k>
+# python -m kickos_compose emit <composition> | --partition <composition>... --manifest <manifest> -o <file.c>
+#                               [--asserts <file.ld>] [--fragment <file.cmake>] [--gate <file.c>]
+# python -m kickos_compose gate --manifest <manifest> -o <file.c>
 # python -m kickos_compose cost <composition> --manifest <manifest>
 # python -m kickos_compose chip <chip or board file> --arch <arch> --include-dir <dir> --chip-dir <dir>
 # python -m kickos_compose chip <chip or board file> --arch <arch> --compare <header>
@@ -22,8 +24,9 @@ import sys
 from . import chip as chip_headers
 from .composition import admit
 from .descriptions import check_platform
-from .emit import admitted_of, emit_system
+from .emit import admitted_of, emit_gate, emit_system
 from .manifest import check_manifests
+from .partition import admit_partition
 from .supply import init_figures
 
 # The exit status of a run that refused what it read, which kickos_compose tells apart from a tool
@@ -57,12 +60,22 @@ def main(argv):
     against.add_argument("--platform", help="without a manifest, the directory holding platform/<chip>/")
     manifest = commands.add_parser("manifest", help="check export manifests and the descriptions they name")
     manifest.add_argument("manifests", nargs="+", help="manifest files")
+    partition = commands.add_parser("partition", help="admit every node composition of a partition together")
+    partition.add_argument("compositions", nargs="+", help="the node compositions, in node order")
+    partition.add_argument("--manifest", required=True, help="the export manifest of this node's kernel build")
+    partition.add_argument("--node", required=True, type=int, help="this build's node index")
+    gate = commands.add_parser("gate", help="emit the gate assignment of a build linking no composition")
+    gate.add_argument("--manifest", required=True, help="the export manifest of the kernel build")
+    gate.add_argument("-o", dest="output", required=True, help="the C source to write")
     table = commands.add_parser("emit", help="admit a composition and emit its table as C")
-    table.add_argument("composition", help="the composition file")
+    table.add_argument("composition", nargs="?", help="the composition file")
+    table.add_argument("--partition", nargs="+", help="the node compositions of a partition, in node order, of "
+                                                       "which this build's node's is emitted")
     table.add_argument("--manifest", required=True, help="the export manifest of the kernel build it runs on")
     table.add_argument("-o", dest="output", required=True, help="the C source to write")
     table.add_argument("--asserts", help="the linker script of the system target's link-time asserts to write")
     table.add_argument("--fragment", help="the CMake fragment kickos_compose reads to write")
+    table.add_argument("--gate", help="the gate assignment's C source to write, where the build carries one")
     cost = commands.add_parser("cost", help="admit a composition and print what its init spends, one figure "
                                             "per line")
     cost.add_argument("composition", help="the composition file")
@@ -83,7 +96,7 @@ def main(argv):
     if arguments.command == "chip":
         return run_chip(arguments)
 
-    if arguments.command in ("admit", "emit", "cost"):
+    if arguments.command in ("admit", "emit", "cost", "partition", "gate"):
         platform = getattr(arguments, "platform", None)
         if platform is not None and not os.path.isdir(platform):
             print("kickos_compose: --platform %s is no directory" % platform, file=sys.stderr)
@@ -99,20 +112,46 @@ def main(argv):
             scope = "; only the description rules ran, and a kernel build's need --manifest"
         return finish(report, count, "composition", scope)
 
+    if arguments.command == "partition":
+        report, found = admit_partition(arguments.compositions, arguments.manifest, arguments.node)
+        if found is None and not report.refusals:
+            print("kickos_compose: the partition was not admitted", file=sys.stderr)
+            return 1
+        return finish(report, len(arguments.compositions), "composition", " together")
+
+    if arguments.command == "gate":
+        if os.path.exists(arguments.output):
+            os.remove(arguments.output)
+        report, text = emit_gate(arguments.manifest)
+        if report.refusals:
+            return finish(report, 1, "manifest")
+        if text is None:
+            return 0
+        with open(arguments.output, "w", encoding="ascii", newline="\n") as stream:
+            stream.write(text)
+        return 0
+
     if arguments.command == "emit":
+        if (arguments.composition is None) == (arguments.partition is None):
+            print("kickos_compose: emit takes one composition or --partition", file=sys.stderr)
+            return 1
         # A refused composition leaves nothing behind, so a build cannot link the last one.
-        outputs = [arguments.output, arguments.asserts, arguments.fragment]
+        outputs = [arguments.output, arguments.asserts, arguments.fragment, arguments.gate]
         for output in outputs:
             if output is not None and os.path.exists(output):
                 os.remove(output)
-        report, texts = emit_system(arguments.composition, arguments.manifest, os.path.basename(arguments.output))
+        report, texts = emit_system(arguments.composition, arguments.manifest, os.path.basename(arguments.output),
+                                    arguments.partition)
+        named = arguments.composition
+        if named is None:
+            named = "the partition"
         if texts is None and not report.refusals:
-            print("kickos_compose: %s was not admitted" % arguments.composition, file=sys.stderr)
+            print("kickos_compose: %s was not admitted" % named, file=sys.stderr)
             return 1
         if texts is None:
             return finish(report, 1, "composition")
         for output, text in zip(outputs, texts):
-            if output is None:
+            if output is None or text is None:
                 continue
             with open(output, "w", encoding="ascii", newline="\n") as stream:
                 stream.write(text)

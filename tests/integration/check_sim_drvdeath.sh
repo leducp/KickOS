@@ -39,6 +39,8 @@ count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
 # First matching line number, empty when absent. Two markers written by different threads
 # both land on fd 1 unbuffered, so their order on the wire is program order.
 line_of() { printf '%s\n' "$OUT" | grep -n "$1" | head -1 | cut -d: -f1; }
+# Whether a configured build's catalogue lists simcon, which a composition may then start.
+catalogued() { grep -q '^  simcon:$' "$1/export/manifest.yaml"; }
 
 scratch_dir
 
@@ -47,6 +49,7 @@ echo "== configuring the sim: publishing service list, driver bounded to 2 messa
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_EXIT_AFTER=2 >/dev/null ) \
   || fail "configure with kickos_services_sim failed"
+catalogued "$TMP/build" || fail "simcon is missing from the catalogue of a build with no window-thread posture"
 
 echo "== building drvdeath =="
 "$CMAKE" --build "$TMP/build" --target drvdeath >/dev/null \
@@ -146,6 +149,9 @@ echo "== case 3: a two-thread driver, the register window outliving the receiver
     -DKICKOS_SIMCON_EXIT_AFTER=2 \
     -DKICKOS_SIMCON_WINDOW_THREAD=1 >/dev/null ) \
   || fail "case 3: configure failed"
+if catalogued "$TMP/build3"; then
+    fail "case 3: the window-thread posture leaves simcon in the catalogue, where a composition could start it"
+fi
 "$CMAKE" --build "$TMP/build3" --target drvdeath >/dev/null \
   || fail "case 3: drvdeath build failed"
 
@@ -222,6 +228,9 @@ echo "== case 4: the IRQ thread never reaches its loop, so root's ready-wait exp
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
     -DKICKOS_SIMCON_IRQ_WEDGE=1 >/dev/null ) \
   || fail "case 4: configure failed"
+if catalogued "$TMP/build4"; then
+    fail "case 4: the wedge posture leaves simcon in the catalogue, where a composition could start it"
+fi
 "$CMAKE" --build "$TMP/build4" --target drvdeath >/dev/null \
   || fail "case 4: drvdeath build failed"
 

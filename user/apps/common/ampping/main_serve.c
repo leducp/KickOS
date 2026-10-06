@@ -1,82 +1,55 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Serve the first partition port assigned to this node using ordinary
-// receive/reply calls. The service handles local and far callers alike.
-// Never return from root: that would shut down the partition's machine.
+// A serving node of the ampping partition: it answers the crossing its composition serves with
+// ordinary receive and reply calls, and keeps its own row of the partition region.
 
+#include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+#include "book.h"
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
-#include <kickos/sys/abi_probe.h>
 
 #define AMPPING_RECV_US (2u * 1000u * 1000u)
 #define AMPPING_IDLE_NS (100ull * 1000ull * 1000ull)
 
-// The port this image SERVES: the first entry of the partition's list naming this node. Its
-// capability is a local endpoint the kernel already bound the port to.
-static kos_cap_t ampping_service(uint32_t* out_port)
+void ampserve_main(kos_self_t const* self)
 {
-    uint32_t i;
-    for (i = 0; i < KOS_AMP_PORT_COUNT; i++)
-    {
-        uint32_t const node = kos_amp_entry_node(i);
-        uint32_t const port = kos_amp_entry_port(i);
-        if (node != KOS_AMP_SELF_NODE)
-        {
-            continue;
-        }
-        *out_port = port;
-        return kos_amp_port(node, port);
-    }
-    return KOS_CAP_NONE;
-}
-
-int main(int argc, char** argv)
-{
-    (void)argc;
-    (void)argv;
-    uint32_t port = 0;
-    kos_cap_t const ep = ampping_service(&port);
-    if (ep == KOS_CAP_NONE)
+    kos_cap_t ep = KOS_CAP_NONE;
+    uint32_t const port = ampping_crossing(self, KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
+    kos_window_t const region = kos_grant_mem(self, AMPBOOK_NAME);
+    struct ampbook_row* const book = (struct ampbook_row*)kos_window_addr(region);
+    if (port == KOS_AMP_NO_ENTRY or ep == KOS_CAP_NONE or book == NULL
+        or kos_window_size(region) < KICKOS_AMP_NODES * sizeof(struct ampbook_row))
     {
         printf("ampping: node %u serves no port\n", (unsigned)KOS_AMP_SELF_NODE);
-        return 1;
+        exit(1);
     }
     printf("ampping: node %u serves port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)port);
+    struct ampbook_row* const row = &book[KOS_AMP_SELF_NODE];
+    ampping_gate_serve(self, row);
+    // After the announcement is queued: node 0 prints nothing a gate reads before every row is set.
+    atomic_store_explicit(&row->alive, port + 1u, memory_order_release);
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Publish startup in the shared record so node 0 can observe uncalled peers.
-    // Console output can interleave across kernels, so it is not a reliable marker.
-    // Publish after queuing the boot line. The kernel validates the claimed port
-    // and writes its own partition-derived value to the shared record.
-    if ((intptr_t)kos_amp_probe(KOS_AMP_OP_APP_ALIVE_SET, port) < 0)
-    {
-        printf("ampping: node %u could not publish the port it serves\n",
-               (unsigned)KOS_AMP_SELF_NODE);
-    }
-#endif
-
+    uint32_t served = 0;
     while (true)
     {
         unsigned char msg[16];
         struct kos_reply_recv_opts opts = {0};
-        int32_t got;
         opts.timeout_us = AMPPING_RECV_US;
-        // NOT the zero the initialiser leaves: KOS_CAP_NONE is all-ones and zero is a real
-        // capability index, KOS_CAP_STDOUT. A path where the kernel never reaches the info
-        // write, an expiry among them, leaves exactly what is here.
+        // KOS_CAP_NONE is all-ones and zero is KOS_CAP_STDOUT: a path where the kernel never
+        // writes the info leaves exactly what is here.
         opts.info.reply_cap = KOS_CAP_NONE;
         opts.ep = ep;
-        got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
+        int32_t const got = kos_reply_recv(KOS_CAP_NONE, msg, kos_call_lens_pack(0, sizeof(msg)), &opts);
         if (got < 0)
         {
-            // A REPLY CAPABILITY CAN OUTLIVE A REFUSED ARRIVAL, and <kickos/sys.h> asks this
-            // loop to answer or close on EVERY path: a far caller under KOS_TIMEOUT_NONE has
-            // no deadline to fall back on. Tested against KOS_CAP_NONE and never for a sign,
-            // per struct kos_recv_info.
+            // A reply capability can outlive a refused arrival, and a far caller with no deadline
+            // waits on it.
             if (opts.info.reply_cap != KOS_CAP_NONE)
             {
                 (void)kos_reply(opts.info.reply_cap, msg, 0);
@@ -86,7 +59,11 @@ int main(int argc, char** argv)
         }
         if (opts.info.reply_cap == KOS_CAP_NONE)
         {
-            // A send and not a call: there is nothing to answer (N6e).
+            continue;
+        }
+        if (got < 1)
+        {
+            (void)kos_reply(opts.info.reply_cap, msg, 0);
             continue;
         }
         unsigned char rep[4];
@@ -94,15 +71,10 @@ int main(int argc, char** argv)
         rep[1] = 0xB1u;
         rep[2] = 0xB2u;
         rep[3] = 0xB3u;
-        // FOR A HUMAN READING A HANG and for nothing else: it is the only line that says this
-        // node answered, and no gate counts it. What a gate reads is the row bumped below.
         printf("  serve %u -> %u\n", (unsigned)msg[0], (unsigned)rep[0]);
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // AHEAD OF THE REPLY. The caller reads this row as soon as its answer lands, so a bump
-        // placed after kos_reply is a row that has not moved yet.
-        (void)kos_amp_probe(KOS_AMP_OP_APP_SERVED_BUMP, 0);
-#endif
+        // Ahead of the reply: the caller reads this row as soon as its answer lands.
+        served++;
+        atomic_store_explicit(&row->served, served, memory_order_release);
         (void)kos_reply(opts.info.reply_cap, rep, sizeof(rep));
     }
-    return 0;
 }

@@ -18,8 +18,48 @@ interrupts:
   # Clear of USBCTRL's line 14, which the default free block from 6 would cover.
   free_from: 15
 
+# ACCESSCTRL: one register per peripheral at its offset from the gate's base (10.6.3, Table 911,
+# pp.827-829), each a device's `gate_register`.
+partition_gate:
+  kind: accessctrl
+  device: accessctrl
+  # No node is ever assigned these (docs/design-m10-fleet.md, section 9.5).
+  never_assigned:
+    rom: 0x14
+    xip_main: 0x18
+    sram0: 0x1C
+    sram1: 0x20
+    sram2: 0x24
+    sram3: 0x28
+    sram4: 0x2C
+    sram5: 0x30
+    sram6: 0x34
+    sram7: 0x38
+    sram8: 0x3C
+    sram9: 0x40
+    dma: 0x44
+    resets: 0x64
+    io_bank0: 0x68
+    pads_bank0: 0x70
+    timer0: 0x98
+    uart1: 0xA4
+    clocks: 0xC0
+    xosc: 0xC4
+    pll_sys: 0xCC
+    pll_usb: 0xD0
+    ticks: 0xD4
+    watchdog: 0xD8
+    xip_ctrl: 0xE0
+    xip_qmi: 0xE4
+    xip_aux: 0xE8
+
 devices:
   # An APB window is a device's registers and the XOR, SET and CLR aliases above them.
+  uart0:
+    window: [0x40070000, 0x4000]
+    gate_register: 0xA0
+    ref: "Table 13 Address map, p.32"
+    lines: { irq: { number: 33, ref: "Table 95 System-level interrupts, p.82" } }
   uart1:
     window: [0x40078000, 0x4000]
     ref: "Table 13 Address map, p.32"
@@ -30,6 +70,7 @@ devices:
     symbol: USBCTRL_DPRAM_BASE
     ref: "Table 14 Address map, p.33"
     lines: { irq: { number: 14, ref: "Table 95 System-level interrupts, p.83" } }
+    gate_register: 0x48
     blocks: { regs: { offset: 0x10000, symbol: USBCTRL_REGS_BASE, ref: "Table 14 Address map, p.33" } }
 
   clocks: { window: [0x40010000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
@@ -44,6 +85,8 @@ devices:
   # The monotonic time base, and the tick generator that clocks it.
   timer0: { window: [0x400B0000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   ticks: { window: [0x40108000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  accessctrl: { window: [0x40060000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  watchdog: { window: [0x400D8000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   # GPIO output, the inter-core FIFOs, the spinlocks and the doorbells. The doorbell line is
   # core-local: each core's controller sees only its own.
   sio:

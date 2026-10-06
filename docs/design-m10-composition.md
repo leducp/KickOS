@@ -46,6 +46,7 @@ A resource is named by a path, and the namespace says who defines it:
 | `/dev/<device>/<line>` | chip file | `/dev/usic0/sr1` |
 | `/svc/<endpoint>` | composition, `serves` | `/svc/sensor` |
 | `/shm/<region>` | composition, `shared` | `/shm/history` |
+| `/amp/<port>` | the partition's port list (`KICKOS_AMP_PORTS`), a crossing between nodes | `/amp/3` |
 | `/init/events` | the init, for a task that `watches` | |
 | `/init/status` | the init, for a task that `watches`: the status of the tasks it watches, in `watches` order, read-only | |
 
@@ -78,7 +79,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `protection` | mapping | unless per cluster | see below |
 | `cores` | mapping | no | a core count range and `smp`; on a part whose cores are protected differently, one entry per cluster, each with its `protection`, and on a multi-architecture part also its `arch`, count range, `smp` and `line_offset`, the number its controller adds to a source number |
 | `clusters_coherent` | boolean | no | on a multi-architecture part, whether the clusters' caches are coherent with each other; absent is read as `false` |
-| `partition_gate` | mapping | no | a bus-enforced assignment of devices to nodes (RDC, APM) |
+| `partition_gate` | mapping | no | a bus-enforced assignment of devices to nodes: its `kind` (`apm`, `accessctrl`, `rdc`), and either the `device` it is programmed through, a per-peripheral gate each device names its register in by `gate_register` with the registers no node is assigned `never_assigned` (each a name and its offset), or its `gates`, each a device of the chip with the `regions` it holds (its catch-all among them), the device `ranges` it fronts, the `memory` it fronts for every other node, and the ranges every other node's `kernel` holds through it, each a `window` and its `access` |
 | `data_cache` | boolean | no | whether a data cache sits over the part's RAM; absent is read as `true` |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
@@ -166,14 +167,15 @@ both list.
 | `accepts` | list of names | no | platform-wide limitations the composition runs with knowingly |
 | `heap` | integer | yes | the image's libc heap, in bytes, which the link carries and no kernel figure sets; `heap: 0` carves none |
 | `init` | mapping | no | the init's own: `priority`, which the init lowers itself to at boot, one above the kernel build's lowest when absent |
-| `shared` | list | no | shared regions: `name` (a `/shm` path), a nonzero `size` and `cache` |
+| `shared` | list | no | shared regions: `name` (a `/shm` path), a nonzero `size` and `cache`, and `partition: true` for a partition region, which lives in the partition's user share and every node naming it maps |
 | `tasks` | list | yes | in declaration order; ready tasks start in that order |
 
 A task has a `name`; exactly one of `entry` (a symbol in the user's sources) and `driver` (a
 driver the package ships); `stack` and `priority`; optionally `core`; `devices`, a list of
 device paths, each a register window or a port range, so one task can hold a DMA engine beside
 its peripheral; `lines`, a mapping from the names the task looks up to line paths; `serves`, an
-endpoint path; `uses`, endpoint paths; `maps`, shared region paths each `ro` or `rw`;
+endpoint path or a crossing `/amp/<port>` the partition names this node's; `uses`, endpoint paths
+or crossings; `maps`, shared region paths each `ro` or `rw`;
 `watches`, task names; `authority`, the kernel authorities it holds; `accepts`, the grant-level
 limitations it runs with; and `restart: { max: N }`. A task name, a line name, a role name and a
 driver name are lowercase identifiers, `[a-z][a-z0-9_]*`; `core` is below 32, the table's
@@ -325,7 +327,11 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
   `scheduling.stdout-priority`, `scheduling.stdout-order`, `scheduling.init-priority-range`.
 - **Memory type**: a shared region's `cache` against who shares it, as the composition section
   states. `memory.uncached`, `memory.cached-incoherent`.
-- **Partition**: a device two nodes of a partition grant, and a `cached` region shared across
+- **Partition**: the node compositions admitted together by the partition build
+  (`kickos_compose(<system> PARTITION <node0.yaml>...)`, `kickos_compose partition`,
+  `docs/design-m10-fleet.md` section 9): `partition.device`, `partition.port`,
+  `partition.unserved`, `partition.region`, `partition.cached-incoherent`,
+  `partition.gate-budget` and `partition.lone`. Before it, a device two nodes of a partition grant, and a `cached` region shared across
   nodes the chip file does not declare coherent, unless accepted. One composition's admission
   cannot see either: they need the partition's node compositions admitted together, the partition
   build `roadmap.md` places in M10.5.
@@ -407,18 +413,24 @@ refused.
 A task's grants are contiguous and in declaration order: the order its entry writes its fields
 in, and each field's items in theirs. `serves` is an endpoint served, each of `uses` an endpoint
 used whose target is the serving task, `watches` one notification named `/init/events` and the
-read-only status window `/init/status`, the watcher's own status block, each of
+read-only status window `/init/status`, the watcher's own status block, a crossing served or used a
+`port` grant whose flags are the right the init delegates from the port the kernel seated in root,
+`KOS_CAP_WAIT` to its server and `KOS_CAP_SIGNAL` to a user, its base the port and its target the
+node the partition list names its server, ordering nothing, each of
 `devices` a window or a port range, named by its path or, for a packaged driver, by its window
 role, each of `maps` a region, `ro` as written, and each of `lines` a line by the name it is
 bound to, a packaged driver's in the order of its line roles. They are of two sorts. A grant that
-carries a capability, an endpoint served or used, a notification or a line, is delegated at spawn,
+carries a capability, an endpoint served or used, a crossing, a notification or a line, is delegated at spawn,
 and those grants alone are numbered: the i-th of them lands at slot `KOS_SPAWN_DELEGATED_CAP0 + i`, the slot the table records. A window, a port
 range, a shared region or the status window is a mapping the spawn makes in table order, occupies
 no capability slot, and records its place in the spawn's window list instead. A packaged driver's
 grants record neither a slot nor a window's place, its `Descriptor` placing what each of its
 threads receives. The status window's size is the count of tasks the watcher watches times the
 manifest's status record size, rounded as a shared region is, and its base is 0: the init's
-reservation places it.
+reservation places it. A partition region carries `KOS_TABLE_REGION_PARTITION` and its `offset` in
+the user share, which the partition build places in node 0's declaration order at the alignment
+every node mapping it needs; the init maps it at the share's base plus that offset and never
+reserves it.
 
 A privileged register's width is the kernel call that writes it, the chip file stating none: a
 port register is one byte through `kos_port_reg_write`, a memory register a 32-bit word through

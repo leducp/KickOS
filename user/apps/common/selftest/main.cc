@@ -11335,7 +11335,6 @@ int main(int, char**)
     // at the peer holds KOS_AMP_RING_SLOTS and nothing drains it on a node booted alone.
     TAP_ADD("amp_far_refusal_answered", t_amp_far_refusal_answered);
     TAP_ADD("amp_deferred_doorbell", t_amp_deferred_doorbell);
-    TAP_ADD("amp_app_alive", t_amp_app_alive);
     TAP_ADD("amp_inbound_reply", t_amp_inbound_reply);
     TAP_ADD("amp_far_undisclosed", t_amp_far_undisclosed);
     TAP_ADD("amp_far_infoless", t_amp_far_infoless);

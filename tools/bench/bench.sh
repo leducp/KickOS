@@ -259,8 +259,15 @@ export EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS
 
 BUILD_TARGET="$APP"
 if [ "${AMP_PARTITION:-0}" = "1" ]; then
-  if [ "$BOARD" != "esp32c6-wroom" ] || [ "$APP" != "ampping_n0" ] || [ "$VARIANT" != "amp2-n0" ]; then
-    echo "REFUSING: AMP_PARTITION=1 requires esp32c6-wroom, APP=ampping_n0, VARIANT=amp2-n0" >&2
+  case "$BOARD" in
+    esp32c6-wroom|pizero2350) ;;
+    *)
+      echo "REFUSING: AMP_PARTITION=1 requires esp32c6-wroom or pizero2350" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$APP" != "ampping_n0" ] || [ "$VARIANT" != "amp2-n0" ]; then
+    echo "REFUSING: AMP_PARTITION=1 requires APP=ampping_n0, VARIANT=amp2-n0" >&2
     exit 1
   fi
   BUILD_TARGET=amp_partition
@@ -351,7 +358,7 @@ if [ -z "${BENCH_HOST:-}" ]; then
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
     CONSOLE_USB_CDC="$CONSOLE_USB_CDC" \
     "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN" || exit $?
-  if [ "${AMP_PARTITION:-0}" = "1" ]; then
+  if [ "${AMP_PARTITION:-0}" = "1" ] && [ "$BOARD" = "esp32c6-wroom" ]; then
     python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
   fi
   judge || exit $?
@@ -494,7 +501,7 @@ fi
 [ -n "$RBYTES" ] || { echo "REFUSING: the remote capture reported no byte count" >&2; exit 1; }
 [ "$LBYTES" = "$RBYTES" ] || { echo "REFUSING: fetched $LBYTES bytes, the bench wrote $RBYTES" >&2; exit 1; }
 echo "log: $LOG  ($LBYTES bytes, fetched from $BENCH_HOST)"
-if [ "${AMP_PARTITION:-0}" = "1" ]; then
+if [ "${AMP_PARTITION:-0}" = "1" ] && [ "$BOARD" = "esp32c6-wroom" ]; then
   python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
 fi
 judge || exit $?

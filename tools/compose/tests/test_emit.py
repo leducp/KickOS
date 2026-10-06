@@ -9,10 +9,13 @@ import tempfile
 import types
 import unittest
 
-from kickos_compose import descriptions, emit, supply
+from kickos_compose import descriptions, emit, partition, supply
 from kickos_compose.subset import Report
 from kickos_compose.__main__ import REFUSED
-from test_arms import MANIFESTS, PLATFORM, SYSTEMS, TREE, VIRTIO, mutate, read, write
+from test_arms import (
+    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, MANIFESTS, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS, TREE, VIRTIO, mutate, read,
+    write,
+)
 
 sys.path.insert(0, os.path.join(TREE, "tools", "manifest"))
 import genmanifest  # noqa: E402
@@ -150,7 +153,7 @@ class Emitted(unittest.TestCase):
         refusals, table, path, manifest = self.table("qemu-arm64.yaml")
         self.assertEqual(refusals, [])
         self.assertEqual(table.init_priority, 2)
-        source, asserts, fragment = self.system("qemu-arm64.yaml")
+        source, asserts, fragment, gate = self.system("qemu-arm64.yaml")
         self.assertIn("\n        .init_priority = 2,\n", source)
         narrowed = [("  priority: [1, 31]\n", "  priority: [4, 31]\n")]
         refusals, table, path, manifest = self.table("qemu-arm64.yaml", manifest_edits=narrowed)
@@ -160,7 +163,7 @@ class Emitted(unittest.TestCase):
         refusals, table, path, manifest = self.table("qemu-arm64.yaml", edits)
         self.assertEqual(refusals, [])
         self.assertEqual(table.init_priority, 7)
-        source, asserts, fragment = self.system("qemu-arm64.yaml", edits)
+        source, asserts, fragment, gate = self.system("qemu-arm64.yaml", edits)
         self.assertIn("\n        .init_priority = 7,\n", source)
 
     def test_a_refused_composition_emits_nothing(self):
@@ -172,7 +175,7 @@ class Emitted(unittest.TestCase):
         self.assertEqual(text, None)
 
     def test_a_table_layout_the_tool_does_not_emit_is_refused(self):
-        edits = [("  table: 4\n", "  table: 3\n")]
+        edits = [("  table: 5\n", "  table: 4\n")]
         refusals, table, path, manifest = self.table("qemu-arm64.yaml", manifest_edits=edits)
         self.assertEqual(table, None)
         self.assertEqual([r.split(": ")[1] for r in refusals], ["form.version"])
@@ -198,11 +201,11 @@ class Emitted(unittest.TestCase):
         return texts
 
     def test_the_table_defines_the_symbol_kickos_kernel_requires(self):
-        source, asserts, fragment = self.system("qemu-arm64.yaml")
+        source, asserts, fragment, gate = self.system("qemu-arm64.yaml")
         self.assertIn("\nchar const kickos_link_one_system_target = 1;\n", source)
 
     def test_each_reserved_stack_pays_the_thread_local_carve(self):
-        source, asserts, fragment = self.system("qemu-arm64.yaml")
+        source, asserts, fragment, gate = self.system("qemu-arm64.yaml")
         stacks = [line for line in asserts.splitlines() if line.endswith("__kickos_tls_carve,")]
         self.assertEqual(stacks, ["ASSERT(4096 >= 2816 + __kickos_tls_carve,",
                                   "ASSERT(8192 >= 2816 + __kickos_tls_carve,",
@@ -212,7 +215,7 @@ class Emitted(unittest.TestCase):
         self.assertNotIn("__kickos_ram_end", asserts)
 
     def test_a_masked_stack_is_the_chip_scripts_to_check_and_the_arena_is_replayed(self):
-        source, asserts, fragment = self.system("xmc4800-relax.yaml")
+        source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
         self.assertNotIn("__kickos_tls_carve", asserts)
         placed = [line for line in asserts.splitlines() if line.startswith("__kickos_system_arena_")]
         self.assertEqual(placed[0], "__kickos_system_arena_0 = ALIGN(__kickos_ram_start, 0x200) + 0x200;")
@@ -228,18 +231,18 @@ class Emitted(unittest.TestCase):
         return texts
 
     def test_a_heap_of_zero_stays_zero(self):
-        source, asserts, fragment = self.system_heap([("heap: 65536\n", "heap: 0\n")])
+        source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 0\n")])
         self.assertIn("set(KICKOS_COMPOSE_HEAP 0)\n", fragment)
         self.assertNotIn("_kickos_heap_limit", asserts)
 
     def test_the_heap_is_carried_to_the_link(self):
-        source, asserts, fragment = self.system_heap([("heap: 65536\n", "heap: 4096\n")])
+        source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 4096\n")])
         self.assertIn("set(KICKOS_COMPOSE_HEAP 4096)\n", fragment)
         self.assertIn("ASSERT(_kickos_heap_limit - _kickos_heap_start >= 4096,", asserts)
 
     def test_the_pad_is_checked_against_the_heap(self):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
-        report, (source, asserts, fragment) = emit.emit_system(path, manifest)
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
         self.assertIn("ASSERT(_kickos_heap_limit - _kickos_heap_start >= 16384,", asserts)
         self.assertIn("state a smaller `heap` in %s, or link a kernel package built to carve more, whose "
                       "KICKOS_APPDATA_SIZE is that span where the heap is the app window's pad" % path, asserts)
@@ -247,14 +250,14 @@ class Emitted(unittest.TestCase):
 
     def test_the_asserts_cite_the_composition_by_its_path(self):
         refusals, table, path, manifest = self.table("qemu-arm64.yaml")
-        report, (source, asserts, fragment) = emit.emit_system(path, manifest)
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
         self.assertIn("so its `stack` in %s would have to grow" % path, asserts)
         self.assertIn("is not the 65536-byte heap of %s, which" % path, asserts)
         self.assertIn("the 65536-byte heap of %s, its `heap`, is more than" % path, asserts)
 
     def test_each_entry_is_declared_at_its_line_in_the_composition(self):
         refusals, table, path, manifest = self.table("qemu-arm64.yaml")
-        report, (source, asserts, fragment) = emit.emit_system(path, manifest, "system.c")
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest, "system.c")
         lines = source.splitlines()
         composition = read(path).splitlines()
         declared = [n for n, line in enumerate(lines) if line.startswith("extern void ")]
@@ -267,14 +270,14 @@ class Emitted(unittest.TestCase):
 
     def test_the_asserts_spell_the_chip_scripts_symbols_with_the_abis_prefix(self):
         prefixed = [('  symbol_prefix: ""\n', "  symbol_prefix: _\n")]
-        source, asserts, fragment = self.system_heap((), prefixed)
+        source, asserts, fragment, gate = self.system_heap((), prefixed)
         self.assertIn("ASSERT(4096 >= 2816 + ___kickos_tls_carve,", asserts)
         self.assertIn("ASSERT(__kickos_heap_limit - __kickos_heap_start >= 65536,", asserts)
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml", manifest_edits=prefixed)
-        report, (source, asserts, fragment) = emit.emit_system(path, manifest)
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
         self.assertIn("__kickos_system_arena_0 = ALIGN(___kickos_ram_start, 0x200) + 0x200;", asserts)
         self.assertIn("ASSERT(__kickos_system_arena_0 <= ___kickos_ram_end,", asserts)
-        source, asserts, fragment = self.system("xmc4800-relax.yaml")
+        source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
         self.assertIn("ALIGN(__kickos_ram_start, 0x200)", asserts)
 
     def test_a_hosted_image_brings_no_chip_script_asserts(self):
@@ -291,17 +294,17 @@ class Emitted(unittest.TestCase):
                 self.assertNotIn(symbol, asserts)
 
     def test_the_link_refuses_a_heap_symbol_other_than_the_systems(self):
-        source, asserts, fragment = self.system_heap([("heap: 65536\n", "heap: 0\n")])
+        source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 0\n")])
         self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 0,", asserts)
-        source, asserts, fragment = self.system_heap(())
+        source, asserts, fragment, gate = self.system_heap(())
         self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 65536,", asserts)
 
     def test_the_fragment_names_the_drivers_and_the_packaged_main(self):
-        source, asserts, fragment = self.system("xmc4800-relax.yaml")
+        source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
         self.assertIn('set(KICKOS_COMPOSE_DRIVERS "xmcuartirq;xmcssc")\n', fragment)
         self.assertIn('set(KICKOS_COMPOSE_CLIENTS "kickos_spi_proxy")\n', fragment)
         self.assertIn("set(KICKOS_COMPOSE_MAIN 0)\n", fragment)
-        source, asserts, fragment = self.system("qemu-arm64.yaml", [("entry: app_main", "entry: kickos_main")])
+        source, asserts, fragment, gate = self.system("qemu-arm64.yaml", [("entry: app_main", "entry: kickos_main")])
         self.assertIn('set(KICKOS_COMPOSE_DRIVERS "")\n', fragment)
         self.assertIn('set(KICKOS_COMPOSE_CLIENTS "")\n', fragment)
         self.assertIn("set(KICKOS_COMPOSE_MAIN 1)\n", fragment)
@@ -311,7 +314,7 @@ class Emitted(unittest.TestCase):
                  ("client: [kickos_spi_proxy]\n", "client: [kickos_spi_proxy, kickos_alpha]\n")]
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml", manifest_edits=edits)
         self.assertEqual(refusals, [])
-        report, (source, asserts, fragment) = emit.emit_system(path, manifest)
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
         self.assertEqual([str(r) for r in report.refusals], [])
         self.assertIn('set(KICKOS_COMPOSE_DRIVERS "xmcuartirq;xmcssc")\n', fragment)
         self.assertIn('set(KICKOS_COMPOSE_CLIENTS "kickos_zeta;kickos_spi_proxy;kickos_alpha")\n', fragment)
@@ -363,6 +366,96 @@ class Emitted(unittest.TestCase):
         self.assertEqual(run.returncode, REFUSED)
         self.assertIn("1 refusal(s) in 1 composition(s) read", run.stdout)
 
+class Partitioned(unittest.TestCase):
+    """What a partition's node compositions emit: crossings, placed regions and the gate rows."""
+
+    def setUp(self):
+        self.scratch = tempfile.mkdtemp(prefix="kickos-partition-")
+        shutil.copytree(PLATFORM, os.path.join(self.scratch, "platform"))
+        self.manifest = os.path.join(self.scratch, "manifest.yaml")
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def nodes(self, texts, manifest, edits=None):
+        write(self.manifest, manifest)
+        paths = []
+        for k, text in enumerate(texts):
+            path = os.path.join(self.scratch, "systems", "node%d.yaml" % k)
+            write(path, mutate(text, (edits or {}).get(k, []))[0])
+            paths.append(path)
+        return paths
+
+    def rows(self, texts, manifest, edits=None):
+        report, found = partition.admit_partition(self.nodes(texts, manifest, edits), self.manifest, 0)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        return [(r.gate, r.node, r.base, r.size, r.access, r.register) for r in found.rows]
+
+    def test_a_crossing_is_a_port_grant_and_orders_nothing(self):
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP)
+        report, texts = emit.emit_system(None, self.manifest, "table.c", paths)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        source = texts[0]
+        self.assertIn(".kind = KOS_GRANT_PORT,", source)
+        self.assertIn(".flags = KOS_CAP_SIGNAL,", source)
+        self.assertIn(".use_count = 0,", source)
+        self.assertIn(".offset = 0x0u, .flags = KOS_MEM_NOCACHE | KOS_TABLE_REGION_PARTITION", source)
+        self.assertIn("set(KICKOS_COMPOSE_GATE 1)", texts[2])
+        self.assertIn("kickos_gate_row_count = 0;", texts[3])
+
+    def test_partition_regions_are_placed_in_node_0_s_declaration_order(self):
+        second = ("  - name: /shm/book\n", "  - name: /shm/log\n    size: 0x1001\n    cache: uncached\n"
+                  "    partition: true\n  - name: /shm/book\n")
+        reordered = ("    partition: true\ntasks:", "    partition: true\n  - name: /shm/log\n    size: 0x1001\n"
+                     "    cache: uncached\n    partition: true\ntasks:")
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, {0: [second], 1: [reordered]})
+        report, found = partition.admit_partition(paths, self.manifest, 0)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        self.assertEqual(found.admitted[0].offsets, {"/shm/log": 0, "/shm/book": 0x2000})
+        self.assertEqual(found.admitted[1].offsets, {"/shm/log": 0, "/shm/book": 0x2000})
+
+    def test_the_c6_rows_give_each_node_its_grants_and_nothing_else(self):
+        hp = ("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/timg0]\n")
+        lp = ("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/timg1]\n")
+        rows = self.rows(C6_PAIR, C6_AMP, {0: [hp], 1: [lp]})
+        self.assertEqual(rows, [
+            (0, 0, 0x60008000, 0x1000, "rw", 0),
+            (0, 1, 0x40878000, 0x8000, "rw", 0), (0, 1, 0x60009000, 0x1000, "rw", 0),
+            (0, 1, 0x4083C000, 0x3C000, "rwx", 0),
+            (1, 1, 0x600B0000, 0x400, "rw", 0), (1, 1, 0x600B0C00, 0x400, "rw", 0),
+            (1, 1, 0x70000000, 0x400, "rwx", 0),
+        ])
+
+    def test_the_rp2350_rows_name_each_granted_register(self):
+        hp = ("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")
+        self.assertEqual(self.rows(RP_PAIR, RP_AMP, {0: [hp]}), [(0, 0, 0x40070000, 0x4000, "rw", 0xA0)])
+
+    def test_only_node_0_and_a_chip_with_a_gate_emit_one(self):
+        write(self.manifest, MANIFESTS["qemu-arm64.yaml"])
+        report, text = emit.emit_gate(self.manifest)
+        self.assertEqual((report.refusals, text), ([], None))
+        write(self.manifest, ARM64_AMP)
+        report, text = emit.emit_gate(self.manifest)
+        self.assertIn("kickos_gate_row_count = 0;", text)
+        write(self.manifest, C6_AMP.replace("    node: 0\n", "    node: 1\n"))
+        report, text = emit.emit_gate(self.manifest)
+        self.assertEqual((report.refusals, text), ([], None))
+        write(self.manifest, mutate(C6_AMP, [("  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n"
+                                              "    share: 0x4000\n    share_cache: cached\n"
+                                              "    slices: [0x40800000, 0x3C000]\n    window: [0x40878000, 0x8000]\n", "")])[0])
+        report, text = emit.emit_gate(self.manifest)
+        self.assertIn("kickos_gate_row_count = 0;", text)
+
+    def test_the_command_line_refuses_a_partition_as_it_refuses_a_composition(self):
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, {1: [("    serves: /amp/3\n", "")]})
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.path.join(TREE, "tools", "compose")
+        run = subprocess.run([sys.executable, "-m", "kickos_compose", "partition"] + paths
+                             + ["--manifest", self.manifest, "--node", "0"], env=env, capture_output=True, text=True)
+        self.assertEqual(run.returncode, REFUSED, run.stdout + run.stderr)
+        self.assertIn("partition.unserved", run.stdout)
+
+
 class Reserved(unittest.TestCase):
     """The init's private block and its reservations name the same shared regions."""
 
@@ -370,6 +463,7 @@ class Reserved(unittest.TestCase):
         class Region:
             def __init__(self, size):
                 self.size = size
+                self.partition = False
 
         class Manifest:
             status_record_size = 8

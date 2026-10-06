@@ -32,6 +32,8 @@ devices:
   uart0: { window: [0x09000000, 0x1000], lines: { global: 33 }, ref: "virt_memmap[VIRT_UART0]" } # PL011, the console
   rtc: { window: [0x09010000, 0x1000], lines: { alarm: 34 }, ref: "virt_memmap[VIRT_RTC]" } # PL031
   gpio: { window: [0x09030000, 0x1000], lines: { global: 39 }, ref: "virt_memmap[VIRT_GPIO]" } # PL061
+  # The PCIe host bridge's four legacy interrupts, shared SPIs 3 to 6. Its windows are left out.
+  pcie: { lines: { inta: 35, intb: 36, intc: 37, intd: 38 }, ref: "a15irqmap[VIRT_PCIE]" }
   # 32 virtio-mmio slots, /dev/virtio/0 to /dev/virtio/31: slot k is at the base plus
   # k * stride and raises the line plus k. Eight share each page, so granting one grants
   # its seven neighbours, which admission refuses unless the composition accepts it. And a

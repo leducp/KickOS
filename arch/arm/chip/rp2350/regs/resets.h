@@ -23,6 +23,7 @@ namespace kickos::rp2350::reg::resets
     constexpr uint32_t PLL_SYS = 1u << 14;
     constexpr uint32_t PLL_USB = 1u << 15;
     constexpr uint32_t TIMER0 = 1u << 23;
+    constexpr uint32_t UART0 = 1u << 26;
     constexpr uint32_t UART1 = 1u << 27;
     constexpr uint32_t USBCTRL = 1u << 28;
 }

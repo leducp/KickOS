@@ -420,8 +420,7 @@ namespace kickos
         // Per-node bookkeeping, one row per node, each row written by that node alone.
         //
         // A count is a REPORT and never an input: no field of a peer's row is spent as an index
-        // or a length anywhere, which is what lets it sit where a peer can write it. app_alive
-        // below is a mark rather than a count and carries the same rule.
+        // or a length anywhere, which is what lets it sit where a peer can write it.
         //
         // RELAXED ATOMICS BECAUSE THEY ARE READ ACROSS NODES: a syscall on node 0 sweeps every
         // node's row while a peer is inside its own doorbell handler writing its own. One
@@ -473,26 +472,6 @@ namespace kickos
             // fault on a message that arrived intact. One count per arrival, so a copy and an
             // info write both refused counts once.
             Atomic<uint32_t, Order::RELAXED> deliver_fault;
-            // THE ONE FIELD HERE THAT MOVES WITHOUT TRAFFIC, and the whole reason it exists:
-            // every count above needs a crossing, so a node this partition never calls is
-            // witnessed by nothing. It holds the port the partition names this node biased by
-            // one, zero being "this node's app has not published". Biased so that a node named
-            // port 0 is still distinguishable from a silent one.
-            //
-            // Written from app_alive_set below and from nowhere else, so what lands here is the
-            // kernel's own derivation from the partition list and never a word an app supplied.
-            // NOT gated on the selftest knob, unlike its writer: the shared region's layout is
-            // the partition's and must not move with a test option.
-            Atomic<uint32_t, Order::RELAXED> app_alive;
-            // CALLS A THREAD ON THIS NODE ANSWERED ITSELF, which no other field here says:
-            // `took` moves for a call the doorbell drained whether or not any thread received
-            // it, this node's kernel answering an unreceived one with an empty reply of its
-            // own, and `sent` counts that refusal as a publication too. So a peer reading
-            // either learns that a message crossed and not that an application served it.
-            // Bumped from app_served_bump below and from nowhere else, ahead of the reply, so
-            // a caller holding the answer finds the row already moved.
-            // NOT gated on the selftest knob, unlike its writer, for app_alive's reason.
-            Atomic<uint32_t, Order::RELAXED> app_served;
         };
 
         Counts const& counts(uint32_t node);
@@ -501,16 +480,6 @@ namespace kickos
         // why a row may sit where a peer reads it.
         void count_deliver_fault(void);
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // Publish THIS node's app_alive mark. The node is derived and never a parameter: one
-        // writer per row is the whole of why a row may sit where a peer reads it, and a caller
-        // that could name the row would be able to speak for a peer.
-        void app_alive_set(uint32_t mark);
-
-        // Count one call a thread on THIS node answered. The node is derived, for the reason
-        // above.
-        void app_served_bump(void);
-#endif
 
         // Drain every inbox of THIS node, routing a PORT_REPLY to whatever local caller its tag
         // names and answering every taken CALL on the sender's PORT_REPLY: a PORT_ECHO with its
