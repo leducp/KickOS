@@ -13,7 +13,8 @@
 #   - a planted app's guard, its selection macro and the if() around that are read as its
 #     conditions, and a selection or a guard of any other shape is refused;
 #   - a listed preset that does not link the image fails, on either condition; a gated preset
-#     that links it and is not listed fails; a judge that reads nothing fails.
+#     that links it and is not listed fails; a gated preset of an arch with no thread that links
+#     it fails; a judge that reads nothing fails.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -164,10 +165,12 @@ rtt = {'SELFTEST': 'ON', 'CONSOLE': 'rtt', 'HAVE': '1'}
 envs = {'on': on, 'on2': on, 'off': off, 'rtt': rtt}
 
 
-def verdict(what, listed, gated, words, threads=None):
+def verdict(what, listed, gated, words, threads=None, others=None):
     if threads is None:
         threads = {'plant': [('img', 't', frozenset(listed))]}
-    findings, confirmed, _absent = P.judge(threads, {'plant': gated}, conds, envs)
+    arches = {'plant': gated}
+    arches.update(others or {})
+    findings, confirmed, _absent = P.judge(threads, arches, conds, envs)
     text = '\n'.join(findings)
     if not words and (findings or not confirmed):
         die('%s: %s' % (what, text or 'nothing confirmed'))
@@ -188,7 +191,12 @@ verdict('a listed preset with no configuration read is refused', ['on', 'gone'],
         ['no configuration was read for gone'])
 verdict('an arch with threads and no gated preset is refused', ['on'], [],
         ['gates no preset'])
-verdict('judging nothing is refused', [], ['on'], ['nothing was judged'], threads={})
+verdict('judging nothing is refused', [], ['off'], ['nothing was judged'], threads={})
+verdict('an arch with no thread whose gated preset links the image is refused', ['on'], ['on'],
+        ['UNBOUNDED: bare declares no thread, and 1 of its trap_redzone preset(s) link img: on2'],
+        others={'bare': ['on2', 'off']})
+verdict('an arch with no thread whose gated presets link no image passes', ['on'], ['on'], [],
+        others={'bare': ['off', 'rtt']})
 
 # The preset's own console and self-test reach the configuration the conditions are read from.
 board = {'KICKOS_BOARD': ('UNINITIALIZED', 'qemu')}

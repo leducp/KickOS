@@ -399,22 +399,26 @@ if [ "${CONSOLE_PIN:-0}" = "1" ]; then
 fi
 
 # A USB device console never carries the kernel banner, so the route holds the identity rows
-# the image prints once the host configures it to this build, from its cache, board config and
-# stamp.
+# the image prints once the host configures it to the flashed image: version and diag column from
+# the build's cache and board config, commit from its stamp, build and app stamps from the image.
 route_identity() {
   [ "$CONSOLE_USB_CDC" = "1" ] || return 0
-  local version terse why
+  local version terse built app why
   version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt" | tail -1)
   terse=$(awk '$1 == "#define" && $2 == "KICKOS_DIAG_TERSE" { print $3; exit }' \
             "$BUILD/generated/include/kickos/board_config.h")
   [ -n "$version" ] && [ -n "$terse" ] || { echo "REFUSING: $BUILD states no version or no \
 KICKOS_DIAG_TERSE, so the identity rows cannot be rendered" >&2; return 1; }
+  built=$(image_string "$IMG" kickos_build_time)
+  [ -n "$built" ] || { echo "REFUSING: $IMG holds no kickos_build_time, so the identity rows \
+cannot be held to it" >&2; return 1; }
+  app=$(image_string "$IMG" kickos_app_build_time)
   if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$terse" "$version" "$BOARD" \
-               "$EXPECT_COMMIT"); then
-    echo "REFUSING: $LOG is not a capture of this build: $why" >&2
+               "$EXPECT_COMMIT" "$built" "$app"); then
+    echo "REFUSING: $LOG is not a capture of the flashed image: $why" >&2
     return 1
   fi
-  echo "=== identity rows name $BOARD at $EXPECT_COMMIT"
+  echo "=== identity rows name $BOARD at $EXPECT_COMMIT, built $built${app:+, app $app}"
 }
 
 # The capture's verdict, from the gate script JUDGE names; none without one.

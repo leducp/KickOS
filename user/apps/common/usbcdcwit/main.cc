@@ -7,10 +7,6 @@
 //
 // The request path must stay a kos_call carrying a <kickos/sys/uart.h> frame: only the call
 // reports a SHORT ACCEPT. A plain send's overflow is silently counted as tx_dropped.
-//
-// Every line goes out through STDIO, never `kos::print`: a userspace driver owns the
-// console in every image this app runs in, and `console_emit` drops a kernel-console write
-// in that state.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

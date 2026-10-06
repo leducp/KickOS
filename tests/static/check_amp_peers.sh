@@ -5,6 +5,8 @@
 # An own-image AMP node's image captured alone runs alone: tools/bench/amp_peers.sh derives the
 # other nodes' flash text windows from planted configurations, tools/flash-picotool.sh erases
 # each ahead of the load over a stub picotool, and every picotool load the capture runs takes them.
+# A picotool with no erase (1.x) and a window that is not whole flash sectors are refused before
+# any erase or load, and a board whose load is not picotool's refuses windows to erase.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -51,21 +53,61 @@ fi
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/picotool" <<'STUB'
 #!/bin/sh
+if [ "$1" = version ]; then
+    echo "$STUB_VERSION"
+    exit 0
+fi
 echo "$*" >> "$STUB_LOG"
 STUB
 chmod +x "$TMP/bin/picotool"
 : > "$TMP/image"
-STUB_LOG="$TMP/calls" PATH="$TMP/bin:$PATH" FLASH_ERASE_RANGES='0x10100000:0x10200000 0x10300000:0x10400000' \
-    FLASH_IMAGE="$TMP/image" bash tools/flash-picotool.sh pizero2350 planted > "$TMP/flash.out" 2>&1 \
-    || bad "flash-picotool.sh fails over the stub: $(tail -n 1 "$TMP/flash.out")"
+# <name> <picotool version line> <windows>: flash-picotool.sh over the stub, its calls in
+# $TMP/<name>.calls and its words in $TMP/<name>.out.
+load() {
+    : > "$TMP/$1.calls"
+    STUB_LOG="$TMP/$1.calls" STUB_VERSION="$2" PATH="$TMP/bin:$PATH" FLASH_ERASE_RANGES="$3" \
+        FLASH_IMAGE="$TMP/image" bash tools/flash-picotool.sh pizero2350 planted > "$TMP/$1.out" 2>&1
+}
+V2='picotool v2.1.1 (Linux, GNU-14.2.0, Release)'
+load erased "$V2" '0x10100000:0x10200000 0x10300000:0x10400000' \
+    || bad "flash-picotool.sh fails over the stub: $(tail -n 1 "$TMP/erased.out")"
 want="erase -r 0x10100000 0x10200000
 erase -r 0x10300000 0x10400000
 load -x -t elf $TMP/image"
-[ "$(cat "$TMP/calls" 2>/dev/null)" = "$want" ] \
-    || bad "flash-picotool.sh runs [$(cat "$TMP/calls" 2>/dev/null)], not the erases ahead of the load"
+[ "$(cat "$TMP/erased.calls")" = "$want" ] \
+    || bad "flash-picotool.sh runs [$(cat "$TMP/erased.calls")], not the erases ahead of the load"
+# <name> <picotool version line> <windows> <word>: refused before any erase or load, saying <word>.
+unloaded() {
+    if load "$1" "$2" "$3"; then
+        bad "flash-picotool.sh takes the $1 load"
+    elif ! grep -qF -e "$4" "$TMP/$1.out"; then
+        bad "flash-picotool.sh refuses the $1 load, but not for '$4': $(tail -n 1 "$TMP/$1.out")"
+    fi
+    [ ! -s "$TMP/$1.calls" ] || bad "the refused $1 load still runs [$(cat "$TMP/$1.calls")]"
+}
+unloaded picotool1 'picotool v1.1.2 (Linux, GNU-12.2.0, Release)' '0x10100000:0x10200000' \
+    'needs picotool 2.x'
+unloaded noversion 'ERROR: Unknown command: version' '0x10100000:0x10200000' 'needs picotool 2.x'
+unloaded unaligned "$V2" '0x10100000:0x10200000 0x10300800:0x10400000' 'whole 4096-byte flash sectors'
+unloaded unalignedend "$V2" '0x10100000:0x10100800' 'whole 4096-byte flash sectors'
+unloaded empty "$V2" '0x10100000:0x10100000' 'whole 4096-byte flash sectors'
+unloaded decimal "$V2" '268435456:269484032' 'not <from>:<to> in hex'
+load plain 'picotool v1.1.2 (Linux, GNU-12.2.0, Release)' '' \
+    || bad "a load with no window to erase is refused over picotool 1.x: $(tail -n 1 "$TMP/plain.out")"
+
+# A route whose load erases nothing refuses windows to erase.
+printf 'RIG_CONSOLE_F302NUCLEO=%s\n' "$TMP/no-such-console" > "$TMP/rig.conf"
+if PEER_ERASE='0x10100000:0x10200000' KICKOS_RIG="$TMP/rig.conf" BENCH_HOST= \
+       bash tools/bench/bench-capture.sh f302nucleo planted "$TMP/image" "$TMP/st.log" \
+       > "$TMP/st.out" 2>&1; then
+    bad "an f302nucleo capture with peer windows to erase is accepted"
+elif ! grep -qF "and f302nucleo's load erases none" "$TMP/st.out"; then
+    bad "an f302nucleo capture with peer windows to erase is refused, but not for them: $(grep REFUSING "$TMP/st.out")"
+fi
 
 loads=$(grep -c 'tools/flash-picotool.sh' tools/bench/bench-capture.sh)
 [ "$loads" -gt 0 ] || bad "bench-capture.sh runs no picotool load, so nothing here is read"
+# Matched as the call site spells it: a reformatted call fails here until this is updated.
 grep -n 'tools/flash-picotool.sh' tools/bench/bench-capture.sh \
     | grep -v 'FLASH_ERASE_RANGES="${PEER_ERASE:-}"' > "$TMP/bare"
 while read -r line; do

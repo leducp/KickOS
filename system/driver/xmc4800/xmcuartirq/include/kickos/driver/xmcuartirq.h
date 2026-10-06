@@ -8,9 +8,9 @@
 // Adding RX needs CCR |= RIEN|AIEN plus a PSCR W1C of the receive flags before every
 // re-arm, or the level re-asserts and storms SR1.
 //
-// Neither thread may use libc stdio: printf/puts route to cap 0, which the publish seated
-// on THIS driver's own endpoint, so a self-send would park the sole receiver forever
-// (design D7). Diagnostics go through kos_print, which bypasses the endpoint.
+// Neither thread may write stdout, through libc stdio or kos_print: both send on cap 0,
+// which the publish seated on THIS driver's own endpoint, so a self-send would park the
+// sole receiver forever (design D7).
 //
 // The driver cannot CHANGE the baud rate: FDR and BRG are Write = PV (RM Table 18-20) and
 // the kos_periph_reg_write allowlist carries entries for them on the sibling channel U0C1

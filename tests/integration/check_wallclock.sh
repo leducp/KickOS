@@ -6,7 +6,8 @@
 # the sleep the app declares took that long, within one percent, on the kernel clock and on the
 # capture host's clock alike, by the arrival stamps the capture route writes beside the log
 # (<log>.times, `<seconds>\t<line>`, whose mark lines must be this log's), and nothing panicked.
-# The first mark is never needed.
+# The first mark is never needed. In the app's source every clock read that opens an interval is
+# followed by the sleep and the read that closes it, so no print falls inside a timed interval.
 #
 #   KOS_CAPTURE=<log> check_wallclock.sh <board-build> <kickos-source> <cmake>
 
@@ -17,6 +18,18 @@ SRC="${2:?usage: check_wallclock.sh <board-build> <kickos-source> <cmake>}/user/
 REQ="$(sed -n 's/^ *constexpr uint64_t SLEEP_NS = \([0-9][0-9]*\)ull;$/\1/p' "$SRC")"
 [ -n "$REQ" ] || fail "$SRC declares no SLEEP_NS"
 TOL=$((REQ / 100))
+# C a clock read, S a sleep, P a print, in source order with comments gone.
+SHAPE="$(sed 's|//.*||' "$SRC" | awk '
+    /clock_now\(/ { printf "C" }
+    /sleep_ns\(/ { printf "S" }
+    /print\(|printf\(|puts\(/ { printf "P" }')"
+case "$SHAPE" in
+    *CSC*) ;;
+    *) jfail interval "$SRC times no sleep between two clock reads (reads [$SHAPE])" ;;
+esac
+case "$(printf '%s' "$SHAPE" | sed 's/CSC//g')" in
+    *C*|*S*) jfail interval "$SRC has a clock read or a sleep outside a read, sleep, read run, so a timed interval holds more than its sleep (reads [$SHAPE])" ;;
+esac
 
 judge_capture wallclock
 

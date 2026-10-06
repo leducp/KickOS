@@ -4,7 +4,7 @@
 # Witnesses the presets= lists of tests/static/app_stack_roots.txt without building: on each
 # trap_redzone preset of an arch that declares a thread, does that preset's tree link the
 # thread's image? A listed preset that does not, and a gated preset that does and is not listed,
-# both fail.
+# both fail, and so does a gated preset of an arch that declares no thread whose tree links one.
 #
 # The answer comes from the build's own facts. The preset's KICKOS_* cache variables, resolved
 # through `inherits` by tests/static/preset_boards.cmake, go to tools/kconfig/genconfig.py as
@@ -482,6 +482,12 @@ def judge(threads, gated, conds, envs):
                     confirmed.append((arch, image, name, preset))
                 else:
                     absent.append((arch, image, name, preset, miss))
+    for arch in sorted(set(gated) - set(threads)):
+        for image in sorted(conds):
+            on = [p for p in sorted(gated[arch]) if p in envs and links(conds[image], envs[p]) is None]
+            if on:
+                findings.append('UNBOUNDED: %s declares no thread, and %d of its trap_redzone'
+                                ' preset(s) link %s: %s' % (arch, len(on), image, ' '.join(on)))
     if not confirmed and not findings:
         findings.append('nothing was judged: no thread, or no preset, was read')
     return findings, confirmed, absent
@@ -548,12 +554,8 @@ def main(argv):
         for preset in sorted(set(gated.get(arch, [])).union(*[p for _i, _n, p in threads[arch]])):
             env_of(preset)
     for arch in sorted(set(gated) - set(threads)):
-        for image in sorted(conds):
-            on = [p for p in sorted(gated[arch]) if links(conds[image], env_of(p)) is None]
-            if on:
-                print('app_stack_presets: UNBOUNDED: %s declares no thread, and %d of its'
-                      ' trap_redzone preset(s) link %s: %s'
-                      % (arch, len(on), image, ' '.join(on)))
+        for preset in gated[arch]:
+            env_of(preset)
     findings, confirmed, absent = judge(threads, gated, conds, envs)
     for arch, image, name, preset in confirmed:
         print('app_stack_presets: %s %s/%s linked on %s' % (arch, image, name, preset))

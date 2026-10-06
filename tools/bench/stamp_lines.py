@@ -8,7 +8,8 @@
 #   stamp_lines.py <log> <watched-pid>
 #
 # <log>.times exists once it is ready. Runs until SIGTERM, or until <watched-pid> is gone or a
-# zombie, and writes a last line that has no newline at exit.
+# zombie, and writes a last line that has no newline at exit, stamped with the last poll that read
+# any of its bytes.
 #
 # A stamp is the first poll that saw the line's newline: never earlier than its arrival, later by
 # at most the gap since the poll before, and every line completed within one poll shares it.

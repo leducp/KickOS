@@ -1051,6 +1051,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(stamp_lines PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
+  _add_test(NAME capture_teardown
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_capture_teardown.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(capture_teardown PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME amp_peers
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_peers.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

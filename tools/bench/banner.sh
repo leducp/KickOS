@@ -4,7 +4,8 @@
 #
 # Sourced by bench-capture.sh and bench.sh, never executed. Reads the image's commit label out of
 # a capture's boot banner (tests/static/check_bench_banner.sh holds it to planted logs), and
-# holds a USB device console's identity rows to the build (tests/static/check_usb_identity.sh).
+# holds a USB device console's identity rows to the flashed image
+# (tests/static/check_usb_identity.sh).
 
 # The label itself can arrive damaged, a console dropping bytes out of its row. A lone 8-hex token
 # in a KickOS banner IS the commit, so it is recovered rather than reporting no banner on a
@@ -150,12 +151,18 @@ identity_row() { # <diag> <macro> <terse> <value>
 }
 
 # A USB device console's capture: its last identity block (kickos/sys/banner_identity.h), the
-# banner's title, board and commit rows a host's configuration opens the stream with, names this
-# build, so it stands in for the kernel banner that console never carries. The rows are rendered
-# here from kbanner's own formats. Prints the refusal and returns 1 otherwise.
-identity_verdict() { # <log> <diag> <terse 0|1> <version> <board> <label>
+# banner's title, board, build, app and commit rows a host's configuration opens the stream with,
+# names the flashed image, so it stands in for the kernel banner that console never carries. The
+# rows are rendered here from kbanner's own formats; an empty <app> is an image with no app stamp,
+# whose block has no app row. Prints the refusal and returns 1 otherwise.
+identity_verdict() { # <log> <diag> <terse 0|1> <version> <board> <label> <build> <app>
   _iv_t=$(identity_row "$2" KDIAG_F_BANNER_NAME "$3" '%s') || { echo "no title format in $2"; return 1; }
   _iv_b=$(identity_row "$2" KDIAG_F_BANNER_BOARD "$3" "$5") || { echo "no board format in $2"; return 1; }
+  _iv_u=$(identity_row "$2" KDIAG_F_BANNER_BUILD "$3" "$7") || { echo "no build format in $2"; return 1; }
+  _iv_a=""
+  if [ -n "$8" ]; then
+    _iv_a=$(identity_row "$2" KDIAG_F_BANNER_APP "$3" "$8") || { echo "no app format in $2"; return 1; }
+  fi
   _iv_c=$(identity_row "$2" KDIAG_F_BANNER_COMMIT "$3" "$6") || { echo "no commit format in $2"; return 1; }
   # shellcheck disable=SC2059
   _iv_title=$(printf "$_iv_t" "$4")
@@ -170,13 +177,16 @@ identity_verdict() { # <log> <diag> <terse 0|1> <version> <board> <label>
     echo "no identity rows: the image on the board printed none once the host configured it, so the capture names no build"
     return 1
   fi
-  _iv_block=$(tr -d '\r' < "$1" | sed -n "${_iv_at},$((_iv_at + 2))p")
+  _iv_block=$(tr -d '\r' < "$1" | sed -n "${_iv_at},$((_iv_at + 4))p")
   _iv_n=0
-  for _iv_row in "$_iv_title" "$_iv_b" "$_iv_c"; do
+  for _iv_row in "$_iv_title" "$_iv_b" "$_iv_u" "$_iv_a" "$_iv_c"; do
+    if [ -z "$_iv_row" ]; then
+      continue
+    fi
     _iv_n=$((_iv_n + 1))
     _iv_got=$(printf '%s\n' "$_iv_block" | sed -n "${_iv_n}p")
     if [ "$_iv_got" != "$_iv_row" ]; then
-      echo "identity row $_iv_n of the last block reads [$_iv_got], not this build's [$_iv_row]"
+      echo "identity row $_iv_n of the last block reads [$_iv_got], not the flashed image's [$_iv_row]"
       return 1
     fi
   done

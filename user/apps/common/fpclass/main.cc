@@ -25,11 +25,9 @@ namespace
     int g_bad = 0;
     char g_line[128];
 
-    // The kernel console drops what its ring cannot hold, so each line gets time to drain.
     void say()
     {
         kos::print(g_line);
-        kos::sleep_ns(20'000'000);
     }
 
     double from_bits(uint64_t u)
