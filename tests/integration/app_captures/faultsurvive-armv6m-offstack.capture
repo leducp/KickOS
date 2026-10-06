@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   cpu     rp2040
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+
+=== HARD FAULT ===
+  PC=0x10000430 LR=0x10001601 xPSR=0x61000000 (PSP)
+  R0=0x1b R1=0x0 R2=0x0 R3=0x20008760 R12=0x0

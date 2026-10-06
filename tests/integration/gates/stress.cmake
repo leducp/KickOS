@@ -7,23 +7,17 @@
 if(NOT TARGET stress)
   return()
 endif()
+kickos_app_judge(stress tests/integration/check_stress.sh)
 
 # Bounded, self-verifying concurrency stress: exercises scheduler + semaphores +
 # the tickless timer under many mixed-priority threads, then asserts conservation.
 # The sim has NO virtual clock: arch_clock_now reads CLOCK_MONOTONIC and the one-shot is a
 # real timer_create delivering SIGALRM, so this gate is wall-clock timed like the MCU runs
-# and its conservation counts, not its timings, are what it asserts. On MCUs it is a
-# manual soak, run per board.
+# and its conservation counts, not its timings, are what it asserts.
 if(KICKOS_ARCH STREQUAL "sim")
-  add_test(NAME sim_stress COMMAND "$<TARGET_FILE:stress>")
-  # KICKOS_PANIC_REGEX, not a lowercase "panic|unreachable": CTest's
-  # FAIL_REGULAR_EXPRESSION is case-sensitive, and the kernel prints "KERNEL PANIC:",
-  # so the old pattern matched only KICKOS_UNREACHABLE and let any panic AFTER the
-  # pass marker ship green.
-  set_tests_properties(sim_stress PROPERTIES
-    TIMEOUT 60
-    PASS_REGULAR_EXPRESSION "STRESS PASS"
-    FAIL_REGULAR_EXPRESSION "STRESS FAIL;${KICKOS_PANIC_REGEX}")
+  add_test(NAME sim_stress
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh" "$<TARGET_FILE:stress>")
+  set_tests_properties(sim_stress PROPERTIES TIMEOUT 60)
 endif()
 
 # Threads on every core, on THIS image and not the smallest one that boots the chip: the soak

@@ -7,6 +7,12 @@
 if(NOT TARGET pspguard_svc)
   return()
 endif()
+foreach(_pg_image pspguard pspguard_svc pspguard_svcdepth pspguard_block pspguard_above
+                  pspguard_below pspguard_fp)
+  if(TARGET ${_pg_image})
+    kickos_emulator_judged(${_pg_image})
+  endif()
+endforeach()
 
 if(NOT (KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"))
   return()

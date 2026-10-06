@@ -6,3 +6,4 @@
 add_executable(hello_c main.c)
 target_link_libraries(hello_c PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(hello_c)
+kickos_app_judge(hello_c tests/integration/check_qemu_hello.sh)

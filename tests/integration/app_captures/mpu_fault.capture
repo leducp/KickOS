@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[domain] expect fault at 0x21000
+[domain] A: writing my own region
+[domain] A: my region ok; writing domain B (expect fault)
+
+=== THREAD FAULT === thread 'domainA' killed, system continues
+  PC=0xffc005c2 MPESTS=0x6
+  ADDR=0x21000

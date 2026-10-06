@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[objbudget]   endpoint_create at the ceiling rc=-11
+[objbudget] ok - a task at its endpoint ceiling is refused with the budget's own code, not ENOMEM
+[objbudget] ok - and the ceiling admitted at least one endpoint first
+[objbudget]   endpoint_create after closing one rc=0
+[objbudget] ok - releasing an endpoint gives its budget back to the task that created it
+[objbudget]   task_create rc=0
+[objbudget]   the child task's endpoint_create rc=0
+[objbudget] ok - a task at its ceiling does not deny another task's endpoint_create
+[objbudget]   sem_create at the endpoint ceiling rc=0
+[objbudget] ok - the endpoint ceiling does not refuse a semaphore: the count is per pool
+[objbudget] PASS (5 arms)

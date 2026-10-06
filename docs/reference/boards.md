@@ -2809,7 +2809,25 @@ fault`. The proof that this is the capture protocol and not the image: a write-o
 **PRE-fix** image reproduces that clean result byte for byte. `f302nucleo` therefore has a
 gate-verified fault-isolation witness (TAG `m484p2`), and **its post-fault console is NOT an
 unreliable instrument** -- a claim this file and `STATE.md` both used to carry. Expecting two plan
-lines here, and slicing from the last one, is the older story: take the capture write-only instead.
+lines here, and slicing from the last one, is the older story.
+
+**The write's own boot is not a start either, and the capture no longer reads it (measured
+2026-10-05, `f411disco`, st-flash 1.8.0).** `st-flash write` does not reset the core after
+programming: it sets PC to the reset vector over the flash loader's core state and runs it, still
+under halting debug, with `DEMCR=0x01000501` (`VC_HARDERR`, `VC_BUSERR`, `VC_CORERESET`) armed by
+the `--connect-under-reset` connect. Read through the bench chain right after the write, over 23 runs
+(17 back-to-back `panicgate1`-`5`, then `fault`, the three `faultsurvive` images and both selftest
+images): in the 2 runs whose write printed nothing, `DFSR.VCATCH` was set, `HFSR` FORCED and `CFSR`
+`IACCVIOL|PRECISERR` at a garbage `BFAR=0xc024f8eb`, so the start jumped wild and the vector catch
+halted it before the console was up; in the 21 others `VCATCH` was clear and the boot printed. The
+capture starts the image with a read under reset instead: a `SYSRESETREQ` start halted at the
+vector, whose detach clears `C_DEBUGEN`. All 23 captures passed under it with `DFSR.VCATCH` clear
+after the start. That count alone does not separate the fix from luck: at the measured base rate of
+2 in 23, a start that changed nothing passes 23 runs clean 12 percent of the time. It takes 34 clean
+back-to-back runs to bring that under 5 percent, and 51 under 1 percent; those runs are owed, and
+until they are taken the evidence is the mechanism, `VCATCH` clear after every start. `DEMCR` keeps its catches, since st-flash writes nothing outside flash, SRAM and
+the option bytes, and they are inert: `faultsurvive_off` took a FORCED HardFault after the start
+(`HFSR=0x40000000`, `CFSR=0x10000`) and its dump reached the wire.
 
 At `124b68c` the `ringppb` capture stops after two lines:
 

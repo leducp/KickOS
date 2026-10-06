@@ -16,6 +16,7 @@ ignore x86_64 * kickos_x86_64_landed@1/1 reason: kernel boot init-array construc
 ignore x86_64 * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore x86_64 * tap::run_all@1/2 reason: userland test callback
 ignore x86_64 * tap::run_all@2/2 reason: userland test callback
+ignore x86_64 * tap.cc:census_read@1/1 reason: userland test census callback
 ignore armv8a * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
 ignore armv8a * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
 ignore-if-present armv8a * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
@@ -25,6 +26,7 @@ ignore armv8a * kickos::init::driver_path::start@1/1 reason: userland packaged d
 ignore armv8a * kickos_root_entry@1/1 reason: userland app init-array constructor
 ignore armv8a * tap::run_all@1/2 reason: userland test callback
 ignore armv8a * tap::run_all@2/2 reason: userland test callback
+ignore armv8a * tap.cc:census_read@1/1 reason: userland test census callback
 ignore rv64imac * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
 ignore rv64imac * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
 ignore-if-present rv64imac * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
@@ -35,6 +37,7 @@ ignore rv64imac * kickos_root_entry@1/1 reason: userland app init-array construc
 ignore rv64imac * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rv64imac * tap::run_all@1/2 reason: userland test callback
 ignore rv64imac * tap::run_all@2/2 reason: userland test callback
+ignore rv64imac * tap.cc:census_read@1/1 reason: userland test census callback
 ignore armv7m * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
 ignore armv7m * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
 ignore-if-present armv7m * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
@@ -45,6 +48,7 @@ ignore armv7m * kickos_root_entry@1/1 reason: userland app init-array constructo
 ignore armv7m * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore armv7m * tap::run_all@1/2 reason: userland test callback
 ignore armv7m * tap::run_all@2/2 reason: userland test callback
+ignore armv7m * tap.cc:census_read@1/1 reason: userland test census callback
 ignore armv6m * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
 ignore-if-present armv6m * __gnu_cxx::__verbose_terminate_handler@1/1 reason: full C++ has this terminate callback; nano does not build the C++ exception leaf
 ignore-if-present armv6m * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
@@ -54,6 +58,7 @@ ignore armv6m * kickos::init::driver_path::start@1/1 reason: userland packaged d
 ignore armv6m * kickos_root_entry@1/1 reason: userland app init-array constructor
 ignore armv6m * tap::run_all@1/2 reason: userland test callback
 ignore armv6m * tap::run_all@2/2 reason: userland test callback
+ignore armv6m * tap.cc:census_read@1/1 reason: userland test census callback
 ignore rv32imac * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
 ignore rv32imac * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
 ignore-if-present rv32imac * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
@@ -64,6 +69,7 @@ ignore rv32imac * kickos_root_entry@1/1 reason: userland app init-array construc
 ignore rv32imac * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rv32imac * tap::run_all@1/2 reason: userland test callback
 ignore rv32imac * tap::run_all@2/2 reason: userland test callback
+ignore rv32imac * tap.cc:census_read@1/1 reason: userland test census callback
 ignore rxv3 * __gnu_cxx::__verbose_terminate_handler@1/1 reason: freestanding C++ terminate callback
 ignore-if-present rxv3 * exception_report.cc:report@1/1 reason: userland report of an uncaught exception from the terminate callback
 ignore rxv3 * kickos::driver::bring_up@1/1 reason: userland block initializer through a service descriptor
@@ -74,3 +80,4 @@ ignore rxv3 * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rxv3 * rx_reset_handler@1/1 reason: boot init-array constructor before scheduler start
 ignore rxv3 * tap::run_all@1/2 reason: userland test callback
 ignore rxv3 * tap::run_all@2/2 reason: userland test callback
+ignore rxv3 * tap.cc:census_read@1/1 reason: userland test census callback

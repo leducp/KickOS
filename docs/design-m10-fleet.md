@@ -857,7 +857,7 @@ flashed). Those are witnessed by their links in CI alone, and the report says so
 
 ## 11. What M10.5 leaves, and its ABI touchpoints
 
-**To M10.6**: the exit record and the reference documents reconciled against what shipped. M10.5
+**To M10.7**: the exit record and the reference documents reconciled against what shipped. M10.5
 updates every page that names what it deletes, since the doc-name gate requires it, and
 `design-m10-composition.md`'s schema for every field it adds: the `mprotect` unit, `host` devices,
 the baseless arena, `blocks`, `link`, `interrupts`, `cycle_counter`, `c`, `symbol`, `manual`,

@@ -7,6 +7,7 @@
 if(NOT TARGET fp_switch)
   return()
 endif()
+kickos_app_judge(fp_switch tests/integration/check_qemu_fp.sh)
 
 # One call for every board that builds the app, the enclosing add_subdirectory gate deciding
 # which those are (user/apps/common/CMakeLists.txt). The M-profile arm validates the PendSV FP

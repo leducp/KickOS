@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     nrf51822
+   mpu     off
+   sched   tickless
+
+[ringpriv]   CONTROL=0x0
+[ringpriv] ok - CONTROL.nPRIV=0: no privilege axis, the unprivileged thread is PRIVILEGED
+[ringpriv] skip - the boundary arm needs a privilege ring: nothing here to escape from
+[ringpriv] PASS (1 arms)

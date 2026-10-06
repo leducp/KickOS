@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+stress: scheduler + semaphore + tickless-timer conservation test
+stress: runnable 12
+  naps 600/600  handoffs 18000/18000  churn 2040/2040
+STRESS PASS
+# stress complete

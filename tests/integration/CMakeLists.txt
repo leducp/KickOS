@@ -25,6 +25,39 @@
 # boards make the CLAIM, and where the claim is every emulated board but a few, it is spelled
 # as the EXCLUSION: a list of the covered boards leaves a new board out and says nothing.
 
+# kickos_emulator_judged(<image>...)
+#   States that an emulator gate holds <image>'s verdict and no capture can: an exit status, a
+#   panic, a reboot or a deliberate fault. The image listing then reads `emulator` where a test
+#   this build runs names it, and `emulator-owed` where none does, which the bench reports as
+#   owed.
+function(kickos_emulator_judged)
+  foreach(_image IN LISTS ARGN)
+    if(NOT TARGET ${_image})
+      message(FATAL_ERROR "kickos_emulator_judged(${_image}): no such image")
+    endif()
+    get_target_property(_judge ${_image} KICKOS_IMAGE_JUDGE)
+    if(_judge)
+      message(FATAL_ERROR "kickos_emulator_judged(${_image}): ${_judge} already judges its capture")
+    endif()
+    set_target_properties(${_image} PROPERTIES KICKOS_IMAGE_JUDGE emulator)
+  endforeach()
+endfunction()
+
+# kickos_inapplicable(<image> <why>)
+#   States that this build's posture voids <image>'s claim, so nothing can witness it here. The
+#   image listing reads `inapplicable` with <why> as its argument.
+function(kickos_inapplicable image why)
+  if(NOT TARGET ${image})
+    message(FATAL_ERROR "kickos_inapplicable(${image}): no such image")
+  endif()
+  get_target_property(_judge ${image} KICKOS_IMAGE_JUDGE)
+  if(_judge)
+    message(FATAL_ERROR "kickos_inapplicable(${image}): already ${_judge}")
+  endif()
+  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE inapplicable
+                                            KICKOS_IMAGE_JUDGE_ARGS "${why}")
+endfunction()
+
 # The board name as a CTest-name prefix, for the gates whose ctest name is the claim rather
 # than the image and so cannot take kickos_add_qemu_test's derived name.
 string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
@@ -45,7 +78,34 @@ foreach(_gate IN LISTS _kickos_gates)
   include("${_gate}")
 endforeach()
 
+add_test(NAME ${_tag}_image_listing
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_image_listing.sh"
+          "${PROJECT_BINARY_DIR}/kickos-images.txt" "${PROJECT_SOURCE_DIR}" "${CMAKE_CTEST_COMMAND}"
+          "${CMAKE_COMMAND}" "${PROJECT_BINARY_DIR}" "${CMAKE_EXECUTABLE_SUFFIX_CXX}")
+kickos_host_gate(${_tag}_image_listing TIMEOUT 30)
 add_test(NAME ${_tag}_host_gate_boots
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_host_gate_boots.sh" "${PROJECT_SOURCE_DIR}"
           "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}" "${PROJECT_BINARY_DIR}")
 kickos_host_gate(${_tag}_host_gate_boots TIMEOUT 30)
+add_test(NAME ${_tag}_image_judges_proved
+  COMMAND sh "${PROJECT_SOURCE_DIR}/tests/static/check_app_judges.sh" --listing
+          "${PROJECT_BINARY_DIR}/kickos-images.txt")
+kickos_host_gate(${_tag}_image_judges_proved TIMEOUT 30)
+
+# KICKOS_RUN_IMAGES: each image a test this build runs names, the test being neither a host gate
+# nor declined, which the image listing reads. Deferred behind every site's set_tests_properties
+# and the decline pass.
+function(_kickos_mark_run_images)
+  get_property(_runs DIRECTORY PROPERTY kickos_image_tests)
+  foreach(_run IN LISTS _runs)
+    string(REPLACE "|" ";" _run "${_run}")
+    list(GET _run 0 _run_image)
+    list(GET _run 1 _run_test)
+    get_test_property("${_run_test}" LABELS _run_labels)
+    get_test_property("${_run_test}" DISABLED _run_disabled)
+    if(NOT "host" IN_LIST _run_labels AND NOT _run_disabled)
+      set_property(GLOBAL APPEND PROPERTY KICKOS_RUN_IMAGES "${_run_image}")
+    endif()
+  endforeach()
+endfunction()
+cmake_language(DEFER CALL _kickos_mark_run_images)

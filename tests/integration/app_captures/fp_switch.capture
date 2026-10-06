@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     xmc4800
+   mpu     enforce
+   sched   tickless
+
+FP switch test: checker verifies s16-s31 survive a switch while
+a lower-priority trasher clobbers them. Result lines follow.
+
+  FP OK: 10 rounds, s16-s31 preserved across switch
+  FP OK: 20 rounds, s16-s31 preserved across switch

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     esp32c6
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+
+=== RISC-V CONTAINED (wild stack) ===
+  thread 'faulter' sp=0x40831bf0
+[fs] survivor ran after the fault

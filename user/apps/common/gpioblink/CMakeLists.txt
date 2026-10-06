@@ -6,6 +6,7 @@
 add_executable(gpioblink main.cc)
 kickos_app_system(gpioblink COMPOSITION systems/${KICKOS_BOARD}.yaml)
 kickos_emit_image(gpioblink)
+kickos_app_judge(gpioblink tests/integration/check_gpioblink.sh)
 if(KICKOS_BOARD STREQUAL "frdmk64f")
   # PTB21, the blue LED, at MUX ALT1 = GPIO.
   target_compile_definitions(gpioblink PRIVATE KICKOS_GPIOBLINK_K64F=1

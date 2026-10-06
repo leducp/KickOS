@@ -1005,8 +1005,7 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The bench chain refuses BY NAME on an absent rig value**, and `bench-fleet.sh` ending
   `INCOMPLETE` with a non-zero exit is the EXPECTED result for a fleet pass, frdmk64f being out by
   ruling. **That ruling exists NOWHERE but this line** -- `bench-fleet.sh` still lists and probes
-  the board, and an absent one records `ABSENT` without failing, leaving its service lists
-  uncovered.
+  the board, and an absent one records `ABSENT` and makes the pass `INCOMPLETE`.
 
 ## Open, and verified still open
 

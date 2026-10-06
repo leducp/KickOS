@@ -6,6 +6,7 @@
 if(NOT TARGET cxxtest)
   return()
 endif()
+kickos_app_judge(cxxtest tests/integration/check_qemu_cxxtest.sh)
 
 # One call for every board: the boards that build this app at all are enumerated in
 # user/apps/common/CMakeLists.txt, and every emulatable one of them boots the image through

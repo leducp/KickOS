@@ -1168,16 +1168,16 @@ wire_cores() {
 # A literal a gate requires on the wire. Strict first, so a one-writer capture stays byte-exact
 # and no split goes unreported; above one core a split is tolerated through wire_has alone, so a
 # literal absent for any other reason still fails. Every tolerated split is reported.
-require_on_wire() { # <literal> <prose>
+require_on_wire() { # <literal> <prose> [capture token]
     require_literal "$1" "the literal required on the wire"
     if printf '%s\n' "$OUT" | grep -qF -- "$1"; then
         return
     fi
     if [ "$(wire_cores)" -le 1 ]; then
-        fail "$2"
+        cfail "${3:-wire}" "$2"
     fi
     if ! wire_has "$1"; then
-        fail "$2"
+        cfail "${3:-wire}" "$2"
     fi
     echo "   TOLERATED A SPLIT: \"$1\" reached the wire across $WIRE_SPAN bytes, broken by a
    kernel status line, which two harts on one unlocked device wire may do at any byte"
@@ -1309,7 +1309,7 @@ capture_out() { # <log>
 # only reaches by not panicking); one that has none says so in its own header.
 assert_no_panic() {
     if has_e "$KOS_PANIC_RE"; then
-        fail "$1"
+        cfail panic "$1"
     fi
 }
 
@@ -1335,6 +1335,40 @@ thread_fault_re() { # <thread-name>
 # tests/static/check_app_judges.sh names, so it stays stable when the prose is reworded.
 jfail() { # <token> <prose>
     fail "$1: $2"
+}
+
+# Whether this run judges a silicon capture (KOS_CAPTURE) rather than an image it boots.
+judging_capture() {
+    [ -n "${KOS_CAPTURE:-}" ]
+}
+
+# A clause of the verdict a capture does not carry, which the bench reports as owed. The line's
+# shape is what tools/bench/bench-fleet.sh reads.
+cnot_evaluated() { # <clause>
+    echo "NOT EVALUATED: $1"
+}
+
+# The one reader of an image's exit status a capture judge may use: a capture carries none, so
+# there the clause is owed; a boot fails unless RC is <status>, or for `ended`, not the bound's.
+status_clause() { # <clause> <status|ended>
+    if judging_capture; then
+        cnot_evaluated "$1"
+        return 0
+    fi
+    if [ "$RC" -eq 124 ]; then
+        fail "not met: $1 (the system was still running when the bound ran out)"
+    fi
+    if [ "$2" != ended ] && [ "$RC" -ne "$2" ]; then
+        fail "not met: $1 (it ended with status $RC)"
+    fi
+}
+
+# fail, refusing through jfail with <token> where the run judges a capture.
+cfail() { # <token> <prose>
+    if judging_capture; then
+        jfail "$1" "$2"
+    fi
+    fail "$2"
 }
 
 # A board app judge's capture, from its last banner on, into OUT.
@@ -1630,9 +1664,9 @@ require_single_marker() { # <marker> <absence-prose> [repeat-prose]
     literal_matcher_control
     count_literal "$1"
     if [ "$KOS_COUNT" -gt 1 ]; then
-        fail "fault-dump marker '$1' appeared $KOS_COUNT times${3:+: $3}"
+        cfail doubled "fault-dump marker '$1' appeared $KOS_COUNT times${3:+: $3}"
     fi
-    require_on_wire "$1" "fault-dump marker '$1' missing: $2"
+    require_on_wire "$1" "fault-dump marker '$1' missing: $2" marker
 }
 
 # A fault record's field, whole, and the one read above one core that may not be tolerated.

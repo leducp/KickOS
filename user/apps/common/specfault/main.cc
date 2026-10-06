@@ -13,6 +13,7 @@
 // one-shot, and its own binary because the fault ends the process.
 
 #include <kickos/kos.h>
+#include <kickos/libc/fmt.h>
 
 // The probe address: inside FlexSPI (0x6000_0000) but beyond the 8 MiB populated image,
 // so it lands in the no-access wrap. Overridable for a board with a different aperture.
@@ -22,7 +23,10 @@
 
 int main(int, char**)
 {
-    kos_print("[specfault] reading unbacked wrapped FlexSPI: expect a clean MPU FAULT\n");
+    char msg[80];
+    ksnprintf(msg, sizeof(msg), "[specfault] reading 0x%x: expect a clean MPU FAULT\n",
+              static_cast<unsigned>(KICKOS_SPECFAULT_ADDR));
+    kos_print(msg);
     volatile uint32_t const* p = reinterpret_cast<volatile uint32_t const*>(KICKOS_SPECFAULT_ADDR);
     volatile uint32_t v = *p; // denied by the wrap -> MemManage; never returns
     (void)v;

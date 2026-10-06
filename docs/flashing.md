@@ -13,6 +13,8 @@ Every non-sim build emits three images next to the app ELF (via
 - `<app>.hex` -- Intel HEX (addresses embedded).
 - `<app>.bin` -- raw binary (no addresses; you supply the load address).
 
+It also writes `<app>.map`, the link map, which is not an image.
+
 The build tree mirrors `user/apps/`: a fleet-wide app emits under
 `build/<board>/user/apps/common/<app>/`, a board-specific one under
 `build/<board>/user/apps/<board>/<app>/` -- e.g.
@@ -103,8 +105,18 @@ halts the CPU at `HardFault_Handler`'s first instruction instead of running it:
 no LED, no fault dump, and a board that reads as locked up forever. It cost weeks
 of hunting a phantom `f302nucleo` firmware bug (measured 2026-08-13,
 `DFSR.VCATCH` set, `DHCSR.S_LOCKUP` clear -- `reference/boards.md`, *M4.5.6*).
-Releasing NRST already starts the image, so `--reset` buys nothing here.
 `tools/flash-stlink.sh` no longer emits the pair.
+
+**The write does not start the image from reset.** It points the core at the reset vector
+without resetting it and leaves halting debug on with `DEMCR`'s vector catches armed, so a run
+whose start faults halts silently (measured: `reference/boards.md`, *M4.5.6*). `st-flash reset`
+leaves halting debug on too. A read under reset resets the core, halts it at the vector, and
+its detach clears `C_DEBUGEN`, so the image starts from reset with debug off.
+`FLASH_STLINK_RESET=1 tools/flash.sh <board>` does exactly that, and the bench capture runs it
+after every write:
+```sh
+st-flash --connect-under-reset read /tmp/probe 0x08000000 4
+```
 
 `--connect-under-reset` is needed to re-flash a *running* board: the idle thread
 sits in `WFI`, so SWD can't halt a live core (a plain `write` on a fresh/erased

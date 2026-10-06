@@ -161,6 +161,16 @@ namespace tap
     // before run_all(); one hook, last writer wins.
     void set_after_failure(TestFn fn);
 
+    // Register a count of what a test must hand back, read before and after every test. A
+    // test that ends on a different count fails even if every check passed; one that failed
+    // already gets a diagnostic. A negative reading judges nothing. Call before run_all(); one
+    // census, last writer wins.
+    using CensusFn = long (*)();
+    void set_census(CensusFn count, char const* what);
+    // Called inside a test that hands what the census counts to a later test, by design: the
+    // count it is to end on, relative to its start. The later test declares the reverse.
+    void census_expect(long delta);
+
     // Run every registered test in order, emit TAP, and return the number that
     // failed (0 == all passed). Skips, vacuity skips and partials are counted but are not
     // failures; the per-board lists of allowed ordinary skips and partials, by name, live in

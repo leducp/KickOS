@@ -4,8 +4,3 @@
 add_executable(cxxterm main.cc)
 target_link_libraries(cxxterm PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(cxxterm)
-# The map check_no_eh_runtime.sh --control reads; x86_64's link rule writes <image>.map itself.
-if(NOT KICKOS_ARCH STREQUAL "x86_64")
-  target_link_options(cxxterm PRIVATE "-Wl,-Map=$<TARGET_FILE:cxxterm>.map")
-  set_property(TARGET cxxterm APPEND PROPERTY ADDITIONAL_CLEAN_FILES "$<TARGET_FILE:cxxterm>.map")
-endif()

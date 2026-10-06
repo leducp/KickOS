@@ -14,6 +14,7 @@ set(_arms 5)
 # pool ran dry, which is the denial the budget exists to prevent, and the app prints the code
 # it got before it judges it.
 set(_absent "endpoint_create at the ceiling rc=-12")
+kickos_app_judge(objbudget tests/integration/check_app_arms.sh ARGS objbudget ${_arms} "${_absent}")
 
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME objbudget

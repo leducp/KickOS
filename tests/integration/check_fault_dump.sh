@@ -8,7 +8,8 @@
 # into an armed console ring and lost (the C1 regression) rather than written
 # synchronously; the exactly-once count catches a dump doubled by a re-pushed ring
 # (the drain-reentrancy regression), and on an isolating backend a redirect that
-# fired twice. Native run for the sim; QEMU (semihosting) when QEMU_MACHINE is set.
+# fired twice. Native run for the sim; QEMU (semihosting) when QEMU_MACHINE is set; with
+# KOS_CAPTURE a silicon capture, which carries no exit status.
 #
 # The "did not fault" clause is an absence and weak on its own, which above one core is all a
 # grep can be. It is corroborated: a run that did not fault carries no marker and does not exit
@@ -39,20 +40,37 @@ set -u
 : "${QEMU_TIMEOUT:=30}"
 : "${SIM_TIMEOUT:=15}"
 
-_usage="usage: check_fault_dump.sh <fault.elf> <dump-marker> <expect-status>"
-elf="${1:?$_usage}"
-marker="${2:?$_usage}"
-expect_status="${3:?$_usage}"
+_usage="usage: check_fault_dump.sh <fault.elf> <dump-marker> <expect-status>
+       KOS_CAPTURE=<log> check_fault_dump.sh <board-build> <kickos-source> <cmake> <dump-marker>"
+if judging_capture; then
+    shift 3
+    marker="${1:?$_usage}"
+    judge_capture fault
+else
+    elf="${1:?$_usage}"
+    marker="${2:?$_usage}"
+    expect_status="${3:?$_usage}"
+    run_image "$elf"
+fi
 
-run_image "$elf"
-
+ANNOUNCE='[fault] executing an illegal instruction'
+require_on_wire "$ANNOUNCE" "the fault app never announced its instruction" announce
 if has "did not fault"; then
-    fail "the illegal instruction did not trap"
+    cfail faulted "the illegal instruction did not trap"
 fi
 require_single_marker "$marker" "dump lost (enqueued into an undrained ring?)" \
     "dump doubled (ring re-pushed?)"
-if [ "$RC" -ne "$expect_status" ]; then
-    fail "expected exit $expect_status, got $RC"
+# Ordered only where both lines arrived whole: a split line has no line number of its own.
+_said="$(printf '%s\n' "$OUT" | grep -nF -- "$ANNOUNCE" | head -n1 | cut -d: -f1)"
+_dump="$(printf '%s\n' "$OUT" | grep -nF -- "$marker" | head -n1 | cut -d: -f1)"
+if [ -n "$_said" ] && [ -n "$_dump" ] && [ "$_dump" -le "$_said" ]; then
+    cfail order "the dump at line $_dump precedes the app's announcement at line $_said, so it is
+  not this instruction's"
+fi
+status_clause "the fault ended the system with the status its marker implies" "${expect_status:-}"
+if judging_capture; then
+    echo "PASS: fault dump present ('$marker') once"
+    exit 0
 fi
 echo "PASS: fault dump present ('$marker') + exit $expect_status"
 exit 0

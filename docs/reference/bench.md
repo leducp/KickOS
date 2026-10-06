@@ -155,18 +155,43 @@ nothing about that board's drivers, which run in the `selftest_<driver>` images.
     LIST_IMAGES=1 tools/bench/bench.sh <board>    every image the configure emits
 
 It configures and flashes nothing, and prints `<build>/kickos-images.txt`, one
-`<image>|<stdout>|<judge>` row per image. The stdout is `kernel`, the driver serving stdout, or
-`-` for an image composing no system. The judge is the gate script that holds the capture: the
-TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, which the capture
-runs against the image's row of `<build>/kickos-selftest-manifest.txt`, a board app's
-`kickos_app_judge`, or `-` for an image nothing judges.
+`<image>|<stdout>|<judge>|<args>` row per image. The stdout is `kernel`, the driver serving
+stdout, or `-` for an image composing no system. The judge is the gate script that holds the
+capture: the TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, which the
+capture runs against the image's row of `<build>/kickos-selftest-manifest.txt`, or the script an
+image's `kickos_app_judge` names, run with the row's `;`-separated args. `JUDGE_ARGS`, which goes
+with a caller's own `JUDGE`, is split at `;` the same way, so `a b` is one argument.
+
+A capture judge reads what an image printed and nothing else. Where its verdict also has a clause
+a capture does not carry, an exit status or the system ending, the judge prints
+`NOT EVALUATED: <clause>` for each, and the image is captured but partly owed.
+
+The other judges are marks:
+
+- `emulator` or `emulator-owed`, set by `kickos_emulator_judged`: an image whose verdict is an
+  exit status, a panic, a reboot or a deliberate fault, which no capture carries. It reads
+  `emulator` where a test the build runs (neither a `host` gate nor declined) names the image,
+  and `emulator-owed` where none does. Naming is running because a test that reads an image
+  without booting it is a `host` gate.
+  Owed is decided per build: an emulator gate on another board runs another image, so it
+  witnesses nothing of this one.
+- `human`, set by `kickos_human_judged`: an image whose only verdict a person reads, an LED; the
+  args say what.
+- `inapplicable`, set by `kickos_inapplicable`: an image whose claim this build's posture voids,
+  a memory-fault arm on a board that enforces no memory; the args say why.
+- `-`: an image nothing judges.
 
 `bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then, on a board
 whose tree declares a `<board>-flat` preset, every image only that flat build ships (`c6lpprobe`,
-which reads a kernel word), labelled `(flat)`, and, on a board whose tree declares a
+which reads a kernel word) and each image its `FLAT_ALSO` names for that board, labelled `(flat)`,
+and, on a board whose tree declares a
 `<board>-amp2-n0` preset, its AMP partition, and prints an "image coverage"
-table naming each image as `captured`, `NOT RUN`, or `NO JUDGE` for one no judge names. Any
-`NOT RUN` or `NO JUDGE` makes the pass `INCOMPLETE` and the script exits nonzero. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
+table naming each image as `captured`, `captured, partly owed: <clauses>`, `NOT RUN`, `NO JUDGE`,
+`emulator-judged`, `emulator-judged, no emulator: owed`, `human-judged (<what>): owed` or
+`inapplicable (<why>)`. Nothing owed is counted as covered, and the pass states how many images
+and clauses it owes. It exits 1 on a failed capture, an `ABSENT` board, or any `NOT RUN` or `NO JUDGE`, which
+make the pass `INCOMPLETE`; 3 when every capture passed and something is still owed; and 0 only when
+nothing is. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
 (`<session>/logs/<tag>-<board>-<image>.log`), so the captures of one pass never share a log.
 
 `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
@@ -189,18 +214,14 @@ is captured over the device's own ACM. The selftest's `selftest_rpusb` on `picop
 and `selftest_rt1062usb` on `teensy41` are those images. `CONSOLE_PIN=1` forces the pin console
 back, for a device-controller backend that dies before it publishes.
 
-## `fpclass` on the RX72M is a step of its own
+## `fpclass` on the RX72M is captured under both presets
 
-`bench-fleet.sh` captures the judged images and nothing else, and `fpclass` names no judge: its
-verdict is `check_fpclass.sh` over the log, and it prints no TAP stream. rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake`
-registers no test there, and the DFPU compare patch's silicon witness is this capture, owed by
-every RX72M pass, enforcing and flat, each under its own TAG:
+rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake` registers no test there, and
+the DFPU compare patch's silicon witness is the capture `check_fpclass.sh` judges, owed under the
+enforcing and the flat preset. `FLAT_ALSO` in `bench-fleet.sh` names `rx72m:fpclass`, so a fleet
+pass captures both and its table shows `fpclass (flat)`. By hand:
 
-    VARIANT=st TAG=<tag> APP=fpclass tools/bench/bench.sh rx72m
-    tests/integration/check_fpclass.sh --log <session>/logs/<tag>-rx72m-fpclass.log
-
-It must print `PASS` under a banner naming the tree under test. A fleet pass alone reads green
-without it, which is how the M10.2 exit first went out.
+    VARIANT=flat TAG=<tag> APP=fpclass tools/bench/bench.sh rx72m
 
 ## The report has to survive the console
 
@@ -1086,13 +1107,16 @@ closed span is a board that cannot deliver an injected line, which is refused.
   `LIST_IMAGES=1 bench.sh <board>` rather than naming boards. It named them once, went two
   splits stale on two of them and named a third nowhere at all, and a fleet pass then flashed
   one image of three while reading green.
-- a board app is judged by the gate script its CMake names through `kickos_app_judge`
-  (`user/apps/CMakeLists.txt`), which configure writes as the third field of the app's row of
-  `kickos-images.txt`. `bench.sh` runs that script over the capture unless `JUDGE` names another.
-  An image that neither its row nor `JUDGE` judges is refused, and `JUDGE=none` takes its
-  capture unjudged. `tests/static/check_app_judges.sh` holds each judge to a planted capture it
-  passes and to damaged copies of it that it refuses, each with the token its row names, and
-  every app a board directory builds to a judge or its waiver list.
+- an image is judged by the gate script its app CMake or its gate fragment
+  (`tests/integration/gates/`) names through `kickos_app_judge` (`user/apps/CMakeLists.txt`),
+  with the arguments it passes, which configure writes as the third and fourth fields of the
+  image's row of `kickos-images.txt`. The script is the image's emulator gate where it has one,
+  reading the capture through `KOS_CAPTURE` by every clause but an exit status. `bench.sh` runs
+  it over the capture unless `JUDGE` names another. An image that neither its row nor `JUDGE`
+  judges is refused, so is one its row marks emulator-judged, and `JUDGE=none` takes its capture
+  unjudged. `tests/static/check_app_judges.sh` holds each judge to a planted capture it passes
+  and to damaged copies of it that it refuses, each with the token its row names, and every app
+  a board directory builds to a judge or its waiver list.
 - a board absent from the bus is REPORTED as absent. It is never silently skipped, and an
   absent board is not a pass.
 - a cycle figure is claimable only where the counter MOVED, and the capture says so or

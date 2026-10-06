@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+KickOS full-C++ opt-in test
+PASS: exception caught by exact type
+PASS: exception caught by std::exception base
+PASS: stack unwind runs local dtors
+PASS: std::vector<int> push_back + sum == 5050
+PASS: std::string concat == KickOS/full-c++
+PASS: virtual dispatch picks override
+PASS: dynamic_cast to real type succeeds
+PASS: dynamic_cast to wrong type yields nullptr
+PASS: typeid reflects dynamic type
+ALL PASS

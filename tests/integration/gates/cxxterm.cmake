@@ -6,6 +6,7 @@
 if(NOT TARGET cxxterm)
   return()
 endif()
+kickos_app_judge(cxxterm tests/integration/check_qemu_cxxterm.sh)
 
 kickos_add_qemu_test(TARGET cxxterm
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_cxxterm.sh")

@@ -8,6 +8,7 @@
 if(NOT TARGET hello)
   return()
 endif()
+kickos_app_judge(hello tests/integration/check_qemu_hello.sh)
 
 set(_hello_qemu "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_hello.sh")
 

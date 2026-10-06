@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+hello from KickOS userspace!
+two threads play ping-pong; press Ctrl+C to stop.
+
+  ping 1
+  pong 1
+  ping 2
+  pong 2
+  ping 3
+  pong 3
+  ping 4
+  pong 4

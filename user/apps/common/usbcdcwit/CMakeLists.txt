@@ -6,3 +6,4 @@
 add_executable(usbcdcwit main.cc)
 kickos_app_system(usbcdcwit COMPOSITION systems/${KICKOS_BOARD}.yaml)
 kickos_emit_image(usbcdcwit)
+kickos_app_judge(usbcdcwit tests/integration/check_usbcdcwit.sh)

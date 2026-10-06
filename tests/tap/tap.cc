@@ -59,6 +59,20 @@ namespace tap
         // Repair for the failing path, or null.
         TestFn g_after_failure = nullptr;
 
+        CensusFn g_census = nullptr;
+        char const* g_census_what = "";
+        long g_census_delta = 0;
+
+        // Out of line: tests/static/caller_held_indirect.txt declares its call as one site.
+        __attribute__((noinline)) long census_read()
+        {
+            if (g_census == nullptr)
+            {
+                return -1;
+            }
+            return g_census();
+        }
+
         void emit(char const* s)
         {
             kickos::emit(s);
@@ -210,6 +224,14 @@ namespace tap
 
     void set_after_failure(TestFn fn) { g_after_failure = fn; }
 
+    void set_census(CensusFn count, char const* what)
+    {
+        g_census = count;
+        g_census_what = what;
+    }
+
+    void census_expect(long delta) { g_census_delta = delta; }
+
     int run_all()
     {
         int plan = g_count;
@@ -238,7 +260,22 @@ namespace tap
             g_msg[0] = 0;
             g_todo = false;
             g_todo_msg[0] = 0;
+            g_census_delta = 0;
+            long const census_before = census_read();
             g_tests[i].fn();
+            long const census_after = census_read();
+            if (census_before >= 0 and census_after >= 0
+                and census_after != census_before + g_census_delta)
+            {
+                if (g_verdict == Verdict::FAIL or g_todo)
+                {
+                    diag("%s: %ld before, %ld after", g_census_what, census_before, census_after);
+                }
+                else
+                {
+                    fail("%s: %ld before, %ld after", g_census_what, census_before, census_after);
+                }
+            }
             // Read before the verdict is, because a TODO arm's failure is not the run's.
             if (g_todo)
             {

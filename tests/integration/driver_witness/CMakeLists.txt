@@ -28,5 +28,3 @@ if(KICKOS_WITNESS_ROOT_DEPTH)
   target_link_options(driver_witness PRIVATE "LINKER:--wrap=kos_notify_wait")
 endif()
 kickos_emit_image(driver_witness)
-# The map tests/integration/check_no_driver_path.sh --control reads.
-target_link_options(driver_witness PRIVATE "-Wl,-Map=$<TARGET_FILE:driver_witness>.map")

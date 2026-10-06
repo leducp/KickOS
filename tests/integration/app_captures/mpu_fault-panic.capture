@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+
+[domain] expect fault at 0x20011000
+[domain] A: writing my own region
+[domain] A: my region ok; writing domain B (expect fault)
+
+=== MPU FAULT ===
+  PC=0x800037e LR=0x8000361 xPSR=0x61000000 (PSP)
+  R0=0x0 R1=0x0 R2=0x0 R3=0x0 R12=0x0
+  CFSR=0x82 HFSR=0x0
+  MMFAR=0x20011000

@@ -39,7 +39,7 @@
     ((n) >= KICKOS_SELFTEST_FIRST_REGION and (n) <= KICKOS_SELFTEST_LAST_REGION)
 
 // Unevaluated operand: counts as a use for -Wunused-function without emitting the body. The
-// cast gives a template-id such as irq_pinned<f> the type that names its one specialization.
+// cast gives a template-id such as main_pinned<f> the type that names its one specialization.
 #define TAP_ELIDE(fn) ((void)sizeof(static_cast<void (*)()>(&(fn))))
 
 #ifndef KICKOS_KERNEL_CORES
@@ -123,7 +123,9 @@ namespace selftest
     // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
     // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
     // core. irq_spawn makes such a thread pinned to TAP_PIN_CORE, and TAP_ADD_IRQ runs an arm
-    // whose main claims or waits with main pinned there. One kernel core carries no placement.
+    // whose main claims or waits with main pinned there. TAP_ADD_PINNED runs an arm with main
+    // pinned there too, so a thread it spawns on TAP_PIN_CORE is ordered against main by
+    // priority alone. One kernel core carries no placement.
 #if KICKOS_KERNEL_CORES > 1
     inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
                                          uint8_t prio, kos_cap_grant const* caps, uint8_t count,
@@ -139,23 +141,88 @@ namespace selftest
     }
 
     template <void (*Arm)()>
-    void irq_pinned()
+    void main_pinned()
     {
         kos_thread_t const self = kos_thread_self();
         int const rc = kos_thread_set_affinity(self, TAP_PIN_CORE);
         if (rc != 0)
         {
-            tap::fail("main could not pin itself to the core its line is claimed on: %d", rc);
+            tap::fail("main could not pin itself to TAP_PIN_CORE: %d", rc);
             return;
         }
         Arm();
         (void)kos_thread_set_affinity(self, 0);
     }
-#define TAP_ADD_IRQ(name, fn) TAP_ADD(name, irq_pinned<fn>)
+#define TAP_ADD_IRQ(name, fn) TAP_ADD(name, main_pinned<fn>)
+#define TAP_ADD_PINNED(name, fn) TAP_ADD(name, main_pinned<fn>)
 #else
 #define irq_spawn kos::thread::create_caps
 #define TAP_ADD_IRQ(name, fn) TAP_ADD(name, fn)
+#define TAP_ADD_PINNED(name, fn) TAP_ADD(name, fn)
 #endif
+
+    // Releases what an arm still holds however it returns, a failing TAP_CHECK included: every
+    // capability first, so a worker parked on one is refused rather than stranded, then every
+    // thread, joined, and slain if it outlives STALL_TOLERANT_US.
+    class ArmHold
+    {
+    public:
+        static constexpr int MAX = 4;
+
+        ArmHold() = default;
+        ArmHold(ArmHold const&) = delete;
+        ArmHold& operator=(ArmHold const&) = delete;
+        ~ArmHold()
+        {
+            for (int i = 0; i < ncaps_; i++)
+            {
+                if (*caps_[i] != KOS_CAP_NONE)
+                {
+                    (void)close(caps_[i]);
+                }
+            }
+            for (int i = 0; i < nthreads_; i++)
+            {
+                if (threads_[i]->valid() and threads_[i]->join(STALL_TOLERANT_US) != 0)
+                {
+                    (void)threads_[i]->slay(STALL_TOLERANT_US);
+                }
+            }
+        }
+
+        void cap(kos_cap_t* c)
+        {
+            if (ncaps_ == MAX)
+            {
+                tap::fail("an ArmHold holds at most %d capabilities", MAX);
+                return;
+            }
+            caps_[ncaps_] = c;
+            ncaps_ = ncaps_ + 1;
+        }
+        void thread(kos::thread::Handle* t)
+        {
+            if (nthreads_ == MAX)
+            {
+                tap::fail("an ArmHold holds at most %d threads", MAX);
+                return;
+            }
+            threads_[nthreads_] = t;
+            nthreads_ = nthreads_ + 1;
+        }
+        int close(kos_cap_t* c)
+        {
+            int const rc = kos_handle_close(*c);
+            *c = KOS_CAP_NONE;
+            return rc;
+        }
+
+    private:
+        kos_cap_t* caps_[MAX] = {};
+        kos::thread::Handle* threads_[MAX] = {};
+        int ncaps_ = 0;
+        int nthreads_ = 0;
+    };
 
     KICKOS_SELFTEST_LOCAL void wait_n(int n);
     KICKOS_SELFTEST_LOCAL size_t discover_granule();

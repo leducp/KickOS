@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Every board app's judge (kickos_app_judge) against PLANTED captures: the fixtures in
+# Every capture judge (kickos_app_judge) against PLANTED captures: the fixtures in
 # tests/integration/app_captures are written by hand from each app's own print statements, with
 # CRLF line ends as the bench records them, and none of them is a silicon recording. A judge
 # passes its fixture and refuses each damaged copy the table below names, with the token the row
@@ -13,14 +13,18 @@
 # exchanges the first line carrying the literal with the first line carrying the replacement,
 # and `cache` judges the fixture whole with the replacement as the cache line instead. A second
 # edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
-# Every judge an app CMake names must have a passing row, and every app a board directory
-# builds names a judge or sits on WAIVED.
+# <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it.
+# Every judge an app CMake or a gate fragment names must have a passing row, and every app a
+# board directory builds names a judge, is human-judged or sits on WAIVED. With --listing, every
+# (judge, arguments) pair one build's image listing names must have a row.
+# A passing judge names each verdict clause a capture does not carry as `NOT EVALUATED: <clause>`,
+# and each (judge, arguments) pair's fixture must print exactly the clauses OWED declares for it.
+# A judge reads an exit status only through status_clause (tests/lib/gate.sh), which prints that
+# line over a capture, so a pair whose path reads one owes it and must have its OWED row.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-require_repo_root
-scratch_dir
 rc=0
 
 # <board>/<app> per line: a board app judged by no capture.
@@ -203,10 +207,290 @@ tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||round|drop|  
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||served|swap|its own record says 4|its own record says 3
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||done|drop|ampping: node 0 done|
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
-tests/integration/check_system_default.sh|sysdefault.capture||line|drop|sysdefault: main returns 3|
-tests/integration/check_system_default.sh|sysdefault.capture||line|swap|main returns 3|main returns 4
-tests/integration/check_system_default.sh|sysdefault.capture||panic|after|sysdefault: main returns 3|KERNEL PANIC: planted
-tests/integration/check_system_default.sh|sysdefault.capture||fault|after|sysdefault: main returns 3|=== THREAD FAULT === thread 'main' killed, system continues"
+tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||line|drop|sysdefault: main returns 3|
+tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||line|swap|main returns 3|main returns 4
+tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||panic|after|sysdefault: main returns 3|KERNEL PANIC: planted
+tests/integration/check_system_default.sh;sysdefault: main returns 3;3|sysdefault.capture||fault|after|sysdefault: main returns 3|=== THREAD FAULT === thread 'main' killed, system continues
+tests/integration/check_qemu_hello.sh|hello.capture||rounds|drop|pong 3|
+tests/integration/check_qemu_hello.sh|hello.capture||rounds|drop|ping 3|
+tests/integration/check_qemu_hello.sh|hello.capture||cpu|swap|cpu     rxv3|cpu     unknown
+tests/integration/check_qemu_hello.sh|hello.capture||cpu|drop|   cpu |
+tests/integration/check_qemu_hello.sh|hello.capture||panic|after|pong 4|KERNEL PANIC: planted
+tests/integration/check_stress.sh|stress.capture||start|drop|stress: scheduler|
+tests/integration/check_stress.sh|stress.capture||skip|swap|STRESS PASS|STRESS SKIP (board thread/sem pool too small)
+tests/integration/check_stress.sh|stress.capture||error|after|stress: runnable|STRESS FAIL
+tests/integration/check_stress.sh|stress.capture||verdict|drop|STRESS PASS|
+tests/integration/check_stress.sh|stress.capture||panic|after|STRESS PASS|KERNEL PANIC: planted
+tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||error|after|[tlsprobe] w1 |[tlsprobe] FAIL w1 read its peer's value
+tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||verdict|drop|[tlsprobe] PASS|
+tests/integration/check_qemu_tlsprobe.sh|tlsprobe.capture||panic|after|[tlsprobe] PASS|KERNEL PANIC: planted
+tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||error|swap|PASS: typeid|FAIL: typeid
+tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||verdict|drop|ALL PASS|
+tests/integration/check_qemu_cxxtest.sh|cxxtest.capture||panic|after|ALL PASS|KERNEL PANIC: planted
+tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||throw|drop|cxxterm: throwing|
+tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||returned|after|cxxterm: throwing|cxxterm: returned
+tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13runtime_error]|[St9exception]
+tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|drop|terminate: uncaught|
+tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||panic|after|terminate: uncaught|KERNEL PANIC: planted
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||spawn|after|regression|worker spawn refused
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||worker|drop|worker: exit()|
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||survived|drop|main: survived|
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||main-exit|drop|main: exit()|
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||atexit|drop|main: atexit handler|
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||atexit|order|main: exit()|main: atexit handler
+tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||panic|after|main: atexit handler|KERNEL PANIC: planted
+tests/integration/check_sched_exit.sh|sched_exit.capture||worker|drop|worker: running|
+tests/integration/check_sched_exit.sh|sched_exit.capture||worker-exit|drop|worker: exiting|
+tests/integration/check_sched_exit.sh|sched_exit.capture||survived|drop|main: survived|
+tests/integration/check_sched_exit.sh|sched_exit.capture||child|after|main: survived|parked spawn refused
+tests/integration/check_sched_exit.sh|sched_exit.capture||main-exit|drop|main: exiting with|
+tests/integration/check_sched_exit.sh|sched_exit.capture||panic|after|main: exiting with|KERNEL PANIC: planted
+tests/integration/check_fpclass.sh|fpclass.capture||arm|drop|[fpclass] order 1,2 |
+tests/integration/check_fpclass.sh|fpclass.capture||arm|swap|[0] want [0] ok|[1] want [0] BAD
+tests/integration/check_fpclass.sh|fpclass.capture||verdict|drop|[fpclass] PASS|
+tests/integration/check_fpclass.sh|fpclass.capture||error|swap|[fpclass] PASS|[fpclass] FAIL
+tests/integration/check_fpclass.sh|fpclass.capture||panic|after|[fpclass] PASS|KERNEL PANIC: planted
+tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||error|after|[rootauth] ok - declared KOS_AUTH_MEMORY|[rootauth] ERROR: planted
+tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||arms|drop|[rootauth] ok - main narrowed|
+tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||verdict|swap|PASS (5 arms)|PASS (4 arms)
+tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||verdict|drop|[rootauth] PASS|
+tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||panic|after|[rootauth] PASS|KERNEL PANIC: planted
+tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12|objbudget.capture||absent|swap|at the ceiling rc=-11|at the ceiling rc=-12
+tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling rc=-12|objbudget.capture||arms|after|[objbudget] ok - and the ceiling|[objbudget] ok - planted extra arm
+tests/integration/check_qemu_fp.sh|fp_switch.capture||error|after|FP OK: 10 rounds|  FP FAIL: s20 = 7, expected 20 (round 11)
+tests/integration/check_qemu_fp.sh|fp_switch.capture||verdict|drop|FP OK:|
+tests/integration/check_qemu_fp.sh|fp_switch.capture||panic|after|FP OK: 20 rounds|KERNEL PANIC: planted
+tests/integration/check_trapnest.sh;480|trapnest.capture||error|after|worker parks sp|[trapnest] ERROR: ticker spawn refused
+tests/integration/check_trapnest.sh;480|trapnest.capture||worker|drop|[trapnest] worker done|
+tests/integration/check_trapnest.sh;480|trapnest.capture||join|drop|main ran after the worker|
+tests/integration/check_trapnest.sh;480|trapnest.capture||tally|drop|[nestwitness] traps=|
+tests/integration/check_trapnest.sh;480|trapnest.capture||traps|swap|traps=64|traps=0
+tests/integration/check_trapnest.sh;480|trapnest.capture||onstack|swap|onstack=0|onstack=3
+tests/integration/check_trapnest.sh;480|trapnest.capture||panic|after|main ran after the worker|KERNEL PANIC: planted
+tests/integration/check_gpioblink.sh|gpioblink.capture||start|drop|driving port|
+tests/integration/check_gpioblink.sh|gpioblink.capture||error|after|driving port|[gpioblink] ERROR: pinmux rc -1, window /dev/port/5
+tests/integration/check_gpioblink.sh|gpioblink.capture||cycle|swap|cycle 4 led=1 readback=1|cycle 4 led=1 readback=0
+tests/integration/check_gpioblink.sh|gpioblink.capture||cycle|drop|cycle 9 |
+tests/integration/check_gpioblink.sh|gpioblink.capture||verdict|swap|PASS (10 cycles, readback ok)|FAIL (readback did not track the drive)
+tests/integration/check_gpioblink.sh|gpioblink.capture||verdict|drop|[gpioblink] PASS|
+tests/integration/check_gpioblink.sh|gpioblink.capture||fault|after|[gpioblink] PASS|=== THREAD FAULT === thread 'gpioblink' killed, system continues
+tests/integration/check_gpioblink.sh|gpioblink.capture||panic|after|[gpioblink] PASS|KERNEL PANIC: planted
+tests/integration/check_specfault.sh|specfault.capture||announce|drop|[specfault] reading|
+tests/integration/check_specfault.sh|specfault.capture||error|after|[specfault] reading|[specfault] ERROR: read was permitted (wrap not no-access?)
+tests/integration/check_specfault.sh|specfault.capture||fault|drop|=== THREAD FAULT|
+tests/integration/check_specfault.sh|specfault.capture||address|swap|ADDR=0x60800000|ADDR=0x60800004
+tests/integration/check_specfault.sh|specfault.capture||address|drop|ADDR=|
+tests/integration/check_specfault.sh|specfault.capture||address|swap|reading 0x60800000|reading 0x60800004
+tests/integration/check_specfault.sh|specfault.capture||order|order|[specfault] reading|=== THREAD FAULT
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||commit|drop|[usbcdcwit] commit|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|accepted=16384 of|accepted=16000 of
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|err=0|err=-11
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|drop|accepted=|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|after|tx=16384|[usbcdcwit] FAIL (the channel stopped and did not recover)
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||verdict|drop|[usbcdcwit] PASS|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||panic|after|[usbcdcwit] PASS|KERNEL PANIC: planted
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||key|drop|HOW TO READ THIS CAPTURE|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||key|drop|both absent ==|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||arm|after|park arm:|[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||mute|after| 4. the app then|[reclaimwit] MUTE kernel console while the driver holds it
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||sink|after|handle_close rc=0|[reclaimwit] routed through the driver, which discards it
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|drop|LIVE kernel console after|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||live|after|LIVE kernel console after|[reclaimwit] LIVE kernel console after the driver died
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||verdict|drop|PASS reclaim fired|
+tests/integration/check_reclaimwit.sh;park|reclaimwit.capture||panic|after|park arm:|KERNEL PANIC: planted
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||arm|after|drain arm:|[reclaimwit] park arm: the system stays up, nothing further is printed
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||drain-tail|swap|<<<DRAIN-END>>>|<<<DRAIN-
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||live|drop|LIVE kernel console after|
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||verdict|drop|PASS reclaim fired|
+tests/integration/check_reclaimwit.sh;drain|reclaimwit-drain.capture||panic|after|DRAINTAIL|KERNEL PANIC: planted
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||error|after|A: writing my own region|[domain] ERROR: planted
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||confined|after|A: my region ok|[domain] cross-domain write completed
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||control|drop|A: my region ok|
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||announce|drop|expect fault at|
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||address|swap|ADDR=0x21000|ADDR=0x21004
+tests/integration/check_mpu_fault.sh;thread-kill|mpu_fault.capture||panic|after|ADDR=0x21000|KERNEL PANIC: planted
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||error|after|child: wrote|[rootfault] ERROR: planted
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||confined|after|main: writing the child|[rootfault] main: NOT confined
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||control|drop|child: wrote my own|
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||announce|drop|main: writing the child|
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||address|swap|ADDR=0x20000|ADDR=0x20004
+tests/integration/check_rootfault.sh;thread-kill|rootfault.capture||panic|after|ADDR=0x20000|KERNEL PANIC: planted
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||error|after|child: wrote|[rootfault] ERROR: planted
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||confined|after|main: writing the child|[rootfault] main: NOT confined
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||control|drop|child: wrote my own|
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||announce|drop|main: writing the child|
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||marker|drop|MPU FAULT: thread|
+tests/integration/check_rootfault.sh;panic|rootfault-panic.capture||address|swap|attempted write at 0xffff9e832000|attempted write at 0xffff9e832004
+tests/integration/check_app_arms.sh;ringpriv;5|ringpriv.capture||error|after|[ringpriv] ok - CONTROL.SPSEL=1|[ringpriv] ERROR: planted
+tests/integration/check_app_arms.sh;ringpriv;5|ringpriv.capture||arms|drop|[ringpriv] ok - a permitted unprivileged msr|
+tests/integration/check_app_arms.sh;ringpriv;5|ringpriv.capture||verdict|swap|PASS (5 arms)|PASS (4 arms)
+tests/integration/check_app_arms.sh;ringpriv;5|ringpriv.capture||panic|after|[ringpriv] PASS|KERNEL PANIC: planted
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||case|drop|[panicgate] case 1|
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||line|swap|message on the wire|message on the wir
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||line|drop|KERNEL PANIC:|
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||returned|after|KERNEL PANIC:|[panicgate] ERROR: kos_panic returned
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||fault|after|[panicgate] case 1|=== MPU FAULT === planted
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV...;CUTME|panicgate-oversized.capture||absent|swap|UV...|UV...CUTME
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV...;CUTME|panicgate-oversized.capture||line|swap|UV...|UVWXYZ
+tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||marker|drop|=== THREAD FAULT|
+tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||doubled|after|=== THREAD FAULT|=== THREAD FAULT === thread 'main' killed, system continues
+tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||faulted|after|[fault] executing|[fault] ERROR: illegal instruction did not fault
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||line|drop|while a thread spins|
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||spinner|after|sched   tickless|sysdefault: spinner never ran
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||fault|after|while a thread spins|=== THREAD FAULT === thread 'spinner' killed, system continues
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|sysdefault-spin.capture||panic|after|while a thread spins|KERNEL PANIC: planted
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||fault|drop|=== THREAD FAULT|
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||fault|swap|thread 'main' killed|thread 'spinner' killed
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||line|drop|sysdefault: main faults|
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||panic|after|=== THREAD FAULT|KERNEL PANIC: planted
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|sysdefault-fault.capture||order|order|sysdefault: main faults|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||error|after|[fs] survivor ran|[fs] ERROR: join did not report the worker gone
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|faultsurvive.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||dump|drop|MPU FAULT: thread|
+tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||cause|swap|attempted write|attempted read
+tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-overflow.capture||redirected|after|[fs] worker about to fault|=== THREAD FAULT === thread 'faulter' killed, system continues
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||refusal|drop|=== RX CONTAINED|
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||order|order|=== RX CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||kwrite|after|[fs] worker about to fault|[fs] [trapwitness] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||marker|drop|=== RX EXCEPTION|
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||doubled|after|PC=0xffc00400|=== RX EXCEPTION (trap) ===
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||faulted|after|[fault] executing|[fault] ERROR: illegal instruction did not fault
+tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||arms|drop|[ringpriv] ok - CONTROL.nPRIV=0|
+tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||verdict|swap|PASS (1 arms)|PASS (2 arms)
+tests/integration/check_app_arms.sh;ringpriv;1|ringpriv-noring.capture||error|after|[ringpriv] ok - CONTROL.nPRIV=0|[ringpriv] ERROR: planted
+tests/integration/check_app_arms.sh;ringpriv;2|ringpriv-armv6m.capture||arms|drop|[ringpriv] ok - CONTROL.SPSEL=1|
+tests/integration/check_app_arms.sh;ringpriv;2|ringpriv-armv6m.capture||verdict|swap|PASS (2 arms)|PASS (5 arms)
+tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||order|order|[fault] executing|=== HARD FAULT
+tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||order|order|[fault] executing|=== THREAD FAULT
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||order|order|[fault] executing|=== RX EXCEPTION
+tests/integration/check_fault_dump.sh;HARD FAULT|fault-hard.capture||marker|drop|=== HARD FAULT|
+tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||marker|drop|=== SIM FAULT|
+tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||doubled|after|=== SIM FAULT|=== SIM FAULT (illegal instruction) at 0xaaaacd2a0366 ===
+tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||faulted|after|[fault] executing|[fault] ERROR: illegal instruction did not fault
+tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||announce|drop|[fault] executing|
+tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||order|order|[fault] executing|=== SIM FAULT
+tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||dump|drop|=== MPU FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||cause|swap|CFSR=0x92|CFSR=0x2
+tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||order|order|[fs] worker about to fault|=== MPU FAULT
+tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||dump|drop|=== HARD FAULT|
+tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||cause|swap|CFSR=0x10000|CFSR=0x10010
+tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||dump|drop|=== HARD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||cause|swap|(PSP)|(MSP)
+tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||cause|after|R12=0x0|  CFSR=0x10 HFSR=0x0
+tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||cause|swap|(PSP)|(MSP)
+tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|faultsurvive-armv6m-offstack.capture||dump|drop|=== HARD FAULT|
+tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|faultsurvive-rv32imac.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|faultsurvive-rv32imac.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||lowband|drop|[lowband] INTACT|
+tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||lowband|swap|[lowband] INTACT: the kernel wrote nothing below the parked sp|[lowband] CORRUPTED: the kernel ran below stack_lo on a U-mode sp
+tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|faultsurvive-rv32imac-lowedge.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
+tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
+tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|[fs] worker about to fault|=== RISC-V CONTAINED
+tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
+tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
+tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
+tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
+tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||kwrite|after|[fs] worker about to fault|[fs] [trapwitness] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|PSW=0x130003|PSW=0x030003
+tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||dump|drop|=== RX EXCEPTION|
+tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|(privileged instruction)|(undefined instruction)
+tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||order|order|[fs] worker about to fault|=== RX EXCEPTION
+tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||usp|swap|USP=0x21ffa|USP=0x21ff8
+tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||refusal|drop|=== RX CONTAINED|
+tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||order|order|=== RX CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|faultsurvive-rx-misalign.capture||order|order|[fs] worker about to fault|=== RX CONTAINED
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||usp|swap|USP=0x8|USP=0xa
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||usp|drop|USP=|
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: P08|panicgate-terse.capture||line|swap|KERNEL PANIC: P08|KERNEL PANIC: P07
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: P08|panicgate-terse.capture||case|drop|[panicgate] case|
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: user panic (no readable message)|panicgate-null.capture||line|swap|(no readable message)|(no message)
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: user panic (no readable message)|panicgate-null.capture||order|order|[panicgate] case|KERNEL PANIC:
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] ctl???? end|panicgate-control.capture||line|swap|ctl???? end|ctl??? end
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] ctl???? end|panicgate-control.capture||fault|after|[panicgate] case 5|=== HARD FAULT === planted
+tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||marker|drop|=== MPU FAULT|
+tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||address|swap|MMFAR=0x20011000|MMFAR=0x20011004
+tests/integration/check_mpu_fault.sh;panic|mpu_fault-panic.capture||control|drop|A: my region ok|"
+
+OWED="tests/integration/check_fault_dump.sh;HARD FAULT|the fault ended the system with the status its marker implies
+tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|the fault ended the system with the status its marker implies
+tests/integration/check_fault_dump.sh;SIM FAULT|the fault ended the system with the status its marker implies
+tests/integration/check_fault_dump.sh;THREAD FAULT|the fault ended the system with the status its marker implies
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;misalign;rxv3;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;offstack;armv6m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|the system exited 0 once main outlived the refusal
+tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|the escalation ended the system with exit 0
+tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|the system exited 0 once main returned
+tests/integration/check_libc_exit.sh;--atexit|main's exit() ended the system with status 7
+tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
+tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
+tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
+tests/integration/check_sched_exit.sh|main's exit with a child alive ended the system with status 7
+tests/integration/check_system_default.sh;sysdefault: main faults;139;main|main's task ending ended the system with status 139
+tests/integration/check_system_default.sh;sysdefault: main returns 3;3|main's task ending ended the system with status 3
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|main's task ending ended the system with status 3"
+
+# --listing <kickos-images.txt>: every judge a build's image listing names, with its arguments,
+# has a row above, so no judged (script, args) pair goes without a fixture.
+if [ "${1:-}" = --listing ]; then
+    [ -f "${2:-}" ] || fail "usage: check_app_judges.sh --listing <kickos-images.txt>"
+    PROVED="$(printf '%s\n' "$ROWS" | cut -d '|' -f 1 | sort -u)"
+    pairs=0
+    while IFS='|' read -r image _stdout judge args; do
+        case "$judge" in
+            tests/integration/check_tap_stream.sh | - | emulator | emulator-owed | human | inapplicable | "") continue ;;
+            *) ;;
+        esac
+        key="$judge"
+        if [ -n "$args" ]; then
+            key="$judge;$args"
+        fi
+        pairs=$((pairs + 1))
+        if ! printf '%s\n' "$PROVED" | grep -qxF -- "$key"; then
+            bad "$image is judged by $key, which no fixture row proves"
+        fi
+    done < "$2"
+    [ "$rc" -eq 0 ] || exit 1
+    echo "PASS: each of $pairs judged image(s) names a judge and arguments a fixture row proves"
+    exit 0
+fi
+
+require_repo_root
+scratch_dir
 
 # <in> <op> <literal> <replacement> <out>: <in> with one edit, with CRLF line ends.
 plant() {
@@ -242,13 +526,32 @@ plant() {
 judged() {
     mkdir -p "$TMP/build"
     printf '%s\n' "$2" > "$TMP/build/CMakeCache.txt"
-    KOS_CAPTURE="$3" sh "$1" "$TMP/build" "$PWD" cmake > "$TMP/judge.out" 2>&1
+    _jd_log="$3"
+    _jd_ifs="$IFS"
+    IFS=';'
+    set -f
+    # shellcheck disable=SC2086
+    set -- $1
+    set +f
+    IFS="$_jd_ifs"
+    _jd_script="$1"
+    shift
+    KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" > "$TMP/judge.out" 2>&1
+}
+
+# <judge> <output>: the NOT EVALUATED clauses in <output> are not exactly those OWED declares.
+owed_differs() {
+    _od_got="$(sed -n 's/^NOT EVALUATED: //p' "$2" | sort)"
+    _od_want="$(printf '%s\n' "$OWED" \
+        | KOS_OD_KEY="$1" awk -F '|' '$1 == ENVIRON["KOS_OD_KEY"] { print $2 }' | sort)"
+    [ "$_od_got" != "$_od_want" ]
 }
 
 passed=""
+goodruns=""
 while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
     [ -n "$judge" ] || continue
-    [ -f "$judge" ] || fail "no judge $judge"
+    [ -f "${judge%%;*}" ] || fail "no judge ${judge%%;*}"
     [ -f "tests/integration/app_captures/$fixture" ] || fail "no fixture $fixture"
     [ -n "$token" ] || fail "the row for $judge over $fixture names no token"
     plant "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
@@ -257,8 +560,13 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
         *)
             if ! judged "$judge" "$cache" "$TMP/good.log"; then
                 bad "$judge refuses its fixture $fixture: $(tail -n 1 "$TMP/judge.out")"
+            elif owed_differs "$judge" "$TMP/judge.out"; then
+                bad "$judge over $fixture names NOT EVALUATED [$(sed -n 's/^NOT EVALUATED: //p' \
+                    "$TMP/judge.out" | paste -sd ';' -)], not the clauses OWED declares for it"
             fi
             passed="$passed|$judge $fixture $cache|"
+            goodruns="$goodruns$judge|$fixture|$cache
+"
             ;;
     esac
     what="the $op of '$lit'"
@@ -289,30 +597,95 @@ done <<ROWS
 $ROWS
 ROWS
 
-NAMED="$(git ls-files user/apps | grep 'CMakeLists\.txt$' | while read -r f; do
-    sed -n 's/^ *kickos_app_judge([^ ]* \([^)]*\)).*/\1/p' "$f"
-done | sort -u)"
+NAMED="$(git ls-files user/apps tests/integration/gates | grep -E '(CMakeLists\.txt|\.cmake)$' \
+    | while read -r f; do
+        sed -n 's/^ *kickos_app_judge([^ ]* \([^ )]*\).*/\1/p' "$f"
+    done | sort -u)"
 [ -n "$NAMED" ] || fail "no app CMake names a judge, so the coverage check below reads nothing"
 for judge in $NAMED; do
     case "$passed" in
-        *"|$judge "*) ;;
-        *) bad "$judge judges a board app and no fixture row proves it" ;;
+        *"|$judge "*|*"|$judge;"*) ;;
+        *) bad "$judge judges an image and no fixture row proves it" ;;
     esac
 done
+
+# <judge>: the lines of <judge> that read an exit status other than through status_clause.
+raw_status_reads() {
+    grep -nE '[$][{]?(RC|KOS_STATUS|POLL_ALIVE)([^A-Za-z0-9_]|$)' "$1"
+}
+
+for judge in $NAMED; do
+    if raw_status_reads "$judge" > "$TMP/raw"; then
+        bad "$judge reads an exit status outside status_clause, at line \
+$(head -n 1 "$TMP/raw" | cut -d: -f1)"
+    fi
+    if grep -qE '(status_clause|cnot_evaluated) ' "$judge" \
+        && ! printf '%s\n' "$OWED" | cut -d '|' -f 1 | cut -d ';' -f 1 | grep -qxF -- "$judge"; then
+        bad "$judge can name a clause NOT EVALUATED and OWED declares none for it"
+    fi
+done
+
+# Planted: a new arm that reads the exit status itself is refused.
+mkdir -p "$TMP/planted"
+awk '/^status_clause / {
+         print "if [ \"$atexit\" -eq 1 ] && ! judging_capture && [ \"$RC\" -gt 128 ]; then"
+         print "    fail \"planted\""
+         print "fi"
+     }
+     { print }' tests/integration/check_libc_exit.sh > "$TMP/planted/check_libc_exit.sh"
+cmp -s tests/integration/check_libc_exit.sh "$TMP/planted/check_libc_exit.sh" \
+    && fail "the planted status arm was not added"
+raw_status_reads "$TMP/planted/check_libc_exit.sh" > /dev/null \
+    || bad "a new arm reading the exit status outside status_clause is not refused"
+
+# Planted: each OWED pair passes its fixture with NOT EVALUATED silenced, and owed_differs
+# refuses it; and with its OWED rows removed, owed_differs refuses it as it prints.
+mkdir -p "$TMP/silenced/tests/integration"
+cp -R tests/lib "$TMP/silenced/tests/lib"
+sed 's/^    echo "NOT EVALUATED: $1"$/    :/' tests/lib/gate.sh > "$TMP/silenced/tests/lib/gate.sh"
+cmp -s tests/lib/gate.sh "$TMP/silenced/tests/lib/gate.sh" \
+    && fail "cnot_evaluated was not silenced in the planted gate.sh"
+while IFS= read -r key; do
+    run="$(printf '%s' "$goodruns" \
+        | KOS_OD_KEY="$key" awk -F '|' '$1 == ENVIRON["KOS_OD_KEY"] { print; exit }')"
+    if [ -z "$run" ]; then
+        bad "OWED declares $key and no fixture row runs it"
+        continue
+    fi
+    fixture="$(printf '%s' "$run" | cut -d '|' -f 2)"
+    cache="$(printf '%s' "$run" | cut -d '|' -f 3)"
+    cp "${key%%;*}" "$TMP/silenced/${key%%;*}"
+    plant "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
+    if ! judged "$TMP/silenced/$key" "$cache" "$TMP/good.log"; then
+        bad "$key with its NOT EVALUATED silenced refuses $fixture, so the control proves nothing: \
+$(tail -n 1 "$TMP/judge.out")"
+    elif ! owed_differs "$key" "$TMP/judge.out"; then
+        bad "$key with its NOT EVALUATED silenced passes $fixture unrefused"
+    fi
+    judged "$key" "$cache" "$TMP/good.log"
+    _owed="$OWED"
+    OWED="$(printf '%s\n' "$OWED" | KOS_OD_KEY="$key" awk -F '|' '$1 != ENVIRON["KOS_OD_KEY"]')"
+    if ! owed_differs "$key" "$TMP/judge.out"; then
+        bad "$key with no OWED row passes $fixture unrefused"
+    fi
+    OWED="$_owed"
+done <<KEYS
+$(printf '%s\n' "$OWED" | cut -d '|' -f 1 | sort -u)
+KEYS
 
 BOARD_APPS="$(git ls-files 'user/apps/*/*/CMakeLists.txt' | grep -v '^user/apps/common/')"
 [ -n "$BOARD_APPS" ] || fail "git ls-files found no board app, so the judge check below reads nothing"
 for f in $BOARD_APPS; do
     app="${f#user/apps/}"
     app="${app%/CMakeLists.txt}"
-    if grep -q '^ *kickos_app_judge(' "$f"; then
+    if grep -qE '^ *kickos_(app_judge|human_judged)\(' "$f"; then
         continue
     fi
     if printf '%s\n' "$WAIVED" | grep -qxF -- "$app"; then
         continue
     fi
-    bad "$app names no judge (kickos_app_judge) and is not on WAIVED"
+    bad "$app names no judge (kickos_app_judge), is not human-judged (kickos_human_judged) and is not on WAIVED"
 done
 
 [ "$rc" -eq 0 ] || exit 1
-echo "PASS: every board app names a judge that passes its fixture and refuses each damaged copy as its row names"
+echo "PASS: every capture judge passes its fixture and refuses each damaged copy as its row names, and every board app names one"

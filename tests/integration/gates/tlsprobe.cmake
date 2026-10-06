@@ -7,6 +7,7 @@
 if(NOT TARGET tlsprobe)
   return()
 endif()
+kickos_app_judge(tlsprobe tests/integration/check_qemu_tlsprobe.sh)
 
 # One arm per mechanism an emulator can run: mps2 masks SP on armv7m, microbit on armv6m;
 # qemu-riscv and armv8a seat the register from the context, and there the image also runs a

@@ -39,3 +39,4 @@ endforeach()
 kickos_add_qemu_test(TARGET trapnest
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_trapnest.sh"
   ARGS ${_tn_TRAP_KERNEL_DEPTH})
+kickos_app_judge(trapnest tests/integration/check_trapnest.sh ARGS ${_tn_TRAP_KERNEL_DEPTH})
