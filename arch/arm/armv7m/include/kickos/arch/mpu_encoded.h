@@ -16,11 +16,16 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/mpu_overlap.h>
+
 // Descriptor slots the image carries. kernel/include/kickos/mpuset.h static_asserts that
 // KICKOS_MPU_MAX_REGIONS fits.
 #define ARCH_MPU_ENCODED_SLOTS 8
 
 #if KICKOS_ARM_MPU == KICKOS_ARM_MPU_SYSMPU
+
+// K64 RM, SYSMPU: an access is allowed when any region descriptor it hits allows it.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_UNION
 
 struct arch_mpu_encoded
 {
@@ -31,6 +36,10 @@ struct arch_mpu_encoded
 
 #elif KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
 
+// ARMv8-M ARM, MPU region matching: an address two enabled regions match faults for every
+// access, a privileged one included, and PRIVDEFENA's background map does not apply.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_FAULTS
+
 struct arch_mpu_encoded
 {
     uint32_t rbar[ARCH_MPU_ENCODED_SLOTS];
@@ -38,6 +47,9 @@ struct arch_mpu_encoded
 };
 
 #elif KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
+
+// ARMv7-M ARM B3.5: the highest-numbered region matching an address decides its access.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_HIGHER
 
 // The core PMSAv7 backend in arch/arm/common/ programs from this layout.
 struct arch_mpu_encoded

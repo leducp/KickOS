@@ -59,10 +59,11 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t TXFIFO_LEN = 128u;
     constexpr uint32_t TXFIFO_LIMIT = TXFIFO_LEN - 2u;      // push stops here, 2 spare entries
 
-    // FSM_STATUS (TRM Register 27.24, p.770): ST_UTX_OUT [3:0] is the transmitter state machine.
-    // Its idle encoding is taken from ESP32 TRM v5.8 Register 19.8; the C6 TRM prints none.
+    // FSM_STATUS (TRM Register 27.24, p.770): ST_UTX_OUT [7:4] is the transmitter state machine;
+    // [3:0] is the receiver's, which reads idle through a whole transmission. The idle encoding
+    // is taken from ESP32 TRM v5.8 Register 19.8; the C6 TRM prints none.
     constexpr uintptr_t OFF_TX_FSM = OFF_FSM_STATUS;
-    constexpr uint32_t ST_UTX_OUT_S = 0u;
+    constexpr uint32_t ST_UTX_OUT_S = 4u;
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
     constexpr uint32_t ST_UTX_OUT_IDLE = 0u;
 
@@ -115,6 +116,7 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t CLK_CONF_TX_SCLK_EN = 1u << 24;
     constexpr uint32_t CLK_CONF_RX_SCLK_EN = 1u << 25;
     constexpr uint32_t CLK_CONF_RUN = CLK_CONF_TX_SCLK_EN | CLK_CONF_RX_SCLK_EN;
+    constexpr uint32_t CLK_CONF_TX_RST_CORE = 1u << 26; // holds the transmitter in reset
 
     // SWFC_CONF0 (TRM Register 27.15): the XON/XOFF characters, with SW_FLOW_CON_EN and
     // FORCE_XOFF clear.

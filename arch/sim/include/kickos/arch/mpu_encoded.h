@@ -10,9 +10,14 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/mpu_overlap.h>
+
 // Descriptor slots the image carries. kernel/include/kickos/mpuset.h static_asserts that
 // KICKOS_MPU_MAX_REGIONS fits.
 #define ARCH_MPU_ENCODED_SLOTS 8
+
+// The regions are mprotected in slot order, so the last call over a page decides it.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_HIGHER
 
 struct arch_mpu_encoded
 {

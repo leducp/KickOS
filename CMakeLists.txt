@@ -956,6 +956,12 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(trap_redzone_walk PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME app_stack_control
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_stack.sh"
+                    "${CMAKE_CXX_COMPILER}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(app_stack_control PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME frame_pool_unwritten
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_frame_pool_unwritten.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1044,6 +1050,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(bench_fleet_controls PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME bench_banner_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_bench_banner.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(bench_banner_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME stlink_capture_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_stlink_capture.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1056,6 +1067,14 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME no_libnosys_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_libnosys.sh" --self-test)
   set_tests_properties(no_libnosys_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME selftest_manifest_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_selftest_manifest.sh" --self-test)
+  set_tests_properties(selftest_manifest_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME ctors_kept_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_ctors_kept.sh" --self-test)
+  set_tests_properties(ctors_kept_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   _add_test(NAME image_listing_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_image_listing.sh" --self-test)

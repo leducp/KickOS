@@ -412,7 +412,8 @@ struct arch_mpu_region
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out);
 
-// Replace the active MPU set with nonoverlapping regions on switch-in.
+// Replace the active MPU set on switch-in. Its regions overlap only where ARCH_MPU_OVERLAP
+// decides the shared bytes as the kernel does (kernel/include/kickos/mpuset.h).
 // Attributes describe user access. image holds encoded descriptors; regions
 // provides addresses for backends such as sim mprotect, which denies all
 // unlisted arena memory. image is null only without KICKOS_HAVE_MPU.
@@ -484,25 +485,9 @@ static inline size_t arch_ram_region_size(size_t want)
     return p;
 }
 
-// Round up to a power of two.
-static inline size_t kickos_pow2_ceil(size_t want)
-{
-    size_t p = 1;
-    while (p < want)
-    {
-        size_t const next = p << 1;
-        if (next < p) // size_t overflow: unroundable, hand back the raw request
-        {
-            return want;
-        }
-        p = next;
-    }
-    return p;
-}
-
 // Required block alignment; equal to region size in power-of-two mode. Where the thread
-// pointer is SP masked down to the stride, every block also sits on its own power-of-two
-// stride, or the mask lands in a neighbour's block.
+// pointer is SP masked down to the stride, a block of exactly one stride also sits on one,
+// since only such a block can be a thread's stack (tls_stack_admissible).
 static inline size_t arch_ram_region_align(size_t want)
 {
     size_t const min = arch_mpu_min_region();
@@ -516,10 +501,9 @@ static inline size_t arch_ram_region_align(size_t want)
         }
     }
 #if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
-    size_t const stride = kickos_pow2_ceil(want);
-    if (stride > geometry)
+    if (arch_ram_region_size(want) == KICKOS_TLS_STRIDE and KICKOS_TLS_STRIDE > geometry)
     {
-        return stride;
+        return KICKOS_TLS_STRIDE;
     }
 #endif
     return geometry;
@@ -896,6 +880,10 @@ void arch_diag_led_set(int on);
 // Optional chip-specific fault details after the CPU frame and status dump.
 // Defaults to no-op.
 void arch_fault_report_extra(void);
+
+// The address of a fault a bus-side unit latched outside the core's fault registers, read and
+// cleared, for a thread's fault record. False where nothing is latched. Defaults to false.
+bool arch_fault_chip_addr(uintptr_t* addr);
 
 // Whether the fault occurred in unprivileged thread mode, using CPU privilege
 // at fault time. Syscall dispatch is privileged. Defaults to false (panic).

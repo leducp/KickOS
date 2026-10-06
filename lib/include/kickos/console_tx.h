@@ -93,6 +93,13 @@ void console_tx_write(char const* buf, size_t n);
 // reports as a short write.
 int console_tx_insert_line(char const* buf, size_t n, int crlf);
 
+// One line of a fault record: what console_tx_insert_line answers, except that a full ring does
+// not refuse it. The oldest queued bytes go out through arch_console_write_sync under the mask
+// until the line fits, so the ring's order and its one writer stand, and a line masks at most its
+// own expanded length of wire time. Still 0 for an unarmed ring, a line wider than the ring, a
+// copy it interrupted, and a producer drain holding a byte.
+int console_tx_insert_record_line(char const* buf, size_t n, int crlf);
+
 #if KICKOS_BENCH
 // Bytes queued in the ring, 0 while it is not armed.
 uint32_t console_tx_used(void);

@@ -76,6 +76,16 @@ namespace kickos
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
 
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+    struct Domain;
+
+    // Whether this MPU decides every overlap of the set thread_create would assemble as the
+    // kernel's range checks do. Assembles it in `scratch`, a claimed slot thread_create has not
+    // yet seated.
+    bool thread_regions_expressible(Thread* scratch, Domain const* dom, ThreadAttr const& attr,
+                                    void* stack_base, size_t stack_size);
+#endif
+
     // True iff NO live thread holds a DEV region overlapping [base, base+size). The admission
     // test behind the one-holder-per-window rule, and the console reclaim's precondition. A
     // dying thread holds its windows until its exit releases them. Callers pass a non-wrapping

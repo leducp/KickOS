@@ -14,6 +14,7 @@ set(KICKOS_ARCH_SOURCES
   ${KICKOS_SEAM_DEFAULTS_COMMON}
   ${KICKOS_SEAM_DEFAULTS_ARM}
   arm/armv7m/arch_fault_report_extra_default.cc
+  arm/armv7m/arch_fault_chip_addr_default.cc
   arm/armv7m/arch_trace_now_default.cc
   arm/read_tp.S
   arm/armv7m/switch.S)

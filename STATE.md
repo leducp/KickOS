@@ -4012,9 +4012,9 @@ timeouts while two sweeps shared the box, and passed alone.
 
 **WHAT IT DOES NOT SAY.**
 - The ESP32-C6 UART flush waits for `ST_UTX_OUT` 0, the ESP32's TX_IDLE encoding, because the C6
-  manual prints no encoding for the field. That the C6's transmitter reads 0 only once the last
-  stop bit has left the pin is inferred, not witnessed: a C6 capture of `c6txidle`, which takes
-  the TX pad from the UART the moment the flush returns, is owed (M10.5.14).
+  manual prints no encoding for the field. A `c6txidle` capture witnesses it at one baud, 115200,
+  and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
+  frame is out. No other baud or idle count was run.
 
 ## Where to go next
 

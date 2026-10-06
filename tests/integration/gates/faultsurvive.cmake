@@ -108,6 +108,11 @@ if(_fs_unprivileged AND TARGET faultsurvive_kwrite)
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
     ARGS misalign ${KICKOS_ARCH} contained)
 endif()
+if(TARGET faultsurvive_unread)
+  kickos_add_qemu_test(NAME ${_tag}_faultunread TARGET faultsurvive_unread
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+    ARGS unread ${KICKOS_ARCH} terminated)
+endif()
 if(_fs_judged AND TARGET faultsurvive_lowedge)
   kickos_add_qemu_test(NAME ${_tag}_faultlowedge TARGET faultsurvive_lowedge
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"

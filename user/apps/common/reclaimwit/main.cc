@@ -5,6 +5,7 @@
 // console driver is slain, and (KICKOS_RW_MODE 1) that kickos_terminate drains the console
 // before the core stops.
 
+#include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
@@ -19,6 +20,17 @@
 #endif
 #ifndef KICKOS_RW_RTT
 #define KICKOS_RW_RTT 0
+#endif
+
+// The driver's stack, by this name in tests/static/app_stack_roots.txt, which bounds it.
+#if KICKOS_USER_STACK_SIZE > 2048
+#define RW_DRIVER_STACK KICKOS_USER_STACK_SIZE
+#else
+#define RW_DRIVER_STACK 2048
+#endif
+#if KICKOS_TLS and KICKOS_TLS_FROM_SP
+static_assert(RW_DRIVER_STACK == KICKOS_TLS_STRIDE,
+              "a masked thread pointer admits a caller stack of exactly one stride");
 #endif
 
 namespace
@@ -121,10 +133,25 @@ int main(int, char**)
         park_forever();
     }
 
+    void* const drv_stack = kos_ram_alloc(RW_DRIVER_STACK);
+    if (drv_stack == nullptr)
+    {
+        print_rc("FAIL ram_alloc driver stack", -KOS_ENOMEM);
+        park_forever();
+    }
+    // Under translation the stack must also be mapped in the task the driver joins. Not
+    // elsewhere: an ARMv8-M MPU faults on an address two regions cover.
+    void* task_mem = nullptr;
+    uint32_t task_mem_size = 0;
+#if KICKOS_HAVE_ASPACE
+    task_mem = drv_stack;
+    task_mem_size = RW_DRIVER_STACK;
+#endif
+
     // The driver is a task of its own: the console's death is its task's end, and main's task
     // never ends before the verdict.
     kos_task_t drv_task = KOS_TASK_NONE;
-    int const task_rc = kos_task_create(nullptr, 0, 0, &drv_task);
+    int const task_rc = kos_task_create(task_mem, task_mem_size, 0, &drv_task);
     if (task_rc != 0)
     {
         print_rc("FAIL task_create", task_rc);
@@ -137,7 +164,7 @@ int main(int, char**)
     auto const drv = kos::thread::create_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
                                               caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
                                               /*privileged=*/false, nullptr, 0, 0, nullptr,
-                                              drv_task);
+                                              drv_task, drv_stack, RW_DRIVER_STACK);
     if (not drv.valid())
     {
         print_rc("FAIL driver spawn", drv.error());

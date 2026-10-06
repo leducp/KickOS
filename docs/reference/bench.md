@@ -91,6 +91,7 @@ naming the main checkout's copy.
 | `RIG_BENCH_PORT` | no | the ssh port, only where `ssh_config` does not answer it. Empty passes no `-p` at all |
 | `RIG_REMOTE_ROOT` | remote mode | the bench host directory holding the shipped tree and the run outputs |
 | `RIG_REMOTE_PYBIN` | Espressif, remote | a python carrying pyserial ON the bench host, absolute |
+| `RIG_WIRED_<BOARD>` | no | the bench fittings on that board, space-separated names; see below |
 
 `BENCH_HOST` in the environment is what SELECTS remote mode. `RIG_BENCH_HOST` names the
 machine but does not select it: a config key must not move a flashing run from one box to
@@ -101,6 +102,26 @@ question for an enumeration and is recorded nowhere.
 HOW to reach that host is `ssh_config`'s answer and not the rig's. A port is passed only
 where one is configured, and there is no fallback to 22, which would override the `Port`
 an alias carries and reach a different machine. A user is never synthesised either.
+
+### Bench fittings
+
+Some verdicts rest on hardware fitted on the bench rather than on the board: a loopback jumper, or
+a device on a bus. Which of them THIS rig carries is `RIG_WIRED_<BOARD>`, the board name uppercased
+with dashes turned into underscores, holding the names below. `bench.sh` hands the list to the image's judge as
+`KOS_WIRED`, and a judge evaluates a clause resting on a fitting only where the list names it.
+Elsewhere the capture must still show the transfer, and the judge prints `NOT EVALUATED` for its
+values, so the image is captured but partly owed. Unset declares nothing: a missing key never
+reads as a fitted wire, and a misspelt name owes the clause rather than passing it.
+
+| board | fitting | what it is | the clause it carries |
+| --- | --- | --- | --- |
+| `f411disco` | `spi1-loopback` | a PA7-to-PA6 jumper | `f411spi`'s four echoed words and its loopback verdict |
+| `frdmk64f` | `lan9252` | the EasyCAT LAN9252 shield, chip select on PTC4 | `k64dspi`'s `BYTE_TEST` signature |
+| `frdmk64f` | `dspi0-loopback` | a PTD2-to-PTD3 (SOUT-to-SIN) jumper | the loopback cases of a `K64DSPI_LOOPBACK` build |
+
+    RIG_WIRED_FRDMK64F="lan9252"
+
+The XMC4800's SSC loopback is internal to the channel and needs no fitting.
 
 ### Consoles, and why one guess is forbidden
 
@@ -163,8 +184,9 @@ image's `kickos_app_judge` names, run with the row's `;`-separated args. `JUDGE_
 with a caller's own `JUDGE`, is split at `;` the same way, so `a b` is one argument.
 
 A capture judge reads what an image printed and nothing else. Where its verdict also has a clause
-a capture does not carry, an exit status or the system ending, the judge prints
-`NOT EVALUATED: <clause>` for each, and the image is captured but partly owed.
+a capture does not carry, an exit status or the system ending, or one resting on a bench fitting the
+rig does not declare (*Bench fittings* above), the judge prints `NOT EVALUATED: <clause>` for each,
+and the image is captured but partly owed.
 
 The other judges are marks:
 

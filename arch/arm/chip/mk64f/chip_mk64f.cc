@@ -728,43 +728,72 @@ int arch_bitband_present(void)
     return 1;
 }
 
-// Chip fault-decode hook (arch.h): a SYSMPU protection error reaches the core as a BUS
-// error (escalates to HardFault; the CFSR MMFSR is 0, so the shared reporter cannot name
-// it). IMPORTANT (K64 RM 3.3.6.2 / 3.3.7.1): the MPU slave ports cover flash, SRAM_L/U
-// and FlexBus ONLY. The AIPS peripheral bridges and the GPIO controller are NOT slave
-// ports ("protection built into the bridge"), so a peripheral-window violation does NOT
-// set SPERR, and that no-SPERR case is itself the diagnostic.
-// Runs privileged (RGD0 full access), so it cannot itself fault.
-void arch_fault_report_extra(void)
+// The lowest slave port whose protection error is latched, read and then cleared. SPERR is
+// W1C and VLD (bit 0) plain R/W, so VLD is written back as read: a bare write of the port's
+// bit would disable the whole SYSMPU.
+static bool sysmpu_take_error(size_t* port, uint32_t* ear, uint32_t* edr)
 {
-    uint32_t cesr = r32(reg::sysmpu::CESR);
-    uint32_t sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
-    if (sperr == 0)
+    uint32_t const cesr = r32(reg::sysmpu::CESR);
+    uint32_t const sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
+    for (size_t p = 0; p < reg::sysmpu::SLAVE_PORTS; p++)
     {
-        kickos::kprintf("  SYSMPU: no protection error latched (CESR=0x%x): a bus "
-                        "fault outside an MPU slave port (peripheral bridge?)\n", cesr);
-        return;
-    }
-    for (size_t port = 0; port < reg::sysmpu::SLAVE_PORTS; port++)
-    {
-        if ((sperr & (1u << (4 - port))) == 0)
+        if ((sperr & (1u << (4 - p))) == 0)
         {
             continue;
         }
-        uint32_t ear = r32(reg::sysmpu::EAR0 + port * 8u);
-        uint32_t edr = r32(reg::sysmpu::EDR0 + port * 8u);
-        uint32_t master = (edr >> 4) & 0xFu;
+        *port = p;
+        *ear = r32(reg::sysmpu::EAR0 + p * 8u);
+        *edr = r32(reg::sysmpu::EDR0 + p * 8u);
+        r32(reg::sysmpu::CESR) = (cesr & reg::sysmpu::CESR_VLD) | (1u << (31 - p));
+        return true;
+    }
+    return false;
+}
+
+// A SYSMPU protection error reaches the core as an imprecise BUS error, so neither MMFAR nor
+// BFAR holds its address. The MPU slave ports cover flash, SRAM_L/U and FlexBus ONLY (K64 RM
+// 3.3.6.2 / 3.3.7.1): the AIPS peripheral bridges and the GPIO controller are not slave ports,
+// so a peripheral-window violation latches nothing, and that absence is itself the diagnostic.
+void arch_fault_report_extra(void)
+{
+    size_t port = 0;
+    uint32_t ear = 0;
+    uint32_t edr = 0;
+    if (not sysmpu_take_error(&port, &ear, &edr))
+    {
+        kickos::kprintf("  SYSMPU: no protection error latched (CESR=0x%x): a bus "
+                        "fault outside an MPU slave port (peripheral bridge?)\n",
+                        r32(reg::sysmpu::CESR));
+        return;
+    }
+    do
+    {
         char const* rw = "R";
         if (edr & 1u)
         {
             rw = "W";
         }
         kickos::kprintf("  SYSMPU ISOLATION FAULT: port=%u addr=0x%x master=%u %s "
-                        "EDR=0x%x\n", static_cast<unsigned>(port), ear, master, rw, edr);
-        // W1C this port's SPERR, but PRESERVE VLD (bit 0, plain R/W): a bare
-        // `= 1u<<(31-port)` writes VLD=0 and disables the whole SYSMPU.
-        r32(reg::sysmpu::CESR) = (cesr & reg::sysmpu::CESR_VLD) | (1u << (31 - port));
+                        "EDR=0x%x\n", static_cast<unsigned>(port), ear, (edr >> 4) & 0xFu, rw,
+                        edr);
+    } while (sysmpu_take_error(&port, &ear, &edr));
+}
+
+bool arch_fault_chip_addr(uintptr_t* addr)
+{
+    size_t port = 0;
+    uint32_t ear = 0;
+    uint32_t edr = 0;
+    if (not sysmpu_take_error(&port, &ear, &edr))
+    {
+        return false;
     }
+    *addr = ear;
+    // A second port's latch left standing would label the next fault with this one's address.
+    while (sysmpu_take_error(&port, &ear, &edr))
+    {
+    }
+    return true;
 }
 
 int arch_console_write(char const* buf, size_t n)

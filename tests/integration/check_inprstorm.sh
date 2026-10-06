@@ -18,7 +18,7 @@ if has_f '[inprstorm] CCFG.TB=0'; then
     jfail no-fifo "the TX FIFO was absent, so the fifo profile could not run"
 fi
 jno_panic "a panic in inprstorm"
-jafter root-up 1 '[inprstorm] MARKER: root up, spawning the U0C1 holder' "startup marker"
+jafter root-up 1 '[inprstorm] MARKER: root up, starting the heartbeat' "startup marker"
 jafter reroute "$AT" '[inprstorm] rerouting INPR RINP/AINP -> SR0 (console node)' "reroute"
 jafter heartbeat-1 "$((AT + 1))" '[inprstorm] heartbeat ' "a heartbeat after the reroute" part
 jafter heartbeat-2 "$((AT + 1))" '[inprstorm] heartbeat ' "a second heartbeat after the reroute" part

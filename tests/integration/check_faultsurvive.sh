@@ -64,7 +64,12 @@
 # and no write ever landing. QEMU virt COMPLETES misaligned stores, so pre-fix it writes the
 # whole frame in bounds and kills the thread cleanly. The ESP32-C6 is the exposed core.
 #
-# The four refusal arms share the negative claim of no kill banner. A contained refusal leaves the
+# `unread' (faultsurvive_unread, KICKOS_FS_MODE 6, armv7m on QEMU): the worker points SP at an
+# address no memory answers and traps. Its stacking aborts, and a privileged read of that frame
+# would fault again in handler mode, where a fault escalated to HardFault locks the core up. The
+# claim is ONE dump, which names the stacking abort and says it read no frame.
+#
+# The refusal arms share the negative claim of no kill banner. A contained refusal leaves the
 # system running; a terminated one ends in a panic dump and exit 132.
 #
 # QEMU, machine from kickos_add_qemu_test; the survive arm also runs natively on the sim. With
@@ -73,7 +78,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|offstack|kwrite|lowedge|misalign> <arch> <outcome: contained|terminated>
+_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|offstack|kwrite|lowedge|misalign|unread> <arch> <outcome: contained|terminated>
        KOS_CAPTURE=<log> check_faultsurvive.sh <board-build> <kickos-source> <cmake> <arm> <arch> <outcome>"
 if judging_capture; then
     shift 3
@@ -164,7 +169,7 @@ case "$arm" in
         status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
         ;;
-    overflow | offstack | kwrite | misalign)
+    overflow | offstack | kwrite | misalign | unread)
         if has_e "$(thread_fault_re faulter)"; then
             cfail redirected "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
@@ -299,6 +304,20 @@ case "$arm" in
                     cfail cause "PSW=0x$psw has PM clear: the fault was not taken in user mode, so the privilege clause refused it and the arm proves nothing about the bounds test"
                 fi
                 why="PSW=0x$psw, PM=1 (user)"
+                ;;
+            armv7m:unread)
+                cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+                [ -n "$cfsr" ] || cfail cause "the dump carries no CFSR: the report died before it, the core locked up reading the frame?"
+                if [ $(( 0x$cfsr & 0x1818 )) -eq 0 ]; then
+                    cfail cause "CFSR=0x$cfsr carries no stacking-abort bit, so the frame was readable and this arm witnessed nothing"
+                fi
+                has "frame not read: its stacking at" \
+                  || cfail frame "the dump does not say it left the aborted frame unread"
+                banners="$(printf '%s\n' "$OUT" | grep -oE "$KOS_PANIC_RE" | wc -l | tr -d ' ')"
+                if [ "$banners" -ne 1 ]; then
+                    cfail doubled "$banners dump banners: the report faulted again"
+                fi
+                why="CFSR=0x$cfsr, stacking abort, frame left unread"
                 ;;
             armv7m:offstack)
                 # The frame WAS written, so the bits the CFSR early-out would refuse on are

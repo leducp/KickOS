@@ -10,7 +10,7 @@
 # store a change of the held store makes (KICKOS_HELD_STEP). HOST-ONLY: the second record has to
 # open while the first is still being written, which no image can arrange.
 kickos_add_unit_test(NAME console_held
-  SOURCES held_record.cc held_store.cc held_seam.cc
+  SOURCES held_record.cc held_store.cc record_room.cc held_seam.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"

@@ -123,6 +123,10 @@ namespace kickos
 #define KDIAG_F_ARM_REGS1 KICKOS_DIAG_PICK("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n", "R1 %x %x %x %s\n")
 #define KDIAG_F_ARM_REGS2 KICKOS_DIAG_PICK("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n", \
                                            "R2 %x %x %x %x %x\n")
+#define KDIAG_F_ARM_NOFRAME KICKOS_DIAG_PICK("  frame not read: its stacking at 0x%x (%s) faulted\n", \
+                                             "R3 %x %s\n")
+#define KDIAG_F_ARM_FRAME_FOREIGN KICKOS_DIAG_PICK( \
+    "  frame not read: 0x%x (%s) lies outside the thread's stack\n", "R4 %x %s\n")
 #define KDIAG_F_ARM_CFSR  KICKOS_DIAG_PICK("  CFSR=0x%x HFSR=0x%x\n", "CFSR=0x%x H=%x\n")
 #define KDIAG_F_ARM_MMFAR KICKOS_DIAG_PICK("  MMFAR=0x%x\n", "MMFAR=0x%x\n")
 #define KDIAG_F_ARM_BFAR  KICKOS_DIAG_PICK("  BFAR=0x%x\n", "BFAR=0x%x\n")

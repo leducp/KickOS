@@ -61,3 +61,13 @@ if(KICKOS_ARCH STREQUAL "rv32imac")
       "${PROJECT_SOURCE_DIR}/arch/riscv/rv32imac/include")
   endforeach()
 endif()
+
+# Mode 6 aims SP where no memory answers, which only an emulator's map pins: 0xF0000000 is in
+# the vendor system space, unimplemented on every mps2 machine.
+if(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_QEMU_MPS2 AND KICKOS_MEMORY_ENFORCED)
+  add_executable(faultsurvive_unread main.cc)
+  target_link_libraries(faultsurvive_unread PRIVATE KickOS::kernel KickOS::system_default)
+  kickos_emit_image(faultsurvive_unread)
+  target_compile_definitions(faultsurvive_unread PRIVATE KICKOS_FS_MODE=6
+                                                         KICKOS_FS_NOWHERE=0xF0000000u)
+endif()

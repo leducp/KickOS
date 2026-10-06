@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The entry re-delegates the channel's window to a storm thread it spawns, which takes `memory`.
+# The entry holds the channel window and storms below the heartbeat thread it spawns.
 
 version: 1
 stdout: kernel
@@ -13,4 +13,3 @@ tasks:
     priority: 2
     ceiling: 2
     devices: [/dev/usic0/ch1]
-    authority: [memory]

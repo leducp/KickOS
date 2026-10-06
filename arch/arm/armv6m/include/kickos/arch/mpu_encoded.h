@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/mpu_overlap.h>
+
 // Descriptor slots the image carries. kernel/include/kickos/mpuset.h static_asserts that
 // KICKOS_MPU_MAX_REGIONS fits.
 #define ARCH_MPU_ENCODED_SLOTS 8
@@ -19,6 +21,9 @@
 // backend v6-M can reach. This header is only included where KICKOS_HAVE_MPU (see
 // arch/include/kickos/arch/arch.h), so it never sees KICKOS_ARM_MPU_NONE either.
 #if KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
+
+// ARMv6-M ARM B3.5: the highest-numbered region matching an address decides its access.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_HIGHER
 
 struct arch_mpu_encoded
 {

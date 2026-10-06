@@ -436,7 +436,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `esp32c6-wroom/c6blink` | 2 | the GPIO bank and `pinmux`; the ungranted poke is a child thread's fault. No `coarse_gate`, although the bank holds pins the board spends: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and admission refuses it as unneeded (`enforcement.unneeded`) |
 | `esp32c6-wroom/c6intpri` | 3 | deleted: it probes INTPRI, which the kernel owns and admission refuses to grant; what it found is stated in the chip file and the chip code, and the inject doorbell it identified runs in every C6 AMP capture |
 | `esp32c6-wroom/c6lpprobe` | 1 | its flat build accepts `no_protection` already |
-| `esp32c6-wroom/c6txidle` | 1 | the default composition in the flat build, which lets its task drive UART0 and the TX pad |
+| `esp32c6-wroom/c6txidle` | 1 | the default composition in the flat build, reading what a kernel-side probe recorded in M-mode: a U-mode thread's ungranted UART0 access passes no APM |
 | `esp32-wroom/lx6smp` | 3 | deleted: it starts the APP CPU by writing kernel-owned registers. Owed: esp32-wroom-smp silicon selftest (5.14), the shared kernel on both LX6 cores taking the compare-and-swap from both and reading each core's processor identity; `docs/reference/boards.md` names its capture |
 | `f411disco/f411spi` | 2 | the worked example of hand-rolled bring-up, rewritten as one: SPI1's window and line, `pinmux` for its pins; no claim by number, no task created by hand |
 | `frdmk64f/k64console` | 2 | `stdout` names the packaged `k64uart` |

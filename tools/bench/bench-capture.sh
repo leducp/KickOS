@@ -67,6 +67,7 @@ SN="${5:-}"
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
 . "$HERE/reset-boot.sh"
+. "$HERE/banner.sh"
 rig_find "$ROOT" || true
 
 # The bench host keeps uv's esptool and the rfp-cli wrapper in ~/.local/bin, which a
@@ -526,66 +527,6 @@ NOTOKC=$(grep -acE '^not ok ' "$RUN")
 # Banner and posture are taken from the WHOLE log with tail, not from the run slice: they are
 # printed BEFORE the plan line, so slicing from the last plan line cuts them off. The LAST banner
 # in the file belongs to the last boot, which is the run being counted.
-#
-# The label itself can arrive damaged: the f302nucleo VCOM drops bytes, and "commit a1220233"
-# reached the log as "c a1220233". A lone 8-hex token in a KickOS banner IS the commit, so recover
-# it rather than reporting no banner on a capture that carries one.
-# `-dirty` is part of the label and MUST survive: without it a capture taken from a tree with
-# uncommitted edits reports as if it were taken at the commit, and the witness is unfalsifiable.
-#
-# THE LABEL ALONE, in the form cmake/build_stamp.cmake stamps it (`git describe --dirty
-# --always`), or empty. Split out from the line it is printed on because the bench verdict
-# below compares it against the tree that built the image, and must run over a planted log as
-# well as over this one.
-#
-# THE LABEL IS A HASH ONLY WHILE NO TAG IS REACHABLE. `git describe` answers `<tag>` on a tree
-# sitting on one and `<tag>-<n>-g<hash>` past it, so a recogniser keyed on the hex shape reads a
-# capture that carries a banner as carrying none, and the plant machinery below then refuses its
-# own 'good' control and every capture with it. A tagged tree is exactly what a re-measurement
-# of an archived campaign runs on.
-BANNER_COMMIT_RE='commit +[A-Za-z0-9._/+-]+'
-
-banner_label() { # <log> [expected label]
-  _bl=$(grep -aoE "$BANNER_COMMIT_RE" "$1" | tail -1)
-  if [ -n "$_bl" ]; then
-    printf '%s\n' "${_bl##* }"
-    return 0
-  fi
-  # THE SUFFIX MUST BE RECOVERED WITH THE HASH, and its absence must not read as clean.
-  # Damage is byte LOSS, so a banner that reached the log as "c 06ffd64f" may have been
-  # "commit 06ffd64f-dirty" with the suffix eaten. Recovering a bare hash therefore says
-  # UNVERIFIED rather than nothing.
-  #
-  # THE SEARCH IS HELD TO BANNER-BLOCK LINES, WHICH CARRY NO COLON. Eight hex digits is a
-  # short enough shape to occur in the report proper, where `cycle counter: 84000000 Hz`
-  # matches it, and a boot whose commit line was dropped WHOLE then recovers a rate and
-  # reports a damaged label instead of an absent one. Every banner field is `name  value`; every app and
-  # report line is `label: value`.
-  _br=$(grep -av ':' "$1" \
-    | grep -aoE '(^|[^0-9a-z])[0-9a-f]{8}(-dirty)?([^0-9a-z]|$)' \
-    | grep -oE '[0-9a-f]{8}(-dirty)?' | tail -1)
-  # A DESCRIBE LABEL CARRIES NO SHAPE TO RECOVER BY: a tag is an arbitrary string, so the only
-  # thing the surviving bytes can be held against is the label the build stamped. Last, so a
-  # capture of ANOTHER commit still reports as a mismatch rather than as an absence. The CR is
-  # part of the last field and is taken off here; a `$` anchor would answer differently to the
-  # two greps this chain runs under.
-  _bw="${2:-}"
-  _bw="${_bw%-dirty}"
-  if [ -z "$_br" ] && [ -n "$_bw" ]; then
-    _br=$(awk -v want="$_bw" '
-        index($0, ":") { next }
-        { _t = $NF; sub(/\r/, "", _t)
-          if (_t == want || _t == want "-dirty") { hit = _t } }
-        END { if (hit != "") { print hit } }' "$1")
-  fi
-  if [ -z "$_br" ]; then
-    return 0
-  fi
-  case "$_br" in
-    *-dirty) printf '%s\n' "$_br" ;;
-    *) printf '%s-UNVERIFIED\n' "$_br" ;;
-  esac
-}
 
 LABEL=$(banner_label "$LOG" "${EXPECT_COMMIT:-}")
 BANNER=""
@@ -596,7 +537,7 @@ case "$LABEL" in
     BANNER="commit $LABEL"
     # A label recovered with its `-dirty` intact is verified; it still arrived damaged and the
     # line says so, which the UNVERIFIED spelling above already carries for the other case.
-    if ! grep -aqE "$BANNER_COMMIT_RE" "$LOG"; then
+    if ! grep -aqE "$BANNER_COMMIT_RE" "$LOG" && [ -z "$(banner_terse "$LOG")" ]; then
       BANNER="$BANNER (banner damaged in transit)"
     fi
     ;;
@@ -628,36 +569,6 @@ bench_window_markers() {
     '  switch:   '
 }
 
-# The line the LAST boot begins at. The banner BLOCK is the first thing an image prints, and its
-# title line carries no commit, so a console that drops the commit line whole still leaves an
-# anchor the label cannot reach. Where the title went too the commit line stands in, and the
-# one-per-boot counts inside the slice are what then refuse a slice spanning two boots.
-bench_boot_start() { # <log>
-  _bs_t=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
-  _bs_c=$(grep -anE "$BANNER_COMMIT_RE" "$1" | tail -1 | cut -d: -f1)
-  if [ -z "$_bs_c" ]; then
-    # The same banner-block restriction banner_label recovers under: a boot start found on a
-    # line that label search will not read leaves the slice beginning after its own banner.
-    # This one has no expected label to hold the bytes against, so it cannot reach a damaged
-    # DESCRIBE label the way banner_label does; what that costs is a refusal for want of a boot
-    # start where the title line went too, never a slice that reads across a boundary.
-    _bs_c=$(grep -anv ':' "$1" \
-      | grep -aE '(^|[^0-9a-z])[0-9a-f]{8}(-dirty)?([^0-9a-z]|$)' | tail -1 | cut -d: -f1)
-  fi
-  if [ -z "$_bs_t" ]; then
-    printf '%s\n' "$_bs_c"
-    return 0
-  fi
-  if [ -z "$_bs_c" ]; then
-    printf '%s\n' "$_bs_t"
-    return 0
-  fi
-  if [ "$_bs_c" -gt "$_bs_t" ]; then
-    printf '%s\n' "$_bs_c"
-    return 0
-  fi
-  printf '%s\n' "$_bs_t"
-}
 
 # <log> <slice out>. Cuts the log to its last boot. Nonzero, and an empty slice, where no boot
 # start is recognisable at all.
@@ -1320,12 +1231,20 @@ bench_controls() {
   printf 'bench: done\r\n' >> "$CTL/flip"
   ctl_report "$CTL/other" "0000000f"
   printf 'bench: done\r\n' >> "$CTL/other"
-  # The banner as the f302nucleo VCOM delivers it: the word eaten, a bare hash left. Built from
-  # the CLEAN label, since a damaged label that still carries `-dirty` is a label the recovery
+  # A prose commit row that lost its word, a bare hash left. Built from the CLEAN label, since a damaged label that still carries `-dirty` is a label the recovery
   # can verify; what it cannot verify is a bare hash, and that is the case this plants.
   ctl_head "$CTL/damaged" "${EXPECT_COMMIT%-dirty}" 84000000 "   c "
   ctl_window "$CTL/damaged" 50 50
   printf 'bench: done\r\n' >> "$CTL/damaged"
+  # THE SHORT COLUMN a KICKOS_DIAG_TERSE board prints, whole and undamaged, and the same commit
+  # row under a prose title or with its own `c ` lost, both of which read as damage.
+  sed -e 's|^   KickOS 0.5.1  -  microkernel RTOS|K 0.5.1|' -e 's|^   commit  |c |' \
+    "$CTL/good" > "$CTL/terse"
+  ctl_head "$CTL/tersenotitle" "${EXPECT_COMMIT%-dirty}" 84000000 "c "
+  ctl_window "$CTL/tersenotitle" 50 50
+  printf 'bench: done\r\n' >> "$CTL/tersenotitle"
+  sed -e 's|^   KickOS 0.5.1  -  microkernel RTOS|K 0.5.1|' -e 's|^c ||' "$CTL/tersenotitle" \
+    > "$CTL/tersebare"
   # A table the console could not take whole: every line after it still arrives, so the
   # sentinel is there and only the header's own count says anything is missing.
   sed '/^    ARCH_SWITCH/d' "$CTL/good" > "$CTL/dropped"
@@ -1562,7 +1481,8 @@ EOF
 
   # <plant>:<the arch it is judged as>. A report of no arch's shape is judged as armv7m, an arch
   # that owes neither RX row, so each of them reads on the one difference it plants.
-  for _c in good:armv7m twowin:armv7m threewin:armv7m nocyc:armv7m notitle:armv7m mean:armv7m \
+  for _c in good:armv7m terse:armv7m twowin:armv7m threewin:armv7m nocyc:armv7m notitle:armv7m \
+            mean:armv7m \
             fpwatch:rxv3 fpother:armv7m rxnoarch:rxv3 rxterse:rxv3 armbare:armv7m; do
     _ca=${_c#*:}
     bench_verdict "$CTL/${_c%%:*}" "$EXPECT_COMMIT" "$CTL/${_c%%:*}.slice" "$_ca" 2>/dev/null \
@@ -1570,7 +1490,8 @@ EOF
   as ${_ca:-no arch}, which is a complete one, so it would refuse captures this bench legitimately
   takes"; }
   done
-  for _c in cut:armv7m flip:armv7m other:armv7m damaged:armv7m dropped:armv7m \
+  for _c in cut:armv7m flip:armv7m other:armv7m damaged:armv7m tersenotitle:armv7m \
+            tersebare:armv7m dropped:armv7m \
             nopasses:armv7m winlost:armv7m winbody:armv7m winnosw:armv7m twoprobe:armv7m \
             noloc:armv7m shortsweep:armv7m longsweep:armv7m malformed:armv7m locshort:armv7m \
             noswitch:armv7m reboot:armv7m rebootdropped:armv7m rebootdamaged:armv7m \
@@ -1636,11 +1557,12 @@ EOF
   fi
 
   rm -rf "$CTL"
-  echo "control: the bench verdict passes a complete report at the expected commit, one" >&2
-  echo "  carrying two accounted windows, one carrying three, one whose switch row sampled" >&2
+  echo "control: the bench verdict passes a complete report at the expected commit, the same" >&2
+  echo "  under the terse banner column, one carrying two accounted windows, one carrying three, one whose switch row sampled" >&2
   echo "  nothing and carries no end-to-end denominator, and one whose banner title was lost" >&2
   echo "  and whose commit line stands in for it; it refuses a truncated one, one whose dirty" >&2
-  echo "  state disagrees, one from another commit, one whose banner arrived damaged, one whose" >&2
+  echo "  state disagrees, one from another commit, one whose banner arrived damaged in either" >&2
+  echo "  column, one whose" >&2
   echo "  phase table lost a row, one carrying no end-to-end denominator beside a switch row" >&2
   echo "  that sampled, one whose SECOND window lost its accounting, one whose SECOND window" >&2
   echo "  lost its end-to-end block whole and kept the accounting, one whose SECOND window of" >&2

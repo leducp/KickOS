@@ -27,6 +27,8 @@
 //   5  the alignment leg. The worker drops SP two bytes, still deep inside its own stack and in
 //      bounds, so only alignment can refuse it. QEMU virt COMPLETES the misaligned frame stores,
 //      so this witnesses the REFUSAL and not the prologue live-lock a trapping core would take.
+//   6  the worker points SP where no memory answers (KICKOS_FS_NOWHERE) and traps: the
+//      stacking aborts, and a privileged read of that frame would fault again in handler mode.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -100,6 +102,9 @@ namespace
 #if !defined(__riscv) && !defined(__RX__)
 #error "KICKOS_FS_MODE 5 needs this ISA's spelling for moving SP; it must not be built here"
 #endif
+#endif
+#if KICKOS_FS_MODE == 6 && !defined(__thumb__)
+#error "KICKOS_FS_MODE 6 spells its SP move for armv7m only"
 #endif
 #if KICKOS_FS_MODE == 2
 #if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__) \
@@ -208,6 +213,10 @@ namespace
                        "int #1\n\t"
                        : : : "memory");
 #endif
+#elif KICKOS_FS_MODE == 6
+        // Nothing may run between the SP move and the trap.
+        __asm volatile("mov sp, %0" ::"r"(KICKOS_FS_NOWHERE) : "memory");
+        KICKOS_FS_TRAP();
 #else
         KICKOS_FS_TRAP();
 #endif

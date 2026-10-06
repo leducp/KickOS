@@ -222,6 +222,24 @@ namespace tap
         va_end(ap);
     }
 
+    bool nested_skips(TestFn fn)
+    {
+        Verdict const outer = g_verdict;
+        char saved[sizeof(g_msg)];
+        memcpy(saved, g_msg, sizeof(g_msg));
+        g_verdict = Verdict::PASS;
+        g_msg[0] = 0;
+        fn();
+        bool const skipped = g_verdict == Verdict::SKIP;
+        if (not skipped)
+        {
+            diag("nested arm did not skip: %s", g_msg);
+        }
+        g_verdict = outer;
+        memcpy(g_msg, saved, sizeof(g_msg));
+        return skipped;
+    }
+
     void set_after_failure(TestFn fn) { g_after_failure = fn; }
 
     void set_census(CensusFn count, char const* what)

@@ -64,3 +64,29 @@ rig_need() {
         exit 2
     fi
 }
+
+# rig_wired <board>  prints the bench fittings RIG_WIRED_<BOARD> declares on that board, such
+# as a loopback jumper or a shield, as space-separated names. Unset declares none, so a judge
+# owes every clause that rests on one rather than reading a missing wire as a failure.
+rig_wired() {
+    _rig_key="RIG_WIRED_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
+    eval "_rig_w=\${$_rig_key:-}"
+    printf '%s\n' "$_rig_w" | tr -s ' \t' ' ' | sed 's/^ //; s/ $//'
+}
+
+# rig_judge <board> <log> <build> <judge> <args>  runs the capture judge <judge> over <log>,
+# with <args> split at each `;` and <board>'s fittings in KOS_WIRED (tests/lib/gate.sh wired).
+rig_judge() {
+    _rj_wired="$(rig_wired "$1")"
+    _rj_log="$2"
+    _rj_build="$3"
+    _rj_judge="$4"
+    _rj_ifs="$IFS"
+    IFS=';'
+    set -f
+    # shellcheck disable=SC2086
+    set -- $5
+    set +f
+    IFS="$_rj_ifs"
+    KOS_WIRED="$_rj_wired" KOS_CAPTURE="$_rj_log" sh "$_rj_judge" "$_rj_build" "$PWD" cmake "$@"
+}

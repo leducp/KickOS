@@ -16,7 +16,7 @@
    kstack  1008 B x 9 = 9072 B
 
 [inprstorm] XMC4800 console DoS probe via U0C1 INPR reroute onto SR0
-[inprstorm] MARKER: root up, spawning the U0C1 holder
+[inprstorm] MARKER: root up, starting the heartbeat
 [inprstorm] rate profile: 115.2 kHz comparison
 [inprstorm] unpriv up (granted U0C1 window 0x200)
 [inprstorm] profile 115.2 kHz comparison: STEP=367 PDIV+1=14 PCTQ+1=1 DCTQ+1=16 fPERIPH=96000000 Hz

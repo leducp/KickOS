@@ -1188,6 +1188,17 @@ namespace kickos
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return -KOS_EINVAL;
         }
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        // On PMSAv8 any overlap faults the child's exception entry and the kernel's own reads of
+        // its frame.
+        if (p->privileged == 0
+            and not thread_regions_expressible(&k.threads.slots[i], task_domain(tk), attr, stack,
+                                               stack_size))
+        {
+            spawn_unwind(k, attr, tk, stack, stack_size, i);
+            return -KOS_EINVAL;
+        }
+#endif
         // Taken before the reference loop so one unwind path serves both failures.
         if (not cap_slab_attach(&attr.cap_run, KICKOS_CAP_CHILD_WIDTH, &attr.cap_free_head,
                                 &attr.cap_width))

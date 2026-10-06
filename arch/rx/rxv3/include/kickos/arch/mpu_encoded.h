@@ -9,9 +9,14 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/mpu_overlap.h>
+
 // Descriptor slots the image carries. kernel/include/kickos/mpuset.h static_asserts that
 // KICKOS_MPU_MAX_REGIONS fits.
 #define ARCH_MPU_ENCODED_SLOTS 8
+
+// RX72M UM 17.1.4: the permissions of every region an access hits are ORed.
+#define ARCH_MPU_OVERLAP ARCH_MPU_OVERLAP_UNION
 
 struct arch_mpu_encoded
 {

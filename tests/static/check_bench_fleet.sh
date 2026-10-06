@@ -38,6 +38,13 @@ if [ "${LIST_IMAGES:-0}" = 1 ]; then
     exit 0
 fi
 echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0}" >> "$FLEET_FIXTURE/flashed"
+if [ -f "$FLEET_FIXTURE/$APP.capture" ]; then
+    . "$(dirname "$0")/rig.sh"
+    rig_load "$TREE"
+    judge=$(awk -F '|' -v a="$APP" '$1 == a { print $3; exit }' "$FLEET_FIXTURE/$1.images")
+    rig_judge "$1" "$FLEET_FIXTURE/$APP.capture" "$FLEET_FIXTURE/build" "$judge" ""
+    exit $?
+fi
 if [ -f "$FLEET_FIXTURE/$APP${VARIANT:+-$VARIANT}.out" ]; then
     cat "$FLEET_FIXTURE/$APP${VARIANT:+-$VARIANT}.out"
 elif [ -f "$FLEET_FIXTURE/$APP.out" ]; then
@@ -115,6 +122,50 @@ got=$?
 grep -qE '^  esp32c6-wroom +amp_partition +captured, partly owed: the planted clause$' \
     "$TMP/fleet.out" || bad "the AMP partition's NOT EVALUATED clause is not owed in the table"
 
+# A capture whose judge rests on a bench fitting: the rig declares it or the clause is owed, and
+# no rig line at all declares nothing.
+# <rig line or empty>: rig_wired f411disco under a rig carrying it.
+wired_f411() {
+    { cat "$TMP/rig.conf"; printf '%s\n' "$1"; } > "$TMP/rig-wired.conf"
+    (
+        KICKOS_RIG="$TMP/rig-wired.conf"
+        . "$TMP/tools/bench/rig.sh"
+        rig_find "$TMP/tree" && rig_wired f411disco
+    )
+}
+[ -z "$(wired_f411 '')" ] || bad "a rig with no RIG_WIRED_F411DISCO declares a fitting"
+[ "$(wired_f411 "$(printf 'RIG_WIRED_F411DISCO="  spi1-loopback\tlan9252 "')")" = "spi1-loopback lan9252" ] \
+    || bad "rig_wired does not read RIG_WIRED_F411DISCO as its space-separated names"
+[ -z "$(wired_f411 'RIG_WIRED_BLACKPILL=spi1-loopback')" ] \
+    || bad "rig_wired declares another board's fitting on f411disco"
+
+F411_BUS='0483:3748 STLINK'
+printf 'f411spi|kernel|tests/integration/check_f411spi.sh|\n' > "$F/f411disco.images"
+mkdir -p "$F/build"
+: > "$F/build/CMakeCache.txt"
+cp tests/integration/app_captures/f411spi-unwired.capture "$F/f411spi.capture"
+fleet "$F411_BUS" f411disco
+got=$?
+[ "$got" -eq 3 ] || bad "a pass on an unjumpered f411disco with no fitting declared exits $got, not 3"
+grep -qE '^  f411disco +f411spi +captured, partly owed: loopback \(bench wiring absent\)$' \
+    "$TMP/fleet.out" || bad "f411spi's loopback is not owed where the rig declares no jumper"
+printf 'RIG_WIRED_F411DISCO=spi1-loopback\n' >> "$TMP/rig.conf"
+fleet "$F411_BUS" f411disco
+got=$?
+[ "$got" -eq 1 ] || bad "a pass whose declared jumper echoes nothing exits $got, not 1"
+grep -q '^f411disco/f411spi  *FAILED' "$TMP/fleet.out" \
+    || bad "f411spi's mismatch is not a failure where the rig declares the jumper"
+cp tests/integration/app_captures/f411spi.capture "$F/f411spi.capture"
+fleet "$F411_BUS" f411disco
+got=$?
+[ "$got" -eq 0 ] || bad "a pass whose declared jumper echoes every word exits $got, not 0"
+grep -qE '^  f411disco +f411spi +captured$' "$TMP/fleet.out" \
+    || bad "f411spi is not captured whole where the rig declares the jumper and the words echo"
+printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
+fleet "$F411_BUS" f411disco
+got=$?
+[ "$got" -eq 3 ] || bad "an echoing f411spi under a rig declaring no jumper exits $got, not 3"
+
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: an absent board fails the pass; the flat fpclass and an owed AMP clause count, each"
-echo "  under its own label"
+echo "  under its own label; a loopback is judged only where the rig declares its fitting"

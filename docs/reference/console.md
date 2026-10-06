@@ -200,6 +200,17 @@ around the fallback fixes that, because the interleaving is between the fallback
 drain that is not holding the lock. Waiting instead is a decision for the caller, not
 one the kernel takes on its behalf.
 
+**A fault record's line is the exception.** A thread-fault record (`kprintf_fault`) on the
+kernel's own console is not dropped by a full ring: under the mask, the oldest queued bytes go out
+through `arch_console_write_sync`, in ring order, until the line fits, and the line then queues
+(`console_tx_insert_record_line`). The drain ISR and every producer are held off for that span, so
+the device still has one writer and the lines queued first go out first and whole. The span is
+bounded by the record: a line sends at most its own length, CRs included, so one record masks
+interrupts for at most `KDIAG_FAULT_RECORD_MAX` bytes plus one CR per line of wire time, about
+25 ms at 115200. A record line is still refused by a line wider than the ring and by a nested
+insert, and on a backend with no TX interrupt by a producer drain holding a byte it took, the one
+writer the mask does not stop.
+
 **The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file, under
 `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,
 so the ring fills a dozen rows in and the rest are refused; three silicon captures of one campaign
