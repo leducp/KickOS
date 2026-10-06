@@ -214,10 +214,10 @@ grep -qE "$EXPECT" "$TMP/build.log" || {
     fail "the $ARM arm's link failed without '$EXPECT' (see above)"
 }
 # Each system target names KickOS::init's objects, which the link takes once, so only the
-# symbols each system target emits collide: its table's, and on a build carrying one its gate
-# assignment's.
+# symbols each system target emits collide: its table's and its USB console mark's, and on a
+# build carrying one its gate assignment's.
 if [ "$ARM" = two ] && grep 'multiple definition' "$TMP/build.log" \
-        | grep -qv 'definition of [^ ]*\(kickos_link_one_system_target\|kickos_table\|kickos_gate_rows\|kickos_gate_row_count\).'; then
+        | grep -qv 'definition of [^ ]*\(kickos_link_one_system_target\|kickos_table\|kickos_usb_device_console\|kickos_gate_rows\|kickos_gate_row_count\).'; then
     grep 'multiple definition' "$TMP/build.log" | sed -n '1,5p' >&2
     fail "the link took a system target's shared objects twice"
 fi

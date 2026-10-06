@@ -148,7 +148,7 @@ The key is the board name uppercased with dashes turned into underscores:
 
 ## Image coverage
 
-`bench.sh` names an image with `APP`; there is no service list to select. A driver is in the image
+`bench.sh` names an image with `APP`. A driver is in the image
 whose composition names it, so a green run of a board's kernel-console `selftest` images says
 nothing about that board's drivers, which run in the `selftest_<driver>` images.
 
@@ -170,11 +170,11 @@ exits nonzero. One TAG covers the whole pass: a capture's log is keyed by TAG, b
 `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
 either, so no line it prints is a witness.
 
-The console route is derived from the image. An image whose stdout driver is a USB device
-console, `rpusb` or `rt1062usb`, links that driver's `kickos_usb_device_console`
-(`<kickos/usb_console.h>`), which is also what brings the USB clock tree up in its chip init;
-`usb_console_image` in `tools/bench/board-rows.sh` reads it from the ELF, and such an image is
-captured over the device's own ACM. The selftest's `selftest_rpusb` on `picopi` and `pizero2350`
+The console route is derived from the image. Every system target defines
+`kickos_usb_device_console` (`<kickos/usb_console.h>`), 1 where its stdout driver is a USB device
+console, `rpusb` or `rt1062usb`, which is also what brings the USB clock tree up in its chip init;
+`usb_console_image` in `tools/bench/board-rows.sh` reads its value from the ELF, and such an image
+is captured over the device's own ACM. The selftest's `selftest_rpusb` on `picopi` and `pizero2350`
 and `selftest_rt1062usb` on `teensy41` are those images. `CONSOLE_PIN=1` forces the pin console
 back, for a device-controller backend that dies before it publishes.
 

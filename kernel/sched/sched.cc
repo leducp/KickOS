@@ -1056,7 +1056,6 @@ namespace kickos
                 bool const task_dead = task_sweep_done(left_task, left_gen);
                 // EXITED suppresses switching while this loop scans ThreadPool for join and
                 // task-empty waiters.
-                bool const last_out = (k.live == 1);
                 for (int s = 0; s < k.threads.next; s++)
                 {
                     Thread* const w = &k.threads.slots[s];
@@ -1073,14 +1072,6 @@ namespace kickos
                     {
                         w->clear_wait_edge();
                         w->wait_result = 0;
-                        wake(w);
-                        continue;
-                    }
-                    // A parked waiter is still counted live, so a count of 1 names it.
-                    if (last_out and w->wait_kind == WAIT_LIVE_LAST)
-                    {
-                        // No wait_result: thread_wait_last returns 0 without reading one.
-                        w->clear_wait_edge();
                         wake(w);
                     }
                 }

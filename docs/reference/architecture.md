@@ -33,7 +33,7 @@ badged endpoints, static capability distribution) and **Zircon** (typed handles,
 - **First-class host/x86 "sim"** -- kernel + userspace as one Linux process for hardware-free,
   CI-friendly testing: the real kernel runs under CTest on the host, no board or emulator needed.
 - **C++ first-class** -- kernel in **freestanding C++** (`-fno-exceptions -fno-rtti`); userspace
-  gets **full C++ as a per-app opt-in** (exceptions/RTTI allowed there).
+  is **full C++** (exceptions/RTTI allowed there).
 - **Low barrier -- seL4's paradigm, not its ceremony.** The UX benchmark is the sibling
   **KickCAT**: easy to use, easy to tweak, no big machinery -- *you write a `main`, and that's it*;
   the provided userspace libc/runtime already does most of the job for a basic app (this is what
@@ -96,20 +96,17 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   minting syscall returns a status and writes the handle to an out-parameter. One index value is
   reserved -- the all-ones index is never a slot, which caps a table at `2^16 - 1` entries and is
   what makes `KOS_CAP_AUTHORITY` and `KOS_CAP_NONE` unmintable. **No board states a width at all**:
-  a board states only its `KICKOS_CAP_TABLE_SUPPLY`, and the width is summed at configure from four
-  declarations -- the kernel's reserved range, the chosen service list's retention, the widest app
-  peak in the tree, and the widest declared peak of concurrent INBOUND reply capabilities (**0 by
-  default**, declared by nothing in tree) -- then RAISED to the grant-list floor
-  `KICKOS_MAX_SPAWN_GRANTS + 1` whenever the sum falls below it, and checked against that supply
-  (`cmake/cap_table.cmake`). So the width is a property of the IMAGE, not of the board: the same
-  board configures a different one for a different service list or a different widest app. The fleet
-  configures **three** widths -- **7**, **10** and **11** -- and widening a table no longer
-  renumbers anything.
+  a board states only its `KICKOS_CAP_TABLE_SUPPLY`, and root, which is the init, gets a table exactly
+  that wide (`cmake/cap_table.cmake`), the supply admission counts what the init holds against. Every
+  spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`.
+  The fleet's root widths are the boards' supplies: 16 by default, 7 on `bluepill-c8` and
+  `f302nucleo`, 32 on the x86_64 and arm64 bench presets that state it. Widening a table does not
+  renumber anything.
   Hierarchical CSpace exists to address a
   space too large to index directly; at that size the guard/radix machinery would cost more than
   the space it organises. What actually keeps tables small is not the field width but the
   **static** allocation: one slab holds a run per possible thread. A run is NOT one width -- root
-  gets the summed `KICKOS_MAX_HANDLES`, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH` -- so the
+  gets `KICKOS_MAX_HANDLES`, the board's supply, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH` -- so the
   slab is `((KICKOS_MAX_THREADS + 2) x child chunks + root's extra chunks) x 8 x 8` bytes of
   `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
   formula.
@@ -139,7 +136,7 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
 
 The common thread is that a run is statically reserved for every possible thread -- the TCB holds only
 the chunk *directory*, and the entries live in one slab carved at boot -- which is what holds the
-fleet's three configured ROOT widths at 7, 10 and 11 slots regardless of what the handle codec
+fleet's two configured ROOT widths at 7 and 10 slots regardless of what the handle codec
 could address. A spawned thread is narrower still: it gets `KICKOS_CAP_CHILD_WIDTH`. If that ever changes, two
 of the four deserve revisiting -- the CNode and per-instance bullets. The untyped-memory bullet
 never depended on table size at all, and the derivation-tree bullet gets *stronger* as tables
@@ -214,9 +211,8 @@ becoming a silent no-op.
    every trigger goes through one of them. The tick is one optional caller among many.
 3. **Tickless by default.** No mandatory periodic interrupt; a single "next-event" timer is
    armed for the earliest deadline. Pure-FIFO idle arms nothing.
-4. **Identical userspace across arches (on target).** On an MCU, a plain userspace app links the
-   **KickOS freestanding libc** (the zero-overhead default); an app that opts into full C++ instead
-   links the **toolchain's** libc + libstdc++ (see the layered libc model in the toolchain-libc
+4. **Identical userspace across arches (on target).** On an MCU, a userspace app links the
+   **toolchain's** libc + libstdc++ (see the layered libc model in the toolchain-libc
    lesson below). The **sim is deliberately exempt**: it is a hosted ELF, so its arch backend and
    any full-C++ app ride **host libc/libstdc++** -- forcing "KickOS libc only" there buys nothing
    and would block the sim's whole purpose (running real userspace, e.g. a KickCAT slave). The
@@ -237,16 +233,12 @@ becoming a silent no-op.
    one system target, `KickOS::system_default` for the board's default composition. The kernel's
    root thread calls one init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after
    kernel init. An image linking `KickOS::kernel` takes it from its system target's
-   `KickOS::init`; for the old leaves the CMake cache var `KICKOS_INIT_PROVIDER` selects the
-   target that supplies it (default `kickos_default_init`, a thin passthrough
-   `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
-   only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
+   `KickOS::init`, which walks the image's composition and grants each task the authority its
+   `authority:` list declares. App/libstdc++ global ctors run in the root thread BEFORE the
    seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
    `kos_shutdown` syscall, so it needs `AUTH_SYSTEM` and panics `"root: shutdown refused"` if root
-   narrowed that bit away -- and a persistent init never returns (parks/loops). `kickos_default_init_run`
-   narrows root's authority to `kickos_app_authority()` before the app main, so a custom provider that
-   delegates to it inherits the confinement. A bad/missing provider is a build-time FATAL_ERROR, never
-   a silent fallback (CMake target selection, not a link-time fallback).
+   narrowed that bit away -- and a persistent init never returns (parks/loops). A missing init is
+   a build-time error, never a silent fallback.
 9. **Conventions.** `style.md` is the contract: Allman everywhere, 4-space indent, traditional
    include guards, no ternary, spelled logical operators, fixed-width types, and comments only for
    hidden constraints. Shared in shape with the sibling projects `../KickCAT` / `../kickmsg`.
@@ -292,10 +284,9 @@ libstdc++ can sit on top. A secondary tax is the runtime porting layer libsupc++
 (`_impure_ptr` from `vterminate.o`, unwinder locks).
 
 **KickOS sidesteps the mismatch class by never putting toolchain C++ on our own libc.** The libc
-strategy is layered: a plain app links KickOS's **freestanding** libc (no libstdc++); an app that
-opts into full C++ links `libstdc++`/`libsupc++` over the **libc they were built against**. The
+strategy is layered: an app links `libstdc++`/`libsupc++` over the **libc they were built against**. The
 fleet is on **pinned vendor toolchains that are all newlib** -- Arm GNU Toolchain (ARM),
-RISCStar (RISC-V), GNURX (RX) -- so the full-C++ opt-in links libstdc++/libsupc++ over their
+RISCStar (RISC-V), GNURX (RX) -- so an app links libstdc++/libsupc++ over their
 native **newlib** on every arch, no per-toolchain libc special-casing; our `newlib_stubs.cc`
 fits directly. **Design rule: keep KickOS's own libc newlib-*family*-compatible** so the *sim*
 can ride host `libstdc++` and so freestanding/newlib interop stays clean. What remains on target
@@ -314,7 +305,7 @@ KickOS/
   CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, arm64, host, riscv,
                                     #   rx, x86, xtensa)
   Kconfig                          # top-level symbol tree: capability facts (HAS_MPU, ...),
-                                    #   sourced boards/Kconfig + arch/Kconfig + per-board Kconfig
+                                    #   sourced boards/Kconfig + arch/Kconfig
   tools/kconfig/genconfig.py       # resolves a board's defconfig into <build>/generated/:
                                     #   .config, include/kickos/board_config.h, kickos_config.cmake
   cmake/
@@ -370,9 +361,8 @@ KickOS/
   system/                           # kickos_system: fleet-wide system layer
     include/kickos/sys/             # errno.h (KOS_E* taxonomy), cap_index.h (the well-known cap
                                     #   indices; renumberable downward only), init.h (the init
-                                    #   seam), pinmap.h + service.h (the board-provider seams)
-    init/                           # kickos_default_init (the passthrough provider) + the
-                                    #   per-board pinmap and service-list providers
+                                    #   seam)
+    init/                           # the composed init (compose/) + root's authority lowering
     cxx/                            # verbose-terminate handler
     driver/<chip>/<driver>/         # the driver LIBS, per chip: esp32/lx6uart, esp32c6/c6uart,
                                     #   imxrt1062/rt1062usb, mk64f/{k64dspi,k64uart,k64uartirq},
@@ -526,17 +516,6 @@ SAME gate, spawn parenthood (`ThreadAttr::spawner_tag` against `ThreadPool::kill
 is non-transferable: there is no table entry for a `cap_grant` to copy, and it hands the caller
 nothing it did not already have. They decide ONE state oppositely, and that difference is the
 point -- see `invariants.md` `join-accepts-the-unreclaimed-exit`.
-`KOS_SYS_WAIT_LAST` is the AGGREGATE: it returns once the caller is the last live thread
-(`sched::live_count()` reaching 1), parking queue-less tagged `WAIT_LIVE_LAST` and woken by that
-same exit sweep. It takes **no deadline** -- it is the shutdown condition itself rather than a
-wait for an event, so no caller could know a bound -- and it is **root-only**, `-KOS_EPERM` to
-anyone else: it reaches outside the caller's own spawn subtree, and it is single-seat, so an
-ordinary thread parking there first would deny root its shutdown condition for as long as it
-waits. That refusal is also what makes a second-waiter case unreachable, so there is none to
-refuse. It is the only way to await a thread
-the caller cannot NAME: a spawn hands back a handle to the child alone, so a `main`'s
-grandchildren are unnameable. Its condition is GLOBAL, so it never returns in an image whose
-service list holds a driver thread that does not exit.
 
 **Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` makes an EMPTY group
 holding a domain built from its own grant and `kos_thread_params::task` seats a member;
@@ -966,11 +945,9 @@ feeds the slave app.
   new/delete` is not provided at all** -- the kernel links `-nostdlib++`, so a stray `operator new`
   is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt`, the `-nostdlib++` link options). No implicitly
   heap-allocating STL. `extern "C"` at asm/startup/syscall seams.
-- **Userspace**: default freestanding subset; **each app may opt into full C++**
-  (`-fexceptions -frtti`) by linking the toolchain's `libstdc++`/`libsupc++` over the **toolchain's
-  own libc** -- newlib on every arch (Arm GNU / RISCStar / GNURX are all newlib) -- so the C++
+- **Userspace**: **full C++** (`-fexceptions -frtti`): every app links the toolchain's
+  `libstdc++`/`libsupc++` over the **toolchain's own libc** -- newlib on every arch (Arm GNU / RISCStar / GNURX are all newlib) -- so the C++
   runtime rides its native libc, no cross-libc header/ABI collision (see the NuttX lesson above).
-  KickOS's own freestanding libc backs the default apps that never link libstdc++.
 - **libc**: one freestanding KickOS libc for the kernel + freestanding userspace, identical on sim
   and target. Its ABI is kept **newlib-family-compatible** so the *sim* rides host `libstdc++` and
   newlib interop stays clean. The bottom edge is a syscall-stub porting layer
@@ -1008,24 +985,14 @@ feeds the slave app.
   separates `kickos_kernel` (TCB/scheduler) from **`kickos_system`** -- the fleet-wide system
   layer: an INTERFACE header home for the syscall error taxonomy (`errno.h`), the
   capability-index convention (`cap_index.h`, renumberable downward only), the init seam
-  (`init.h`) and the two board-provider seams (`pinmap.h`, `service.h`); and the home of the
-  class/service driver layer plus the per-board bring-up descriptor, both **populated**.
+  (`init.h`); and the home of the
+  class/service driver layer plus the composed init, both **populated**.
   `system/driver/<chip>/<name>/` carries the driver libs -- `esp32/lx6uart`, `esp32c6/c6uart`,
   `imxrt1062/rt1062usb`, `mk64f/{k64dspi,k64uart,k64uartirq}`, `rp2xxx/rpusb`, `rx72m/rxsci`,
-  `stm32f411/f4uartirq`, `xmc4800/{xmcssc,xmcuart,xmcuartirq}` -- and `system/init/` carries the
-  bring-up descriptors:
-  `common/` (the passthrough init provider, the empty pinmap and the empty service list) plus a
-  per-board directory of `pinmap.cc` and `service_list*.cc` providers for `f302nucleo`,
-  `f411disco`, `frdmk64f`, `picopi`, `pizero2350`, `teensy41`, `xmc4800-relax`, `rx72m`,
-  `esp32-wroom`, `esp32c6-wroom` and `sim`. `kickos_system` carries no archive, so it links separately (never in a RESCAN
+  `stm32f411/f4uartirq`, `xmc4800/{xmcssc,xmcuart,xmcuartirq}` -- and `system/init/compose/`
+  carries the init, which walks the composition table.
+  `kickos_system` carries no archive, so it links separately (never in a RESCAN
   group) and is propagated to every app via `kickos_core`.
-- **Init provider (the entry seam target).** The target supplying `kickos_init_entry` is a
-  separate library selected by the `KICKOS_INIT_PROVIDER` cache var (default `kickos_default_init`,
-  a `kickos_system` service that passes through to the app's `main`); it is spliced into the link
-  group right after `kickos_kernel` and resolved across the RESCAN boundary. A power user names
-  their own target; a missing/unknown provider is a CMake FATAL_ERROR -- never a silent fallback,
-  never a link-time fallback TU -- and the installed package refuses a consumer override of the frozen
-  provider.
 - **Dependency-inversion packaging (the DX goal).** KickOS installs/exports a CMake package
   (config + libs + startup object + board linker script + flags). Consumption modes: **in-tree**
   (`add_subdirectory`) and **out-of-tree** (`find_package(KickOS)` / FetchContent / export
@@ -1039,9 +1006,8 @@ feeds the slave app.
   target_link_libraries(my_slave PRIVATE KickOS::kernel KickOS::system_default)
   ```
   The exported `KickOS::kernel` INTERFACE target carries the component link group + flags (sim:
-  host libc threads) with no init provider, service list or pin map in its archive group; the
-  old leaves `KickOS::kickos` and `KickOS::kickos_cxx` carry those three (all sit over a
-  posture-neutral `KickOS::kickos_core`). `KickOS::kernel` links beside exactly
+  host libc threads) with no init in its archive group, and is full C++ on every board.
+  `KickOS::kernel` links beside exactly
   one system target, which carries the init, the emitted table and the heap:
   `kickos_compose(<system> <composition.yaml>)` makes one, `kickos_compose(<system> PARTITION
   <node0.yaml>...)` one on a node of an AMP partition, and `KickOS::system_default` is the
@@ -1085,12 +1051,9 @@ feeds the slave app.
   module whose channels share their lines, as the XMC's USIC is, where the role is `irq`. A
   composition binds each role to a line, and the init hands the driver's `START` a
   `kos_driver_instance` carrying each line as its number and its index among its device's lines:
-  `bring_up` claims the instance's lines, never the descriptor's numbers, which only a service
-  list still claims; `kickos_add_qemu_test(NAME
+  `bring_up` claims the instance's lines; `kickos_add_qemu_test(NAME
   TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
-  prefix in exactly one place; and `kickos_add_board_provider(<name> SOURCE [LINK])` -- a pinmap or
-  service-list descriptor lib that folds its `install(EXPORT)` in so adding a provider cannot drift
-  from a hand-maintained install list. The `KICKOS_BOARD` cache-var help and the MPU-enforcement
+  prefix in exactly one place. The `KICKOS_BOARD` cache-var help and the MPU-enforcement
   board list are **derived from globs** over `boards/*/board.cmake`, so neither goes stale against
   the fleet.
 - **CTest** runs the sim ELF natively in CI.
@@ -1127,33 +1090,11 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   (`KCAP_CHUNK_TARGET`, 8) compiles a FLAT path with no directory, no shift and no mask, and its
   run is exactly the declared width; wider tables reserve a ceiling count of chunks, so the last
   chunk's tail is paid for and unaddressable. **The width is per TASK, not per image**: root gets
-  the sum below, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
-  classes rather than from the widest. Root's width is a configure-time SUM of
-  four declarations -- the kernel's reserved range, the chosen service list's `RETAINED_CAPS`, the
-  app's declared peak (`kickos_declare_app_capabilities`'s `peak` argument), and the peak
-  concurrent INBOUND reply capabilities a thread's table must hold (`INBOUND_REPLY_CAPS` on
-  `kickos_add_board_provider`, the `reply` argument to `kickos_declare_app_capabilities`,
-  combined as the widest, and **0 by default** -- nothing in tree declares it). A client mints
-  into the SERVER's table, so without that fourth term the sum is not a bound on when a thread's own
-  mint can fail. Beneath the sum sits a floor that is nobody's declaration, the grant-list floor
-  `KICKOS_MAX_SPAWN_GRANTS + 1`: it RAISES a width that falls below it rather than refusing it, so
-  no app is asked to declare capabilities it does not hold, and it refuses only when the floor
-  itself exceeds supply. The total is checked against the board's `KICKOS_CAP_TABLE_SUPPLY`, which
-  is the only capability figure a board states. The width itself is
-  **computed, and no board declares one**; three values come out across the fleet. **7** on the
-  two supply-7 boards (`bluepill-c8`, `f302nucleo`), whose supply clamps the
-  selftest's optional peak away, so the arms that wanted it reclaim and skip -- one flat chunk,
-  224 B of `.bss`. **10** on a supply-16 board whose list retains nothing -- every preset default
-  except `frdmk64f`'s and `xmc4800-relax`'s, `microbit` included, and equally under any
-  `*_uartirq` list: root takes two chunks of 8 with a 6-slot unaddressable tail while every
-  spawned thread takes one, 1216 B where `KICKOS_MAX_THREADS` is 16, 704 B where it is 8 and
-  448 B where it is 4. **Do not recompute these -- read the `KickOS: cap table =` configure
-  line, which is the authority.** Those are the widths ROOT is
-  configured at; a spawned thread gets
-  `KICKOS_CAP_CHILD_WIDTH` whatever the row says. **11** only when a
-  RETAINING service list is selected -- exactly three declare `RETAINED_CAPS 1`
-  (`system/CMakeLists.txt`): the two SPI lists `services_frdmk64f` and `services_xmc4800relax`, and
-  the sim's UART list `services_simuart`. A `CapEntry` is
+  the board's supply, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
+  classes rather than from the widest. Root's table is exactly `KICKOS_CAP_TABLE_SUPPLY` wide and
+  admission counts the init's holdings against it; the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`
+  is the child width, and a board whose supply is below it fails the configure. Do not recompute the
+  `.bss` cost: the `KickOS: cap table =` configure line is the authority. A `CapEntry` is
   8 bytes and **fully spent**: the global object handle, `CapType`, the rights bits, the cap-gen,
   and -- packed into the spare bits beside the type and the rights -- a `CAP_REPLY`'s 8-bit call
   sequence (`KCAP_REPLY_SEQ_LO_BITS` / `KCAP_REPLY_SEQ_HI_BITS`, seated by `cap_reply_seq_seat`).
@@ -1206,7 +1147,7 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   index. Userspace only *names* a reserved slot by these constants -- it never chooses the
   index. The range is not frozen, but either direction is an ABI break: renumber **downward** only
   for a slot nothing seats, keeping the usable dynamic count constant -- the width follows on its
-  own, since the reserved range is one of the terms it is summed from; **append** by raising the last reserved
+  own, since the reserved range lies inside root's table; **append** by raising the last reserved
   index and `KICKOS_CAP_FIRST_DYNAMIC` together, which costs one slot on every table in the fleet
   -- so weigh it first against putting the state in the TCB, as the authority word does. The
   `cap.h` static_assert floors the dynamic count at >=1 either way.

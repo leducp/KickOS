@@ -18,25 +18,20 @@ void shared_init(Shared* s)
     console::shared_init<Transport>(s);
 }
 
-int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud)
+int ctx_init(Ctx* ctx, struct kos_driver_instance const* in, uint32_t fallback_baud)
 {
     shared_init(&ctx->sh);
-    uint32_t baud = cfg->hz;
-    if (baud == 0u)
-    {
-        baud = fallback_baud;
-    }
-    ctx->ucfg.base = cfg->mmio_base;
+    ctx->ucfg.base = in->mmio_base;
     ctx->ucfg.stats = &ctx->sh.stats;
-    ctx->ucfg.baud = baud;
+    ctx->ucfg.baud = fallback_baud;
     ctx->ucfg.data_bits = 8;
     ctx->ucfg.parity = KOS_UART_PARITY_NONE;
     ctx->ucfg.stop_bits = 1;
     ctx->ucfg.rsv = 0;
     ctx->ucfg.line_index = 0;
-    if (cfg->instance != nullptr and cfg->instance->line_count != 0u)
+    if (in->line_count != 0u)
     {
-        ctx->ucfg.line_index = cfg->instance->lines[0].index;
+        ctx->ucfg.line_index = in->lines[0].index;
     }
     return 0;
 }
@@ -113,10 +108,9 @@ int32_t console_serve_loop(Shared* sh)
 
 void console_thread(void* arg)
 {
-    (void)console_serve_loop(&static_cast<Ctx*>(driver::thread_start(arg))->sh);
+    (void)console_serve_loop(&static_cast<Ctx*>(arg)->sh);
     // Not the entry thread: its exit would end it alone and leave the task alive.
-    driver::trap_under_init();
-    exit(0);
+    driver::trap();
 }
 
 }

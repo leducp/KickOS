@@ -577,7 +577,7 @@ The whole point of this file. A green fleet pass says none of the following.
   snapshots the tree: each preset reads the source afresh, so a tree edited while a sweep runs
   yields verdicts belonging to different tree states, with no record of which preset saw which. And
   both tools take the service list each preset defaults to, so a provider that lives only in
-  `tests/static/service_lists.txt` is compiled by neither. **And the TREE STAMP each tool prints is
+  the service-list table is compiled by neither. **And the TREE STAMP each tool prints is
   a check on none of this**: it is taken from `$ROOT` by `git -C` and agrees with itself whatever
   sources cmake actually read, which is how a sweep invoked from another checkout once reported 59
   of 60 presets against a tree it had never compiled.
@@ -997,7 +997,7 @@ The whole point of this file. A green fleet pass says none of the following.
 - **The `_ebss`-to-arena gap is NOT slack.** The `.userheap` carve slides up with `_ebss`. The
   shape that really is pinned is an enforcement window.
 - **`usbcdcwit` is built by no default configuration of any board** (gated on
-  `KICKOS_SERVICE_LIST MATCHES "_usbcdc$"`).
+  a service-list selection matching `_usbcdc`).
 - **`picopi`'s slay capture EXISTS and is not valid for this tree.** The five slay arms passed on
   it in a 2026-08-16 session log, which is why "owed" was the wrong word -- but that log attests the
   M4.9.1 tip, and M6.2 has since changed `arch/arm/armv6m/arch_armv6m.cc` at T6a. A witness is valid
@@ -1018,7 +1018,7 @@ The whole point of this file. A green fleet pass says none of the following.
   panic time. Detail at `TODO.md`.
 - **Four app SOURCES grant a DEV window a live driver holds**: `xmcspi`, `xmccshold`, `pvprobe`,
   `inprstorm` -- six targets, `inprstorm` now building three ELFs from one source.
-  **`KICKOS_APP_AUTHORITY` surfaces only at runtime**, one consumer at boot and no build file
+  **The app authority macro surfaces only at runtime**, one consumer at boot and no build file
   reading it.
 - **T7's OWED LATENCY MEASUREMENT WAS NEVER TAKEN, and there is no instrument to take it with.**
   The doc makes a compact-SVC-frame decision wait on the number; `qemu-arm64` has only a `base`

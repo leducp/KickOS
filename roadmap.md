@@ -108,10 +108,10 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   be console-observable, or two of the four matrix boards cannot be brought up at all.
 - **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
   validation** -- the userspace console drivers that exist are whatever
-  `grep -rln KOS_SVC_CONSOLE system/driver/` lists: UART on xmc4800, mk64f, esp32c6, esp32, rx72m and
+  a grep of `system/driver/` for the console service kind lists: UART on xmc4800, mk64f, esp32c6, esp32, rx72m and
   stm32f411 (the polled pair plus the `*uartirq` set), and USB CDC on imxrt1062 and rp2xxx
   (the `select`-only lists `system/init/{picopi,pizero2350,teensy41}/service_list_usbcdc.cc`, which
-  reach an image only under `-DKICKOS_SERVICE_LIST`). Every other board is kernel-owned, and so are
+  reach an image only under an explicit service-list selection). Every other board is kernel-owned, and so are
   those three in their default posture. The chips shipping a reclaim body are
   `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/`, now most of the fleet (the fault-funnel
   porting invariant: no real reclaim => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
@@ -326,7 +326,7 @@ like any pool size -- and what the summing used to guarantee is replaced by an a
 `static_assert` against the installed generated header plus the runtime refusal that already exists.
 
 **That deletion has NOT happened, and what landed keeps the summing in CMake deliberately.** Its
-terms are target properties -- the widest app `KICKOS_CAP_PEAK` and the service list's `RETAINED_CAPS`
+terms are target properties -- the widest app's declared peak and the service list's `RETAINED_CAPS`
 -- so the sum is build-graph arithmetic over numbers CMake already holds, which is what CMake is
 for. What made it a hazard was never the arithmetic: it was that its INPUTS were read back out of C
 through a preprocessor probe, and that is what is gone. Deleting the sum outright is a separate
@@ -1764,7 +1764,7 @@ topology under the same lock every resolve takes.
 **WHAT EARLIER MILESTONES LEAVE HERE BECOMES A RULE OR A DELETION.** Admission checks that a line's
 claimer and its declared core are one, and that a declared pin fits the task's grant (M9.2); a pin
 is never required. Four diagnostic apps grant a device window a live board service holds, which
-becomes a build-time refusal instead of a spawn refused on silicon. `KICKOS_APP_AUTHORITY` goes,
+becomes a build-time refusal instead of a spawn refused on silicon. the app authority macro goes,
 authority being declared per task. A restart needs no stop hook: the kernel frees what a dead
 instance's threads held, and the init keeps its endpoint and ring block for the next start.
 
@@ -1822,7 +1822,7 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5.10 | the host and emulated apps on compositions: the default for those that need nothing more, their own for the rest, the root and old-init tests retargeted or deleted with their witness kept, the sim's published-console gates on compositions |
 | M10.5.11 | the silicon per-board apps on compositions, `f411spi` and the XMC's hand-rolled bring-up rewritten as composed tasks, `k64drv` on LPTMR0, `conreclaim` over a test-owned console driver, and a judge per app that prints |
 | M10.5.12 | the selftest as a task under its own composition on every board, one more per console driver a board has, its priorities under each, its root arms reading the task, AMP nodes naming their crossings |
-| M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and `KICKOS_APP_AUTHORITY`; `kickos_root_lower`; the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
+| M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and the app authority macro; `kickos_root_lower`; the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
 | M10.5.14 | the fleet sweep over every preset, the silicon witnesses through `tools/bench` with a judge per capture, and M10.5's ten-angle review |
 | M10.6 | the exit record, and the reference documents reconciled against what shipped |
 

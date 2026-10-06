@@ -22,11 +22,9 @@
 #include <kickos/driver/spi.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/emit.h> // publish-aware write; kos_print is dropped once published
-#include <kickos/sys/service.h>
 #include <kickos/sys/spi_service.h>
 
 #include <stdint.h>
-#include <stdlib.h>
 
 namespace drv = kickos::driver;
 namespace spi = kickos::spi;
@@ -34,15 +32,12 @@ namespace declared = kickos::driver::declared::k64dspi;
 
 namespace
 {
-    // KOS_CAP_NONE = not up, or already taken.
-    kos_cap_t g_spi0_ep = KOS_CAP_NONE;
-
     // UNPRIVILEGED driver thread. The window base arrives as the arg VALUE, never
     // dereferenced as memory.
     void bus_thread(void* arg)
     {
         struct kos_spi_bus_config cfg;
-        cfg.base = reinterpret_cast<uintptr_t>(drv::thread_start(arg));
+        cfg.base = reinterpret_cast<uintptr_t>(arg);
         cfg.ep = KOS_CAP_NONE;  // a local engine reaches no endpoint
         cfg.irq = KOS_CAP_NONE; // the DSPI pump polls its FIFOs
         cfg.notify = KOS_CAP_NONE; // and so blocks on nothing
@@ -56,12 +51,7 @@ namespace
             // emit, not kos_print: the console is already USER_OWNED here, so the kernel
             // chip path drops every byte.
             kickos::emit("[k64dspi] ERROR: bus bring-up refused, DSPI0 unreachable\n");
-            // NO exit HERE on a service list: root keeps a WAIT-bearing cap on the endpoint
-            // under KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies,
-            // the last-receiver-gone wake never fires, and a client parked in kos_call would
-            // block forever. Under the init the trap ends the task instead.
-            drv::trap_under_init();
-            kos_panic("[k64dspi] bus bring-up refused (see the ERROR line above)");
+            drv::trap();
         }
 
         kickos::emit("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)\n");
@@ -69,21 +59,17 @@ namespace
         (void)spi::serve_loop(&bus);
 
         (void)kos_spi_bus_close(&bus);
-        drv::trap_under_init();
-        exit(0);
+        drv::trap();
     }
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[k64dspi] ",
-        // NO base guard: spi_dspi.cc is base-parameterised across DSPI0/1/2 and no vector is
-        // claimed by number, so there is nothing to pin the cfg against. Adding a line makes
-        // leg L9 demand one.
+        // NO base guard: spi_dspi.cc is base-parameterised across DSPI0/1/2.
         .expected_base = 0,
         .block_size = declared::k_declared.block_size, // no Shared, ring, doorbell or latch
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_SPI,
         .line_count = declared::k_declared.line_count, // the DSPI pump polls its FIFOs
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -109,24 +95,15 @@ namespace
 
 extern "C"
 {
-    kos_cap_t k64dspi_take_endpoint(void)
-    {
-        kos_cap_t const ep = g_spi0_ep;
-        g_spi0_ep = KOS_CAP_NONE; // one-shot: device slots are caller-named, so ONE client only
-        return ep;
-    }
-
-    // Root KEEPS the full-rights cap so the app, on the same thread and table, can delegate a
-    // SIGNAL-narrowed copy to each client.
-    int k64dspi_spi_start(struct kos_service_cfg const* cfg)
+    int k64dspi_spi_start(struct kos_driver_instance* instance)
     {
         // Here, on the init's thread: the driver's threads hold no pinmux authority.
-        int32_t const muxed = k64dspi_bus_mux(cfg->mmio_base);
+        int32_t const muxed = k64dspi_bus_mux(instance->mmio_base);
         if (muxed != 0)
         {
             kickos::emit("[k64dspi] ERROR: the board bus over the DSPI window was not muxed\n");
             return muxed;
         }
-        return drv::bring_up(k_desc, cfg, &g_spi0_ep);
+        return drv::bring_up(k_desc, instance);
     }
 }

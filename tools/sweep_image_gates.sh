@@ -207,8 +207,8 @@ if [ "$GPREFIX" != "-" ]; then
     PREFIX_ARG="-DCMAKE_PREFIX_PATH=$GPREFIX"
 fi
 
-# Same flattener the sibling and the service-list gate use, so the three cannot disagree about
-# what a preset is or which board it resolves to.
+# Same flattener the sibling and the preset gates use, so they cannot disagree about what a
+# preset is or which board it resolves to.
 PRESETS_TSV="$OUT/presets.tsv"
 cmake "-DSRC=$ROOT" "-DOUT=$PRESETS_TSV" -P "$ROOT/tests/static/preset_boards.cmake" >/dev/null \
     || die "could not read the configure presets"

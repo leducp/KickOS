@@ -14,5 +14,4 @@ CONFIG_KICKOS_ROOT_STACK_SIZE=4096
 CONFIG_KICKOS_ENABLE_SELFTEST=y
 CONFIG_KICKOS_BENCH=y
 
-# Use the default empty service list to avoid driver and IRQ interference.
-# Output still reaches the kernel console through kickos::emit.
+# Output reaches the kernel console through kickos::emit.

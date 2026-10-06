@@ -138,7 +138,7 @@ than aesthetic: while the tier-2 attach syscall stays reachable by any `AUTH_IRQ
 naming a bare line number, tier 2 is a namespace-wide door and a per-line grant on tier-1 mint
 buys nothing. The holder populations of a would-be seventh bit and of `AUTH_IRQ` are identical
 today -- `AUTH_IRQ` is declared in exactly one place in the tree
-(`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)), and all four tier-1 drivers run
+(`user/apps/common/selftest/main.cc` (the app authority macro)), and all four tier-1 drivers run
 at authority zero -- so the bit would be the pre-M4.5.4 authority-inflation mistake mirrored.
 Sec.3.6 records the falsifier to check instead of re-arguing.
 
@@ -531,7 +531,7 @@ int spawn_driver(struct kos_driver_spawn const* p);
 ```
 
 The one-cap helper stayed beside it so the two landed SPI services
-(`system/init/frdmk64f/service_list.cc`, `service_list_xmc4800relax.cc`) did not churn; M4.8.1
+(the SPI boards' service lists) did not churn; M4.8.1
 retired it, and both services became descriptors instead.
 
 **Corrected at implementation time: the two threads CANNOT both hold the window.** An earlier
@@ -757,8 +757,8 @@ and is defined today by exactly four chips: **mk64f**
 (`arch/riscv/chip/esp32c6/chip_esp32c6.cc` (`arch_console_reclaim`)) and **esp32**
 (`arch/xtensa/chip/esp32/chip_esp32.cc` (`arch_console_reclaim`)).
 
-**Three providers ship a console service list, not two**: `system/init/sim/service_list.cc`
-registers `simcon` with `kind = KOS_SVC_CONSOLE` and publishes exactly as the silicon services
+**Three providers ship a console service list, not two**: the sim's console service list
+registers `simcon` as the console service kind and publishes exactly as the silicon services
 do. **The sim needs no `arch_console_reclaim` body, and there is nothing for one to do**: the sim's
 "device" is host fd 1, which has no register state a dead driver can garble, and the polled writer
 (`arch/sim/sim.cc` (`arch_console_write_sync`)) writes to that same fd with no dependence on
@@ -1404,7 +1404,7 @@ register work. **L** = new subsystem. "HW" = validation is silicon-gated.
 | **RISC-V / esp32c6** | **NOW LANDED for a userspace driver.** The bug shape below was a HALF-DEFINED PAIR; the missing half is defined (`arch/riscv/chip/esp32c6/chip_esp32c6.cc` (`arch_rv_hw_mask`)) and `c6uart` runs the whole suite on silicon. Kept for the shape: `arch_rv_hw_unmask` was defined by the chip (`arch/riscv/chip/esp32c6/chip_esp32c6.cc` (`arch_rv_hw_unmask`)); its twin `arch_rv_hw_mask` is not, so it links the lone-TU fallback (`arch/riscv/rv32imac/arch_rv_hw_mask_default.cc`) and `irq_event_isr`'s mask sets only a software bit while the PLIC enable, `mie` and `UART_INT_ENA` stay live. The seam is present and one half of it is wired; unmask arms the line that mask cannot disarm. Compounding it, `kickos_rv_ext_dispatch_dev` calls `kickos_isr_irq` **unconditionally**, hard-coded to one line (`arch/riscv/chip/esp32c6/chip_esp32c6.cc` (`kickos_rv_ext_dispatch_dev`)). On a level source that is an interrupt storm | (a) **define the missing half**: an `arch_rv_hw_mask` override clearing the PLIC `MXINT_ENABLE` bit for the device CPU int that `arch_rv_hw_unmask` sets -- coarse but kernel-owned, per RULE L1 (sec.5.1); (b) turn `kickos_rv_ext_dispatch_dev` into a real `UART_INT_ST` demux posting per sub-source; (c) a per-line route table so more than one real line is expressible | **M** | **yes** |
 | **RISC-V / qemu virt** | no real device routed at all (semihosting console, `chip_virt_rv32.cc`) | nothing -- stays the inject-only substrate target. Useful for testing the *cap* mechanism in CI without hardware | **S** | no |
 | **Xtensa LX6 / esp32** | **WAS the worst case: the mask pair was absent entirely, not half-defined. ARCH SIDE NOW LANDED** -- `kickos_lx6_hw_mask` / `kickos_lx6_hw_unmask` clear and set the INTENABLE bit of the CPU interrupt a line routes to, a 4-entry route table replaced the single hard-coded console line (`arch/xtensa/lx6/arch_xtensa.cc` (`kickos_lx6_bind_dev_int`)), and the L1 dispatcher delegates to a chip demux that posts only an ASSERTED sub-source, 0 posts being a valid outcome (`arch/xtensa/chip/esp32/chip_esp32.cc` (`kickos_lx6_dispatch_dev`)). Two corrections to the original reading: the predicted storm was LATENT, not live, because bring-up enables only TX-empty; and the kernel's own storm guard (`kernel/irq/irq.cc` (`irq_default_handler`)) was already written but INERT on this chip, since `arch_irq_mask` reached no controller -- so the hook activates a guard that existed. `INTSET` still latches only software ints 7/29, so `arch_irq_inject` cannot fake a real line here, which is another reason `kos_irq_notify` is the doorbell (sec.2.6) | the UART driver is BLOCKED on documentation, not on code: see sec.8.1 | **M** | **yes** |
-| **sim** | dispatch bypasses the mask: `console_tx_service()` calls `kickos_isr_irq(TX_LINE)` without consulting `sim().irq_masked` (`arch/sim/sim.cc` (`console_tx_service`)). It also ships a console service list (`system/init/sim/service_list.cc`), so it is the one hardware-free target that can lose a console driver | (a) make the TX-line delivery respect `irq_masked`, so the sim faithfully models mask-until-ack. **NOT** an `arch_console_reclaim` body: fd 1 has no state to restore, so the no-op fallback is correct (sec.4.4). With (a) the whole cap / teardown / level / reclaim-on-death design is testable in CI with no hardware, which no other target in the fleet offers | **S** | no |
+| **sim** | dispatch bypasses the mask: `console_tx_service()` calls `kickos_isr_irq(TX_LINE)` without consulting `sim().irq_masked` (`arch/sim/sim.cc` (`console_tx_service`)). It also ships a console service list, so it is the one hardware-free target that can lose a console driver | (a) make the TX-line delivery respect `irq_masked`, so the sim faithfully models mask-until-ack. **NOT** an `arch_console_reclaim` body: fd 1 has no state to restore, so the no-op fallback is correct (sec.4.4). With (a) the whole cap / teardown / level / reclaim-on-death design is testable in CI with no hardware, which no other target in the fleet offers | **S** | no |
 | **rp2350 Hazard3** | **does not exist in tree** (no `arch/riscv/chip/rp2350*`; design-only, `docs/design-rp2350.md` ("DEFERRED (b): Hazard3 RV32IMAC(B) target")) | out of scope | -- | -- |
 | **mps2, nrf51, virt** | semihosting console, no `arch_console_tx_backend` | no UART driver to build; they validate the *general* mechanism via injected lines | **S** | no |
 
@@ -1455,7 +1455,7 @@ Two hard numeric ceilings to design against, both confirmed:
   This is a second, independent argument for the C6/LX6 UART being **one grouped line** rather
   than three.
 - **`arch_console_reclaim` exists on only four chips** (mk64f, xmc4800, esp32c6, esp32) while eleven
-  `system/init/` service lists now reference `KOS_SVC_CONSOLE`. The sim needs no body (sec.4.4:
+  `system/init/` service lists now reference the console service kind. The sim needs no body (sec.4.4:
   fd 1 holds no state), so what it uniquely closes is the ownership half, and it does -- that is
   `sim_driver_death`. The remaining gap is per-chip bodies on the rest of the fleet, M4.7 work,
   where a driver death still leaves the console dark.
@@ -1509,7 +1509,7 @@ is also the case that forces two delegated caps into one spawn -- see sec.11, qu
 Three coverage limits, stated rather than discovered:
 
 - **Every refusal arm needs a worker, not root.** The suite declares five of the six authority
-  bits including `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)), so a
+  bits including `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (the app authority macro)), so a
   root-side mint check asserts the *grant* and can never witness the *refusal*. The shape to
   copy is `t_cpu_clock_set`, which already moves its arm into a worker for the same reason.
 - **The UART wire ABI (sec.7.4) gets no emulated case.** Configure / write / read / stats round
@@ -1743,7 +1743,7 @@ with it too. What S1 actually absorbed, and why, is in its row. S2 is now only t
 | **S5** | **LANDED.** spawn-side delegation: the driver-spawn helper carrying N caps plus the shared data region, with the one-cap wrapper kept so the two landed SPI services do not churn | M4.6.1 |
 | **S6** | **LANDED.** console visibility and handover ordering. Root closes its own WAIT cap, then PROVES the driver is serving with a zero-length rendezvous on cap 0 before any client runs; a dead driver EPIPEs that probe, and the death has already reclaimed the console, so the failure is REPORTABLE and boot fails loudly. `handle_close` acts on a pending reclaim note too, so a failed spawn also gives the console back. Second case in `sim_driver_death`. **NOT** reordered to publish-after-spawn: on a chip where the driver takes the UART the kernel was using, the kernel must let go FIRST, so a window in which kernel-console writes are dropped is inherent to a single-owner device -- what the probe removes is any CLIENT running inside it | M4.6.1 |
 | **S7** | **LANDED.** the userspace byte ring (`user/include/kickos/sys/byte_ring.h`), with the publication-barrier seam generalised out of the kernel ring -- and NOT the same guarantee: the kernel publishes its head under `IrqLock`, so there the macro only pins compiler order, while here producer and consumer are two THREADS and a weakly-ordered core needs a real release fence. A non-power-of-two size is REFUSED rather than masked wrong. Gated by the `byte_ring` case | M4.6.1 second half |
-| **S8** | **LANDED except the silicon consumer.**: the wire ABI (`sys/uart.h`, size-asserted like `bus.h`) and the two-thread choreography (`sys/uart_service.h`), gated by the `uart_service` case which drives `serve_one` with NO device -- the peripheral belongs to the IRQ thread, so the whole request/reply surface is host-testable. `KOS_SVC_UART` added as a service kind. The first CONSUMER is the sim LOOPBACK port (`system/init/sim/service_list_uart.cc`, gated by `tests/integration/check_sim_uartloop.sh`), so the two-thread split, the doorbell and the wire ABI are all CI-gated against a real driver. **The silicon consumer LANDED too**: `xmcuartirq` took `U0C0` as the console service (sec.11 q.7's recommended route), witnessed on the wire in `m461h-xmc-uartirq.log`, and four sibling drivers followed on `frdmk64f`, `esp32c6-wroom`, `esp32-wroom` and `rx72m` | M4.6.1 second half |
+| **S8** | **LANDED except the silicon consumer.**: the wire ABI (`sys/uart.h`, size-asserted like `bus.h`) and the two-thread choreography (`sys/uart_service.h`), gated by the `uart_service` case which drives `serve_one` with NO device -- the peripheral belongs to the IRQ thread, so the whole request/reply surface is host-testable. the UART service kind added as a service kind. The first CONSUMER is the sim LOOPBACK port (the sim's UART service list, gated by `tests/integration/check_sim_uartloop.sh`), so the two-thread split, the doorbell and the wire ABI are all CI-gated against a real driver. **The silicon consumer LANDED too**: `xmcuartirq` took `U0C0` as the console service (sec.11 q.7's recommended route), witnessed on the wire in `m461h-xmc-uartirq.log`, and four sibling drivers followed on `frdmk64f`, `esp32c6-wroom`, `esp32-wroom` and `rx72m` | M4.6.1 second half |
 | **S9** | **LANDED.** per-chip rollout in sec.9.2's order: `frdmk64f`, then `rx72m` (the dispatch-hook replacement, the group demux, the group-vector refcount, the reserved-block extension), then `esp32c6` (the missing mask half first), then `esp32-wroom` | M4.6.1 second half |
 
 The RX72M reserved-block extension (sec.6.4) is the one item that may land **earlier than its
@@ -1798,8 +1798,8 @@ found it, and it is already filed on its own in `TODO.md`.
    retiring the *syscall* is cheap, and it converts a REFUSED question (sec.3.6) into an
    expressible one. Out of scope as written; worth an explicit yes or no rather than silence.
 7. ~~**Which port carries the first UART consumer, and can it be gated before the bench?**~~
-   **RULED 2026-07-31: sim loopback first, LANDED.** `system/init/sim/service_list_uart.cc`
-   carries a `KOS_SVC_UART` port whose "device" is host fd 1 plus an internal loopback -- the
+   **RULED 2026-07-31: sim loopback first, LANDED.** the sim's UART service list
+   carries a UART service kind port whose "device" is host fd 1 plus an internal loopback -- the
    trick `xmcspi` uses on silicon to test a bus with no second party wired -- driven by the real
    two-thread driver and gated by `tests/integration/check_sim_uartloop.sh`. Its own service-list provider,
    not a second entry in `kickos_services_sim`, because one list links per image and the existing

@@ -28,12 +28,9 @@ set(KICKOS_Q35_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/chip/q35")
 
 set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
 
-# A probe links no leaf, so it states the section script, the exit stub and the heap itself.
-kickos_heap_defsym(_kos_probe_heap "${KICKOS_USER_HEAP_SIZE}")
-if(NOT _kos_probe_heap)
-  message(FATAL_ERROR "KickOS x86_64: KICKOS_USER_HEAP_SIZE is unset, so the probe images' PE "
-    "script has no heap to carve. The board configuration states it.")
-endif()
+# A probe links no leaf, so it states the section script, the exit stub and the heap itself: it
+# carves none.
+kickos_heap_defsym(_kos_probe_heap 0)
 set(KICKOS_X86_64_PROBE_LINK "${KICKOS_X86_64_LINK}" --one-pass
     "${KICKOS_X86_64_LD}" "${CMAKE_READELF}" "${CMAKE_OBJDUMP}" "${CMAKE_OBJCOPY}"
     "-Wl,-u,_exit" "-Wl,-T,${KICKOS_X86_64_PE_SCRIPT}" "-Wl,${_kos_probe_heap}")

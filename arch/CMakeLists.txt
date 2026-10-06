@@ -322,37 +322,15 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/chip_${KICKOS_CHIP}.cc")
   endif()
   # The M7 D-cache is safe only while the M7 is single-core with no DMA: an M4 or DMA driver
-  # must add clean/invalidate maintenance around its buffers.
-  # KICKOS_USB_CONSOLE must be set by the top-level CMakeLists before add_subdirectory(arch).
-  set(_imxrt_dcache_default ON)
-  if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE)
-    set(_imxrt_dcache_default OFF)
-  endif()
-  option(KICKOS_IMXRT_DCACHE "imxrt1062: enable the Cortex-M7 L1 D-cache"
-         ${_imxrt_dcache_default})
-  # option() caches, so an existing build directory switched onto a USB service list keeps a
-  # stale ON. With the cache on, coherency rests on KOS_MEM_NOCACHE reaching both of the
-  # block's grants.
-  if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_USB_CONSOLE AND KICKOS_IMXRT_DCACHE)
-    message(WARNING
-      "KickOS: KICKOS_IMXRT_DCACHE=ON with a USB console on imxrt1062 is UNWITNESSED ON "
-      "SILICON. The device controller reads its descriptor lists out of OCRAM2 as a bus "
-      "master and this tree has no cache maintenance at all; coherency rests ENTIRELY on "
-      "the S7 non-cacheable attribute reaching every mapping of the shared block, the "
-      "driver's and the app's. Nothing here has enumerated on a host with the cache on. "
-      "Pass -DKICKOS_IMXRT_DCACHE=OFF for the "
-      "witnessed posture; that is what a fresh build directory selects by default.")
-  endif()
+  # must add clean/invalidate maintenance around its buffers. A bus master's block, a USB
+  # device console's, is coherent only through KOS_MEM_NOCACHE reaching both of its grants.
+  option(KICKOS_IMXRT_DCACHE "imxrt1062: enable the Cortex-M7 L1 D-cache" ON)
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND NOT KICKOS_IMXRT_DCACHE)
     message(WARNING
       "KickOS: the Cortex-M7 L1 D-cache is OFF on this image, which costs about 6x on IPC "
       "(measured: 61124 ns per call/reply round-trip with it on, 363005 ns with it off). "
       "Code executes XIP from FlexSPI, so literal pools and .rodata are data reads that "
-      "reach external QSPI flash with the cache off. A USB console selects this posture by "
-      "default because keeping the cache rests on the S7 non-cacheable attribute "
-      "reaching every mapping of the shared block, which no board on this bench can "
-      "witness. Pass "
-      "-DKICKOS_IMXRT_DCACHE=ON to take that path.")
+      "reach external QSPI flash with the cache off.")
   endif()
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
     target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)

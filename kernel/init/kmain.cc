@@ -333,8 +333,8 @@ namespace kickos
             sched::add(&kernel().idle_tcb);
         }
 
-        // Root lowers itself to the priority its image states (kickos_root_lower,
-        // <kickos/sys/init.h>). Spawn order is not a barrier: any interrupt between two spawns
+        // Root runs the app's constructors at this priority and the init then lowers it to the
+        // priority its composition states. Spawn order is not a barrier: any interrupt between two spawns
         // reschedules onto the highest-priority READY thread, so an orchestrator that needs its
         // workers staged MUST gate them on a semaphore it posts itself.
         ThreadAttr root_attr;

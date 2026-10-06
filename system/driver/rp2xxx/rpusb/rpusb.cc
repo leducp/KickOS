@@ -4,9 +4,8 @@
 // RP2040 / RP2350 USB CDC-ACM console driver on the <kickos/sys/usb_cdc_service.h>
 // substrate: a privileged one-shot bring-up plus two unprivileged threads, one parked in
 // a notification wait owning every USB register and the whole control endpoint, one parked in
-// kos_recv owning neither. ONE backend for both chips: the per-chip delta is rp_usb_chip.h
-// plus writing ABSOLUTE values rather than read-modify-writes, which is what absorbs the
-// reset-value differences.
+// kos_recv owning neither. ONE backend for both chips: writing ABSOLUTE values rather than
+// read-modify-writes is what absorbs the reset-value differences.
 //
 // Register facts come from the RP2350 datasheet section 12.7 and the RP2040 datasheet
 // section 4.1 via rp_usb_regs.h. Three chip facts drive the whole discipline:
@@ -32,11 +31,8 @@
 #include <kickos/io/mmio.h>
 #include <kickos/sys/bytes.h>
 #include <kickos/sys/driver_service.h>
-#include <kickos/sys/service.h>
 #include <kickos/sys/usb_cdc_service.h>
-#include <kickos/usb_console.h>
 
-#include "rp_usb_chip.h"
 #include "rp_usb_regs.h"
 
 #include <stdint.h>
@@ -370,7 +366,7 @@ namespace
 
     void rpusb_irq_thread(void* arg)
     {
-        usb::Shared* sh = static_cast<usb::Shared*>(drv::thread_start(arg));
+        usb::Shared* sh = static_cast<usb::Shared*>(arg);
         RpUsb dev;
         dev.sh = sh;
         dev.dpram = reg::DPRAM_BASE;
@@ -387,10 +383,10 @@ namespace
 
     void rpusb_service_thread(void* arg)
     {
-        usb::console_serve_loop(static_cast<usb::Shared*>(drv::thread_start(arg)));
+        usb::console_serve_loop(static_cast<usb::Shared*>(arg));
     }
 
-    int block_init(void* blk, struct kos_service_cfg const*)
+    int block_init(void* blk, struct kos_driver_instance const*)
     {
         // A bare Shared, not a Ctx: the CDC class is a template over the device, not a set
         // of kos_usb_* symbols, so there is no class config to carry.
@@ -400,8 +396,8 @@ namespace
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[rpusb] ",
-        // The register map is hard-wired to the one USB block, and USBCTRL is claimed by
-        // number, so a cfg naming another window would grant one region and poke another.
+        // The register map is hard-wired to the one USB block, so an instance naming another
+        // window would grant one region and poke another.
         .expected_base = reg::DPRAM_BASE,
         .block_size = declared::k_declared.block_size,
         .block_flags = 0,
@@ -412,7 +408,6 @@ namespace
         // behaviour is a fallback to KERNEL_OWNED, which is a kernel delta and is NOT
         // implemented; it lands as a third ep_posture, not a flag here.
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         // The poll does NOT wait for enumeration, and must not, or boot would depend on a
@@ -420,7 +415,7 @@ namespace
         .barrier_after = declared::k_declared.barrier_after,
         // LEVEL: INTS is a pure OR of sources cleared at the peripheral, and its
         // BUFF_STATUS bit stays asserted until every BUFF_STATUS bit is clear.
-        .lines = {{rpchip::irq::USBCTRL_IRQ, KOS_IRQ_LEVEL}},
+        .lines = {{KOS_IRQ_LEVEL}},
         .threads = {{.entry = rpusb_irq_thread,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
@@ -452,11 +447,9 @@ namespace
 extern "C"
 {
 
-char const kickos_usb_device_console = 1;
-
-int rpusb_console_start(struct kos_service_cfg const* cfg)
+int rpusb_console_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }
 
 }

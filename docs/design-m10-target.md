@@ -28,9 +28,7 @@ The kernel creates root at `KICKOS_PRIO_MAX`, so the constructors run there, and
 no priority of the composition's. The init's first act, once it has checked the table's layout,
 lowers root to the priority the table's header carries (`kos_thread_set_priority`), the
 composition's `init: { priority: N }`, one above the kernel build's lowest where it states none;
-a refusal panics. An image linking no system target lowers root to `KICKOS_PRIO_ROOT`, which
-`cmake/sched_geometry.cmake` declares as `KICKOS_PRIO_MIN + 1`, before its constructors, its link group's `kickos_root_lower` being the
-call `kickos_root_entry` makes first, which a system target's init defines empty. A thread at or
+a refusal panics. A thread at or
 above the init's priority that never blocks starves it, which is the user's choice: the init
 then handles no death and no ending, so a system whose `ends` task has ended does not shut down
 while that thread spins. Its diagnostics go through `kickos::emit`, never stdio. At boot, in this order, it:
@@ -237,15 +235,12 @@ parks the init. Three results are not refusals:
 ## 2. Packaged drivers through their descriptors
 
 A driver task's table entry names its `START`, declared on `kickos_add_driver`. To start it the
-init mints the badged copy of 1.2's first step, calls `START` with a `kos_service_cfg` it fills
-from the table, and closes the copy when `START` returns. The cfg carries the task's name, its
-priority, its first window role's base and size, `hz` and `addr` 0, and a trailing field, the
-instance, the bring-up taking the kind from its descriptor. The size assert on `kos_service_cfg`
-counts three pointers, and the bring-up refuses a cfg whose reserved bytes are not zero. A service
-list leaves the instance null; M10.5 deletes the lists. The instance, `struct kos_driver_instance`
-in `<kickos/sys/driver_service.h>`, is filled at each start from the init's record of the task
-and its table entry, so it adds nothing to the private record: the endpoint the init created at
-boot and the ring block of 1.1 with its memory type, both kept across restarts in the record, the
+init mints the badged copy of 1.2's first step, calls `START` with the instance it fills from the
+table, and closes the copy when `START` returns. The instance, `struct kos_driver_instance` in
+`<kickos/sys/driver_service.h>`, carries the task's name, its priority and its first window role's
+base and size, and is filled at each start from the init's record of the task and its table
+entry, so it adds nothing to the private record: the endpoint the init created at boot and the
+ring block of 1.1 with its memory type, both kept across restarts in the record, the
 table's lines by role, each as its number and its index among its device's lines, the core mask,
 whether the table names it the console driver, which the bring-up refuses unless its descriptor
 hands the console over, the badged copy of this start, and the task handle the bring-up writes
@@ -296,14 +291,9 @@ system, a driver's trap included, and nothing falls back to `exit`: the manifest
 `system/driver/mk64f/k64dspi/k64dspi.cc` and the IRQ thread of
 `user/include/kickos/sys/uart_service.h`, and the `exit(0)` that ends a UART driver's IRQ thread
 and its console receiver (`user/src/uart_service.cc`) once a wait or a receive fails; the
-receiver is not the entry thread, so its exit would end it alone and leave the task alive. A
-thread learns its posture from its spawn: given an instance, `bring_up` sets bit 0 of each
-thread's arg, which no declared arg sets, a ring block and a window base being aligned, and every
-descriptor thread's entry first calls `kickos::driver::thread_start`, which records that posture
-in the thread's own space, where `trap_under_init` reads it, and returns the declared arg. On a
-service list no arg carries it, and a failing driver thread panics until M10.5, and `bring_up`, given no instance, creates its own endpoint and kills
-its task on failure. `kos_service_bringup` and `kos_service_list` stay the service lists' types, which the init never
-reads.
+receiver is not the entry thread, so its exit would end it alone and leave the task alive. Every
+failing driver thread traps (`kickos::driver::trap`); the service lists that kept a second
+posture until M10.5 are deleted.
 
 ### 2.1 The console handover
 
@@ -325,8 +315,7 @@ at every start of it:
 A step that fails narrows the init's capability the same way before it prints or returns:
 `kickos::emit` is a blocking send on index 0, which parks while a WAIT holder exists with no
 receiver, so the init would otherwise park on its own endpoint. `console_handover_finish`
-narrows given an instance; on a service list it closes the capability, as
-`tests/unit/drvbringup/bringup_unwind.cc` expects.
+narrows it, as `tests/unit/drvbringup/bringup_unwind.cc` expects.
 
 A driver that dies before step 3, or a start that fails before its receiver exists, is reclaimed
 when the init drops its receive right, the last WAIT going, so the kernel console comes back; a
@@ -436,8 +425,7 @@ does not hold.
 
 ## 5. System targets
 
-**`KickOS::kernel`** is `kickos_cxx`, full C++ over newlib with `main` renamed,
-without the init provider, root's lowering, the service list and the pin map in its archive group. It requires the
+**`KickOS::kernel`** is full C++ over newlib with `main` renamed. It requires the
 symbol `kickos_link_one_system_target` at the link (`--require-defined`), which every system
 target's emitted table defines: the init's objects are the same files in every system target,
 and both CMake's link line and the x86_64 image link name each once. Linking no system target fails
@@ -720,8 +708,8 @@ CMake side: `kickos_add_driver` and its catalogue, `cmake/driver_geometry.cmake`
 `kickos_emit_image`, the x86_64 link rule, and the gate machinery of
 `tests/lib/gate.sh`.
 
-**Left.** `KICKOS_SERVICE_LIST`, `KICKOS_BOARD_PINMAP`, `KICKOS_INIT_PROVIDER`,
-`KICKOS_APP_AUTHORITY` and the default init behind the old `kickos` and `kickos_cxx` leaves;
+**Left.** the service-list selection knob, the pin-map selection knob, the init-provider cache variable,
+the app authority macro and the default init behind the old `kickos` and `kickos_cxx` leaves;
 `KICKOS_USER_HEAP_SIZE` sizing those leaves' heap; the service lists' types; the line numbers in
 driver descriptors; chip headers generated from chip files; the partition build; x86 linking
 through `add_executable`; the out-of-tree examples on `KickOS::system_default`.

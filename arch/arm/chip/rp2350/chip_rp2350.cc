@@ -544,7 +544,7 @@ void arch_init(void)
         clocks_init();
         unreset(reg::resets::UART1);
         uart1_init();
-        if (&kickos_usb_device_console != nullptr)
+        if (kickos_usb_device_console != 0)
         {
             usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
         }

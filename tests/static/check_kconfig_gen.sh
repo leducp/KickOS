@@ -107,12 +107,10 @@ grep -q "^set(KICKOS_MIN_STACK_SIZE $_floor)\$" "$F" || fail "fragment lost the 
 grep -q '^set(KICKOS_HAVE_MPU 1)$' "$F" \
     || fail "the base variant of an enforcing board did not resolve the enforcing posture"
 # Named file by file rather than matched on the list's SHAPE: a shape match still looks
-# right with the per-board boards/*/Kconfig entries dropped, and those are where a board
-# states its service list and pin map.
+# right with a sourced file dropped.
 SOURCES="$(grep '^set(KICKOS_KCONFIG_SOURCES ' "$F")" \
     || fail "fragment does not report what it read, so a Kconfig edit would not reconfigure"
-for want in "$SRC/Kconfig" "$SRC/boards/Kconfig" "$SRC/boards/xmc4800-relax/Kconfig" \
-            "$SRC/arch/Kconfig" "$DEFCONFIG"; do
+for want in "$SRC/Kconfig" "$SRC/boards/Kconfig" "$SRC/arch/Kconfig" "$DEFCONFIG"; do
     # First, middle or last element; never a substring of a longer path.
     case "$SOURCES" in
         *"\"$want;"* | *";$want;"* | *";$want\")") ;;
@@ -163,13 +161,14 @@ grep -q '^set(KICKOS_HAVE_MPU 0)$' "$TMP/flat/kickos_config.cmake" \
 gen "$TMP/telem" "CONFIG_TELEMETRY_RTT=y" \
     || fail "RTT telemetry was refused on a board that carries RTT: $(cat "$TMP/telem.err")"
 
-# A STRING request has to round-trip, not just an integer or a bool. Sim gates build one
-# board against different service providers, and a knob the fragment sets while the
-# translation omits it is one the fragment silently overwrites.
-gen "$TMP/svc" 'CONFIG_KICKOS_SERVICE_LIST="kickos_services_sim"' \
-    || fail "a service-list override was refused: $(cat "$TMP/svc.err")"
-grep -q '^set(KICKOS_SERVICE_LIST "kickos_services_sim")$' "$TMP/svc/kickos_config.cmake" \
-    || fail "a service-list override did not reach the fragment"
+# A STRING request has to round-trip, not just an integer or a bool: a knob the fragment sets
+# while the translation omits it is one the fragment silently overwrites. The partition's port
+# list is a string knob, so the AMP variant of a multi-core board carries it.
+AMP_DEFCONFIG="$SRC/boards/qemu-arm64/configs/amp/defconfig"
+gen_with "$AMP_DEFCONFIG" "$TMP/str" 'CONFIG_KICKOS_AMP_PORTS="0:2,1:0"' \
+    || fail "a port-list override was refused: $(cat "$TMP/str.err")"
+grep -q '^set(KICKOS_AMP_PORTS "0:2,1:0")$' "$TMP/str/kickos_config.cmake" \
+    || fail "a port-list override did not reach the fragment"
 
 # --- Leg 7: a string knob's semicolon or dollar reaches the fragment inert ---------
 # Neither character needs escaping at the .config level itself (kconfiglib's own quoting
@@ -177,11 +176,11 @@ grep -q '^set(KICKOS_SERVICE_LIST "kickos_services_sim")$' "$TMP/svc/kickos_conf
 # check_assignments unchanged and the fragment is the only place left to prove it: a
 # raw semicolon is CMake's list separator regardless of quoting, and a raw $ expands
 # ${...}/$ENV{...} even inside a quoted set() argument.
-gen "$TMP/esc" 'CONFIG_KICKOS_SERVICE_LIST="kickos_services_sim;two$LEAK_ME"' \
-    || fail "a service-list value carrying ';' and '\$' was refused: $(cat "$TMP/esc.err")"
+gen_with "$AMP_DEFCONFIG" "$TMP/esc" 'CONFIG_KICKOS_AMP_PORTS="0:2;two$LEAK_ME"' \
+    || fail "a port-list value carrying ';' and '\$' was refused: $(cat "$TMP/esc.err")"
 ESCF="$TMP/esc/kickos_config.cmake"
-grep -Fq 'set(KICKOS_SERVICE_LIST "kickos_services_sim\;two\$LEAK_ME")' "$ESCF" \
-    || fail "the fragment did not backslash-escape the ';' and '\$' in KICKOS_SERVICE_LIST"
+grep -Fq 'set(KICKOS_AMP_PORTS "0:2\;two\$LEAK_ME")' "$ESCF" \
+    || fail "the fragment did not backslash-escape the ';' and '\$' in KICKOS_AMP_PORTS"
 
 # Read the escaped line back through CMake itself, with a decoy variable in scope, rather
 # than trusting the text of the generated line: an unescaped \$ would pull LEAK_ME's value
@@ -189,19 +188,18 @@ grep -Fq 'set(KICKOS_SERVICE_LIST "kickos_services_sim\;two\$LEAK_ME")' "$ESCF" 
 cat > "$TMP/verify.cmake" <<VEOF
 set(LEAK_ME "PWNED")
 include("$ESCF")
-list(LENGTH KICKOS_SERVICE_LIST _len)
+list(LENGTH KICKOS_AMP_PORTS _len)
 if(NOT _len EQUAL 1)
-  message(FATAL_ERROR "KICKOS_SERVICE_LIST split into \${_len} list element(s)")
+  message(FATAL_ERROR "KICKOS_AMP_PORTS split into \${_len} list element(s)")
 endif()
-list(GET KICKOS_SERVICE_LIST 0 _elem)
+list(GET KICKOS_AMP_PORTS 0 _elem)
 file(WRITE "$TMP/esc.got" "\${_elem}")
 VEOF
 "$CMK" -P "$TMP/verify.cmake" >"$TMP/verify.log" 2>"$TMP/verify.err" \
     || fail "the escaped fragment does not parse back as one CMake string: $(cat "$TMP/verify.err")"
-printf '%s' 'kickos_services_sim;two$LEAK_ME' > "$TMP/esc.want"
+printf '%s' '0:2;two$LEAK_ME' > "$TMP/esc.want"
 cmp -s "$TMP/esc.got" "$TMP/esc.want" \
-    || fail "KICKOS_SERVICE_LIST round-tripped to '$(cat "$TMP/esc.got")', not \
-'kickos_services_sim;two\$LEAK_ME'"
+    || fail "KICKOS_AMP_PORTS round-tripped to '$(cat "$TMP/esc.got")', not '0:2;two\$LEAK_ME'"
 
 # --- Leg 8: the escaping function itself, for the characters a defconfig cannot carry ---
 # A literal quote or backslash needs kconfiglib's OWN backslash to reach sym.str_value at

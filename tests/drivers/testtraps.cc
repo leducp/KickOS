@@ -14,20 +14,18 @@ namespace declared = kickos::driver::declared::testtraps;
 
 namespace
 {
-    void entry(void* arg)
+    void entry(void*)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         while (true)
         {
             kos_sleep_ns(1000000000ull);
         }
     }
 
-    void worker(void* arg)
+    void worker(void*)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         (void)testdrivers::serve(KOS_SPAWN_DELEGATED_CAP0);
-        drv::trap_under_init();
+        drv::trap();
         // Not the entry thread: an exit ends it alone and leaves the task alive.
         kos_exit(1);
     }
@@ -39,7 +37,6 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_SPI, // no kind is neutral: an instance reads only whether it is KOS_SVC_CONSOLE
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -66,7 +63,7 @@ namespace
                   "the testtraps descriptor departs from its kickos_add_driver declaration");
 }
 
-extern "C" int testtraps_start(struct kos_service_cfg const* cfg)
+extern "C" int testtraps_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }

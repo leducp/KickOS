@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Two regressions on the thread-exit path, and the root-only last-thread wait refused to main,
-// in one boot of the default system.
+// Two regressions on the thread-exit path, in one boot of the default system.
 //
 // 1. A NON-LAST thread that exits must not panic. A spawned worker runs briefly then
 // RETURNS (thread exit) while main is still alive. On an arch that defers the context
@@ -46,14 +45,6 @@ int main(int, char**)
     kos::thread::create(worker, nullptr, "worker", 10);
     kos::sleep_ns(300000000ull); // 0.3s: main blocks here -> worker runs + exits
     kos::print("main: survived worker exit\n");
-    if (kos_wait_last() == -KOS_EPERM)
-    {
-        kos::print("main: wait_last refused\n");
-    }
-    else
-    {
-        kos::print("main: wait_last NOT refused\n");
-    }
     auto parked_thread = kos::thread::create(parked, nullptr, "parked", 10);
     if (not parked_thread.valid())
     {

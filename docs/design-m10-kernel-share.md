@@ -86,7 +86,7 @@ to sections 7 and 6.
 - **The word is 32 bits wherever it appears**: `kos_thread_params::authority`,
   `Thread::authority`, `CapAuthority` and its mirror `kos_cap_authority` in
   `user/include/kickos/sys/abi.h`, the mask `kos_cap_narrow(KOS_CAP_AUTHORITY, mask)` takes, and
-  `kickos_app_authority()` with `KICKOS_APP_AUTHORITY` in `system/include/kickos/sys/init.h`.
+  `kickos_app_authority()` with the app authority macro in `system/include/kickos/sys/init.h`.
   In `kos_thread_params` it moves beside `core_mask`, the other 32-bit word, and `cap_count`
   moves behind `privileged`, keeping the struct's size. Spawn rejects undefined authority bits;
   `kos_cap_narrow` intersects its mask with held bits and cannot grant new ones.
@@ -373,7 +373,7 @@ KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the
 | `system/include/kickos/sys/errno.h` | 3 | the refused errno, 111; `KOS_EPIPE` and `KOS_EAGAIN` reworded |
 | `user/include/kickos/sys.h` | 3 to 7 | the wrappers `kos_task_watch`, `kos_task_state`, `kos_window_get`, `kos_port_reg_write`; the `kos_ram_alloc` comment |
 | `user/include/kickos/kos.h` | 2, 5 | `kos::create`'s authority and window arguments |
-| `system/include/kickos/sys/init.h` | 2 | `kickos_app_authority` and `KICKOS_APP_AUTHORITY` 32 bits |
+| `system/include/kickos/sys/init.h` | 2 | `kickos_app_authority` and the app authority macro 32 bits |
 | `user/include/kickos/sys/driver_service.h`, `emit.h`, `driver/spi.h`, `driver/i2c.h` | 3 | the no-receiver answers |
 | `user/include/kickos/sys/abi_probe.h` | 3 to 7 | probe selectors the new arms need, selftest only |
 
@@ -481,8 +481,7 @@ caller's: a thread names no other.
   takes no pass.
 
 Root uses it. The kernel creates root at `KICKOS_PRIO_MAX` and root lowers itself: a system
-target's init to its composition's priority as its first act, any other image to
-`KICKOS_PRIO_ROOT` before the app's constructors
+target's init to its composition's priority as its first act
 ([`design-m10-target.md`](design-m10-target.md), section 1.1).
 
 **Arms.** `prio_self_raise_lower`: a thread raises itself above a peer it readies, which stays

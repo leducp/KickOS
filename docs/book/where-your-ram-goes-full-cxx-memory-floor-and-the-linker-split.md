@@ -18,9 +18,9 @@ Copyright (c) 2026 Philippe Leduc
 > [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld). This chapter is
 > the LAYOUT: which side of the wall each byte lands on.
 
-A freestanding KickOS app pays almost nothing for its writable state: a few globals, its
-stack. Flip on full C++ -- `-fexceptions -frtti`, the toolchain's `libstdc++`/`libsupc++`
-in the link -- and a floor appears under the app's RAM that was not there before. This
+A KickOS app's own writable state is a few globals and its stack. Full C++ --
+`-fexceptions -frtti`, the toolchain's `libstdc++`/`libsupc++` in the link -- puts a floor
+under the app's RAM on top of that. This
 chapter is about that floor: what sits on it, why it is roughly the size it is, and then
 the linker mechanics that decide which side of the protection boundary every byte of it
 lands on.
@@ -96,7 +96,7 @@ statics and the heap shrinks by exactly that much.
 
 On a **non-MPU** chip there is no window and no isolation boundary, so the heap cannot be
 "leftover window pad" -- there is no window. Instead the linker reserves an explicit
-`.userheap (NOLOAD)` section, sized by **`KICKOS_USER_HEAP_SIZE`**, carved out of RAM
+`.userheap (NOLOAD)` section, sized by the composition's `heap:` (the **`KICKOS_USER_HEAP_SIZE`** link symbol), carved out of RAM
 *before* the thread-stack arena. The same `_kickos_heap_start`/`_kickos_heap_limit` symbols
 bracket it, so `_sbrk` is identical on both paths -- only where the bounds come from
 differs. A board that provisions no heap at all defines neither symbol, and an app that
@@ -220,9 +220,9 @@ unprivileged thread already has. Nothing about the object's type or its declarat
 where its bytes live.
 
 It also has to be in the *right* archive, and for a reason that has nothing to do with protection.
-The definition sits in the general userspace library rather than in the archive of whichever target
-supplies the init entry point, because a build may name its own init provider -- and then that
-archive leaves the link while the kernel's unconditional reference to the handoff stays, turning a
+The definition sits in the general userspace library rather than in the archive of whichever system
+target supplies the init entry point, because an image may link a different system target -- and then
+that archive leaves the link while the kernel's unconditional reference to the handoff stays, turning a
 supported customisation into an undefined symbol. So placement answers to two independent masters:
 **the linker script decides which side of the protection wall an object lands on, and the build
 graph decides whether the archive holding it can be substituted away.** A design that only thinks

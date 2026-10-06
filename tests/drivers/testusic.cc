@@ -70,7 +70,7 @@ namespace
 
     void service(void* arg)
     {
-        uintptr_t const base = reinterpret_cast<uintptr_t>(drv::thread_start(arg));
+        uintptr_t const base = reinterpret_cast<uintptr_t>(arg);
 
         struct kos_uart_stats stats = {};
         struct kos_uart_config cfg = {};
@@ -87,8 +87,7 @@ namespace
         {
             // Not stdio: this thread's stdout is the endpoint it serves, which has no receiver yet.
             kos::print("[testusic] ERROR: channel open refused\n");
-            drv::trap_under_init();
-            kos_exit(1);
+            drv::trap();
         }
         put_text(&dev, "[testusic] driver up (polled TX)\n");
 
@@ -149,7 +148,6 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -169,7 +167,7 @@ namespace
                   "the testusic descriptor departs from its kickos_add_driver declaration");
 }
 
-extern "C" int testusic_start(struct kos_service_cfg const* cfg)
+extern "C" int testusic_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }

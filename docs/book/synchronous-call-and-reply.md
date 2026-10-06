@@ -204,8 +204,8 @@ A client that was not given the capability cannot manufacture one -- which is th
 point of capability-based authority, applied to reaching a driver.
 
 The board decides *which* services exist and how they are configured -- their register
-base, window size, priority, chip-select choice, target clock -- and it says so as data: an
-ordered service list and a per-instance config block the default init walks at bring-up,
+base, window size, priority, chip-select choice, target clock -- and it says so as data: a
+composition naming each driver and its instance, which the composed init walks at bring-up,
 before the application's `main`. That keeps the routing space (which peripheral, which
 pads, how many instances) where it belongs, with the product integrator, and out of the
 kernel. The shape of that data surface is in `../reference/architecture.md` (service

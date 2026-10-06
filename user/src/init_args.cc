@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Storage for the kernel -> init argument handoff (see <kickos/sys/init.h> for why
-// it must be app-side). Its own TU, and in libkickos_user.a rather than the init
-// provider's archive: kmain references the object unconditionally, so a build that
-// names its own KICKOS_INIT_PROVIDER must not be able to take the definition away.
+// it must be app-side). Its own TU, in libkickos_user.a: kmain references the object
+// unconditionally.
 
 #include <kickos/sys/init.h>
 

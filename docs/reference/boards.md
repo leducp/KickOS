@@ -59,7 +59,7 @@ but the thread count:
   on it, which is why this board is at 4 and not 8.
 - `KICKOS_TLS=y`, TLS stride 2,048 (`1 << 11`), so every arena block is aligned to its own
   rounded size.
-- `KICKOS_CAP_TABLE_SUPPLY` at the fleet default 16, 448 bytes of `.bss`. The two 16 KiB parts
+- `KICKOS_CAP_TABLE_SUPPLY` at the fleet default 16, 896 bytes of `.bss`. The two 16 KiB parts
   above are the only boards in the fleet still cutting it to 7.
 
 At 128 KiB of flash the self-test fits as one image: a solo self-test image on `microbit`
@@ -169,16 +169,15 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   arena against the **6,656 B** that idle 512 + root 2,048 + a 2x2,048 pool need
   (`boards/bluepill-c8/configs/base/defconfig:9`, `:10`, `:11`; every figure is a multiple of the
   32-byte no-MPU granule, so alignment costs nothing here). `stm32f103.ld` carves
-  `KICKOS_USER_HEAP_SIZE` bytes of `.userheap`, which Kconfig defaults to **2,048** for
-  `CHIP_STM32F103`; the `st` variant sets it to **0**. The model is the one in `porting.md`'s
+  `KICKOS_USER_HEAP_SIZE` bytes of `.userheap`, which the board's composition sets to
+  **2,048** with its `heap:`. The model is the one in `porting.md`'s
   `## Minimum hardware requirement` section; it predicted all three `f302nucleo` silicon outcomes
   correctly (see *`f302nucleo` on silicon* below), which is the whole basis for quoting a number
   for a board nobody can run.
 
   **Neither 64 KiB-flash STM32 builds `cxxtest`.** Its heap high-water is **6,136 B**, bisected on
   `qemu-m3` by capping the `_sbrk` arena until the STL check stops reporting `ALL PASS`. That is
-  above both the 2,048 B `CHIP_STM32F103`/`CHIP_STM32F302` carve and the 0 B their `st` defconfigs
-  set, and `KICKOS_USER_HEAP_SIZE` is per-build rather than per-app, so raising it for `cxxtest`
+  above both boards' composition heaps, and the heap is per-composition rather than per-app, so raising it for `cxxtest`
   would take the bytes from every other image on a 20 KiB part.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
@@ -191,8 +190,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   **SYSMPU** -- is the M2 enforcement backend, and it signed off there. The kernel
   diagnostic LED is the onboard RGB **red, PTB22, active-low**
   (`arch_diag_led_init`/`_set` in `arch/arm/chip/mk64f/chip_mk64f.cc`, the pin from the board
-  file), and `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a board
-  map cannot steal it. The board pin map additionally muxes PTB21 (blue) as plain GPIO.
+  file), and `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a pinmux
+  request cannot steal it.
 - **`teensy41`** -- the fleet's only **Cortex-M7**, and the M7 is the one core here that
   speculates. Under enforcement a dropped (non-pow2) whole-arena grant leaves a privileged
   thread on the PRIVDEFENA background, which types the whole 1 GiB FlexSPI/SEMC aperture as
@@ -418,7 +417,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   Console is **UART1 on GP4/GP5** -- UART0's pins are not brought out on the Pi-Zero header.
   BOOTSEL-recoverable, so a bad clock or boot-block config cannot brick it.
 - **`xmc4800-relax` and `frdmk64f` under enforcement now print TAP through their
-  userspace UART driver** (2026-07-27), so the `-DKICKOS_SERVICE_LIST=kickos_services_none`
+  userspace UART driver** (2026-07-27), so the service-list selection `kickos_services_none`
   workaround is no longer needed to get a verdict. The old symptom was a banner,
   `[xmcuart|k64uart] driver up`, a stray `x`, then silence: the TAP harness wrote to the kernel
   console, which `console_emit` drops once the UART is `USER_OWNED`, and the `x` was `cap_index0`
@@ -462,7 +461,7 @@ first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/arm.
 and the first on this board since 2026-07-14. Every banner reads `board f302nucleo /
 arch armv7m / mpu off / sched tickless`; the three at the board's application profile add
 `heap 2 KiB available`, and the `-st` capture reads `heap none`, since that preset carves no
-heap (`KICKOS_USER_HEAP_SIZE=0`).
+heap (a zero `heap:`).
 
 | App | Commit in the banner | Result |
 | --- | --- | --- |
@@ -478,7 +477,7 @@ banner's `heap 2 KiB` witnesses (`176109e` itself still declared 4K).
 
 **`hello` PASS is the run-floor witness.** Two threads
 (`ping` and `pong` in `user/apps/common/hello/main.cc`), both spawned, `printf` alive, at
-`KICKOS_USER_HEAP_SIZE` 2048 (its chip default, declared in `Kconfig`) -- the halved carve
+a 2048-byte heap -- the halved carve
 neither starves stdio nor costs a thread stack.
 
 **`stress` PASS**, verbatim:
@@ -696,7 +695,7 @@ LPUART6 is IRQ **25** (RM Table 4-2, combined TX/RX), buffered TX over the share
 ring with a synchronous fallback for the panic path -- the same seam as `mk64f`. Baud assumes the
 reset UART clock root (`pll3_80m/1` = 80 MHz, RM chapter 14) with `OSR = 15` and
 `SBR = root / (baud * 16)`; it tracks the real root once the CCM bring-up lands.
-`arch_pinmux_set` refuses `GPIO1.IO02`/`IO03` so a board pin map cannot steal the console pads.
+`arch_pinmux_set` refuses `GPIO1.IO02`/`IO03` so a pinmux request cannot steal the console pads.
 
 Why writable state lives in **OCRAM2** (`0x2020_0000`, 512 KiB) and not DTCM: ITCM and DTCM are
 carved out of the 512 KiB **FlexRAM**, whose split is set by `IOMUXC_GPR_GPR16`/`GPR17` from a
@@ -750,13 +749,6 @@ the board".
 | RXv3 | `rx72m` | build only, plain, `-st`, `-flat` and `-bench` | -- |
 | x86_64 | `qemu-x86_64`, `qemu-x86_64-bench`, `qemu-x86_64-smp2root1` | run gate over a UEFI handover, on firmware the job resolves rather than names, and the microbench gates on the same resolved pair; `errnoprobe` with root on core 1 in a job of its own on `ubuntu-26.04`, whose QEMU emulates the x2APIC q35 SMP needs | -- (no memory family selected; the map is flat) |
 
-- **The `KICKOS_SERVICE_LIST` axis is COMPILE-checked in CI and never LINK-checked there.**
-  `tests/static/check_service_lists.sh` pins that every provider is declared against a preset
-  that compiles it, but a `select` row (no board defaults to it) reaches an image only under an
-  explicit `-DKICKOS_SERVICE_LIST=<provider>`, so an ordinary fleet build compiles it and links
-  none. `tools/sweep_service_lists.sh` is the operator tool that closes that gap: it configures
-  each declared row against its own preset with that override and confirms at least one image
-  links. Cross toolchains and minutes per entry keep it a manual bench step, never a CI job.
 - **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a
   long time, and the reason was real: every enforcing ARM port was a silicon part, and the one
   runnable armv7m target shipped no enforcement block, so `--preset qemu -DKICKOS_HAVE_MPU=1`
@@ -846,8 +838,7 @@ the board".
   (`boards/f302nucleo/configs/base/defconfig:10`, `:11`) -- so it needs **2,560 B**, and
   an unsatisfied second allocation is `kpanic("kmain: no arena for the root stack")`
   (`kernel/init/kmain.cc`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
-  halved `KICKOS_USER_HEAP_SIZE` to 2K (then a `stm32f302.ld` default, now the chip's
-  declared one in `Kconfig`), which returns
+  halved the heap to 2K (then a `stm32f302.ld` default, now the composition's `heap:`), which returns
   1:1 to the arena because the heap is carved below `__kickos_ram_start`. **Boot at the tip is now
   witnessed rather than computed** -- see *`f302nucleo` on silicon* above. `176109e` was superseded
   by the branch reorder and resolves against `backup/m4.5.2-pre-reorder`, not the live branch.
@@ -971,7 +962,7 @@ switching profiles; configure refuses one whose cached flags name the other. Nan
 implementations. Its formatted I/O omits C99 and long-long formats, and without `-u
 _printf_float` at the link a floating-point conversion in `printf` prints nothing for that
 argument; `scanf` takes `-u _scanf_float` the same way. The package's nano C++ archives unwind
-as its full ones do, so `KickOS::kickos_cxx` exists on either profile: `cxxtest` passed every
+as its full ones do, so full C++ exists on either profile: `cxxtest` passed every
 check on `qemu-m3` built nano (M10.2). Other cross targets carry the full profile only.
 
 Nano's per-thread `_reent` holds pointers where the full profile holds storage. A thread's
@@ -1000,13 +991,13 @@ floating-point conversion fails the assertion; the selftest calls none of them. 
 boards build prints a floating-point value. Neither board has an emulator, so an integer `printf`
 and a `strtok` on their nano images are untested here.
 
-Under nano, `microbit` defaults `KICKOS_USER_HEAP_SIZE` to 1,024 bytes; the full-profile
+Under nano, `microbit`'s composition states a 1,024-byte `heap:`; the full-profile
 build keeps the scratch inline and carves none. One thread's `strtok`, `localtime`,
 `asctime` and `rand` scratch measures 200 bytes there, so the heap holds it for root and
 all four pool threads at once, and `microbit_errnoprobe` fails if an ended thread keeps
 it. A floating-point conversion adds up to 1,428 bytes a thread (`strtod("1.25e300")`),
-which this heap cannot supply even once: an app that converts floating point sets
-`-DKICKOS_USER_HEAP_SIZE` in its build, and `errnoprobe` skips that conversion below
+which this heap cannot supply even once: an app that converts floating point states
+a larger `heap:` in its composition, and `errnoprobe` skips that conversion below
 2 KiB. The first buffered `stdout` write asks for 1,032 bytes, so it never fits and
 stdout stays unbuffered, as with no heap. The carve costs a `hello`-sized image no thread
 arena, the 2 KiB stack alignment absorbing it; each selftest image and `errnoprobe`
@@ -1656,8 +1647,8 @@ treatment.
 #### `frdmk64f` -- SYSMPU
 
 The sixth board, the last enforcement backend to be flipped, and the **only board flipped on its full
-service list** (`KICKOS_SERVICE_LIST=kickos_services_frdmk64f` = console `k64uart` + SPI `k64dspi`,
-board pin map `kickos_pinmap_frdmk64f`). Captured over the OpenSDA J-Link VCOM; both banners stamp
+service list** (the board's service-list selection set to `kickos_services_frdmk64f` = console `k64uart` + SPI `k64dspi`,
+plus the board pin map). Captured over the OpenSDA J-Link VCOM; both banners stamp
 `commit 127efb5`.
 
 What makes this a stage-3 witness rather than a sixth repeat of stage 2: **root writes no MMIO on
@@ -1665,8 +1656,8 @@ this board at all.** The other five got flipped by taking the peripheral work ou
 (console-only, or `kickos_services_none`); this one keeps both drivers and moves the work across a
 seam instead. `k64uart` and `k64dspi` each call `kos_periph_enable(win)` as their own first act, so
 the `SIM_SCGC*` clock ungate and the `AIPS0` PACR unprotect happen inside the unprivileged window
-holder rather than in root, and the four DSPI pins moved into the board pin map, which root applies
-through `kos_pinmux_set` before any service starts. `kickos_services_frdmk64f` therefore came off the
+holder rather than in root, and the four DSPI pins moved into the board pin map, which root applied
+through `kos_pinmux_set` before any service started. `kickos_services_frdmk64f` therefore came off the
 root-MMIO refusal list, so the configure-time refusal that used to fire for this board stopped
 applying; that list and its gate have since been deleted outright. The run also witnessed the console handover to `k64uart` (TAP via the
 driver), `k64dspi` up in the same image, and `ok 47 - periph_enable_unheld`.
@@ -1735,8 +1726,8 @@ window at that base rather than on an authority bit; the contract and the per-ch
 so a granted channel-2 window would also expose the chained ch0+ch1 pair `arch_clock_now` runs on, so
 the PIT stays kernel-gated at boot instead.
 
-The board pin map is 5 rows (`system/init/frdmk64f/pinmap.cc`) -- the LED plus the four DSPI pins
-root muxes before any service starts: PTB21 `func=0x100` (ALT1) blue LED as GPIO; PTD1 / PTD2 / PTD3
+The board pin map was 5 rows -- the LED plus the four DSPI pins
+root muxed before any service started: PTB21 `func=0x100` (ALT1) blue LED as GPIO; PTD1 / PTD2 / PTD3
 `func=0x200` (ALT2) as DSPI0 SCK / SOUT / SIN; PTC4 `func=0x100` (ALT1) as the DSPI0 software CS.
 All four DSPI rows read back their programmed mux on a halted target in the runs below --
 `PORTD_PCR1`/`PCR2`/`PCR3` = `0x200`, `PORTC_PCR4` = `0x100`.
@@ -1768,9 +1759,9 @@ same transfer **under the flip is still owed**, and the canonical PMSA periphera
 
 ### Stage 4 -- root narrows its own authority (2026-07-30)
 
-Stage 4 makes root hand the app only the authority the app declared: the default init calls
+Stage 4 makes root hand the app only the authority the app declared: the init called
 `kos_cap_narrow` after the pin map and the service list, with a mask from the per-app
-`KICKOS_APP_AUTHORITY`. Witnessed on **two of the six** boards carrying a confinement witness, the
+authority declaration. Witnessed on **two of the six** boards carrying a confinement witness, the
 two J-Link ones, each captured over its own VCOM from a clean worktree. Both banners read
 `enforce, root unprivileged`.
 
@@ -1785,7 +1776,7 @@ no privileged caller exists` on both, plus `mutex_deadlock # SKIP pool too small
 `mutex_deadlock` survives in a current run.
 
 **Read the selftest rows for what they actually prove, which is not the narrow.** `selftest` declares
-five of the six bits (`KICKOS_APP_AUTHORITY`, everything but `AUTH_PSTATE`), because the suite drives
+five of the six bits (the per-app declaration, everything but `AUTH_PSTATE`), because the suite drives
 the authority gates from root. So on these two runs root gave up **`AUTH_PSTATE` and nothing else**:
 `AUTH_PINMUX` and `AUTH_CONSOLE` were kept, and the TAP route line shows the console path surviving
 bring-up, not surviving a narrow. What the rows do witness is that the re-cut, the delegation refusal
@@ -2896,7 +2887,7 @@ selftest among them). No record may quote `c82af2c` as a witness of the merged r
 | `frdmk64f` | SYSMPU, `-st` + `MPU=1` | `1..79` | 79 ok, 0 not-ok, 0 skip, 0 partial | `m472-k64-st.log` |
 
 Both ran the RETAINING service list, which is the enforcing default on these two boards
-(`CMakeLists.txt` resolves `KICKOS_SERVICE_LIST` after `KICKOS_HAVE_MPU` is known), so both
+(the service-list selection was resolved after `KICKOS_HAVE_MPU` was known), so both
 configured an **11-slot** table -- the widest in the fleet, and the only width that exercises the
 retained term. Both carry `# tap route: stdout endpoint -> console driver (service list published)`,
 so the whole suite crossed the userspace driver. The two arms this milestone added are on the wire as

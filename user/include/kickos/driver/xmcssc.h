@@ -19,25 +19,15 @@
 #ifndef KICKOS_DRIVER_XMCSSC_H
 #define KICKOS_DRIVER_XMCSSC_H
 
-#include <kickos/sys/abi.h> // kos_cap_t (the endpoint handle this hands out)
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    struct kos_service_cfg;
+    struct kos_driver_instance;
 
-    // KOS_SVC_SPI service start(): the privileged one-time bring-up, the endpoint, and the
-    // unprivileged driver spawn. Reads the controller base/window, target Hz and CS policy
-    // from the service cfg. Returns 0, or a negative -KOS_E*. NO libc stdio (the service-list
-    // HARD RULE); diagnostics use kos::print.
-    int xmc_spi0_start(struct kos_service_cfg const* cfg);
-
-    // TAKE the USIC0-CH1 SSC service endpoint cap out of the root thread's table: the caller
-    // owns it and closes its own copy. ONE-SHOT; a second call, or a service that did not come
-    // up, returns KOS_CAP_NONE.
-    kos_cap_t xmc_spi0_take_endpoint(void);
+    // The SPI bus driver's START. Returns 0, or a negative -KOS_E*.
+    int xmc_spi0_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

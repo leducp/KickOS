@@ -226,8 +226,6 @@ namespace step
 // Every entry the systems' tables name, which the walk never calls; drivers.cc defines the starts.
 extern "C"
 {
-    struct kos_service_cfg;
-
     void sensor_main(kos_self_t const*)
     {
     }

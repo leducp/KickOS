@@ -17,8 +17,8 @@
 #                     where it names none, KickOS::main's where the
 #                     composition names kickos_main, each named packaged driver's archive and
 #                     the libraries its CLIENT declares for the tasks using it, the
-#                     link-time asserts script as a link input, and KICKOS_USER_HEAP_SIZE from
-#                     the composition's `heap`; on node 0 of a partition, or on a chip stating a
+#                     link-time asserts script as a link input, and KICKOS_USER_HEAP_SIZE, a
+#                     link symbol and a compile definition, from the composition's `heap`; on node 0 of a partition, or on a chip stating a
 #                     partition gate, the gate assignment's object too.
 #   EXPORT_NAME installs both under KickOS::<name> and KickOS::<name>_table.
 #
@@ -216,63 +216,6 @@ function(kickos_compose system)
   target_link_libraries(${system} INTERFACE ${_links} ${_archives} ${_asserts_link} KickOS::kernel)
   kickos_heap_defsym(_heap "${KICKOS_COMPOSE_HEAP}")
   target_link_options(${system} INTERFACE "LINKER:${_heap}")
+  target_compile_definitions(${system} INTERFACE KICKOS_USER_HEAP_SIZE=${KICKOS_COMPOSE_HEAP})
   set_property(TARGET ${system} APPEND PROPERTY INTERFACE_LINK_DEPENDS ${_asserts_link})
-endfunction()
-
-# kickos_compose_gate(<target>)
-#   The gate assignment of an image linking no system target, its kernel's own ranges alone: an
-#   object library <target> where the build carries one (node 0 of a partition, or a chip stating a
-#   partition gate), and no target otherwise. Runs the host tool at configure as kickos_compose
-#   does, on KICKOS_MANIFEST.
-function(kickos_compose_gate target)
-  get_property(_tool GLOBAL PROPERTY KICKOS_COMPOSE_TOOL)
-  if(NOT KICKOS_MANIFEST OR NOT EXISTS "${KICKOS_MANIFEST}")
-    message(FATAL_ERROR "kickos_compose_gate(${target}): KICKOS_MANIFEST names no manifest "
-      "('${KICKOS_MANIFEST}')")
-  endif()
-  get_filename_component(_manifest_dir "${KICKOS_MANIFEST}" DIRECTORY)
-  file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml")
-  file(GLOB_RECURSE _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
-  set(_inputs "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources} "${_tool}/pyproject.toml" "${_tool}/uv.lock")
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
-  set(_hashes "")
-  foreach(_input IN LISTS _inputs)
-    file(SHA256 "${_input}" _input_hash)
-    string(APPEND _hashes "${_input} ${_input_hash}\n")
-  endforeach()
-  string(SHA256 _hash "${_hashes}")
-  set(_dir "${CMAKE_CURRENT_BINARY_DIR}/kickos_compose/${target}")
-  set(_recorded "")
-  if(EXISTS "${_dir}/inputs.sha256")
-    file(READ "${_dir}/inputs.sha256" _recorded)
-  endif()
-  if(NOT _recorded STREQUAL _hash)
-    find_program(KICKOS_UV uv)
-    if(NOT KICKOS_UV)
-      message(FATAL_ERROR "kickos_compose_gate(${target}): uv not found on PATH; the host tool runs "
-        "under uv (https://docs.astral.sh/uv/)")
-    endif()
-    file(REMOVE_RECURSE "${_dir}")
-    file(MAKE_DIRECTORY "${_dir}/tmp")
-    execute_process(
-      COMMAND "${CMAKE_COMMAND}" -E env
-              "UV_PROJECT_ENVIRONMENT=${CMAKE_BINARY_DIR}/kickos_compose/venv"
-              UV_PYTHON_DOWNLOADS=never "PYTHONPATH=${_tool}" PYTHONDONTWRITEBYTECODE=1
-              "TMPDIR=${_dir}/tmp"
-              "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
-              python -m kickos_compose gate --manifest "${KICKOS_MANIFEST}" -o "${_dir}/gate.c"
-      RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err
-      TIMEOUT 600)
-    string(STRIP "${_out}\n${_err}" _said)
-    string(REPLACE "\n" "\n  " _said "${_said}")
-    if(NOT _rc STREQUAL "0")
-      message(FATAL_ERROR "kickos_compose_gate(${target}): the host tool refused or did not run on "
-        "${KICKOS_MANIFEST} (${_rc}):\n  ${_said}")
-    endif()
-    file(WRITE "${_dir}/inputs.sha256" "${_hash}")
-  endif()
-  if(EXISTS "${_dir}/gate.c")
-    add_library(${target} OBJECT "${_dir}/gate.c")
-    target_link_libraries(${target} PRIVATE KickOS::kernel)
-  endif()
 endfunction()

@@ -8,7 +8,6 @@
 // kconsole_write, so bytes appear if and only if they travelled the endpoint -> driver route.
 // Sim-only by construction (host libc).
 
-#include <kickos/sys/service.h>
 
 #include <kickos/driver/declared/simcon.h>
 #include <kickos/kos.h>
@@ -56,7 +55,6 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -156,46 +154,33 @@ namespace
 
     // The two window-thread postures below do NOT go through drv::bring_up, and the loop
     // above is why: the host may refuse any given candidate base, so this window's address is
-    // discovered BY SPAWNING, which a descriptor's single cfg->mmio_base cannot express.
-    kos::thread::Handle spawn_console_driver(struct kos_service_cfg const* cfg, kos_cap_t ep,
-                                             kos_task_t task)
+    // discovered BY SPAWNING, which an instance's single window base cannot express.
+    kos::thread::Handle spawn_console_driver(struct kos_driver_instance const& in, kos_task_t task)
     {
-        bool const under_init = cfg->instance != nullptr;
         kos::thread::Handle const h =
-            drv::spawn_one(k_desc.threads[0], cfg, /*blk=*/nullptr, ep, /*line=*/nullptr,
-                           drv::LineIndex{drv::KOS_DRV_LINE_INDEX_NONE}, /*note=*/KOS_CAP_NONE,
-                           task, /*core_mask=*/0u, under_init);
+            drv::spawn_one(k_desc.threads[0], in, /*line=*/nullptr, /*note=*/KOS_CAP_NONE, task,
+                           /*core_mask=*/0u);
         if (not h.valid())
         {
-            // CLOSE BEFORE PRINTING: the close is what reclaims the console for the tag below.
-            if (under_init)
-            {
-                (void)kos_cap_narrow(ep, drv::KOS_DRV_HANDOVER_KEPT);
-            }
-            else
-            {
-                kos_handle_close(ep);
-                kos::print("[simcon] ERROR: driver spawn failed\n");
-            }
+            (void)kos_cap_narrow(in.endpoint, drv::KOS_DRV_HANDOVER_KEPT);
         }
         return h;
     }
 
-    int instance_task(struct kos_service_cfg const* cfg, kos_task_t* out)
+    int instance_task(struct kos_driver_instance& in, kos_task_t* out)
     {
-        struct kos_driver_instance* const in = cfg->instance;
         int rc = kos_task_create(nullptr, 0, 0, out);
         if (rc != 0)
         {
             return rc;
         }
-        in->task = *out;
-        rc = kos_task_sched_grant(*out, in->ceiling, in->core_mask);
+        in.task = *out;
+        rc = kos_task_sched_grant(*out, in.ceiling, in.core_mask);
         if (rc != 0)
         {
             return rc;
         }
-        return kos_task_watch(*out, in->watch, in->endpoint);
+        return kos_task_watch(*out, in.watch, in.endpoint);
     }
 #endif
 
@@ -335,7 +320,7 @@ extern "C"
     // and keep KOS_CAP_HANDOUT, and this service does not.
     void simconsole_driver(void* arg)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
+        (void)arg; // records the posture; the thread takes no arg
         kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");
         wire_puts("[simcon] driver up (host fd 1)\n");
 
@@ -423,11 +408,10 @@ extern "C"
     // the register window, so dropping the init's receiving right notes the console dead and
     // the reclaim waits for the window. The init slays the failed start, which releases it,
     // and reports the failure on the console that comes back.
-    static int simconsole_start_wedge_instance(struct kos_service_cfg const* cfg)
+    static int simconsole_start_wedge(struct kos_driver_instance* in)
     {
-        struct kos_driver_instance* const in = cfg->instance;
         kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = instance_task(cfg, &task);
+        int const task_rc = instance_task(*in, &task);
         if (task_rc != 0)
         {
             return task_rc;
@@ -454,88 +438,12 @@ extern "C"
             }
             kos_sleep_ns(WIN_READY_NS);
         }
-        kos::thread::Handle const drvt = spawn_console_driver(cfg, in->endpoint, task);
+        kos::thread::Handle const drvt = spawn_console_driver(*in, task);
         if (not drvt.valid())
         {
             return drvt.error();
         }
-        return drv::console_handover_finish(in->endpoint, "[simcon] ", task, in);
-    }
-
-    // The READY TIMEOUT every silicon console driver carries, executable with no board.
-    // The ORDER is the thing under test: root waits for the IRQ thread while it is still
-    // the endpoint's ONLY receiver holder, so closing E takes recv_holders to 0 and notes
-    // the console dead. Once the service thread exists it holds a WAIT cap on E and that
-    // close no longer reclaims, which leaves the tag below with nowhere to go.
-    //
-    // A HAND COPY of bring_up's order: the wedge thread's window base has to be probed
-    // (spawn_window_thread).
-    static int simconsole_start_wedge(struct kos_service_cfg const* cfg)
-    {
-        // Both threads are ONE driver, so one task: the group kill below names no thread, and
-        // either thread's death ends the other. No shared region, because the sim's "device" is
-        // fd 1 and there is no ring block.
-        kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = kos_task_create(nullptr, 0, 0, &task);
-        if (task_rc != 0)
-        {
-            return task_rc;
-        }
-        kos_cap_t ep = KOS_CAP_NONE;
-        int const ep_rc = kos_endpoint_create(&ep);
-        if (ep_rc != 0)
-        {
-            (void)kos_task_kill(task);
-            return ep_rc;
-        }
-        if (kos_console_publish(ep) != 0)
-        {
-            kos::print("[simcon] ERROR: console_publish failed\n");
-            kos_handle_close(ep);
-            (void)kos_task_kill(task);
-            return -1;
-        }
-        // Dropped while the console is USER_OWNED. On the wire it means the publish did not
-        // take, and then the timeout tag below would prove nothing.
-        kos::print("[simcon] wedge: post-publish kernel write (must NOT reach the wire)\n");
-
-        auto const irqt = spawn_window_thread(simconsole_wedge_thread,
-                                              static_cast<uint8_t>(cfg->prio + 1), "simconirq",
-                                              task);
-        if (not irqt.valid())
-        {
-            kos_handle_close(ep);
-            (void)kos_task_kill(task);
-            kos::print("[simcon] ERROR: no notification or DEV window for the wedge irq "
-                       "thread\n");
-            return -1;
-        }
-
-        // Close BEFORE the kill, so the death note is already set when the slain thread's
-        // exit runs the reclaim. The note alone does not reclaim: the wedged thread still
-        // holds the register window, and its exit is what releases it.
-        uint32_t waited = 0;
-        while (g_win_ready == 0u)
-        {
-            if (waited >= WIN_READY_MAX)
-            {
-                kos_handle_close(ep);
-                (void)kos_task_kill(task);
-                kos::print("[simcon] ERROR: IRQ thread never reached its loop\n");
-                return -1;
-            }
-            waited++;
-            kos_sleep_ns(WIN_READY_NS);
-        }
-
-        // Unreachable while the wedge thread holds ready at 0.
-        kos::thread::Handle const drvt = spawn_console_driver(cfg, ep, task);
-        if (not drvt.valid())
-        {
-            (void)kos_task_kill(task);
-            return drvt.error();
-        }
-        return drv::console_handover_finish(ep, "[simcon] ", task, nullptr);
+        return drv::console_handover_finish(in->endpoint, "[simcon] ");
     }
 #endif
 
@@ -543,11 +451,10 @@ extern "C"
     // The windowed posture under the init: the window thread is spawned first, so it is the
     // driver task's entry and outlives the receiver's death holding the console registers,
     // until its release ends the task.
-    static int simconsole_start_windowed_instance(struct kos_service_cfg const* cfg)
+    static int simconsole_start_windowed(struct kos_driver_instance* in)
     {
-        struct kos_driver_instance* const in = cfg->instance;
         kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = instance_task(cfg, &task);
+        int const task_rc = instance_task(*in, &task);
         if (task_rc != 0)
         {
             return task_rc;
@@ -572,123 +479,25 @@ extern "C"
         {
             return pub;
         }
-        kos::thread::Handle const drvt = spawn_console_driver(cfg, in->endpoint, task);
+        kos::thread::Handle const drvt = spawn_console_driver(*in, task);
         if (not drvt.valid())
         {
             return drvt.error();
         }
-        return drv::console_handover_finish(in->endpoint, "[simcon] ", task, in);
-    }
-
-    static int simconsole_start_windowed(struct kos_service_cfg const* cfg)
-    {
-        // The window thread is deliberately NOT a member of the driver's task, and that is
-        // this posture's whole subject: it models a FOREIGN holder of the console registers,
-        // which is the only shape in which the deferred reclaim is observable. Coupling it
-        // would end it with the driver, the window would already be free when
-        // console_on_driver_death ran, and the defer arm would never be taken. A real
-        // multi-thread driver does put its window holder in the group (drv::bring_up).
-        //
-        // BEFORE the publish, so a failure here still reports on a kernel-owned console.
-        // That ordering is why this posture cannot be drv::bring_up, which publishes first.
-        g_win_thread = spawn_window_thread(simconsole_window_thread,
-                                          static_cast<uint8_t>(cfg->prio + 1), "simconwin",
-                                          KOS_TASK_NONE);
-        if (not g_win_thread.valid())
-        {
-            kos::print("[simcon] ERROR: no notification or DEV window for the window thread\n");
-            return -1;
-        }
-        // A spawn does NOT reschedule, so the new thread has not run yet whatever its
-        // priority. Wait for its park BEFORE the publish: a window thread that never
-        // parked cannot be cancelled, and that reads as a broken reclaim rather than a
-        // broken bring-up.
-        for (uint32_t waited = 0; g_win_ready == 0u; waited++)
-        {
-            if (waited >= WIN_READY_MAX)
-            {
-                (void)g_win_thread.kill();
-                kos::print("[simcon] ERROR: window thread never reached its park\n");
-                return -1;
-            }
-            kos_sleep_ns(WIN_READY_NS);
-        }
-
-        // The driver thread's own group, holding only it. An explicit task even for one
-        // member, because the handover tail ends a GROUP and nothing else.
-        kos_task_t task = KOS_TASK_NONE;
-        int const task_rc = kos_task_create(nullptr, 0, 0, &task);
-        if (task_rc != 0)
-        {
-            (void)g_win_thread.kill();
-            return task_rc;
-        }
-        kos_cap_t ep = KOS_CAP_NONE;
-        int const ep_rc = kos_endpoint_create(&ep);
-        if (ep_rc != 0)
-        {
-            (void)kos_task_kill(task);
-            (void)g_win_thread.kill();
-            return ep_rc;
-        }
-        int const pub = kos_console_publish(ep);
-        if (pub != 0)
-        {
-            kos_handle_close(ep);
-            (void)kos_task_kill(task);
-            (void)g_win_thread.kill();
-            return pub;
-        }
-        // The driver thread gets NO window: the sim's "device" is fd 1, and the registers
-        // belong to the thread above.
-        kos::thread::Handle const drvt = spawn_console_driver(cfg, ep, task);
-        if (not drvt.valid())
-        {
-            (void)kos_task_kill(task);
-            (void)g_win_thread.kill();
-            return drvt.error(); // the helper already closed ep, which reclaimed the console
-        }
-        // Close root's cap, then prove the driver is serving before any client runs. The
-        // window thread is cancelled SEPARATELY on the failure path, because it is not in the
-        // driver's group: the console comes back only once the WINDOW is free, and the window
-        // holder is not the thread whose death EPIPEs the probe.
-        int const rc = drv::console_handover_finish(ep, "[simcon] ", task, nullptr);
-        if (rc != 0)
-        {
-            (void)g_win_thread.kill();
-        }
-        return rc;
+        return drv::console_handover_finish(in->endpoint, "[simcon] ");
     }
 #endif
 
     // kos_console_publish seats the CALLER's cap 0 too, so init and the app print through
-    // the driver; the parent's cap is dropped so the driver is the sole receiver.
-    int simcon_console_start(struct kos_service_cfg const* cfg)
+    // the driver; the init's cap is narrowed so the driver is the sole receiver.
+    int simcon_console_start(struct kos_driver_instance* instance)
     {
-#if defined(SIMCON_START_WEDGE) || defined(SIMCON_START_WINDOWED)
-        if (cfg == nullptr)
-        {
-            return -1;
-        }
-        if (cfg->instance == nullptr and cfg->kind != KOS_SVC_CONSOLE)
-        {
-            return -1; // cfg authored for another service class
-        }
-#endif
 #ifdef SIMCON_START_WEDGE
-        if (cfg->instance != nullptr)
-        {
-            return simconsole_start_wedge_instance(cfg);
-        }
-        return simconsole_start_wedge(cfg);
+        return simconsole_start_wedge(instance);
 #elif defined(SIMCON_START_WINDOWED)
-        if (cfg->instance != nullptr)
-        {
-            return simconsole_start_windowed_instance(cfg);
-        }
-        return simconsole_start_windowed(cfg);
+        return simconsole_start_windowed(instance);
 #else
-        return drv::bring_up(k_desc, cfg, nullptr);
+        return drv::bring_up(k_desc, instance);
 #endif
     }
 }

@@ -70,15 +70,13 @@ namespace
         write(base, s, n);
     }
 
-    void service(void* arg)
+    void service(void*)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         // Where this thread reaches its window, which a translating board chooses.
         struct kos_window window = {};
         if (kos_window_get(0u, &window) != 0)
         {
-            drv::trap_under_init();
-            kos_exit(1);
+            drv::trap();
         }
         uintptr_t const base = window.base;
         write_text(base, "testpl011: serving\n");
@@ -101,8 +99,7 @@ namespace
             reply_len = 0;
             if (n < 0)
             {
-                drv::trap_under_init();
-                kos_exit(1);
+                drv::trap();
             }
             if (opts.info.reply_cap != KOS_CAP_NONE)
             {
@@ -132,7 +129,6 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -152,7 +148,7 @@ namespace
                   "the testpl011 descriptor departs from its kickos_add_driver declaration");
 }
 
-extern "C" int testpl011_start(struct kos_service_cfg const* cfg)
+extern "C" int testpl011_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }

@@ -28,22 +28,17 @@
 #include <kickos/sys/bytes.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h> // KOS_EPERM
-#include <kickos/sys/service.h>
 #include <kickos/sys/usb_cdc_service.h>
-#include <kickos/usb_console.h>
 
-#include "irq.h"
 #include "rt_usb_regs.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h> // exit
 
-
 namespace drv = kickos::driver;
 namespace reg = kickos::rtusb::reg;
 namespace usb = kickos::usb;
-namespace rtirq = kickos::imxrt1062::irq;
 namespace declared = kickos::driver::declared::rt1062usb;
 
 namespace
@@ -733,7 +728,7 @@ namespace
 
     void rtusb_irq_thread(void* arg)
     {
-        Block* blk = static_cast<Block*>(drv::thread_start(arg));
+        Block* blk = static_cast<Block*>(arg);
         // FIRST statement, before anything that can fault: it separates a thread that never
         // ran from one that ran and died.
         blk->stage = STAGE_ENTERED;
@@ -751,8 +746,8 @@ namespace
         usb::Cdc<RtUsb> cdc(dev, &blk->sh);
         if (cdc.bring_up() != 0)
         {
-            // Leaving the ready latch clear is the report: drv::bring_up gives up on it,
-            // unwinds, and rtusb_console_start prints the stage this thread left behind.
+            // Leaving the ready latch clear is the report: drv::bring_up gives up on it, and
+            // rtusb_console_start prints the stage this thread left behind.
             exit(0);
         }
         usb::irq_loop(cdc, &blk->sh); // parks in irq_wait; never returns
@@ -760,14 +755,13 @@ namespace
 
     void rtusb_service_thread(void* arg)
     {
-        usb::console_serve_loop(&static_cast<Block*>(drv::thread_start(arg))->sh);
+        usb::console_serve_loop(&static_cast<Block*>(arg)->sh);
     }
 
-    // The block drv::bring_up allocated: it does not hand the pointer back, so block_init is
-    // where this TU sees it.
+    // The instance's block once block_init has laid it out.
     Block* g_blk = nullptr;
 
-    int block_init(void* raw, struct kos_service_cfg const*)
+    int block_init(void* raw, struct kos_driver_instance const*)
     {
         // A bus master pointed at a mis-aligned list corrupts memory rather than faulting,
         // so the allocator's alignment is checked rather than assumed.
@@ -904,8 +898,8 @@ namespace
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[rtusb] ",
-        // The register map is hard-wired to USB1 and the vector is claimed by number, so a
-        // cfg naming another window would grant one block and poke another.
+        // The register map is hard-wired to USB1, so an instance naming another window would
+        // grant one block and poke another.
         .expected_base = reg::USB1_BASE,
         .block_size = BLOCK_SIZE,
         // The controller reads its dQH/dTD lists and writes transfer results out of this
@@ -915,14 +909,13 @@ namespace
         // The publish blinds the kernel console, which is LPUART6 on pins 0/1 and a
         // different peripheral from the one taken here.
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         // irq_loop latches ready before enumeration, so the poll does not wait for a cable.
         .barrier_after = declared::k_declared.barrier_after,
         // LEVEL: USBSTS is an OR of sources cleared at the peripheral, and the NVIC line
         // follows it.
-        .lines = {{rtirq::USB_OTG1_IRQ, KOS_IRQ_LEVEL}},
+        .lines = {{KOS_IRQ_LEVEL}},
         .threads = {{.entry = rtusb_irq_thread,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
@@ -957,16 +950,14 @@ namespace
 extern "C"
 {
 
-char const kickos_usb_device_console = 1;
-
-int rtusb_console_start(struct kos_service_cfg const* cfg)
+int rtusb_console_start(struct kos_driver_instance* instance)
 {
-    int const rc = drv::bring_up(k_desc, cfg, nullptr);
+    int const rc = drv::bring_up(k_desc, instance);
     if (rc == 0)
     {
         return 0;
     }
-    // The unwind reclaimed the console, so a print reaches the wire again from here. How far
+    // The bring-up narrowed the console's endpoint, so a print reaches the wire again. How far
     // the IRQ thread got is only in the block; what it printed had no receiver.
     if (g_blk != nullptr)
     {

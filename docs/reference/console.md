@@ -446,10 +446,7 @@ publisher keeps its WAIT, the driver's death drops the count to 1, not 0: no ans
 delivered, parked senders are never woken, and every client hangs for the life of the system.
 That is strictly WORSE than a dark console, which is why the drop is a hard rule and not a
 tidiness convention.
-`console_handover_finish` drops it in one of two ways. A driver brought up from a service list
-closes the endpoint capability outright, so its death leaves neither a WAIT nor a HANDOUT holder
-and a send answers `-KOS_ECONNREFUSED`. A driver brought up under the init (given a
-`kos_driver_instance`) narrows it to SIGNAL, TRANSFER and HANDOUT (`HANDOVER_KEPT`), the rights
+`console_handover_finish` narrows it to SIGNAL, TRANSFER and HANDOUT (`HANDOVER_KEPT`), the rights
 the init's walk (`system/init/compose/walk.cc`) keeps of every endpoint it creates for a server.
 Its death then vacates the endpoint and gives the kernel its console back: a send answers
 `-KOS_EAGAIN` while the init's HANDOUT remains, until the endpoint next receives

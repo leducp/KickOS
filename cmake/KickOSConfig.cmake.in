@@ -28,28 +28,9 @@ set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
 
-# ROOT's capability-table width this package's libraries were compiled with, for CMake code
-# that has to report it. What a COMPILE reads is <prefix>/include/kickos/config/cap_width.h;
-# this must never be used to override that.
-set(KICKOS_CAP_TABLE_WIDTH "@KICKOS_CAP_TABLE_SLOTS@")
-
 # The export manifest a composition is admitted against, with the descriptions it names under
 # platform/ beside it.
 set(KICKOS_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/manifest.yaml")
-
-# The init provider was frozen INTO the exported link recipe at KickOS build time
-# (the leaves' LINK_GROUP names KickOS::@KICKOS_INIT_PROVIDER@). A consumer override would
-# silently no-op, because the shipped recipe still pulls the packaged provider, so a
-# DIFFERENT KICKOS_INIT_PROVIDER must fail clearly instead. To use a custom init in
-# an installed package, rebuild KickOS with -DKICKOS_INIT_PROVIDER pointing at an
-# exported target.
-if(DEFINED KICKOS_INIT_PROVIDER AND NOT KICKOS_INIT_PROVIDER STREQUAL "@KICKOS_INIT_PROVIDER@")
-  message(FATAL_ERROR "KickOS: this package was built with KICKOS_INIT_PROVIDER='@KICKOS_INIT_PROVIDER@', "
-    "but KICKOS_INIT_PROVIDER='${KICKOS_INIT_PROVIDER}' was requested. The provider is frozen into the "
-    "exported link recipe, so an override here would silently no-op. Rebuild KickOS with the desired "
-    "provider, or unset KICKOS_INIT_PROVIDER.")
-endif()
-set(KICKOS_INIT_PROVIDER "@KICKOS_INIT_PROVIDER@")
 
 # The leaves pull POSIX threads only on the host sim; a bare-metal
 # package must not require Threads (there is no pthreads on an MCU).

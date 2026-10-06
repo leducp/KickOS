@@ -3,9 +3,7 @@
 //
 // A packaged driver holding the two lines its composition binds: its IRQ thread prints the index
 // line 0 has among its device's lines, as its spawn hands it, then waits until line 0 is raised
-// and says so; its service thread answers calls. Its descriptor numbers both lines as none a claim
-// takes and states another index, so a start claiming the descriptor's numbers fails and a thread
-// handed the descriptor's index prints that one.
+// and says so; its service thread answers calls.
 
 #include <kickos/driver/declared/testline.h>
 #include <kickos/kos.h>
@@ -18,10 +16,6 @@ namespace declared = kickos::driver::declared::testline;
 
 namespace
 {
-    // Past every interrupt controller's lines.
-    constexpr int NO_LINE = 0x7FFF;
-    constexpr uint16_t DESCRIPTOR_INDEX = 0u;
-
     constexpr kos_cap_t NOTE = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t EP = KOS_SPAWN_DELEGATED_CAP0;
     constexpr uint32_t LINE_WAIT_US = 20000000u;
@@ -44,13 +38,12 @@ namespace
 
     void irq(void* arg)
     {
-        print_index(drv::line_index_of(drv::thread_start(arg)));
+        print_index(drv::line_index_of(arg));
         uint32_t bits = 0;
         if (kos_notify_bind(NOTE) != 0 or kos_notify_wait(NOTE, 1u, LINE_WAIT_US, &bits) != 0)
         {
             kos::print("testline: line 0 was never raised\n");
-            drv::trap_under_init();
-            kos_exit(1);
+            drv::trap();
         }
         kos::print("testline: line 0 was raised\n");
         while (true)
@@ -59,12 +52,11 @@ namespace
         }
     }
 
-    void service(void* arg)
+    void service(void*)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         if (testdrivers::serve(EP) < 0)
         {
-            drv::trap_under_init();
+            drv::trap();
         }
         kos_exit(0);
     }
@@ -76,11 +68,10 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_SPI, // no kind is neutral: an instance reads only whether it is KOS_SVC_CONSOLE
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
-        .lines = {{NO_LINE, KOS_IRQ_EDGE, DESCRIPTOR_INDEX}, {NO_LINE, KOS_IRQ_EDGE}},
+        .lines = {{KOS_IRQ_EDGE}, {KOS_IRQ_EDGE}},
         .threads = {{.entry = irq,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
@@ -105,7 +96,7 @@ namespace
                   "the testline descriptor departs from its kickos_add_driver declaration");
 }
 
-extern "C" int testline_start(struct kos_service_cfg const* cfg)
+extern "C" int testline_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }

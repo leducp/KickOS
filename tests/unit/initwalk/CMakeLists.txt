@@ -19,7 +19,7 @@ foreach(_system IN LISTS _systems)
   list(APPEND _requests "${_system}=${_table}")
   list(APPEND _outputs "${_table}")
   set_source_files_properties("${_table}" PROPERTIES COMPILE_DEFINITIONS
-    "kickos_table=kickos_table_${_system};kickos_link_one_system_target=kickos_link_one_system_target_${_system}")
+    "kickos_table=kickos_table_${_system};kickos_link_one_system_target=kickos_link_one_system_target_${_system};kickos_usb_device_console=kickos_usb_device_console_${_system}")
 endforeach()
 list(JOIN _requests "," _requests)
 file(GLOB _tool CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/*.py")

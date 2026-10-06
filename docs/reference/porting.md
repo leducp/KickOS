@@ -435,8 +435,8 @@ cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is i
    Configure REFUSES a board with none.
 
 `boards/<board>/` is also where a `<chip>.ld` linker override lives for a shared chip,
-and `boards/<board>/Kconfig` where its own options go -- proven on the `stm32f411` pair
-(f411disco + blackpill), which share a chip and differ in five wiring facts.
+-- proven on the `stm32f411` pair (f411disco + blackpill), which share a chip and differ in
+five wiring facts.
 
 **Two headers, because there are two kinds of fact**, and both are pure-`#define` so
 `startup.S` can include them. `kernel/include/kickos/config/{board,system}.h` pull in
@@ -736,7 +736,7 @@ encoding), so the ABI `{port, pin, func}` stays vendor-neutral while each backen
 owns its own encoding. Returns 0, `-KOS_EINVAL` (out of range), or `-KOS_EBUSY` (a
 kernel-owned pin: a console pin, the kernel LED's or a reserved pin, from `board_pins.h`). The **declining fallback**
 (`arch/common/arch_pinmux_set_default.cc`) **returns `-KOS_ENOSYS`**, so
-a non-empty board pin-map fails LOUD on a chip with no backend rather than silently
+a task that muxes pins on a chip with no backend fails LOUD rather than silently
 mis-muxing.
 
 Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `rx72m`,
@@ -754,9 +754,8 @@ bit for the `PFS` write in `[9]` -- and does the MPC `PWPR` unlock plus the mand
 "clear `PMR`, write `PSEL`, restore `PMR`" order itself, since a `PFS` write outside
 that bracket is silently dropped. `port` there is the DENSE register index 0..0x17
 (PORT0..PORTQ; `PORTG` is 0x10), and package pin holes are not modelled -- a pin absent
-from the package is accepted and writes a reserved bit. The board
-supplies the routing as a `kos_board_pinmap` table the init service walks before the
-service list; the init DAG is pinmux -> service list -> app.
+from the package is accepted and writes a reserved bit. A task muxes its own pins under the
+`pinmux` authority; the board file states the wiring.
 
 `stm32f411` encodes MODER verbatim in `[1:0]`, the AF number in `[7:4]`, and an
 output-preset-high arm in `[8]` (`PINMUX_OUT_HIGH`, chip-local at
@@ -1339,7 +1338,7 @@ every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the s
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
 defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
-`KICKOS_USER_HEAP_SIZE 0`, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 2`, and the
+a zero heap, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 2`, and the
 stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
 `KICKOS_IDLE_STACK_SIZE 512`). **That capture was taken at three slots and the file states
 two**: the unconditional priority ceiling grew `Task` past the slack the third slot needed,
@@ -1493,7 +1492,7 @@ looks far larger -- 49,112 bytes in `../archive/M4.5_footprint_meas.md` s.3 -- b
 data share the 512 KiB RAM and the figure is whole-RAM occupancy. Measured at tip, its
 `hello` code is ordinary: `.text` 22,840 + `.data` 48 + `.init_array` 8 = 22,896, and
 the rest of the 49,072-byte total is `.bss` 9,792 plus a 16,384-byte `.userheap`
-(`KICKOS_USER_HEAP_SIZE` at this chip's declared default). Per-ISA code density accounts for the
+(the composition's `heap:`). Per-ISA code density accounts for the
 remaining ARM/non-ARM gap; that attribution is **inferred, not measured**.
 
 The suite spans 46,932 to 57,568 bytes at `-Os` across the fleet and both
@@ -1517,10 +1516,9 @@ linker-script symbol, so the split is readable out of any linked ELF:
   not eight for exactly that reason -- `KICKOS_THREAD_SLOTS` is `KICKOS_MAX_THREADS + 1`, so
   that is five blocks of the armv6m 896 and not nine -- and its defconfig
   carries the derivation (`../../boards/microbit/configs/base/defconfig`).
-- **`.userheap`** -- `KICKOS_USER_HEAP_SIZE`, carved *below* `__kickos_ram_start` by
-  `stm32f302.ld`, so it trades against the arena 1:1. A knob like the stacks: its
-  per-chip default is declared in `Kconfig` and a variant states its own, which reaches
-  the linker script as a `-D` (`arch/CMakeLists.txt`).
+- **`.userheap`** -- the composition's `heap:`, carved *below* `__kickos_ram_start` by
+  `stm32f302.ld` through the `KICKOS_USER_HEAP_SIZE` link symbol, so it trades against the
+  arena 1:1.
 - **arena** -- `[__kickos_ram_start, __kickos_ram_end)`
   (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`), the MPU-governed user-RAM pool.
   **Every thread stack comes from here**, as does every `kos_ram_alloc`.
@@ -1630,9 +1628,9 @@ lives in the linker script and not in CMake.
 **Before trimming the demand, price the sections carved between `.bss` and the arena
 base.** Each has a different owner and the demand side may be blameless:
 
-- `.userheap`, sized by `KICKOS_USER_HEAP_SIZE`, sits immediately below
+- `.userheap`, sized by the composition's `heap:`, sits immediately below
   `__kickos_ram_start`, so every byte of heap is a byte of arena. This was the WHOLE
-  deficit on `bluepill-c8`: the `CHIP_STM32F103` default was 8192, inherited from its
+  deficit on `bluepill-c8`: its heap was 8192, inherited from its
   128 KiB `stm32f411` sibling, on a part with 20 KiB of SRAM. Its thread provisioning
   (`KICKOS_MAX_THREADS 2` x 2048) was never the problem.
 - the `.appdata` enforcement window on an enforcing chip. `frdmk64f` WITHOUT the MPU has
@@ -1668,8 +1666,8 @@ FAILS at `-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactl
 where `f302nucleo-st` does not because its 8,192 B root and pool alignment quantizes the
 per-slot `.bss` away, NOT because its base is fixed: the base moves with `.bss` across slot
 counts (`0x20014340` at 8, `0x20015580` at 11) and both round to one root base.
-`bluepill-c8-st`, whose defconfig states heap 0, measures **+2,048 B** on the pool assert and
-+6,144 B on the boot one, and at `-DKICKOS_USER_HEAP_SIZE=8192` the POOL assert fires on every
+`bluepill-c8-st`, at heap 0, measures **+2,048 B** on the pool assert and
++6,144 B on the boot one, and at a heap of 8192 the POOL assert fires on every
 image while the BOOT assert, which the linker script evaluates FIRST, fires on the fattest
 selftest image alone -- that image's 6,144 B of boot slack being the only one under the 8 KiB
 carve. That sweep dates to the three-image split, where the fattest was `selftest_p3`. Which shape a board has is what decides whether a slot costs one stride or more, so
@@ -1677,11 +1675,10 @@ read the shape before predicting a count.
 
 ### The heap is a per-board profile, not a requirement
 
-`KICKOS_USER_HEAP_SIZE 0` is a supported profile, not a broken one. Newlib falls back to
+A zero `heap:` is a supported profile, not a broken one. Newlib falls back to
 unbuffered stdio when the stream-buffer `malloc` fails, so `printf` and `std::cout` still
-emit with no heap. The in-tree precedents are `nrf51`, whose chip default is heap 0
-(`Kconfig`, `KICKOS_USER_HEAP_SIZE`) for the full-newlib `microbit` build, and
-`bluepill-c8-st`. Under the nano profile heap 0 holds only for code that never calls a
+emit with no heap. The in-tree precedents are the full-newlib `microbit` build, whose
+composition states heap 0, and `bluepill-c8-st`. Under the nano profile heap 0 holds only for code that never calls a
 newlib function whose per-thread state nano builds on the heap (`strtok`,
 `localtime`/`asctime`, `rand`, `strtod` and the other floating-point conversions): the
 first such call fails a newlib assertion. Nano `microbit` therefore defaults to a 1 KiB
@@ -1693,9 +1690,8 @@ apps are written against `printf`/`std::cout` rather than `kos_*` requires those
 work, not a heap.
 
 So the SRAM floor is **16 KiB with a static-allocation profile**, and the carve is a
-decision a variant can state, over a chip default declared in `Kconfig`: 1024 on nano
-`microbit`, 0 on `nrf51` otherwise, 2048 on `stm32f302` and `stm32f103`, 8192 on
-`stm32f411`, 16384 everywhere else.
+decision a composition states in its `heap:`: 1024 on nano
+`microbit` and 2048 on `bluepill-c8`.
 
 A part at the floor **plus MPU enforcement** is tighter still, because enforcement costs
 RAM of its own: region descriptors, per-domain data in `g_instance`
@@ -1767,11 +1763,10 @@ Four readings, and they are the point of the section:
   configure line (see `boards.md`, *The selftest ships as SEVERAL images on five boards*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
-  because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`
-  default inherited from its 128 KiB `stm32f411` sibling; at 2K (and 0 on the `st`
-  variant, which carries the fleet's heaviest static image) the same part seats both of
-  `hello`'s threads with room over. `microbit` carves heap 0 -- the `CHIP_NRF51` default,
-  stated in `Kconfig` and not in the board -- and has the roomiest small-board arena in the
+  because its heap carve was 8K against f302's 2K. That 8K was inherited from its
+  128 KiB `stm32f411` sibling; at 2K (and 0 on the `st` variant, which carries the
+  fleet's heaviest static image) the same part seats both of
+  `hello`'s threads with room over. `microbit` carves heap 0 and has the roomiest small-board arena in the
   fleet; it is no longer the same part class, that board having moved to a 32 KiB
   nRF51822. **The heap carve, not the part's
   SRAM, is usually what binds.** (`bluepill-c8` is build-only, so every N here is a model
@@ -1811,22 +1806,14 @@ deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on 
 root stack. That is the pattern to copy on a tight part: measure the watermark, then
 provision, rather than provisioning for comfort.
 
-The cap table is the one row that is NOT a board knob. `KICKOS_MAX_HANDLES` is summed at
-configure from four declarations (`cmake/cap_table.cmake`) -- the kernel's reserved range,
-the chosen service list's `RETAINED_CAPS`, the app's declared peak
-(`kickos_declare_app_capabilities`'s `peak` argument), and the peak concurrent INBOUND
-reply capabilities a task's table must hold, declared by whoever owns the protocol's
-fan-in: `INBOUND_REPLY_CAPS` on `kickos_add_board_provider`, the `reply` argument to
-`kickos_declare_app_capabilities`, combined as the widest, and **0 by default** -- nothing
-in tree declares it. The total is checked against the board's
-`KICKOS_CAP_TABLE_SUPPLY`, which is all a board states. A demand that exceeds supply is a
-configure FATAL naming every term; a board too small for an app's OPTIONAL peak still
-configures, and the arms that wanted those slots reclaim and skip. Beneath the sum the
-grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1` RAISES a width that falls below it instead
-of refusing it, and refuses only when the floor itself exceeds the board's supply.
+The cap table is the one row that is NOT a board knob. A board states only
+`KICKOS_CAP_TABLE_SUPPLY`, and `KICKOS_MAX_HANDLES`, root's width, is exactly that supply
+(`cmake/cap_table.cmake`); admission counts what the init holds against it. Every spawned
+child gets the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`, and the configure refuses a
+board whose supply is below it.
 `cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
 `KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) because `tests/unit/captable` substitutes a
-width the sum never produces. A build that misses the generated `kickos/config/cap_width.h`
+width no board configures. A build that misses the generated `kickos/config/cap_width.h`
 does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc`, `t_call_infoless_revert`), and `mutex_chain_boost`,
@@ -1849,7 +1836,7 @@ branch).
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
 (18 ok / 41 not ok / 11 skipped), `sem_destroy` then failed on a semaphore **handle**
-against `KICKOS_MAX_SEMAPHORES 4` (`t_sem_destroy`); adding `KICKOS_USER_HEAP_SIZE=0` and
+against `KICKOS_MAX_SEMAPHORES 4` (`t_sem_destroy`); adding a zero heap and
 `KICKOS_MAX_SEMAPHORES=6` is what took the run to 0 `not ok`. **A spawn failure is not
 evidence that the thread pool is the limit; check the arena first, and expect the next pool
 behind it.** The runtime cannot tell you which one you hit -- `-KOS_ENOMEM` covers both --
@@ -1873,7 +1860,7 @@ slope carries and the base does not. **Do not correct them with the 424-byte slo
 slope includes a `Domain` per slot, and seating root added a pool slot WITHOUT one, so the
 slope overshoots the real growth by roughly 165 bytes. They were also taken at a 9-slot cap table,
 a width no board in the fleet configures: `KICKOS_MAX_HANDLES` is not a per-chip knob, it
-is the summed total described above, and part of the per-thread cost is the cap run itself,
+is the board's supply described above, and part of the per-thread cost is the cap run itself,
 so neither the base nor the slope carries over to a table of another width unmeasured.
 
 Seating root in the pool itself cost almost nothing, measured on four boards. Static RAM is
@@ -1896,7 +1883,7 @@ Measured, not assumed -- but measured BEFORE the `124b68c` right-size, which too
 therefore the older link; the METHOD is what to reuse, and step 5 of the checklist is how.
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
 (then in `cmake/presets/arm.json`; the cap table was 9 slots wide, a width no
-board configures today -- `KICKOS_MAX_HANDLES` is summed at configure and no chip header
+board configures today -- `KICKOS_MAX_HANDLES` is the board's supply and no chip header
 states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336. **That figure and the
 `.data`/`.bss` breakdown below it hold one pool slot fewer than the same knob value gives
 today**, for the reason stated above, and the 424-byte slope must NOT be used to correct
@@ -1928,8 +1915,8 @@ take. That is **a 32 KiB part**, and an enforcing chip pays an `.appdata` window
 besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
 the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
-capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the full summed
-demand of 10: 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
+capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the demand
+of 10: 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
 optional. Only `bluepill-c8` and `f302nucleo` still supply 7
 (`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
 so on that part the cap table is no longer what binds.
@@ -2012,7 +1999,7 @@ Given a new part's flash and SRAM, in order:
    and 16 threads, sized for the host sim. If the board ships its own header it must
    restate EVERY knob it needs -- `boards/<board>/include` replaces the chip's header
    outright and does not layer over it.
-3. **Decide the heap carve first, not last.** `KICKOS_USER_HEAP_SIZE` comes out of the
+3. **Decide the heap carve first, not last.** The composition's `heap:` comes out of the
    arena 1:1, and on a 16-20 KiB part it is routinely the difference between one thread
    and four. Zero is a supported profile: it costs stdio buffering and `malloc`, not
    `printf`/`std::cout` -- see *The heap is a per-board profile* above.
@@ -2027,7 +2014,7 @@ Given a new part's flash and SRAM, in order:
 6. **Compute N** = `floor((arena - align(idle) - align(root)) / align(user))`, then
    `N = min(N, KICKOS_MAX_THREADS)`. That is how many threads the board will host.
    Subtract any `kos_ram_alloc` the app makes first.
-7. **If N is short**, in decreasing order of yield: cut `KICKOS_USER_HEAP_SIZE`, cut
+7. **If N is short**, in decreasing order of yield: cut the composition's `heap:`, cut
    `KICKOS_USER_STACK_SIZE`, cut `KICKOS_MAX_THREADS` (~424 bytes of static RAM each),
    then the other pools. Do **not** raise `KICKOS_MAX_THREADS` to fix a spawn failure
    without checking the arena: on a tight part the arena is usually the binding term,
@@ -2453,7 +2440,7 @@ site):
   is correct either way, and it is what the earlier Debian arm-none-eabi toolchain
   (picolibc) *required*, since picolibc's spec injected a default `-T picolibc.ld`
   unless it saw a driver-level `-T` (a `-Wl,-T` was invisible to that check and the
-  two scripts collided at address 0). Keep the driver-level form. (See the `KickOS::kickos`
+  two scripts collided at address 0). Keep the driver-level form. (See the `KickOS::kernel`
   interface `target_link_options`.)
 - **QEMU's DWT cycle counter is frozen.** `arch_clock_now` has NO armv7m fallback at
   all -- it is a required per-chip definition (`arch_armv7m.cc`, "Monotonic clock: NO

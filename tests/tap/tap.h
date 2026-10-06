@@ -11,7 +11,7 @@
 // Output route: every line goes through one publish-aware writer (stdout cap
 // index 0, kernel-console fallback; see tap.cc emit()). Test bodies must use
 // tap::diag/tap::skip, not kos::print: the kernel console drops everything once a
-// board's service list hands the UART to a userspace driver.
+// composition hands the UART to a userspace driver.
 
 #ifndef KICKOS_TESTS_TAP_TAP_H
 #define KICKOS_TESTS_TAP_TAP_H

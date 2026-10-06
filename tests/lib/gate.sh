@@ -566,10 +566,8 @@ package_names() { # <kickos-build> <kickos-source> <cmake> <prefix> <scratch dir
     _pn_prefix="$4"
     _pn_dir="$5"
     shift 5
-    _pn_providers="$(sed -n 's/^KICKOS_GROUP_PROVIDERS:INTERNAL=//p' "$_pn_build/CMakeCache.txt")"
-    [ -n "$_pn_providers" ] || fail "$_pn_build/CMakeCache.txt states no KICKOS_GROUP_PROVIDERS"
     "$_pn_cmake" -S "$_pn_src/tests/lib/package_names" -B "$_pn_dir" -G Ninja \
-        -DCMAKE_PREFIX_PATH="$_pn_prefix" -DKICKOS_EXPECT_PROVIDERS="$_pn_providers" "$@" \
+        -DCMAKE_PREFIX_PATH="$_pn_prefix" "$@" \
         >"$_pn_dir.log" 2>&1 || {
         sed -n '/CMake Error/,$p' "$_pn_dir.log" | sed -n '1,20p' >&2
         fail "an out-of-tree configure does not find the package's KickOS:: names (see above)"

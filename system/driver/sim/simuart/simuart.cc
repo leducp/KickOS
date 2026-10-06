@@ -11,15 +11,12 @@
 // the ONLY thing that wakes the IRQ thread. Nothing here exercises a TX-empty source that
 // raises only on a transition, because a host write cannot fail to raise.
 
-#include <kickos/sys/service.h>
 
 #include <kickos/driver/declared/simuart.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/uart_service.h>
-
-#include "irq.h"
 
 #include <stddef.h> // offsetof
 #include <stdint.h>
@@ -34,13 +31,8 @@ namespace declared = kickos::driver::declared::simuart;
 
 namespace
 {
-    // Nothing but the doorbell raises it.
-    constexpr int SIMUART_LINE = kickos::sim::irq::UART_IRQ;
-
     // Bytes the modelled device accepts on a pass that finds it ready.
     constexpr uint32_t FIFO_DEPTH = 32;
-
-    kos_cap_t g_uart_ep = KOS_CAP_NONE;
 
     // The per-chip class, sim edition. Every method here may be entered ONLY from the IRQ
     // thread: on a real chip they touch the granted register window, which has exactly
@@ -105,7 +97,7 @@ namespace
 
     void uart_irq_thread(void* arg)
     {
-        uart::Shared* sh = static_cast<uart::Shared*>(drv::thread_start(arg));
+        uart::Shared* sh = static_cast<uart::Shared*>(arg);
         LoopUart dev;
         dev.sh = sh;
         (void)dev.configure(115200u, 8u, KOS_UART_PARITY_NONE, 1u);
@@ -114,12 +106,12 @@ namespace
 
     void uart_service_thread(void* arg)
     {
-        uart::Shared* sh = static_cast<uart::Shared*>(drv::thread_start(arg));
+        uart::Shared* sh = static_cast<uart::Shared*>(arg);
         uart::serve_loop(sh); // parks in recv; returns when the endpoint dies
         kos_exit(0);
     }
 
-    int block_init(void* blk, struct kos_service_cfg const*)
+    int block_init(void* blk, struct kos_driver_instance const*)
     {
         uart::shared_init(static_cast<uart::Shared*>(blk));
         return 0;
@@ -134,25 +126,23 @@ namespace
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[simuart] ",
-        // No guard: mmio_base is 0 and no thread takes a window, so there is nothing to pin
-        // the cfg against.
+        // No guard: no thread takes a window.
         .expected_base = 0,
         .block_size = declared::k_declared.block_size,
         .block_flags = 0,
         .ready_offset = uart::KOS_UART_READY_OFFSET,
         .ep_posture = declared::k_declared.ep_posture, // no kos_console_publish, no handover tail
-        .svc_kind = KOS_SVC_UART,                      // not KOS_SVC_CONSOLE
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
         // EDGE, and leg L5 requires it: the IRQ thread holds no window here, so it could not
         // clear a peripheral flag if there were one.
-        .lines = {{SIMUART_LINE, KOS_IRQ_EDGE}},
+        .lines = {{KOS_IRQ_EDGE}},
         .threads = {{.entry = uart_irq_thread,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .window_grant = false, // mmio_base is 0 and there is no window
+                     .window_grant = false,
                      .cap_count = 2,
                      .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
                               {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},
@@ -179,20 +169,9 @@ namespace
 extern "C"
 {
 
-// One-shot: the app takes the handle and delegates a SIGNAL-narrowed copy to each client
-// it spawns.
-kos_cap_t kickos_sim_uart_take_endpoint(void)
+int simuart_start(struct kos_driver_instance* instance)
 {
-    kos_cap_t const ep = g_uart_ep;
-    g_uart_ep = KOS_CAP_NONE;
-    return ep;
-}
-
-int simuart_start(struct kos_service_cfg const* cfg)
-{
-    // Root KEEPS a full-rights cap under RETAIN so it can hand SIGNAL copies to clients;
-    // the driver's service thread gets WAIT only.
-    int const rc = drv::bring_up(k_desc, cfg, &g_uart_ep);
+    int const rc = drv::bring_up(k_desc, instance);
     if (rc != 0)
     {
         return rc;

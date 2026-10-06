@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Semaphore ping-pong and IPC microbenchmarks. The kernel prints its benchmark tables on the
-// kernel console, so benchmark variants select kickos_services_none.
+// kernel console.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

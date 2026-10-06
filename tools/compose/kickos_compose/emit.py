@@ -116,6 +116,7 @@ class Table:
         self.externs = []
         # Each entry symbol's line in the composition, where the task first naming it names it.
         self.extern_lines = {}
+        self.usb_device_console = False
 
 
 def emit(path, manifest_path):
@@ -286,6 +287,8 @@ def build(admitted):
     if admitted.ends.value != "never":
         table.ends_task = index[admitted.ends.value]
     table.init_priority = admitted.init_priority
+    if admitted.stdout != "kernel":
+        table.usb_device_console = admitted.stdout.catalogue.usb_device
     runs = {}
 
     for task in admitted.tasks:
@@ -485,7 +488,7 @@ def render(table, source, composition=None, output="table.c"):
         if composition is not None:
             out.append("#line %d \"%s\"" % (table.extern_lines[symbol], c_string(composition)))
         if kind == "driver":
-            out.append("extern int %s(struct kos_service_cfg const* cfg);" % symbol)
+            out.append("extern int %s(struct kos_driver_instance* instance);" % symbol)
         else:
             out.append("extern void %s(kos_self_t const* self);" % symbol)
     if table.externs and composition is not None:
@@ -629,6 +632,7 @@ def render(table, source, composition=None, output="table.c"):
     out.append("")
     out.append("struct kos_table_header const* const kickos_table = &kickos_table_image.header;")
     out.append("char const kickos_link_one_system_target = 1;")
+    out.append("char const kickos_usb_device_console = %d;" % int(table.usb_device_console))
     return "\n".join(out) + "\n"
 
 

@@ -15,8 +15,3 @@ kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72
                   THREADS rxsciirq:1:default:3:0 service:0:default:2:1 RECEIVER service
                   WINDOWS regs LINES txi rxi NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START rxsci_console_start CONSOLE)
-
-# A service-list provider needs the bring-up declaration, and it lives beside the
-# driver rather than in user/include: nothing outside a provider calls it.
-target_include_directories(kickos_rxsci PUBLIC
-  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")

@@ -19,7 +19,6 @@
 #include <kickos/driver/declared/xmcuart.h>
 #include <kickos/driver/uart.h>
 #include <kickos/sys/driver_service.h>
-#include <kickos/sys/service.h> // kos_service_cfg
 #include <kickos/sys/uart_service.h>
 
 #include <stdint.h>
@@ -49,15 +48,12 @@ namespace
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[xmcuart] ",
-        // No base guard: no vector is claimed by number and uart_usic.cc is genuinely
-        // base-parameterised across the USIC channels, so there is nothing to pin the cfg
-        // against.
+        // No base guard: uart_usic.cc is base-parameterised across the USIC channels.
         .expected_base = 0,
         .block_size = declared::k_declared.block_size, // polled and TX-only: no ring, doorbell or latch
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -92,7 +88,7 @@ extern "C"
 
 void xmcuart_console_driver(void* arg)
 {
-    uintptr_t const win = reinterpret_cast<uintptr_t>(drv::thread_start(arg)); // U0C0 window base
+    uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // U0C0 window base
 
     struct kos_uart_stats stats = {};
     struct kos_uart_config cfg = {};
@@ -121,10 +117,10 @@ void xmcuart_console_driver(void* arg)
     exit(0);
 }
 
-// cfg->prio must be >= every stdout client (D9: rendezvous has no PI).
-int xmcuart_console_start(struct kos_service_cfg const* cfg)
+// The task's priority must be >= every stdout client's (D9: rendezvous has no PI).
+int xmcuart_console_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }
 
 }

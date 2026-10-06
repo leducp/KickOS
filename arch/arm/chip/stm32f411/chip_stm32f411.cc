@@ -312,7 +312,7 @@ namespace
     // The window arch_console_reclaim rewrites. ONE constant: a reclaim reaching outside
     // the window it reports would rewrite registers whose holder was never checked. The
     // USART register file ends at 0x1B (RM0383 sec.19.6.8 Table 88), so this covers every
-    // register that exists on the channel, and it need not equal the service list's grant:
+    // register that exists on the channel, and it need not equal the driver's grant:
     // dev_window_free tests OVERLAP, so any holder able to reach a register below also
     // overlaps this.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::USART2_BASE;
@@ -536,7 +536,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 // Table 1), whose rate clock_init() landed in pclk1_hz, so a userspace UART driver derives
 // its own divisor instead of carrying a copy of the PLL plan. 0 for every other block: a
 // WRONG branch clock silently garbles the wire, so an unknown must not answer with the core
-// clock. USART1/USART6 are APB2 and would need their own entry, which no service list grants.
+// clock. USART1/USART6 are APB2 and would need their own entry, which no composition grants.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     if (base == mmap::USART2_BASE)

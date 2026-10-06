@@ -10,7 +10,6 @@ ignore x86_64 * kickos::driver::bring_up@1/1 reason: userland block initializer 
 ignore x86_64 * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore x86_64 * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore x86_64 * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore x86_64 * kickos_service_list_run@1/1 reason: userland service start callback
 ignore x86_64 * kickos_x86_64_ap_reserve@1/1 reason: firmware page allocator before kernel entry
 ignore x86_64 * kickos_x86_64_floor@1/1 reason: firmware console output before kernel entry
 ignore x86_64 * kickos_x86_64_landed@1/1 reason: kernel boot init-array constructor before scheduler start
@@ -24,7 +23,6 @@ ignore armv8a * kickos::driver::bring_up@1/1 reason: userland block initializer 
 ignore armv8a * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore armv8a * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore armv8a * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore armv8a * kickos_service_list_run@1/1 reason: userland service start callback
 ignore armv8a * tap::run_all@1/2 reason: userland test callback
 ignore armv8a * tap::run_all@2/2 reason: userland test callback
 ignore rv64imac * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
@@ -34,7 +32,6 @@ ignore rv64imac * kickos::driver::bring_up@1/1 reason: userland block initialize
 ignore rv64imac * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore rv64imac * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore rv64imac * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore rv64imac * kickos_service_list_run@1/1 reason: userland service start callback
 ignore rv64imac * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rv64imac * tap::run_all@1/2 reason: userland test callback
 ignore rv64imac * tap::run_all@2/2 reason: userland test callback
@@ -45,7 +42,6 @@ ignore armv7m * kickos::driver::bring_up@1/1 reason: userland block initializer 
 ignore armv7m * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore armv7m * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore armv7m * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore armv7m * kickos_service_list_run@1/1 reason: userland service start callback
 ignore armv7m * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore armv7m * tap::run_all@1/2 reason: userland test callback
 ignore armv7m * tap::run_all@2/2 reason: userland test callback
@@ -56,7 +52,6 @@ ignore armv6m * kickos::driver::bring_up@1/1 reason: userland block initializer 
 ignore armv6m * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore armv6m * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore armv6m * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore armv6m * kickos_service_list_run@1/1 reason: userland service start callback
 ignore armv6m * tap::run_all@1/2 reason: userland test callback
 ignore armv6m * tap::run_all@2/2 reason: userland test callback
 ignore rv32imac * Reset_Handler@1/1 reason: boot init-array constructor before scheduler start
@@ -66,7 +61,6 @@ ignore rv32imac * kickos::driver::bring_up@1/1 reason: userland block initialize
 ignore rv32imac * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore rv32imac * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore rv32imac * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore rv32imac * kickos_service_list_run@1/1 reason: userland service start callback
 ignore rv32imac * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rv32imac * tap::run_all@1/2 reason: userland test callback
 ignore rv32imac * tap::run_all@2/2 reason: userland test callback
@@ -76,7 +70,6 @@ ignore rxv3 * kickos::driver::bring_up@1/1 reason: userland block initializer th
 ignore rxv3 * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore rxv3 * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore rxv3 * kickos_root_entry@1/1 reason: userland app init-array constructor
-ignore rxv3 * kickos_service_list_run@1/1 reason: userland service start callback
 ignore rxv3 * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore rxv3 * rx_reset_handler@1/1 reason: boot init-array constructor before scheduler start
 ignore rxv3 * tap::run_all@1/2 reason: userland test callback

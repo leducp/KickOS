@@ -153,7 +153,7 @@ the same reason.
   accounting close performs, or the last-receiver `EPIPE` wake goes wrong. Keeping the handle argument
   is what leaves that generalisation ABI-free.
 - **REJECTED: declaring the narrow mask as a CMake variable**, one value per build tree while one tree
-  links `selftest` and `stress` against one kernel. It is per executable, `KICKOS_APP_AUTHORITY` in the
+  links `selftest` and `stress` against one kernel. It is per executable, the app authority macro in the
   app's own TU. The narrow runs after the pin map and the service list, so bring-up still holds its
   bits when it needs them.
 - **An app whose `main` returns must keep `AUTH_SYSTEM`**, and the bit is deliberately not forced back
@@ -209,7 +209,7 @@ Two records outlive them:
 - **The argv bug's failure shape, which the sim cannot reproduce.** Reading `argc`/`argv` from a `kmain`
   frame local faults on root's first statement on every enforcing board, the boot stack being outside the
   arena, while the sim's host-stack frame sees nothing. They live in `kickos_init_args` now, deliberately
-  not the init provider's archive, because a build naming its own `KICKOS_INIT_PROVIDER` must not be able
+  not the init provider's archive, because a build naming its own the init-provider cache variable must not be able
   to take away a definition `kmain` references unconditionally. Worse than the bug: test code had already
   worked around it in a comment, and nobody filed it.
 - **The widened panic reclaim gate rests on chip-body idempotence.** The ownership axis records a

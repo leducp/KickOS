@@ -13,19 +13,16 @@
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
-#include "irq.h"
 #include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 
 namespace uart = kickos::uart;
 namespace mmap = kickos::esp32c6::mmap;
-namespace c6irq = kickos::esp32c6::irq;
 
 namespace
 {
     constexpr uart::UartParams k_uart = {
-        .open_fail = "[c6uart] UART0 open refused: source clock, divisor or frame",
         .announce = "[c6uart] device up (IRQ TX/RX)\n",
         .prime = true
     };
@@ -38,4 +35,4 @@ namespace
 //
 // LEVEL: the UART source stays asserted until the driver clears the latch.
 KICKOS_UART_CONSOLE_SERVICE(c6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            c6irq::UART0_TX_LINE, KOS_IRQ_LEVEL);
+                            KOS_IRQ_LEVEL);

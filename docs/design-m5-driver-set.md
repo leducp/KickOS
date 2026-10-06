@@ -46,14 +46,14 @@ Two rows deserve their own reading rather than a count.
 
 ## 3. The finding that matters most: a contract with one consumer, and it is simulated
 
-**`KOS_SVC_UART`, the general bidirectional UART PORT service kind, has exactly one consumer in
+**the UART service kind, the general bidirectional UART PORT service kind, has exactly one consumer in
 the entire tree, and it is a host loopback.** `system/driver/sim/simuart/simuart.cc` is the only
-driver that serves it, through the list in `system/init/sim/service_list_uart.cc`, whose comment
-says "This list deliberately publishes NO console. It is a `KOS_SVC_UART` port", and its device
+driver that serves it, through the list in the sim's UART service list, whose comment
+says "This list deliberately publishes NO console. It is a UART service kind port", and its device
 is host fd 1 with TX fed back into RX.
 
 Every UART driver on real silicon (`mk64f`, `xmc4800`, `stm32f411`, `rx72m`, `esp32c6`, `esp32`)
-runs as `KOS_SVC_CONSOLE` instead. They share the `<kickos/driver/uart.h>` register backend and the
+runs as the console service kind instead. They share the `<kickos/driver/uart.h>` register backend and the
 two-thread `irq_loop`/`serve_loop` framework, so THAT much is silicon-judged. What is not judged is
 the port contract itself: back-pressure with a real producer, baud mismatch, and overrun on a
 controller that can actually overrun.
@@ -62,7 +62,7 @@ controller that can actually overrun.
 against the loopback that is true. What the row does not support is the reading that matters:
 **a gate over a cooperative simulated device does not judge a contract whose hard cases are all
 uncooperative hardware.** This is the same class of finding the KickCAT reality check produced, and
-it is cheap to fix: promote ONE existing silicon UART to a real `KOS_SVC_UART` port.
+it is cheap to fix: promote ONE existing silicon UART to a real UART service kind port.
 
 ## 4. I2C: the empty row is a missing driver, not a missing seam
 
@@ -90,7 +90,7 @@ marshals onto a service endpoint; and a service driver. **That is porting work a
 ABI**, not architecture. The first two have since landed against `design-m5-i2c-seam.md`
 (`user/include/kickos/driver/i2c.h` and the RIICa engine `system/driver/rx72m/i2c_riic.cc`,
 target `kickos_i2c_rxriic`); the proxy and the service driver are still owed, and no driver
-registers `KOS_SVC_I2C` even though the kind is spelled in `system/include/kickos/sys/service.h`.
+registers the I2C service kind even though the kind is spelled in the service header.
 
 Several chips already driven here have an I2C-capable peripheral beside the block the tree already
 drives (`xmc4800`'s USIC and `rx72m`'s SCI are multi-protocol), so the silicon is not the obstacle.
@@ -128,11 +128,11 @@ several chips.
 - **SPI as a service on `stm32f411`.** The register code EXISTS and is proven on silicon; it just
   lives inside a one-off diagnostic app (`user/apps/f411disco/f411spi/`), registered for
   `f411disco` only, so `blackpill` cannot use it despite sharing the chip. Turning it into a
-  `KOS_SVC_SPI` service following `mk64f` and `xmc4800` is a move, not an invention, and it makes
+  the SPI service kind service following `mk64f` and `xmc4800` is a move, not an invention, and it makes
   the SPI seam's implementation count three.
 
 Note also that a UART service EXISTING is not the same as a board USING it: only `frdmk64f` and
-`xmc4800-relax` set `KICKOS_SERVICE_LIST` in their Kconfig at all. Every other board defaults to
+`xmc4800-relax` set the service-list selection knob in their Kconfig at all. Every other board defaults to
 `kickos_services_none`, with the repeated comment "no silicon witness yet". That is a
 default-selection gap, not a driver gap, and it should not be counted as missing work.
 

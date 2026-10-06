@@ -19,7 +19,5 @@ kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc
                   WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START xmcuartirq_console_start CONSOLE)
 
-# The driver header ships beside the driver rather than in user/include, so a service-list
-# provider that links this target reaches it as <kickos/driver/xmcuartirq.h>.
-target_include_directories(kickos_xmcuartirq PUBLIC
+target_include_directories(kickos_xmcuartirq PRIVATE
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")

@@ -633,6 +633,7 @@ drivers:
     posture: retain
     barrier: none
     console: false
+    usb_device: false
     start: xmc_spi0_start
     receiver: bus
     client: [kickos_spi_proxy]
@@ -649,6 +650,7 @@ drivers:
     posture: handover
     barrier: 1
     console: true
+    usb_device: false
     start: xmcuartirq_console_start
     receiver: service
     client: []
@@ -736,7 +738,7 @@ SENSOR_LINES = ("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: r
 PORT_DRIVER = [("drivers:\n", "drivers:\n  portdrv:\n    windows: [regs]\n    lines: []\n    threads:\n"
                 "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
                 "    notifications: 0\n    block: none\n    block_cache: cached\n    posture: retain\n    barrier: none\n"
-                "    console: false\n    start: portdrv_start\n    receiver: io\n    client: []\n")]
+                "    console: false\n    usb_device: false\n    start: portdrv_start\n    receiver: io\n    client: []\n")]
 def com2_driver(device):
     return ("    maps: { /shm/history: ro }\n",
             "    maps: { /shm/history: ro }\n\n  - name: uart\n    driver: portdrv\n    devices: [%s]\n"
@@ -1550,7 +1552,7 @@ K64F_LEDS_ISOLATED = (K64F_LEDS, "# leds\n    accepts: [device_not_isolated]\n")
 BLOCK_DRIVER = ("drivers:\n", "drivers:\n  blkdrv:\n    windows: []\n    lines: []\n    threads:\n"
                 "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
                 "    notifications: 0\n    block: 1024\n    block_cache: uncached\n    posture: retain\n"
-                "    barrier: 1\n    console: false\n    start: blkdrv_start\n    receiver: io\n    client: []\n")
+                "    barrier: 1\n    console: false\n    usb_device: false\n    start: blkdrv_start\n    receiver: io\n    client: []\n")
 K64F_BLOCK_TASK = ("tasks:\n", "tasks:\n  - name: blk\n    driver: blkdrv\n    serves: /svc/blk\n    priority: 9\n")
 K64F_SHARED = ("stdout: kernel\n", "stdout: kernel\nshared:\n  - name: /shm/state\n    size: 16\n    cache: uncached\n")
 K64F_CACHED = [("\ndata_cache: false\n", "\n")]

@@ -257,7 +257,7 @@ before this gate, and three separate reasons they could not get any:
 - The sim's two other console postures do not route through `bring_up` at all, deliberately: the
   host may refuse any given candidate window base, so those postures discover the base BY SPAWNING,
   which a descriptor's single `cfg->mmio_base` cannot express. The comment at
-  `system/init/sim/service_list.cc:151-154` is that reason.
+  the sim's console service list is that reason.
 - No target image can make a syscall fail on demand.
 
 ### 5.2 The shape

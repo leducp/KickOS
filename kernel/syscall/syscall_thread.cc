@@ -1372,34 +1372,4 @@ namespace kickos
         // itself was cancelled, e.g. a task group kill; thread_abort_park handles WAIT_JOIN)
         return static_cast<int>(c->wait_result);
     }
-
-    // Park until the caller is the last live thread; covers a main's grandchildren, which no
-    // handle it holds can name. Root only: it observes threads outside the caller's own spawn
-    // subtree, and it is single-seat, whoever parks here first denying it to everyone else.
-    int thread_wait_last()
-    {
-        Thread* const c = sched::current();
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            if (park_cancel_pending(c))
-            {
-                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
-            }
-            if (not kernel().threads.is_root(c))
-            {
-                return -KOS_EPERM;
-            }
-            if (sched::live_count() <= 1)
-            {
-                return 0; // already the last one: parking here would never be woken
-            }
-            park_queueless(c, WAIT_LIVE_LAST, nullptr);
-            epoch = c->switch_count;
-            sched::reschedule();
-        }
-        wq_confirm_resume(c, epoch);
-        // The exit sweep releases this park only when the caller is the last live thread.
-        return 0;
-    }
 }

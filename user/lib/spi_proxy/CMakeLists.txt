@@ -8,7 +8,7 @@
 # no shared state (each call frames a request on the caller's stack), so no .appdata home is
 # needed.
 #
-# NOT in any board's service-list closure and NOT in the kickos link group: it defines the same
+# NOT in the kickos link group: it defines the same
 # four symbols a local engine does, so the selected one must precede that group on the link
 # line, and a group member cannot. system/CMakeLists.txt does the selecting.
 add_library(kickos_spi_proxy STATIC spi_proxy.cc)

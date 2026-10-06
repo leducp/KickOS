@@ -182,7 +182,7 @@ false for that board; section 10 carries the sweep.
 - **A contiguous per-task run with a task-relative index.** Required by the reserved index plane,
   and it rests on **one** seated index, not two. `KOS_CAP_STDOUT` is 0 in every task and is genuinely
   seated -- `cap_install_defaults` and `cap_seat_stdout` write it, and
-  `system/init/common/default_init_run.cc`, `user/include/kickos/sys/driver_service.h` and
+  the default init's run source, `user/include/kickos/sys/driver_service.h` and
   `user/apps/common/drvdeath/main.cc` read it. `KOS_CAP_CLOCK` at index 1 has no reader that names
   it by that constant, but it is written: `KOS_SPAWN_DELEGATED_CAP0` is 1 and `cap_install_at`
   rejects only index 0, so every DEFAULTED spawn grant seats index 1 -- which is the aliasing
@@ -403,7 +403,7 @@ declarations, each made by whoever knows the fact:**
 
 - **the kernel's reserved indices** -- a constant, `KICKOS_CAP_FIRST_DYNAMIC`;
 - **what the chosen service list retains for the life of the image**, declared by the service-list
-  target. This is *not* a board property: `KICKOS_SERVICE_LIST` is a `CACHE STRING` with a per-board
+  target. This is *not* a board property: the service-list selection knob is a `CACHE STRING` with a per-board
   default (root `CMakeLists.txt`), so it is a per-image choice, and one board has several service
   lists that retain different amounts;
 - **the app's peak concurrent capabilities**, declared by the app's build, via

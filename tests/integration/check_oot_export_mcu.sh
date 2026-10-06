@@ -139,22 +139,6 @@ grep -q "required symbol [^ ]*kickos_link_one_system_target. not defined" "$TMP/
   || fail "the KickOS::kernel link failed without naming kickos_link_one_system_target: \
 $(sed -n '1,6p' "$TMP/nosystem.log" | tr '\n' ' ')"
 
-# An image reaching KickOS::kernel through a library of its own and linking an old leaf
-# besides would define the heap size twice, and is refused at configure.
-echo "== a link reaching KickOS::kernel and an old leaf is refused =="
-NINJA_PROBE="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$TMP/names/CMakeCache.txt")"
-if "$CMAKE" -S "$KICKOS_SRC/tests/lib/package_names" -B "$TMP/mixed" -G Ninja \
-    -DCMAKE_MAKE_PROGRAM="$NINJA_PROBE" -DCMAKE_TOOLCHAIN_FILE="$TC" \
-    -DCMAKE_PREFIX_PATH="$TMP/prefix" \
-    -DKICKOS_EXPECT_PROVIDERS="$(sed -n 's/^KICKOS_GROUP_PROVIDERS:INTERNAL=//p' "$KICKOS_BUILD/CMakeCache.txt")" \
-    -DKICKOS_PROBE_MIXED_LEAVES=ON >"$TMP/mixed.log" 2>&1; then
-  fail "an image reaching KickOS::kernel and KickOS::kickos_cxx configured"
-fi
-# CMake wraps a message, so the words are matched across its lines.
-tr -s ' \n' '  ' < "$TMP/mixed.log" | grep -q 'would each define KICKOS_USER_HEAP_SIZE' \
-  || fail "the mixed-leaf configure failed for another reason: \
-$(sed -n '/CMake Error/,$p' "$TMP/mixed.log" | sed -n '1,6p' | tr '\n' ' ')"
-
 echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS_BOARD) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \

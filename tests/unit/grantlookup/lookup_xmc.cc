@@ -17,15 +17,15 @@
 extern "C"
 {
 
-int xmc_spi0_start(struct kos_service_cfg const* cfg)
+int xmc_spi0_start(struct kos_driver_instance* instance)
 {
-    (void)cfg;
+    (void)instance;
     return 0;
 }
 
-int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
+int xmcuartirq_console_start(struct kos_driver_instance* instance)
 {
-    (void)cfg;
+    (void)instance;
     return 0;
 }
 

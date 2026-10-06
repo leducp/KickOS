@@ -13,19 +13,16 @@
 #include <kickos/sys/uart_console_desc.h>
 #include <kickos/sys/uart_service.h>
 
-#include "irq.h"
 #include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 
 namespace uart = kickos::uart;
 namespace mmap = kickos::esp32::mmap;
-namespace lx6irq = kickos::esp32::irq;
 
 namespace
 {
     constexpr uart::UartParams k_uart = {
-        .open_fail = "[lx6uart] UART0 open refused: divisor read-back or frame",
         .announce = "[lx6uart] device up (IRQ TX/RX)\n",
         .prime = true
     };
@@ -40,4 +37,4 @@ namespace
 // LEVEL: CPU interrupt 13 is level-triggered (TRM Table 8.3-2) and the UART latch stays set
 // until the driver clears it.
 KICKOS_UART_CONSOLE_SERVICE(lx6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            lx6irq::CONSOLE_TX_LINE, KOS_IRQ_LEVEL);
+                            KOS_IRQ_LEVEL);

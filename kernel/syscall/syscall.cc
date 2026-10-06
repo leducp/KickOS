@@ -677,10 +677,6 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 task_slay(static_cast<kos_task_t>(a0), static_cast<uint32_t>(a1)));
         }
-        case KOS_SYS_WAIT_LAST:
-        {
-            return static_cast<uint64_t>(thread_wait_last());
-        }
         case KOS_SYS_EXIT:
         {
             Thread* c = sched::current();

@@ -19,23 +19,17 @@
 #ifndef KICKOS_DRIVER_RX72M_RXSCI_H
 #define KICKOS_DRIVER_RX72M_RXSCI_H
 
-#include <kickos/sys/service.h> // kos_service_cfg
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    // Call ONCE from a service list before any client runs. Needs AUTH_MEMORY,
-    // AUTH_CONSOLE and AUTH_IRQ.
-    //
-    // `cfg` must be KOS_SVC_CONSOLE with mmio_base the SCI6 base. cfg->prio is the SERVICE
-    // thread priority and must sit at or above every stdout client: a rendezvous has no
-    // priority inheritance. The IRQ thread and the RX relay run at cfg->prio + 1. cfg->hz
-    // is the requested baud; 0 keeps the divisor the kernel console left.
-    //
-    // Returns 0, or -1 with the console reclaimed by the kernel.
-    int rxsci_console_start(struct kos_service_cfg const* cfg);
+    struct kos_driver_instance;
+
+    // The driver's START. The IRQ thread and the RX relay run one priority above the task's,
+    // which must sit at or above every stdout client's: a rendezvous has no priority
+    // inheritance. Returns 0, or -1 on any failure.
+    int rxsci_console_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

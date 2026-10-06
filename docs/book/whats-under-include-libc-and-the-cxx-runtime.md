@@ -166,16 +166,16 @@ freestanding C++, next), but never the reverse.
 C++ has the same freestanding/hosted split as C, and KickOS uses it as the axis of a
 deliberate cost decision.
 
-- **Freestanding C++ is the default, on every arch, at zero overhead.** Kernel, arch,
-  lib, and every plain app compile `-fno-exceptions -fno-rtti` and link `-nostdlib++`
-  (the exact set is `KICKOS_FREESTANDING_CXX_FLAGS` in `cmake/kickos.cmake`:
+- **The kernel and the libraries are freestanding C++, at zero overhead.** They compile
+  `-fno-exceptions -fno-rtti` and link `-nostdlib++` (the exact set is
+  `KICKOS_FREESTANDING_CXX_FLAGS` in `cmake/kickos.cmake`:
   `-fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit`). You get
   classes, templates, RAII, constexpr -- the whole *language* minus the two features
   that need a runtime. No `.eh_frame`, no unwind tables, no libsupc++, no libstdc++.
   The freestanding subset of the headers (`<type_traits>`, `<utility>`, `<array>`, ...)
   is still available because it needs no runtime.
-- **Full C++ is a per-app opt-in, and it is not free.** An app that links `KickOS::kickos_cxx`
-  compiles its C++ TUs `-fexceptions -frtti` and *drops* the `-nostdlib++`, so the toolchain's
+- **An app is full C++, and it is not free.** An app compiles its C++ TUs
+  `-fexceptions -frtti` and *drops* the `-nostdlib++`, so the toolchain's
   own `libstdc++`/`libsupc++` join the link. Now you have exceptions, RTTI, and the STL
   -- and you pay for them: the EH/unwind tables (`.eh_frame` and `.gcc_except_table` on
   DWARF arches, `.ARM.exidx`/`.ARM.extab` on ARM) run **~10-15 KiB** of read-only data,
@@ -183,19 +183,16 @@ deliberate cost decision.
   `std::to_string`) drags it in. That cost is libc-independent -- it is the price of the
   feature, not of a brand.
 
-The plumbing that flips between the two is which target the app links. The exported
-package ships its leaves over a posture-neutral `KickOS::kickos_core`: an app links
-`KickOS::kickos` for the freestanding default (`-fno-exceptions -fno-rtti`, `-nostdlib++`) or
-`KickOS::kickos_cxx` for full C++ (`-fexceptions -frtti`, `libstdc++`/`libsupc++` kept), and
-`KickOS::kernel` is full C++ too, with no init provider, service list or pin map in its link. A
-misspelled leaf is a hard link error, not a silent freestanding downgrade. The kernel and
+The plumbing is the one target an app links: `KickOS::kernel`, full C++ (`-fexceptions
+-frtti`, `libstdc++`/`libsupc++` kept) on every board, with no init in its link; the app
+also links a system target that carries the init. The kernel and
 libs are clamped freestanding directly via `kickos_apply_freestanding()` and are never
 consumers.
 
 ## The cross-libc trap: never host toolchain C++ on your own libc
 
 Here is the mistake this layering is built to avoid. It is tempting to write your *own* small
-libc (KickOS has one, for the freestanding default) and then link the *toolchain's*
+libc (KickOS has one, for its own freestanding code) and then link the *toolchain's*
 `libstdc++` on top of it -- one libc to maintain, full C++ for free. It does not work,
 and the reason is instructive.
 
@@ -314,8 +311,8 @@ Under per-task MPU isolation (Chapter 7), one extra fact matters: the C++ runtim
 **writable state must land in a region the isolated thread was granted**, while its
 read-only tables come along for free. An unprivileged thread running the full runtime --
 exceptions, RTTI, the STL all live -- reaches all of it only because every writable
-runtime global was placed inside one of its granted regions; a full-C++ app (linking
-`KickOS::kickos_cxx`) runs out of its own granted regions with the protection unit enforcing on
+runtime global was placed inside one of its granted regions; an app
+runs out of its own granted regions with the protection unit enforcing on
 every access.
 
 - **Writable, must be in the granted data region:** the libc heap arena, the

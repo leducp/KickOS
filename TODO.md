@@ -1021,7 +1021,7 @@ G-06 lands as a named configure refusal of the fastpath above one kernel core.
 
 - [x] **G-09, G-10: A SWEEP TOOL NOBODY CALLS, A FIGURE STATED TWICE WITH NOTHING TYING THE
       COPIES, AND A CONTEXT FILE THAT NAMES ONE FLEET-WIDE DOC GATE OF FIVE.**
-      `tools/sweep_service_lists.sh`; `nrf51.ld` 26 vs `cmake/kickos.cmake` 541;
+      the service-list sweep tool; `nrf51.ld` 26 vs `cmake/kickos.cmake` 541;
       `CONTEXT.local.md`. `sweep_service_lists.sh` is referenced by nothing in the tree. The nrf51
       32K SRAM figure is stated in both the linker script and the CMake file with no shared symbol
       and no gate reading both. Five fleet-wide gates read `docs/` (`doc_names`, `ascii`, `spdx`,
@@ -2640,8 +2640,8 @@ reason, 310 lines out of the root and 319 into a module. Measured totals so far:
       or `console_thread`, so the merged loop -- the arm every published console actually parks
       in -- has no automated execution coverage at all. What does execute is `serve_one`, in
       process, through the selftest's `uart_service` arm, and `serve_loop` through the sim
-      loopback. On the USB side the gap is total: `usbcdcwit` is built by no default
-      configuration and needs a host to enumerate the device.
+      loopback. On the USB side the gap is total: `usbcdcwit` needs a host to
+      enumerate the device.
 
 - [x] **`uart_lx6.cc` / `uart_c6.cc` SHARE 0.68 CONTAINMENT: THE SAME DRIVER BODY FOR TWO IP
       REVISIONS.** `system/driver/esp32/lx6uart/uart_lx6.cc` and
@@ -4407,7 +4407,7 @@ the three that have no fastpath and the declaration really is conditional.
       `kernel/amp/ampmap.cc` 25 counts a list with no declared bound. **One entry of this sweep was
       NOT a keeper and is lifted out of this record into M8.4**: `KICKOS_DOORBELL_CORES` refusing
       nothing at configure is a defect, not an assertion worth preserving.
-      `system/init/sim/service_list_uart.cc` 133 pins a byte offset a descriptor hands the kernel.
+      the sim's UART service list 133 pins a byte offset a descriptor hands the kernel.
 
 - **RECORD, not a task: NEGATIVE RESULTS, so neither sweep is repeated.** The
       ISA-macro-in-an-ISA-directory shape (`__aarch64__`, `__riscv`, `__XTENSA__`, `__RX__`,
@@ -5415,7 +5415,7 @@ owed.
       pass -- which is the whole reason it was left rather than fixed inside a branch three audit
       passes had cleared. Direction: `rev-parse HEAD^{tree}`, one line in each tool, with the
       dirty-tree cksum kept as it is. Anytime; attached to no stage.
-      **LANDED, and it is THREE tools rather than two**: `tools/sweep_service_lists.sh` carries the
+      **LANDED, and it is THREE tools rather than two**: the service-list sweep tool carries the
       identical construct under the identical comment. All three key on the tree object, so a
       rewritten commit reuses the preset passes it already recorded.
       **AND THE DIRTY-TREE HALF WAS NOT CONTENT-ADDRESSED EITHER.** `git status --porcelain` prints
@@ -5465,9 +5465,9 @@ wrapped. The kernel may change where the work needs it, a wrong errno for instan
 it is not the point.
 
 **WHAT M10 DELETES, SO THAT ONE WAY IS LEFT.** The per-board `kos_service_list` arrays and the
-`kos_service_cfg` kinds they carry. The per-board pin-map tables. The `KICKOS_SERVICE_LIST` and
-`KICKOS_BOARD_PINMAP` Kconfig selections. `KICKOS_APP_AUTHORITY` and
-`system/init/common/app_authority_default.cc`. The bring-up choreography apps re-roll by hand, of
+`kos_service_cfg` kinds they carry. The per-board pin-map tables. The service-list selection knob and
+pin-map Kconfig selections. The app authority macro and
+its default definition's source file. The bring-up choreography apps re-roll by hand, of
 which `user/apps/f411disco/f411spi/main.cc` and `user/apps/xmc4800-relax/xmcssc/main.cc` are the
 worked examples. Line numbers claimed by number in packaged drivers. M10.0 confirms the list; the
 milestone does not close while any of them still composes a system.
@@ -5623,8 +5623,8 @@ milestone does not close while any of them still composes a system.
       `docs/design-m10-composition.md`'s Kconfig split: three knobs are userspace and move or go,
       and the root and default stacks stay kernel after all, for the reasons given there. Kconfig configures the
       kernel and the composition configures userspace (maintainer, 2026-09-28). Userspace facts in
-      kernel clothing today: `KICKOS_SERVICE_LIST`, `KICKOS_BOARD_PINMAP`,
-      `KICKOS_USER_HEAP_SIZE` (the heap the linker carves) and the `KICKOS_INIT_PROVIDER` CMake
+      kernel clothing today: the service-list selection knob, the pin-map selection knob,
+      `KICKOS_USER_HEAP_SIZE` (the heap the linker carves) and the init-provider CMake
       cache entry. `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE`, first read as
       userspace, stay kernel: the first is the stack a runtime spawn defaults to, the second the
       init's own.
@@ -5887,9 +5887,10 @@ milestone does not close while any of them still composes a system.
       (`examples/oot-app`, `examples/oot-mcu-app`; **DONE AT M10.5.6**, their gates running them
       where an emulator runs). Move every board and app onto compositions (the common apps but the
       selftest and `ampping`: **DONE AT M10.5.10**), packaged drivers taking their lines from the
-      composition rather than by number, and delete the mechanisms listed above. The four apps whose
-      child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) declare their ending
-      explicitly (**DONE AT M10.5.10**, `ends: main`). Run the fleet sweep and the silicon witnesses
+      composition rather than by number, and delete the mechanisms listed above (**DONE AT
+      M10.5.13**). The four apps whose child never exits (`initdemo`, `tele_pingpong`,
+      `drvdeath`, `rootfault`) declare their ending explicitly (**DONE AT M10.5.10**, `ends:
+      main`). Run the fleet sweep and the silicon witnesses
       against the result. Owed: esp32-wroom-smp silicon selftest (5.14), the witness `lx6smp`'s
       deletion in M10.5.11 rests on (`S32C1I` from both cores, `PRID` per core); its capture is
       named in `docs/reference/boards.md`.
@@ -6391,7 +6392,7 @@ survives is below; everything else was re-verified fixed against tree `82fa51f`.
       thread pool, both `-KOS_ENOMEM`, so it wants its own measurement. M4.7.7 moved the number
       from 2 to 1 by seating root in the pool, which did not touch this margin: the total
       `KCAP_RUN_COUNT` is unchanged.
-- [ ] **The out-of-tree capability WARNING has no gate.** `kickos_declare_app_capabilities` warns
+- [x] **The out-of-tree capability WARNING has no gate.** **DONE AT M10.5.13**: the declaring function and its warning are deleted. It warned
       when a declaration cannot be honoured (`cmake/cap_table.cmake:137-144`), but neither
       `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` calls it, so
       `tests/integration/check_oot_export.sh` and `check_oot_export_mcu.sh` never invoke it.
@@ -6421,12 +6422,12 @@ to all 20.
       bool); `CMakeLists.txt:92-146` translates a bare `-D` into a `CONFIG_*` request over its own
       lists; nothing compares the two. A knob in the fragment but not the translation is one the
       fragment SILENTLY OVERWRITES -- that shape has now bitten three times (the posture, the five
-      booleans, and `KICKOS_SERVICE_LIST`/`KICKOS_BOARD_PINMAP`, whose omission reddened four sim
+      booleans, and the service-list selection knob/the pin-map selection knob, whose omission reddened four sim
       gates). `tests/static/check_kconfig_gen.sh:51` drives `tools/kconfig/genconfig.py` DIRECTLY, so the CMake
-      translation never executes under any gate; its only round-trip leg is `KICKOS_SERVICE_LIST`
-      (`:149-152`), there is none for `KICKOS_BOARD_PINMAP`, and no leg tests a provisioning
+      translation never executes under any gate; its only round-trip leg is the service-list selection knob
+      (`:149-152`), there is none for the pin-map selection knob, and no leg tests a provisioning
       integer accepted as an override or a boolean forced to `n` against a defconfig that sets it
-      `y`. The only real exercise of the translation is `-DKICKOS_SERVICE_LIST=` in the four sim
+      `y`. The only real exercise of the translation is an explicit service-list selection in the four sim
       gates.
 - [ ] **Five booleans reach C from CMake, not from the generated header.** `KICKOS_DEBUG`,
       `KICKOS_ENABLE_SELFTEST`, `KICKOS_BENCH`, `KICKOS_SHUTDOWN_TO_BOOTLOADER`
@@ -6706,7 +6707,7 @@ The items below are the parts that belong in tracked history whatever those audi
       tree already prefers failing loud and early (the HAS_MPU-without-`mpu.cmake` refusal in the
       root `CMakeLists.txt` is the model). The obstacle to price first is that nothing declares "this
       image terminates" and the authority mask is a C symbol in the app's own translation unit
-      (`KICKOS_APP_AUTHORITY`) that no build file reads, so the gate needs a declaration that does
+      (the app authority macro) that no build file reads, so the gate needs a declaration that does
       not exist yet.
 - [ ] **The fault path is thread-scoped on FIVE backends (armv6m, armv7m, rxv3, rv32imac, sim)
       and still system-terminal on ONE (xtensa); on that one, isolation still buys only
@@ -7273,9 +7274,8 @@ triggers `push` only on `master`).
       N16 needs, so it gates nothing -- filed so it is not rediscovered. **Record only: no fix
       attempted.**
 - [ ] **`kickos_core` no longer carries the archive group.** c539d1c moved the RESCAN group onto
-      the `kickos` / `kickos_cxx` leaves, because the two postures need different toolchain
-      runtimes in it and CMake forbids one target's closure carrying a library in two groups. A
-      consumer linking `kickos_core` DIRECTLY now gets usage requirements but no archives. The
+      the leaves, and it rides `KickOS::kernel`, the one leaf left. A consumer linking
+      `kickos_core` DIRECTLY gets usage requirements but no archives. The
       documented contract already says consumers link a leaf and never core, and both
       out-of-tree export gates pass -- but core is still in the export set, so the contract is
       now load-bearing where it used to be advice. Either state it in the exported package or
@@ -7398,7 +7398,7 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
       after the ctor walk on every enforcing board -- and **the sim cannot reproduce it** (`kmain`'s
       frame is host stack). Now `kickos_init_args` in `libkickos_user.a`, which every enforcement
       linker script routes into the `.appdata`/`.appbss` grant. NOT the init provider's archive: a
-      build naming its own `KICKOS_INIT_PROVIDER` must not be able to remove the definition.
+      build naming its own init provider must not be able to remove the definition.
       Placement verified by symbol address on all five enforcement images, not assumed.
 - [x] **Add `KOS_SYS_SHUTDOWN(status)`** -- see `m4.5.1: end the system through a syscall, not a
       direct kernel call`. Syscall **36**; privileged-only for now, which is exactly who can end the
@@ -7637,13 +7637,13 @@ posture that is still selectable.
       `-KOS_EBADF`.
 - [x] **`kickos_default_init_run` narrows root after bring-up**, so the pin map and the console
       publish still have their bits. It lives in the RUN BODY, not the entry, because `init.h`
-      advertises that body as the delegation reuse point: a custom `KICKOS_INIT_PROVIDER` composing
+      advertises that body as the delegation reuse point: a custom init provider composing
       pinmux + service list + run body would otherwise have run the app with root's full authority,
       silently. Found by the review pass, not by a test. The mask comes from
       `kickos_app_authority()` (default `AUTH_MEMORY | AUTH_SYSTEM`), overridden per app by
-      `KICKOS_APP_AUTHORITY` in the app's own TU. **Per app, not per build tree**: one tree links
+      the app authority macro in the app's own TU. **Per app, not per build tree**: one tree links
       every app against one kernel, so no CMake variable can express it. **NO weak symbol** -- the
-      fallback is alone in `system/init/common/app_authority_default.cc`, so an app that defines the symbol
+      fallback is alone in its own source file, so an app that defines the symbol
       resolves it locally and that member is never extracted. Weak was tried first and rejected: GCC
       carries a weak attribute from a declaration onto the definition in the same TU, so every app's
       override compiled `W` and link order decided it (`nm` confirmed). The macro emits the
@@ -7678,7 +7678,7 @@ Opened by stage 4:
       so the app is now five arms on one path, and it gained a `microbit` gate.
       The arm that matters is still the first -- it asserts `pinmux_set` is NOT `-KOS_EPERM`,
       and `AUTH_PINMUX` is a bit the fallback mask does **not** carry, so **a silently-ignored
-      `KICKOS_APP_AUTHORITY` override now fails a gate**. Asserting some MISSING bit is refused would
+      app authority override now fails a gate**. Asserting some MISSING bit is refused would
       not have done it: the fallback lacks those too, so that arm passes with the declaration
       ignored. Verified by mutation -- neutralising the declaration turns arm 1 red while the other
       arms stay green. Gate set as of M4.5.6, with the posture condition gone: the sim, the QEMU MPS2
@@ -7719,7 +7719,7 @@ Opened by stage 4:
       room.
 - [ ] **A per-service authority declaration in `kos_service_cfg`.** The struct has `rsv[4]`, so a
       byte fits with no layout change, and the runner could then narrow *between* entries -- hold
-      `AUTH_CONSOLE` only while the `KOS_SVC_CONSOLE` entry runs. Deliberately NOT done in stage 4:
+      `AUTH_CONSOLE` only while the console service kind entry runs. Deliberately NOT done in stage 4:
       root holds `CAP_AUTH_ALL` for the whole list run either way, so the only window it closes is
       between one bring-up entry and the next, with no app code running, and the app-level narrow
       already strips the bit before `main`. It becomes worth doing when service bring-up moves off
@@ -8017,8 +8017,8 @@ one, so those captures cannot be re-derived from history.
 - [x] **The deletion exposed a REAL defect on the panic path, fixed by a new ungated syscall:
       `KOS_SYS_PANIC = 41` / `kos_panic`.** `kmain`'s `kos_shutdown(status);
       KICKOS_UNREACHABLE(...)` tail called `kpanic` DIRECTLY, and after the flip that call runs in
-      root's UNPRIVILEGED frame. It is reachable, not theoretical: an app declaring a
-      `KICKOS_APP_AUTHORITY` without `KOS_AUTH_SYSTEM` has its `kos_shutdown` refused, and if it
+      root's UNPRIVILEGED frame. It is reachable, not theoretical: an app declaring an
+      app authority macro without `KOS_AUTH_SYSTEM` has its `kos_shutdown` refused, and if it
       then returns from `main` the unreachable arm runs. **Measured faulting three ways, with the
       diagnostic LOST every time** -- the worst possible shape for a path whose only job is to
       report. The kernel now panics kernel-side with the caller's message, so the report survives.
@@ -8077,7 +8077,7 @@ one, so those captures cannot be re-derived from history.
       its gate stay for the next board whose bring-up writes MMIO from root, because that failure is
       silent and total.
 - [x] **`consoledemo`'s scramble-test build option is restaged as a standalone app, `conreclaim`,
-      registered only when `KICKOS_SERVICE_LIST=kickos_services_none`. THAT OPTION NO LONGER
+      registered only when the service-list selection is `kickos_services_none`. THAT OPTION NO LONGER
       EXISTS** -- any doc still naming it is stale. The split was forced by a premise conflict
       rather than chosen: U0C0 admits exactly ONE holder, the scrambler has to be
       it, and `consoledemo` exists to demonstrate the `xmcuart` handover, which needs `xmcuart` to
@@ -8415,7 +8415,7 @@ libc-interop exceptions. Two reasons, and the second is the deciding one:
 - **`__attribute__((weak))` is a GNU extension**, and its interaction with archive extraction is
   implementation-defined. Requiring GCC for a kernel whose whole seam story is portability is the
   wrong trade. This already bit once, in-tree: GCC carries a weak attribute from a declaration onto
-  a definition in the same TU, so every `KICKOS_APP_AUTHORITY` override compiled `W` and link order
+  a definition in the same TU, so every app authority override compiled `W` and link order
   picked the winner (`nm` was the check; reasoning was not).
 
 **Inventory -- and the planning figure was WRONG, so do not repeat it.** The sweep counted 48
@@ -8437,14 +8437,14 @@ true split:
   whose whole point is that it may be absent.
 
 **Replacement: the lone-TU pattern, which this repo has already proven** in
-`system/init/common/app_authority_default.cc`: the fallback sits alone in its own TU, so a chip defining
+the app authority default's own source file: the fallback sits alone in its own TU, so a chip defining
 the symbol resolves it locally and the member is never extracted. Standard archive semantics, no
 compiler extension, no weak attribute anywhere. The constraint is real and must be documented per
 file: **such a TU must define exactly one symbol**, or it gets extracted anyway and collides.
 Group two fallbacks in one TU only where they are genuinely all-or-nothing (`arch_diag_led_init`
 plus `arch_diag_led_set`).
 The two other proven alternatives stay available where they fit better: a CMake-selected provider
-spliced into the link group (`KICKOS_INIT_PROVIDER`), and no default at all where a missing
+spliced into the link group (the init-provider cache variable), and no default at all where a missing
 override should fail the link (`arch_reserved_blocks`).
 
 **Payoff beyond the removal**: `cmake/boot_arena.cmake` loses its precedence logic entirely -- one
@@ -8505,15 +8505,15 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
 
 - [x] **The per-chip `Uart` class plus the two spawns. DONE, five times over.** The shared half is
       `byte_ring.h`, `uart.h` (size-asserted wire ABI), `uart_service.h` (the two loops, the
-      doorbell, the RX/TX policy), `KOS_SVC_UART`, and a `uart_service` selftest case that drives
+      doorbell, the RX/TX policy), the UART service kind, and a `uart_service` selftest case that drives
       `serve_one` with no device at all. The silicon edge is `configure`, `service_irq`,
       `tx_irq_enable`, plus the bring-up that allocates the 1 KiB shared block and spawns the IRQ
       thread `{win, shared}` and the service thread `{shared}`. **Asymmetric on purpose**: a DEV
       window has ONE holder, so a service thread that tried to touch the peripheral would fail at
       SPAWN, not at the register write -- the isolation rule is enforced by the domain model
       (design section 3.3, corrected there against an earlier draft).
-      **The SIM consumer** closes the in-env half: `system/init/sim/service_list_uart.cc` is a
-      `KOS_SVC_UART` port over host fd 1 with TX fed back to RX, running the real two-thread
+      **The SIM consumer** closes the in-env half: the sim's UART service list is a
+      the UART service kind port over host fd 1 with TX fed back to RX, running the real two-thread
       driver, gated by `tests/integration/check_sim_uartloop.sh`. Nothing raises that line, so the service
       thread's doorbell is the only thing that can move a byte -- which is exactly what makes the
       doorbell mutation-provable, and it is.
@@ -8544,7 +8544,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       no compat shim, since the ABI is unstable until the ABI-freeze milestone.
       The drivers stay at authority == 0, so the
       frozen cap-index range needs no spawn-ABI work. `selftest` is the one caller that already holds
-      `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (`KICKOS_APP_AUTHORITY`)) and its `kos::Irq`
+      `AUTH_IRQ` (`user/apps/common/selftest/main.cc` (the app authority macro)) and its `kos::Irq`
       cases keep working, which also means **the suite cannot witness the refusal from root** -- the
       `-KOS_EPERM` arm needs a worker, the shape `t_cpu_clock_set` already uses.
 - [x] **Console reclaim when the DRIVER dies (not the system). LANDED**, and it was the other half
@@ -8602,7 +8602,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       not get one this way: there is NO kernel path that wakes a receiver parked in a receive when
       the last `SIGNAL` holder goes. Only the mirror exists (`recv_holders` -> 0 EPIPEs parked
       SENDERS, `obj_close_protocol`), so a console driver parked in `recv` blocks forever however
-      its clients go away, and `system/init/sim/service_list.cc`'s own `n < 0` break is unreachable
+      its clients go away, and the sim's console service list's own `n < 0` break is unreachable
       defence rather than a working exit. `tests/integration/check_sim_drvdeath.sh` therefore bounds the driver
       to N served messages instead. So the gap has TWO halves now: root cannot drop `WAIT` while
       keeping the endpoint (the narrow), and a parked receiver has no last-sender wake at all.
@@ -8680,7 +8680,7 @@ vendor reset interface.
       So this is +1 backend for `teensy41`, not +1 stack. **Both claims about the controllers
       are unverified here** and the datasheets are in the local reference set; confirm the RP
       pair really is one block before planning on it.
-- [ ] **It is a service, not a port.** A `KOS_SVC_CONSOLE` entry that publishes an endpoint,
+- [ ] **It is a service, not a port.** A console service kind entry that publishes an endpoint,
       exactly like `k64uart`. The handover machinery is transport-agnostic and already carries
       the choreography (create endpoint, publish, grant the window, spawn the unprivileged
       driver, drop root's cap), so nothing in `system/init/` should need to learn about USB.
@@ -9369,7 +9369,7 @@ driver-carried TAP lines end `\r\n` where the `cb5f2a4` capture from the same bo
 bare `\n` -- the two console routes agree byte for byte at last. The `cb5f2a4` pass below is what
 closed the driver work and the `rx72m` stop; it stays as that fix's provenance.
 
-Selected with `-DKICKOS_SERVICE_LIST=kickos_services_<board>_uartirq -DKICKOS_ENABLE_SELFTEST=ON`.
+Selected with the service-list selection `kickos_services_<board>_uartirq` and `-DKICKOS_ENABLE_SELFTEST=ON`.
 Every capture carries `# tap route: stdout endpoint -> console driver (service list published)`, so
 the bytes provably crossed `printf` -> `_write` -> `kos_send(0)` -> endpoint -> service thread ->
 SPSC ring -> doorbell -> IRQ thread -> the peripheral's TX register, with nothing left in the
@@ -9417,7 +9417,7 @@ tree whose banner reads `commit nogit`).
 ### The first board to run: `xmcuartirq` (2026-08-01)
 
 Capture `.session/logs/m461-xmc-uartirq.log`, image `build/bench-xmc` at `a946a12`(-dirty),
-`-DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_uartirq -DKICKOS_HAVE_MPU=1`. Superseded as a
+the service-list selection `kickos_services_xmc4800relax_uartirq` and `-DKICKOS_HAVE_MPU=1`. Superseded as a
 result by the table above; kept for the two findings under it that are still open.
 
 - [x] **`xmcuartirq` WORKS end to end on xmc4800-relax silicon**, under enforcement. The kernel
@@ -9663,7 +9663,7 @@ Captures: old `.session/logs/m461-rx-fixed-selftest.log`, `m461-rx-led.log`; new
       portion isolated: full 1877, short 1366, common prefix 1366, delta 511 -- which is what lands
       the figure exactly on the ring capacity, so the count has to be taken this way).
       Every test ran and passed. The tail was produced and lost at SHUTDOWN:
-      `system/init/common/default_init_run.cc` sends two zero-length plain sends after `main` returns and
+      the default init's run source sends two zero-length plain sends after `main` returns and
       `root_entry` then calls `kos_shutdown`, which masks interrupts and halts. `rxsci` was the one
       driver not implementing that request, so root was released instantly and halted on a full
       ring. The flush arm is the driver's implementation of the protocol, not a workaround. Proved
@@ -10387,7 +10387,7 @@ cancellation are proven only by `sim_driver_death` case 3 and its four mutation 
       True in the only sense the sim can make it true (that block is the only DEV window the host
       admits), and it is what lets case 3 exist at all, but it is the softest part of the gate.
 - [ ] **`SIMCON_WIN_BASES` is a THIRD copy of `SIM_PVREG_BASES`** (`sim.cc`, the selftest, and now
-      `system/init/sim/service_list.cc`), each carrying a "must equal" comment and no check. Following the
+      the sim's console service list), each carrying a "must equal" comment and no check. Following the
       existing precedent rather than fixing it was the right call mid-change; fixing it is owed.
 
 ### Found by the adversarial review of the cleanup plan (2026-08-03)
@@ -10736,7 +10736,7 @@ so it could never have hung -- that candidate died on inspection, before the ben
 ## M4.6.1 selftest bench pass -- `irq_claim_gate` and `irq_reclaim` on silicon (2026-08-01)
 
 The first silicon witness of the two IRQ-capability cases M4.6.1 added. Default posture on every
-board (**no** `KICKOS_SERVICE_LIST` override -- the existing console, not the unrun `*_uartirq`
+board (**no** service-list selection override -- the existing console, not the unrun `*_uartirq`
 drivers), `KICKOS_ENABLE_SELFTEST=ON`, `MinSizeRel`. Captures in `.session/logs/m461-*-selftest*.log`.
 
 | board | arch / enforcement | plan | result | skips |
@@ -11029,7 +11029,7 @@ here because they are pre-existing isolation facts, not things that pass created
           pre-existing conflict, not a false positive: two drivers configuring one USIC channel. The
           four predate `xmcssc` joining the service list (M4.4) and silently became conflicting then.
           Run them against a console-only service list
-          (`-DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console`, an existing provider) so U0C1
+          (the service-list selection `kickos_services_xmc4800relax_console`, an existing provider) so U0C1
           has no other holder. Note M4.5.6 changed what these four DO without changing this conflict:
           they now reach FDR/BRG/CCR through `arch_periph_reg_write` instead of writing them directly,
           but they still grant the same U0C1 window, and the one-holder check is about the window.
@@ -11037,11 +11037,11 @@ here because they are pre-existing isolation facts, not things that pass created
           `xmcuart` driver holds. Here the double grant is the POINT (garble a live console, prove
           `arch_console_reclaim` recovers it), so the check structurally obsoleted the way it was
           staged. **RESOLVED in M4.5.6, and not the way this entry first proposed**: the scrambler is
-          now its own app, `conreclaim`, REGISTERED only when `KICKOS_SERVICE_LIST` already resolves
+          now its own app, `conreclaim`, REGISTERED only when the service-list selection knob already resolves
           to `kickos_services_none` -- a kernel-driven console with no DEV holder anywhere, so the
           scrambler is the sole holder. The scramble-test build option no longer exists.
       **The remedy shape is the part worth keeping, because the obvious one is unbuildable.**
-      `KICKOS_SERVICE_LIST` is ONE global cache variable, resolved in the root `CMakeLists.txt` before
+      the service-list selection knob is ONE global cache variable, resolved in the root `CMakeLists.txt` before
       any subdirectory is added, so an app's own `CMakeLists` can never set the list it needs -- it can
       only observe the one already chosen. So the encodable form is a REGISTRATION GATE, not an
       override: register the app when the resolved list is compatible, and otherwise say at configure
@@ -11333,7 +11333,7 @@ so that nothing before it waits on bench access.
       work: `f411spi` (F411-disco, PMSAv7).** Three apps were owed -- the others, `c6blink`
       (ESP32-C6, PMP NAPOT) and `rxdrv` (RX72M, RXv3), **were both taken in M4.5.6** at
       `270b6fa`/`270b6fa-dirty`, and `rxdrv` also ran the `kos_periph_enable` possession probe. The
-      claim in each case is that a per-app `KICKOS_APP_AUTHORITY` declaration carries a board's OWN
+      claim in each case is that a per-app authority declaration carries a board's OWN
       pin muxing on real silicon, and nothing substitutes for the board: the sim can never hold a DEV
       region (`arch_mpu_region_encodable` is unconditionally false there).
       This is the SAME debt the M4.6.3..N ledger carries, not a second one. Both places now use the
@@ -12249,7 +12249,7 @@ shared case only.
       alone on the bus means local, sharing it with another consumer means remote, and that differs
       per image with the same chip and the same driver source. So it belongs to the CONSUMER TARGET
       rather than to a global macro -- one image may legitimately have one consumer local and another
-      remote -- which is the shape `KICKOS_SERVICE_LIST` and `KICKOS_INIT_PROVIDER` already use.
+      remote -- which is the shape the service-list selection knob and the init-provider cache variable already use.
 - [x] **Console is a COOKED UART, not a type, and the tree HAD that inverted.** Fixed by the M4.8.1
       conversion: the raw type is `user/include/kickos/driver/uart.h`, five calls, in-process, and
       console composes on it, so a client wanting bytes rather than a console gets them without a
@@ -12289,15 +12289,8 @@ shared case only.
       `faultsurvive_off` traps through `mvtipl`, a privileged instruction, so it takes the fault
       path where `kickos_fault_frame_trusted` does the checking. So `kickos_rx_bad_usp` is compiled
       into every RX image carrying fault isolation and reached by nothing that runs.
-- [ ] **`usbcdcwit` is built by no default configuration of any board.**
-      `user/apps/common/CMakeLists.txt` builds it only where `KICKOS_USB_CONSOLE` is set, which a
-      `_usbcdc` service list or `-DKICKOS_USB_CONSOLE=ON` on the configure line does, and no board
-      defconfig or `Kconfig` sets either. The three that exist --
-      `kickos_services_picopi_usbcdc`, `kickos_services_pizero2350_usbcdc` and
-      `kickos_services_teensy41_usbcdc` (`system/CMakeLists.txt`) -- are reachable only from a
-      `-DKICKOS_SERVICE_LIST=` on the configure line, so the app compiles in no preset, no local
-      fleet sweep and no CI job, and a change that breaks it is invisible until somebody remembers
-      the flag.
+- [x] **`usbcdcwit` is built by no default configuration of any board.** **DONE AT M10.5.13**: it is built on
+      picopi, pizero2350 and teensy41, its compositions naming the board's packaged USB console driver.
 
 ## Two `-st` presets stopped linking at M6.3's R2.2, FIXED (2026-08-29)
 
@@ -13002,7 +12995,7 @@ items and the DRY item are a separate pass and are untouched.
 ## Found while witnessing T5, and predating it (2026-08-25)
 
 - [ ] **`fault_dump` HANGS under a non-default service list.** Configured with
-      `-DKICKOS_SERVICE_LIST=kickos_services_simuart`, the ctest `fault_dump` gate times out: the
+      the service-list selection `kickos_services_simuart`, the ctest `fault_dump` gate times out: the
       fault dump prints correctly and the process then never exits. Reproduced on a clean worktree at
       `364aea7a`, so T5 did not cause it. **It is invisible to both sweeps by construction**, nothing
       in `sweep_host_gates.sh` selecting an alternative provider, which is why it survived this long.
@@ -13541,7 +13534,7 @@ the section is kept -- chasing this is what surfaced the PendSV race that had be
 a flaky arm.
 
 First time `rpusb` has ever run on an RP2040; every prior CDC witness is `pizero2350` (RP2350).
-Preset `picopi-st` with `-DKICKOS_SERVICE_LIST=kickos_services_picopi_usbcdc`, app `usbcdcwit`.
+Preset `picopi-st` with the service-list selection `kickos_services_picopi_usbcdc`, app `usbcdcwit`.
 
 **What WORKS, and it is not nothing.** The device enumerates: `/dev/ttyACM0` appears **1.0 s** after
 boot on both trees, so the descriptor tables, the chapter 9 request machine and the RP2040 USB clock
@@ -14197,7 +14190,7 @@ which is the only reason they are filed rather than fixed:
       throttling; revisit when the DEV-window respawn gate lands.
 - [ ] **`console_crlf` now also gates console write POLICY** and should be renamed; deferred
       deliberately to avoid fleet record churn mid-milestone.
-- [ ] **No reply-bearing flush op**, so the default init cannot read the residual `flush()` returns.
+- [ ] **No reply-bearing flush op**, so the init cannot read the residual `flush()` returns.
 - [ ] **CDC console throughput is ~167 B/s** under many small writes (2008 bytes in 12 s). A console
       you cannot read a suite through is marginal.
 - [ ] **Blocking console mode makes the fault-record route LOSSY while the console is wedged**: a

@@ -640,7 +640,7 @@ fleet, it is that driver's own state, and the grant the isolation principle is a
 window -- stays its own. The alternative, giving the task no shared region and keeping the per-thread
 grants, would have left 1.2's "two levels of memory authority" a fiction in practice.
 And the sim's WINDOWED console posture deliberately keeps its window thread OUT of the driver's group
-(`system/init/sim/service_list.cc`): it models a FOREIGN holder of the registers, which is the only
+(the sim's console service list): it models a FOREIGN holder of the registers, which is the only
 shape in which the deferred console reclaim is observable at all. Coupling it would have deleted that
 gate's subject.
 

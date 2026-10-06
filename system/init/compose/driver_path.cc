@@ -4,7 +4,6 @@
 #include "driver_path.h"
 
 #include <kickos/sys/driver_service.h>
-#include <kickos/sys/service.h>
 
 namespace kickos::init::driver_path
 {
@@ -39,6 +38,8 @@ namespace kickos::init::driver_path
         TaskRecord& r = walk.record(task);
 
         kos_driver_instance instance = {};
+        instance.name = walk.name(task);
+        instance.priority = t.priority;
         instance.block = r.block;
         instance.block_size = t.block;
         instance.block_flags = block_flags(t);
@@ -49,10 +50,6 @@ namespace kickos::init::driver_path
         instance.task = KOS_TASK_NONE;
         instance.console = narrows_at_handover(walk, task);
 
-        kos_service_cfg cfg = {};
-        cfg.name = walk.name(task);
-        cfg.prio = t.priority;
-        cfg.instance = &instance;
         bool window = false;
         uint16_t lines = 0;
         for (uint16_t k = 0; k < t.grant_count; k++)
@@ -60,8 +57,8 @@ namespace kickos::init::driver_path
             kos_table_grant const& g = walk.grant(task, k);
             if (g.kind == KOS_GRANT_WINDOW and not window)
             {
-                cfg.mmio_base = static_cast<uintptr_t>(g.base);
-                cfg.mmio_window = g.size;
+                instance.mmio_base = static_cast<uintptr_t>(g.base);
+                instance.mmio_window = g.size;
                 window = true;
             }
             if (g.kind == KOS_GRANT_LINE)
@@ -82,7 +79,7 @@ namespace kickos::init::driver_path
             instance.line_count = 0xFFu;
         }
 
-        int const rc = t.entry.driver(&cfg);
+        int const rc = t.entry.driver(&instance);
         *out = instance.task;
         return rc;
     }

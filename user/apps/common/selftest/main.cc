@@ -7804,7 +7804,7 @@ namespace
     void t_console_publish()
     {
         // From main, which holds AUTH_CONSOLE: a bad/stale cap is rejected before the
-        // deinit/flip, so console ownership stays as the board's service list set it. This
+        // deinit/flip, so console ownership stays as the composition set it. This
         // test never publishes anything itself.
         // The -KOS_EBADF assertions are exact: the AUTH_CONSOLE gate runs before the cap
         // resolve, so a main that lost the bit answers -KOS_EPERM and this test fails.

@@ -47,8 +47,8 @@
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
 // (kickos_add_diagnostic_apps): never a production image.
 //
-// BUILD WITH THE KERNEL-CONSOLE SERVICE LIST (KICKOS_SERVICE_LIST=kickos_services_none):
-// the kernel console_tx path is the target, and the xmcuart handover deinits it.
+// The kernel console_tx path is the target, so its composition's stdout is the kernel's: an
+// xmcuart handover would deinit it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

@@ -278,8 +278,8 @@ extern "C" void kickos_thread_fault_exit(void)
         who = c->name;
     }
     // kprintf_fault, not kprintf: a published console DROPS the kernel chip path, and this
-    // record is the one line naming the dead thread on the boards whose default service list
-    // carries a console driver.
+    // record is the one line naming the dead thread on the boards whose composition carries a
+    // console driver.
     ::kickos::kprintf_fault(KDIAG_F_THREAD_FAULT, who);
     FaultRecord& r = fault_record();
     if (r.valid and r.owner != c)

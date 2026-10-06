@@ -44,9 +44,6 @@ foreach(_ampping ampping_n0 ampserve)
   set_target_properties(${_ampping} PROPERTIES KICKOS_APP_SYSTEM ampping_system)
   kickos_emit_image(${_ampping})
 endforeach()
-# One CONCURRENTLY parked far caller: the peer's call is held on this node's table while the
-# service thread answers it.
-kickos_declare_app_capabilities(ampserve ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
 
 # The peer the SELFTEST talks to: it echoes the caller's own bytes, where ampserve's reply
 # transforms the payload. Its node of the partition the selftest's node 0 runs in, every other
@@ -64,7 +61,6 @@ add_executable(ampecho main_echo.c crossing.c)
 target_include_directories(ampecho PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 kickos_app_system(ampecho PARTITION ${_ampecho_partition})
 kickos_emit_image(ampecho)
-kickos_declare_app_capabilities(ampecho ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
 
 # One entry per peer node in node order, which is the order build-partition.sh assigns them.
 # The same target repeats: what makes two peers different images is the node index their build
