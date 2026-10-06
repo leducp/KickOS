@@ -22,6 +22,7 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 #include <kickos/arch/trap.h>
 #include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_limits.h>
+#include <kickos/sys/atomic.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -109,13 +110,24 @@ namespace
     static_assert(KICKOS_KERNEL_STACK_SIZE % 16 == 0,
                   "a block's top must land on the psABI stack alignment the entry needs");
 
+    // The spawn stages its grant list on the kernel block, and _SYSK holds the list it was
+    // measured at (x86_64_trap_stack.h).
+    static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+                  "KICKOS_X86_64_TRAP_DEPTH_SYSK was measured at a spawn staging 9 grants on the "
+                  "kernel block: re-measure with tests/static/check_trap_redzone.sh first");
+
     // The gate reads each of these as an immediate, so the sums are spelled out there.
     static_assert(KICKOS_X86_64_TRAP_FRAME_IRQ == KICKOS_X86_64_TRAP_FRAME + 8,
                   "a same-level delivery realigns rsp to 16 bytes before the frame");
     static_assert(KICKOS_X86_64_TRAP_NEST
                       == KICKOS_X86_64_TRAP_FRAME_IRQ + KICKOS_X86_64_TRAP_DEPTH_IRQ,
                   "KICKOS_X86_64_TRAP_NEST is an interrupt's frame plus its dispatch");
+    static_assert(KICKOS_X86_64_TRAP_WINDOW == KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_NEST,
+                  "KICKOS_X86_64_TRAP_WINDOW is the syscall entry's frame plus an interrupt's");
     // The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
+    static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                      >= KICKOS_X86_64_TRAP_WINDOW + KICKOS_X86_64_TRAP_DEPTH_SYSWIN,
+                  "the kernel block cannot hold an interrupt taken in a syscall's window");
     static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                       >= KICKOS_X86_64_TRAP_FRAME + KICKOS_X86_64_TRAP_DEPTH_SYSK,
                   "the kernel block cannot hold the ring 3 syscall plus its canary word");
@@ -700,6 +712,32 @@ void arch_fault_redirect_to_exit(void* frame)
     f->ss = kickos::x86_64::sel_kernel_data;
     f->rflags = RFLAGS_IF | RFLAGS_RESERVED_ONE;
     f->rsp = kickos_fault_stack_top();
+}
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Per core, each written by its own core with interrupts masked.
+static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
+
+uint32_t arch_irq_windows(void)
+{
+    uint32_t sum = 0;
+    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
+    {
+        sum += n.load();
+    }
+    return sum;
+}
+#endif
+
+// STI holds recognition off until the next instruction ends, so the NOP is the window. An
+// interrupt the local APIC has not yet presented may wait for a later window.
+void arch_irq_window(void)
+{
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
+    mine.store(mine.load() + 1u);
+#endif
+    __asm__ volatile("sti\n\tnop\n\tcli" ::: "memory");
 }
 
 // --- Idle -------------------------------------------------------------------

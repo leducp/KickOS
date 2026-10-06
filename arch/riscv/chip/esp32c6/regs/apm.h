@@ -30,8 +30,8 @@ namespace kickos::esp32c6::reg::apm
     //     HP CPU is master M0 (TRM 16.3.1). Reset 0 => U-mode security mode is REE0.
     constexpr uintptr_t HP_TEE_M0_MODE_CTRL = mmap::HP_TEE_BASE + 0x00u;
 
-    // --- The LP CPU's mode, LP_TEE at 0x600B_3400 (Table 5.3-2, p.176; Reg 16.56, reset 3).
-    constexpr uintptr_t LP_TEE_M0_MODE_CTRL = 0x600B3400u;
+    // --- The LP CPU's mode (Reg 16.56, reset 3).
+    constexpr uintptr_t LP_TEE_M0_MODE_CTRL = mmap::LP_TEE_BASE + 0x00u;
 
     // LP_TEE_M0_MODE values (Reg 16.56).
     constexpr uint32_t MODE_REE0 = 1u;

@@ -109,7 +109,8 @@ def check_priorities(f, tasks, manifest):
                 break
         if task.ceiling is not None and not lo <= task.ceiling <= hi:
             f.refuse(task.nodes["ceiling"], "scheduling.ceiling",
-                     "%s ceiling %d is outside the kernel build's range [%d, %d]" % (task.label(), task.ceiling, lo, hi))
+                     "%s ceiling %d, the highest priority its threads may take, is outside the kernel build's "
+                     "range [%d, %d]; the usual value is its top, %d" % (task.label(), task.ceiling, lo, hi, hi))
 
 
 class Held:
@@ -575,26 +576,10 @@ def check_scheduling(f, top, tasks, stdout, manifest):
             f.refuse(task.nodes["driver"], "scheduling.console-driver",
                      "%s runs driver `%s`, which takes the console, and `stdout` does not name its endpoint"
                      % (task.label(), task.driver))
-    if console is None or console.priority is None or console.catalogue.receiver is None:
+    if console is None:
         return
-    name, offset, stack = console.catalogue.threads[console.catalogue.receiver]
-    receiver_priority = console.priority + offset
     for task in tasks:
-        if not task.entry:
-            continue
-        if task.index < console.index:
+        if task.entry and task.index < console.index:
             f.refuse(task.node, "scheduling.stdout-order",
                      "%s writes standard output and is declared before %s, which serves `stdout`"
                      % (task.label(), console.label()))
-        if task.priority is None:
-            continue
-        highest = task.priority
-        field = "priority"
-        if task.ceiling is not None and task.ceiling > task.priority:
-            highest = task.ceiling
-            field = "ceiling"
-        if highest > receiver_priority:
-            f.refuse(task.nodes[field], "scheduling.stdout-priority",
-                     "%s writes standard output from threads up to its %s %d, above the %d of thread "
-                     "`%s`, which receives on the console's endpoint with no priority inheritance"
-                     % (task.label(), field, highest, receiver_priority, name))

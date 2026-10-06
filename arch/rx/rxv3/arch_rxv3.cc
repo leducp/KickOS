@@ -88,6 +88,11 @@ static_assert(KICKOS_RX_TRAP_NEST_SYSK == 8 + KICKOS_RX_TRAP_REDZONE_PENDSW,
 // dispatch is measured as SYSK and nothing of it descends on the thread stack.
 static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS == 0,
               "a nonzero SYS descent needs roots in tests/static/trap_redzone_roots.txt");
+// The spawn stages its grant list on the kernel block, and _SYSK holds the list it was
+// measured at (rx_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+              "KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK was measured at a spawn staging 9 grants on "
+              "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
 // The fastpath arm's C dispatch is on the block too, so what is left of that class on the
 // thread stack is its save plus the restore descent below it, which is the epilogue PENDSW
 // already measures on the same chain. Equal by derivation: if one moves and the other does

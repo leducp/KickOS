@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+ESP-ROM:esp32c6-20220919
+Build:Sep 19 2022
+rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     esp32c6
+   mpu     off
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[c6txidle] UART0 TX idle witness: a line loaded into the FIFO, the console flush,
+[c6txidle] then the TX pad taken from the UART and held idle. The TAIL line below
+[c6txidle] must end in its sentinel whole; a cut last byte is a flush that
+[c6txidle] returned with the frame still shifting.
+[c6txidle] TAIL 0123456789abcdef0123456789abcdef <<<TXIDLE-END>>>
+[c6txidle] frame 86790 ns over 65 bytes, flush held 88120 ns past the FIFO's last byte (late past 4599870 ns)
+[c6txidle] ST_UTX_OUT 0 after 10 ms quiet, 0 at the flush's return; idle is 0
+[c6txidle] PASS the flush returned once the last frame had left

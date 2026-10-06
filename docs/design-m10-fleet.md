@@ -117,8 +117,17 @@ hard-float ABI refuses, and such units include `arch.h`.
 ```c
 struct arch_reserved_span arch_reserved_blocks(void);
 struct arch_reserved_span arch_window_apertures(void);
+struct arch_reserved_span arch_bus_master_apertures(void);
 struct arch_reserved_span arch_port_apertures(void);
 ```
+
+`arch_bus_master_apertures` is the rows of the windows a grantable `bus_master` device covers,
+on a translating chip and a region chip alike. The kernel opens a spawn's device window over one
+only for a spawner holding `KOS_AUTH_BUS_MASTER`, so a hand-written spawn holding
+`KOS_AUTH_MEMORY` and `KOS_AUTH_SYSTEM` without it is refused what admission refuses a composition
+that does not accept `bus_master`. The init holds the authority, and a spawner passes it on only if it holds
+it, as every other authority. A composition names it `bus_master` in a task's `authority`;
+`accepts: [bus_master]` stays the composition's consent.
 
 **The rows follow the file, so the kernel and admission agree.** Today the kernel reserves fewer
 devices than the files mark `owner: kernel` (the C6, the F411's GPIO, the K64F's ports, the
@@ -427,16 +436,17 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `esp32c6-wroom/c6blink` | 2 | the GPIO bank and `pinmux`; the ungranted poke is a child thread's fault. No `coarse_gate`, although the bank holds pins the board spends: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and admission refuses it as unneeded (`enforcement.unneeded`) |
 | `esp32c6-wroom/c6intpri` | 3 | deleted: it probes INTPRI, which the kernel owns and admission refuses to grant; what it found is stated in the chip file and the chip code, and the inject doorbell it identified runs in every C6 AMP capture |
 | `esp32c6-wroom/c6lpprobe` | 1 | its flat build accepts `no_protection` already |
+| `esp32c6-wroom/c6txidle` | 1 | the default composition in the flat build, which lets its task drive UART0 and the TX pad |
 | `esp32-wroom/lx6smp` | 3 | deleted: it starts the APP CPU by writing kernel-owned registers. Owed: esp32-wroom-smp silicon selftest (5.14), the shared kernel on both LX6 cores taking the compare-and-swap from both and reading each core's processor identity; `docs/reference/boards.md` names its capture |
 | `f411disco/f411spi` | 2 | the worked example of hand-rolled bring-up, rewritten as one: SPI1's window and line, `pinmux` for its pins; no claim by number, no task created by hand |
 | `frdmk64f/k64console` | 2 | `stdout` names the packaged `k64uart` |
 | `frdmk64f/k64drv` | 2 | retargeted from PIT channel 2 to LPTMR0, since PIT's AIPS slot 55 also holds the channels the kernel's time base chains and is never opened: LPTMR0 sits alone in AIPS0 slot 64 at 0x4004_0000, raises line 58, and is clocked by SCGC5 bit 0 (K64 RM 4.5.2 Table 4-2, 3.2.2.3 Table 3-5, 12.2.12). Its window and line, `device_not_isolated`, `coarse_gate` for its slot; the chip file gains the device, and `arch_periph_enable` the base, gating its clock and clearing its slot's SP bit as it does for UART0 and DSPI0. The driver counts the 1 kHz LPO (PSR PCS=01, PBYP=1; RM 42.3.2) and a thread of its task holding no window reads the counter, which succeeds, the slot being the gate: the window, 32 bytes by the SYSMPU's granule, already holds every register LPTMR0 implements, and the slot answers any other address with a transfer error (RM 4.5) |
-| `frdmk64f/k64dspi` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE` as `xmcssc`'s are: the packaged `k64dspi`, whose start muxes the pins the board file wires to DSPI0, and a client using its endpoint `/svc/spi0`; and a task holding DSPI0 and `pinmux` that links the local SPI engine and muxes those pins through `k64dspi_bus_mux` |
-| `rx72m/rxdrv` | 2 | the port window, `pinmux`; the ungranted poke is a child thread's fault. The chip file's port window holds `PMR`, so it takes `coarse_gate` beside the console's pins and the kernel's LED, and the poke writes the console pin's `PB1PFS` in the ungranted MPC instead |
+| `frdmk64f/k64dspi` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE`: the packaged `k64dspi`, whose start muxes the pins the board file wires to DSPI0, and a client using its endpoint `/svc/spi0`; and a task holding DSPI0 and `pinmux` that links the local SPI engine and muxes those pins through `k64dspi_bus_mux` |
+| `rx72m/rxdrv` | 2 | the port window, `pinmux`; the ungranted poke is a child thread's fault. The chip file's port window holds `PMR`, so it takes `coarse_gate` beside the console's pins and the kernel's LED, and the poke writes the console pin's `PB1PFS` in the MPC, which the chip file gives the kernel, instead |
 | `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled like `xmcuart`, a zero-length one as a flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
 | `xmc4800-relax/consoledemo` | 2 | `stdout` names the packaged `xmcuart` |
 | `inprstorm`, `pvprobe`, `xmccshold`, `xmcspi` | 2 | USIC0 CH1, and for `xmcspi` the line `/dev/usic0/sr1`; `inprstorm`'s entry holds the window and re-delegates it to a storm thread below itself, so it takes `memory` and runs on `ends: never`; `pvprobe` and `xmcspi` fault their own entry on the closing ungranted read, which ends the system, while `xmccshold` returns. Their compositions do not name `xmcssc`, so nothing else holds the window. The refusal of the old conflict is already armed: `tools/compose/tests/test_arms.py` grants each beside the golden system's `xmcssc` and reddens `ownership.device`, and `ownership.line` for `xmcspi` |
-| `xmc4800-relax/xmcssc` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE`: the packaged `xmcssc` and a client using its endpoint `/svc/spi0`, and a task holding CH1 and its line that links the local SPI engine |
+| `xmc4800-relax/xmcssc` | 2 | two images in every configure: `xmcssc`, the packaged `xmcssc` and a client using its endpoint `/svc/spi0`, and `xmcssc_local`, a task holding CH1 and its line that links the local SPI engine |
 
 ### 4.4 The selftest as a task
 
@@ -466,7 +476,7 @@ at today's root priority, 2, under a `ceiling` above.
 | composition | the console driver | the selftest's `ceiling` |
 | --- | --- | --- |
 | `stdout: kernel` | none | `KICKOS_PRIO_MAX` |
-| `stdout` names a driver | `KICKOS_PRIO_MAX` less 1, its IRQ thread at offset 1 reaching `KICKOS_PRIO_MAX` | `KICKOS_PRIO_MAX` less 1, so no writer is above the console's receiver (`scheduling.stdout-priority`) |
+| `stdout` names a driver | `KICKOS_PRIO_MAX` less 1, its IRQ thread at offset 1 reaching `KICKOS_PRIO_MAX` | `KICKOS_PRIO_MAX` less 1, so no writer is above the console's receiver |
 
 The ceiling arms read the declared ceiling rather than a constant, so one arm holds under both.
 
@@ -486,7 +496,7 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 | `amp_port_seating`, `amp_port_unnamed` | the ports at root's seated indices | each named crossing at its delegated slot, and none other |
 | `amp_far_slot_reuse` | closes root's far endpoint, the last capability to it | closes a far endpoint the task alone holds, minted through the probe (`KOS_AMP_MINT_HOLD`): the crossings are copies of root's |
 | `amp_share_window`, `amp_share_crossing` | root holds the user share and hands windows of it | the task reaches the share through its composition's partition region, and naming any part of it itself is refused |
-| `process_data_from_image`, `process_data_template`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, an explicit task the snapshot |
+| `process_data_from_image`, `process_data_template`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, consistent on more than one core only while the spawner's other threads write no static data across the spawn, an explicit task the snapshot |
 | an arm reading a pin a board pin map set | the default init applied it | none exists |
 
 The pools follow the task. A task's entry thread and task come out of `KICKOS_MAX_THREADS` and
@@ -714,10 +724,10 @@ partition build:
 | `partition.device` | a device, or a gate around it, two nodes grant | two node compositions granting `/dev/rtc` on `qemu-arm64`, in the tool's tests |
 | `partition.port` | an `/amp` port the manifest does not list or lists for two nodes, port 1, a `serves` on a node not its server, a port two tasks of one node serve, a task that serves and uses one port, a packaged driver serving one | a mutated node composition each |
 | `partition.unserved` | an `/amp` port a node uses that no task of its server serves | the server's `serves` removed |
-| `partition.region` | a partition region two nodes declare with different sizes, one whose `cache` is not the share's one type (so two nodes never differ in it), the regions past the user share, or one where the kernel build states no AMP shared window | a size changed on one node; a `cache` changed on one; a size past the share on both; a node composition emitted alone against a build stating no window |
+| `partition.region` | a partition region two nodes declare with different sizes, one another node declares without `partition: true`, one whose `cache` is not the share's one type (so two nodes never differ in it), the regions past the user share, or one where the kernel build states no AMP shared window | a size changed on one node; `partition: true` dropped on node 1, on node 0, and on two nodes of three, and dropped on both nodes admitted; a `cache` changed on one; a size past the share on both; a node composition emitted alone against a build stating no window |
 | `partition.lone` | on an AMP build, a crossing or a partition region in a composition admitted apart from its partition, whose system target no other node's admission sees | a node composition emitted alone against node 0's manifest, once holding its region and once its crossing |
 | `partition.cached-incoherent` | a `cached` partition region shared by nodes that are not coherent, unless every node that maps it accepts `cached_incoherent` | the i.MX 8M Plus's clusters as a two-node fixture, refused, admitted with the acceptance on both, refused with it on one |
-| `partition.gate-budget` | a gate's derived assignment past the regions it holds, and a device granted where a per-peripheral gate states no register for it | the C6's LP node granted the LP UART, which coalesces with none of the LP kernel's pages; the C6's HP_APM cut to two regions, refused by the partition, by a node composition holding no crossing and no region emitted alone, and by the assignment of no composition; the RP2350's UART0 with its register removed |
+| `partition.gate-budget` | a gate's derived assignment past the regions it holds, a device granted where a per-peripheral gate states no register for it or no region gate's `ranges` front it, and one register two nodes' grants would each be assigned | the C6's LP node granted the LP UART, which coalesces with none of the LP kernel's pages; the C6's HP_APM cut to two regions, refused by the partition, by a node composition holding no crossing and no region emitted alone, and by the assignment of no composition; the RP2350's UART0 with its register removed; the C6's HP_APM ranges narrowed past `timg1`, granted on node 1; two UART0 instances under one register, granted on two nodes |
 
 Nodes are coherent when they run on one cluster the chip file states `smp`, or where no data cache
 sits over the region (`data_cache: false`, as the C6's file states), where both cache values are
@@ -827,16 +837,16 @@ The bench chain knows a board by its rows in `tools/bench/board-rows.sh` and its
 `tools/bench/bench-capture.sh`; `tools/bench/bench-present.sh` attests the boards a probe row
 identifies. Each run is judged by a script over the capture, through `bench.sh`'s `JUDGE`:
 `check_golden_system.sh`, `check_composition_witness.sh`, `check_system_default.sh` reading
-`KOS_CAPTURE` as the first two do, the selftest's TAP verdict as the fleet reads it, and a judge per
-board app that prints.
+`KOS_CAPTURE` as the first two do and named by the `sysdefault` image, the selftest's TAP verdict as
+the fleet reads it, and a judge per board app that prints.
 
 | board | the chain has | runs |
 | --- | --- | --- |
-| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and each of `xmcuart` and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms, the four diagnostic apps, `conreclaim` |
+| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and each of `xmcuart` and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
 | `frdmk64f` | probe, console, fleet | default system; selftest, kernel, `k64uart` and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi` in loopback |
 | `rx72m` | probe, console, fleet | default system; selftest, kernel and `rxsci`; `rxdrv` |
-| `f302nucleo` | probe, console, fleet | default system; selftest; the measurement images of section 3 |
-| `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`, `c6lpprobe`; the `amp2` partition with its gate witness |
+| `f302nucleo` | probe, console, fleet | default system; selftest |
+| `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`; from the flat build, `c6lpprobe` and `c6txidle`; the `amp2` partition with its gate witness |
 | `esp32-wroom` | probe, console, fleet | default system; selftest, kernel and `lx6uart`, one and two cores |
 | `f411disco` | probe, console | default system; selftest, kernel and `f4uartirq`; `f411spi` |
 | `picopi`, `pizero2350`, `teensy41` | console and capture, no probe row | default system, selftest, `usbcdcwit`; `pizero2350-amp2`'s `ampping` and gate witness |

@@ -8,6 +8,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sys/errno.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,6 +27,11 @@ namespace
     // One-shot: the flip lands as a racing writer masks interrupts, the last instant that
     // writer can still be caught.
     bool g_flip_at_mask = false;
+    // Whether the writing thread's own stdout send would be taken, and how often it was asked.
+    bool g_serves = false;
+    int g_serves_asked = 0;
+    // Never dereferenced: it only names the writer to the predicate above.
+    alignas(16) unsigned char g_writer[64];
 
     void note_poke()
     {
@@ -98,9 +104,16 @@ namespace kickos
 
     int32_t cap_console_deliver(char const*, size_t) { return 0; }
 
+    bool cap_console_serves(Thread const* t)
+    {
+        g_serves_asked = g_serves_asked + 1;
+        EXPECT_EQ(static_cast<void const*>(t), static_cast<void const*>(g_writer));
+        return g_serves;
+    }
+
     namespace sched
     {
-        Thread* current() { return nullptr; }
+        Thread* current() { return reinterpret_cast<Thread*>(g_writer); }
     }
 }
 
@@ -250,6 +263,72 @@ namespace
             kickos::kputs("kernel write under the new driver");
             EXPECT_EQ(g_pokes, 0)
                 << "the console left USER_OWNED, so the kernel is back on the new driver's UART";
+        });
+    }
+
+    // A writer whose send was refused while the endpoint stood vacated reaches the kernel
+    // console only after a restart published it again: the chunk belongs on the endpoint now,
+    // and a "taken" answer would lose it.
+    TEST(ConsoleOwnership, AFallbackAfterARePublishIsHandedBackToTheServedEndpoint)
+    {
+        run_isolated([]() {
+            console_owner_set_user();
+            console_note_driver_death();
+            console_on_driver_death();
+            ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
+            console_owner_set_user(); // the restart's publish
+            g_pokes = 0;
+            g_serves = true;
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), -KOS_EBUSY);
+            EXPECT_EQ(g_serves_asked, 1);
+            EXPECT_EQ(g_pokes, 0);
+            EXPECT_EQ(console_chip_writers(), 0);
+        });
+    }
+
+    // Boundaries of the answer above: a writer the endpoint would not take keeps the designed
+    // drop, a kernel writer is never asked, and a kernel-owned console takes the bytes.
+    TEST(ConsoleOwnership, OnlyAServedUserWriterIsRefused)
+    {
+        run_isolated([]() {
+            EXPECT_GT(kickos::kconsole_write_user("boot\n", 5), 0);
+            EXPECT_EQ(g_pokes, 1);
+            EXPECT_EQ(g_serves_asked, 0) << "a kernel-owned console asked about the endpoint";
+            console_owner_set_user();
+            g_pokes = 0;
+            g_serves = false;
+            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5), 5);
+            EXPECT_EQ(g_serves_asked, 1);
+            g_serves = true;
+            kickos::kputs("kernel line");
+            EXPECT_EQ(g_serves_asked, 1) << "a kernel write asked about a thread's endpoint";
+            EXPECT_EQ(g_pokes, 0);
+        });
+    }
+
+    // A driver dead while a thread of its group still holds the device leaves the console
+    // published and unserved until that thread exits. A writer is told to retry rather than
+    // have its line dropped, the device stays untouched, and the retry lands once the reclaim
+    // does.
+    TEST(ConsoleOwnership, ADeferredReclaimAsksAWriterToRetry)
+    {
+        run_isolated([]() {
+            console_owner_set_user();
+            console_note_driver_death();
+            g_window_free = false;
+            console_on_driver_death();
+            ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no window was opened";
+            g_serves = false;
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), -KOS_EAGAIN)
+                << "the writer's line was dropped in the deferred window";
+            kickos::kputs("kernel line");
+            EXPECT_EQ(g_pokes, 0) << "the device was written while a live thread held it";
+            EXPECT_EQ(console_chip_writers(), 0);
+            g_window_free = true;
+            console_on_driver_death();
+            EXPECT_EQ(g_reclaims, 1);
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), 7);
+            EXPECT_GT(g_pokes, 0) << "the retry did not land after the reclaim";
         });
     }
 }

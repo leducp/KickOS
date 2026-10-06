@@ -32,7 +32,7 @@ struct bit_name
 static struct bit_name const authority_names[] = {
     {KOS_AUTH_MEMORY, "memory"}, {KOS_AUTH_PINMUX, "pinmux"}, {KOS_AUTH_PSTATE, "pstate"},
     {KOS_AUTH_IRQ, "irq"},       {KOS_AUTH_SYSTEM, "system"}, {KOS_AUTH_CONSOLE, "console"},
-    {KOS_AUTH_TASKS, "tasks"},   {0, NULL}};
+    {KOS_AUTH_TASKS, "tasks"},   {KOS_AUTH_BUS_MASTER, "bus_master"}, {0, NULL}};
 static struct bit_name const grant_flag_names[] = {
     {KOS_WINDOW_RO, "ro"}, {KOS_WINDOW_UNCACHED, "uncached"}, {0, NULL}};
 static struct bit_name const port_flag_names[] = {{KOS_CAP_WAIT, "wait"}, {KOS_CAP_SIGNAL, "signal"}, {0, NULL}};

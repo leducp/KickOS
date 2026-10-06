@@ -10,6 +10,9 @@
 #
 #   KOS_CAPTURE=<log> check_pizero_amp_gate.sh <board-build> <kickos-source> <cmake>
 #
+# A finding is `FAIL: <token>: <prose>`, the token a planted row of
+# tests/static/check_app_judges.sh names.
+#
 # Only a capture is judged: no emulator runs this partition. Both kernels print a banner per
 # boot, so the boot judged opens at the last banner ahead of the last readback line, which
 # node 0 prints before it launches node 1.
@@ -20,9 +23,9 @@ set -u
 USAGE="usage: KOS_CAPTURE=<log> check_pizero_amp_gate.sh <board-build> <kickos-source> <cmake>"
 : "${1:?$USAGE}" "${2:?$USAGE}" "${3:?$USAGE}"
 if [ -z "${KOS_CAPTURE:-}" ]; then
-  fail "no KOS_CAPTURE: this partition is judged from a silicon capture only"
+  jfail no-capture "no KOS_CAPTURE: this partition is judged from a silicon capture only"
 fi
-[ -s "$KOS_CAPTURE" ] || fail "no capture at $KOS_CAPTURE"
+[ -s "$KOS_CAPTURE" ] || jfail no-capture "no capture at $KOS_CAPTURE"
 
 BANNER_RE='^   KickOS [^ ]+  -  microkernel RTOS$|^K [0-9]'
 READBACK_RE='^# accessctrl: 0xa0 = 0x[0-9a-f]+$'
@@ -32,7 +35,7 @@ _at="$(tr -d '\r' < "$KOS_CAPTURE" | awk -v banner="$BANNER_RE" -v readback="$RE
   $0 ~ readback { at = b }
   END { print at }')"
 if [ -z "$_at" ]; then
-  fail "$KOS_CAPTURE holds no '# accessctrl: 0xa0' line after a banner"
+  jfail readback "$KOS_CAPTURE holds no '# accessctrl: 0xa0' line after a banner"
 fi
 OUT="$(tr -d '\r' < "$KOS_CAPTURE" | sed -n "${_at},\$p")"
 echo "== judging the boot at line $_at of $KOS_CAPTURE =="
@@ -40,10 +43,10 @@ echo "== judging the boot at line $_at of $KOS_CAPTURE =="
 rc=0
 
 # The one line matching <ere>, or a finding.
-one() { # <ere> <what>
+one() { # <ere> <token> <what>
   _n="$(printf '%s\n' "$OUT" | grep -cE "$1")"
   if [ "$_n" -ne 1 ]; then
-    bad "$2: $_n line(s) match '$1', not one"
+    bad "$2: $3: $_n line(s) match '$1', not one"
     return 1
   fi
   return 0
@@ -51,63 +54,63 @@ one() { # <ere> <what>
 
 _banners="$(printf '%s\n' "$OUT" | grep -cE "$BANNER_RE")"
 if [ "$_banners" -gt 2 ]; then
-  bad "$_banners banners in the judged boot, which two kernels print two of"
+  bad "banners: $_banners banners in the judged boot, which two kernels print two of"
 fi
 
 # Node 0 granted UART0, which runs on core 0: DBG, CORE0, SP and SU set; CORE1, NSP and NSU
 # clear; DMA whatever reset left (RP2350 datasheet, Table 952).
-if one "$READBACK_RE" "UART0's ACCESSCTRL readback"; then
+if one "$READBACK_RE" readback "UART0's ACCESSCTRL readback"; then
   _img="$(printf '%s\n' "$OUT" | sed -n 's/^# accessctrl: 0xa0 = 0x\([0-9a-f]*\)$/\1/p')"
   if [ "${#_img}" -gt 8 ]; then
-    bad "UART0's ACCESSCTRL readback 0x$_img is wider than a register"
+    bad "readback: UART0's ACCESSCTRL readback 0x$_img is wider than a register"
   elif [ $((0x$_img & ~0x40)) -ne $((0x9C)) ]; then
-    bad "UART0's ACCESSCTRL reads 0x$_img: want DBG, CORE0, SP and SU alone beside DMA (0x9c or 0xdc)"
+    bad "readback: UART0's ACCESSCTRL reads 0x$_img: want DBG, CORE0, SP and SU alone beside DMA (0x9c or 0xdc)"
   fi
 fi
 
 one "^ampping: gate: node 0 read 0x11 from its uart0, node 1's kernel's read of it took a fault$" \
-    "the gate witness"
+    gate "the gate witness"
 
 # Node 1's read is denied by a bus error on the access itself: a BusFault (CFSR[15:8]), precise,
 # its BFAR the address read, and no MemManage (CFSR[7:0]) ahead of it.
 PROBE_RE='^# accessctrl probe: 0xa0 = 0x[0-9a-f]+, node 1 read 0x40070fe0: '
-if one "$PROBE_RE" "node 1's kernel's read of UART0"; then
+if one "$PROBE_RE" probe "node 1's kernel's read of UART0"; then
   _probe="$(printf '%s\n' "$OUT" | grep -E "$PROBE_RE")"
   _cfsr="$(printf '%s\n' "$_probe" | sed -n 's/.*: fault CFSR=0x\([0-9a-f]*\) BFAR=0x[0-9a-f]*$/\1/p')"
   _bfar="$(printf '%s\n' "$_probe" | sed -n 's/.*: fault CFSR=0x[0-9a-f]* BFAR=0x\([0-9a-f]*\)$/\1/p')"
   if [ -z "$_cfsr" ] || [ -z "$_bfar" ]; then
-    bad "node 1's kernel's read of UART0 took no fault: '$_probe'"
+    bad "probe: node 1's kernel's read of UART0 took no fault: '$_probe'"
   elif [ "${#_cfsr}" -gt 8 ] || [ "${#_bfar}" -gt 8 ]; then
-    bad "node 1's fault record is wider than a register: '$_probe'"
+    bad "probe: node 1's fault record is wider than a register: '$_probe'"
   elif [ $((0x$_cfsr & 0xFF)) -ne 0 ]; then
-    bad "node 1's read took a MemManage (CFSR=0x$_cfsr), not ACCESSCTRL's bus fault"
+    bad "probe: node 1's read took a MemManage (CFSR=0x$_cfsr), not ACCESSCTRL's bus fault"
   elif [ $((0x$_cfsr & 0x8200)) -ne $((0x8200)) ]; then
-    bad "node 1's read took no precise bus fault with a valid BFAR (CFSR=0x$_cfsr)"
+    bad "probe: node 1's read took no precise bus fault with a valid BFAR (CFSR=0x$_cfsr)"
   elif [ $((0x$_bfar)) -ne $((0x40070FE0)) ]; then
-    bad "node 1's bus fault is at 0x$_bfar, not UART0's UARTPERIPHID0 at 0x40070fe0"
+    bad "probe: node 1's bus fault is at 0x$_bfar, not UART0's UARTPERIPHID0 at 0x40070fe0"
   fi
 fi
 _faults="$(printf '%s\n' "$OUT" | grep -c '=== THREAD FAULT ===')"
 if [ "$_faults" -ne 0 ]; then
-  bad "$_faults thread fault(s) in the judged boot, where none is expected"
+  bad "fault: $_faults thread fault(s) in the judged boot, where none is expected"
 fi
 
 one '^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$' \
-    "both node apps alive"
-one '^ampping: node 0 calls node 1 port 3$' "node 0's call line"
+    alive "both node apps alive"
+one '^ampping: node 0 calls node 1 port 3$' call "node 0's call line"
 for _n in 1 2 3 4; do
-  one "^  ping $_n -> pong $((_n + 1)) from node 1 \\(4 byte\\(s\\)\\)\$" "round $_n"
+  one "^  ping $_n -> pong $((_n + 1)) from node 1 \\(4 byte\\(s\\)\\)\$" round "round $_n"
 done
-if one '^ampping: node 1 answered 4 round\(s\), its own record says [0-9]+$' "node 1's record"; then
+if one '^ampping: node 1 answered 4 round\(s\), its own record says [0-9]+$' served "node 1's record"; then
   _served="$(printf '%s\n' "$OUT" | sed -n 's/^ampping: node 1 answered 4 round(s), its own record says \([0-9]*\)$/\1/p')"
   if [ "$_served" -lt 4 ]; then
-    bad "node 1's own record says $_served, not four"
+    bad "served: node 1's own record says $_served, not four"
   fi
 fi
-one '^ampping: node 0 done, 4 round\(s\) across the partition$' "node 0 done"
+one '^ampping: node 0 done, 4 round\(s\) across the partition$' done "node 0 done"
 
 if has_e "$KOS_PANIC_RE"; then
-  bad "a panic or fault banner in the judged boot"
+  bad "panic: a panic or fault banner in the judged boot"
 fi
 
 if [ "$rc" -ne 0 ]; then

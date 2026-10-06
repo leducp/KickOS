@@ -7,7 +7,7 @@
 set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc src/root_entry.cc
                         src/console_ring.cc src/driver_service.cc src/uart_service.cc
                         src/uart_service_dev.cc src/usb_cdc_service.cc src/grant_lookup.cc
-                        src/init_status.cc src/task_trampoline.cc)
+                        src/init_status.cc src/task_trampoline.cc src/console_flush.cc)
 
 # newlib_sbrk.cc stays its own TU: merging it into newlib_stubs.cc disables the heapless-board
 # link error (-Wl,-u,_exit force-links that object everywhere). sim_exit.cc is separate so the

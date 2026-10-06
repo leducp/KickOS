@@ -89,6 +89,12 @@ namespace kickos
         // capability stays installed and unnameable until its holder dies.
         uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
         {
+#if KICKOS_PRESYNC and defined(KICKOS_ENABLE_SELFTEST)
+            if (rc == 0 and presync_take_fault_out())
+            {
+                return static_cast<uint64_t>(-KOS_EFAULT);
+            }
+#endif
             if (rc == 0
                 and not kaccess_to_user(user_space_of(sched::current()), out, &handle,
                                         sizeof(handle)))
@@ -114,7 +120,8 @@ namespace kickos
 
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
         // the bytes that went out, or with none, -KOS_EAGAIN where the console could take
-        // nothing now and -KOS_EFAULT where the buffer went away.
+        // nothing now, -KOS_EBUSY where the caller's stdout is served again and -KOS_EFAULT
+        // where the buffer went away.
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[CONSOLE_CHUNK];
@@ -140,7 +147,13 @@ namespace kickos
                 // A line longer than this buffer is several inserts, and under pressure the
                 // console can refuse one and accept the next: carrying on would put a hole in
                 // the middle of a line whose tail arrived.
-                size_t const took = static_cast<size_t>(kconsole_write_user(chunk, n));
+                int const w = kconsole_write_user(chunk, n);
+                if (w < 0)
+                {
+                    none = w;
+                    break;
+                }
+                size_t const took = static_cast<size_t>(w);
                 done += took;
                 if (took < n)
                 {
@@ -257,6 +270,137 @@ namespace
 {
     uint64_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
                           uintptr_t a2, uintptr_t a3);
+
+#if KICKOS_PRESYNC
+    bool presync_wanted(uintptr_t nr)
+    {
+#if KICKOS_ARCH_ALIAS_DCACHE
+        if (nr == KOS_SYS_MEM_SELF_GRANT or nr == KOS_SYS_FRAME_MAP)
+        {
+            return true;
+        }
+#endif
+        return nr == KOS_SYS_THREAD_CREATE or nr == KOS_SYS_TASK_CREATE;
+    }
+
+#if KICKOS_ARCH_ALIAS_DCACHE
+    void self_grant_plan(Thread* c, uintptr_t base, size_t size, uintptr_t flags)
+    {
+        uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
+        if (not cap_check_authority(c, AUTH_MEMORY) or size == 0 or (base + size) < base
+            or not mem_flags_to_attr(flags, &attr) or not grant_nocache_admissible(attr)
+            or user_range_typed_ok(base, size, attr))
+        {
+            return;
+        }
+        enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
+        if ((attr & ARCH_MPU_NOCACHE) != 0)
+        {
+            mtype = ARCH_MAP_NOCACHE;
+        }
+        aspace_self_grant_note(domain_ranges(task_domain(c->task)), base, size,
+                               ARCH_MAP_R | ARCH_MAP_W, mtype);
+    }
+
+    void frame_map_plan(Thread* c, uintptr_t a0, uintptr_t a1, uintptr_t a3)
+    {
+        if (not cap_check_authority(c, AUTH_MEMORY)
+            or (static_cast<uint32_t>(a3) & ~static_cast<uint32_t>(KOS_MEM_FLAGS_ALL)) != 0)
+        {
+            return;
+        }
+        int err = 0;
+        FrameRun const* const run = static_cast<FrameRun*>(
+            cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &err));
+        CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
+        Domain const* const target = static_cast<Domain*>(
+            cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &err));
+        if (run == nullptr or fe == nullptr or domain_space(target) == nullptr)
+        {
+            return;
+        }
+        enum arch_map_memtype type = ARCH_MAP_NORMAL;
+        if ((static_cast<uint32_t>(a3) & KOS_MEM_NOCACHE) != 0)
+        {
+            type = ARCH_MAP_NOCACHE;
+        }
+        aspace_cap_map_note(fe->obj, run->base, run->pages, type);
+    }
+
+#endif
+
+    // noinline: its frame must not sit below presync_run's interrupt windows (SYSWIN).
+    __attribute__((noinline)) void presync_plan(uintptr_t nr, uintptr_t a0, uintptr_t a1,
+                                                uintptr_t a2, uintptr_t a3)
+    {
+        {
+            IrqLock lock;
+            bool const entering = presync_begin();
+            Thread* const c = sched::current();
+            uint32_t attr = 0u;
+            if (nr == KOS_SYS_THREAD_CREATE and entering)
+            {
+                spawn_presync_enter(reinterpret_cast<kos_thread_params const*>(a0));
+            }
+            if (c != nullptr and c->task != nullptr)
+            {
+#if KICKOS_ARCH_ALIAS_DCACHE
+                if (nr == KOS_SYS_MEM_SELF_GRANT)
+                {
+                    self_grant_plan(c, a0, static_cast<size_t>(a1), a2);
+                }
+                else if (nr == KOS_SYS_FRAME_MAP)
+                {
+                    frame_map_plan(c, a0, a1, a3);
+                }
+#else
+                (void)a2;
+#endif
+                if (nr == KOS_SYS_THREAD_CREATE and cap_out_check(a1) == 0)
+                {
+                    spawn_presync_plan();
+                }
+                else if (nr == KOS_SYS_TASK_CREATE and cap_out_check(a2) == 0
+                         and mem_flags_to_attr(a3, &attr))
+                {
+                    task_create_presync_plan(reinterpret_cast<void*>(a0),
+                                             static_cast<size_t>(a1), attr);
+                }
+            }
+        }
+    }
+
+    __attribute__((noinline)) void presync_prepare(uintptr_t nr, uintptr_t a0, uintptr_t a1,
+                                                   uintptr_t a2, uintptr_t a3)
+    {
+        presync_plan(nr, a0, a1, a2, a3);
+        presync_run();
+    }
+
+    __attribute__((noinline)) bool presync_retry(bool succeeded)
+    {
+        bool again = false;
+        {
+            IrqLock lock;
+            again = presync_end();
+        }
+        presync_release(succeeded and not again);
+        return again;
+    }
+
+    __attribute__((noinline)) void presync_yield()
+    {
+        Thread* const c = sched::current();
+        if (c != nullptr and c->cancel_kind != CANCEL_NONE and not c->dying)
+        {
+            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
+        }
+        if (c != nullptr and not c->privileged)
+        {
+            arch_irq_window();
+        }
+    }
+#endif
 }
 
 // The death point of a cancelled thread. A cancel breaks the target's park, so it returns to
@@ -275,12 +419,31 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
 #if KICKOS_BENCH_SCHED_ON
     // A syscall enters from userspace, so leaving restores that on whichever core it returns.
     (void)kickos_bench_reason_enter(BR_SYSCALL);
-    uint64_t const rc = syscall_body(nr, a0, a1, a2, a3);
-    kickos_bench_reason_leave(BR_OTHER);
-    return rc;
-#else
-    return syscall_body(nr, a0, a1, a2, a3);
 #endif
+    uint64_t rc = 0;
+#if KICKOS_PRESYNC
+    // One call site keeps syscall_body inlined: a second adds its frame to the trap red zone.
+    bool const synced = presync_wanted(nr);
+    while (true)
+    {
+        if (synced)
+        {
+            presync_prepare(nr, a0, a1, a2, a3);
+        }
+        rc = syscall_body(nr, a0, a1, a2, a3);
+        if (not synced or not presync_retry(rc == 0))
+        {
+            break;
+        }
+        presync_yield();
+    }
+#else
+    rc = syscall_body(nr, a0, a1, a2, a3);
+#endif
+#if KICKOS_BENCH_SCHED_ON
+    kickos_bench_reason_leave(BR_OTHER);
+#endif
+    return rc;
 }
 
 namespace
@@ -1039,18 +1202,40 @@ uint64_t syscall_body(uintptr_t nr,
             // POINTER return, OUT of the -KOS_E* scheme: a negative errno cast to void* would
             // be a non-NULL pointer, so EVERY failure path returns 0 (NULL).
 #if KICKOS_HAVE_ASPACE
+            // A page-aligned range RESERVED in the calling task's own space, mapped nowhere;
+            // the frames under it make it a globally unique name the handoff can carry, and
+            // they are cleared before the range names them. A privileged caller gets null: the
+            // kernel domain carries no space.
+#if KICKOS_PRESYNC
+            {
+                IrqLock lock;
+                Thread* const c = sched::current();
+                if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY)
+                    or aspace_reserve_stage(domain_ranges(task_domain(c->task)),
+                                            static_cast<size_t>(a0))
+                           == 0)
+                {
+                    return 0;
+                }
+            }
+            presync_run();
+            uintptr_t va = 0;
+            {
+                IrqLock lock;
+                va = aspace_reserve_commit(domain_ranges_mut(task_domain(sched::current()->task)));
+            }
+            presync_release(va != 0);
+            return va;
+#else
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
             {
                 return 0;
             }
-            // A page-aligned range RESERVED in the calling task's own space, mapped nowhere;
-            // the frames under it make it a globally unique name the handoff can carry, and the
-            // frame pool hands them out cleared. A privileged caller gets null: the kernel
-            // domain carries no space.
             return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
                                   static_cast<size_t>(a0));
+#endif
 #else
             void* block = nullptr;
             {
@@ -1132,9 +1317,13 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_EINVAL);
             }
-            return static_cast<uint64_t>(
-                aspace_cap_map(sp, vr, a2, run_obj, run->base, run->pages,
-                               ARCH_MAP_R | ARCH_MAP_W, type));
+            int const mrc = aspace_cap_map(sp, vr, a2, run_obj, run->base, run->pages,
+                                           ARCH_MAP_R | ARCH_MAP_W, type);
+            if (mrc == 0)
+            {
+                presync_commit();
+            }
+            return static_cast<uint64_t>(mrc);
         }
 #endif
         case KOS_SYS_MEM_SELF_GRANT:
@@ -1193,60 +1382,17 @@ uint64_t syscall_body(uintptr_t nr,
             int const grc = aspace_self_grant(domain_space(task_domain(c->task)),
                                               domain_ranges_mut(task_domain(c->task)), base,
                                               size, ARCH_MAP_R | ARCH_MAP_W, mtype);
+            if (grc == 0)
+            {
+                presync_commit();
+            }
             // The range list already carries this mapping, at the EXACT extent, so there is no
             // region record beside it. That is what moves the -KOS_ENOMEM budget onto
             // KICKOS_ASPACE_RANGES and what makes the grant reach every sibling, the array
             // being per-THREAD while the mapping is task-wide.
             return static_cast<uint64_t>(grc);
 #else
-            // Rule 7 admission on the geometry that will actually be committed: a window
-            // rounded up AFTER admission could cover a neighbour the unrounded extent did
-            // not.
-            size_t const rsz = arch_ram_region_size(size);
-            if (rsz == 0)
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            // Nameable by one descriptor, as for the stack grant (syscall_thread.cc):
-            // PMSAv7's MPU_RBAR masks the base down to the region size, so an unaligned base
-            // would be programmed as a window starting below what the caller named. On a
-            // no-MPU arch it still demands a 16-aligned base.
-            if (not arch_ram_region_admissible(base, rsz))
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            if (not grant_region_admissible(base, rsz, attr,
-                                            cap_check_authority(c, AUTH_MEMORY)))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            // Rule 7 answers for the arena's BOUNDS and not for who inside it reserved what:
-            // without this a caller could make a sibling task's block reachable to itself.
-            // Only a NEW window: the already-reachable short circuit above is what a
-            // privileged caller's whole-arena background map answers on.
-            if (not ram_owner_nameable(c->task, base, size))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            // Another thread holding the block with another memory type keeps it: a window
-            // over it, or a sibling's grant.
-            if (not memory_type_free(base, rsz, attr, c))
-            {
-                return static_cast<uint64_t>(-KOS_EBUSY);
-            }
-            grant_sync(&c->mpu, base, rsz, attr);
-            // Retype an existing block in place to avoid conflicting overlapping descriptors.
-            // Keep the temporary region in MpuSet to limit syscall stack use.
-            if (not c->mpu.add_enforced_retyping(base, rsz, attr))
-            {
-                return static_cast<uint64_t>(-KOS_ENOMEM);
-            }
-            // Must be effective BEFORE the return: the caller's next instruction may
-            // dereference the region, and on a deferred-switch arch apply() only STASHES.
-            // apply_now and NOT apply plus commit: a switch to another thread may already be
-            // pended, and the pair would leave its epilogue the caller's image to program.
-            c->mpu.apply_now();
-            return 0;
+            return static_cast<uint64_t>(thread_self_grant(c, base, size, attr));
 #endif
         }
         case KOS_SYS_PERIPH_ENABLE:

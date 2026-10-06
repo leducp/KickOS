@@ -15,7 +15,7 @@
 #   arch    <arch> header=<path-relative-to-source-dir>
 #   preset  <arch> <configure-preset>
 #   class   <arch> <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap|stack=kernel] \
-#                                                        [kstacks=0|kstacks=1]
+#                                                        [kstacks=0|kstacks=1] [at=<symbol>]
 #   root    <arch> <CLASS> [?]<symbol>
 #   root    <arch> <CLASS> NONE reason: <text to end of line>
 #   exclude <arch> <mangled-symbol> [class=<CLASS>[,<CLASS>]...] reason: <text to end of line>
@@ -64,6 +64,10 @@
 # have no one to protect, while an involuntary frame still has to FIT the stack it lands on.
 #
 # IDLE prices idle_entry's own frames, which sit above the interrupt idle waits for.
+#
+# at=<symbol> says the class prices an interrupt nested below that ONE callee alone: its depth is
+# the longest path from a root that ends at the callee, the callee's own frame included, and a
+# class none of whose roots reaches it is refused.
 #
 # stack=trap says the descent runs on a static kernel stack the arch owns. The SPAWN FLOOR
 # clause does not apply.
@@ -465,15 +469,16 @@ preset  lx6 esp32-wroom-bench
 preset  lx6 esp32-wroom-benchsmp
 
 # --- armv8a --------------------------------------------------------------------
-# TEN classes. switch.S takes four entries: the EL1h IRQ slot, which builds its frame on the
+# ELEVEN classes. switch.S takes four entries: the EL1h IRQ slot, which builds its frame on the
 # stack it interrupts, idle's or a privileged thread's own; the EL0 IRQ and synchronous slots,
 # which build theirs on the thread's KERNEL BLOCK, SP_EL1 already naming its top; and the EL1h
 # synchronous slot, whose reporter runs on the stack that faulted. Every other slot reports
 # after seating SP_EL1 from the kernel's own record, or is unreachable by construction, SPSel
 # never selecting SP_EL0.
 #
-# An EL0 entry masks interrupts and nothing in the kernel unmasks what it did not mask, so
-# nothing nests on a block under IRQK or SYSK. The death-path stubs and a privileged thread's
+# An EL0 entry masks interrupts, and the one place the kernel opens them under SYSK is
+# arch_irq_window, called by a system call syncing frames ahead of the kernel lock: SYSWIN prices
+# the interrupt nested there. The death-path stubs and a privileged thread's
 # return run with interrupts live, so each is priced twice: EXITK and RET with an interrupt's
 # whole extent nested at the deepest byte and the switch cut, EXITKSW and RETSW through the
 # switch with nothing below it (armv8a_trap_stack.h).
@@ -501,6 +506,8 @@ class   armv8a IRQK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_D
                        stack=kernel
 class   armv8a SYSK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSK \
                        stack=kernel
+class   armv8a SYSWIN  frame=KICKOS_ARMV8A_TRAP_WINDOW depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN \
+                       stack=kernel at=arch_irq_window
 class   armv8a EXITK   frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_EXITK \
                        stack=kernel
 class   armv8a EXITKSW frame=KICKOS_ARMV8A_TRAP_FRAME_NONE \
@@ -524,6 +531,7 @@ root    armv8a IRQK    ?kickos_bench_switch_done
 root    armv8a SYSK    syscall_dispatch
 root    armv8a SYSK    kickos_fault_kill_thread
 root    armv8a SYSK    kickos_armv8a_exception
+root    armv8a SYSWIN  syscall_dispatch
 root    armv8a EXITK   kickos_thread_fault_exit
 root    armv8a EXITK   kickos_thread_slay_exit
 root    armv8a EXITKSW kickos_thread_fault_exit
@@ -551,9 +559,10 @@ recurse armv8a aspace_armv8a.cc:prune_empty 3 reason: levels 1 to 3, the leaf le
 recurse armv8a aspace_armv8a.cc:map_into 3 reason: levels 1 to 3, the leaf level storing descriptors instead
 
 # --- rv64imac ------------------------------------------------------------------
-# TEN classes. stvec is DIRECT, so every cause enters kickos_rv64_stvec, and sstatus.SPP and
+# ELEVEN classes. stvec is DIRECT, so every cause enters kickos_rv64_stvec, and sstatus.SPP and
 # scause pick the stack. From U-mode every cause builds its frame on the thread's KERNEL BLOCK:
-# an ecall and a fault are SYSK, an interrupt IRQK, all with SIE clear to the sret. From S-mode
+# an ecall and a fault are SYSK, an interrupt IRQK, all with SIE clear to the sret but for
+# arch_irq_window, where a system call lets an interrupt nest on the block, SYSWIN. From S-mode
 # an interrupt keeps its frame on the sp it interrupted, idle's or a privileged thread's own or
 # a death-path stub's block, and every exception takes the per-hart trap stack, NESTED, whose
 # reporter a U-mode entry that found no block seated also runs on.
@@ -575,6 +584,8 @@ class   rv64imac IRQK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEP
                          stack=kernel
 class   rv64imac SYSK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_SYSK \
                          stack=kernel
+class   rv64imac SYSWIN  frame=KICKOS_RV64_TRAP_WINDOW depth=KICKOS_RV64_TRAP_DEPTH_SYSWIN \
+                         stack=kernel at=arch_irq_window
 class   rv64imac NESTED  frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_NESTED_DEPTH \
                          stack=trap
 class   rv64imac EXITK   frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_EXITK \
@@ -596,6 +607,7 @@ root    rv64imac IRQK    ?kickos_switch_unlock
 # .Lecall's dispatch, and .Lfault's reporter with the containment call inside it.
 root    rv64imac SYSK    syscall_dispatch
 root    rv64imac SYSK    kickos_rv64_fault_report
+root    rv64imac SYSWIN  syscall_dispatch
 root    rv64imac NESTED  kickos_rv64_fault_report
 root    rv64imac NESTED  kickos_rv64_no_kernel_stack
 root    rv64imac EXITK   kickos_thread_fault_exit
@@ -627,13 +639,14 @@ recurse rv64imac aspace_rv64imac.cc:prune_empty 4 reason: one activation per lev
 recurse rv64imac aspace_rv64imac.cc:map_into 4 reason: one activation per level, the leaf level storing descriptors instead
 
 # --- x86_64 --------------------------------------------------------------------
-# TWELVE classes. A ring 3 entry builds its frame on the thread's KERNEL BLOCK: an interrupt
+# THIRTEEN classes. A ring 3 entry builds its frame on the thread's KERNEL BLOCK: an interrupt
 # or an exception through the task-state segment's rsp0 is IRQK, SYSCALL through the per-core
-# block is SYSK, both with the interrupt flag clear to the return. A ring 0 interrupt keeps its
-# frame on the rsp it interrupted, IRQ, idle's or a privileged thread's own or a death-path
-# stub's block, and the double fault, NMI and machine check take static interrupt-stack-table
-# arrays, IST. A privileged caller's arch_syscall jumps to the dispatch on its own stack with
-# interrupts live, SYSPRIV.
+# block is SYSK, both with the interrupt flag clear to the return but in arch_irq_window, where a
+# system call syncing frames ahead of the kernel lock takes an interrupt on the block, SYSWIN. A
+# ring 0 interrupt keeps its frame on the rsp it interrupted, IRQ, idle's or a privileged
+# thread's own or a death-path stub's block, and the double fault, NMI and machine check take
+# static interrupt-stack-table arrays, IST. A privileged caller's arch_syscall jumps to the
+# dispatch on its own stack with interrupts live, SYSPRIV.
 #
 # The death-path stubs, a privileged thread's return and a privileged syscall run with
 # interrupts live, so each is priced twice: EXITK, RET and SYSPRIV with an interrupt's whole
@@ -656,6 +669,8 @@ class   x86_64 IRQK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP
                          stack=kernel
 class   x86_64 SYSK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_SYSK \
                          stack=kernel
+class   x86_64 SYSWIN    frame=KICKOS_X86_64_TRAP_WINDOW depth=KICKOS_X86_64_TRAP_DEPTH_SYSWIN \
+                         stack=kernel at=arch_irq_window
 class   x86_64 SYSPRIV   frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
 class   x86_64 SYSPRIVSW frame=KICKOS_X86_64_TRAP_FRAME_NONE \
                          depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
@@ -678,6 +693,7 @@ root    x86_64 IRQ       kickos_x86_64_trap
 root    x86_64 IRQK      kickos_x86_64_trap
 root    x86_64 IST       kickos_x86_64_trap
 root    x86_64 SYSK      syscall_dispatch
+root    x86_64 SYSWIN    syscall_dispatch
 root    x86_64 SYSPRIV   syscall_dispatch
 root    x86_64 SYSPRIVSW syscall_dispatch
 root    x86_64 EXITK     kickos_thread_fault_exit

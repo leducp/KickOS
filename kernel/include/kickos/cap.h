@@ -171,7 +171,8 @@ namespace kickos
         AUTH_IRQ = 1 << 3,     // irq_claim (the tier-1 mint), irq_attach, irq_unmask
         AUTH_SYSTEM = 1 << 4,  // shutdown, reboot
         AUTH_CONSOLE = 1 << 5, // console_publish
-        AUTH_TASKS = 1 << 6    // task_create, and a spawn that builds a task of its own
+        AUTH_TASKS = 1 << 6,   // task_create, and a spawn that builds a task of its own
+        AUTH_BUS_MASTER = 1 << 7 // a spawn's device window over a device that masters the bus
     };
 
     // One bit per distinct holder: a bit merging two holders grants each the other's power.
@@ -181,7 +182,8 @@ namespace kickos
     // (caller_holds_mmio_block, syscall_mem.cc).
 
     static constexpr uint32_t CAP_AUTH_ALL = AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ
-                                             | AUTH_SYSTEM | AUTH_CONSOLE | AUTH_TASKS;
+                                             | AUTH_SYSTEM | AUTH_CONSOLE | AUTH_TASKS
+                                             | AUTH_BUS_MASTER;
 
     // Carries the object pool's handle codec verbatim (no re-encoding). gen is bumped on
     // close: the per-thread use-after-close ABA guard.
@@ -690,6 +692,10 @@ namespace kickos
     // *out is untouched. The sentinel stays private to cap.cc: it is tested by EQUALITY, never
     // by sign, because a live handle whose slot generation has reached 32768 is NEGATIVE.
     bool cap_console_target(int* out);
+
+    // Whether a send through `t`'s stdout slot reaches the published console endpoint and finds
+    // it receiving. Caller holds IrqLock.
+    bool cap_console_serves(Thread const* t);
 
     // Copy kernel text to an already-waiting console receiver; never park or retry.
     // Returns bytes copied, or zero. The receiver is woken even if copying fails.

@@ -35,7 +35,9 @@ devices:
   # reaches every pin's general-I/O switch, the console's included. Each port's DSCR2 sits in
   # /dev/mpc.
   port: { window: [0x0008C000, 0x100], symbol: PORT, ref: "Table 5.1 List of I/O Registers (Address Order), p.243" }
-  mpc: { window: [0x0008C100, 0x100], symbol: MPC, ref: "Table 5.1 List of I/O Registers (Address Order), p.246" }
+  # PWPR and every pin's PFS: a holder would route any pin, the console's included, past
+  # arch_pinmux_set.
+  mpc: { window: [0x0008C100, 0x100], owner: kernel, symbol: MPC, ref: "Table 5.1 List of I/O Registers (Address Order), p.246" }
 
   # CMTW0, the next-event timer, and CMTW1, the free-running clock.
   cmtw:

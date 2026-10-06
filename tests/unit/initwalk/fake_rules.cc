@@ -275,7 +275,7 @@ namespace
         p.prio = 0;
         EXPECT_EQ(spawn(p), -KOS_EINVAL);
         p.prio = 10;
-        p.authority = 1u << 7;
+        p.authority = 1u << 8;
         EXPECT_EQ(spawn(p), -KOS_EINVAL);
     }
 
@@ -408,6 +408,30 @@ namespace
         EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
         fake::set_console_receives(true);
         EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
+    }
+
+    TEST_F(Fake, a_console_flush_is_two_zero_length_sends_and_stops_at_a_failed_one)
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        ASSERT_EQ(kos_endpoint_create(&ep), 0);
+        ASSERT_EQ(kos_console_publish(ep), 0);
+        kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
+        kos_thread_params p = params(task());
+        p.caps = wait;
+        p.cap_count = 1;
+        ASSERT_EQ(spawn(p), 0);
+        ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
+        size_t const before = fake::calls_of("kos_send_timed").size();
+        EXPECT_EQ(kos_console_flush(1000u), 0);
+        std::vector<fake::Call> sends = fake::calls_of("kos_send_timed");
+        ASSERT_EQ(sends.size(), before + 2u);
+        for (size_t k = before; k < sends.size(); k++)
+        {
+            EXPECT_EQ(sends[k].args, (std::vector<uint64_t>{KOS_CAP_STDOUT, 0u, 1000u}));
+        }
+        fake::set_console_receives(false);
+        EXPECT_EQ(kos_console_flush(1000u), -KOS_ETIMEDOUT);
+        EXPECT_EQ(fake::calls_of("kos_send_timed").size(), before + 3u);
     }
 
     TEST_F(Fake, a_vacated_endpoint_answers_at_once_until_its_next_receiver_waits)

@@ -21,7 +21,10 @@ scratch_dir
 awk '/^[0-9a-f]+ <_*kickos_app_main>:/ { on = 1; next } on && /^[0-9a-f]+ <[^.]/ { exit } on' \
     "$TMP/dis" > "$TMP/main"
 [ -s "$TMP/main" ] || fail "$IMAGE has no kickos_app_main to read"
-grep -qw "$WANT" "$TMP/main" || {
+# The mnemonic column alone, which objdump separates by tabs from the encoding before it and the
+# operands after it: a symbol or an operand spelling the word is not the instruction.
+awk -F '\t' -v want="$WANT" 'NF >= 3 { split($3, m, " "); if (m[1] == want) { found = 1 } }
+    END { exit !found }' "$TMP/main" || {
     sed -n '1,40p' "$TMP/main" >&2
     fail "main in $IMAGE does not execute \`$WANT\`"
 }

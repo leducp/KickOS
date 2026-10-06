@@ -67,6 +67,16 @@ namespace kickos
     inline bool ram_owner_nameable(Task const*, uintptr_t, size_t) { return true; }
 #endif
 
+#if KICKOS_HAVE_MPU and KICKOS_ARCH_ARENA_DCACHE
+    // Whether a block [base, base + size) meets has been held by a non-cacheable region since
+    // its last sync, and the record of it for every block it meets. Caller holds IrqLock.
+    bool ram_owner_sync_owed(uintptr_t base, size_t size);
+    void ram_owner_set_sync_owed(uintptr_t base, size_t size, bool owed);
+#else
+    inline bool ram_owner_sync_owed(uintptr_t, size_t) { return false; }
+    inline void ram_owner_set_sync_owed(uintptr_t, size_t, bool) {}
+#endif
+
 #if not KICKOS_HAVE_ASPACE
     // Zero a block kos_ram_alloc hands out over `extent`, the span a region grants. Where the
     // arch puts a data cache over the arena the zeroes are cleaned to memory and the lines

@@ -594,10 +594,15 @@ C compiler, so its installation cannot be looked for in the package"
         esac
     done
     _pn_pkg="$_pn_prefix/lib/cmake/KickOS"
+    set -- "$_pn_pkg"/KickOSTargets*.cmake "$_pn_pkg/KickOSConfig.cmake" "$_pn_pkg/kickos.cmake" \
+        "$_pn_pkg/manifest.yaml"
+    for _pn_f in "$_pn_pkg/board.cmake" "$_pn_pkg"/toolchain-*.cmake "$_pn_prefix"/lib/kickos/*/asserts.ld; do
+        if [ -f "$_pn_f" ]; then
+            set -- "$@" "$_pn_f"
+        fi
+    done
     _pn_rc=0
-    _pn_hit="$(machine_path_named "$_pn_dir.dirs" "$_pn_pkg"/KickOSTargets*.cmake \
-        "$_pn_pkg/KickOSConfig.cmake" "$_pn_pkg/kickos.cmake" "$_pn_pkg/manifest.yaml")" \
-        || _pn_rc=$?
+    _pn_hit="$(machine_path_named "$_pn_dir.dirs" "$@")" || _pn_rc=$?
     case "$_pn_rc" in
         0) fail "the package names a directory of the machine that built it: $_pn_hit" ;;
         1) ;;
@@ -778,6 +783,32 @@ boot_args() { # <image>
     fi
 }
 
+# Seconds a uefi-pe boot spends in firmware before the image runs, added to every bound a boot
+# puts on its image. The firmware took up to 8 s on a loaded host.
+KOS_UEFI_FIRMWARE_S=20
+# The bound on the boot in flight, its firmware allowance included, which boot_bound sets.
+KOS_BOOT_BOUND_S=0
+# The worst case of the boots this gate has made so far, each bound and the stop after it.
+KOS_BOOTS_SPENT_S=0
+
+# Charge a boot, its image bounded at <seconds>, to this gate's ctest TIMEOUT, which the root
+# CMakeLists hands every test as KOS_CTEST_TIMEOUT_S, and refuse the boot it cannot cover: ctest
+# would kill the gate at the instant `timeout` fires and report no finding.
+boot_bound() { # <seconds>
+    KOS_BOOT_BOUND_S="$1"
+    if [ "${KICKOS_BOOT:-kernel}" = "uefi-pe" ]; then
+        KOS_BOOT_BOUND_S=$((KOS_BOOT_BOUND_S + KOS_UEFI_FIRMWARE_S))
+    fi
+    KOS_BOOTS_SPENT_S=$((KOS_BOOTS_SPENT_S + KOS_BOOT_BOUND_S + KOS_STOP_TICKS / 5))
+    if [ -n "${KOS_CTEST_TIMEOUT_S:-}" ] \
+       && [ "$KOS_BOOTS_SPENT_S" -ge "${KOS_CTEST_TIMEOUT_S%%.*}" ]; then
+        fail "this gate's ctest TIMEOUT of ${KOS_CTEST_TIMEOUT_S%%.*}s does not cover its boots:
+  with this one they are bounded at ${KOS_BOOTS_SPENT_S}s, each image's bound, the firmware
+  allowance and the stop included. Count this boot in the BOOTS it is registered with, or
+  reconfigure under this QEMU_TIMEOUT"
+    fi
+}
+
 # The status line an image prints for itself, as a sed BRE with the number in \1. Restated from
 # arch/x86/chip/q35/chip_q35.cc on purpose: a parse derived from the emitter would assert
 # nothing about it. Anchored, because an unanchored match would also take a line quoting it.
@@ -864,9 +895,10 @@ run_image() {
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
         boot_args "$1"
+        boot_bound "${QEMU_TIMEOUT:-20}"
         # QEMU_EXTRA and KOS_BOOT_ARGS are word lists (e.g. `-bios none`), so they must split.
         # shellcheck disable=SC2086
-        OUT="$(timeout "${QEMU_TIMEOUT:-20}" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
+        OUT="$(timeout "$KOS_BOOT_BOUND_S" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
                  -nographic ${KOS_BOOT_ARGS} 2>&1)"
     else
         OUT="$(timeout "${SIM_TIMEOUT:-20}" "$1" 2>&1)"
@@ -908,9 +940,12 @@ poll_image() { # <elf> <ere>...
     shift
     _log="$(mktemp)" || fail "mktemp failed"
     KOS_TRASH_FILE="$_log"
+    _bound="${QEMU_TIMEOUT:-8}"
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
         boot_args "$_elf"
+        boot_bound "$_bound"
+        _bound="$KOS_BOOT_BOUND_S"
         # QEMU_EXTRA and KOS_BOOT_ARGS are word lists (e.g. `-bios none`), so they must split.
         # shellcheck disable=SC2086
         "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
@@ -926,11 +961,11 @@ poll_image() { # <elf> <ere>...
     _n=0
     POLL_ALIVE=1
     # Eight, where run_image takes twenty, and the two are not interchangeable. A gate that
-    # polls spends this whole bound before it reports no progress, and two of them register
-    # their sim arm at a ctest TIMEOUT of 15 (tests/integration/gates/rootfault.cmake and
-    # mpu_fault.cmake). At twenty ctest kills those at 15 instead, and a reported "the poll
-    # ran out" becomes a timeout carrying no finding. Raise the registered bounds first.
-    while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
+    # polls spends this whole bound before it reports no progress, and mpu_fault registers its
+    # sim arm, which boot_bound does not charge, at a ctest TIMEOUT of 15
+    # (tests/integration/gates/mpu_fault.cmake). At twenty ctest kills it at 15 instead, and a
+    # reported "the poll ran out" becomes a timeout carrying no finding.
+    while [ "$_n" -lt $((_bound * 5)) ]; do   # poll at 5 Hz
         if _poll_matched "$_log" "$@" && _poll_until "$_log"; then
             break
         fi

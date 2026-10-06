@@ -483,6 +483,19 @@ namespace selftest
         TAP_CHECK(took1 == took0 + 1);
     }
 
+    // The first port the partition names `peer`, which main crosses to, or KOS_AMP_NO_ENTRY.
+    uint32_t amp_served_port(uint32_t peer)
+    {
+        for (uint32_t i = 0; i < KOS_AMP_PORT_COUNT; i++)
+        {
+            if (kos_amp_entry_node(i) == peer)
+            {
+                return kos_amp_entry_port(i);
+            }
+        }
+        return KOS_AMP_NO_ENTRY;
+    }
+
     void t_amp_mint_reply_port()
     {
         uint32_t const peer = amp_round_peer();
@@ -494,16 +507,31 @@ namespace selftest
         TAP_CHECK(amp_rc(KOS_AMP_OP_MINT, KOS_AMP_PORT_REPLY) == -KOS_EINVAL);
         // PORT_ECHO is reserved too but is a service, answered by the window layer.
         TAP_CHECK(amp_rc(KOS_AMP_OP_MINT, KOS_AMP_PORT_ECHO) == 0);
-        // The control: a crossing the partition names still mints.
-        uint32_t served = KOS_AMP_NO_ENTRY;
+        // Kept, it would be a crossing main's composition does not name: main uses every port
+        // the partition names another node, and only those.
+        bool echo_named = false;
         for (uint32_t i = 0; i < KOS_AMP_PORT_COUNT; i++)
         {
-            if (kos_amp_entry_node(i) == peer)
+            if (kos_amp_entry_node(i) == peer and kos_amp_entry_port(i) == KOS_AMP_PORT_ECHO)
             {
-                served = kos_amp_entry_port(i);
-                break;
+                echo_named = true;
             }
         }
+        if (not echo_named)
+        {
+            int64_t const unnamed = amp_rc(KOS_AMP_OP_MINT, KOS_AMP_PORT_ECHO | KOS_AMP_MINT_HOLD);
+            if (unnamed >= 0)
+            {
+                kos_handle_close(static_cast<kos_cap_t>(unnamed));
+            }
+            TAP_CHECK(unnamed == -KOS_EPERM);
+        }
+        else
+        {
+            tap::partial("the partition names the peer's echo port, so no unnamed port is held");
+        }
+        // The control: a crossing the partition names still mints.
+        uint32_t const served = amp_served_port(peer);
         if (served != KOS_AMP_NO_ENTRY)
         {
             TAP_CHECK(amp_rc(KOS_AMP_OP_MINT, served) == 0);
@@ -1988,7 +2016,13 @@ namespace selftest
             tap::skip("the partition holds no peer at the kernel's own choice");
             return;
         }
-        int64_t const minted = amp_rc(KOS_AMP_OP_MINT, KOS_AMP_PORT_ECHO | KOS_AMP_MINT_HOLD);
+        uint32_t const served = amp_served_port(amp_round_peer());
+        if (served == KOS_AMP_NO_ENTRY)
+        {
+            tap::skip("the partition names the peer no port");
+            return;
+        }
+        int64_t const minted = amp_rc(KOS_AMP_OP_MINT, served | KOS_AMP_MINT_HOLD);
         TAP_CHECK(minted >= 0);
         kos_cap_t const far_ep = static_cast<kos_cap_t>(minted);
         kos_cap_t held[AMP_REUSE_SLOTS];
@@ -2162,6 +2196,18 @@ namespace selftest
         TAP_CHECK(memtype == AMP_SHARE_TYPE_AT);
         TAP_CHECK(walk == AMP_SHARE_TYPE_AT);
         TAP_CHECK(kernel_walk == AMP_SHARE_TYPE_AT);
+        // A window over a part of the share, which no pool frame backs, where the composition gives
+        // main one: the spawn that seated main admitted it.
+        kos_window_t const wide = kos_grant_mem(g_self, "/shm/wide");
+        uintptr_t const wide_view = reinterpret_cast<uintptr_t>(kos_window_addr(wide));
+        size_t const wide_size = kos_window_size(wide);
+        tap::diag("share part window: 0x%lx bytes at 0x%lx", static_cast<unsigned long>(wide_size),
+                  static_cast<unsigned long>(wide_view));
+        if (wide_view != 0)
+        {
+            TAP_CHECK(wide_size > 16u * g);
+            TAP_CHECK(kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, wide_view) == AMP_SHARE_TYPE_AT);
+        }
 #endif
         // The authority control: a reservation of main's own is admitted.
         void* const mine = kos_ram_alloc(g);

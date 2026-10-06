@@ -44,6 +44,10 @@ extern "C"
 
     // Zero blocks and no bit-band alias, so geometry cannot decide an arm's verdict.
     struct arch_reserved_span arch_reserved_blocks(void) { return {}; }
+
+    // The i.MX RT1062's USB OTG1 core, the region chip's one bus master.
+    constexpr struct arch_reserved_block BUS_MASTERS[] = {{0x402E0000u, 0x200u}};
+    struct arch_reserved_span arch_bus_master_apertures(void) { return {BUS_MASTERS}; }
     int arch_bitband_present(void) { return 0; }
 }
 
@@ -115,5 +119,15 @@ namespace
         EXPECT_FALSE(kickos::grant_region_admissible(ARENA_BASE + 1u, 4096u, RW_NC, false));
         EXPECT_FALSE(kickos::grant_region_admissible(0x40000000u, 4096u, RW_NC, false));
         EXPECT_FALSE(kickos::grant_region_admissible(ARENA_BASE, 0u, RW_NC, false));
+    }
+
+    // A region backend asks the chip's bus-master rows, as a translating one does.
+    TEST(BusMasterWindow, a_window_meeting_a_bus_master_row_is_one)
+    {
+        EXPECT_TRUE(kickos::grant_window_bus_master(0x402E0000u, 0x200u));
+        EXPECT_TRUE(kickos::grant_window_bus_master(0x402E0100u, 0x20u));
+        EXPECT_TRUE(kickos::grant_window_bus_master(0x402DFF00u, 0x200u));
+        EXPECT_FALSE(kickos::grant_window_bus_master(0x402E0200u, 0x600u));
+        EXPECT_FALSE(kickos::grant_window_bus_master(0x402DFE00u, 0x200u));
     }
 }

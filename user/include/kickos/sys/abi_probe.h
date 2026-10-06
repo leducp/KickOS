@@ -110,10 +110,12 @@ enum kos_aspace_op
     // () -> KOS_ASPACE_CAPOBJ_* results for mint, resolve and close of frame-run
     // and address-space capabilities in the caller's table.
     KOS_ASPACE_OP_CAP_OBJECTS = 25,
-    // () -> frame cap in bits 31:0, caller-space cap in bits 63:32, or zero on
-    // failure. Test handles for kos_frame_map/unmap; both belong to the caller.
+    // (pages, 0 for one, at most KOS_ASPACE_SEED_PAGES_MAX) -> frame cap in bits 31:0,
+    // caller-space cap in bits 63:32, or zero on failure. Test handles for kos_frame_map/unmap;
+    // both belong to the caller.
     KOS_ASPACE_OP_CAP_SEED = 26,
-    // () -> an unused page-aligned address for mapping the seeded run.
+    // (pages, 0 or above KOS_ASPACE_SEED_PAGES_MAX for KOS_ASPACE_SEED_PAGES) -> an unused
+    // page-aligned address with that many pages free above it, for mapping a seeded run.
     KOS_ASPACE_OP_CAP_SEED_VA = 27,
     // () -> a capability for the caller's space in its own table, or zero.
     KOS_ASPACE_OP_CAP_SELF_SPACE = 28,
@@ -139,8 +141,40 @@ enum kos_aspace_op
     KOS_ASPACE_OP_KERNEL_STATE = 53,
     // () -> data-cache maintenance calls the kernel has made since boot over its cacheable view
     // of a page mapped non-cacheable.
-    KOS_ASPACE_OP_ALIAS_SYNCS = 54
+    KOS_ASPACE_OP_ALIAS_SYNCS = 54,
+    // () -> locked passes sent round again for frames no live record of a sync ahead of the
+    // lock covered, or a space's static data no full staged copy held.
+    KOS_ASPACE_OP_PRESYNC_REFUSALS = 55,
+    // () -> the most granules, low word, and nanoseconds, high word, one unprivileged caller's
+    // work outside the lock, a sync, a clear or a copy, ran between two interrupt windows.
+    KOS_ASPACE_OP_PRESYNC_MASKED = 56,
+    // (line | drops << 16) -> 0. The caller's next work outside the lock injects `line` at its
+    // first interrupt window, and loses its record, as to another call's completed edit,
+    // `drops` times, once per round (0xFF: every round); bit 24 fails its next handle
+    // delivery -KOS_EFAULT, as an out-word unmapped since its check would; bit 25 injects
+    // `line` at one window of its own when that work has no granule to open one after.
+    KOS_ASPACE_OP_PRESYNC_ARM = 57,
+    // (0) -> records of a sync ahead of the lock live now; (kos_thread_t) -> 1 while that
+    // thread's record is live, else 0.
+    KOS_ASPACE_OP_PRESYNC_LIVE = 58,
+    // () -> granules synced outside the lock since boot, low word, and cleared or copied
+    // outside it, high word.
+    KOS_ASPACE_OP_PRESYNC_GRANULES = 59,
+    // () -> interrupt windows the kernel has opened inside system calls since boot.
+    KOS_ASPACE_OP_IRQ_WINDOWS = 60,
+    // () -> granules cleared or copied under the kernel lock since boot, for a reservation, a
+    // new space's static data or the snapshot.
+    KOS_ASPACE_OP_LOCKED_PAGES = 61,
+    // () -> interrupt windows the caller's own system calls have opened since boot.
+    KOS_ASPACE_OP_PRESYNC_WINDOWS = 62,
+    // (nth) -> 0. The frame pool refuses its nth next allocation, by any entry point; 0
+    // disarms. Needs AUTH_MEMORY.
+    KOS_ASPACE_OP_POOL_FAIL_IN = 63
 };
+
+// KOS_ASPACE_OP_CAP_SEED_VA's default span, and the widest run CAP_SEED and CAP_SEED_VA take.
+#define KOS_ASPACE_SEED_PAGES 16u
+#define KOS_ASPACE_SEED_PAGES_MAX 64u
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect
 // -KOS_EINVAL; the syscall stub returns an unsigned word. "Gated" admits any thread
@@ -185,7 +219,8 @@ enum kos_amp_op
     KOS_AMP_OP_PEER_HOLD = 17,
     // (port) -> signed result of privileged endpoint mint for the first peer. Any minted cap is
     // closed before return, but with KOS_AMP_MINT_HOLD in the argument, where its handle is the
-    // answer and the caller holds the endpoint's only capability.
+    // answer and the caller holds the endpoint's only capability. HOLD needs the caller's task to
+    // hold a crossing to that port already (-KOS_EPERM).
     KOS_AMP_OP_MINT = 18,
     // (node) -> calls deferred because the reply ring had no free slot.
     // The call remains unread; this counts backpressure, not lost messages.

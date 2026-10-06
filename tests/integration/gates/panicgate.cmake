@@ -66,7 +66,7 @@ endforeach()
 if(KICKOS_BOARD STREQUAL "qemu-m3" AND NOT KICKOS_DIAG_TERSE)
   kickos_add_qemu_test(NAME "${_tag}_diag_terse" TARGET panicgate2
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_diag_terse.sh"
-    TIMEOUT 900
+    BOOTS 2 WORK 900
     ARGS "${CMAKE_COMMAND}" "${PROJECT_SOURCE_DIR}" "${CMAKE_GENERATOR}"
          "${CMAKE_TOOLCHAIN_FILE}" "${CMAKE_BUILD_TYPE}"
          "${KICKOS_BOARD}" "${KICKOS_CONFIG_VARIANT}"

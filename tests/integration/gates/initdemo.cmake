@@ -15,4 +15,4 @@ if(NOT TARGET initdemo)
 endif()
 
 kickos_add_qemu_test(TARGET initdemo
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_initdemo.sh" TIMEOUT 40)
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_initdemo.sh")

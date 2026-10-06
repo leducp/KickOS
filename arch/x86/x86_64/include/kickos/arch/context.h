@@ -38,6 +38,7 @@
 // The kernel reaches frames through the firmware's write-back identity map whatever a task's leaf
 // says.
 #define KICKOS_ARCH_ALIAS_DCACHE 1
+#define KICKOS_ARCH_IRQ_WINDOW 1
 
 // The vector state area makes the TCB too large to pin to the byte here, so
 // kernel/include/kickos/thread.h holds sizeof(Thread) to this ceiling instead.

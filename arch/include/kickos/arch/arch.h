@@ -58,7 +58,7 @@
 #define KICKOS_ARCH_HAS_PORTS 0
 #endif
 
-// A region arch whose chips may put a data cache over the arena defines this in its context.h,
+// A region arch defines this in its context.h where the chip puts a data cache over the arena,
 // and arch_dcache_invalidate with it, which kos_ram_alloc's clear calls.
 #ifndef KICKOS_ARCH_ARENA_DCACHE
 #define KICKOS_ARCH_ARENA_DCACHE 0
@@ -68,6 +68,12 @@
 // ARCH_MAP_NOCACHE defines this in its context.h and provides arch_dcache_invalidate.
 #ifndef KICKOS_ARCH_ALIAS_DCACHE
 #define KICKOS_ARCH_ALIAS_DCACHE 0
+#endif
+
+// An arch whose system calls run with interrupts masked and which provides arch_irq_window
+// defines this in its context.h.
+#ifndef KICKOS_ARCH_IRQ_WINDOW
+#define KICKOS_ARCH_IRQ_WINDOW 0
 #endif
 
 // Architecture-specific MPU descriptors. Included only with KICKOS_HAVE_MPU;
@@ -289,6 +295,15 @@ arch_irq_state_t arch_irq_save(void);
 #endif
 #ifndef KICKOS_ARCH_IRQ_RESTORE_INLINE
 void arch_irq_restore(arch_irq_state_t state);
+#endif
+
+// Take any interrupt pending now, then mask again. Call with interrupts masked and no lock
+// held, from a system call whose trap entry masked what the caller ran with unmasked: the
+// interrupt nests on the caller's kernel block and may switch it out there.
+void arch_irq_window(void);
+#if defined(KICKOS_ENABLE_SELFTEST)
+// arch_irq_window calls since boot, every core's.
+uint32_t arch_irq_windows(void);
 #endif
 
 // Nonzero while executing in interrupt/ISR context.
@@ -744,6 +759,10 @@ struct arch_reserved_span arch_reserved_blocks(void);
 // chip_tables.h; any other chip of a translating arch defines this.
 struct arch_reserved_span arch_window_apertures(void);
 
+// The windows of the grantable devices that master the bus: a window over one reaches memory by
+// physical address past every unit, translating or region.
+struct arch_reserved_span arch_bus_master_apertures(void);
+
 // Where the arch defines KICKOS_ARCH_HAS_PORTS: the I/O port ranges a user port window may name,
 // as base and count; the chip's own ports are in none.
 struct arch_reserved_span arch_port_apertures(void);
@@ -855,7 +874,8 @@ bool arch_irq_line_kernel_owned(int line);
 // to write and cannot provide those guarantees.
 int arch_console_write(char const* buf, size_t n);
 #if KICKOS_AMP_OWN_IMAGE
-// Like arch_console_write, but carries a syscall writer's half-sent CR across short writes.
+// A syscall writer's arch_console_write: carries its half-sent CR across short writes, and
+// stops at an ended claim, which a kernel line on ARM64 renews when no peer took it.
 int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
 #endif
 void arch_console_write_sync(char const* buf, size_t n);

@@ -10,11 +10,13 @@ import types
 import unittest
 
 from kickos_compose import descriptions, emit, partition, supply
-from kickos_compose.subset import Report
+from kickos_compose.composition import Cache, admit_composition
+from kickos_compose.manifest import read_manifest
+from kickos_compose.subset import File, Report
 from kickos_compose.__main__ import REFUSED
 from test_arms import (
-    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, MANIFESTS, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS, TREE, VIRTIO, mutate, read,
-    write,
+    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, LOCAL, MANIFESTS, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS, TREE, VIRTIO, mutate,
+    read, write,
 )
 
 sys.path.insert(0, os.path.join(TREE, "tools", "manifest"))
@@ -455,6 +457,32 @@ class Partitioned(unittest.TestCase):
                       texts[0])
         self.assertIn(".size = 0x1000u, .offset = 0x2000u, .flags = KOS_MEM_NOCACHE | KOS_TABLE_REGION_PARTITION",
                       texts[0])
+
+    def admitted(self, edits):
+        """(the paths, each node's composition admitted and not yet placed, the manifest)."""
+        paths = self.nodes(ARM64_PAIR, ARM64_AMP, edits)
+        report = Report()
+        found = read_manifest(self.manifest, report)
+        admitted = [admit_composition(path, read(path), None, report, Cache(), partition.node_manifest(found, k),
+                                      partition=True) for k, path in enumerate(paths)]
+        self.assertEqual([str(r) for r in report.refusals], [])
+        return paths, admitted, found
+
+    def test_a_region_one_node_keeps_its_own_is_neither_placed_nor_flagged_there(self):
+        paths, admitted, found = self.admitted({1: [LOCAL]})
+        report = Report()
+        partition.place_regions([File(path, report) for path in paths], admitted, found)
+        self.assertEqual([r.rule for r in report.refusals], ["partition.region"])
+        self.assertEqual((admitted[0].offsets, admitted[1].offsets), ({"/shm/book": 0}, {}))
+        self.assertEqual([region.offset for region in emit.build(admitted[1]).regions], [None])
+
+    def test_the_table_flags_a_declared_partition_region_alone_and_only_once_placed(self):
+        paths, admitted, found = self.admitted({})
+        with self.assertRaisesRegex(ValueError, "partition region `/shm/book` was never placed"):
+            emit.build(admitted[0])
+        paths, admitted, found = self.admitted({1: [LOCAL]})
+        admitted[1].offsets["/shm/book"] = 0
+        self.assertEqual([region.offset for region in emit.build(admitted[1]).regions], [None])
 
     def test_the_c6_rows_give_each_node_its_grants_and_nothing_else(self):
         hp = ("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/timg0]\n")

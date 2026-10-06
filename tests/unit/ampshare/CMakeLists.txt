@@ -45,13 +45,26 @@ kickos_add_unit_test(NAME amp_share_type_aspace
           KICKOS_AMP_USER_SHARE_ADDR=0x40210000
           KICKOS_AMP_USER_SHARE_SIZE=0x10000
           KICKOS_AMP_USER_SHARE_UNCACHED=1)
+kickos_add_unit_test(NAME amp_share_type_aspace_cached TEST_PREFIX cached_
+  SOURCES share_type.cc
+          "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+  POSTURE KICKOS_HAVE_ASPACE=1
+          KICKOS_AMP_OWN_IMAGE=1
+          KICKOS_AMP_NODES=2
+          KICKOS_AMP_NODE_ID=0
+          KICKOS_AMP_PARTITION_BASE=0x40000000
+          KICKOS_AMP_NODE_SHARE=0x100000
+          KICKOS_AMP_SHARED_SIZE=0x20000
+          KICKOS_AMP_USER_SHARE_ADDR=0x40210000
+          KICKOS_AMP_USER_SHARE_SIZE=0x10000)
 kickos_add_unit_test(NAME amp_share_type_region
   SOURCES share_type.cc
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
   POSTURE KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_USER_SHARE_ADDR=0x2007C000
           KICKOS_AMP_USER_SHARE_SIZE=0x4000)
-foreach(_kickos_share_type amp_share_type_aspace amp_share_type_region)
+foreach(_kickos_share_type amp_share_type_aspace amp_share_type_aspace_cached amp_share_type_region)
   target_compile_options(${_kickos_share_type} PRIVATE -ffunction-sections -fdata-sections)
   target_link_options(${_kickos_share_type} PRIVATE -Wl,--gc-sections)
 endforeach()

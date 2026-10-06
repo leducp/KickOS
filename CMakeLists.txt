@@ -427,29 +427,17 @@ if(KICKOS_CHIP)
     include("${_caps_optin}")
   endif()
 endif()
-# Do not override fault isolation: duplicate architecture and fallback
-# definitions would make archive order select the implementation.
-if(KICKOS_ARCH STREQUAL "armv6m")
-  if(KICKOS_BOARD STREQUAL "microbit")
-    set(KICKOS_HAVE_PRIV_RING 0) # nRF51822, Cortex-M0
-  elseif(KICKOS_BOARD STREQUAL "picopi")
-    set(KICKOS_HAVE_PRIV_RING 1) # RP2040, Cortex-M0+
-  else()
-    message(FATAL_ERROR
-      "armv6m board '${KICKOS_BOARD}' is not classified. ARMv6-M's Unprivileged/Privileged "
-      "Extension is optional and separate from the MPU extension: a Cortex-M0+ implements it, a "
-      "Cortex-M0 does not, and on an M0 the npriv fields of the fabricated frame are written and "
-      "then discarded by the hardware. One armv6m backend spans both cores, so the ring is a "
-      "per-board fact: add a branch above setting KICKOS_HAVE_PRIV_RING to 1 for a Cortex-M0+ "
-      "core or 0 for a Cortex-M0 one.")
-  endif()
-elseif(KICKOS_ARCH STREQUAL "lx6")
-  # PS.UM is 1 for kernel and thread alike and arch_context_init discards `privileged`.
-  set(KICKOS_HAVE_PRIV_RING 0)
-else()
+# The chip file's facts: its protection unit, which Kconfig's selection is held to below, and
+# whether its cores have an unprivileged mode at all.
+include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
+if(KICKOS_CHIP_PRIVILEGE)
   set(KICKOS_HAVE_PRIV_RING 1)
+else()
+  set(KICKOS_HAVE_PRIV_RING 0)
 endif()
 
+# Do not override fault isolation: duplicate architecture and fallback
+# definitions would make archive order select the implementation.
 # sim is x86_64-only: arch_fault_is_user_thread reads a host layout it only knows there.
 set(KICKOS_FAULT_ISOLATION 0)
 set(KICKOS_FAULT_OUTCOME panic)
@@ -501,8 +489,6 @@ if(NOT KICKOS_HAVE_TRACE_CLOCK EQUAL KICKOS_TRACE_CLOCK_DECLARED)
     "above. A chip that gained or lost arch_trace_now has to be stated in both.")
 endif()
 
-# The chip file states the protection unit; Kconfig's selection is held to it.
-include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
 kickos_chip_protection_disagreement(_chip_disagrees "${KICKOS_HAVE_MPU}" "${KICKOS_HAVE_ASPACE}"
   "${KICKOS_CHIP_REGION_UNIT}" "${KICKOS_CHIP_TRANSLATES}" "platform/${KICKOS_CHIP}/chip.yaml")
 if(NOT _chip_disagrees STREQUAL "")
@@ -741,6 +727,27 @@ if(KICKOS_BUILD_TESTS)
                         "an empty regex and no fault would ever fail a test")
   endif()
 
+  # Every test's TIMEOUT reaches it as KOS_CTEST_TIMEOUT_S, which tests/lib/gate.sh charges each
+  # boot's bound against. Deferred to the end of each directory, where every site's own
+  # set_tests_properties has run.
+  function(kickos_hand_timeouts)
+    get_property(_names DIRECTORY PROPERTY TESTS)
+    foreach(_name IN LISTS _names)
+      get_test_property("${_name}" TIMEOUT _timeout)
+      if(_timeout)
+        set_property(TEST "${_name}" APPEND PROPERTY ENVIRONMENT "KOS_CTEST_TIMEOUT_S=${_timeout}")
+      endif()
+    endforeach()
+  endfunction()
+  macro(kickos_arm_timeouts)
+    get_property(_kickos_timeouts_armed DIRECTORY PROPERTY kickos_timeouts_armed)
+    if(NOT _kickos_timeouts_armed)
+      set_property(DIRECTORY PROPERTY kickos_timeouts_armed ON)
+      cmake_language(DEFER CALL kickos_hand_timeouts)
+    endif()
+  endmacro()
+  kickos_arm_timeouts()
+
   # One CTest fixture (SETUP) so no test can run a stale binary; every test registered below
   # is auto-wired to require it by the add_test wrapper just after.
   add_test(NAME kickos_build COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}")
@@ -750,6 +757,7 @@ if(KICKOS_BUILD_TESTS)
   # Register kickos_build outside it to avoid a self-dependency.
   macro(add_test)
     _add_test(${ARGV})
+    kickos_arm_timeouts()
     if("${ARGV0}" STREQUAL "NAME")
       set(_kickos_test_name "${ARGV1}")
     else()
@@ -935,6 +943,16 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(trap_redzone_decls PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME trap_redzone_walk
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_trap_redzone_walk.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(trap_redzone_walk PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME frame_pool_unwritten
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_frame_pool_unwritten.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(frame_pool_unwritten PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # Register translating presets listed in console_reach_roots.txt.
   set(_fs_reach_decl "${PROJECT_SOURCE_DIR}/tests/static/console_reach_roots.txt")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_fs_reach_decl}")
@@ -1003,10 +1021,19 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(capture_matchers PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME boot_bounds
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_boot_bounds.sh" 120
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(boot_bounds PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME app_judges
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_judges.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(app_judges PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME no_eh_runtime_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_eh_runtime.sh" --self-test)
+  set_tests_properties(no_eh_runtime_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
   # is registered from every board and reads no build output.
@@ -1664,6 +1691,6 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
       "# the only one the shipped toolchain file accepts.\n"
       "set(KICKOS_PACKAGE_NEWLIB ${_kos_package_newlib})\n")
   endif()
-  file(WRITE "${_kos_baked}" "${_kos_desc}")
+  kickos_write_if_changed("${_kos_baked}" "${_kos_desc}")
   install(FILES "${_kos_baked}" DESTINATION "${KICKOS_CMAKE_DIR}")
 endif()

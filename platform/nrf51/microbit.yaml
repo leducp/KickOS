@@ -7,5 +7,9 @@ version: 1
 board: microbit
 chip: nrf51
 
+# QEMU's nRF51 SoC takes its SRAM size as a QOM property and ignores -m, so an image linked for
+# the chip's real SRAM without it locks up on its first push as "can't escalate 3 to HardFault".
+emulator: { qemu: qemu-system-arm, machine: microbit, ram_global: nrf51-soc.sram-size }
+
 console:
   semihosting: true

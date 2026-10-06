@@ -24,6 +24,7 @@
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/notify.h>
+#include <kickos/presync.h>
 #include <kickos/slotpool.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -169,9 +170,15 @@ namespace kickos
         Thread idle_tcb_peer[KICKOS_KERNEL_CORES - 1];
 #endif
         // A spawn's window list, staged here and not on the spawner's stack, whose every byte
-        // is one of each thread's kernel block on the trap red zone. Held for the whole of
-        // thread_create_call's IrqLock, which is the cross-core kernel lock above one core.
+        // is one of each thread's kernel block on the trap red zone. Read only within the
+        // IrqLock hold that wrote it, which is the cross-core kernel lock above one core.
         kos_window window_stage[KICKOS_MAX_THREAD_WINDOWS] = {};
+#if KICKOS_PRESYNC
+        // Per thread slot (aspace.h, presync_begin), and how many are live. Under IrqLock, but
+        // for the owner's own reads and its staged run's bytes outside it.
+        PresyncRecord presync[KICKOS_THREAD_SLOTS] = {};
+        uint32_t presync_live = 0;
+#endif
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_create_call().

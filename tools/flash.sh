@@ -21,25 +21,6 @@
 set -euo pipefail
 FL_ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$FL_ROOT/tools/flash-common.sh"
 
-# candidates_for <chip> -> ordered backend keys valid for that chip (empty = QEMU/host)
-candidates_for() {
-    case "$1" in
-        esp32*)                        echo "esptool" ;;
-        stm32f103|stm32f302|stm32f411) echo "stlink jlink" ;;
-        # picotool ONLY: J-Link SWD of an RP2xxx is flaky (RP2040 gates the DAP once
-        # both cores WFI; boot2 is not re-run on an SWD reset). BOOTSEL always
-        # recovers the board.
-        rp2040|rp2350)                 echo "picotool" ;;
-        nrf51)                         echo "pyocd jlink" ;;
-        sam3x8e)                       echo "bossac" ;;
-        mk64f)                         echo "jlink pyocd" ;;
-        imxrt1062)                     echo "teensy" ;;   # HalfKay: no SWD header
-        xmc4800)                       echo "jlink" ;;
-        rx72m)                         echo "rfp" ;;
-        *)                             echo "" ;;
-    esac
-}
-
 # tool_bin <backend-key> -> the PATH binary backing it, or empty if unavailable
 tool_bin() {
     case "$1" in
@@ -60,7 +41,9 @@ if [ "${1:-}" = "--list" ]; then
     for d in "$FL_ROOT"/boards/*/; do
         b=$(basename "$d"); c=$(_bf "$b" KICKOS_CHIP); cand=$(candidates_for "$c")
         if [ -n "$cand" ]; then disp="${cand// / | }"     # join real backend keys
-        else case "$c" in mps2|an505|virt_*|q35) disp="(QEMU, not flashed)" ;; sim) disp="(host, not flashed)" ;; *) disp="(no flash backend)" ;; esac; fi
+        elif _emulated "$b" "$c"; then disp="(QEMU, not flashed)"
+        elif [ "$c" = sim ]; then disp="(host, not flashed)"
+        else disp="(no flash backend)"; fi
         printf '%-16s %-10s %-9s %s\n' "$b" "$c" "$(_bf "$b" KICKOS_ARCH)" "$disp"
     done
     exit 0

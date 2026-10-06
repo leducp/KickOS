@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The manifest's open-ended field sets, which tools/manifest/genmanifest.py writes from and
-# manifest.py reads against. Standard library only: the writer runs at configure, without uv.
+# manifest.py reads against. Standard library only: the writer runs under the configure's Python,
+# outside the tool's uv environment.
 
 import re
 

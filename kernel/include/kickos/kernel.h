@@ -22,6 +22,8 @@ namespace kickos
     // not, or a dropped middle chunk leaves a hole in a line whose later chunks were taken.
     int kconsole_write(char const* buf, size_t n);
     // A syscall writer keeps a half-sent AMP CRLF across short writes in its own TCB.
+    // -KOS_EBUSY where the console is published and the caller's own stdout send would be
+    // taken now: nothing was written.
     int kconsole_write_user(char const* buf, size_t n);
 
     // Debug console (in-kernel, write-only, unbuffered). Routes via kconsole_write.
@@ -75,6 +77,25 @@ namespace kickos
     // [base, base+size) whose memory type differs from `attr`'s: one block cacheable for one
     // thread and not for another is incoherent. Caller holds IrqLock.
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except);
+
+#if KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_ASPACE
+    // Whether a cacheable stack over [base, base + size) meets no region of another memory
+    // type: memory_type_free's, or a memory window of the spawn's own list, which no thread
+    // holds yet. Caller holds IrqLock.
+    bool stack_type_free(uintptr_t base, size_t size, kos_window const* list, uint16_t n);
+#endif
+
+#if not KICKOS_HAVE_ASPACE
+    // A self-grant of [base, base + size) with `attr` seated in `c`'s own region set, live
+    // before the return: 0, or the refusal. Caller holds IrqLock.
+    int thread_self_grant(Thread* c, uintptr_t base, size_t size, uint32_t attr);
+#endif
+
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+    // The sync a new unprivileged thread's memory windows, its task's data and its stack owe
+    // the kernel's cacheable view of their blocks (grant_sync). Caller holds IrqLock.
+    void thread_region_sync(Thread const* t);
+#endif
 
 #if KICKOS_ARCH_HAS_PORTS
     // Whether ports [base, base+count) lie inside one aperture the chip states

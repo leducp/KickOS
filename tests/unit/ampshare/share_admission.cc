@@ -37,6 +37,7 @@ extern "C"
     size_t arch_ram_size(void) { return ARENA_SIZE; }
     void* arch_ram_alloc(size_t) { return nullptr; }
     struct arch_reserved_span arch_reserved_blocks(void) { return {}; }
+    struct arch_reserved_span arch_bus_master_apertures(void) { return {}; }
     int arch_bitband_present(void) { return 0; }
     size_t arch_domain_static_regions(struct arch_mpu_region*, size_t) { return 0; }
 }

@@ -73,7 +73,8 @@ function(kickos_chip_generate description arch)
       "arch ${arch}:\n  ${_said}")
   elseif(NOT _rc STREQUAL "0")
     message(FATAL_ERROR "KickOS: could not write the chip headers from ${description} (uv and Python >= 3.12 "
-      "required, with the ruamel.yaml its uv.lock pins) (${_rc}):\n  ${_said}")
+      "required, with the ruamel.yaml its uv.lock pins, which a first run fetches from PyPI or finds in "
+      "uv's cache) (${_rc}):\n  ${_said}")
   endif()
   file(WRITE "${_state}/inputs.sha256" "${_hash}")
   message(STATUS "KickOS: chip headers written from ${description}")

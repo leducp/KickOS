@@ -44,7 +44,8 @@ set(_walk_sources
   "${PROJECT_SOURCE_DIR}/system/init/compose/message.cc"
   "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
   "${PROJECT_SOURCE_DIR}/user/src/init_status.cc"
-  "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc")
+  "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc"
+  "${PROJECT_SOURCE_DIR}/user/src/console_flush.cc")
 set(_walk_includes "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/system/init/compose"
   "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
   "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/lib/include"

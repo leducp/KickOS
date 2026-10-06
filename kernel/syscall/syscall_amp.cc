@@ -127,9 +127,11 @@ namespace kickos
             return amp::PORT_MAX;
         }
 
+        constexpr uint32_t ANY_NODE = 0xFFFFFFFFu;
+
         // A crossing of the partition: a far endpoint, or the local one a port of this node is
-        // bound to.
-        bool amp_is_crossing(CapEntry const* entry)
+        // bound to. With a `node` other than ANY_NODE, only a far endpoint to its `port`.
+        bool amp_is_crossing(CapEntry const* entry, uint32_t node, uint32_t port)
         {
             if (entry->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT))
             {
@@ -142,12 +144,16 @@ namespace kickos
             }
             if (endpoint_is_far(e))
             {
-                return true;
+                return node == ANY_NODE or (endpoint_far_node(e) == node and e->far_port == port);
+            }
+            if (node != ANY_NODE)
+            {
+                return false;
             }
             uint16_t const index = static_cast<uint16_t>(kernel().endpoints.index_of(e));
-            for (uint32_t port = 0; port < amp::PORT_MAX; port++)
+            for (uint32_t p = 0; p < amp::PORT_MAX; p++)
             {
-                if (amp::port_endpoint(port) == index)
+                if (amp::port_endpoint(p) == index)
                 {
                     return true;
                 }
@@ -155,12 +161,11 @@ namespace kickos
             return false;
         }
 
-        // True for any thread of a task whose threads hold a crossing of the partition, which
-        // root holds from boot and the init delegates to each task its composition names one to.
-        // A caller mid-exit has a null task and is refused.
+        // Whether a thread of `c`'s task holds a crossing, as amp_is_crossing reads `node` and
+        // `port`. A caller mid-exit has a null task and holds none.
         //
         // Caller holds IrqLock: the tables walked are other threads'.
-        bool amp_probe_caller_ok(Thread* c)
+        bool amp_task_holds_crossing(Thread* c, uint32_t node, uint32_t port)
         {
             if (c == nullptr or c->task == nullptr)
             {
@@ -177,13 +182,22 @@ namespace kickos
                 uint32_t const end = thread_cap_capacity(th);
                 for (uint32_t e = 0; e < end; e++)
                 {
-                    if (amp_is_crossing(cap_slot(th->caps, e)))
+                    if (amp_is_crossing(cap_slot(th->caps, e), node, port))
                     {
                         return true;
                     }
                 }
             }
             return false;
+        }
+
+        // True for any thread of a task whose threads hold a crossing of the partition, which
+        // root holds from boot and the init delegates to each task its composition names one to.
+        //
+        // Caller holds IrqLock.
+        bool amp_probe_caller_ok(Thread* c)
+        {
+            return amp_task_holds_crossing(c, ANY_NODE, 0u);
         }
 
         // KOS_AMP_OP_DEFER's gate alone.
@@ -690,12 +704,17 @@ namespace kickos
                 }
                 uint32_t cap = KCAP_INVALID;
                 uint32_t const port = static_cast<uint32_t>(a1) & ~KOS_AMP_MINT_HOLD;
+                bool const hold = (static_cast<uint32_t>(a1) & KOS_AMP_MINT_HOLD) != 0u;
+                if (hold and not amp_task_holds_crossing(c, amp_peer_node(), port))
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
                 int const rc = amp_endpoint_mint(c, amp_peer_node(), port, CAP_SIGNAL, &cap);
                 if (rc != 0)
                 {
                     return static_cast<uint64_t>(static_cast<int64_t>(rc));
                 }
-                if ((static_cast<uint32_t>(a1) & KOS_AMP_MINT_HOLD) != 0u)
+                if (hold)
                 {
                     return cap;
                 }

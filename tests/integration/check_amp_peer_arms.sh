@@ -52,11 +52,19 @@ amp_share_crossing"
 # is deliberate rather than an oversight of the category: these arms are run against a peer that
 # answers, so one of them declining for want of a window is this vehicle's own defect and may
 # not be waved through on a permission the rest of the fleet carries.
+tap_ok() { # <arm> <armed|skipped>
+    printf '%s\n' "$OUT" | tr -d '\r' | awk -v arm="$1" -v want="$2" '
+        $1 == "ok" && $3 == "-" && $4 == arm {
+            skip = ($5 == "#" && toupper($6) ~ /^SKIP/)
+            if ((want == "skipped") == skip) { found = 1 }
+        }
+        END { exit !found }'
+}
 armed() { # <arm>
-    printf '%s\n' "$OUT" | grep -E "^ok [0-9]+ - $1( |\$)" | grep -qv '# SKIP'
+    tap_ok "$1" armed
 }
 skipped() { # <arm>
-    printf '%s\n' "$OUT" | grep -E "^ok [0-9]+ - $1 # SKIP" >/dev/null
+    tap_ok "$1" skipped
 }
 
 # The verdict over $OUT.
@@ -101,12 +109,16 @@ judge() {
 }
 
 if [ "${1:-}" = "--controls" ]; then
-    good() {
+    good() { # [skip|drop <arm>]
         echo "amp window: 1 of 1 peer node(s) answered"
         _n=0
-        for _arm in amp_probe $ARMS; do
+        for _arm in $ARMS; do
             _n=$((_n + 1))
-            echo "ok $_n - $_arm"
+            if [ "${2:-}" != "$_arm" ]; then
+                echo "ok $_n - $_arm"
+            elif [ "$1" = skip ]; then
+                echo "ok $_n - $_arm # SKIP no peer"
+            fi
         done
     }
     # <name> <pass|refuse> <capture>
@@ -126,6 +138,10 @@ $_ctl_out"
     ctl 'an unlisted arm not ok' refuse "$(good; echo 'not ok 9 - amp_unlisted')"
     ctl 'a not ok behind a peer byte' refuse "$(good; echo 'Knot ok 9 - amp_unlisted')"
     ctl 'a TODO arm not ok' pass "$(good; echo 'not ok 9 - amp_unlisted # TODO owed')"
+    ctl 'every arm ok with CR line ends' pass "$(good | sed 's/$/\r/')"
+    ctl 'a listed arm skipped' refuse "$(good skip amp_window)"
+    ctl 'a listed arm absent' refuse "$(good drop amp_far_reply_empty)"
+    ctl 'no peer answered' refuse "$(good | grep -v 'peer node(s) answered')"
     echo "PASS: the planted captures are judged as stated"
     exit 0
 fi

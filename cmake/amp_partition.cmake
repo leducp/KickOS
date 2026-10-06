@@ -183,7 +183,7 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     endif()
     string(APPEND _amp_seed "set(${_amp_name} ${_amp_v} CACHE BOOL \"\" FORCE)\n")
   endforeach()
-  file(WRITE "${PROJECT_BINARY_DIR}/generated/amp-peer-seed.cmake" "${_amp_seed}")
+  kickos_write_if_changed("${PROJECT_BINARY_DIR}/generated/amp-peer-seed.cmake" "${_amp_seed}")
 
   # The fingerprint the IMAGE carries, over that same resolved configuration with the one
   # per-node symbol taken out. TWO absolute symbols of 32 bits: a 32-bit linker truncates one

@@ -64,29 +64,56 @@ namespace selftest
 #endif
     }
 
-    // Nothing waits on this probe, so any subset of a probe batch still drains.
-    void pool_probe_worker(void*)
+    void pool_probe_worker(void*) // caps: done@1
     {
         kos_sem_post(CH_DONE);
     }
 
+    // Above every batch an arm asks for: a crowd of one per kernel core plus one, or four.
+    constexpr int POOL_PROBES_MAX = KICKOS_KERNEL_CORES + 4;
+
+    void pool_gated_worker(void*) // caps: gate@1
+    {
+        kos_sem_wait(1);
+    }
+
     // Can this board host `n` workers CONCURRENTLY, right now? Slots held by driver tasks
-    // and arena room for each stack bound this as much as KICKOS_MAX_THREADS does.
-    // Call immediately before the real spawns; when wait_n returns every probe slot is
-    // EXITED and every probe stack is back on the free list.
+    // and room for each stack bound this as much as the thread pool's size does.
+    // No probe leaves before the whole batch exists, and each is joined, so on return every
+    // probe slot and stack is free again. Call immediately before the real spawns.
     bool pool_can_host(int n)
     {
-        kos_cap_grant caps[] = {{g_done, CH_FULL}};
+        if (n > POOL_PROBES_MAX)
+        {
+            tap::fail("pool_can_host(%d) is wider than its %d probe handles", n, POOL_PROBES_MAX);
+            return false;
+        }
+        kos_cap_t gate = KOS_CAP_NONE;
+        if (kos_sem_create(0, &gate) != 0)
+        {
+            return false;
+        }
+        kos_cap_grant caps[] = {{gate, KOS_CAP_WAIT}};
+        kos::thread::Handle probes[POOL_PROBES_MAX];
         int got = 0;
         for (int i = 0; i < n; i++)
         {
-            if (not kos::thread::create_caps(pool_probe_worker, nullptr, "probe", 10, caps, 1).valid())
+            probes[i] = kos::thread::create_caps(pool_gated_worker, nullptr, "probe", 10, caps, 1);
+            if (not probes[i].valid())
             {
                 break;
             }
             got++;
         }
-        wait_n(got);
+        for (int i = 0; i < got; i++)
+        {
+            kos_sem_post(gate);
+        }
+        for (int i = 0; i < got; i++)
+        {
+            (void)probes[i].join();
+        }
+        (void)kos_handle_close(gate);
         return got == n;
     }
 

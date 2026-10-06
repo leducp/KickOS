@@ -445,7 +445,7 @@ uint32_t console_tx_used(void)
     return r.used();
 }
 
-void console_tx_wait_drain(void)
+void console_tx_wait_progress(void)
 {
     ConsoleTxRing& r = tx();
     if (not r.armed)

@@ -57,6 +57,7 @@
 #include "regs/uart.h"
 #include "regs/xosc.h"
 #include "../rp2xxx/rp2xxx.h"
+#include "console_claim.h"
 
 namespace reg = kickos::rp2350::reg;
 namespace irq = kickos::rp2350::irq;
@@ -197,7 +198,7 @@ namespace
         {
             cycles = reg::ticks::CYCLES_MAX;
         }
-        r32(reg::ticks::TIMER0_CTRL) = 0; // disable while reprogramming
+        r32(reg::ticks::TIMER0_CTRL) = 0;
         r32(reg::ticks::TIMER0_CYCLES) = cycles;
         r32(reg::ticks::TIMER0_CTRL) = reg::ticks::CTRL_ENABLE;
     }
@@ -225,8 +226,8 @@ namespace
 
         if (not xosc_ok)
         {
-            SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;            // clk_sys stayed on ROSC
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys
+            SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS;
             ticks_timer0_start(reg::clocks::CLK_REF_ROSC_NOMINAL_HZ);
             return;
         }
@@ -249,7 +250,7 @@ namespace
             SystemCoreClock = reg::clocks::CLK_SYS_HZ;
             g_uart_ibrd = reg::uart::IBRD_PLL;
             g_uart_fbrd = reg::uart::FBRD_PLL;
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys 150 MHz
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS;
         }
         else
         {
@@ -257,7 +258,7 @@ namespace
             // left it on. clk_peri is taken off the crystal instead, which is what the
             // 12 MHz UART divisor defaults are for.
             SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_XOSC; // UART clock <- XOSC 12 MHz
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_XOSC;
         }
     }
 
@@ -304,94 +305,37 @@ namespace
 #if KICKOS_AMP_OWN_IMAGE
 namespace
 {
-    // One UART and two kernels, so a chunk is claimed against the peer before its bytes are
-    // pushed. The claim is held to the LINE, not to the chunk: console_write_user copies a user
-    // buffer in 64-byte pieces and calls the writer once per piece, so a claim released at the
-    // end of a chunk would let the peer's whole line land inside one of this node's.
-    //
-    // Ownership is bounded by a DEADLINE taken when the claim is, never by what the holder
-    // writes next: a node that stops mid-line, or dies there, would otherwise keep the lock for
-    // as long as it lives and leave every later line unserialised. The holder drops the claim at
-    // its first release past the deadline, and a peer that finds the deadline passed releases
-    // the register under the holder and takes it. So the bound holds with
-    // the holder gone, which is what the console's "always works, even while dying" guarantee
-    // needs.
-    //
-    // A stolen-from node must not then end the thief's claim, so the release is conditional on
-    // the published owner still naming this node. The test and the release are not one atomic
-    // act: a steal landing between them frees a claim one line early and the thief's own release
-    // is then refused by that same test rather than ending a third claim, so the window costs a
-    // shredded line and does not cascade.
-    //
-    // A caller that loses the claim drops the rest of its line. It must never
-    // write into a peer's grant.
-
-    // The wire time of the 512-byte run the claim is meant to cover: 512 bytes at 115200 8N1
-    // is 44.4 ms. A holder past this is stalled or dead, not writing a long line.
-    constexpr uint32_t CONSOLE_HOLD_MAX_US = 50000u;
-
-    // Two byte times at 115200. The holder stops this far short of its deadline, so a byte
-    // checked just before its store cannot land after a peer has taken the expired grant.
-    constexpr uint32_t CONSOLE_MARGIN_US = 200u;
-
     // Read by a peer whose own claim failed, so they live where both nodes look. Zeroed by the
     // partition primary before any peer runs (arch_amp_shared_zero). SPINLOCK31 serialises the
-    // writers and the dsb pair below carries the ordering, so the fields carry none.
-    KICKOS_AMP_SHARED("chip")
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_console_owner = 0; // 0 free, else node id + 1
-    KICKOS_AMP_SHARED("chip")
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_console_deadline = 0; // TIMER0 us
+    // writers and the fences carry the ordering, so the fields carry none.
+    KICKOS_AMP_SHARED("chip") kickos::rp2350::console::Word g_console_owner = 0;
+    KICKOS_AMP_SHARED("chip") kickos::rp2350::console::Word g_console_deadline = 0;
 
-    constexpr uint32_t CONSOLE_OWNER_SELF = KICKOS_AMP_NODE_ID + 1u;
+    // One holder state serves: this node drives one core.
+    kickos::rp2350::console::Claim g_claim{KICKOS_AMP_NODE_ID + 1u, g_console_owner,
+                                           g_console_deadline};
+}
 
-    bool g_console_held = false;
-
-    // Microseconds left on the published grant, 0 once it has ended. A live deadline lies at
-    // most one hold ahead: TIMER0's low half wraps every ~71 min, and a dead holder's deadline
-    // would read as live again half a wrap later under a signed comparison.
-    uint32_t console_hold_left()
+namespace kickos::rp2350::console
+{
+    uint32_t now(void)
     {
-        uint32_t const left = g_console_deadline - r32(reg::timer::TIMERAWL);
-        if (left > CONSOLE_HOLD_MAX_US)
-        {
-            return 0;
-        }
-        return left;
+        return r32(reg::timer::TIMERAWL);
     }
 
-    bool console_holding()
+    bool lock_take(void)
     {
-        return g_console_held and g_console_owner == CONSOLE_OWNER_SELF and
-               console_hold_left() > CONSOLE_MARGIN_US;
+        return r32(reg::sio::SPINLOCK31) != 0;
     }
 
-    void claim_taken()
+    void lock_free(void)
     {
-        g_console_held = true;
-        g_console_deadline = r32(reg::timer::TIMERAWL) + CONSOLE_HOLD_MAX_US;
-        __asm volatile("dsb" ::: "memory"); // a peer reading this owner must see its deadline
-        g_console_owner = CONSOLE_OWNER_SELF;
+        r32(reg::sio::SPINLOCK31) = 1u;
     }
 
-    bool console_try_claim()
+    void fence(void)
     {
-        if (r32(reg::sio::SPINLOCK31) != 0)
-        {
-            claim_taken();
-            return true;
-        }
-        // A claim past its bound, so its holder is stalled mid-line or gone. Any write to the
-        // register releases it, whichever core claimed it.
-        if (g_console_owner != 0 and console_hold_left() == 0)
-        {
-            r32(reg::sio::SPINLOCK31) = 1u;
-            if (r32(reg::sio::SPINLOCK31) != 0)
-            {
-                claim_taken();
-                return true;
-            }
-        }
-        return false;
+        __asm volatile("dsb" ::: "memory");
     }
 }
 
@@ -399,60 +343,24 @@ namespace kickos::rp2xxx
 {
     bool console_claim(void)
     {
-        // A fault landing inside a run this node already holds writes into it rather than
-        // spinning its budget out against its own claim. One flag serves: this node drives one
-        // core.
-        if (g_console_held)
-        {
-            if (console_holding())
-            {
-                return true;
-            }
-            console_drop(true);
-            return false;
-        }
-        // Reached with interrupts masked only by a caller already masked (panic, fault, ISR),
-        // console_claim_open having taken the claim for every other writer. A panicking node
-        // would otherwise lose every line that starts while its peer is inside one.
-        //
-        // The wait and the grant it waits out are both TIMER0 microseconds. Counted in loop
-        // iterations instead, the wait grows with a degraded core clock while the grant does
-        // not. KICKOS_POLL_SPIN_MAX is the structural backstop and not the budget: a TIMER0
-        // that has stopped must still leave this node able to emit.
-        uint32_t const waited_from = r32(reg::timer::TIMERAWL);
-        for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
-        {
-            if (console_try_claim())
-            {
-                return true;
-            }
-            if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
-            {
-                break;
-            }
-        }
-        return false;
+        return g_claim.claim();
     }
 
+    // Interrupts stay open between attempts: a peer may hold the UART for a whole hold.
     bool console_claim_open(void)
     {
-        // console_write_line_sync masks for its whole transmission and a peer may hold the
-        // UART for a whole hold, so the wait for it keeps interrupts open between attempts.
+        using kickos::rp2350::console::HOLD_MAX_US;
         uint32_t const waited_from = r32(reg::timer::TIMERAWL);
         for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
         {
             arch_irq_state_t const irq = arch_irq_save();
-            if (g_console_held and not console_holding())
-            {
-                console_drop(true);
-            }
-            bool const held = g_console_held or console_try_claim();
+            bool const held = g_claim.try_open();
             arch_irq_restore(irq);
             if (held)
             {
                 return true;
             }
-            if ((r32(reg::timer::TIMERAWL) - waited_from) >= CONSOLE_HOLD_MAX_US)
+            if ((r32(reg::timer::TIMERAWL) - waited_from) >= HOLD_MAX_US)
             {
                 return false;
             }
@@ -462,22 +370,7 @@ namespace kickos::rp2xxx
 
     void console_drop(bool ended_line)
     {
-        if (not g_console_held)
-        {
-            return;
-        }
-        if (not ended_line and console_hold_left() != 0)
-        {
-            return;
-        }
-        g_console_held = false;
-        if (g_console_owner != CONSOLE_OWNER_SELF)
-        {
-            return;
-        }
-        g_console_owner = 0;
-        __asm volatile("dsb" ::: "memory"); // no peer may read this node as owner past the free
-        r32(reg::sio::SPINLOCK31) = 1u;
+        g_claim.drop(ended_line);
     }
 }
 #endif
@@ -758,7 +651,7 @@ void Reset_Handler(void)
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 
-    kickos_ranges_init(); // init .data; zero .bss
+    kickos_ranges_init();
 #if KICKOS_AMP_OWN_IMAGE
     kickos_rp2350_xip_identity();
     // Ahead of arch_init, which publishes into that region; later would erase the primary's

@@ -24,7 +24,7 @@ if has "SLAYPEER FAIL"; then
 fi
 assert_no_panic "the slay panicked the kernel"
 if [ "$RC" -eq 124 ]; then
-    fail "the image did not exit within ${QEMU_TIMEOUT:-20}s: the slay's own bound would have
+    fail "the image did not exit within ${KOS_BOOT_BOUND_S}s: the slay's own bound would have
   arrived as a FAIL line, so this is the run failing to terminate"
 fi
 require_on_wire "slay rc: 0" \

@@ -603,6 +603,21 @@ namespace kickos
         frame_run_ref_drop(obj_handle, false);
     }
 
+    bool frame_run_sync_owed(int obj_handle)
+    {
+        FrameRun const* const f = kernel().frame_runs.resolve(obj_handle);
+        return f != nullptr and f->sync_owed;
+    }
+
+    void frame_run_set_sync_owed(int obj_handle, bool owed)
+    {
+        FrameRun* const f = kernel().frame_runs.resolve(obj_handle);
+        if (f != nullptr)
+        {
+            f->sync_owed = owed;
+        }
+    }
+
     int frame_run_create(arch_phys_addr_t base, uint32_t pages)
     {
         // Answers a HANDLE, FRAME_RUN_NONE when there is none: every consumer resolves it, so
@@ -615,6 +630,7 @@ namespace kickos
         }
         f->base = base;
         f->pages = pages;
+        f->sync_owed = false;
         kernel().frame_run_refs[i] = 1; // the creator's own
         return kernel().frame_runs.handle_for(i);
     }
@@ -1047,7 +1063,8 @@ namespace kickos
                       and auth_mirrors(AUTH_IRQ, KOS_AUTH_IRQ)
                       and auth_mirrors(AUTH_SYSTEM, KOS_AUTH_SYSTEM)
                       and auth_mirrors(AUTH_CONSOLE, KOS_AUTH_CONSOLE)
-                      and auth_mirrors(AUTH_TASKS, KOS_AUTH_TASKS),
+                      and auth_mirrors(AUTH_TASKS, KOS_AUTH_TASKS)
+                      and auth_mirrors(AUTH_BUS_MASTER, KOS_AUTH_BUS_MASTER),
                   "CapAuthority and the ABI's kos_cap_authority must number every bit alike");
 
     bool cap_check_authority(Thread* c, uint32_t need)
@@ -1635,5 +1652,21 @@ namespace kickos
         }
         *out = stdout_target();
         return true;
+    }
+
+    bool cap_console_serves(Thread const* t)
+    {
+        if (stdout_target() == KCAP_STDOUT_NONE or not cap_run_held(t->caps))
+        {
+            return false;
+        }
+        CapEntry const& e = *cap_slot(t->caps, KOS_CAP_STDOUT);
+        if (e.type != static_cast<uint8_t>(CapType::CAP_ENDPOINT) or e.obj != stdout_target()
+            or (e.rights & CAP_SIGNAL) == 0)
+        {
+            return false;
+        }
+        Endpoint const* const ep = kernel().endpoints.resolve(e.obj);
+        return ep != nullptr and endpoint_receiving(ep);
     }
 }

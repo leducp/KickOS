@@ -423,3 +423,31 @@ TEST(C6Apm, RefusesWhatTheApmCannotHold)
     bad = {0x60000000ull, 0x1000ull, 0, 0, 0, 8, 0};
     EXPECT_EQ(refusal_of(&bad, 1u), apm::Refusal::ACCESS);
 }
+
+TEST(C6Apm, TheModeRegistersLieInTheChipFilesTees)
+{
+    namespace mmap = kickos::esp32c6::mmap;
+    EXPECT_LT(reg::HP_TEE_M0_MODE_CTRL - mmap::HP_TEE_BASE, mmap::HP_TEE_SIZE);
+    EXPECT_LT(reg::LP_TEE_M0_MODE_CTRL - mmap::LP_TEE_BASE, mmap::LP_TEE_SIZE);
+}
+
+// Every register a gate programs, the filter and each region's last word, at the TRM's bases
+// (Table 5.3-2, p.176) and inside the chip file's windows.
+TEST(C6Apm, TheRegionControllersLieInTheChipFilesApms)
+{
+    namespace mmap = kickos::esp32c6::mmap;
+    EXPECT_EQ(reg::HP_APM_BASE, 0x60099000u);
+    EXPECT_EQ(reg::LP_APM_BASE, 0x600B3800u);
+    for (uintptr_t const gate : {reg::HP_APM_BASE, reg::LP_APM_BASE})
+    {
+        uintptr_t base = mmap::HP_APM_BASE;
+        uintptr_t size = mmap::HP_APM_SIZE;
+        if (gate == reg::LP_APM_BASE)
+        {
+            base = mmap::LP_APM_BASE;
+            size = mmap::LP_APM_SIZE;
+        }
+        EXPECT_LT(reg::filter_en(gate) - base, size);
+        EXPECT_LT(reg::region_attr_of(gate, apm::MAX_REGIONS - 1u) + 3u - base, size);
+    }
+}

@@ -123,12 +123,12 @@
  *
  *   _PENDSV   0  handler mode uses SP_main.
  *   _SVC    512  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
- *                PSP. The spawn stages its grant list on this stack, 24 bytes a grant: due-st,
- *                at KICKOS_MAX_SPAWN_GRANTS 9, measures 508, rounded up to the next multiple
- *                of 64, and the presets at 6 (bluepill-c8, bluepill-c8-st, due, f302nucleo,
- *                f302nucleo-st) measure 436. It is not zeroed at KICKOS_KERNEL_STACKS 1: the
- *                gate scrapes it on every preset, and trap_redzone_roots.txt marks the class
- *                kstacks=0.
+ *                PSP. The spawn stages its grant list on this stack: due-st, at
+ *                KICKOS_MAX_SPAWN_GRANTS 9, measures 500, rounded up to the next multiple of
+ *                64, and the presets at 6 (bluepill-c8, bluepill-c8-st, due, f302nucleo,
+ *                f302nucleo-st) measure 428. arch_armv7m.cc refuses more than 9. It is not
+ *                zeroed at KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset, and
+ *                trap_redzone_roots.txt marks the class kstacks=0.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
  * THE PANIC REPORTER IS ON NEITHER THIS CLASS NOR _SVCK: kpanic leaves the stack it was called
@@ -145,11 +145,13 @@
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
  * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
- * 832 enforced against 768 measured at f411disco-bench and 760 at xmc4800-relax-bench, the only
- * two. Off both, 768 enforced: the 33 ordinary presets read 444 to 640, and the two partition
- * nodes pizero2350-amp2-n0 and -n1 read 652. 1240 enforced against 1008 measured at qemu-telem
- * through arch_shutdown's telemetry tail, the only telemetry variant of any armv7m board. All
- * three are enforced above their measurement, as headroom.
+ * 832 enforced against 672 measured at f411disco-bench and 664 at xmc4800-relax-bench, the only
+ * two. Off both, 768 enforced: the 33 ordinary presets read 428 to 568, and the two partition
+ * nodes pizero2350-amp2-n0 and -n1 read 592 and 600. 1240 enforced against 992 measured at
+ * qemu-telem through arch_shutdown's telemetry tail, the only telemetry variant of any armv7m
+ * board. All three are enforced above their measurement, as headroom. The bench and telemetry
+ * presets stage at most 9 spawn grants and the partition nodes 12, so arch_armv7m.cc refuses
+ * more.
  *
  * A node's self-test drives the doorbell's service body from inside the dispatch (amp_probe
  * -> forge_reply_depth_recovery -> node_service); what wins there is an ordinary far reply
@@ -189,8 +191,8 @@
  * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
  * is RET.
  *
- * 448 is enforced over the 296 measured, and 208 + 448 = 656 is the largest thread-stack
- * requirement on those six presets, above _SVC's 632 and 304 under the 960 floor. */
+ * 448 is enforced over the 296 measured. 208 + 448 = 656 is under _SVC's 184 + 512 = 696, the
+ * largest thread-stack requirement on those six presets, 264 under the 960 floor. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,

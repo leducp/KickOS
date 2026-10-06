@@ -54,9 +54,23 @@ WANT="${*:-$ALL}"
 #
 # The configure this does is the one the runs below reuse: same TAG, same board, same variant,
 # so it lands in the same build dir and costs nothing twice.
-images_for() { # <board> <stderr out>
-  TAG="$TAG" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
+images_for() { # <board> <stderr out> [variant]
+  if [ -n "${3:-}" ]; then
+    TAG="$TAG" VARIANT="$3" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
+  else
+    TAG="$TAG" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
+  fi
 }
+
+# The board's AMP partition is the image a node 0 build of its amp2 preset assembles, so a board
+# has one exactly where the tree declares that preset.
+AMP_VARIANT=amp2-n0
+has_variant() { # <board> <variant>
+  (cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) | grep -qF "\"$1-$2\""
+}
+# An image only the board's flat build ships (one that reads what enforcement would refuse it) is
+# captured from that build; an image both builds ship is the enforcing build's.
+FLAT_VARIANT=flat
 
 # ONE enumeration of the bus, taken once, wherever the boards are.
 bench_host_select "${BENCH_HOST:-}"
@@ -95,13 +109,22 @@ TAP_JUDGE=tests/integration/check_tap_stream.sh
 
 # Runs bench.sh for ONE board and ONE image. The serial, when a board needs one, is
 # passed as its own argument here and nowhere else.
+# With <variant> set, the image is that variant's build's; with <amp> 1 as well, the run is that
+# variant's AMP partition rather than one image.
 bench_one() {
-  local board=$1 app=$2 sn=$3 label=$4 judge=$5 out rc
+  local board=$1 app=$2 sn=$3 label=$4 judge=$5 variant=${6:-} amp=${7:-0} out rc
+  local -a vars=(TAG="$TAG" APP="$app")
+  if [ -n "$variant" ]; then
+    vars+=(VARIANT="$variant")
+  fi
+  if [ "$amp" = "1" ]; then
+    vars+=(AMP_PARTITION=1)
+  fi
   out=$(mktemp)
   if [ -n "$sn" ]; then
-    TAG="$TAG" APP="$app" "$BENCH" "$board" "$sn" > "$out" 2>&1 < /dev/null
+    env "${vars[@]}" "$BENCH" "$board" "$sn" > "$out" 2>&1 < /dev/null
   else
-    TAG="$TAG" APP="$app" "$BENCH" "$board" > "$out" 2>&1 < /dev/null
+    env "${vars[@]}" "$BENCH" "$board" > "$out" 2>&1 < /dev/null
   fi
   rc=$?
   if [ $rc -ne 0 ]; then
@@ -143,6 +166,7 @@ FAILED=0
 ABSENT=0
 COVERED=""
 OWED=""
+UNJUDGED=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
@@ -190,11 +214,11 @@ EOF
   # at 1, so a figure in the table below belongs to an image rather than to the board. A console
   # driver is only in the images whose composition names it, so a green kernel-console run says
   # nothing about the driver.
-  UNJUDGED=0
   while IFS='|' read -r img _stdout judge <&4; do
     [ -n "$img" ] || continue
     if [ "$judge" = "-" ]; then
-      UNJUDGED=$((UNJUDGED + 1))
+      UNJUDGED="$UNJUDGED$board $img
+"
       continue
     fi
     OWED="$OWED$board $img
@@ -212,8 +236,61 @@ EOF
   done 4<<ROWS
 $IMAGES
 ROWS
-  if [ "$UNJUDGED" -ne 0 ]; then
-    record "$board" "$UNJUDGED image(s) no judge names, not captured"
+  if has_variant "$board" "$FLAT_VARIANT"; then
+    LERR=$(mktemp)
+    FLAT_IMAGES=$(images_for "$board" "$LERR" "$FLAT_VARIANT")
+    if [ -z "$FLAT_IMAGES" ]; then
+      record "$board/$FLAT_VARIANT" "REFUSED (the tree was not able to say which images this board's $FLAT_VARIANT build ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
+      FAILED=1
+    fi
+    rm -f "$LERR"
+    while IFS='|' read -r img _stdout judge <&4; do
+      [ -n "$img" ] || continue
+      if printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }'; then
+        continue
+      fi
+      label="$img ($FLAT_VARIANT)"
+      if [ "$judge" = "-" ]; then
+        UNJUDGED="$UNJUDGED$board $label
+"
+        continue
+      fi
+      OWED="$OWED$board $label
+"
+      if [ "$DRY_RUN" = "1" ]; then
+        record "$board/$label" "WOULD FLASH (dry run; judge $judge)"
+        continue
+      fi
+      if bench_one "$board" "$img" "$SN" "$board/$label" "$judge" "$FLAT_VARIANT"; then
+        COVERED="$COVERED$board $label
+"
+      else
+        FAILED=1
+      fi
+    done 4<<ROWS
+$FLAT_IMAGES
+ROWS
+  fi
+  if has_variant "$board" "$AMP_VARIANT"; then
+    img=amp_partition
+    LERR=$(mktemp)
+    judge=$(images_for "$board" "$LERR" "$AMP_VARIANT" | awk -F '|' '$1 == "ampping_n0" { print $3; exit }')
+    rm -f "$LERR"
+    if [ -z "$judge" ] || [ "$judge" = "-" ]; then
+      UNJUDGED="$UNJUDGED$board $img
+"
+    else
+      OWED="$OWED$board $img
+"
+      if [ "$DRY_RUN" = "1" ]; then
+        record "$board/$img" "WOULD FLASH (dry run; judge $judge)"
+      elif bench_one "$board" ampping_n0 "$SN" "$board/$img" "$judge" "$AMP_VARIANT" 1; then
+        COVERED="$COVERED$board $img
+"
+      else
+        FAILED=1
+      fi
+    fi
   fi
 done
 
@@ -242,10 +319,17 @@ while read -r board img; do
 done <<OWED
 $OWED
 OWED
+while read -r board img; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s NO JUDGE\n' "$board" "$img"
+  UNCOVERED=$((UNCOVERED + 1))
+done <<UNJUDGED
+$UNJUDGED
+UNJUDGED
 if [ "$UNCOVERED" -ne 0 ]; then
   echo
-  echo "INCOMPLETE: $UNCOVERED judged image(s) a board ships were not captured, so this pass does not"
-  echo "  cover those boards."
+  echo "INCOMPLETE: $UNCOVERED image(s) a board ships were not captured, or no judge names them, so"
+  echo "  this pass does not cover those boards."
   exit 1
 fi
 exit $FAILED

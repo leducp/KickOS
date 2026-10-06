@@ -6,7 +6,7 @@
 # python -m kickos_compose manifest <manifest>...
 # python -m kickos_compose partition <composition>... --manifest <manifest> --node <k>
 # python -m kickos_compose emit <composition> | --partition <composition>... --manifest <manifest> -o <file.c>
-#                               [--asserts <file.ld>] [--fragment <file.cmake>] [--gate <file.c>]
+#                               [--asserts <file.ld>] [--fragment <file.cmake>] [--gate <file.c>] [--name <name>]
 # python -m kickos_compose gate --manifest <manifest> -o <file.c>
 # python -m kickos_compose cost <composition> --manifest <manifest>
 # python -m kickos_compose chip <chip or board file> --arch <arch> --include-dir <dir> --chip-dir <dir>
@@ -76,6 +76,7 @@ def main(argv):
     table.add_argument("--asserts", help="the linker script of the system target's link-time asserts to write")
     table.add_argument("--fragment", help="the CMake fragment kickos_compose reads to write")
     table.add_argument("--gate", help="the gate assignment's C source to write, where the build carries one")
+    table.add_argument("--name", help="the name the emitted files cite the composition by, its path by default")
     cost = commands.add_parser("cost", help="admit a composition and print what its init spends, one figure "
                                             "per line")
     cost.add_argument("composition", help="the composition file")
@@ -142,7 +143,7 @@ def main(argv):
             if output is not None and os.path.exists(output):
                 os.remove(output)
         report, texts = emit_system(arguments.composition, arguments.manifest, os.path.basename(arguments.output),
-                                    arguments.partition)
+                                    arguments.partition, arguments.name)
         named = arguments.composition
         if named is None:
             named = "the partition"

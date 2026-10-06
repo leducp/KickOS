@@ -17,29 +17,6 @@ kickos_toolchain_board_descriptor("x86_64")
 kickos_toolchain_cpu_baseline("x86_64" "x86")
 kickos_toolchain_export_baseline("${_kos_cpu}")
 
-# CMake keeps these flags from the first configure. Upgrade existing q35 build trees too, to
-# x86-64-v3, to the app posture's vectors and hosted C library, and off the visibility header
-# the compiler's binds-local patch replaced.
-foreach(_kos_lang C CXX ASM)
-  if(CMAKE_${_kos_lang}_FLAGS MATCHES "(^| )-march=x86-64( |$)")
-    string(REGEX REPLACE "(^| )-march=x86-64( |$)" "\\1-march=x86-64-v3\\2"
-      _kos_flags "${CMAKE_${_kos_lang}_FLAGS}")
-    set(CMAKE_${_kos_lang}_FLAGS "${_kos_flags}" CACHE STRING "Compiler flags" FORCE)
-  endif()
-  foreach(_kos_gone " -mno-sse -mno-mmx -mno-80387" " -ffreestanding")
-    if(CMAKE_${_kos_lang}_FLAGS MATCHES "${_kos_gone}")
-      string(REPLACE "${_kos_gone}" "" _kos_flags "${CMAKE_${_kos_lang}_FLAGS}")
-      set(CMAKE_${_kos_lang}_FLAGS "${_kos_flags}" CACHE STRING "Compiler flags" FORCE)
-    endif()
-  endforeach()
-  # Matched by pattern: the install step reads a path under this directory as a file to ship.
-  string(REGEX REPLACE " -include [^ ]*/toolchain-x86_64-hidden[.]h" ""
-    _kos_flags "${CMAKE_${_kos_lang}_FLAGS}")
-  if(NOT "${_kos_flags}" STREQUAL "${CMAKE_${_kos_lang}_FLAGS}")
-    set(CMAKE_${_kos_lang}_FLAGS "${_kos_flags}" CACHE STRING "Compiler flags" FORCE)
-  endif()
-endforeach()
-
 set(KICKOS_ARCH_FAMILY "x86" CACHE STRING "KickOS ISA family (arm|rx|xtensa|riscv|arm64|x86)")
 
 kickos_toolchain_package(x86_64-elf)

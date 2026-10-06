@@ -415,14 +415,15 @@ namespace kickos
             return bits;
         }
 
-        // A holder adds offsets to pick an address of its own and must stay inside the
-        // window this checked.
-        constexpr size_t VA_SEED_PAGES = 16u;
 
         int g_seed_obj = FRAME_RUN_NONE;
 
-        uint64_t op_cap_seed()
+        uint64_t op_cap_seed(uintptr_t pages)
         {
+            if (pages == 0)
+            {
+                pages = 1;
+            }
             IrqLock lock;
             Thread* self = sched::current();
             if (self == nullptr)
@@ -436,15 +437,19 @@ namespace kickos
             }
             // Cleared: alloc_run hands out the previous owner's bytes and this run crosses
             // into another task.
-            arch_phys_addr_t const run = frame_pool_alloc_user_run(1);
+            if (pages > KOS_ASPACE_SEED_PAGES_MAX)
+            {
+                return 0;
+            }
+            arch_phys_addr_t const run = frame_pool_alloc_user_run(pages);
             if (run == 0)
             {
                 return 0;
             }
-            int const fobj = frame_run_create(run, 1);
+            int const fobj = frame_run_create(run, static_cast<uint32_t>(pages));
             if (fobj == FRAME_RUN_NONE) // a handle, so never a sign test
             {
-                frame_pool_free_run(run, 1, arch_aspace_granule());
+                frame_pool_free_run(run, pages, arch_aspace_granule());
                 return 0;
             }
             uint32_t fcap = KCAP_INVALID;
@@ -499,8 +504,12 @@ namespace kickos
             return static_cast<uint64_t>(acap);
         }
 
-        uint64_t op_cap_seed_va()
+        uint64_t op_cap_seed_va(uintptr_t pages)
         {
+            if (pages == 0 or pages > KOS_ASPACE_SEED_PAGES_MAX)
+            {
+                pages = KOS_ASPACE_SEED_PAGES;
+            }
             IrqLock lock;
             Thread const* const c = sched::current();
             size_t const g = arch_aspace_granule();
@@ -516,9 +525,9 @@ namespace kickos
             // Stacks and guards are recorded, so the list can identify unmapped addresses.
             for (unsigned i = 0; i < 8u; i++)
             {
-                uintptr_t const va =
-                    va_seed() + static_cast<uintptr_t>(i) * static_cast<uintptr_t>(VA_SEED_PAGES * g);
-                if (not r->overlaps(va, VA_SEED_PAGES))
+                uintptr_t const va = va_seed()
+                                     + static_cast<uintptr_t>(i) * KOS_ASPACE_SEED_PAGES * g;
+                if (not r->overlaps(va, pages))
                 {
                     return static_cast<uint64_t>(va);
                 }
@@ -720,8 +729,8 @@ namespace kickos
             uint32_t const rw = ARCH_MAP_R | ARCH_MAP_W;
             struct arch_aspace* const sa = arch_aspace_create();
             struct arch_aspace* const sb = arch_aspace_create();
-            arch_phys_addr_t const ra = frame_pool_alloc_run(3);
-            arch_phys_addr_t const rb = frame_pool_alloc_run(3);
+            arch_phys_addr_t const ra = frame_pool_alloc_user_run(3);
+            arch_phys_addr_t const rb = frame_pool_alloc_user_run(3);
             uint64_t bits = 0;
             if (sa != nullptr and sb != nullptr and ra != 0 and rb != 0)
             {
@@ -1050,6 +1059,9 @@ namespace kickos
             uint64_t bits = KOS_ASPACE_UNWIND_REFUSED | KOS_ASPACE_UNWIND_ENOMEM
                             | KOS_ASPACE_UNWIND_BALANCED;
             size_t depth = 0;
+#if KICKOS_ARCH_ALIAS_DCACHE
+            presync_probe(true);
+#endif
             for (size_t nth = 1; nth <= SWEEP_LIMIT; nth++)
             {
                 frame_pool_fail_in(nth);
@@ -1091,6 +1103,9 @@ namespace kickos
                     bits &= ~static_cast<uint64_t>(KOS_ASPACE_UNWIND_BALANCED);
                 }
             }
+#if KICKOS_ARCH_ALIAS_DCACHE
+            presync_probe(false);
+#endif
             if (frame_pool_refused() == refused_before)
             {
                 bits |= KOS_ASPACE_UNWIND_NO_DOUBLE;
@@ -1223,11 +1238,11 @@ namespace kickos
                 {
                     return static_cast<uint64_t>(-KOS_EPERM);
                 }
-                return op_cap_seed();
+                return op_cap_seed(a1);
             }
             case KOS_ASPACE_OP_CAP_SEED_VA:
             {
-                return op_cap_seed_va();
+                return op_cap_seed_va(a1);
             }
             case KOS_ASPACE_OP_CAP_SELF_SPACE:
             {
@@ -1323,6 +1338,19 @@ namespace kickos
             {
                 return aspace_release_peer_hits();
             }
+            case KOS_ASPACE_OP_POOL_FAIL_IN:
+            {
+                if (not cap_mint_authorised())
+                {
+                    return static_cast<uint64_t>(-KOS_EPERM);
+                }
+                frame_pool_fail_in(static_cast<size_t>(a1));
+                return 0;
+            }
+            case KOS_ASPACE_OP_LOCKED_PAGES:
+            {
+                return aspace_locked_pages();
+            }
             case KOS_ASPACE_OP_RELEASE_RUNS:
             {
                 return aspace_release_runs();
@@ -1366,6 +1394,55 @@ namespace kickos
             {
                 return alias_sync_count();
             }
+#if KICKOS_PRESYNC
+            case KOS_ASPACE_OP_PRESYNC_REFUSALS:
+            {
+                return presync_refusals();
+            }
+            case KOS_ASPACE_OP_PRESYNC_MASKED:
+            {
+                return presync_masked_max();
+            }
+            case KOS_ASPACE_OP_PRESYNC_ARM:
+            {
+                presync_arm(static_cast<uint16_t>(a1 & 0xFFFFu),
+                            static_cast<uint8_t>((a1 >> 16) & 0xFFu), ((a1 >> 24) & 1u) != 0,
+                            ((a1 >> 25) & 1u) != 0);
+                return 0;
+            }
+            case KOS_ASPACE_OP_PRESYNC_LIVE:
+            {
+                if (a1 == 0)
+                {
+                    return presync_live_count();
+                }
+                Thread const* named = nullptr;
+                {
+                    IrqLock lock;
+                    Kernel& k = kernel();
+                    int const index = static_cast<int>(
+                        a1 & ((1u << ThreadPool::INDEX_BITS) - 1u));
+                    uint16_t const gen = static_cast<uint16_t>(a1 >> ThreadPool::INDEX_BITS);
+                    if (index < k.threads.next and k.threads.gen[index] == gen)
+                    {
+                        named = &k.threads.slots[index];
+                    }
+                }
+                return static_cast<uint64_t>(presync_live_of(named));
+            }
+            case KOS_ASPACE_OP_PRESYNC_GRANULES:
+            {
+                return presync_granules();
+            }
+            case KOS_ASPACE_OP_PRESYNC_WINDOWS:
+            {
+                return presync_windows_mine();
+            }
+            case KOS_ASPACE_OP_IRQ_WINDOWS:
+            {
+                return arch_irq_windows();
+            }
+#endif
             case KOS_ASPACE_OP_SPACE_ID:
             {
                 // Two tasks comparing this is what witnesses that a domain is an address

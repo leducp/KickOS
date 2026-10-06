@@ -104,6 +104,9 @@ namespace kickos
 
     void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
 
+    // The exit path's end of a call that syncs ahead of its lock; no arm here makes one.
+    void presync_exit() {}
+
     struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
 
     bool aspace_seated_for(Thread const*)

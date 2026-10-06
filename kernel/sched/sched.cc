@@ -971,6 +971,11 @@ namespace kickos
                     task_end(c->task, code, c->cancel_kind == CANCEL_NONE);
                 }
 #if KICKOS_HAVE_ASPACE
+#if KICKOS_PRESYNC
+                // A thread leaving inside a call's work outside the lock: the run it staged has
+                // no other owner.
+                presync_exit();
+#endif
                 // Unmap this thread's windows, the shootdown included, before the release below
                 // frees a device for a second holder: a sibling keeps the space and must not
                 // keep the mapping.

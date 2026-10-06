@@ -63,6 +63,10 @@
 #
 # An image that no row and no JUDGE judges is refused; JUDGE=none takes the capture unjudged.
 set -u
+# AMP_PARTITION=1, with APP=ampping_n0 and VARIANT=amp2-n0, builds the board's whole AMP partition,
+# every node's image merged into one, flashes that, and judges the capture with the judge
+# ampping_n0's row names.
+#
 # WHICH IMAGES THIS BOARD'S BUILD SHIPS IS A PROPERTY OF ITS CONFIGURE, and LIST_IMAGES=1 is how a
 # caller asks: configure, print one `<image>|<stdout>|<judge>` row per image, flash nothing. The
 # stdout is `kernel`, the packaged console driver the image's composition names, or `-`; the
@@ -266,13 +270,6 @@ export EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS
 
 BUILD_TARGET="$APP"
 if [ "${AMP_PARTITION:-0}" = "1" ]; then
-  case "$BOARD" in
-    esp32c6-wroom|pizero2350) ;;
-    *)
-      echo "REFUSING: AMP_PARTITION=1 requires esp32c6-wroom or pizero2350" >&2
-      exit 1
-      ;;
-  esac
   if [ "$APP" != "ampping_n0" ] || [ "$VARIANT" != "amp2-n0" ]; then
     echo "REFUSING: AMP_PARTITION=1 requires APP=ampping_n0, VARIANT=amp2-n0" >&2
     exit 1
@@ -380,9 +377,6 @@ if [ -z "${BENCH_HOST:-}" ]; then
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
     CONSOLE_USB_CDC="$CONSOLE_USB_CDC" \
     "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN" || exit $?
-  if [ "${AMP_PARTITION:-0}" = "1" ] && [ "$BOARD" = "esp32c6-wroom" ]; then
-    python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
-  fi
   judge || exit $?
   exit 0
 fi
@@ -523,7 +517,4 @@ fi
 [ -n "$RBYTES" ] || { echo "REFUSING: the remote capture reported no byte count" >&2; exit 1; }
 [ "$LBYTES" = "$RBYTES" ] || { echo "REFUSING: fetched $LBYTES bytes, the bench wrote $RBYTES" >&2; exit 1; }
 echo "log: $LOG  ($LBYTES bytes, fetched from $BENCH_HOST)"
-if [ "${AMP_PARTITION:-0}" = "1" ] && [ "$BOARD" = "esp32c6-wroom" ]; then
-  python3 "$HERE/../../tests/integration/check_c6_amp_capture.py" "$LOG" || exit $?
-fi
 judge || exit $?

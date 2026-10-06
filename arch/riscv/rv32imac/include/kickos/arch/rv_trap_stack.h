@@ -49,14 +49,17 @@
  * nothing else compiles. Both figures are reserves above the measurements below, kept as headroom;
  * the red-zone gate fails a measurement past them.
  *
- *   KICKOS_BENCH 0, 576 on qemu-riscv and the two non-flat esp32c6-wroom presets:
+ *   KICKOS_BENCH 0, 576 on esp32c6-wroom at KICKOS_MAX_SPAWN_GRANTS 6:
  *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[80] -> seat_windows[64]
  *     -> MpuSet::add[16] -> MpuSet::encode -> arch_mpu_encode[80]
- *   The two flat presets read 512:
- *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[96] -> seat_windows[64]
- *     -> arch_ram_region_size[16]
+ *   672 on qemu-riscv and esp32c6-wroom-st at 9, where spawn_masked[336] leaves
+ *   thread_create_call[32]; qemu-riscv-flat reads 608, down thread_create[96] -> seat_windows[64]
+ *   -> arch_ram_region_size[16].
  *   KICKOS_BENCH 1, 768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console.
- *   C6 AMP node 0, 800 via the self-test diagnostic on exit; node 1 measures 608. */
+ *   C6 AMP node 0, 800 via the self-test diagnostic on exit; node 1 measures 608.
+ * thread_create_call stages the spawn's grant list: qemu-riscv reads 672 at
+ * KICKOS_MAX_SPAWN_GRANTS 9, 704 at 11, 720 at 12 and 784 at 15, so arch_rv32imac.cc refuses
+ * more than 11 under the 704 figure. C6 AMP node 0 still reads 800 at 15. */
 #if KICKOS_BENCH || KICKOS_AMP_OWN_IMAGE
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
 #else

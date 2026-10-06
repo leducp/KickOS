@@ -159,7 +159,7 @@ kernel latched with `kos_task_exit_status(task, &status)` (section 7): 0 when th
 the code passed to `exit` or `kos_exit`, any `int` and negatives included, `KOS_EXIT_FAULT` after
 a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marked
 dependency-down, or whose start fails, never runs its entry, and the system ends with
-`KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with two
+`KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, two
 zero-length `kos_send_timed` on `KOS_CAP_STDOUT`, each bounded by `KOS_DRV_HANDOVER_PROBE_US`
 (1 s). A zero-length send to a console driver is a flush: the driver goes back to its receive
 only once its TX ring and the device's transmit path have drained, as far as the device can
@@ -708,7 +708,7 @@ CMake side: `kickos_add_driver` and its catalogue, `cmake/driver_geometry.cmake`
 `kickos_emit_image`, the x86_64 link rule, and the gate machinery of
 `tests/lib/gate.sh`.
 
-**Left.** the service-list selection knob, the pin-map selection knob, the init-provider cache variable,
+**Left, and since done by M10.5.** the service-list selection knob, the pin-map selection knob, the init-provider cache variable,
 the app authority macro and the default init behind the old `kickos` and `kickos_cxx` leaves;
 `KICKOS_USER_HEAP_SIZE` sizing those leaves' heap; the service lists' types; the line numbers in
 driver descriptors; chip headers generated from chip files; the partition build; x86 linking
@@ -737,7 +737,7 @@ int kos_thread_set_priority(uint8_t priority);  /* the caller's own base priorit
 void fence_acquire();        /* std::atomic_thread_fence at acquire, for the status read */
 void fence_release();        /* std::atomic_thread_fence at release, for the status write */
 
-/* user/include/kickos/sys/table.h, KICKOS_TABLE_VERSION 3 */
+/* user/include/kickos/sys/table.h, KICKOS_TABLE_VERSION 3 at M10.4, 6 since M10.5 */
 uint8_t init_priority;       /* kos_table_header, after strings_size: what the init lowers itself to */
 KOS_GRANT_STATUS = 7,        /* /init/status, a watcher's read-only status block */
 uint16_t window;             /* kos_table_grant, after target: the place in the spawn's window list */

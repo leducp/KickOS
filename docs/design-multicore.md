@@ -1203,11 +1203,11 @@ collapse N6c names and one that every arm on the node owning that base passes.
 wherever own-image nodes share one UART, which is the RP2350 and QEMU ARM64 partitions. One
 private TX ring per node cannot arbitrate one UART: a peer's announcement shreds under another
 node's banner about one run in ten. The shared UART therefore carries a bounded partition claim,
-held across the chunks of one line; a write whose claim cannot be acquired, or is lost, drops the
-rest of its line. The partition gate checks each peer's complete app announcement, and still
-witnesses peer liveness through a counter the *other* node reads: a debug line may be dropped
-under a bounded wait even when the app ran. The app-alive sweep checks the app's causal order
-only.
+held across the chunks of one line; a kernel line whose claim cannot be acquired, or passes to a
+peer, drops the rest of its line, and a user write reports the short count instead. The
+partition gate checks each peer's complete app announcement, and still witnesses peer liveness
+through a counter the *other* node reads: a debug line may be dropped under a bounded wait even
+when the app ran. The app-alive sweep checks the app's causal order only.
 
 The ESP32-C6 pair shares no UART and takes no claim. The part has an LP UART, but this port
 wires none: HP owns UART0, and LP writes boot and served-call records to the shared window;

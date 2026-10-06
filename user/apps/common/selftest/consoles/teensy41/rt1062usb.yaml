@@ -12,6 +12,7 @@ tasks:
   - name: console
     driver: rt1062usb
     devices: [/dev/usb1]
+    accepts: [bus_master]
     lines: { irq: /dev/usb1/irq }
     core: 0
     serves: /svc/console
@@ -21,4 +22,4 @@ tasks:
     entry: selftest_main
     priority: 2
     ceiling: 30
-    authority: [memory, system, pinmux, irq, console, tasks]
+    authority: [memory, system, pinmux, irq, console, tasks, bus_master]

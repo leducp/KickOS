@@ -23,6 +23,9 @@ namespace kickos
     {
         arch_phys_addr_t base = 0;
         uint32_t pages = 0;
+        // A mapping of another type than cacheable has been installed since the last sync of
+        // these frames, so a cacheable one owes them one (aspace_cap_map).
+        bool sync_owed = false;
     };
 
     // What frame_run_create answers when it could not make one, and what a caller holding no
@@ -44,6 +47,10 @@ namespace kickos
     // The frame RUN slot a handle names, or -1. This is what a VirtualRange stores.
     int frame_run_slot_of(int obj_handle);
 
+    // FrameRun::sync_owed of the run a handle names; false when it does not resolve.
+    bool frame_run_sync_owed(int obj_handle);
+    void frame_run_set_sync_owed(int obj_handle, bool owed);
+
     // A teardown's release, named by the run's SLOT as the range recorded it. A slot out of
     // range, or one holding no reference, is a no-op rather than a drop of whatever sits there.
     // The slot is pinned by the very reference this drops.
@@ -64,31 +71,25 @@ namespace kickos
     // this pool handed out.
     void* frame_pool_ptr(arch_phys_addr_t frame);
 
-    // `pages` consecutive frames, or 0 when no run that long is free.
-    // The bytes are the previous owner's: only a caller that overwrites every byte before
-    // anything unprivileged can reach them may use this one; anything a task maps takes
-    // frame_pool_alloc_user_run below.
-    arch_phys_addr_t frame_pool_alloc_run(size_t pages);
-
-    // The same run with every byte zero. Whole-run or nothing: a frame the kernel cannot reach
-    // through its own alias fails the whole allocation and the answer is 0.
+    // `pages` consecutive frames with every byte zero, or 0 when no run that long is free.
+    // Whole-run or nothing: a frame the kernel cannot reach through its own alias fails the
+    // whole allocation and the answer is 0.
     arch_phys_addr_t frame_pool_alloc_user_run(size_t pages);
 
     // `granule` is the map editor's granule, which is what the run was measured in.
     void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Refuse the `nth` next allocation, by either entry point, taking nothing; then disarm.
+    // Refuse the `nth` next allocation, by any entry point, taking nothing; then disarm.
     // 0 disarms without refusing.
     void frame_pool_fail_in(size_t nth);
 
     // Whether an arming is still waiting for its attempt.
     bool frame_pool_fail_armed();
-
-    // The physical frames the pool describes, [*lo, *hi), bitmap included: what a probe that
-    // maps an output it must not own keeps clear of.
-    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi);
 #endif
+
+    // The physical frames the pool describes, [*lo, *hi), bitmap included.
+    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi);
 }
 
 #endif

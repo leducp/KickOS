@@ -4,8 +4,8 @@
 #
 # A silicon capture of xmcssc (user/apps/xmc4800-relax/xmcssc): the client's SSC transfers through
 # the bus, every case passing and the loopback verdict, with no panic. The same source runs over
-# the packaged service (proxy) or the local engine (KICKOS_SPI_LOCAL_ENGINE); the capture is the
-# same either way.
+# the packaged service (`xmcssc`) and the local engine (`xmcssc_local`); the capture is the same
+# either way.
 #
 #   KOS_CAPTURE=<log> check_xmcssc.sh <board-build> <kickos-source> <cmake>
 

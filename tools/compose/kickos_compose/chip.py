@@ -168,6 +168,7 @@ def limit_values(view):
         values.append(("KICKOS_CHIP_CYCCNT_HZ", chip.cycle_counter["hz"], chip.refs.get("hz")))
     if chip.cycle_counter.get("glitches"):
         values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
+    values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
     return values
 
 
@@ -265,7 +266,7 @@ def table_rows(view):
     units = view.units()
     translating = any(unit.unit == "mmu" for unit in units)
     ports = any(unit.io_ports for unit in units)
-    tables = {"reserved_blocks": [], "window_apertures": [], "port_apertures": []}
+    tables = {"reserved_blocks": [], "window_apertures": [], "bus_master_apertures": [], "port_apertures": []}
     for device in view.devices():
         kernel = device.owner == "kernel"
         rows = [(base, size, device.ref) for base, size in window_rows(device)]
@@ -273,6 +274,8 @@ def table_rows(view):
             tables["reserved_blocks"].extend(rows)
         elif translating:
             tables["window_apertures"].extend(rows)
+        if device.bus_master and not kernel:
+            tables["bus_master_apertures"].extend(rows)
         if device.ports is not None and not kernel and ports:
             tables["port_apertures"].append((device.ports[0], device.ports[1], device.ref))
     return tables
@@ -383,15 +386,41 @@ def emit_cmake(view):
     if any(unit.unit == "mmu" for unit in units):
         translating = "ON"
     links = []
+    lengths = {}
     for entry in view.memory():
         base = view.base(entry)
         if base is None or entry.link is None:
             continue
         region = entry.link[0]
+        lengths[region] = entry.size
         links.append("set(KICKOS_CHIP_LINK_%s_ORIGIN 0x%X)\nset(KICKOS_CHIP_LINK_%s_LENGTH 0x%X)\n"
                      % (region, base, region, entry.size))
-    return "%s%sset(KICKOS_CHIP_REGION_UNIT \"%s\")\nset(KICKOS_CHIP_TRANSLATES %s)\n" % (
-        opening(view, "cmake"), "".join(links), "".join(regions), translating)
+    privilege = "OFF"
+    if not units or any(unit.privilege is not False for unit in units):
+        privilege = "ON"
+    facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege]
+    if view.chip.esptool_image is not None:
+        facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
+    if view.board is not None and view.board.emulator is not None:
+        facts.extend(emulator_cmake(view, view.board.emulator, lengths))
+    return "%s%s%sset(KICKOS_CHIP_REGION_UNIT \"%s\")\nset(KICKOS_CHIP_TRANSLATES %s)\n" % (
+        opening(view, "cmake"), "".join(links), "".join(facts), "".join(regions), translating)
+
+
+def emulator_cmake(view, emulator, lengths):
+    """The QEMU binary, machine and options of a board an emulator runs, as chip.cmake sets them."""
+    options = list(emulator["options"])
+    if "ram_global" in emulator:
+        if "RAM" not in lengths:
+            raise Failure("the board's emulator sets `%s` to the RAM link region's length, and chip `%s` links "
+                          "no RAM" % (emulator["ram_global"], view.chip.name))
+        options.extend(["-global", "%s=%d" % (emulator["ram_global"], lengths["RAM"])])
+    out = ["set(KICKOS_QEMU_BINARY \"%s\")\n" % emulator["qemu"],
+           "set(KICKOS_QEMU_MACHINE \"%s\")\n" % emulator["machine"],
+           "set(KICKOS_QEMU_OPTIONS \"%s\")\n" % ";".join(options)]
+    if "gicv3_machine" in emulator:
+        out.append("set(KICKOS_QEMU_GICV3_MACHINE \"%s\")\n" % emulator["gicv3_machine"])
+    return out
 
 
 def selector_value(selector):

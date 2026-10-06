@@ -140,8 +140,12 @@ def check_unserved(files, admitted, manifest):
                                     % (task.label(), path, server, server, files[server].filename))
 
 
+def is_partition_region(made, path):
+    return path in made.shared and made.shared[path].partition
+
+
 def partition_regions(made):
-    return [(path, region) for path, region in made.shared.items() if region.partition]
+    return [(path, region) for path, region in made.shared.items() if is_partition_region(made, path)]
 
 
 def region_align(size, made, manifest):
@@ -167,10 +171,10 @@ def share_base(manifest):
 
 
 def place_regions(files, admitted, manifest):
-    """partition.region: a partition region two nodes declare with different sizes, or one placed
-    past the user share; a `cache` other than the share's is each node's own refusal. Each is placed
-    in node 0's declaration order, then in node order, at the alignment every node mapping it
-    needs."""
+    """partition.region: a partition region two nodes declare with different sizes, one another node
+    declares without `partition: true`, or one placed past the user share; a `cache` other than the
+    share's is each node's own refusal. Each is placed in node 0's declaration order, then in node
+    order, at the alignment every node mapping it needs."""
     declared = {}
     order = []
     for k, made in enumerate(admitted):
@@ -185,6 +189,14 @@ def place_regions(files, admitted, manifest):
                                 "partition region `%s` has size %s on node %d, and %s on node %d (%s:%d)"
                                 % (path, region.size, k, first.size, j, files[j].filename,
                                    line_of(first.size_node)))
+    for k, made in enumerate(admitted):
+        for path, region in made.shared.items():
+            if region.partition or path not in declared:
+                continue
+            j, first = declared[path]
+            files[k].refuse(region.node, "partition.region",
+                            "shared region `%s` is not a partition region on node %d, and is one on node %d (%s:%d)"
+                            % (path, k, j, files[j].filename, line_of(first.node)))
     base = share_base(manifest)
     cursor = 0
     for path in order:
@@ -192,13 +204,13 @@ def place_regions(files, admitted, manifest):
         size = 0
         align = 1
         for made in admitted:
-            if path in made.shared:
+            if is_partition_region(made, path):
                 size = max(size, region_size(region.size, made.chip, made.cluster, made.manifest))
                 align = max(align, region_align(size, made, made.manifest))
         offset = -(-(base + cursor) // align) * align - base
         cursor = offset + size
         for n, made in enumerate(admitted):
-            if path not in made.shared:
+            if not is_partition_region(made, path):
                 continue
             made.offsets[path] = offset
             if cursor > manifest.amp_share:
@@ -274,8 +286,8 @@ def touches(row, after):
 def derive_gate(chip, manifest, grants, nodes, refuse):
     """The gate assignment, each row a Row. `grants` holds each memory-window grant as (node, Grant),
     `nodes` is the partition's node count, and `refuse(node, Grant or None, message)` reports
-    partition.gate-budget: a gate whose rows outnumber its regions less its catch-all, or a grant no
-    register gates."""
+    partition.gate-budget: a gate whose rows outnumber its regions less its catch-all, a grant no
+    register or region gate fronts, or a register two nodes' grants would each be assigned."""
     gate = chip.partition_gate
     if gate is None:
         return []
@@ -288,9 +300,20 @@ def derive_gate(chip, manifest, grants, nodes, refuse):
                                  "no node's kernel can keep it from the others"
                        % (grant.task.label(), grant.path, k, gate.device))
                 continue
-            if not any(row.register == register and row.node == k for row in rows):
+            owner = [row for row in rows if row.register == register]
+            if owner and owner[0].node != k:
+                refuse(k, grant, "%s holds `%s` on node %d, and register 0x%X of partition gate `%s` already "
+                                 "assigns `%s` to node %d, so one register would be both nodes'"
+                       % (grant.task.label(), grant.path, k, register, gate.device, owner[0].grant.path,
+                          owner[0].node))
+                continue
+            if not owner:
                 rows.append(Row(0, k, grant.base, grant.size, "rw", register, grant))
         return rows
+    for k, grant in grants:
+        if not any(fronted(unit, grant) for unit in gate.gates.values()):
+            refuse(k, grant, "%s holds `%s` on node %d, which the ranges of no gate of the partition front, so no "
+                             "node's kernel can keep it from the others" % (grant.task.label(), grant.path, k))
     for index, (name, unit) in enumerate(gate.gates.items()):
         gate_rows = []
         mine = [(k, grant) for k, grant in grants if fronted(unit, grant)]

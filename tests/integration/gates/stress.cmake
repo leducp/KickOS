@@ -37,7 +37,7 @@ endif()
 # every vCPU, and it is that log rather than anything the image printed that carries the
 # verdict. The liveness pattern is the app's own FIRST line, a control that the app half ran at
 # all. CMAKE_NM travels with it: the gate reads the trap stub's address out of the image
-# instead of carrying a layout. TIMEOUT covers the gate's own sampling bound.
+# instead of carrying a layout.
 #
 # THE CORE COUNT STAYS THE MACHINE'S, and the isolated mask travels beside it as its own
 # argument: stress names no core, and an isolated core is held out of the default core set that
@@ -63,6 +63,5 @@ if((KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
   kickos_add_qemu_test(NAME ${_tag}_smp_threads TARGET stress
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"
     ARGS ${KICKOS_KERNEL_CORES} "^stress: scheduler" "${CMAKE_NM}" ${KICKOS_ARCH}
-         ${_stress_isolated}
-    TIMEOUT 300)
+         ${_stress_isolated})
 endif()

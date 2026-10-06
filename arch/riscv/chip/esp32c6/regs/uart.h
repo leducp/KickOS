@@ -59,9 +59,8 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t TXFIFO_LEN = 128u;
     constexpr uint32_t TXFIFO_LIMIT = TXFIFO_LEN - 2u;      // push stops here, 2 spare entries
 
-    // FSM_STATUS (TRM Register 27.24): ST_UTX_OUT [3:0] is the transmitter state machine,
-    // ST_URX_OUT [7:4] the receiver's. The TRM prints the fields but not their encodings;
-    // idle is taken to be the reset value 0.
+    // FSM_STATUS (TRM Register 27.24, p.770): ST_UTX_OUT [3:0] is the transmitter state machine.
+    // Its idle encoding is taken from ESP32 TRM v5.8 Register 19.8; the C6 TRM prints none.
     constexpr uintptr_t OFF_TX_FSM = OFF_FSM_STATUS;
     constexpr uint32_t ST_UTX_OUT_S = 0u;
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;

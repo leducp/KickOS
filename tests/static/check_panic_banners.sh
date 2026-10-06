@@ -93,8 +93,9 @@ corpus_class() { # <tracked path> -> read | skip | refuse
             printf 'read\n' ;;
         # user/ and examples/ are application code and boards/ is board glue: an application
         # printing its own message is not a fault reporter. tests/ and tools/ are host-side,
-        # where a banner-shaped literal is a gate's own planted control.
-        user|examples|boards|tests|tools)
+        # where a banner-shaped literal is a gate's own planted control. docs/ archives a
+        # measurement's application code beside its record.
+        user|examples|boards|tests|tools|docs)
             printf 'skip\n' ;;
         *)
             printf 'refuse\n' ;;
@@ -632,6 +633,8 @@ cls skip   examples/oot-app/main.cc
 cls skip   boards/blackpill/include/kickos/board_wiring.h
 cls skip   tests/unit/uartclass/uart_mock.cc
 cls skip   tools/host/probe.c
+cls skip   docs/archive/M10.5_smallest_boards_meas/main.c
+cls refuse docsx/archive/main.c
 cls refuse archive/old/arch_armv7m.cc
 cls refuse kernelish/ampmap.cc
 cls refuse ampmap.cc
@@ -649,12 +652,12 @@ while IFS="$TAB" read -r want path; do
         refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
     esac
 done < "$TMP/st_class"
-[ "$i" -eq 13 ] || fail "$i corpus_class control(s) ran, expected 13"
+[ "$i" -eq 15 ] || fail "$i corpus_class control(s) ran, expected 15"
 # All three verdicts, or a classification collapsed onto one of them would satisfy every
 # equality above and still read the whole tree wrong.
 [ "$C_READ" -eq 5 ] || fail "corpus_class answered read for $C_READ of 5 controls"
-[ "$C_SKIP" -eq 5 ] || fail "corpus_class answered skip for $C_SKIP of 5 controls"
-[ "$C_REFUSE" -eq 3 ] || fail "corpus_class answered refuse for $C_REFUSE of 3 controls"
+[ "$C_SKIP" -eq 6 ] || fail "corpus_class answered skip for $C_SKIP of 6 controls"
+[ "$C_REFUSE" -eq 4 ] || fail "corpus_class answered refuse for $C_REFUSE of 4 controls"
 
 # --- the corpus ---------------------------------------------------------------
 corpus_all "$TMP/tracked"

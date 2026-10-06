@@ -20,11 +20,12 @@ need_qemu
 [ -f "$LIMITS" ] || fail "no chip limits at $LIMITS"
 WANT="$(sed -n 's/^#define KICKOS_MAX_IRQ \([0-9]*\).*/\1/p' "$LIMITS")"
 [ -n "$WANT" ] || fail "$LIMITS defines no KICKOS_MAX_IRQ"
+boot_bound "${QEMU_TIMEOUT:-20}"
 # The monitor outlives the end of its input, so only `quit` ends the run before the bound.
 # shellcheck disable=SC2086
-TREE="$(printf 'info qtree\nquit\n' | timeout "${QEMU_TIMEOUT:-20}" "$QEMU_BIN" -M "$QEMU_MACHINE" \
+TREE="$(printf 'info qtree\nquit\n' | timeout "$KOS_BOOT_BOUND_S" "$QEMU_BIN" -M "$QEMU_MACHINE" \
         ${QEMU_EXTRA:-} -S -nographic -monitor stdio -serial null 2>&1)"
-[ "$?" -ne 124 ] || fail "QEMU's $QEMU_MACHINE ran out its ${QEMU_TIMEOUT:-20}s bound instead of quitting"
+[ "$?" -ne 124 ] || fail "QEMU's $QEMU_MACHINE ran out its ${KOS_BOOT_BOUND_S}s bound instead of quitting"
 GOT="$(printf '%s\n' "$TREE" | grep -A3 'dev: armv7m_nvic' | sed -n 's/^ *num-irq = \([0-9]*\).*/\1/p' | head -n 1)"
 [ -n "$GOT" ] || fail "QEMU's $QEMU_MACHINE reported no armv7m_nvic num-irq"
 [ "$GOT" = "$WANT" ] || fail "QEMU's $QEMU_MACHINE models $GOT NVIC lines, and the chip file states $WANT"

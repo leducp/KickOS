@@ -22,7 +22,7 @@
 #   notool    a host tool that cannot run: the configure fails saying so
 #   nocc      a project that does not enable C: kickos_compose refuses it at configure
 #   rerun     no arm of the link: an unchanged configure does not run the host tool, and a
-#             changed composition does
+#             changed composition, or a changed default under a composition naming no board, does
 #
 # Every composition is the package's default one with one field changed, so each arm differs
 # from a system the build itself links by that field alone.
@@ -88,6 +88,15 @@ if [ "$ARM" = rerun ]; then
     configure composed "$COMPOSITION" "$TMP/build" || fail "the edited composition did not configure"
     grep -q 'kickos_compose(probe_system): emitted ' "$TMP/build.configure.log" \
         || fail "a changed composition did not run the host tool again"
+    grep -v '^board:' "$DEFAULT" > "$TMP/boardless.yaml"
+    [ "$(grep -c '^board:' "$DEFAULT")" -eq 1 ] || fail "$DEFAULT names no single board to leave out"
+    configure composed "$TMP/boardless.yaml" "$TMP/boardless" \
+        || fail "the default composition naming no board did not configure"
+    printf '# a comment the tool reads past\n' >> "$DEFAULT"
+    configure composed "$TMP/boardless.yaml" "$TMP/boardless" \
+        || fail "the composition naming no board did not configure over the edited default"
+    grep -q 'kickos_compose(probe_system): emitted ' "$TMP/boardless.configure.log" \
+        || fail "a changed default did not run the host tool again on a composition naming no board"
     echo "PASS: the host tool ran on the first configure and on a changed input, not on an unchanged one"
     exit 0
 fi
@@ -155,11 +164,11 @@ $((BASE + 2 * S)), so a stack of $S need not fail on this board"
         EXPECT="the arena cannot hold task .main.'s stack" ;;
     heap)
         edited '^heap: *[0-9]+' 'heap: 1048576'
-        EXPECT="1048576-byte heap of $COMPOSITION, its .heap., is more than" ;;
+        EXPECT="1048576-byte heap of [^ ]*composition[.]yaml, its .heap., is more than" ;;
     noheap)
         PROBE_ARM=noheap
         cp "$DEFAULT" "$COMPOSITION"
-        EXPECT="KICKOS_USER_HEAP_SIZE is not the [0-9]+-byte heap of $COMPOSITION, which" ;;
+        EXPECT="KICKOS_USER_HEAP_SIZE is not the [0-9]+-byte heap of [^ ]*composition[.]yaml, which" ;;
     nocc)
         PROBE_ARM=nocc
         cp "$DEFAULT" "$COMPOSITION"

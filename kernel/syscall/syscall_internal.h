@@ -170,6 +170,17 @@ namespace kickos
     int task_create_call(void* mem_base, size_t mem_size, uint32_t mem_attr,
                          kos_task_t* out_task);
     int task_kill(kos_task_t task);
+
+#if KICKOS_PRESYNC
+    // Under the kernel lock, on a spawn's first round: its parameters and window list into the
+    // caller's record, which every round's plan and locked pass then read.
+    void spawn_presync_enter(kos_thread_params const* p);
+    // Under the kernel lock: what the spawn or the task creation will owe a sync and stage, for
+    // a call it would not refuse at once (aspace.h, presync_begin).
+    void spawn_presync_plan();
+    void task_create_presync_plan(void* mem_base, size_t mem_size, uint32_t mem_attr);
+#endif
+
     // Both BLOCK, so like the endpoint calls they must be reached with no caller-held
     // IrqLock: each takes its own for the gate and the park, then releases it before the
     // resume barrier and the wait_result read.

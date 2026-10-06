@@ -8,6 +8,7 @@
 #define KICKOS_ASPACE_H
 
 #include <kickos/arch/arch.h>
+#include <kickos/presync.h>
 #include <kickos/vrange.h>
 
 #include <stddef.h>
@@ -58,9 +59,12 @@ namespace kickos
 #endif
 
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
-    // Ahead of a region of `attr` over [base, base + size): one that is non-cacheable, or that
-    // retypes a region `held` names at exactly that extent, has the block's lines cleaned to
-    // memory then dropped, so none an earlier use left is evicted over it or read through it.
+    // Ahead of a memory region of `attr` over [base, base + size): one that is non-cacheable,
+    // one that retypes a region `held` names at exactly that extent, or a cacheable one over a
+    // block a non-cacheable region held since its last sync (ram_owner_sync_owed), has the
+    // block's lines cleaned to memory then dropped, so none an earlier use left is evicted over
+    // it or read through it. The block then owes the next cacheable region a sync exactly when
+    // this one is non-cacheable. Caller holds IrqLock.
     void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr);
 #else
     inline void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr)
@@ -110,7 +114,9 @@ namespace kickos
                                VirtualRange const* self);
 
     // Whether mapping `e`'s frames with `memtype` owes the kernel's cacheable view of them a
-    // sync: a non-cacheable mapping, or any change of type over a granted range.
+    // sync: a non-cacheable mapping, or any change of type over a granted range. A cacheable
+    // mapping over frames a non-cacheable one held since their last sync owes one too
+    // (VR_SYNC_OWED, kernel/mem/aspace.cc).
     inline bool aspace_grant_syncs(VirtualRange const* e, uint8_t memtype)
     {
         if (memtype == static_cast<uint8_t>(ARCH_MAP_NOCACHE))
@@ -119,6 +125,76 @@ namespace kickos
         }
         return e != nullptr and e->state == VirtualState::Granted and e->memtype != memtype;
     }
+
+#if KICKOS_PRESYNC
+    // The work a system call does outside the kernel lock (kickos/presync.h). All but
+    // presync_run and presync_release are called under IrqLock.
+    //
+    // The calling thread's record, or null.
+    PresyncRecord* presync_record();
+    // Start a round: forget what the last one noted and mapped. True on the call's first round,
+    // whose parameters the caller then copies into the record.
+    bool presync_begin();
+#if KICKOS_ARCH_ALIAS_DCACHE
+    // Note a span the locked pass will owe a sync. Frames outside the pool are not noted.
+    void presync_note(arch_phys_addr_t pa, size_t pages);
+#endif
+    // Stage the copy of the image's static data that aspace_image_seed, called with these
+    // arguments, will map into a new space.
+    void presync_stage_image(bool from_snapshot, struct arch_aspace* spawner);
+    // No lock held: sync every noted frame, then fill the staged run.
+    void presync_run();
+    // The call completed: every other live record meeting what its locked pass mapped is dropped.
+    void presync_commit();
+    // End a round: true when the locked pass was refused and the call goes round again.
+    bool presync_end();
+    // No lock held: free a staged run the round did not take, which a call that `succeeded`
+    // and was not sent round cannot have.
+    void presync_release(bool succeeded);
+    // The calling thread is leaving inside a call: drop its record and free its stage.
+    void presync_exit();
+    // `t` is a slot's new occupant: its record is a new one.
+    void presync_fresh(Thread const* t);
+
+    // The frames of a reservation of `bytes`, staged for presync_run to clear; 0 when the pool
+    // has no run that long.
+    arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes);
+    // Reserve the cleared run in `ranges`: its address, or 0 with the run left staged.
+    uintptr_t aspace_reserve_commit(VirtualRanges* ranges);
+
+#if KICKOS_ARCH_ALIAS_DCACHE
+    // The spans the locked pass of each mapping call below will owe a sync, noted ahead of it.
+    // Each asks what that call asks and notes nothing where it would refuse.
+    void aspace_self_grant_note(VirtualRanges const* ranges, uintptr_t base, size_t size,
+                                uint32_t rights, enum arch_map_memtype type);
+    void aspace_cap_map_note(int run_obj, arch_phys_addr_t base, uint32_t pages,
+                             enum arch_map_memtype type);
+    // A spawn's memory window or a task's data: a whole reservation of `own`'s at `base`.
+    void aspace_reservation_note(VirtualRanges const* own, uintptr_t base, size_t bytes,
+                                 enum arch_map_memtype type);
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST)
+    uint32_t presync_refusals();
+    // The most granules, low word, and nanoseconds, high word, one unprivileged caller's work
+    // outside the lock ran between two interrupt windows.
+    uint64_t presync_masked_max();
+    // Granules synced, low word, and cleared, copied or freed outside the lock, high word.
+    uint64_t presync_granules();
+    uint32_t presync_live_count();
+    bool presync_live_of(Thread const* t);
+    // Interrupt windows the calling thread's calls have opened outside the lock.
+    uint32_t presync_windows_mine();
+    // The calling thread is a kernel probe mapping outside any call while `on`.
+    void presync_probe(bool on);
+    // Arm the calling thread's next presync_run: inject `line` at its first window, and drop
+    // its record `drops` times, once per round, every round for UINT8_MAX; with `fault_out`
+    // fail its next handle delivery; with `idle_window` open one window for the line in a run
+    // with nothing to do.
+    void presync_arm(uint16_t line, uint8_t drops, bool fault_out, bool idle_window);
+    // Whether the calling thread's handle delivery is armed to fail, disarming it.
+    bool presync_take_fault_out();
+#endif
+#endif
 
     // The self-grant: map a range the caller reserved, at the address it reserved.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;
@@ -161,6 +237,10 @@ namespace kickos
     void aspace_window_unmap_holder(struct arch_aspace* space, VirtualRanges* ranges,
                                     uint16_t holder);
 
+    // aspace_handoff's refusal that its arguments alone decide: 0, or -KOS_EPERM where
+    // [base, base + size) is not one whole reservation `donor` may name.
+    int aspace_handoff_admit(VirtualRanges const* donor, uintptr_t base, size_t size);
+
     // Map the donor's complete reservation at the same VA without taking ownership.
     // Require its exact base and rounded page count. Return -KOS_EPERM for a
     // missing reservation or -KOS_ENOMEM if the destination cannot accept it.
@@ -201,6 +281,10 @@ namespace kickos
     // Destroys run since boot. The counter above reads 0 for a sweep that found nothing and
     // for a destroy that never ran, so a caller asserting the 0 needs this beside it.
     uint64_t aspace_release_runs(void);
+
+    // Granules cleared or copied under the kernel lock since boot, for a reservation, a new
+    // space's static data or the snapshot.
+    uint64_t aspace_locked_pages(void);
 
     // Drop the space holding the image's own data pages, as its release would.
     void aspace_data_home_forget(void);

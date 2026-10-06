@@ -11,11 +11,10 @@
 #include <kickos/diag.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns)
 
+#include "probe_catch.h"
 #include "regs.h"
 #include <kickos/arch/armv7m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
-
-#include <kickos/sys/atomic.h>
 
 #include <stddef.h> // offsetof
 #include <stdint.h>
@@ -72,6 +71,12 @@ static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC
 static_assert(KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH == KICKOS_ARMV7M_TRAP_NEST_SVC + 4,
               "the unconverted SVC window is the converted one plus the STKALIGN pad a "
               "preempting entry spends below a chain of compiler frames");
+// The spawn stages its grant list on the caller's stack, and _SVC holds the list it was
+// measured at (armv7m_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+              "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC holds a spawn staging 9 grants on the "
+              "caller's stack, and 10 measure past it: re-measure with "
+              "tests/static/check_trap_redzone.sh and raise the figure first");
 #endif
 #if KICKOS_KERNEL_STACKS
 // The kernel block's structural half. The STKALIGN pad does NOT cancel here, the frames
@@ -85,6 +90,17 @@ static_assert(KICKOS_ARMV7M_TRAP_NEST_SVCK
 // is not a typo the compiler catches.
 static_assert(KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK >= KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC,
               "the tail-counted dispatch depth is below the tail-excluded one");
+// The spawn stages its grant list on the kernel block, and _SVCK holds the list it was
+// measured at, per posture (armv7m_trap_stack.h).
+#if KICKOS_TELEMETRY or KICKOS_BENCH
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+              "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK was measured at a spawn staging 9 grants on "
+              "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
+#else
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 12,
+              "KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK was measured at a spawn staging 12 grants on "
+              "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
+#endif
 #endif
 // Handler mode rather than a measurement: ARMv7-M forces SP_main there, so everything
 // PendSV_Handler calls runs on the MSP.
@@ -460,28 +476,22 @@ __asm__(".pushsection .text.kickos_armv7m_probe_word,\"ax\",%progbits\n"
         ".size kickos_armv7m_probe_word, . - kickos_armv7m_probe_word\n"
         ".popsection\n");
 
-static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_probe_cfsr = 0;
-static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_probe_bfar = 0;
+static kickos::armv7m::ProbeLatch g_probe = {};
 
-static bool kickos_armv7m_probe_caught(uint32_t* frame)
+static bool kickos_armv7m_probe_caught(uint32_t* frame, uint32_t exc_return)
 {
     uint32_t const load = reinterpret_cast<uint32_t>(&kickos_armv7m_probe_word) & ~1u;
-    if ((frame[6] & ~1u) != load)
+    uint32_t control;
+    __asm volatile("mrs %0, control" : "=r"(control));
+    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
+    if (not kickos::armv7m::probe_catch(g_probe, frame, load, exc_return, control, cfsr,
+                                        kickos::arm::reg32(0xE000ED38)))
     {
         return false;
     }
-    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
-    uint32_t bfar = 0u;
-    if (cfsr & (1u << 15))
-    {
-        bfar = kickos::arm::reg32(0xE000ED38);
-    }
-    g_probe_bfar.store(bfar);
-    g_probe_cfsr.store(cfsr);
     // Write-1-to-clear, as on every other fault path.
     kickos::arm::reg32(0xE000ED28) = cfsr;
     kickos::arm::reg32(0xE000ED2C) = kickos::arm::reg32(0xE000ED2C);
-    frame[6] = load + 2u;
     return true;
 }
 
@@ -489,15 +499,7 @@ static bool kickos_armv7m_probe_caught(uint32_t* frame)
 // the fault left none valid, in `*value`.
 uint32_t kickos_armv7m_probe_read(uintptr_t at, uint32_t* value)
 {
-    g_probe_cfsr.store(0u);
-    uint32_t const word = kickos_armv7m_probe_word(at);
-    uint32_t const cfsr = g_probe_cfsr.load();
-    *value = word;
-    if (cfsr != 0u)
-    {
-        *value = g_probe_bfar.load();
-    }
-    return cfsr;
+    return kickos::armv7m::probe_read(g_probe, kickos_armv7m_probe_word, at, value);
 }
 #endif
 
@@ -509,7 +511,7 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
-    if (kickos_armv7m_probe_caught(frame))
+    if (kickos_armv7m_probe_caught(frame, exc_return))
     {
         return;
     }

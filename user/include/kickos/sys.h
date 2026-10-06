@@ -22,15 +22,16 @@ extern "C"
 // the cross toolchains and 8 on the host. One static_assert per name in
 // user/src/syscall_stubs.cc holds them at 4, so a name added here needs one there.
 
-// Debug console: unbuffered, polling, straight at the kernel console, so it works in boot
-// and panic. NOT stdout: ordinary output is libc stdio over a userspace console driver.
-// The write(2) shape: returns bytes written (a len-0 write is a legitimate 0), or with none
-// completed -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring, or a peer node
-// holding a shared UART; try again) or -KOS_EFAULT for a buffer the caller cannot read. THE
-// COUNT CAN BE SHORT, for the same causes: the walk stops at the first byte the console
-// cannot take. On an AMP UART, CR can precede an uncounted newline; retrying from the
-// reported count sends its LF without repeating CR. A page unmapped mid-write stops it too,
-// the chunks spanning no lock.
+// Debug console: unbuffered, polling, straight at the kernel console, so it works in boot and
+// panic. NOT stdout: ordinary output is libc stdio over a userspace console driver. The write(2)
+// shape: returns bytes written (a len-0 write is a legitimate 0), or with none completed
+// -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring, a peer node holding
+// a shared UART, or a dead driver's thread still holding the device; try again), -KOS_EBUSY (a
+// driver owns the console and this thread's stdout send would be taken now; send there instead) or
+// -KOS_EFAULT for a buffer the caller cannot read. THE COUNT CAN BE SHORT, for the same causes: the
+// walk stops at the first byte the console cannot take. On an AMP UART, CR can precede an uncounted
+// newline; retrying from the reported count sends its LF without repeating CR. A page unmapped
+// mid-write stops it too, the chunks spanning no lock.
 // kos_print discards all of it, so a line that has to survive a burst goes through
 // kickos::emit (sys/emit.h), which retries the remainder.
 int32_t kos_kconsole_write(void const* buf, size_t len);
@@ -150,6 +151,13 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
 // HANDOUT, a WAIT-only cap included), or -KOS_EOVERFLOW (a reference or receiver count is at
 // its ceiling). A refusal publishes nothing and leaves the kernel console untouched.
 int kos_console_publish(kos_cap_t ep);
+// Wait until the console driver holding this thread's stdout has written every byte sent to it
+// before, as far as its device can tell: two zero-length sends on KOS_CAP_STDOUT, each bounded by
+// `timeout_us` as kos_send_timed bounds it (docs/reference/console.md). Bytes stdio still buffers
+// were never sent: fflush(stdout) first. -> 0, or the failed send's -KOS_E*, after which the
+// second is not sent: EBADF where stdout is the kernel console, ETIMEDOUT where the driver took
+// neither in time.
+int32_t kos_console_flush(uint32_t timeout_us);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
 // destroyed only at the LAST close across all holders, and a close touches no waiters.

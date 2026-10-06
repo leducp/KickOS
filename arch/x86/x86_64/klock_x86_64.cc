@@ -40,6 +40,8 @@ namespace
     constinit ClhRequest* g_clh_tail = &g_clh_request[KICKOS_KERNEL_CORES];
 #if defined(KICKOS_ENABLE_SELFTEST)
     alignas(64) uint32_t g_served[KICKOS_KERNEL_CORES] = {};
+    // Per-core translation rendezvous initiated, each core writing its own.
+    alignas(64) uint32_t g_initiated[KICKOS_KERNEL_CORES] = {};
 #endif
 }
 
@@ -108,6 +110,21 @@ void arch_ipi_raise(uint32_t cores)
     kickos::x86_64::apic_doorbell_send(cores & ~(1u << me));
 }
 
+// One poke and one wait over `peers`, each of which reloads CR3 in its service before it answers.
+// arch_ipi_counts calls its high half instruction-side; on this backend it counts these.
+void kickos_x86_64_translation_rendezvous(uint32_t peers)
+{
+#if defined(KICKOS_ENABLE_SELFTEST)
+    if (peers != 0)
+    {
+        uint32_t const me = arch_cpu_id();
+        __atomic_store_n(&g_initiated[me], g_initiated[me] + 1u, __ATOMIC_RELAXED);
+    }
+#endif
+    arch_ipi_send(peers);
+    arch_ipi_wait(peers);
+}
+
 void arch_ipi_fence(void)
 {
     __asm__ volatile("mfence" ::: "memory");
@@ -149,7 +166,8 @@ uint64_t arch_ipi_counts(uint32_t core)
     {
         return 0;
     }
-    return __atomic_load_n(&g_served[core], __ATOMIC_RELAXED);
+    return (static_cast<uint64_t>(__atomic_load_n(&g_initiated[core], __ATOMIC_RELAXED)) << 32)
+           | static_cast<uint64_t>(__atomic_load_n(&g_served[core], __ATOMIC_RELAXED));
 }
 
 uint32_t arch_ipi_deferred(uint32_t)

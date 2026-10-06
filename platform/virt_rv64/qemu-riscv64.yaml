@@ -7,5 +7,9 @@ version: 1
 board: qemu-riscv64
 chip: virt_rv64
 
+# With no firmware every hart -smp makes enters _start, and the park in startup.S holds all but
+# the boot hart.
+emulator: { qemu: qemu-system-riscv64, machine: virt, options: [-bios, none] }
+
 console:
   device: /dev/uart0

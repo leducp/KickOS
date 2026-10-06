@@ -9,7 +9,9 @@ if(KICKOS_HAVE_MPU)
   kickos_add_diagnostic_apps(c6blink)
 endif()
 
-# The LP probe reads a kernel word and starts the LP core outside any partition.
+# The LP probe reads a kernel word and starts the LP core outside any partition; the TX idle
+# witness drives the console's UART and pad.
 if(NOT KICKOS_HAVE_MPU AND NOT KICKOS_AMP_OWN_IMAGE)
   add_subdirectory(c6lpprobe)
+  add_subdirectory(c6txidle)
 endif()

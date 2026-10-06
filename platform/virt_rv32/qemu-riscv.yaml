@@ -7,5 +7,7 @@ version: 1
 board: qemu-riscv
 chip: virt_rv32
 
+emulator: { qemu: qemu-system-riscv32, machine: virt, options: [-bios, none] }
+
 console:
   semihosting: true

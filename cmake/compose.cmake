@@ -8,8 +8,8 @@
 #   design-m10-fleet.md, section 9.1). At configure
 #   it runs the host tool against KICKOS_MANIFEST, the package's manifest or the build's, and a
 #   refusal fails the configure with the tool's `<file>:<line>: <rule>: <message>` lines. The
-#   tool runs again only when the composition, the manifest, a description beside it or the tool
-#   itself changed. It defines:
+#   tool runs again only when the composition, the manifest, a description or default composition
+#   beside it, or the tool itself changed. It defines:
 #     <system>_table  an object library of the emitted table, compiled as C;
 #     <system>        an interface library linking KickOS::kernel, carrying ahead of the kernel's
 #                     group the table's objects, KickOS::init's, KickOS::init_drivers' where
@@ -80,17 +80,28 @@ function(kickos_compose system)
   endif()
 
   get_filename_component(_manifest_dir "${KICKOS_MANIFEST}" DIRECTORY)
-  file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml")
+  file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml"
+                                                   "${_manifest_dir}/boards/*.yaml")
   file(GLOB_RECURSE _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
   set(_inputs ${_compositions} "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources}
               "${_tool}/pyproject.toml" "${_tool}/uv.lock")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
-  set(_hashes "")
+  set(_hashes "${KC_EXPORT_NAME}\n")
   foreach(_input IN LISTS _inputs)
     file(SHA256 "${_input}" _input_hash)
     string(APPEND _hashes "${_input} ${_input_hash}\n")
   endforeach()
   string(SHA256 _hash "${_hashes}")
+
+  # An exported system's files cite its composition by a name no machine path is in.
+  set(_name_args "")
+  if(KC_EXPORT_NAME)
+    file(RELATIVE_PATH _display "${_manifest_dir}" "${_composition}")
+    if(_display MATCHES "^\\.\\./")
+      get_filename_component(_display "${_composition}" NAME)
+    endif()
+    set(_name_args --name "${_display}")
+  endif()
 
   set(_dir "${CMAKE_CURRENT_BINARY_DIR}/kickos_compose/${system}")
   set(_outputs table.c asserts.ld system.cmake)
@@ -126,7 +137,7 @@ function(kickos_compose system)
               "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
               python -m kickos_compose emit ${_source_args} --manifest "${KICKOS_MANIFEST}"
               -o "${_fresh}/table.c" --asserts "${_fresh}/asserts.ld"
-              --fragment "${_fresh}/system.cmake" --gate "${_fresh}/gate.c"
+              --fragment "${_fresh}/system.cmake" --gate "${_fresh}/gate.c" ${_name_args}
       RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err
       TIMEOUT 600)
     # Indented, so CMake prints each of the tool's lines as it wrote it.
@@ -139,7 +150,8 @@ function(kickos_compose system)
         "against ${KICKOS_MANIFEST}:\n  ${_said}")
     elseif(NOT _rc STREQUAL "0")
       message(FATAL_ERROR "kickos_compose(${system}): could not run the host tool (uv and Python >= 3.12 "
-        "required, with the ruamel.yaml its uv.lock pins) on ${_what} (${_rc}):\n  ${_said}")
+        "required, with the ruamel.yaml its uv.lock pins, which a first run fetches from PyPI or finds in "
+        "uv's cache) on ${_what} (${_rc}):\n  ${_said}")
     endif()
     if(NOT _said STREQUAL "")
       message(STATUS "kickos_compose(${system}): the host tool says:\n  ${_said}")

@@ -8,6 +8,7 @@
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/time.h>
@@ -27,35 +28,9 @@ int _write(int fd, char const* buf, int len)
     {
         return 0;
     }
-    size_t const total = static_cast<size_t>(len);
-    size_t sent = 0;
-    while (sent < total)
-    {
-        size_t chunk = total - sent;
-        if (chunk > KOS_EP_MSG_MAX)
-        {
-            chunk = KOS_EP_MSG_MAX;
-        }
-        long const r = kos_send(0, buf + sent, chunk); // index 0 == the stdout endpoint cap
-        // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
-        if (r <= 0)
-        {
-            // Close on ECONNREFUSED only, and emit.h states why: the peer closing does not
-            // free this side, -KOS_EAGAIN may be served again, and -KOS_EBADF is pre-publish
-            // with nothing to close.
-            if (r == -KOS_ECONNREFUSED)
-            {
-                (void)kos_handle_close(KOS_CAP_STDOUT);
-            }
-            // Fall back on the REMAINDER only: resending the whole buffer would duplicate
-            // the chunks already delivered to the driver. Return the FULL len even so,
-            // because a short write would make newlib retry and re-send the bytes IPC
-            // already accepted.
-            kickos::kconsole_write_all(buf + sent, total - sent);
-            return len;
-        }
-        sent += static_cast<size_t>(r);
-    }
+    // The FULL len even where bytes were lost: a short write would make newlib retry and
+    // re-send the bytes IPC already accepted.
+    kickos::stdout_write(buf, static_cast<size_t>(len));
     return len;
 }
 
@@ -106,6 +81,14 @@ int _getentropy(void* buf, size_t len)
         p[i] = static_cast<unsigned char>(x >> 56);
     }
     return 0;
+}
+#elif defined(__XTENSA__)
+// libstdc++'s std::random_device and libc's arc4random reach getentropy, and the
+// toolchain's libnosys stub of it carries a link-time warning. No image calls it.
+int _getentropy(void*, size_t)
+{
+    errno = ENOSYS;
+    return -1;
 }
 #endif
 

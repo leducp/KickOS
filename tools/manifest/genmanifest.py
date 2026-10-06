@@ -3,8 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Writes the export manifest at configure, from the build-graph facts cmake/manifest.cmake
-# hands over as JSON and the resolved .config that JSON names. Standard library only, so a
-# configure needs no uv. The schema is tools/compose/kickos_compose/manifest.py's.
+# hands over as JSON and the resolved .config that JSON names. Standard library only: it runs
+# under the configure's Python, outside the tool's uv environment. The schema is
+# tools/compose/kickos_compose/manifest.py's.
 #
 #   genmanifest.py <facts.json> <manifest.yaml>
 

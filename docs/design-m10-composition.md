@@ -81,6 +81,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `clusters_coherent` | boolean | no | on a multi-architecture part, whether the clusters' caches are coherent with each other; absent is read as `false` |
 | `partition_gate` | mapping | no | a bus-enforced assignment of devices to nodes: its `kind` (`apm`, `accessctrl`, `rdc`), and either the `device` it is programmed through, a per-peripheral gate each device names its register in by `gate_register` with the registers no node is assigned `never_assigned` (each a name and its offset), or its `gates`, each a device of the chip with the `regions` it holds (its catch-all among them), the device `ranges` it fronts, the `memory` it fronts for every other node, and the ranges every other node's `kernel` holds through it, each a `window` and its `access` |
 | `data_cache` | boolean | no | whether a data cache sits over the part's RAM; absent is read as `true` |
+| `esptool_image` | list | no | where the ROM boots only esptool's image format, the `elf2image` options of that image, each a word |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
@@ -156,6 +157,7 @@ function is not.
 | `parts` | mapping | no | a soldered part: the bus it hangs on, its chip select, its pins |
 | `buses` | mapping | no | a bus as this board wires it: device, pins, chip selects |
 | `reserved_pins` | mapping | no | pins the board has spent, with the reason |
+| `emulator` | mapping | no | where QEMU runs the board: the `qemu` binary, its `machine`, the `gicv3_machine` a GICv3 build runs instead, the `options` the command line carries, each a word, and `ram_global`, a QOM global set to the RAM link region's length |
 | `memory` | mapping | no | memory soldered on the board, external flash, PSRAM or DRAM: each a `size`, a `base` in its chip's map, `cluster` where one cluster alone reaches it, and the `link` region the image is placed in, as a chip file's memory entry states them; it may overlap no window of its chip, link a region its chip already links, or take a C name its chip's headers already carry, and it joins the chip's in the headers generated for the board |
 
 A board spends each pin once: a pin named twice across the console, the LEDs, the parts and the
@@ -198,7 +200,8 @@ driver name are lowercase identifiers, `[a-z][a-z0-9_]*`; `core` is below 32, th
 carries it.
 
 `authority` lists names for the bits of the kernel's authority word: `memory`, `pinmux`,
-`pstate`, `irq`, `system`, `console`, and `tasks`, the task-creation authority M10.1 adds. It
+`pstate`, `irq`, `system`, `console`, `tasks`, the task-creation authority M10.1 adds, and
+`bus_master`, which a spawn's window over a bus master takes beside `memory`. It
 is empty unless declared, since authority is never a default; the init passes it as the spawn's
 authority word, which can only narrow what the init itself holds, so admission refuses a task
 declaring more than the init has. The boot init holds every authority, so against it a name has
@@ -336,13 +339,15 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
   range, and one on a packaged driver, whose ceiling is its priority plus its threads' highest
   offset; a declared `core` the kernel build lacks; a task taking a
   line not on exactly one core; `stdout` naming an endpoint no console driver serves, or a console
-  driver whose endpoint `stdout` does not name; a stdout writer above the console's priority,
-  which is that of the driver thread receiving on its endpoint; a task that writes standard
-  output declared before the task `stdout` names; the init's priority, stated or defaulted,
-  outside the kernel build's range. A thread at or above the init's priority that never blocks starves the init,
-  which is the user's choice: the init then handles no death and does not end the system.
+  driver whose endpoint `stdout` does not name; a task that writes standard output declared
+  before the task `stdout` names; the init's priority, stated or defaulted, outside the kernel
+  build's range. A thread at or above the init's priority that never blocks starves the init,
+  which is the user's choice: the init then handles no death and does not end the system. A
+  stdout writer above the driver thread receiving on the console's endpoint is the user's choice
+  too: the rendezvous has no priority inheritance, so each of its writes waits until nothing
+  above that receiver is ready, and it costs that writer alone the latency.
   `scheduling.priority`, `scheduling.ceiling`, `scheduling.core`, `scheduling.line-core`, `scheduling.console-driver`,
-  `scheduling.stdout-priority`, `scheduling.stdout-order`, `scheduling.init-priority-range`.
+  `scheduling.stdout-order`, `scheduling.init-priority-range`.
 - **Memory type**: a shared region's `cache` against who shares it, as the composition section
   states. `memory.uncached`, `memory.cached-incoherent`.
 - **Partition**: the node compositions admitted together by the partition build

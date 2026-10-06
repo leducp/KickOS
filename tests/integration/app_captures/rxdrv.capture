@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[rxdrv] pinmux P80 -> general I/O rc 0
+[rxdrv] pinmux PB1/TXD6 refused (-KOS_EBUSY): console pin is kernel-owned
+[rxdrv] PASS periph_enable holder rc -22 (want -22)
+[rxdrv] PORT8 PODR readback 0x1
+[rxdrv] blinking LED6 (P80) via the port window
+[rxdrv] blink 1 pad=0/0 pad=1/1
+[rxdrv] blink 2 pad=0/0 pad=1/1
+[rxdrv] blink 3 pad=0/0 pad=1/1
+[rxdrv] blink 4 pad=0/0 pad=1/1
+[rxdrv] blink 5 pad=0/0 pad=1/1
+[rxdrv] blink 6 pad=0/0 pad=1/1
+[rxdrv] blink 7 pad=0/0 pad=1/1
+[rxdrv] blink 8 pad=0/0 pad=1/1
+[rxdrv] blink 9 pad=0/0 pad=1/1
+[rxdrv] blink 10 pad=0/0 pad=1/1
+[rxdrv] PASS (pad tracked the drive on every cycle)
+[rxdrv] PASS periph_enable non-holder rc -1 (want -1)
+[rxdrv] poking UNGRANTED MPC PB1PFS @ 0x0008C199 (expect MPU FAULT)
+
+=== THREAD FAULT === thread 'rxpoke' killed, system continues
+  PC=0xffe01234
+  ADDR=0x8c199

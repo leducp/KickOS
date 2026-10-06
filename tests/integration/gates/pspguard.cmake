@@ -120,6 +120,6 @@ if(TARGET pspguard_fp)
   if(KICKOS_BOARD STREQUAL "qemu" AND KICKOS_TELEMETRY)
     kickos_add_qemu_test(NAME telemetry_qemu_contained TARGET pspguard_fp
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_qemu.py"
-      TIMEOUT 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
+      BOOTS 0 WORK 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
   endif()
 endif()

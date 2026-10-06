@@ -36,3 +36,10 @@ kickos_add_unit_test(NAME console_publish_handoff
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"
   KERNEL)
+
+# kernel/init/console.cc at an own-image AMP node's posture, where a user writer carries a
+# half-sent CR between offers.
+kickos_add_unit_test(NAME console_cr_pending
+  SOURCES console_cr_pending.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+          "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
+  POSTURE KICKOS_AMP_OWN_IMAGE=1)

@@ -5,6 +5,7 @@
 # a merge key and a duplicate key are refused from the token and event streams, so a second
 # document or an alias, which leave no tree to walk, hide none of them.
 
+import difflib
 import re
 
 from ruamel.yaml import YAML
@@ -49,7 +50,7 @@ RULES = (
     "memory.uncached", "memory.cached-incoherent",
     "name.driver-unknown", "name.entry", "driver.line-role", "driver.line-name", "driver.window-role", "driver.port-window",
     "driver.authority",
-    "scheduling.priority", "scheduling.ceiling", "scheduling.core", "scheduling.line-core", "scheduling.stdout-priority",
+    "scheduling.priority", "scheduling.ceiling", "scheduling.core", "scheduling.line-core",
     "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range",
     "supply.pool", "supply.budget", "supply.spawn-grants", "supply.cap-table", "supply.stack", "supply.arena",
     "supply.size", "supply.init-windows", "supply.reservations", "supply.ranges",
@@ -80,6 +81,16 @@ PIN = re.compile(r"[A-Z][A-Z0-9_]*(\.[0-9]+)?")
 SELECTOR = re.compile(r"[a-z][a-z0-9]*")
 FUNCTION = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+")
 GPIO_FUNCTION = re.compile(r"[a-z][a-z0-9_]*(\.(0|[1-9][0-9]*)){1,2}")
+
+
+def unknown_field(what, name, allowed):
+    """The refusal of field `name` outside `allowed`, naming the nearest field and every valid one."""
+    near = difflib.get_close_matches(name, allowed, 1)
+    hint = ""
+    if near:
+        hint = " (did you mean `%s`?)" % near[0]
+    return "%s has no field `%s`%s; its fields are %s" % (
+        what, name, hint, ", ".join("`%s`" % field for field in allowed))
 
 
 def index_below(text, count):
@@ -231,7 +242,7 @@ class File:
         values = {}
         for name, (key, value) in pairs.items():
             if name not in allowed:
-                self.refuse(key, "form.unknown-field", "%s has no field `%s`" % (what, name))
+                self.refuse(key, "form.unknown-field", unknown_field(what, name, allowed))
                 continue
             values[name] = value
         for name in required:

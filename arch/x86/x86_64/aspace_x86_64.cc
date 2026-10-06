@@ -28,6 +28,7 @@ extern "C"
     extern unsigned char __kickos_app_sram_end[];
 #if KICKOS_KERNEL_CORES > 1
     uint32_t kickos_x86_64_online_cores(void);
+    void kickos_x86_64_translation_rendezvous(uint32_t peers);
 #endif
 }
 
@@ -64,6 +65,7 @@ namespace
     constexpr uint64_t PTE_ADDR_MASK = 0x000ffffffffff000ull;
 
     constexpr uint64_t CR0_WP = 1ull << 16;
+    constexpr uint64_t CR4_PGE = 1ull << 7;
     constexpr uint64_t CR4_LA57 = 1ull << 12;
     constexpr uint32_t MSR_EFER = 0xc0000080;
     constexpr uint64_t EFER_NXE = 1ull << 11;
@@ -262,17 +264,24 @@ namespace
 
     // INVLPG also invalidates paging-structure caches for this PCID, so newly
     // installed table entries need no separate invalidation
-    // (Intel SDM Vol. 3, section 5.10.4.1).
+    // (Intel SDM Vol. 3, section 5.10.4.1). This core only: peers_reload covers the others.
     void invalidate_page(uintptr_t va)
     {
 #if defined(KICKOS_ENABLE_SELFTEST)
         g_tlbi_issued++;
 #endif
         __asm__ volatile("invlpg (%0)" ::"r"(va) : "memory");
+    }
+
+    // Every other online core reloads CR3 before this returns, which with PCIDs off drops every
+    // non-global translation it caches, and global pages are off on every core: one call covers
+    // every entry edited before it. A frame an edit stopped mapping may go back to the pool only
+    // after this.
+    void peers_reload(void)
+    {
 #if KICKOS_KERNEL_CORES > 1
-        uint32_t const peers = kickos_x86_64_online_cores() & ~(1u << arch_cpu_id());
-        arch_ipi_send(peers);
-        arch_ipi_wait(peers);
+        kickos_x86_64_translation_rendezvous(kickos_x86_64_online_cores()
+                                             & ~(1u << arch_cpu_id()));
 #endif
     }
 
@@ -296,11 +305,7 @@ namespace
     void invalidate_all(void)
     {
         install_root(read_cr3());
-#if KICKOS_KERNEL_CORES > 1
-        uint32_t const peers = kickos_x86_64_online_cores() & ~(1u << arch_cpu_id());
-        arch_ipi_send(peers);
-        arch_ipi_wait(peers);
-#endif
+        peers_reload();
     }
 
     uint64_t root_key(struct arch_aspace* space)
@@ -308,7 +313,8 @@ namespace
         return static_cast<uint64_t>(phys_of(root_of(space))) & PTE_ADDR_MASK;
     }
 
-    // Use recorded residency for maintenance, including spaces switched away from.
+    // Use recorded residency for maintenance, including spaces switched away from. Exact only
+    // because install_root, like every caller of this, runs under the kernel lock.
     bool resident_anywhere(struct arch_aspace* space)
     {
         return g_residency.cores(root_key(space)) != 0;
@@ -698,6 +704,11 @@ namespace kickos::x86_64
     void aspace_init(uintptr_t ram_base, size_t ram_size)
     {
         uint64_t const cr4 = read_cr4();
+        // A CR3 reload keeps global translations, and the kernel half is the firmware's tables.
+        if ((cr4 & CR4_PGE) != 0)
+        {
+            refuse("the firmware left global pages enabled, which a CR3 reload does not drop");
+        }
         // ring3_init reads the same control-register bit; neither publishes it to the other.
         g_levels = 4;
         if ((cr4 & CR4_LA57) != 0)
@@ -898,6 +909,7 @@ namespace kickos::x86_64
         leaves[leaf] = (static_cast<uint64_t>(pa) & PTE_ADDR_MASK) | PTE_P | PTE_RW | PTE_A
                        | PTE_D | PTE_XD | memtype;
         invalidate_page(va);
+        peers_reload();
         arch_irq_restore(s);
         return true;
     }
@@ -919,6 +931,7 @@ namespace kickos::x86_64
         }
         leaves[leaf] = 0;
         invalidate_page(va);
+        peers_reload();
         arch_irq_restore(s);
         return true;
     }
@@ -1140,6 +1153,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     bool const resident = resident_anywhere(space);
     enum arch_aspace_result const rc =
         map_into(root_of(space), static_cast<int>(g_levels), va, pages, pa, leaf, resident);
+    if (rc == ARCH_ASPACE_OK and resident)
+    {
+        peers_reload();
+    }
     if (rc != ARCH_ASPACE_OK)
     {
         // Mask interrupts so no walk can occur between invalidation and table free.
@@ -1189,6 +1206,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
         uint64_t* const entry = leaf_entry(root_of(space), at);
         *entry = 0;
         invalidate_page_if(at, resident);
+    }
+    if (resident)
+    {
+        peers_reload();
     }
     // Empty tables are reclaimed by destroy.
     return ARCH_ASPACE_OK;

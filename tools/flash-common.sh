@@ -36,6 +36,30 @@ _bf() {
     grep -oP "$2"'\s+"?\K[A-Za-z0-9_]+' "$FL_ROOT/boards/$1/board.cmake" 2>/dev/null | head -1 || true
 }
 
+# candidates_for <chip> -> ordered backend keys valid for that chip (empty = QEMU/host)
+candidates_for() {
+    case "$1" in
+        esp32*)                        echo "esptool" ;;
+        stm32f103|stm32f302|stm32f411) echo "stlink jlink" ;;
+        # picotool ONLY: J-Link SWD of an RP2xxx is flaky (RP2040 gates the DAP once
+        # both cores WFI; boot2 is not re-run on an SWD reset). BOOTSEL always
+        # recovers the board.
+        rp2040|rp2350)                 echo "picotool" ;;
+        nrf51)                         echo "pyocd jlink" ;;
+        sam3x8e)                       echo "bossac" ;;
+        mk64f)                         echo "jlink pyocd" ;;
+        imxrt1062)                     echo "teensy" ;;   # HalfKay: no SWD header
+        xmc4800)                       echo "jlink" ;;
+        rx72m)                         echo "rfp" ;;
+        *)                             echo "" ;;
+    esac
+}
+
+# _emulated <board> <chip> -> status 0 when the board file states an `emulator`
+_emulated() {
+    grep -q '^emulator:' "$FL_ROOT/platform/$2/$1.yaml" 2>/dev/null
+}
+
 # _app_base <builddir> <board> <app> -> emitted image base (no extension); nonzero if
 # the app is not built there. The build tree mirrors user/apps/: board-specific apps
 # under <board>/<app>/, fleet-wide ones under common/<app>/. Board-specific is
@@ -61,9 +85,9 @@ flash_resolve() {
     case "$FL_ARCH:$FL_CHIP" in
         sim:*) die "'$FL_BOARD' is the host sim; run it: ctest --preset sim" ;;
     esac
-    case "$FL_CHIP" in
-        mps2|an505|virt_*|q35) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset $FL_BOARD" ;;
-    esac
+    if [ -z "$(candidates_for "$FL_CHIP")" ] && _emulated "$FL_BOARD" "$FL_CHIP"; then
+        die "'$FL_BOARD' is a QEMU target; run it: ctest --preset $FL_BOARD"
+    fi
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
     # variant preset's output (e.g. FLASH_BUILD=build/rx72m-st for the selftest build,

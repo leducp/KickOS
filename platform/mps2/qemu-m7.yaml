@@ -7,5 +7,7 @@ version: 1
 board: qemu-m7
 chip: mps2
 
+emulator: { qemu: qemu-system-arm, machine: mps2-an500 }
+
 console:
   semihosting: true

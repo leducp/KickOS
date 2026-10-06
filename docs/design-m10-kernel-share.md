@@ -438,8 +438,8 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   its region.
 - **Reservations.** The entry flag in `spawn_masked`'s frame and the explicit task's seed
   posture (`DOM_CALLER_TASK`) carried through the domain claim are on the spawn chain. x86
-  reserves SYSK at 1864 on one core and 2432 above it, SYSPRIV and SYSPRIVSW at 1920 and 2368,
-  and the spawn floor at 2752 and 3328
+  reserves SYSK at 1920 on one core and 2432 above it, SYSPRIV and SYSPRIVSW at 1920 and 2432,
+  and the spawn floor at 2752 and 3392
   (`arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h`, `Kconfig`).
 - **Data from the image.** On a translating board an explicit task's space copies its static
   data from one snapshot of root's, taken by the first explicit task's seed (`DOM_CALLER_TASK`),
@@ -447,8 +447,10 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   then and never from a global the init wrote since. An implicit task, the one a spawn creates,
   copies its spawner's live data, root's or a task's, as the T6 template of `design-m6-mmu.md`
   states: a global the spawner writes before the spawn is one the child reads, which the
-  selftest's IRQ driver arms rely on. Root is the only snapshot source. A snapshot that cannot be
-  taken refuses the creation with `-KOS_ENOMEM`.
+  selftest's IRQ driver arms rely on. The copy runs under the kernel lock while the spawner's other
+  threads keep running, so on more than one core it is consistent only where none of them writes
+  static data across the spawn. Root is the only snapshot source. A snapshot that cannot be taken
+  refuses the creation with `-KOS_ENOMEM`.
 - **Every reservation zeroed.** `kos_ram_alloc` clears a region board's block after the bracket
   that recorded it, and cleans it to memory and invalidates its lines where the arch puts a data
   cache over the arena, as the frame pool already clears a translating board's.

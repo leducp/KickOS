@@ -13,6 +13,10 @@ arch: lx6
 protection: { unit: none, privilege: false }
 # The two 32 KiB caches serve external memory alone.
 data_cache: false
+# The ROM loads the image at its boot offset by the header's flash mode before any code sets
+# the SPI pins, and reads a QIO header there unreliably (`load:0xffffffff,len:-1`, then an
+# RTC-WDT reset loop).
+esptool_image: [--flash-mode, dio]
 c: { line_enum: kernel_line }
 cores: { count: [1, 2], smp: true }
 

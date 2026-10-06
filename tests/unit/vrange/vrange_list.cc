@@ -361,3 +361,21 @@ TEST(VRange, grant_refuses_a_right_the_entry_cannot_hold)
     EXPECT_TRUE(v.grant(BASE, 2, ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X, ARCH_MAP_NORMAL));
     EXPECT_TRUE(v.covers(BASE, G, ARCH_MAP_R | ARCH_MAP_W | ARCH_MAP_X));
 }
+
+TEST(VRange, sync_owed_marks_one_entry_and_survives_a_grant)
+{
+    kickos::VirtualRanges v = made();
+    ASSERT_TRUE(v.reserve(BASE, 2));
+    ASSERT_TRUE(v.reserve(BASE + 4 * G, 1));
+    EXPECT_FALSE(v.set_sync_owed(BASE + G, true)); // inside an entry, not its base
+    EXPECT_TRUE(v.set_sync_owed(BASE, true));
+    EXPECT_NE(v.at_base(BASE)->flags & kickos::VR_SYNC_OWED, 0u);
+    EXPECT_EQ(v.at_base(BASE + 4 * G)->flags & kickos::VR_SYNC_OWED, 0u);
+    ASSERT_TRUE(v.grant(BASE, 2, ARCH_MAP_R | ARCH_MAP_W, 0));
+    EXPECT_NE(v.at_base(BASE)->flags & kickos::VR_SYNC_OWED, 0u);
+    EXPECT_TRUE(v.set_sync_owed(BASE, false));
+    EXPECT_EQ(v.at_base(BASE)->flags & kickos::VR_SYNC_OWED, 0u);
+    // The flag is no kind: the entry stays the caller's to name.
+    EXPECT_TRUE(v.set_sync_owed(BASE, true));
+    EXPECT_TRUE(kickos::vr_caller_nameable(v.at_base(BASE)));
+}
