@@ -12,6 +12,7 @@
 #include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
 
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/chip_mmap.h>
 #include <kickos/config/limits.h> // bounded console claim wait
 #include <kickos/sys/atomic.h>
 
@@ -78,7 +79,7 @@ namespace
     using kickos::arm64::SYS_EXIT;
 
     // QEMU `virt` PL011.
-    constexpr uintptr_t UART0_BASE = 0x09000000;
+    using kickos::virt_arm64::mmap::UART0_BASE;
     constexpr uintptr_t UART_DR = UART0_BASE + 0x00;
     constexpr uintptr_t UART_FR = UART0_BASE + 0x18;
     constexpr uint32_t UART_FR_TXFF = 1u << 5;
@@ -345,10 +346,10 @@ namespace
     // The distributor is global either way. What sits beside it follows gic-version: a GICv2
     // CPU interface, or a series of GICv3 redistributors at a window that does not overlap
     // it.
-    constexpr uintptr_t GICD_BASE = 0x08000000;
+    using kickos::virt_arm64::mmap::GICD_BASE;
 #if KICKOS_ARM64_GIC_VERSION == 3
     // Two 64 KB frames per core, RD_base then SGI_base, contiguous from the first core.
-    constexpr uintptr_t GICR_BASE = 0x080A0000;
+    using kickos::virt_arm64::mmap::GICR_BASE;
     constexpr uintptr_t GICR_STRIDE = 0x20000;
     // `virt` instantiates a redistributor per core `-smp` gave it, so this is the MACHINE's
     // core count and never the count this image drives: an image driving one core still has to
@@ -356,7 +357,7 @@ namespace
     // must not be copied there.
     constexpr int GICR_COUNT = KICKOS_DOORBELL_CORES;
 #else
-    constexpr uintptr_t GICC_BASE = 0x08010000;
+    using kickos::virt_arm64::mmap::GICC_BASE;
 #endif
 
 // A peer is started by the partition and not by the cores this image drives, so the conduit is
@@ -624,53 +625,6 @@ void arch_init(void)
 #endif
 
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
-}
-
-// Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
-// through system registers, and so are the translation controls, so neither is nameable by
-// a grant. This machine has no clock or reset gates.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {GICD_BASE, 0x10000u}, // distributor
-#if KICKOS_ARM64_GIC_VERSION == 3
-        // Every redistributor the machine instantiates, and not this core's alone: the frames a
-        // peer's banked interrupt state lives in are exactly what a grant of this window would
-        // hand over.
-        {GICR_BASE, GICR_COUNT * GICR_STRIDE},
-#else
-        {GICC_BASE, 0x10000u}, // CPU interface
-#endif
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-
-// The device pages a user window may name: the PL011 and the PL031 RTC. fw_cfg, right above,
-// stays out: its DMA interface writes guest RAM.
-size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const apertures[] = {
-        {0x09000000u, 0x20000u},
-    };
-    size_t n = sizeof(apertures) / sizeof(apertures[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = apertures[i];
-    }
-    return n;
 }
 
 #if KICKOS_AMP_OWN_IMAGE

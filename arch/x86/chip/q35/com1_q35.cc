@@ -6,6 +6,7 @@
 
 #include <kickos/arch/portio.h>
 #include <kickos/chip_com1.h>
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 
@@ -13,7 +14,7 @@ namespace kickos::q35
 {
     namespace
     {
-        constexpr uint16_t com1_base = 0x3f8;
+        constexpr uint16_t com1_base = mmap::COM1_BASE;
 
         constexpr uint16_t reg_data = 0;
         constexpr uint16_t reg_int_enable = 1;

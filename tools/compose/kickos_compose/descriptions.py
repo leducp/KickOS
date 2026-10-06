@@ -6,8 +6,11 @@
 
 import os
 
+from ruamel.yaml.nodes import MappingNode
+
 from .subset import (
-    FILE_NAME, FUNCTION, GPIO_FUNCTION, IDENTIFIER, PIN, SELECTOR, File, Report, index_below, line_of,
+    ACCESS, C_IDENTIFIER, FILE_NAME, FUNCTION, GPIO_FUNCTION, IDENTIFIER, LINE_ENUM, NAMESPACE, PIN, REGION,
+    SELECTOR, File, Report, index_below, line_of,
 )
 
 UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mmu", "none")
@@ -16,18 +19,20 @@ UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mmu", "none")
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
-    "version", "chip", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
-    "data_cache", "devices", "memory", "pins",
+    "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
+    "data_cache", "interrupts", "cycle_counter", "c", "devices", "memory", "pins",
 )
 PROTECTION_FIELDS = (
     "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports",
 )
 CLUSTER_FIELDS = ("arch", "count", "smp", "protection", "line_offset")
 DEVICE_FIELDS = (
-    "window", "ports", "channels", "count", "stride", "lines", "bus_master", "owner", "sysreg",
-    "privileged_registers", "cluster",
+    "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg",
+    "privileged_registers", "cluster", "ref", "symbol",
 )
-MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena")
+MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
+INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors", "ref")
+CYCLE_COUNTER_FIELDS = ("hz", "glitches", "ref")
 BOARD_FIELDS = ("version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins")
 
 
@@ -71,6 +76,41 @@ class Device:
         self.cluster = None
         # The offset of each privileged register, in the chip file's order.
         self.registers = []
+        self.ref = None
+        self.symbol = None
+        # [Block], in the chip file's order.
+        self.blocks = []
+        # {channel or line: Named}
+        self.channel_names = {}
+        self.line_names = {}
+
+
+class Named:
+    """The `ref` and `symbol` an entry states, each None when it states none."""
+
+    def __init__(self, ref=None, symbol=None):
+        self.ref = ref
+        self.symbol = symbol
+
+
+class Block:
+    def __init__(self, name, offset, named):
+        self.name = name
+        self.offset = offset
+        self.ref = named.ref
+        self.symbol = named.symbol
+
+
+class Memory:
+    def __init__(self, name, size, bases, named):
+        self.name = name
+        self.size = size
+        # {cluster or PART: base}
+        self.bases = bases
+        self.ref = named.ref
+        self.symbol = named.symbol
+        # (region, access), or None
+        self.link = None
 
 
 class Board:
@@ -108,6 +148,21 @@ class Chip:
         self.gates = {}
         # {pin: {selector: function}}, or None when `pins` could not be read.
         self.pins = {}
+        self.manual = None
+        self.arch = None
+        # {cluster: arch} for a part whose clusters carry their own
+        self.cluster_arch = {}
+        # {cluster: line_offset}
+        self.line_offsets = {}
+        # {field: value} and the `ref` of `interrupts` and `cycle_counter`
+        self.interrupts = {}
+        self.interrupts_ref = None
+        self.cycle_counter = {}
+        self.cycle_counter_ref = None
+        self.namespace = None
+        self.line_enum = None
+        # [Memory], in the chip file's order.
+        self.memory = []
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -120,7 +175,7 @@ def check_chip(path, text, report):
     root = f.load(text)
     if root is None:
         return None
-    top = f.fields(root, "the chip file", CHIP_FIELDS, ("version", "chip", "devices"))
+    top = f.fields(root, "the chip file", CHIP_FIELDS, ("version", "chip", "manual", "interrupts", "devices"))
     if top is None or not f.version(top, "the chip file", CHIP_VERSIONS):
         return None
     folder = os.path.basename(os.path.dirname(os.path.abspath(path)))
@@ -137,7 +192,19 @@ def check_chip(path, text, report):
             if flag == "data_cache" and setting is False:
                 chip.data_cache = False
     if "arch" in top:
-        f.name(top["arch"], "`arch`", IDENTIFIER)
+        chip.arch = f.name(top["arch"], "`arch`", IDENTIFIER)
+    if "manual" in top:
+        chip.manual = f.string(top["manual"], "`manual`")
+    if "c" in top:
+        check_c(f, top["c"], chip)
+    if "cycle_counter" in top:
+        counter = f.fields(top["cycle_counter"], "`cycle_counter`", CYCLE_COUNTER_FIELDS, ())
+        if counter is not None:
+            if "hz" in counter:
+                chip.cycle_counter["hz"] = f.integer(counter["hz"], "`cycle_counter` hz", 32)
+            if "glitches" in counter:
+                chip.cycle_counter["glitches"] = f.boolean(counter["glitches"], "`cycle_counter` glitches")
+            chip.cycle_counter_ref = check_ref(f, counter)
 
     translates = check_cores(f, top, root, chip)
     if "clusters_coherent" in top and not chip.multi_arch:
@@ -169,7 +236,141 @@ def check_chip(path, text, report):
         check_chip_pins(f, top["pins"], chip, devices)
     check_overlaps(f, chip, windows)
     check_gate_edges(f, chip, windows)
+    if "interrupts" in top:
+        check_interrupts(f, top["interrupts"], chip)
+    check_symbols(f, chip)
     return chip
+
+
+def device_symbols(device):
+    """[(symbol, value, ref)] of the device's windows, blocks and stride, in the chip file's order."""
+    up = device.name.upper()
+    symbols = []
+    if device.window is not None and device.count is not None:
+        symbols.append((device.symbol or up + "0_BASE", device.window[0], device.ref))
+        symbols.append((up + "_STRIDE", device.stride, device.ref))
+    elif device.window is not None or device.ports is not None:
+        window = device.window or device.ports
+        symbols.append((device.symbol or up + "_BASE", window[0], device.ref))
+    for channel, window in device.channel_windows.items():
+        named = device.channel_names[channel]
+        symbols.append((named.symbol or "%s_%s_BASE" % (up, channel.upper()), window[0], named.ref or device.ref))
+    for block in device.blocks:
+        symbols.append((block.symbol or "%s_%s_BASE" % (up, block.name.upper()), device.window[0] + block.offset,
+                        block.ref))
+    return symbols
+
+
+def device_layout(device):
+    """[(macro, value, ref)] of the device's chip_layout.h definitions."""
+    name = device.name.upper()
+    values = []
+    if device.window is not None and device.count is not None:
+        values.append(("KICKOS_LAYOUT_%s0_BASE" % name, device.window[0], device.ref))
+        values.append(("KICKOS_LAYOUT_%s_STRIDE" % name, device.stride, None))
+        values.append(("KICKOS_LAYOUT_%s_SIZE" % name, device.window[1], None))
+    elif device.window is not None:
+        values.append(("KICKOS_LAYOUT_%s_BASE" % name, device.window[0], device.ref))
+        values.append(("KICKOS_LAYOUT_%s_SIZE" % name, device.window[1], None))
+    for channel, window in device.channel_windows.items():
+        values.append(("KICKOS_LAYOUT_%s_%s_BASE" % (name, channel.upper()), window[0],
+                       device.channel_names[channel].ref or device.ref))
+    return values
+
+
+def memory_layout(entry, base):
+    """[(macro, value, ref)] of the memory entry's chip_layout.h definitions."""
+    name = entry.name.upper()
+    return [("KICKOS_LAYOUT_%s_BASE" % name, base, entry.ref), ("KICKOS_LAYOUT_%s_SIZE" % name, entry.size, None)]
+
+
+def memory_symbol(entry):
+    return entry.symbol or entry.name.upper() + "_BASE"
+
+
+def line_symbols(device):
+    """[(symbol, source number, ref)] of the device's lines, in the chip file's order."""
+    symbols = []
+    for line, number in device.sources.items():
+        named = device.line_names[line]
+        symbols.append((named.symbol or "%s_%s" % (device.name.upper(), line.upper()), number, named.ref))
+    return symbols
+
+
+def check_symbols(f, chip):
+    """Two entries whose C names are one name, in the mmap namespace, the line enum or the layout."""
+    names = {}
+    lines = {}
+    layout = {}
+    for device in chip.devices.values():
+        for symbol, value, ref in device_symbols(device):
+            refuse_collision(f, names, symbol, device.node, "/dev/%s" % device.name)
+        for symbol, value, ref in line_symbols(device):
+            refuse_collision(f, lines, symbol, device.node, "/dev/%s" % device.name)
+        for symbol, value, ref in device_layout(device):
+            refuse_collision(f, layout, symbol, device.node, "/dev/%s" % device.name)
+    for entry in chip.memory:
+        refuse_collision(f, names, memory_symbol(entry), entry.node, "memory `%s`" % entry.name)
+        for symbol, value, ref in memory_layout(entry, 0):
+            refuse_collision(f, layout, symbol, entry.node, "memory `%s`" % entry.name)
+
+
+def refuse_collision(f, seen, symbol, node, what):
+    if symbol in seen:
+        f.refuse(node, "chip.symbol-collision",
+                 "%s is named `%s` in C, as %s on line %d is" % (what, symbol, seen[symbol][1], line_of(seen[symbol][0])))
+        return
+    seen[symbol] = (node, what)
+
+
+def check_ref(f, values):
+    """The `ref` among `values`, or None."""
+    if "ref" not in values:
+        return None
+    return f.string(values["ref"], "`ref`")
+
+
+def check_named(f, values, what):
+    """The `ref` and `symbol` among `values`."""
+    named = Named(check_ref(f, values))
+    if "symbol" in values:
+        named.symbol = f.name(values["symbol"], "%s symbol" % what, C_IDENTIFIER)
+    return named
+
+
+def check_c(f, node, chip):
+    values = f.fields(node, "`c`", ("namespace", "line_enum"), ())
+    if values is None:
+        return
+    if "namespace" in values:
+        chip.namespace = f.name(values["namespace"], "`c` namespace", NAMESPACE)
+    if "line_enum" in values:
+        chip.line_enum = f.name(values["line_enum"], "`c` line_enum", LINE_ENUM)
+
+
+def check_interrupts(f, node, chip):
+    """`count` lines a controller has, the two thresholds below it, and every device's line under it."""
+    values = f.fields(node, "`interrupts`", INTERRUPT_FIELDS, ("count",))
+    if values is None:
+        return
+    for field in INTERRUPT_FIELDS[:-1]:
+        if field in values:
+            chip.interrupts[field] = f.integer(values[field], "`interrupts` %s" % field, 16)
+    chip.interrupts_ref = check_ref(f, values)
+    count = chip.interrupts.get("count")
+    if count is None:
+        return
+    for field in ("soft_only_from", "free_from"):
+        value = chip.interrupts.get(field)
+        if value is not None and value >= count:
+            f.refuse(values[field], "chip.line-range",
+                     "`interrupts` %s %d is past the %d lines `count` gives" % (field, value, count))
+    for device in chip.devices.values():
+        for line, number in device.sources.items():
+            if number >= count:
+                f.refuse(device.lines[line], "chip.line-range",
+                         "line `/dev/%s/%s` %d is past the %d lines `interrupts` count gives"
+                         % (device.name, line, number, count))
 
 
 def check_protection(f, node, what, chip, view):
@@ -291,7 +492,9 @@ def check_cores(f, top, root, chip):
         if values is None:
             continue
         if "arch" in values:
-            f.name(values["arch"], "%s `arch`" % what, IDENTIFIER)
+            arch = f.name(values["arch"], "%s `arch`" % what, IDENTIFIER)
+            if cluster is not None and arch is not None:
+                chip.cluster_arch[cluster] = arch
             chip.multi_arch = True
             if "arch" in top:
                 f.refuse(values["arch"], "form.exclusive",
@@ -302,7 +505,9 @@ def check_cores(f, top, root, chip):
         elif "arch" not in top:
             f.refuse(value, "form.missing", "%s needs `arch`, the part naming none" % what)
         if "line_offset" in values:
-            f.integer(values["line_offset"], "%s `line_offset`" % what, 16)
+            offset = f.integer(values["line_offset"], "%s `line_offset`" % what, 16)
+            if cluster is not None and offset is not None:
+                chip.line_offsets[cluster] = offset
             if "arch" not in values:
                 f.refuse(values["line_offset"], "form.inapplicable",
                          "%s has a `line_offset`, which only a cluster with its own `arch` has" % what)
@@ -401,11 +606,12 @@ def check_device(f, chip, key, value, windows):
             for channel_name, (ckey, cvalue) in channels.items():
                 channel = f.name(ckey, "%s channel" % what, IDENTIFIER)
                 cwhat = "channel `%s/%s`" % (name, channel_name)
-                cvalues = f.fields(cvalue, cwhat, ("window",), ("window",))
+                cvalues = f.fields(cvalue, cwhat, ("window", "ref", "symbol"), ("window",))
                 if channel is None or cvalues is None or "window" not in cvalues:
                     continue
                 window = check_range(f, cvalues["window"], "%s window" % cwhat, "size")
                 device.channels[channel] = ckey
+                device.channel_names[channel] = check_named(f, cvalues, cwhat)
                 if window is not None:
                     device.channel_windows[channel] = window
                     spans.append(("the window of channel `%s`" % channel, window[1]))
@@ -436,10 +642,19 @@ def check_device(f, chip, key, value, windows):
         if lines is not None:
             for line_name, (lkey, lvalue) in lines.items():
                 line = f.name(lkey, "%s line" % what, IDENTIFIER)
-                number = f.integer(lvalue, "line `%s/%s`" % (name, line_name), 16)
+                lwhat = "line `%s/%s`" % (name, line_name)
+                named = Named()
+                if isinstance(lvalue, MappingNode):
+                    lvalues = f.fields(lvalue, lwhat, ("number", "ref", "symbol"), ("number",))
+                    if lvalues is None or "number" not in lvalues:
+                        continue
+                    named = check_named(f, lvalues, lwhat)
+                    lvalue = lvalues["number"]
+                number = f.integer(lvalue, lwhat, 16)
                 if line is not None and number is not None:
                     device.lines[line] = lkey
                     device.sources[line] = number
+                    device.line_names[line] = named
     for line, lkey in device.lines.items():
         if line in device.channels:
             f.refuse(lkey, "chip.name-collision",
@@ -458,6 +673,12 @@ def check_device(f, chip, key, value, windows):
         f.refuse(key, "chip.kernel-window",
                  "%s is kernel-owned, so it states its `window` or `ports`, or `sysreg: true`" % what)
 
+    named = check_named(f, values, what)
+    device.ref = named.ref
+    device.symbol = named.symbol
+    if "blocks" in values:
+        check_blocks(f, values["blocks"], device, what, shapes, spans)
+
     if "privileged_registers" in values:
         registers = f.mapping(values["privileged_registers"], "%s privileged_registers" % what)
         if registers is not None:
@@ -469,6 +690,34 @@ def check_device(f, chip, key, value, windows):
                     check_register(f, rvalue, rwhat, offset, shapes, spans)
                     device.registers.append(offset)
     return device
+
+
+def check_blocks(f, node, device, what, shapes, spans):
+    blocks = f.mapping(node, "%s blocks" % what)
+    if blocks is None:
+        return
+    for block_name, (bkey, bvalue) in blocks.items():
+        block = f.name(bkey, "%s block" % what, IDENTIFIER)
+        bwhat = "block `%s` of %s" % (block_name, what)
+        named = Named()
+        if isinstance(bvalue, MappingNode):
+            bvalues = f.fields(bvalue, bwhat, ("offset", "ref", "symbol"), ("offset",))
+            if bvalues is None or "offset" not in bvalues:
+                continue
+            named = check_named(f, bvalues, bwhat)
+            bvalue = bvalues["offset"]
+        offset = f.integer(bvalue, bwhat, 32)
+        if block is None or offset is None:
+            continue
+        if shapes != ["window"]:
+            f.refuse(bvalue, "chip.block-outside", "%s at 0x%X lies in no window; a block is part of a "
+                     "device's one `window`" % (bwhat, offset))
+            continue
+        if spans and offset >= spans[0][1]:
+            f.refuse(bvalue, "chip.block-outside",
+                     "%s at 0x%X lies outside its window, 0x%X long" % (bwhat, offset, spans[0][1]))
+            continue
+        device.blocks.append(Block(block, offset, named))
 
 
 def check_repeat(f, values, what, base, size, count, stride):
@@ -513,6 +762,8 @@ def check_memory(f, top, root, chip, translates, windows):
     arenas = {}
     for view in carving:
         arenas[view] = []
+    # {(view, region): the node that named it first}
+    links = {}
     for entry_name, (key, value) in entries.items():
         name = f.name(key, "memory entry", IDENTIFIER)
         what = "memory `%s`" % entry_name
@@ -554,6 +805,13 @@ def check_memory(f, top, root, chip, translates, windows):
                 base = f.integer(cvalue, "%s base for `%s`" % (what, cluster_name), 64)
                 if cluster is not None:
                     bases[cluster] = (base, cvalue)
+        if size is not None and all(base is not None for base, node in bases.values()):
+            entry = Memory(name, size, {view: base for view, (base, node) in bases.items()},
+                           check_named(f, values, what))
+            entry.node = key
+            if "link" in values:
+                entry.link = check_link(f, values["link"], what, links, bases)
+            chip.memory.append(entry)
         arena = False
         if "arena" in values:
             arena = f.boolean(values["arena"], "%s arena" % what)
@@ -586,6 +844,25 @@ def check_memory(f, top, root, chip, translates, windows):
         for mark in marks[1:]:
             f.refuse(mark, "chip.arena",
                      "a second `arena` for %s, which carves its arena from exactly one" % where)
+
+
+def check_link(f, node, what, links, bases):
+    """The (region, access) a memory entry links as, refused where a view already has the region."""
+    values = f.fields(node, "%s link" % what, ("region", "access"), ("region", "access"))
+    if values is None or "region" not in values or "access" not in values:
+        return None
+    region = f.name(values["region"], "%s link region" % what, REGION)
+    access = f.name(values["access"], "%s link access" % what, ACCESS)
+    if region is None or access is None:
+        return None
+    for view in bases:
+        first = links.get((view, region))
+        if first is not None:
+            f.refuse(values["region"], "chip.link-duplicate",
+                     "%s links as `%s`, which line %d already names" % (what, region, line_of(first)))
+            return None
+        links[(view, region)] = values["region"]
+    return (region, access)
 
 
 def carving_prose(carving):

@@ -22,6 +22,7 @@
  * by the app grant.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -30,7 +31,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 8M   /* QEMU virt DRAM (ample) */
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/handler stack: top of RAM */

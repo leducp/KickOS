@@ -91,18 +91,19 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  picopi-st at 628, the deepest of this arch's four declared presets
-                  (picopi 572, microbit and picopi-flat 504).
+     _SVCK   808  picopi-st at 552, the deepest of this arch's four declared presets
+                  (picopi 544, microbit and picopi-flat 536).
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
-   (kickos_panic_stack_enter, switch.S), so what 628 measures at picopi-st is grant admission
-   under thread_create_call and no console backend at all:
-     syscall_dispatch[112] -> thread_create_call[240] -> thread_create[72] -> task_for[24]
-     -> domain_for[32] -> grant_region_admissible[32] -> grant_hits_reserved[96]
-     -> arch_reserved_blocks[20]
-   808 IS ENFORCED OVER THAT 628 ON PURPOSE, as headroom a future change is measured against
-   rather than slack to spend. Cutting it to the measurement returns 180 per
-   KICKOS_THREAD_SLOTS, the block falling from 896 to 720, and buys the next added assert a
+   (kickos_panic_stack_enter, switch.S), so what 552 measures at picopi-st is the exit path
+   under endpoint_reply_recv and no console backend at all:
+     syscall_dispatch[64] -> endpoint_reply_recv[128] -> exit_current[56] -> cap_teardown[40]
+     -> teardown_entry[40] -> obj_close_protocol[16] -> endpoint_rights_dropped[32] -> wake[8]
+     -> resched_after_wake[8] -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32]
+     -> __aeabi_ldivmod[96]
+   808 IS ENFORCED OVER THAT 552 ON PURPOSE, as headroom a future change is measured against
+   rather than slack to spend. Cutting it to the measurement returns 256 per
+   KICKOS_THREAD_SLOTS, the block falling from 896 to 640, and buys the next added assert a
    gate failure on whichever preset happens to be deepest.
 
    On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, with the

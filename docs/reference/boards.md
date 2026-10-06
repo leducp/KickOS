@@ -307,14 +307,12 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   before the task's first instruction, so threads execute at EL0 under a per-space map rather than
   under the boot identity. There is no region MPU, and enforcement is the page tables:
   `KICKOS_MEMORY_ENFORCED` is derived ON here from `KICKOS_HAVE_ASPACE`, so an unprivileged thread
-  cannot reach the kernel's half at all. It is one of the fleet's TWO TRANSLATING boards, the other being
-  `qemu-riscv64`, and the two `aspace.cmake` files under `arch/` are the whole set. Both ship the
-  `arch_aspace_*` map editor and carry a linker-carved frame pool the kernel's `FrameAllocator`
-  describes, which is what `arch/arm64/chip/virt_arm64/aspace.cmake` declares here. Both also BUILD
+  cannot reach the kernel's half at all. It is a TRANSLATING board, as `qemu-riscv64` is: both ship
+  the `arch_aspace_*` map editor and carry a linker-carved frame pool the kernel's `FrameAllocator`
+  describes, which `platform/virt_arm64/chip.yaml` declares here with `unit: mmu`. Both also BUILD
   their first table: translation arrives OFF and each writes the table before enabling it, where
-  `qemu-x86_64` runs with translation already live and ADOPTS the regime UEFI firmware left it,
-  selecting no memory family, shipping no map editor and declaring no frame pool, which is what
-  keeps the set at two. What separates this one: its granule and level count are FIXED at build time
+  `qemu-x86_64` runs with translation already live and ADOPTS the regime UEFI firmware left it.
+  What separates this one: its granule and level count are FIXED at build time
   where `qemu-riscv64` selects Sv39 or Sv48 by config variant, it has TWO root registers
   (`TTBR0_EL1` and `TTBR1_EL1`) where Sv39/Sv48 have `satp` alone and x86_64 has `cr3` alone, its
   app window is IDENTITY-linked where the RISC-V one links at `0x40000000`

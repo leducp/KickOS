@@ -13,6 +13,7 @@
  * the part (bricks debug access), so .fcf is placed here explicitly and KEPT.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 
@@ -24,8 +25,8 @@ ENTRY(Reset_Handler)
  * split this region if a DMA/burst buffer ever needs to straddle 0x2000_0000. */
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 1024K
-    RAM   (rwx) : ORIGIN = 0x1FFF0000, LENGTH = 256K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of SRAM_U */

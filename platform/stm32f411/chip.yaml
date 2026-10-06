@@ -1,30 +1,43 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from RM0383 and the tree's chip_mmap.h, irq.h, chip_stm32f411.cc and stm32f411.ld
-# under arch/arm/chip/stm32f411/, the f411spi app, and arch_mpu_nocache_support in
+# Values from RM0383, the f411spi app, and arch_mpu_nocache_support in
 # arch/arm/common/arch_mpu_nocache_support_default.cc.
 
 version: 1
 chip: stm32f411
+manual: "RM0383 STM32F411xC/E Reference Manual, Rev 4 (May 2025)"
 arch: armv7m
 protection: { unit: pmsav7, covers_devices: true, memory_type: true }
 data_cache: false
 
+interrupts: { count: 86, ref: "Table 37 Vector table, p.205" }
+
 devices:
   # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
   # whole 1 KiB bus slot.
-  usart2: { window: [0x40004400, 0x20], lines: { global: 38 } }
-  spi1: { window: [0x40013000, 0x20], lines: { global: 35 } }
+  usart2:
+    window: [0x40004400, 0x20]
+    ref: "Table 1, p.39"
+    lines: { global: { number: 38, symbol: USART2_IRQ, ref: "Table 37 Vector table, p.204" } }
+  spi1: { window: [0x40013000, 0x20], lines: { global: 35 }, ref: "Table 1, p.39" }
 
-  tim2: { window: [0x40000000, 0x400], owner: kernel } # the monotonic time base
-  rcc: { window: [0x40023800, 0x400], owner: kernel }
+  # The monotonic time base.
+  tim2:
+    window: [0x40000000, 0x400]
+    owner: kernel
+    ref: "Table 1, p.39"
+    lines: { global: { number: 28, symbol: TIM2_IRQ, ref: "Table 37 Vector table, p.204" } }
+  rcc: { window: [0x40023800, 0x400], owner: kernel, ref: "Table 1, p.38" }
   # Every GPIO port. A pin is muxed through kos_pinmux_set, never through a granted window.
-  gpio: { window: [0x40020000, 0x400], count: 5, stride: 0x400, owner: kernel } # A to E
-  gpioh: { window: [0x40021C00, 0x400], owner: kernel } # F and G are not on this part
+  gpio: { window: [0x40020000, 0x400], count: 5, stride: 0x400, owner: kernel, symbol: GPIOA_BASE, ref: "Table 1, p.38" }
+  gpioh: { window: [0x40021C00, 0x400], owner: kernel, ref: "Table 1, p.38" } # F and G are not on this part
+  # The flash interface: the wait states the kernel sets with the clock.
+  flash: { window: [0x40023C00, 0x400], owner: kernel, ref: "Table 1, p.38" }
 
 memory:
-  sram: { base: 0x20000000, size: 0x20000, arena: true }
+  main_flash: { base: 0x08000000, size: 0x80000, link: { region: FLASH, access: rx }, ref: "Table 4, p.44" }
+  sram: { base: 0x20000000, size: 0x20000, arena: true, link: { region: RAM, access: rwx }, ref: "2.3.1, p.40" }
 
 # Pins are PORT PIN. A selector other than `gpio` is the alternate-function number the pin's AFR
 # selects.

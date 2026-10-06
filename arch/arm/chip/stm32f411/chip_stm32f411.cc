@@ -529,29 +529,6 @@ int arch_periph_enable(uintptr_t base)
     return -KOS_EINVAL;
 }
 
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (RM0383). Owns-for-life: the TIM2 monotonic time base and the
-// RCC clock/reset/gate block. TIM2 and RCC bases are the constants above; sizes are
-// one 1 KB APB slot each per the RM peripheral map.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::TIM2_BASE, 0x400u},  // TIM2: the monotonic time base (RM sec.13)
-        {mmap::RCC_BASE, 0x400u},   // RCC: clock/PLL + peripheral reset/gate (RM sec.6)
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-#endif
-
 // STM32F411 is a Cortex-M4 with the bit-band peripheral/SRAM alias.
 int arch_bitband_present(void)
 {

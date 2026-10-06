@@ -23,6 +23,7 @@
  * window holds only app + C++-runtime small-data and is covered by the app grant.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -36,7 +37,7 @@ MEMORY
     RAM (rwx) : ORIGIN = KICKOS_AMP_IMAGE_BASE, LENGTH = KICKOS_AMP_NODE_SHARE
     SHARED (rw) : ORIGIN = KICKOS_AMP_SHARED_BASE, LENGTH = KICKOS_AMP_SHARED_SIZE
 #else
-    RAM (rwx) : ORIGIN = 0x40800000, LENGTH = 512K   /* HP SRAM */
+    KICKOS_LINK_RAM
 #endif
 }
 

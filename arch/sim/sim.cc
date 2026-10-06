@@ -1416,11 +1416,9 @@ int arch_mpu_nocache_support(void)
 
 // Rule 7: the sim's "devices" are arena-backed fakes reached via a data grant, so it reserves
 // nothing and only the arena and encodability rules apply.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+struct arch_reserved_span arch_reserved_blocks(void)
 {
-    (void)out;
-    (void)max;
-    return KICKOS_RESERVED_NONE;
+    return {};
 }
 
 // No Cortex-M bit-band on the host.

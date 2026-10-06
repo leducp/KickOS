@@ -192,12 +192,9 @@ namespace kickos
 
     bool port_aperture_ok(uintptr_t base, size_t count)
     {
-        struct arch_reserved_block apertures[KICKOS_MAX_RESERVED];
-        size_t const n = arch_port_apertures(apertures, KICKOS_MAX_RESERVED);
-        for (size_t i = 0; i < n; i++)
+        for (struct arch_reserved_block const& a : arch_port_apertures())
         {
-            if (base >= apertures[i].base
-                and base + count <= apertures[i].base + apertures[i].size)
+            if (base >= a.base and base + count <= a.base + a.size)
             {
                 return true;
             }

@@ -67,9 +67,9 @@ isolates on an MPU (PMSA, no address translation), and the **Domain / address-sp
 backend-agnostic** so that a **VMSA (page-table / MMU)** backend slots in behind the same
 abstraction. **Two such backends now ship**: `armv8a` on `virt_arm64` (VMSAv8, EL0/EL1, a fixed
 granule and level count) and `rv64imac` on `virt_rv64` (Sv39 or Sv48, selected per config variant).
-A chip declares which family it is by shipping `arch/<family>/chip/<chip>/mpu.cmake` for region
-descriptors or `aspace.cmake` for translation, never both, and the two are mutually exclusive at
-configure time. What has NOT been built is a translating backend on real application-class silicon:
+A chip declares which family it is by its chip file's protection unit, a region unit or `mmu`, or,
+where it has no chip file, by shipping `arch/<family>/chip/<chip>/mpu.cmake` for region descriptors
+or `aspace.cmake` for translation, never both, and the two are mutually exclusive at configure time. What has NOT been built is a translating backend on real application-class silicon:
 both translating boards are emulated, so the discipline the seam was designed for is proven under
 QEMU and not on a part. The design claim the seam makes is unchanged and now measured rather than
 promised -- keep MPU/PMSA and VMSA specifics in the **arch/chip layer**, never leaked into the core
@@ -183,11 +183,12 @@ PMSAv7/v6-M (XMC4800, F411, i.MX RT1062, RP2040; the shared fallback TU
 Every backend but the PMP writes only the descriptors whose words changed, against a record
 of what the hardware holds (`reference/invariants.md`, `mpu-commit-writes-what-changed`).
 (See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
-maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmake`, and
-the same chips select `HAS_MPU` in `arch/Kconfig`, which is what makes the enforcing
-posture selectable at all. A configuration asking for it on a chip that declares neither is
-refused -- by Kconfig on the unmet dependency, or by a configure error if the two
-declarations ever disagree -- rather than becoming a silent no-op.
+maintain by hand: the chips select `HAS_MPU` in `arch/Kconfig`, which is what makes the
+enforcing posture selectable at all, and a chip opts in by a region unit in its chip file, which
+`tests/static/check_chip_kconfig.sh` holds against that select, or by shipping
+`arch/<family>/chip/<chip>/mpu.cmake` where it has no chip file. A configuration asking for it on
+a chip that declares neither is refused -- by Kconfig on the unmet dependency, or by the gate or a
+configure error if the two declarations ever disagree -- rather than becoming a silent no-op.
 
 ---
 

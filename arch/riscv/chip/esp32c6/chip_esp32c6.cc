@@ -905,38 +905,6 @@ void arch_init(void)
 #endif
 }
 
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (ESP32-C6 TRM). One 4 KB page at 0x20001000 covers both the
-// undocumented CPU-interrupt-controller window (@0x20001000, regs/plic.h) and the
-// core-local CLINT (@0x20001800: MSIP switch doorbell + MTIME/MTIMECMP tickless timer
-// @0x20001808/0x20001810, TRM section 1.7.5), so one entry covers timebase + IRQ enable.
-// INTMTX (interrupt matrix routing) and PCR (the clock/reset gate block the MTIME rate
-// depends on) are owns-for-life too, as are the two bus-side permission controllers:
-// HP_TEE (per-master security mode) and HP_APM (the REE permission regions arch_init
-// programs once). Granting HP_APM is total escalation, and its region registers sit on
-// a 0xC stride, so even a minimal window reaches several regions.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {0x20001000u, 0x1000u}, // int-controller window (@+0x000) + CLINT MSIP/MTIME/MTIMECMP (@+0x800..)
-        {0x60010000u, 0x1000u}, // INTMTX: interrupt matrix (TRM, memory map Table 5.3-2)
-        {0x60096000u, 0x1000u}, // PCR: clock + reset gate controller (TRM PCR ch.; regs @+0x2c/+0x30)
-        {0x60098000u, 0x1000u}, // HP_TEE: per-master security mode (TRM ch.16)
-        {0x60099000u, 0x1000u}, // HP_APM: bus-side access-permission regions (TRM ch.16)
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-#endif
-
 void arch_shutdown(int status)
 {
     (void)status; // no exit on bare metal

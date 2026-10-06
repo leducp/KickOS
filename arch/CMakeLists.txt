@@ -66,6 +66,12 @@ if(KICKOS_FAULT_ISOLATION)
     common/arch_fault_is_user_thread_default.cc
     common/arch_fault_redirect_to_exit_default.cc)
 endif()
+# A chip whose headers are generated reads its tables from chip_tables.h, unless its own sources
+# still define them.
+if(KICKOS_CHIP_GENERATED)
+  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reserved_blocks_default.cc
+    common/arch_window_apertures_default.cc common/arch_port_apertures_default.cc)
+endif()
 # Swapped, not added: both TUs define kfault_terminate.
 if(KICKOS_CHIP_EXITS_ON_FAULT)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON common/kfault_terminate_default.cc)
@@ -129,6 +135,9 @@ if(KICKOS_ARCH_PRIVATE_INCLUDE_DIRS)
 endif()
 if(KICKOS_ARCH_LINK_LIBRARIES)
   target_link_libraries(kickos_arch_${KICKOS_ARCH} PUBLIC ${KICKOS_ARCH_LINK_LIBRARIES})
+endif()
+if(KICKOS_CHIP_GENERATED)
+  target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
 endif()
 kickos_export_targets(kickos_arch_${KICKOS_ARCH})
 set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
@@ -372,6 +381,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/../system/include"
     # rtt.h, for an arch_shutdown that dumps the telemetry ring (mps2).
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
+  if(KICKOS_CHIP_GENERATED)
+    target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
+  endif()
   # Appended after the list above: a chip directory ahead of <family>/common would shadow
   # regs.h for every source in this archive. Only the configured chip's directory is on this
   # path, so a family TU's #include "regs/<periph>.h" resolves to that chip's copy.
@@ -401,6 +413,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       PRIVATE
         "${CMAKE_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
+    if(KICKOS_CHIP_GENERATED)
+      target_include_directories(kickos_class_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
+    endif()
     kickos_export_targets(kickos_class_${KICKOS_CHIP})
   endif()
 
@@ -435,6 +450,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # The generated script keeps the <chip>.ld name for the INSTALL_INTERFACE -T path.
     set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
     set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+    if(KICKOS_CHIP_GENERATED)
+      list(APPEND _ld_defs "-I${PROJECT_BINARY_DIR}/generated/chip")
+    endif()
     # A chip whose boot handshake needs storage outside .bss carves it per hart, so its script
     # must know the count; at one core the carve is absent rather than empty.
     list(APPEND _ld_defs -DKICKOS_NUM_CORES=${KICKOS_NUM_CORES})

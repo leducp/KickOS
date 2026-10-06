@@ -72,6 +72,41 @@
 struct arch_mpu_encoded;
 #endif
 
+// MMIO grants must exclude kernel-owned timers, interrupt and protection
+// controllers, bus access gates, and clock/reset registers.
+struct arch_reserved_block
+{
+    uintptr_t base;
+    size_t size;
+};
+
+// Not std::span: <span> pulls <limits>, whose float members a TU built with
+// -mgeneral-regs-only for a hard-float ABI refuses, and such TUs include this header.
+struct arch_reserved_span
+{
+    struct arch_reserved_block const* rows;
+    size_t count;
+
+    constexpr arch_reserved_span() : rows(nullptr), count(0)
+    {
+    }
+
+    template <size_t N>
+    constexpr arch_reserved_span(struct arch_reserved_block const (&table)[N]) : rows(table), count(N)
+    {
+    }
+
+    constexpr struct arch_reserved_block const* begin() const
+    {
+        return rows;
+    }
+
+    constexpr struct arch_reserved_block const* end() const
+    {
+        return rows + count;
+    }
+};
+
 // C++ only: extern "C" below is unguarded.
 extern "C"
 {
@@ -677,29 +712,19 @@ uintptr_t arch_cpu_block_addr(void);
 void arch_dcache_flush(void const* addr, size_t bytes);
 void arch_dcache_invalidate(void* addr, size_t bytes);
 
-// MMIO grants must exclude kernel-owned timers, interrupt and protection
-// controllers, bus access gates, and clock/reset registers.
-struct arch_reserved_block
-{
-    uintptr_t base;
-    size_t size;
-};
+// The reserved blocks. Empty is valid. A chip whose headers are generated is served from its
+// chip_tables.h; any other chip with KICKOS_MEMORY_ENFORCED, MMU chips included, defines this.
+struct arch_reserved_span arch_reserved_blocks(void);
 
-// Fill at most max reserved blocks and return the count. Zero is valid.
-// Each chip with KICKOS_MEMORY_ENFORCED, including MMU chips, must define
-// this function; there is no fallback.
-#define KICKOS_RESERVED_NONE 0u
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
+// The physical apertures a user DEVICE window may lie in on a translating backend: device space
+// holding no RAM and no firmware, arch_reserved_blocks still carving the kernel's own devices
+// out of it. Empty admits no window. A chip whose headers are generated is served from its
+// chip_tables.h; any other chip of a translating arch defines this.
+struct arch_reserved_span arch_window_apertures(void);
 
-// Fill at most max physical apertures a user DEVICE window may lie in on a translating backend,
-// and return the count: device space holding no RAM and no firmware, arch_reserved_blocks still
-// carving the kernel's own devices out of it. Zero admits no window. Each chip of a translating
-// arch must define this function; there is no fallback.
-size_t arch_window_apertures(struct arch_reserved_block* out, size_t max);
-
-// Where the arch defines KICKOS_ARCH_HAS_PORTS: fill at most max I/O port ranges a user port
-// window may name, as base and count, and return how many; the chip's own ports are in none.
-size_t arch_port_apertures(struct arch_reserved_block* out, size_t max);
+// Where the arch defines KICKOS_ARCH_HAS_PORTS: the I/O port ranges a user port window may name,
+// as base and count; the chip's own ports are in none.
+struct arch_reserved_span arch_port_apertures(void);
 
 // Where the arch defines KICKOS_ARCH_HAS_PORTS: write `value` to `port` if the chip keeps that
 // port for the kernel's write and the value is inside the port's mask. 0, or -KOS_EINVAL for a

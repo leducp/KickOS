@@ -2440,7 +2440,8 @@ namespace selftest
     // --- The x86 port grant --------------------------------------------------------------
     // A holder of the CMOS pair has the kernel write the index, which the chip keeps closed to
     // it, and reads the data port itself; a value with the NMI-mask bit is refused, and so is a
-    // port it does not hold. A second holder, COM1 and the PIC are refused. A COM2 holder
+    // port it does not hold. A second holder and the PIC are refused, and COM1 is refused only
+    // as held, its console driver holding it where one runs. A COM2 holder
     // alternates with it on one core, each reading its own port, then reaches for the CMOS
     // data port and faults; the CMOS holder moves to another core where there is one and reads
     // again. A holder writing the CMOS index itself faults. Reports travel over an endpoint.
@@ -2539,7 +2540,6 @@ namespace selftest
         }
         kos_window const cmos = {PW_CMOS, 2u, KOS_WINDOW_PORTS, 0};
         kos_window const com2 = {PW_COM2, 8u, KOS_WINDOW_PORTS, 0};
-        kos_window const com1 = {0x3f8u, 8u, KOS_WINDOW_PORTS, 0};
         kos_window const pic = {0x20u, 2u, KOS_WINDOW_PORTS, 0};
         kos_cap_grant const ccaps[] = {{ep, KOS_CAP_SIGNAL}, {sa, CH_FULL}, {sb, CH_FULL}};
         kos_cap_grant const bcaps[] = {{ep, KOS_CAP_SIGNAL}, {sb, CH_FULL}, {sa, CH_FULL}};
@@ -2551,11 +2551,6 @@ namespace selftest
                                       ti)
                       .error()
                   == -KOS_EBUSY);
-        TAP_CHECK(kos::thread::create(pw_noop, nullptr, "pwk", 10, KOS_POLICY_FIFO, 0, false,
-                                      nullptr, 0, nullptr, 0, &com1, 1, nullptr, 0, 0, nullptr,
-                                      ti)
-                      .error()
-                  == -KOS_EINVAL);
         TAP_CHECK(kos::thread::create(pw_noop, nullptr, "pwp", 10, KOS_POLICY_FIFO, 0, false,
                                       nullptr, 0, nullptr, 0, &pic, 1, nullptr, 0, 0, nullptr,
                                       ti)
@@ -2594,6 +2589,15 @@ namespace selftest
             char x = 0;
             TAP_CHECK(pw_recv(ep, &x, 1, 20000) == -KOS_ETIMEDOUT);
             TAP_CHECK(writer.join(PW_JOIN_US) == 0);
+        }
+        kos_window const com1 = {0x3f8u, 8u, KOS_WINDOW_PORTS, 0};
+        auto const console = kos::thread::create(pw_noop, nullptr, "pwk", 10, KOS_POLICY_FIFO, 0,
+                                                 false, nullptr, 0, nullptr, 0, &com1, 1, nullptr,
+                                                 0, 0, nullptr, ti);
+        TAP_CHECK(console.error() != -KOS_EINVAL);
+        if (console.valid())
+        {
+            TAP_CHECK(console.join(PW_JOIN_US) == 0);
         }
         (void)kos_task_kill(tc);
         (void)kos_task_kill(tb);

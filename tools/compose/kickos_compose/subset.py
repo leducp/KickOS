@@ -29,6 +29,7 @@ RULES = (
     "chip.name-mismatch", "chip.name-collision", "chip.overlap", "chip.cluster-unknown",
     "chip.kernel-window", "chip.memory-required", "chip.arena", "chip.page-unit", "chip.page-size",
     "chip.core-count", "chip.zero-size", "chip.device-unknown", "chip.register-outside", "chip.gate-straddle",
+    "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision",
     "board.name-mismatch", "board.name-collision", "board.chip-unknown", "board.chip-unreadable",
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",
@@ -64,6 +65,10 @@ DECIMAL_DIGITS = 20
 
 IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+NAMESPACE = re.compile(r"kickos(::[a-z][a-z0-9_]*)+")
+LINE_ENUM = re.compile(r"[a-z_][a-z0-9_]*( : [a-z_][a-z0-9_]*( [a-z_][a-z0-9_]*)*)?")
+REGION = re.compile(r"[A-Z][A-Z0-9_]*")
+ACCESS = re.compile(r"(?=.)r?w?x?")
 FILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 PIN = re.compile(r"[A-Z][A-Z0-9_]*(\.[0-9]+)?")
 SELECTOR = re.compile(r"[a-z][a-z0-9]*")

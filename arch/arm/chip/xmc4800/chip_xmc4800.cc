@@ -31,6 +31,12 @@ namespace ccu4 = kickos::xmc::reg::ccu4;
 namespace flash = kickos::xmc::reg::flash;
 namespace rp = kickos::xmc::reg::port;
 
+namespace
+{
+    constexpr uintptr_t USIC_CHANNEL_STRIDE = mmap::USIC0_CH1_BASE - mmap::USIC0_CH0_BASE;
+    constexpr uintptr_t USIC_MODULE_SPAN = 2u * USIC_CHANNEL_STRIDE;
+}
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -324,7 +330,7 @@ namespace
 
     namespace ru = kickos::xmc::reg::usic;
 
-    static_assert(ru::U0C1_BASE == mmap::USIC0_CH0_BASE + mmap::USIC_CHANNEL_STRIDE,
+    static_assert(ru::U0C1_BASE == mmap::USIC0_CH0_BASE + USIC_CHANNEL_STRIDE,
                   "U0C1 is USIC0's second channel");
 
     // Per-entry value masks. The store is one whole 32-bit word, so without a mask an
@@ -470,12 +476,12 @@ uint64_t arch_cpu_clock_set(uint32_t target)
 // USIC0 @0x40030000, USIC1 @0x48020000, USIC2 @0x48024000. Any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
-    bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + mmap::USIC_MODULE_SPAN;
-    if (base >= mmap::USIC1_CH0_BASE and base < mmap::USIC1_CH0_BASE + mmap::USIC_MODULE_SPAN)
+    bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + USIC_MODULE_SPAN;
+    if (base >= mmap::USIC1_CH0_BASE and base < mmap::USIC1_CH0_BASE + USIC_MODULE_SPAN)
     {
         in_usic = true;
     }
-    if (base >= mmap::USIC2_CH0_BASE and base < mmap::USIC2_CH0_BASE + mmap::USIC_MODULE_SPAN)
+    if (base >= mmap::USIC2_CH0_BASE and base < mmap::USIC2_CH0_BASE + USIC_MODULE_SPAN)
     {
         in_usic = true;
     }
@@ -582,29 +588,6 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     r32(iocr) = v;
     return 0;
 }
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (XMC4[78]00 RM). Owns-for-life: the CCU40 monotonic time base
-// (its slice + the global-control prefix) and the SCU (clock gates / peripheral
-// resets / PLL).
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::CCU40_BASE, 0x1000u}, // CCU40: timebase slice + global control (RM ch.23)
-        {mmap::SCU_BASE, 0x1000u},   // SCU: CGATSET clock gates / PRSET resets / PLL (RM SCU ch.)
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-#endif
 
 // XMC4800 is a Cortex-M4 with the bit-band peripheral/SRAM alias.
 int arch_bitband_present(void)

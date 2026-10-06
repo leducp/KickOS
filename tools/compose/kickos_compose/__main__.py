@@ -7,14 +7,18 @@
 # python -m kickos_compose emit <composition> --manifest <manifest> -o <file.c> [--asserts <file.ld>]
 #                               [--fragment <file.cmake>]
 # python -m kickos_compose cost <composition> --manifest <manifest>
+# python -m kickos_compose chip <chip or board file> --arch <arch> --include-dir <dir> --chip-dir <dir>
+# python -m kickos_compose chip <chip or board file> --arch <arch> --compare <header> --cxx "<compiler> [<flag>...]"
 #
 # Against a manifest, the chip and board files are the ones its `descriptions` names. A run that
 # refuses exits REFUSED; any other failure exits otherwise.
 
 import argparse
 import os
+import shlex
 import sys
 
+from . import chip as chip_headers
 from .composition import admit
 from .descriptions import check_platform
 from .emit import admitted_of, emit_system
@@ -59,7 +63,18 @@ def main(argv):
                                             "per line")
     cost.add_argument("composition", help="the composition file")
     cost.add_argument("--manifest", required=True, help="the export manifest of the kernel build it runs on")
+    headers = commands.add_parser("chip", help="write the chip headers a build includes, or compare one with a "
+                                               "hand-written header")
+    headers.add_argument("description", help="the chip file, or a board file naming it")
+    headers.add_argument("--arch", required=True, help="the kernel architecture of the build, which picks its cluster")
+    headers.add_argument("--include-dir", help="where kickos/chip_mmap.h and kickos/chip_limits.h go")
+    headers.add_argument("--chip-dir", help="where irq.h, chip_layout.h, chip_tables.h and chip.cmake go")
+    headers.add_argument("--compare", help="a hand-written chip_mmap.h, irq.h or chip_limits.h to assert against")
+    headers.add_argument("--cxx", help="the C++ compiler and flags the compare compiles with, as one shell word list")
     arguments = parser.parse_args(argv)
+
+    if arguments.command == "chip":
+        return run_chip(arguments)
 
     if arguments.command in ("admit", "emit", "cost"):
         platform = getattr(arguments, "platform", None)
@@ -116,6 +131,30 @@ def main(argv):
         print("kickos_compose: no description file under %s" % " ".join(arguments.paths), file=sys.stderr)
         return 1
     return finish(report, count, "description file")
+
+
+def run_chip(arguments):
+    if arguments.compare is None and (arguments.include_dir is None or arguments.chip_dir is None):
+        print("kickos_compose: chip needs --include-dir and --chip-dir, or --compare", file=sys.stderr)
+        return 1
+    if arguments.compare is not None and not arguments.cxx:
+        print("kickos_compose: chip --compare needs --cxx, the compiler it compiles with", file=sys.stderr)
+        return 1
+    if not os.path.isfile(arguments.description):
+        print("kickos_compose: %s is no file" % arguments.description, file=sys.stderr)
+        return 1
+    try:
+        report, said, status = chip_headers.run(arguments.description, arguments.arch, arguments.include_dir,
+                                                arguments.chip_dir, arguments.compare,
+                                                shlex.split(arguments.cxx or ""))
+    except chip_headers.Failure as failure:
+        print("kickos_compose: %s" % failure, file=sys.stderr)
+        return 1
+    if status is None:
+        return finish(report, 1, "description file")
+    for line in said:
+        print(line)
+    return status
 
 
 if __name__ == "__main__":

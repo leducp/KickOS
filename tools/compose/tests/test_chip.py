@@ -1,0 +1,259 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+import contextlib
+import io
+import os
+import shutil
+import tempfile
+import unittest
+
+from kickos_compose import chip
+from kickos_compose.__main__ import main
+from kickos_compose.subset import Report
+
+TREE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+PLATFORM = os.path.join(TREE, "platform")
+COMPILER = [shutil.which("g++") or "g++"]
+# The arch each described chip builds for, and on a multi-architecture part the one cluster it picks.
+ARCHES = {
+    "xmc4800": "armv7m", "stm32f411": "armv7m", "mk64f": "armv7m", "esp32c6": "rv32imac", "virt_rv32": "rv32imac",
+    "virt_arm64": "armv8a", "virt_rv64": "rv64imac", "q35": "x86_64", "imx8mp": "armv8a",
+}
+
+SMALL = """version: 1
+chip: small
+manual: "The Small Part Manual, rev 2"
+arch: armv7m
+protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+interrupts: { count: 40, free_from: 30, ref: "Table 1, p.3" }
+cycle_counter: { hz: 0, glitches: true }
+c: { namespace: kickos::sm, line_enum: "node : int" }
+devices:
+  uart: { window: [0x40001000, 0x100], ref: "p.10", lines: { rx: 5, tx: { number: 6, ref: "p.11", symbol: UART_TX_IRQ } } }
+  port: { window: [0x40002000, 0x100], count: 3, stride: 0x100, symbol: PORTA_BASE }
+  gap: { window: [0x40010000, 0x100], count: 2, stride: 0x400 }
+  usic: { channels: { ch0: { window: [0x40020000, 0x200] }, ch1: { window: [0x40020200, 0x200], symbol: U0C1 } } }
+  scu: { window: [0x50000000, 0x4000], owner: kernel, blocks: { trap: 0x160, pll: { offset: 0x710, symbol: PLL_REGS } } }
+  timer: { window: [0x50010000, 0x1000], owner: kernel, lines: { tick: 7 } }
+memory:
+  flash: { base: 0x08000000, size: 0x200000, symbol: FLASH_CACHED_BASE, link: { region: FLASH, access: rx } }
+  sram: { base: 0x20000000, size: 0x20000, arena: true, link: { region: RAM, access: rwx } }
+"""
+
+HAND_MMAP = """#include <stdint.h>
+namespace kickos::sm::mmap
+{
+    constexpr uintptr_t UART_BASE = 0x40001000u;
+    constexpr uintptr_t PORTA_BASE = 0x40002000u;
+    constexpr uintptr_t PORT_STRIDE = 0x100u;
+    constexpr uintptr_t SCU_TRAP_BASE = 0x50000160u;
+    constexpr uintptr_t PLL_REGS = 0x50000710u;
+}
+"""
+
+HAND_IRQ = """namespace kickos::sm::irq
+{
+    enum node : int
+    {
+        UART_RX = 5,
+        UART_TX_IRQ = 6,
+    };
+}
+"""
+
+HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
+#define KICKOS_IRQ_FREE_BASE 30
+#define KICKOS_CHIP_CYCCNT_HZ 0
+#define KICKOS_CHIP_CYCCNT_GLITCHES 1
+"""
+
+
+class Generated(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.mkdtemp(prefix="kickos-chip-")
+        self.platform = os.path.join(self.scratch, "platform", "small")
+        os.makedirs(self.platform)
+        self.path = os.path.join(self.platform, "chip.yaml")
+        self.write(self.path, SMALL)
+
+    def tearDown(self):
+        shutil.rmtree(self.scratch)
+
+    def write(self, path, text):
+        with open(path, "w", encoding="ascii") as stream:
+            stream.write(text)
+
+    def view(self, path=None, arch="armv7m"):
+        report = Report()
+        described = chip.read(path or self.path, report)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        return chip.view_of(described, arch)
+
+    def header(self, name, text):
+        path = os.path.join(self.scratch, "hand", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.write(path, text)
+        return path
+
+    def compare(self, name, text):
+        return chip.compare(self.view(), self.header(name, text), COMPILER)
+
+    def test_mmap_names_values_and_refs(self):
+        text = chip.generate(self.view())["chip_mmap.h"]
+        self.assertTrue(text.startswith("// The Small Part Manual, rev 2\n"))
+        for line in ("namespace kickos::sm::mmap", "constexpr uintptr_t UART_BASE = 0x40001000u; // p.10",
+                     "PORTA_BASE = 0x40002000u;", "PORT_STRIDE = 0x100u;", "GAP0_BASE = 0x40010000u;",
+                     "USIC_CH0_BASE = 0x40020000u;", "U0C1 = 0x40020200u;", "SCU_TRAP_BASE = 0x50000160u;",
+                     "PLL_REGS = 0x50000710u;", "FLASH_CACHED_BASE = 0x8000000u;", "SRAM_BASE = 0x20000000u;"):
+            self.assertIn(line, text)
+
+    def test_irq_limits_layout(self):
+        outputs = chip.generate(self.view())
+        self.assertIn("    enum node : int\n", outputs["irq.h"])
+        self.assertIn("UART_TX_IRQ = 6, // p.11", outputs["irq.h"])
+        self.assertIn("TIMER_TICK = 7,", outputs["irq.h"])
+        self.assertIn("#ifndef KICKOS_ARCH_ARM_CHIP_SMALL_IRQ_H", outputs["irq.h"])
+        self.assertIn("#define KICKOS_MAX_IRQ 40 /* Table 1, p.3 */", outputs["chip_limits.h"])
+        self.assertIn("#define KICKOS_IRQ_FREE_BASE 30", outputs["chip_limits.h"])
+        self.assertIn("#define KICKOS_CHIP_CYCCNT_HZ 0", outputs["chip_limits.h"])
+        self.assertIn("#define KICKOS_CHIP_CYCCNT_GLITCHES 1", outputs["chip_limits.h"])
+        self.assertIn("#define KICKOS_LINK_FLASH FLASH (rx) : ORIGIN = 0x8000000, LENGTH = 0x200000", outputs["chip_layout.h"])
+        self.assertIn("#define KICKOS_LAYOUT_SRAM_SIZE 0x20000", outputs["chip_layout.h"])
+        self.assertIn("#define KICKOS_LAYOUT_SCU_SIZE 0x4000", outputs["chip_layout.h"])
+        self.assertIn("#define KICKOS_LAYOUT_PORT_SIZE 0x100", outputs["chip_layout.h"])
+        self.assertEqual(outputs["chip.cmake"], "set(KICKOS_CHIP_REGION_UNIT \"pmsav7\")\nset(KICKOS_CHIP_TRANSLATES OFF)\n")
+
+    def test_tables_follow_ownership(self):
+        rows = chip.table_rows(self.view())
+        self.assertEqual([(b, s) for b, s, r in rows["reserved_blocks"]], [(0x50000000, 0x4000), (0x50010000, 0x1000)])
+        self.assertEqual(rows["window_apertures"], [])
+        self.assertEqual(rows["port_apertures"], [])
+
+    def test_translating_apertures_and_ports(self):
+        rows = chip.table_rows(self.view(os.path.join(PLATFORM, "q35", "chip.yaml"), "x86_64"))
+        self.assertEqual([(b, s) for b, s, r in rows["reserved_blocks"]], [(0xFEE00000, 0x1000), (0xFEC00000, 0x1000)])
+        self.assertEqual([(b, s) for b, s, r in rows["window_apertures"]], [(0xFED00000, 0x1000)])
+        self.assertEqual([(b, s) for b, s, r in rows["port_apertures"]], [(0x70, 2), (0x3F8, 8), (0x2F8, 8)])
+
+    def test_repeats_touching_are_one_row(self):
+        text = SMALL.replace("  gap: { window: [0x40010000, 0x100], count: 2, stride: 0x400 }",
+                             "  gap: { window: [0x40010000, 0x100], count: 2, stride: 0x400, owner: kernel }")
+        text = text.replace("count: 3, stride: 0x100, symbol", "count: 3, stride: 0x100, owner: kernel, symbol")
+        self.write(self.path, text)
+        rows = [(b, s) for b, s, r in chip.table_rows(self.view())["reserved_blocks"]]
+        self.assertEqual(rows[:3], [(0x40002000, 0x300), (0x40010000, 0x100), (0x40010400, 0x100)])
+
+    def test_cluster_offset_and_choice(self):
+        imx = os.path.join(PLATFORM, "imx8mp", "chip.yaml")
+        a53 = chip.generate(self.view(imx, "armv8a"))
+        m7 = chip.generate(self.view(imx, "armv7m"))
+        self.assertIn("MU1_A_TO_A53 = 120,", a53["irq.h"])
+        self.assertNotIn("MU1_B", a53["irq.h"])
+        self.assertIn("MU1_B_TO_M7 = 97,", m7["irq.h"])
+        self.assertIn("#define KICKOS_MAX_IRQ 192", a53["chip_limits.h"])
+        self.assertIn("#define KICKOS_MAX_IRQ 160", m7["chip_limits.h"])
+        self.assertIn("KICKOS_CHIP_TRANSLATES ON", a53["chip.cmake"])
+        self.assertIn("\"pmsav7\"", m7["chip.cmake"])
+        with self.assertRaises(chip.Failure):
+            self.view(imx, "rv32imac")
+
+    def test_every_described_chip_generates(self):
+        for name, arch in sorted(ARCHES.items()):
+            with self.subTest(chip=name):
+                outputs = chip.generate(self.view(os.path.join(PLATFORM, name, "chip.yaml"), arch))
+                self.assertEqual(sorted(outputs), sorted(chip.INCLUDE_OUTPUTS + chip.CHIP_OUTPUTS))
+
+    def test_the_generated_headers_pass_their_own_compare(self):
+        outputs = chip.generate(self.view())
+        for name in ("chip_mmap.h", "irq.h", "chip_limits.h"):
+            with self.subTest(header=name):
+                self.assertEqual(self.compare(name, outputs[name]), None)
+
+    def test_a_hand_header_agrees(self):
+        self.assertEqual(self.compare("chip_mmap.h", HAND_MMAP), None)
+        self.assertEqual(self.compare("irq.h", HAND_IRQ), None)
+        self.assertEqual(self.compare("chip_limits.h", HAND_LIMITS), None)
+
+    def test_a_planted_difference_shows(self):
+        plants = [
+            ("chip_mmap.h", HAND_MMAP, "UART_BASE = 0x40001000u", "UART_BASE = 0x40001004u"),
+            ("chip_mmap.h", HAND_MMAP, "constexpr uintptr_t PORT_STRIDE", "constexpr uint32_t PORT_STRIDE"),
+            ("chip_mmap.h", HAND_MMAP, "namespace kickos::sm::mmap", "namespace kickos::small::mmap"),
+            ("irq.h", HAND_IRQ, "UART_RX = 5", "UART_RX = 4"),
+            ("irq.h", HAND_IRQ, "enum node : int", "enum node : unsigned"),
+            ("irq.h", HAND_IRQ, "enum node : int", "enum line : int"),
+            ("chip_limits.h", HAND_LIMITS, "KICKOS_MAX_IRQ 40", "KICKOS_MAX_IRQ 41"),
+            ("chip_limits.h", HAND_LIMITS, "#define KICKOS_IRQ_FREE_BASE 30\n", ""),
+            ("chip_limits.h", HAND_LIMITS, "#define KICKOS_CHIP_CYCCNT_HZ 0\n", ""),
+        ]
+        for name, text, old, new in plants:
+            with self.subTest(plant=new):
+                self.assertNotEqual(self.compare(name, text.replace(old, new)), None)
+
+    def test_a_header_sharing_nothing_is_refused(self):
+        hand = self.header("chip_mmap.h", "#include <stdint.h>\nnamespace kickos::sm::mmap { constexpr uintptr_t X = 1; }\n")
+        report, said, status = chip.run(self.path, "armv7m", header=hand, compiler=COMPILER)
+        self.assertEqual(status, 1)
+        self.assertIn("declares none", said[0])
+
+    def test_the_cli_writes_only_what_changed(self):
+        include = os.path.join(self.scratch, "out", "include")
+        chip_dir = os.path.join(self.scratch, "out", "chip")
+        arguments = ["chip", self.path, "--arch", "armv7m", "--include-dir", include, "--chip-dir", chip_dir]
+        self.assertEqual(main(arguments), 0)
+        mmap = os.path.join(include, "kickos", "chip_mmap.h")
+        irq = os.path.join(chip_dir, "irq.h")
+        os.utime(mmap, (1, 1))
+        os.utime(irq, (1, 1))
+        self.write(self.path, SMALL.replace("lines: { rx: 5,", "lines: { rx: 4,"))
+        self.assertEqual(main(arguments), 0)
+        self.assertEqual(os.stat(mmap).st_mtime, 1)
+        self.assertNotEqual(os.stat(irq).st_mtime, 1)
+
+    def test_a_refused_file_writes_nothing(self):
+        self.write(self.path, SMALL.replace("interrupts: { count: 40,", "interrupts: { count: 4,"))
+        out = os.path.join(self.scratch, "out")
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            status = main(["chip", self.path, "--arch", "armv7m", "--include-dir", out, "--chip-dir", out])
+        self.assertEqual(status, 3)
+        self.assertIn("chip.line-range", said.getvalue())
+        self.assertFalse(os.path.exists(out))
+
+    def test_the_cli_compares(self):
+        hand = self.header("irq.h", HAND_IRQ)
+        arguments = ["chip", self.path, "--arch", "armv7m", "--compare", hand, "--cxx", " ".join(COMPILER)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(arguments), 0)
+            self.write(hand, HAND_IRQ.replace("UART_RX = 5", "UART_RX = 3"))
+            self.assertEqual(main(arguments), 1)
+            self.assertEqual(main(arguments[:-2]), 1)
+
+    def test_a_wrong_or_unknown_arch_is_refused(self):
+        report = Report()
+        described = chip.read(self.path, report)
+        for arch in ("rv32imac", "armv8m"):
+            with self.subTest(arch=arch):
+                with self.assertRaises(chip.Failure):
+                    chip.view_of(described, arch)
+
+    def test_a_compiler_that_does_not_run_fails(self):
+        with self.assertRaises(chip.Failure):
+            chip.compare(self.view(), self.header("irq.h", HAND_IRQ), ["/nonexistent/c++"])
+
+    def test_a_name_in_a_comment_is_not_declared(self):
+        hand = self.header("irq.h", HAND_IRQ + "// TIMER_TICK lives elsewhere\n")
+        self.assertIn("TIMER_TICK", chip.absent_from(self.view(), hand, "irq.h"))
+        self.assertEqual(self.compare("irq.h", HAND_IRQ + "// TIMER_TICK lives elsewhere\n"), None)
+
+    def test_nothing_generated_to_compare_is_refused(self):
+        self.write(self.path, SMALL.replace(", lines: { rx: 5, tx: { number: 6, ref: \"p.11\", symbol: UART_TX_IRQ } }",
+                                            "").replace(", lines: { tick: 7 }", ""))
+        report, said, status = chip.run(self.path, "armv7m", header=self.header("irq.h", HAND_IRQ), compiler=COMPILER)
+        self.assertEqual(status, 1)
+        self.assertIn("nothing to compare", said[0])
+
+    def test_a_board_file_names_its_chip(self):
+        board = os.path.join(PLATFORM, "xmc4800", "xmc4800-relax.yaml")
+        self.assertEqual(self.view(board).chip.name, "xmc4800")

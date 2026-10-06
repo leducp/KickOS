@@ -58,6 +58,9 @@ namespace
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
     inline volatile uint8_t& r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
 
+    constexpr uintptr_t PORTB_BASE = mmap::PORTA_BASE + mmap::PORT_STRIDE;
+    constexpr uintptr_t GPIOB_BASE = mmap::GPIOA_BASE + mmap::GPIO_STRIDE;
+
     // Bus clock = core / BUS_DIV. Used by BOTH the OUTDIV2 field below AND the PIT
     // clock rate in arch_clock_now, so retuning the divider cannot silently rescale
     // kernel time.
@@ -73,14 +76,14 @@ namespace
     // OpenSDA VCOM is PTB16/PTB17. Per the K64 signal-mux table these pins are
     // UART0_RX/UART0_TX at ALT3 (PTB16 has no UART1 option). The FRDM-K64F user
     // guide's "UART1" label is a doc typo; UART0 is what the silicon exposes.
-    constexpr uintptr_t PORTB_PCR16 = mmap::PORTB_BASE + 16u * reg::port::PCR_STRIDE; // UART0_RX (ALT3)
-    constexpr uintptr_t PORTB_PCR17 = mmap::PORTB_BASE + 17u * reg::port::PCR_STRIDE; // UART0_TX (ALT3)
+    constexpr uintptr_t PORTB_PCR16 = PORTB_BASE + 16u * reg::port::PCR_STRIDE; // UART0_RX (ALT3)
+    constexpr uintptr_t PORTB_PCR17 = PORTB_BASE + 17u * reg::port::PCR_STRIDE; // UART0_TX (ALT3)
 
     // FRDM-K64F onboard RGB, RED = PTB22, ACTIVE-LOW (pin low = lit).
-    constexpr uintptr_t PORTB_PCR22 = mmap::PORTB_BASE + 22u * reg::port::PCR_STRIDE;
-    constexpr uintptr_t GPIOB_PSOR = mmap::GPIOB_BASE + reg::gpio::PSOR_OFFSET;
-    constexpr uintptr_t GPIOB_PCOR = mmap::GPIOB_BASE + reg::gpio::PCOR_OFFSET;
-    constexpr uintptr_t GPIOB_PDDR = mmap::GPIOB_BASE + reg::gpio::PDDR_OFFSET;
+    constexpr uintptr_t PORTB_PCR22 = PORTB_BASE + 22u * reg::port::PCR_STRIDE;
+    constexpr uintptr_t GPIOB_PSOR = GPIOB_BASE + reg::gpio::PSOR_OFFSET;
+    constexpr uintptr_t GPIOB_PCOR = GPIOB_BASE + reg::gpio::PCOR_OFFSET;
+    constexpr uintptr_t GPIOB_PDDR = GPIOB_BASE + reg::gpio::PDDR_OFFSET;
     constexpr uint32_t LED_RED_BIT = 1u << 22;
 
     constexpr uintptr_t UART0_BDH = mmap::UART0_BASE + reg::uart::BDH_OFFSET;
@@ -683,36 +686,6 @@ int arch_mpu_nocache_support(void)
 {
     return ARCH_MPU_NOCACHE_ALREADY;
 }
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (K64 RM). Granting SYSMPU or an AIPS bridge control page would be
-// total escalation: SYSMPU holds the isolation regions, and one PACR SP bit opens a whole
-// 4 KB peripheral slot to EVERY unprivileged thread, which SYSMPU cannot gate (see
-// arch_fault_report_extra). The watchdog INSTANCE is excluded (neutralize-then-grant).
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        // PIT ch2 @0x40037120 is deliberately outside the block: k64drv grants CH2, and
-        // the adjacency-allowed overlap predicate lets it sit at reserved_last+1.
-        {mmap::PIT_BASE, 0x120u},     // PIT: MCR + ch0 + ch1 (RM ch.44)
-        {mmap::SIM_BASE, 0x1000u},    // SIM: SCGC clock-gate registers (RM ch.12)
-        {mmap::MCG_BASE, 0x1000u},    // MCG: PLL / clock source (RM ch.25)
-        {mmap::SYSMPU_BASE, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
-        {mmap::AIPS0_BASE, 0x1000u},  // AIPS0: MPRA + PACRA..PACRP, slots 0..127 (RM ch.20)
-        {mmap::AIPS1_BASE, 0x1000u},  // AIPS1: MPRA + PACRA..PACRP, slots 128..255 (RM ch.20)
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-#endif
 
 // K64F is a Cortex-M4 with the bit-band peripheral/SRAM alias.
 int arch_bitband_present(void)

@@ -11,6 +11,9 @@
 #include <kickos/console_tx.h>
 
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/chip_mmap.h>
+
+#include <chip_layout.h>
 
 #include "a53.h"   // arch/arm64/common: the A53 facts and the timer seams both chips share
 #include "gic.h"   // arch/arm64/common: the architected half of this machine's controller
@@ -81,7 +84,7 @@ namespace
     // one of them is silent rather than faulting. WHICH UART CARRIES THE EVK'S DEBUG HEADER IS
     // A SCHEMATIC FACT THE RM DOES NOT CARRY, so on real hardware this is the machine's answer
     // rather than the board's.
-    constexpr uintptr_t UART1_BASE = 0x30860000;
+    using kickos::imx8mp::mmap::UART1_BASE;
     constexpr uintptr_t UART_UTXD = UART1_BASE + 0x40;
     constexpr uintptr_t UART_UCR1 = UART1_BASE + 0x80;
     constexpr uintptr_t UART_UCR2 = UART1_BASE + 0x84;
@@ -164,8 +167,8 @@ namespace
     // redistributors are a contiguous series 0x8_0000 above it. The stride counts the frames
     // the implementation ships, two 64 KB frames per core under GICv3 (IHI 0069H.b section
     // 12.10); a GIC-500 adds no virtual LPI pair, which is what would make it 0x4_0000.
-    constexpr uintptr_t GICD_BASE = 0x38800000;
-    constexpr uintptr_t GICR_BASE = 0x38880000;
+    using kickos::imx8mp::mmap::GICD_BASE;
+    using kickos::imx8mp::mmap::GICR_BASE;
     constexpr uintptr_t GICR_STRIDE = 0x20000;
     // FOUR, BECAUSE THE DIE CARRIES FOUR A53s: one redistributor per core the part implements,
     // decoded whatever KICKOS_NUM_CORES this image was built for. The four frame pairs fill the
@@ -174,6 +177,9 @@ namespace
     constexpr uintptr_t GIC_BLOCK_SIZE = 0x100000;
     static_assert(GICR_BASE - GICD_BASE + GICR_COUNT * GICR_STRIDE == GIC_BLOCK_SIZE,
                   "the redistributor series must fill the RM's GIC block above GICR_BASE");
+    static_assert(KICKOS_LAYOUT_GICR_SIZE >= GICR_COUNT * GICR_STRIDE,
+                  "the reserved redistributor window must cover every frame pair "
+                  "kickos_gicv3.rdist_count declares");
 }
 
 extern "C"
@@ -206,47 +212,6 @@ void arch_init(void)
     kickos_armv8a_percore_init();
 
     // PSTATE.I stays SET: interrupts first reach the core through the initial thread's SPSR.
-}
-
-// Rule 7. Only the GIC is here: the timebase is the architected generic timer, reached
-// through system registers, and so are the translation controls, so neither is nameable by
-// a grant. THIS PART HAS CLOCK AND RESET GATES AND THEY ARE ABSENT FROM THIS LIST, which is a
-// gap rather than a judgement that granting them is safe: the CCM at 0x3038_0000 and the SRC
-// at 0x3039_0000 reach every peripheral on the die, and a domain handed either could stop the
-// core it does not own.
-// No device page is open to a user window on this board yet.
-size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
-{
-    (void)out;
-    (void)max;
-    return 0;
-}
-
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static constexpr struct arch_reserved_block blocks[] = {
-        {GICD_BASE, 0x10000u}, // distributor
-        // EVERY FRAME PAIR THE DIE CARRIES, not one per core this image drives: the frames a
-        // peer's banked interrupt state lives in are exactly what a grant of this window would
-        // hand over, and the die decodes all four whether or not a core was released into them.
-        {GICR_BASE, GICR_COUNT * GICR_STRIDE},
-    };
-    // Read back off the entry rather than restated: an entry sized on the image's core count
-    // leaves the remaining frame pairs grantable.
-    static_assert(blocks[1].base == GICR_BASE
-                      and blocks[1].size >= GICR_COUNT * GICR_STRIDE,
-                  "the reserved redistributor window must cover every frame pair "
-                  "kickos_gicv3.rdist_count declares");
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
 }
 
 int arch_console_write(char const* buf, size_t n)

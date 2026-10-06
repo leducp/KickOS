@@ -1,16 +1,21 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the XMC4700/XMC4800 Reference Manual V1.3, the tree's chip_mmap.h, irq.h,
-# chip_xmc4800.cc, usic_uart.cc and xmc4800.ld under arch/arm/chip/xmc4800/, and
-# arch_mpu_nocache_support in arch/arm/common/arch_mpu_nocache_support_default.cc.
+# Values from the XMC4700/XMC4800 Reference Manual V1.3, and arch_mpu_nocache_support in
+# arch/arm/common/arch_mpu_nocache_support_default.cc.
 
 version: 1
 chip: xmc4800
+manual: "XMC4700/XMC4800 Reference Manual, V1.3 2016-07"
 arch: armv7m
 # The unit sits on the CPU's access path, so a device window is enforced per task.
 protection: { unit: pmsav7, covers_devices: true, memory_type: true }
 data_cache: false
+c: { namespace: kickos::xmc, line_enum: "node : int" }
+# DWT CYCCNT reads can glitch on this part, and a glitched read only inflates a delta.
+cycle_counter: { glitches: true }
+
+interrupts: { count: 112, ref: "4.1 Features, p.4-4" }
 
 devices:
   # USIC0 is a MODULE of two channels. Each channel is its own register window, but the
@@ -20,7 +25,14 @@ devices:
   # The driver learns which line it was given from its lookup and programs INPR to match.
   # The module clock gate and reset sit in the SCU, which the kernel owns.
   usic0:
-    lines: { sr0: 84, sr1: 85, sr2: 86, sr3: 87, sr4: 88, sr5: 89 }
+    lines:
+      sr0: { number: 84, ref: "Table 4-3 Interrupt Node assignment, p.4-7" }
+      sr1: 85
+      sr2: 86
+      sr3: 87
+      sr4: 88
+      sr5: 89
+    ref: "Table 18-21, p.18-157"
     channels:
       ch0: { window: [0x40030000, 0x200] }
       ch1: { window: [0x40030200, 0x200] }
@@ -28,18 +40,57 @@ devices:
     # fault, so a driver writes them through kos_periph_reg_write. Which channel may write
     # which bits is kernel policy and stays in the kernel.
     privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
+  usic1:
+    ref: "Table 18-21, p.18-157"
+    channels:
+      ch0: { window: [0x48020000, 0x200] }
+      ch1: { window: [0x48020200, 0x200] }
+  usic2:
+    ref: "Table 18-21, p.18-157"
+    channels:
+      ch0: { window: [0x48024000, 0x200] }
+      ch1: { window: [0x48024200, 0x200] }
 
   # A port's window holds its pins' IOCR mux too, so a grant of it reaches the kernel's
   # console and LED pins in that port.
-  port: { window: [0x48028000, 0x100], count: 10, stride: 0x100 } # P0 to P9
-  port14: { window: [0x48028E00, 0x100] } # P14 and P15 are inputs only
-  port15: { window: [0x48028F00, 0x100] }
+  port: { window: [0x48028000, 0x100], count: 10, stride: 0x100, ref: "Table 26-2, p.26-11" } # P0 to P9
+  port14: { window: [0x48028E00, 0x100], ref: "Table 26-2, p.26-12" } # P14 and P15 are inputs only
+  port15: { window: [0x48028F00, 0x100], ref: "Table 26-2, p.26-12" }
 
-  ccu40: { window: [0x4000C000, 0x4000], owner: kernel } # the monotonic time base
-  scu: { window: [0x50004000, 0x4000], owner: kernel }   # clock gates, resets, PLL and RTC
+  # The monotonic time base.
+  ccu40: { window: [0x4000C000, 0x4000], owner: kernel, ref: "Table 7-2 Memory Map, p.7-5" }
+  # Clock gates, resets, PLL and RTC.
+  scu:
+    window: [0x50004000, 0x4000]
+    owner: kernel
+    ref: "Table 7-2 Memory Map, p.7-6"
+    blocks:
+      trap: { offset: 0x160, ref: "Table 11-11 Registers Overview, p.11-67" }
+      rcu: { offset: 0x400, ref: "Table 11-9, p.11-65" }
+      clk: { offset: 0x600, ref: "Table 11-9, p.11-65" }
+      osc: { offset: 0x700, ref: "Table 11-11 Registers Overview, p.11-71" }
+      pll: { offset: 0x710, ref: "Table 11-11 Registers Overview, p.11-71" }
+  # The flash controller: wait states and the prefetch the kernel sets at boot.
+  flash0:
+    window: [0x58001000, 0x1400]
+    owner: kernel
+    symbol: FLASH0_CTRL_BASE
+    ref: "Table 8-10, p.8-37"
 
 memory:
-  dsram1: { base: 0x20000000, size: 0x20000, arena: true }
+  # The cached alias the image is linked at and VTOR points to.
+  flash:
+    base: 0x08000000
+    size: 0x200000
+    symbol: FLASH_CACHED_BASE
+    link: { region: FLASH, access: rx }
+    ref: "Table 7-2 Memory Map, p.7-4"
+  dsram1:
+    base: 0x20000000
+    size: 0x20000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "Table 7-2 Memory Map, p.7-4"
 
 # Pins are PORT.PIN. A function is what the pin's IOCR selects; `in:` names an input path.
 pins:

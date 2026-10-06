@@ -31,8 +31,6 @@
 
 #include "syscall_internal.h"
 
-#include <span>
-
 namespace kickos
 {
     // syscall_dispatch answers 8 bytes on every target and the userspace stub narrows that
@@ -938,30 +936,25 @@ uint64_t syscall_body(uintptr_t nr,
 #endif
                 case KOS_GRANT_OP_RESERVED_COUNT:
                 {
-                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
-                    return arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
+                    return arch_reserved_blocks().count;
                 }
                 case KOS_GRANT_OP_RESERVED_BASE:
                 {
-                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
-                    std::span const blocks{blk,
-                                           arch_reserved_blocks(blk, KICKOS_MAX_RESERVED)};
-                    if (base >= blocks.size())
+                    struct arch_reserved_span const blocks = arch_reserved_blocks();
+                    if (base >= blocks.count)
                     {
                         return 0;
                     }
-                    return blocks[base].base;
+                    return blocks.rows[base].base;
                 }
                 case KOS_GRANT_OP_RESERVED_SIZE:
                 {
-                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
-                    std::span const blocks{blk,
-                                           arch_reserved_blocks(blk, KICKOS_MAX_RESERVED)};
-                    if (base >= blocks.size())
+                    struct arch_reserved_span const blocks = arch_reserved_blocks();
+                    if (base >= blocks.count)
                     {
                         return 0;
                     }
-                    return blocks[base].size;
+                    return blocks.rows[base].size;
                 }
                 default:
                 {
