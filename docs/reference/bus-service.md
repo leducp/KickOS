@@ -183,8 +183,7 @@ Slots are indexed by the CALLER's own `device` byte, so the slot table trusts th
 That holds because **one client reaches a bus service**: the client's cap is `KOS_CAP_SIGNAL`
 only, and spawn-time delegation refuses a source cap without `CAP_TRANSFER`
 (`ipc-call-reply.md`), so a client cannot pass its copy on -- the reachable set is exactly
-what the bring-up delegated, and the bring-up hands the endpoint out ONCE
-(`xmc_spi0_take_endpoint` / `k64dspi_take_endpoint` are one-shot). Several devices behind one
+what the bring-up delegated, and the bring-up hands the endpoint out ONCE. Several devices behind one
 client is supported; several MUTUALLY-UNTRUSTING clients on one bus is NOT -- that needs
 badged endpoints (`badge` is `KOS_BADGE_NONE` today; see `roadmap.md`, service publication).
 
@@ -255,14 +254,13 @@ reference services; a new bus driver writes an engine against `<kickos/driver/sp
 
 ## The bring-up (`<kickos/sys/driver_service.h>`)
 
-A bus service's whole bring-up is `kickos::driver::bring_up(desc, cfg, &g_ep)` over a
+A bus service's whole bring-up is `kickos::driver::bring_up(desc, instance)` over a
 `constexpr Descriptor` authored in the driver's own TU, which is also the only TU that sees the
-chip's register directory. It creates the endpoint, claims its IRQ lines (the instance's under
-the init, which its composition binds, and the descriptor's numbers on a service list), creates
+chip's register directory. It creates the endpoint, claims its IRQ lines (the instance's, which its composition binds), creates
 ONE notification and attaches every line to it (line `i` on BIT `i`), mints a badged copy per
 signaller, and spawns each thread with its own MMIO window, memory grant and cap list, `caps[i]`
-landing at child cap index `KOS_SPAWN_DELEGATED_CAP0 + i`; every failure unwinds the steps
-already taken. A thread that routes its device's events onto one of the device's lines, as
+landing at child cap index `KOS_SPAWN_DELEGATED_CAP0 + i`; a failing step traps
+the driver thread. A thread that routes its device's events onto one of the device's lines, as
 `xmcssc` programs a USIC channel's INPR, takes `KOS_DRV_ARG_LINE0_INDEX`: line 0's index among
 its device's lines, read back with `line_index_of`, which the engine is handed as
 `kos_spi_bus_config::irq_index`. A driver's badge space therefore starts at bit `line_count`, and leg L13 refuses
@@ -279,7 +277,7 @@ the driver's own threads hold no `pinmux` authority.
 There is no separate client API. A client calls the SPI class, and WHICH backend answers is the
 image posture's decision rather than the client's: `system/CMakeLists.txt` selects it
 (`kickos_select_class_backend`), an app names only the class it calls
-(`kickos_link_class_backends`), and the selected archive is linked ahead of the `KickOS::kickos`
+(`kickos_link_class_backends`), and the selected archive is linked ahead of the `KickOS::kernel`
 rescan group, because every backend of one class defines the same four symbols and the ORDER
 would otherwise decide the engine. The default selection is `KickOS::kickos_spi_proxy`, whose
 four bodies marshal onto this protocol; `-DKICKOS_SPI_LOCAL_ENGINE=ON` selects the chip's local
@@ -381,5 +379,5 @@ neutrality matrix) for how the same contract lands on DSPI / USIC / PL022 / C6.
 
 - The call/reply transport + its error codes: `ipc-call-reply.md`.
 - The per-instance bring-up config (base/window/prio/cs as DATA, distinct from the
-  per-device `kos_bus_cfg`): `architecture.md` (service list) + `system/include/kickos/sys/service.h`.
+  per-device `kos_bus_cfg`): `architecture.md` (the init's compositions) and `kos_driver_instance` in `user/include/kickos/sys/driver_service.h`.
 - The GPIO-CS direct-MMIO reasoning: `../book/the-fast-path-is-the-capability-gpio-direct-mmio.md`.

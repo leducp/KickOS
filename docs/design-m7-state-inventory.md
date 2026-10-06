@@ -106,7 +106,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 
 `_SEGGER_RTT` and its three buffers (`lib/rtt.cc`) follow ruling 2. `kickos_init_args`
 (`user/src/init_args.cc`) is per-instance: each simulated node wants its own argv. The driver-side
-statics under `system/driver/` and `system/init/sim/` are userspace state inside a simulated node
+statics under `system/driver/` and the sim's init directory are userspace state inside a simulated node
 rather than kernel state; they are as instance-scoped as everything else, and they are out of
 scope for a `Kernel` inventory.
 

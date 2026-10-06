@@ -513,7 +513,7 @@ cannot express either of the two parts this work names is not the default.
   work it does not do, in `.bss` that the part's other node pays for.
 - **USERSPACE NEEDS NO NEW MECHANISM AT ALL, and that is the strongest evidence for this shape.**
   A second kernel needs a second root, and under its own image that root is the ordinary
-  `KICKOS_INIT_PROVIDER`, `KICKOS_SERVICE_LIST` and application entry every image already selects.
+  the init-provider cache variable, the service-list selection knob and application entry every image already selects.
   Under one image the same requirement is a per-instance selection of all three, invented only to
   keep the binary count at one.
 - **What it costs is a PLACEMENT CONTRACT.** The shared window was one image's `.bss` object; two

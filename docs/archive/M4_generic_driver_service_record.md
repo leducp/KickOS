@@ -311,7 +311,7 @@ constexpr bool valid(Descriptor const& d);
 | **L8** | POSTURELESS: `ready_offset != NONE` implies `block_size != 0`, `ready_offset + 4 <= block_size`, **`ready_offset % 4 == 0`**, and `1 <= barrier_after <= thread_count`. HANDOVER-ONLY: `barrier_after < thread_count` and the `{EP, WAIT}` holder's index `>= barrier_after` | **the barrier rule.** Under HANDOVER the poll must sit STRICTLY between the spawns, because once the ep holder exists `recv_holders` never reaches 0, nothing reclaims the console, and the timeout diagnostic goes to an endpoint nobody drains (`uart_service.h:66-69`). **CORRECTED:** the last two arms were applied to RETAIN as well and refused two legitimate shapes -- section 3.3.1. The alignment arm is new: an unaligned `volatile uint32_t` load is tolerated on ARMv7-M and FAULTS on RX and Xtensa |
 | **L9** | `line_count > 0` and some thread has `window_grant` implies `expected_base != 0` | **the base-pin rule.** A driver that claims a vector BY NUMBER is hard-wired to one peripheral instance, so a cfg naming another window would grant one block and interrupt on another. Exempts the sim (no window) and `k64dspi` (no line, and `spi_dspi.cc` is genuinely base-parameterised across DSPI0/1/2) |
 | L10 | `tag != nullptr`, every `threads[i].entry != nullptr` | a half-authored descriptor |
-| **L11** | `ep_posture == HANDOVER` implies `svc_kind == KOS_SVC_CONSOLE` | NEW. `bring_up` calls `kos_console_publish` under HANDOVER, so any other kind under that posture publishes a BUS endpoint as the board's console and routes every stdout writer at it. Holds for all eight HANDOVER descriptors |
+| **L11** | `ep_posture == HANDOVER` implies `svc_kind` names the console service kind | NEW. `bring_up` calls `kos_console_publish` under HANDOVER, so any other kind under that posture publishes a BUS endpoint as the board's console and routes every stdout writer at it. Holds for all eight HANDOVER descriptors |
 | **L12** | every claimed line has EXACTLY ONE `WAIT` holder | NEW, **the line-role rule.** A claimed line comes back MASKED and only its waiter's first `irq_wait` arms it, so a line nobody waits on stays masked forever and every event on it is lost silently. Section 3.3.3 is why this catches a swapped relay without any layer knowing which line is transmit |
 
 L5, L8, L9 and L12 are the design's real dividend. Each is a rule the tree states in prose, in
@@ -1153,7 +1153,7 @@ and the class backends (`uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`, `uart_usic.c
 | `mk64f/k64dspi/k64dspi.cc` | 106 | ~60 | `take_endpoint`, the bus thread body, descriptor |
 | `xmc4800/xmcssc/xmcssc.cc` | 138 | ~65 | as above |
 | `rp2xxx/rpusb/rpusb.cc` | 521 | ~420 | the ~100-line bring-up collapses; the USB device layer stays |
-| `system/init/sim/service_list_uart.cc` | 271 | ~120 | `LoopUart` stays; the bring-up, the cfg and the list |
+| the sim's UART service list | 271 | ~120 | `LoopUart` stays; the bring-up, the cfg and the list |
 
 **Unchanged.** Every class backend, `driver/uart.h`, `driver/spi.h`,
 `tests/static/check_class_backend.sh`, `cmake/kickos.cmake`, and every driver `CMakeLists.txt` except

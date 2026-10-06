@@ -482,7 +482,7 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | `descriptions` | the board's chip and board files, by their path beside the manifest, on a board that has them; admission and emission against the manifest read the board and chip there and nowhere else | `platform/<chip>/<board>.yaml` and its chip file, copied beside the manifest |
 | `default` | `composition`, the board's default composition, by its path beside the manifest, on a board that has one, which needs its descriptions | `boards/<board>/composition.yaml`, copied beside the manifest |
 | `init` | `status_record_size`, one watched task's record in a watcher's status block, which sizes the watcher's `/init/status`; `private_record_size`, one record in its private block, which holds one per task and one per shared region; `free_regions`, the regions root's set holds past its static regions and its stack, which the init self-grants into on a region board | `cmake/init_geometry.cmake` beside `cmake/driver_geometry.cmake`; `KICKOS_MPU_MAX_REGIONS` in `cmake/mpu_geometry.cmake` less the static regions root's linker script bounds and its stack |
-| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block and its memory type (`block_cache`, `cached` or `uncached`), endpoint posture, readiness barrier, whether it takes the console, its start, and the libraries its clients link | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
+| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block and its memory type (`block_cache`, `cached` or `uncached`), endpoint posture, readiness barrier, whether it takes the console and whether that console is a USB device controller (`usb_device`), its start, and the libraries its clients link | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
 
 The catalogue lists the drivers this build declares, and a composition naming a `driver` the
 catalogue does not list is refused.
@@ -516,10 +516,10 @@ chip file at configure, and with `--compare` asserts a hand-written header again
 Classified against the rule that Kconfig configures the kernel and the composition configures
 userspace:
 
-- **Moves to the composition or is deleted, being userspace.** `KICKOS_SERVICE_LIST` and
-  `KICKOS_BOARD_PINMAP` are deleted: services are tasks and pins are the board file's.
+- **Moves to the composition or is deleted, being userspace.** the service-list selection knob and
+  the pin-map selection knob are deleted: services are tasks and pins are the board file's.
   `KICKOS_USER_HEAP_SIZE`, the libc heap the image carves, becomes the composition's required
-  `heap`; the knob stays only for the images that link no system target, until M10.5 deletes it. The `KICKOS_INIT_PROVIDER` CMake cache entry is deleted: there is one init.
+  `heap`; the knob stays only for the images that link no system target, until M10.5 deletes it. The init-provider CMake cache entry is deleted: there is one init.
 - **Stays, being the kernel.** Cores and the multicore model; the whole AMP partition, ports
   included; the memory model and paging mode; every pool, budget, spawn-grant bound and
   capability supply; the kernel's own stacks, idle's and `KICKOS_MIN_STACK_SIZE`; the kernel

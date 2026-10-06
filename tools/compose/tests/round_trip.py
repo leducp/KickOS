@@ -143,8 +143,8 @@ def stub_source(table):
     out.extend(["static volatile int entry_sink;", ""])
     for n, (symbol, kind) in enumerate(table.externs):
         if kind == "driver":
-            out.append("int %s(struct kos_service_cfg const* cfg)" % symbol)
-            out.extend(["{", "    (void)cfg;", "    return %d;" % (n + 1), "}", ""])
+            out.append("int %s(struct kos_driver_instance* instance)" % symbol)
+            out.extend(["{", "    (void)instance;", "    return %d;" % (n + 1), "}", ""])
         else:
             out.append("void %s(kos_self_t const* self)" % symbol)
             out.extend(["{", "    (void)self;", "    entry_sink = %d;" % (n + 1), "}", ""])

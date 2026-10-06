@@ -114,6 +114,7 @@ TESTDRV = """  testdrv:
     posture: retain
     barrier: none
     console: false
+    usb_device: false
     start: testdrv_start
     receiver: worker
     client: []

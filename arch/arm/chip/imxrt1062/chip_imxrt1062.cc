@@ -551,7 +551,7 @@ void arch_init(void)
     clock_init();
     gpt_clock_init(); // monotonic clock up before the scheduler reads it
     uart6_init();
-    if (&kickos_usb_device_console != nullptr)
+    if (kickos_usb_device_console != 0)
     {
         usb_clock_init(); // after uart6_init: a refusal here must still be able to print
     }

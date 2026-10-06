@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.24)
 include("${KICKOS_SOURCE_DIR}/cmake/heap_symbol.cmake")
 
-foreach(_case "=" "4096=--defsym=KICKOS_USER_HEAP_SIZE=4096"
+foreach(_case "4096=--defsym=KICKOS_USER_HEAP_SIZE=4096"
               "0x10000=--defsym=KICKOS_USER_HEAP_SIZE=0x10000" "0=--defsym=KICKOS_USER_HEAP_SIZE=0")
   string(FIND "${_case}" "=" _at)
   string(SUBSTRING "${_case}" 0 ${_at} _value)

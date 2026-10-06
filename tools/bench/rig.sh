@@ -6,10 +6,10 @@
 # THIS bench rather than the project. Sourced by every script in tools/bench/.
 #
 # The boundary this file exists to hold: the flash-and-capture ORDER per board class,
-# every refusal, the TAP validation and the service-list coverage derivation are
-# project knowledge and live in the tracked scripts. Which physical cable is on which
-# board, where the logs go, what the bench host is called and where a python carrying
-# pyserial lives are not, and live in a gitignored file this reads.
+# every refusal and the TAP validation are project knowledge and live in the tracked
+# scripts. Which physical cable is on which board, where the logs go, what the bench host
+# is called and where a python carrying pyserial lives are not, and live in a gitignored
+# file this reads.
 #
 # A TRACKED SCRIPT NEVER GUESSES A RIG VALUE. Where a value is required and absent it
 # refuses, naming the key. In particular it does NOT fall back to a vendor-pattern

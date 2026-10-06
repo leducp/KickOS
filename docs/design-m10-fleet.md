@@ -266,11 +266,11 @@ userspace, as the composition design leaves for when each board moves:
 
 | board | its own option | side | verdict |
 | --- | --- | --- | --- |
-| `xmc4800-relax`, `frdmk64f` | `KICKOS_SERVICE_LIST`, defaulted on the enforcing posture | userspace | deleted with the service lists (section 6): a service is a task of a composition |
-| `xmc4800-relax`, `frdmk64f`, `picopi`, `f302nucleo` | `KICKOS_BOARD_PINMAP` | userspace | deleted with the pin maps (section 6): a task muxes its own pins and the board file states the wiring |
+| `xmc4800-relax`, `frdmk64f` | the service-list selection knob, defaulted on the enforcing posture | userspace | deleted with the service lists (section 6): a service is a task of a composition |
+| `xmc4800-relax`, `frdmk64f`, `picopi`, `f302nucleo` | the pin-map selection knob | userspace | deleted with the pin maps (section 6): a task muxes its own pins and the board file states the wiring |
 | `imx8mp-evk`, `qemu-arm64`, `qemu-riscv64` | `KICKOS_USER_HEAP_SIZE`, 65536 | userspace | stays until the heap knob is deleted (section 6); the figure is already their default composition's `heap` |
 | `microbit` | its full-newlib choice, which C library the package links | kernel | generalised in M10.5.5: the board descriptor names the nano profile (`KICKOS_BOARD_NEWLIB`, also on `f302nucleo` and `bluepill-c8`) and the fleet's `KICKOS_FULL_NEWLIB` chooses the full one; it is what the kernel package is built with, a fact of the export every image links |
-| `picopi`, `pizero2350`, `teensy41` | none; chip init brings the USB console's clock tree up in an image linking a USB device console driver | kernel | nothing to configure: the driver's `kickos_usb_device_console` (`<kickos/usb_console.h>`) is what the chip reads |
+| `picopi`, `pizero2350`, `teensy41` | none; chip init brings the USB console's clock tree up in an image whose stdout is a USB device console driver | kernel | nothing to configure: the driver's `kickos_usb_device_console` (`<kickos/usb_console.h>`) is what the chip reads |
 | `blackpill`, `bluepill-c8`, `due`, `esp32-wroom`, `esp32c6-wroom`, `f411disco`, `qemu`, `qemu-m3`, `qemu-m7`, `qemu-m33`, `qemu-riscv`, `qemu-x86_64`, `rx72m`, `sim` | none | | nothing to classify |
 
 ### 2.2 The board's pins in the kernel
@@ -442,7 +442,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 
 The selftest is `main` of its own composition on every board, `user/apps/common/selftest/system.yaml`,
 holding `memory`, `system`, `pinmux`, `irq`, `console` and `tasks`, the authority it gave itself
-through `KICKOS_APP_AUTHORITY`, with `ends: main` and a `heap` of 0: no arm allocates from the libc
+through the app authority macro, with `ends: main` and a `heap` of 0: no arm allocates from the libc
 heap, and the 64 KiB parts carve none. Its entry, `selftest_main`, keeps its own row of the table,
 whose priority, ceiling, authority and delegations the arms read. A second composition per
 console driver a board has, `consoles/<board>/<driver>.yaml` with `stdout` naming that driver,
@@ -566,22 +566,22 @@ x86_64's move to `add_executable`.
 
 | mechanism | replaced by | gates, tests and docs that change |
 | --- | --- | --- |
-| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, `kos_service_list`, `kos_service_bringup`, `kickos_board_services`, `kickos_service_list_run`, `KICKOS_SERVICE_LIST` and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `check_kconfig_gen.sh`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
+| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, `kos_service_list`, `kos_service_bringup`, `kickos_board_services`, `kickos_service_list_run`, the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `check_kconfig_gen.sh`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
 | `kos_service_cfg`, `kos_svc_kind`, the descriptor's line numbers, the line argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance and the posture bit | `START` taking the instance (section 5) | `tests/unit/drvbringup/bringup_unwind.cc`'s number-mismatch and service-list cases; the size assert on the cfg |
 | `kickos_add_board_provider` and `cmake/cap_table.cmake`'s summing, with `kickos_declare_app_capabilities` and `kickos_declare_app_endpoints` | root, which is the init, gets a table `KICKOS_CAP_TABLE_SUPPLY` wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
-| the pin maps, `KICKOS_BOARD_PINMAP`, `pinmap.h`, `pinmux_run.cc` | a task muxes its own pins under `pinmux`; the board file states the wiring | `check_provider_alias.sh` and its fixture; `boards.md` |
-| the default init: `kickos_default_init`, `KICKOS_INIT_PROVIDER`, `KICKOS_APP_AUTHORITY`, `app_authority_default.cc` | the composed init, authority per task | `tests/unit/drvbringup/init_flush.cc` is deleted, the walk's host tests holding the stdout drain at the ending; `check_seam_defaults.sh` loses those archives |
+| the pin maps, the pin-map selection knob, `pinmap.h`, `pinmux_run.cc` | a task muxes its own pins under `pinmux`; the board file states the wiring | `check_provider_alias.sh` and its fixture; `boards.md` |
+| the default init: `kickos_default_init`, the init-provider cache variable, the app authority macro, its default definition's source file | the composed init, authority per task | the `init_flush` host test is deleted, the walk's host tests holding the stdout drain at the ending; `check_seam_defaults.sh` loses those archives |
 | `kickos_root_lower` | `kickos_root_entry` runs the constructors and calls the init, which lowers itself | the link group and `kernel/init/kmain.cc`'s reference |
 | the old leaves `kickos` and `kickos_cxx`, `KickOS::kickos`, `KickOS::kickos_cxx`, and the leaf-mixing refusal | `KickOS::kernel` alone | `check_oot_export_mcu.sh`'s probes; `tests/lib/package_names` |
 | `KICKOS_USER_HEAP_SIZE` the knob: Kconfig, three board overrides, the defconfigs, the leaves' `--defsym`, x86's knob path | every composition's `heap` (maintainer, 2026-10-03); the link symbol of that name stays, defined by the system target alone | `cmake/kernel_leaf.ld`'s fallback; `check_heap_symbol.cmake`; `porting.md`, `boards.md` |
 | `kos_wait_last` and its system call, root-only | `ends`, and the task end that stops a task's members | `sched_exit`'s arm; `abi.h`'s row |
-| `tools/sweep_service_lists.sh` | the fleet sweep over every preset | `boards.md` |
+| the service-list sweep tool | the fleet sweep over every preset | `boards.md` |
 | the bench's `SERVICE_LIST`, and `bench-fleet.sh`'s list discovery | the bench names an image, and the fleet runs each selftest composition of the board as its own image | `tools/bench/bench.sh`, `tools/bench/bench-fleet.sh`; the USB console's clock and capture route read from the image (2.1) |
 | the hand-written chip headers, `mpu.cmake`, `aspace.cmake`, the reserved arrays and their fixed bound | section 1 | the configure-time pair checks; `porting.md`'s chip-header steps |
 | the `KickOS::system_default` stub | every board's default (section 2) | the `system_link_stub` gates |
 
 Order: the service lists, the service ABI and the drivers' numbers, the bench's lists and the
-sweep tool go together, then the default init with the pin maps and `KICKOS_APP_AUTHORITY`, then
+sweep tool go together, then the default init with the pin maps and the app authority macro, then
 `kickos_root_lower`, then the cap-table summing, then the heap knob, then the root-only wait,
 then the old leaves last, since every earlier deletion leaves them nothing to carry. The chip
 headers and the stub go as section 1 and section 2 land.

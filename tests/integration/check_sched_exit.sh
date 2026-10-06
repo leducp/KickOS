@@ -9,8 +9,6 @@
 # exited AND that main ran past it: requiring only the survival marker passes with the
 # spawn deleted, main surviving an exit that never happened.
 #
-# The root-only last-thread wait answers main -KOS_EPERM, main not being root.
-#
 # 2. Main's own exit must end the SYSTEM while a child is still alive. The init forwards the
 # status of the task the composition `ends` on, so the exit code IS the witness: 7 means
 # main's exit reached the init's shutdown carrying its argument, 124 means the system ran on
@@ -34,12 +32,6 @@ if ! has "worker: exiting"; then
 fi
 if ! has "main: survived worker exit"; then
     fail "main did not survive the worker's exit"
-fi
-if has "main: wait_last NOT refused"; then
-    fail "main's last-thread wait was accepted instead of -KOS_EPERM"
-fi
-if ! has "main: wait_last refused"; then
-    fail "main never reported its last-thread wait"
 fi
 if has "parked spawn refused"; then
     fail "the never-exiting child was refused; main's exit arm witnessed nothing"

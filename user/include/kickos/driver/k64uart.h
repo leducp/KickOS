@@ -16,12 +16,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kickos/sys/service.h> // kos_service_cfg (the bring-up config)
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
+    struct kos_driver_instance;
 
     // Unprivileged driver entry. arg is the UART0 base address, not a pointer
     // to an argument structure. Receive capability is delegated at index 1.
@@ -29,13 +29,10 @@ extern "C"
     // k64uart_console_start or directly by an application.
     void k64uart_console_driver(void* arg);
 
-    // Call once before starting console clients. Requires AUTH_CONSOLE and
-    // AUTH_MEMORY. Creates and publishes an endpoint, spawns the UART0 driver,
-    // then closes root's WAIT cap so driver death wakes clients with EPIPE.
-    // cfg supplies the window and priority; priority must be at least every
-    // client's because plain rendezvous has no priority inheritance.
-    // Returns 0 or a negative error. Do not start console clients on failure.
-    int k64uart_console_start(struct kos_service_cfg const* cfg);
+    // The driver's START: publish the endpoint, spawn the driver, narrow the init's capability.
+    // The task's priority must be at least every client's because plain rendezvous has no
+    // priority inheritance. Returns 0 or a negative error.
+    int k64uart_console_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

@@ -107,6 +107,8 @@ class Driver:
         self.block_cache = "cached"
         self.posture = None
         self.console = False
+        # A USB device controller serving the console, whose clock tree the chip brings up.
+        self.usb_device = False
         self.start = None
         # The libraries a task using the driver links, by target name.
         self.client = []
@@ -508,6 +510,8 @@ def check_driver(f, node, what):
         driver.posture = posture
     if "console" in values:
         driver.console = f.boolean(values["console"], "%s console" % what) is True
+    if "usb_device" in values:
+        driver.usb_device = f.boolean(values["usb_device"], "%s usb_device" % what) is True
     if "start" in values:
         driver.start = f.name(values["start"], "%s start" % what, C_IDENTIFIER)
     if "client" in values:

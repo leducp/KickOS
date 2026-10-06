@@ -30,7 +30,7 @@ namespace drivers
         {
         }
 
-        int console_block_init(void* blk, struct kos_service_cfg const*)
+        int console_block_init(void* blk, struct kos_driver_instance const*)
         {
             g_block = static_cast<unsigned char*>(blk);
             return 0;
@@ -45,11 +45,10 @@ namespace drivers
             .block_flags = 0,
             .ready_offset = READY_OFFSET,
             .ep_posture = drv::KOS_DRV_EP_HANDOVER,
-            .svc_kind = KOS_SVC_CONSOLE,
             .line_count = 1,
             .thread_count = 2,
             .barrier_after = 1,
-            .lines = {{84, KOS_IRQ_EDGE}},
+            .lines = {{KOS_IRQ_EDGE}},
             .threads = {{.entry = uartirq,
                          .name = "uartirq",
                          .prio_delta = 1,
@@ -78,11 +77,10 @@ namespace drivers
             .block_flags = 0,
             .ready_offset = drv::KOS_DRV_READY_NONE,
             .ep_posture = drv::KOS_DRV_EP_RETAIN,
-            .svc_kind = KOS_SVC_SPI,
             .line_count = 1,
             .thread_count = 1,
             .barrier_after = 1,
-            .lines = {{85, KOS_IRQ_EDGE}},
+            .lines = {{KOS_IRQ_EDGE}},
             .threads = {{.entry = bus,
                          .name = "bus",
                          .prio_delta = 0,
@@ -111,7 +109,6 @@ namespace drivers
             .block_flags = 0,
             .ready_offset = drv::KOS_DRV_READY_NONE,
             .ep_posture = drv::KOS_DRV_EP_RETAIN,
-            .svc_kind = KOS_SVC_SPI,
             .line_count = 0,
             .thread_count = 2,
             .barrier_after = 2,
@@ -148,25 +145,24 @@ namespace drivers
 
 extern "C"
 {
-    int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
+    int xmcuartirq_console_start(struct kos_driver_instance* instance)
     {
         if (drivers::behaviour.uncached_console)
         {
             drv::Descriptor uncached = drivers::k_console;
             uncached.block_flags = KOS_MEM_NOCACHE;
-            return drv::bring_up(uncached, cfg, nullptr);
+            return drv::bring_up(uncached, instance);
         }
-        return drv::bring_up(drivers::k_console, cfg, nullptr);
+        return drv::bring_up(drivers::k_console, instance);
     }
 
-    int testdrv_start(struct kos_service_cfg const* cfg)
+    int testdrv_start(struct kos_driver_instance* instance)
     {
-        return drv::bring_up(drivers::k_test, cfg, nullptr);
+        return drv::bring_up(drivers::k_test, instance);
     }
 
-    int xmc_spi0_start(struct kos_service_cfg const* cfg)
+    int xmc_spi0_start(struct kos_driver_instance* instance)
     {
-        kos_cap_t ep = KOS_CAP_NONE;
-        return drv::bring_up(drivers::k_spi, cfg, &ep);
+        return drv::bring_up(drivers::k_spi, instance);
     }
 }

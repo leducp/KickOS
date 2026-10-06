@@ -80,7 +80,7 @@ endfunction()
 #   arch/sim                  -> hosted (bridges to host libc), still no exc/rtti.
 #
 # Warning flags never leave this project: they are applied PRIVATE to targets we own, and
-# the exported KickOS::kickos and KickOS::kickos_cxx usage targets carry none of them.
+# the exported KickOS::kernel usage target carries none of them.
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
@@ -211,9 +211,8 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
-#   Does nothing on the sim. Elsewhere it refuses a link reaching KickOS::kernel and an old
-#   leaf; on an MCU it then writes the .bin and .hex a board flashes and prints the size, and on
-#   x86_64 it marks the image's map for cleaning.
+#   Does nothing on the sim. On an MCU it writes the .bin and .hex a board flashes and prints the
+#   size, and on x86_64 it marks the image's map for cleaning.
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
 #   after target_link_libraries(app PRIVATE KickOS::kernel KickOS::system_default).
@@ -223,7 +222,6 @@ function(kickos_emit_image target)
   if(KICKOS_ARCH STREQUAL "sim")
     return()
   endif()
-  kickos_image_leaves(${target} _leaves)
   if(KICKOS_ARCH STREQUAL "x86_64")
     set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
       "$<TARGET_FILE:${target}>.map")
@@ -283,16 +281,16 @@ endfunction()
 # kickos_select_class_backend(<class> <target>)
 #   Which backend answers a DRIVER CLASS (<kickos/driver/*.h>) in this image. Every backend of
 #   one class defines the same public kos_<class>_* symbols, so an image has exactly one, and
-#   which one is a property of the IMAGE POSTURE the board and its service list chose, never of
-#   an application: a client body is identical over a proxy and over a local engine, which is
-#   the substitution property the class exists for.
+#   which one is a property of the IMAGE POSTURE the board chose, never of an application: a
+#   client body is identical over a proxy and over a local engine, which is the substitution
+#   property the class exists for.
 #
 #   The selection is a GLOBAL property rather than a variable because the deciding site
 #   (system/CMakeLists.txt in tree, KickOSConfig.cmake in a package) is in a different
 #   directory scope from the apps that consume it. <target> is the backend's KickOS:: name,
 #   which KickOSConfig.cmake replays verbatim.
 #
-#   The BACKEND MUST PRECEDE KickOS::kickos ON THE LINK LINE: the toolchains link the component
+#   The BACKEND MUST PRECEDE KickOS::kernel ON THE LINK LINE: the toolchains link the component
 #   archives with a --start-group rescan, so a group member that ever referenced a class symbol
 #   would otherwise pull a second definer out of the group and the ORDER, not the selection,
 #   would decide the engine. That ordering is kickos_link_class_backends's to hold, which is why
@@ -353,7 +351,7 @@ endfunction()
 # kickos_link_class_backends(<target> <class>...)
 #   Links the backend kickos_select_class_backend chose for each DRIVER CLASS the app's own
 #   sources call (spi, i2c, ...), the one thing about a class an application knows. Called
-#   before the app's KickOS::kickos line, which puts each backend archive ahead of the rescan
+#   before the app's KickOS::kernel line, which puts each backend archive ahead of the rescan
 #   group. An app that names no class links no backend, which is what keeps a mock-carrying
 #   image (the selftest) free of a second definer.
 # ---------------------------------------------------------------------------
@@ -375,7 +373,7 @@ endfunction()
 #                   [THREADS <role>:<priority offset>:<stack>:<capabilities>:<badged>...] [RECEIVER <role>]
 #                   [WINDOWS <role>...] [LINES <role>...] [NOTIFY]
 #                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [POSTURE handover|retain]
-#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE]
+#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE [USB_DEVICE]]
 #                   [CLIENT <target>...])
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
 #   that links kickos_user, sees system/include, optionally sees a chip register dir (REGDIR,
@@ -387,12 +385,14 @@ endfunction()
 #   THREADS makes it a packaged driver, a composition's `driver:`, and requires BLOCK, POSTURE,
 #   BARRIER, START, the C function the init calls to bring it up, and RECEIVER, the thread that
 #   waits on its endpoint. A role is its thread's name, but the role `service`, whose thread takes
-#   its service-list entry's name; a stack is `default` only, bring_up spawning every thread on
+#   its task's name; a stack is `default` only, bring_up spawning every thread on
 #   the kernel's default stack; a thread's capabilities are what its spawn delegates, and badged the
 #   copies of the driver's notification among them, which the bring-up mints for the spawn. NOTIFY
 #   says it uses the notification the shared bring-up creates. BLOCK_CACHE uncached types the ring
 #   block KOS_MEM_NOCACHE, the init self-granting it so and its descriptor's block_flags stating
-#   it; cached is the default. CLIENT names the libraries a task
+#   it; cached is the default. USB_DEVICE marks a console served over the board's USB device
+#   controller, whose clock tree chip init brings up in an image whose stdout it is. CLIENT
+#   names the libraries a task
 #   using the driver links, which kickos_compose links in a system naming it. Its catalogue entry joins the
 #   KICKOS_DRIVER_CATALOGUE global property for the manifest, and its descriptor reads the
 #   generated <kickos/driver/declared/<name>.h>, whose k_declared it static_asserts declared_as.
@@ -784,127 +784,6 @@ function(kickos_add_unit_test)
     TEST_PREFIX "${UT_TEST_PREFIX}"
     PROPERTIES TIMEOUT 30 LABELS host FIXTURES_REQUIRED kickos_build
     DISCOVERY_TIMEOUT 60)
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>]
-#                           [RETAINED_ENDPOINTS <e>] [INBOUND_REPLY_CAPS <r>])
-#   A board-descriptor provider library (pinmap or service-list): a freestanding STATIC lib
-#   defining one board-descriptor symbol, seeing only system/include, exported to
-#   KickOSTargets. LINK carries a service list's board driver targets, which back-reference
-#   kickos_user and so join the rescan link group. The target is kickos_<name>.
-#
-#   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the life
-#   of the image (cmake/cap_table.cmake). It is RETENTION: a list whose bring-up transiently
-#   holds more than its retention plus the app's peak must declare the transient.
-#
-#   RETAINED_ENDPOINTS is how many ENDPOINT POOL SLOTS the list leaves root holding for the
-#   life of the image (cmake/cap_table.cmake). A DIFFERENT QUANTITY FROM RETAINED_CAPS, which
-#   counts capability table indices: a console handover retains no index of its own, the
-#   published route living at the reserved KOS_CAP_STDOUT, yet root's table still names that
-#   endpoint and so holds its pool slot until the image dies. A console handover is therefore
-#   1 here and 0 there, and a KOS_DRV_EP_RETAIN driver endpoint is 1 in both.
-#
-#   INBOUND_REPLY_CAPS is how many CAP_REPLY capabilities one of the list's SERVICES holds at
-#   once as the server side of kos_call. The widest declaration in the tree wins, so it is
-#   not added to the app's number.
-# Every member of the rescan archive group has to be NAMED. The closure walks the edges the
-# LINK and CLASS declarations put there; PRIVATE deps count, which is what reaches a driver's
-# class leaf: PRIVATE is excluded from INTERFACE_LINK_LIBRARIES but still sits in the target's
-# own LINK_LIBRARIES.
-#
-# The walk stops at kickos_user. That library and its own dependencies (the arch leaf and
-# kickos_lib) are put in the group separately.
-function(kickos_service_libs_closure target out)
-  set(_seen "")
-  set(_queue "${target}")
-  while(_queue)
-    list(POP_FRONT _queue _t)
-    if(NOT TARGET ${_t})
-      continue()
-    endif()
-    if("${_t}" IN_LIST _seen)
-      continue()
-    endif()
-    if("${_t}" STREQUAL "kickos_user")
-      continue()
-    endif()
-    list(APPEND _seen "${_t}")
-    get_target_property(_deps "${_t}" LINK_LIBRARIES)
-    if(_deps)
-      list(APPEND _queue ${_deps})
-    endif()
-  endwhile()
-  set(${out} "${_seen}" PARENT_SCOPE)
-endfunction()
-
-function(kickos_add_board_provider name)
-  cmake_parse_arguments(BP ""
-    "SOURCE;RETAINED_CAPS;RETAINED_ENDPOINTS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
-  # A misspelled keyword would otherwise be dropped and the count silently default.
-  if(BP_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR "kickos_add_board_provider(${name}): unrecognised argument(s) "
-      "'${BP_UNPARSED_ARGUMENTS}'. Keywords are SOURCE, LINK, RETAINED_CAPS, "
-      "RETAINED_ENDPOINTS, INBOUND_REPLY_CAPS.")
-  endif()
-  # A keyword given no value (or an empty one, which the unquoted ${ARGN} drops) leaves the
-  # variable UNDEFINED, so the DEFINED guards below would default it past the numeric check.
-  if(BP_KEYWORDS_MISSING_VALUES)
-    message(FATAL_ERROR "kickos_add_board_provider(${name}): keyword(s) "
-      "'${BP_KEYWORDS_MISSING_VALUES}' given with no value. Give each a value, or omit the "
-      "keyword to take the default.")
-  endif()
-  if(NOT BP_SOURCE)
-    message(FATAL_ERROR "kickos_add_board_provider(${name}): SOURCE required")
-  endif()
-  add_library(kickos_${name} STATIC ${BP_SOURCE})
-  if(NOT DEFINED BP_RETAINED_CAPS)
-    set(BP_RETAINED_CAPS 0)
-  endif()
-  # A service list must TYPE its retention, zero included. Defaulting it would make a list
-  # that forgot to declare read as one that holds nothing, which is the seat that went
-  # uncounted on twelve providers before it was summed at all. Pinmaps seat nothing and are
-  # never a KICKOS_SERVICE_LIST, so they keep the default.
-  #
-  # THE NAME PREFIX IS A CONVENIENCE AND NOT THE AUTHORITY: it refuses early and names the
-  # declarer, but a provider called anything else escapes it. What closes the class is the
-  # selection site in the root file, which refuses a KICKOS_SERVICE_LIST whose target carries
-  # no declaration whatever it is called, so this clause is a courtesy and that one is total.
-  set_property(TARGET kickos_${name} PROPERTY KICKOS_ENDPOINT_RETAINED_DECLARED TRUE)
-  if(NOT DEFINED BP_RETAINED_ENDPOINTS)
-    set_property(TARGET kickos_${name} PROPERTY KICKOS_ENDPOINT_RETAINED_DECLARED FALSE)
-    if(name MATCHES "^services_")
-      message(FATAL_ERROR
-        "kickos_add_board_provider(${name}): a service list must state RETAINED_ENDPOINTS, "
-        "the number of endpoint pool slots it leaves ROOT holding for the life of the image. "
-        "Count a console publish or handover as 1 and each KOS_DRV_EP_HANDOVER or "
-        "KOS_DRV_EP_RETAIN driver endpoint as 1. State 0 explicitly if it holds none; "
-        "cmake/cap_table.cmake sums this against KICKOS_TASK_ENDPOINT_BUDGET and a list that "
-        "declined to answer would be counted as zero.")
-    endif()
-    set(BP_RETAINED_ENDPOINTS 0)
-  endif()
-  if(NOT DEFINED BP_INBOUND_REPLY_CAPS)
-    set(BP_INBOUND_REPLY_CAPS "${KICKOS_CAP_REPLY_DEFAULT}")
-  endif()
-  # Refused HERE, where the declarer is named: the resolve reads these properties
-  # numerically and would take a negative as a term that narrows the summed width.
-  foreach(_n "${BP_RETAINED_CAPS}" "${BP_RETAINED_ENDPOINTS}" "${BP_INBOUND_REPLY_CAPS}")
-    if(NOT "${_n}" MATCHES "^[0-9]+$")
-      message(FATAL_ERROR "kickos_add_board_provider(${name}): '${_n}' is not a non-negative "
-        "integer count of concurrently held capabilities")
-    endif()
-  endforeach()
-  set_target_properties(kickos_${name} PROPERTIES
-    KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}" KICKOS_CAP_REPLY "${BP_INBOUND_REPLY_CAPS}"
-    KICKOS_ENDPOINT_RETAINED "${BP_RETAINED_ENDPOINTS}")
-  kickos_apply_freestanding(kickos_${name})
-  target_include_directories(kickos_${name} PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  if(BP_LINK)
-    target_link_libraries(kickos_${name} PUBLIC ${BP_LINK})
-  endif()
-  kickos_export_targets(kickos_${name})
 endfunction()
 
 # ---------------------------------------------------------------------------

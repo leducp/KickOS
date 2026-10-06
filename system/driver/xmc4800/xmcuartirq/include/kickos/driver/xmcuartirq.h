@@ -24,25 +24,17 @@
 #ifndef KICKOS_DRIVER_XMCUARTIRQ_H
 #define KICKOS_DRIVER_XMCUARTIRQ_H
 
-#include <kickos/sys/service.h> // kos_service_cfg
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    // Call ONCE, before spawning any app that should print through the driver.
-    //
-    // `cfg` must be a KOS_SVC_CONSOLE entry carrying the U0C0 window base/size and the
-    // driver priority as data. cfg->prio must be >= every stdout client's priority (D9: no
-    // priority inheritance on the console rendezvous), and cfg->prio + 1 must be a valid
-    // priority. cfg->hz must be 0: any other value is a rate request this channel cannot
-    // honour, and the bring-up fails with the device left to the kernel.
-    //
-    // The caller needs KOS_AUTH_MEMORY, KOS_AUTH_CONSOLE and KOS_AUTH_IRQ. Returns 0, or
-    // < 0 with the console already back, in which case the caller MUST NOT spawn
-    // console-dependent apps: publish and spawn are inseparable.
-    int xmcuartirq_console_start(struct kos_service_cfg const* cfg);
+    struct kos_driver_instance;
+
+    // The driver's START. The IRQ thread runs one priority above the task's, which must be
+    // below the priority ceiling and at or above every stdout client's (no PI on a
+    // rendezvous). Returns 0, or -1 on any failure.
+    int xmcuartirq_console_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

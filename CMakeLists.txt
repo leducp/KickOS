@@ -94,7 +94,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
       endif()
     endif()
     # A raw semicolon would split one candidate into several arguments, and the tail of a
-    # service list then reaches the generator as a request of its own.
+    # string value then reaches the generator as a request of its own.
     string(REPLACE ";" "\\;" _kcfg_val "${_kcfg_val}")
     list(APPEND _kcfg_req "${_kcfg_shape}:${_kcfg_v}=${_kcfg_val}")
   endforeach()
@@ -680,29 +680,6 @@ endif()
 add_compile_definitions(KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE})
 message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE} (arch=${KICKOS_ARCH})")
 
-# Include service providers and their dependencies in the rescan group
-# because they reference kickos_user.
-message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST}")
-
-# A build whose service list publishes the console over USB: it builds usbcdcwit, and on
-# imxrt1062 defaults the D-cache off. Chip init brings the USB clock tree up in an image that links
-# a USB device console driver, whatever this says (<kickos/usb_console.h>). Never cached: a cached
-# value outlives a change of service list.
-if(NOT DEFINED KICKOS_USB_CONSOLE)
-  set(KICKOS_USB_CONSOLE OFF)
-  # Unanchored: any list with a "_usbcdc" stem publishes over USB.
-  if(KICKOS_SERVICE_LIST MATCHES "_usbcdc")
-    set(KICKOS_USB_CONSOLE ON)
-  endif()
-endif()
-
-# KICKOS_BOARD_PINMAP names the target that DEFINES kickos_board_pinmap; it back-references
-# kickos_user, so it must join the rescan link group below.
-if(NOT DEFINED KICKOS_BOARD_PINMAP_LIBS)
-  set(KICKOS_BOARD_PINMAP_LIBS "${KICKOS_BOARD_PINMAP}")
-endif()
-message(STATUS "KickOS: board pin-map = ${KICKOS_BOARD_PINMAP} (libs: ${KICKOS_BOARD_PINMAP_LIBS})")
-
 # RX MPU wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc), command line only.
 if(DEFINED KICKOS_RX_MPU_TRACE)
   add_compile_definitions(KICKOS_RX_MPU_TRACE=${KICKOS_RX_MPU_TRACE})
@@ -1038,11 +1015,6 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kernel_core_index PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
-  _add_test(NAME service_lists
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_service_lists.sh"
-                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
   _add_test(NAME preset_defconfig
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_preset_defconfig.sh"
                     "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1157,44 +1129,26 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_subdirectory(tests/unit)
 endif()
 
-# Set before kickos_core below, whose LINK_GROUP pulls the provider archive.
-set(KICKOS_INIT_PROVIDER "kickos_default_init" CACHE STRING
-  "CMake target providing kickos_init_entry (the userspace init service). Default = the built-in kickos_system service; a power user names their own target, exported with kickos_export_targets.")
-
 if(TARGET kickos_kernel)
-  # Consumers link a leaf (KickOS::kickos, KickOS::kickos_cxx or KickOS::kernel), never
-  # kickos_core directly.
+  # Consumers link KickOS::kernel, never kickos_core directly.
   add_library(kickos_core INTERFACE)
-  # Place init and service providers after the kernel in the rescan group.
-  # Resolve their dependency closure after system targets exist.
-  if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
-    kickos_service_libs_closure("${KICKOS_SERVICE_LIST}" KICKOS_SERVICE_LIST_LIBS)
-    message(STATUS "KickOS: service-list closure = ${KICKOS_SERVICE_LIST_LIBS}")
-  endif()
   # CMake forbids a library in two groups within one target; build a group
   # for each configuration below. Members go by kickos_export_name.
   set(_kickos_head_targets kickos_user kickos_kernel)
-  set(_kickos_providers_targets ${KICKOS_INIT_PROVIDER} kickos_root_lower
-                                ${KICKOS_SERVICE_LIST_LIBS} ${KICKOS_BOARD_PINMAP_LIBS})
   set(_kickos_tail_targets kickos_arch_${KICKOS_ARCH} kickos_lib)
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     list(PREPEND _kickos_tail_targets kickos_chip_${KICKOS_CHIP})
   endif()
-  foreach(_kickos_part head providers tail)
+  foreach(_kickos_part head tail)
     set(_kickos_${_kickos_part}_names "")
     foreach(_kickos_t IN LISTS _kickos_${_kickos_part}_targets)
       kickos_export_name(${_kickos_t} _kickos_name)
       list(APPEND _kickos_${_kickos_part}_names "${_kickos_name}")
     endforeach()
   endforeach()
-  # Read by the export gates, which check KickOS::kernel is the full group less these.
-  set(KICKOS_GROUP_PROVIDERS "${_kickos_providers_names}" CACHE INTERNAL
-      "The init provider, root's lowering, service list and pin map of the link group, by export name")
   list(JOIN _kickos_head_names "," _kickos_head)
   list(JOIN _kickos_tail_names "," _kickos_tail_group)
-  list(JOIN _kickos_providers_names "," _kickos_providers_group)
-  set(_kickos_group "${_kickos_head},${_kickos_providers_group},${_kickos_tail_group}")
-  set(_kickos_kernel_group "${_kickos_head},${_kickos_tail_group}")
+  set(_kickos_group "${_kickos_head},${_kickos_tail_group}")
   # Link the interface-only kickos_system outside the rescan group.
   target_link_libraries(kickos_core INTERFACE kickos_system)
   # The app writes `int main`, renamed to the kernel-called symbol; app.h is force-included
@@ -1292,29 +1246,11 @@ if(TARGET kickos_kernel)
     set(_kickos_scripted_link TRUE)
   endif()
 
-  # A pure-C / freestanding app links KickOS::kickos, a full-C++ one KickOS::kickos_cxx, on
-  # either newlib profile: the KickOS toolchain's nano C++ archives keep the unwind path.
-  # KickOS::kernel is KickOS::kickos_cxx without the init provider, root's lowering, the service
-  # list and the pin map.
-  add_library(kickos INTERFACE)
-  add_library(kickos_cxx INTERFACE)
+  # The leaf an app links, KickOS::kernel, with its system target beside it. The KickOS
+  # toolchain's nano C++ archives keep the unwind path on either newlib profile.
   add_library(kickos_kernel_leaf INTERFACE)
   set_target_properties(kickos_kernel_leaf PROPERTIES EXPORT_NAME kernel)
-  set(_kickos_leaf_group_kickos "${_kickos_group}")
-  set(_kickos_leaf_group_kickos_cxx "${_kickos_group}")
-  set(_kickos_leaf_group_kickos_kernel_leaf "${_kickos_kernel_group}")
-  foreach(_kickos_leaf kickos kickos_cxx kickos_kernel_leaf)
-    target_link_libraries(${_kickos_leaf} INTERFACE kickos_core)
-  endforeach()
-  # The scripts size .userheap by the KICKOS_USER_HEAP_SIZE link symbol. The old leaves define
-  # it from the knob; KickOS::kernel leaves it to the system target. Inert on an MPU chip,
-  # whose heap is the .appdata window pad.
-  kickos_heap_defsym(_kickos_heap "${KICKOS_USER_HEAP_SIZE}")
-  if(_kickos_heap AND _kickos_scripted_link)
-    foreach(_kickos_leaf kickos kickos_cxx)
-      target_link_options(${_kickos_leaf} INTERFACE "LINKER:${_kickos_heap}")
-    endforeach()
-  endif()
+  target_link_libraries(kickos_kernel_leaf INTERFACE kickos_core)
   # Every system target's table defines the symbol (<kickos/sys/table.h>), so a link of none
   # fails naming it and a link of two fails on its second definition.
   target_link_options(kickos_kernel_leaf INTERFACE
@@ -1329,38 +1265,19 @@ if(TARGET kickos_kernel)
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
   if(KICKOS_ARCH STREQUAL "sim")
-    foreach(_kickos_leaf kickos kickos_cxx kickos_kernel_leaf)
-      target_link_libraries(${_kickos_leaf} INTERFACE
-        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}}>")
-    endforeach()
+    target_link_libraries(kickos_kernel_leaf INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
   elseif(KICKOS_ARCH STREQUAL "x86_64")
-    # No compiler driver appends the toolchain's libraries, so each leaf's group names them.
-    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c,m,gcc>")
-    set(_kickos_cxx_libs "stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}")
-    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
-      target_link_libraries(${_kickos_leaf} INTERFACE
-        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},${_kickos_cxx_libs}>")
-    endforeach()
+    # No compiler driver appends the toolchain's libraries, so the group names them.
+    target_link_libraries(kickos_kernel_leaf INTERFACE
+      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}>")
   else()
-    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
-    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
-      target_link_libraries(${_kickos_leaf} INTERFACE
-        "$<LINK_GROUP:RESCAN,${_kickos_leaf_group_${_kickos_leaf}},stdc++,supc++,c>")
-    endforeach()
+    target_link_libraries(kickos_kernel_leaf INTERFACE
+      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
   endif()
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
   target_compile_definitions(kickos_core INTERFACE __KickOS__=1)
   if(NOT (KICKOS_ARCH STREQUAL "sim"))
-    # Freestanding (default): -nostdlib++ drops libsupc++/libstdc++, so a stray operator new
-    # or EH table fails the link loud.
-    target_compile_options(kickos INTERFACE
-      "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
-    # x86_64's link has no driver to take it, and its group already leaves the C++ libraries out.
-    if(NOT KICKOS_ARCH STREQUAL "x86_64")
-      target_link_options(kickos INTERFACE -nostdlib++)
-    endif()
-
     # Link the custom terminate handler as an object before libstdc++.
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
@@ -1387,25 +1304,23 @@ if(TARGET kickos_kernel)
       target_link_libraries(kickos_cxx_core INTERFACE "${_kickos_cxx_rt_link}")
       set(_kickos_cxx_rt_link kickos_cxx_core)
     endif()
-    foreach(_kickos_leaf kickos_cxx kickos_kernel_leaf)
-      # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
-      # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
-      target_compile_options(${_kickos_leaf} INTERFACE
-        "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-      # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
-      # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
-      # x86_64 has no driver, and its first group holds the C++ libraries.
-      if(NOT KICKOS_ARCH STREQUAL "x86_64")
-        target_link_libraries(${_kickos_leaf} INTERFACE
-          "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name},${_kickos_cxx_throw_name}>")
-      endif()
-      target_link_libraries(${_kickos_leaf} INTERFACE "${_kickos_cxx_rt_link}")
-      target_link_options(${_kickos_leaf} INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
-    endforeach()
+    # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
+    # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+    target_compile_options(kickos_kernel_leaf INTERFACE
+      "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+    # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
+    # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
+    # x86_64 has no driver, and its first group holds the C++ libraries.
+    if(NOT KICKOS_ARCH STREQUAL "x86_64")
+      target_link_libraries(kickos_kernel_leaf INTERFACE
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name},${_kickos_cxx_throw_name}>")
+    endif()
+    target_link_libraries(kickos_kernel_leaf INTERFACE "${_kickos_cxx_rt_link}")
+    target_link_options(kickos_kernel_leaf INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
   endif()
 
-  # kickos_core is a link dependency of every leaf, so it must be in the export set.
-  kickos_export_targets(kickos_core kickos kickos_cxx kickos_kernel_leaf)
+  # kickos_core is a link dependency of the leaf, so it must be in the export set.
+  kickos_export_targets(kickos_core kickos_kernel_leaf)
   if(TARGET kickos_cxx_rt)
     kickos_export_targets(kickos_cxx_rt kickos_cxx_throw)
   endif()
@@ -1430,55 +1345,12 @@ if(KICKOS_BUILD_TESTS)
   add_subdirectory(tests/integration)
 endif()
 
-if(KICKOS_BUILD_TESTS AND TARGET kickos AND KICKOS_ARCH MATCHES "^(sim|x86_64)$")
+if(KICKOS_BUILD_TESTS AND TARGET kickos_kernel_leaf AND KICKOS_ARCH MATCHES "^(sim|x86_64)$")
   add_subdirectory(tests/composition)
 endif()
 
-# Validate providers after apps/superprojects can define them.
-# Library-only builds need no linked provider.
-if(TARGET kickos_core)
-  if(NOT TARGET ${KICKOS_INIT_PROVIDER})
-    message(FATAL_ERROR "KICKOS_INIT_PROVIDER='${KICKOS_INIT_PROVIDER}' is not a CMake target. Name a target that defines kickos_init_entry, or unset to use the default kickos_default_init.")
-  endif()
-  if(NOT KICKOS_INIT_PROVIDER STREQUAL "kickos_default_init")
-    message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default)")
-  endif()
-  # Late for the same reason: a service-list provider under system/init/<board>/ is not a
-  # target at the kickos_core site above.
-  if(NOT TARGET ${KICKOS_SERVICE_LIST})
-    message(FATAL_ERROR "KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' is not a CMake target. Name a target that defines kickos_board_services, or use the default kickos_services_none (count = 0).")
-  endif()
-  # Require retention declarations on the selected service list regardless of its name.
-  get_target_property(_sl_declared ${KICKOS_SERVICE_LIST} KICKOS_ENDPOINT_RETAINED_DECLARED)
-  if(NOT _sl_declared)
-    message(FATAL_ERROR
-      "KickOS: KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' states no RETAINED_ENDPOINTS. "
-      "A service list must state how many endpoint pool slots it leaves ROOT holding for the "
-      "life of the image: count a console publish or handover as 1 and each "
-      "KOS_DRV_EP_HANDOVER or KOS_DRV_EP_RETAIN driver endpoint as 1, and state 0 explicitly "
-      "if it holds none. cmake/cap_table.cmake sums it against "
-      "CONFIG_KICKOS_TASK_ENDPOINT_BUDGET, so a list that declined to answer is counted as "
-      "zero and the ceiling it is checked against is false.")
-  endif()
-  # Without this a misspelled target name reaches the LINK_GROUP as a bare -l, so the board
-  # silently keeps kickos_pinmap_none and boots with unmuxed pins.
-  if(NOT TARGET ${KICKOS_BOARD_PINMAP})
-    message(FATAL_ERROR "KICKOS_BOARD_PINMAP='${KICKOS_BOARD_PINMAP}' is not a CMake target. Name a target that defines kos_board_pinmap, or use the default kickos_pinmap_none.")
-  endif()
-  foreach(_kickos_t IN LISTS _kickos_providers_targets)
-    kickos_export_name(${_kickos_t} _kickos_name)
-    if(NOT TARGET ${_kickos_name})
-      message(FATAL_ERROR "KickOS: the link group names ${_kickos_t} as ${_kickos_name}, which "
-        "is no target. Give it that name with kickos_alias_target, or with "
-        "kickos_export_targets, which also installs it.")
-    endif()
-  endforeach()
-endif()
-
 # Resolve after system providers and app demand declarations are available.
-kickos_endpoint_seats_check("${KICKOS_SERVICE_LIST}")
-kickos_cap_table_resolve("${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
-                         KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
+kickos_cap_table_resolve(KICKOS_CAP_TABLE_SLOTS KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
                          KICKOS_CAP_TABLE_REPLY_MAX)
 configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)
@@ -1540,15 +1412,6 @@ if(TARGET kickos_kernel_leaf)
   kickos_compose(kickos_system_default
                  "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml"
                  EXPORT_NAME system_default)
-  # The old leaves link no system target, so they carry the gate assignment of no composition.
-  kickos_compose_gate(kickos_gate)
-  if(TARGET kickos_gate)
-    kickos_export_targets(kickos_gate)
-    kickos_export_name(kickos_gate _kickos_gate_name)
-    foreach(_kickos_leaf kickos kickos_cxx)
-      target_link_libraries(${_kickos_leaf} INTERFACE "$<TARGET_OBJECTS:${_kickos_gate_name}>")
-    endforeach()
-  endif()
   # The apps' own systems, which kickos_app_system (user/apps/CMakeLists.txt) records.
   get_property(_kickos_app_systems GLOBAL PROPERTY KICKOS_APP_SYSTEMS)
   foreach(_system IN LISTS _kickos_app_systems)

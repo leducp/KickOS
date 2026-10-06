@@ -63,7 +63,7 @@ namespace kickos
 
     // What a parked thread waits for, and the object owning the list it is on. Set at every park
     // and cleared at every unpark: thread_kill dispatches on it, and a mis-tagged park unwinds the
-    // wrong list. WAIT_JOIN, WAIT_LIVE_LAST and WAIT_TASK_EMPTY are on no list at all, so the tag
+    // wrong list. WAIT_JOIN and WAIT_TASK_EMPTY are on no list at all, so the tag
     // is the only thing that finds them.
     enum WaitKind : uint8_t
     {
@@ -79,7 +79,6 @@ namespace kickos
         WAIT_EP_FAR_REPLY,
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
-        WAIT_LIVE_LAST,  // wait_obj: none; queue-less. Carries no deadline, ever.
         WAIT_TASK_EMPTY, // wait_obj: the TASK; queue-less on no list at all
     };
 

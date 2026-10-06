@@ -24,12 +24,7 @@ namespace declared = kickos::driver::declared::rxsci;
 
 namespace
 {
-    // Dedicated SCI6 vectors with their own INTB slot (arch/rx/chip/rx72m/startup.S).
-    constexpr int SCI6_TXI_LINE = 87;
-    constexpr int SCI6_RXI_LINE = 86;
-
     constexpr uart::UartParams k_uart = {
-        .open_fail = "[rxsci] SCI6 open refused: source clock, divisor or frame",
         .announce = "[rxsci] device up (IRQ TX/RX)\n",
         // NO prime: TXI's only raise is a transfer taken with the source already armed, so a
         // pass that stopped with the ring loaded would wait on a transition that has already
@@ -40,13 +35,13 @@ namespace
 
     void irq_entry(void* arg)
     {
-        uart::irq_thread<struct kos_uart>(static_cast<uart::Ctx*>(drv::thread_start(arg)), k_uart);
+        uart::irq_thread<struct kos_uart>(static_cast<uart::Ctx*>(arg), k_uart);
     }
 
-    int block_init(void* blk, struct kos_service_cfg const* cfg)
+    int block_init(void* blk, struct kos_driver_instance const* in)
     {
-        // hz travels as the REQUESTED baud; 0 keeps the divisor the kernel console left.
-        return uart::ctx_init(static_cast<uart::Ctx*>(blk), cfg, /*fallback_baud=*/0u);
+        // 0 keeps the divisor the kernel console left.
+        return uart::ctx_init(static_cast<uart::Ctx*>(blk), in, /*fallback_baud=*/0u);
     }
 
     constexpr drv::Descriptor k_desc = {
@@ -56,13 +51,12 @@ namespace
         .block_flags = 0,
         .ready_offset = uart::KOS_UART_READY_OFFSET,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_CONSOLE,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
         // Both EDGE: a raise taken while the line is masked latches and redelivers on the
         // rearm. TEI6 / ERI6 are LEVEL and are NOT claimed (see <rxsci.h>).
-        .lines = {{SCI6_TXI_LINE, KOS_IRQ_EDGE}, {SCI6_RXI_LINE, KOS_IRQ_EDGE}},
+        .lines = {{KOS_IRQ_EDGE}, {KOS_IRQ_EDGE}},
         // NO RELAY THREAD. One wait covers both lines and the doorbell, so the window
         // holder services RXI directly instead of a second thread converting it into a
         // raise on TXI's binding.
@@ -98,9 +92,9 @@ namespace
 extern "C"
 {
 
-int rxsci_console_start(struct kos_service_cfg const* cfg)
+int rxsci_console_start(struct kos_driver_instance* instance)
 {
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }
 
 }

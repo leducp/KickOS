@@ -61,11 +61,12 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 824
 
-/* The ring 3 syscall on the block. 1864 on qemu-x86_64, a spawn seeding the new task's space:
+/* The ring 3 syscall on the block. 1864 on qemu-x86_64, a spawn seeding the new task's space,
+ * and 1880 on qemu-x86_64-bench, whose 32-slot root table widens spawn_masked to 528:
  *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
  *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
  *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1864
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1880
 
 /* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1864 on
  * qemu-x86_64, down SYSK's chain. */
@@ -115,12 +116,12 @@
 #define KICKOS_X86_64_TRAP_NEST 952
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK, SYSPRIV and SYSPRIVSW measure 2336 on qemu-x86_64-smp12, a spawn seeding the new task's
- * space. */
+/* SYSK, SYSPRIV and SYSPRIVSW measure 2384 on qemu-x86_64-smp12, a spawn seeding the new task's
+ * space from a 32-slot root table. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2368
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2384
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2368
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2384
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK

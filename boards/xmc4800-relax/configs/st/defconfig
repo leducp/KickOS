@@ -8,9 +8,8 @@ CONFIG_MEMORY_MODEL_MPU=y
 CONFIG_KICKOS_MAX_THREADS=8
 CONFIG_KICKOS_MAX_TASKS=10
 CONFIG_KICKOS_MAX_DOMAINS=10
-# The default service list keeps two endpoints in root for the life of the image (the
-# published console and the retained SPI one), and the selftest holds two at once: the
-# per-task ceiling has to seat four, and the pool sits one above it.
+# The per-task ceiling seats the endpoints the init keeps for its drivers and the two the
+# selftest holds at once; the pool sits one above it.
 CONFIG_KICKOS_MAX_ENDPOINTS=5
 CONFIG_KICKOS_TASK_ENDPOINT_BUDGET=4
 CONFIG_KICKOS_USER_STACK_SIZE=4096

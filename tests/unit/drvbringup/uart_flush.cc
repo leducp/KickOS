@@ -191,13 +191,9 @@ extern "C"
 
 namespace kickos::driver
 {
-    void* thread_start(void* arg)
+    void trap()
     {
-        return arg;
-    }
-
-    void trap_under_init()
-    {
+        abort();
     }
 }
 

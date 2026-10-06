@@ -7,8 +7,7 @@
 // kickos_main (KickOS::main), the entry a composition names as `entry: kickos_main` and the
 // default composition names for its `main` task, calls kickos_app_main as that task's entry
 // thread and passes its return to exit(), so the system ends with it where the composition
-// `ends` on that task. Under the `kickos` and `kickos_cxx` leaves the default init calls it on
-// root's thread, and its return becomes the process exit status on the sim.
+// `ends` on that task.
 //
 // App and library C++ global ctors run on MCU targets from the kernel's root thread before
 // kickos_app_main runs, on ONE thread in sequence, and before the init starts any task. An app

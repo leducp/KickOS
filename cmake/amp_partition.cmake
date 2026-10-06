@@ -194,7 +194,7 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   # fingerprint, KICKOS_APPDATA_SIZE=112K and =120K among them, and so do the toolchain and the
   # build type. build-partition.sh covers that half, configuring every peer FROM node 0's own
   # KICKOS_* cache entries. The hash cannot be widened here: the cache is still incomplete at
-  # this point, KICKOS_INIT_PROVIDER being declared further down this file.
+  # this point.
   string(REGEX REPLACE "CONFIG_KICKOS_AMP_NODE_ID=[0-9]+" "" _amp_common "${_amp_cfg_lines}")
   string(SHA256 _amp_fp "${_amp_common}")
   string(SUBSTRING "${_amp_fp}" 0 8 _amp_fp_hi)
@@ -299,10 +299,6 @@ if(KICKOS_AMP_NODE)
       "this partition cannot seat itself and would leave nothing for the app besides. Raise "
       "CONFIG_KICKOS_MAX_ENDPOINTS in this board's defconfig.")
   endif()
-
-  # The ports are only ONE of the seats root holds against KICKOS_TASK_ENDPOINT_BUDGET; the
-  # rest are a service list's, whose target does not exist this early. That relation is
-  # kickos_endpoint_seats_check (cmake/cap_table.cmake).
 
   set(KICKOS_AMP_PORT_COUNT "${_amp_ports_len}")
   # The partition as parsed here, which the export manifest carries.

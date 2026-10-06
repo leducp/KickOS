@@ -643,7 +643,7 @@ This is worth the delta because it pays for itself three times:
 The kernel delta is small and it is a *publish-time* property, not a new state: the publisher
 must be able to say "the device I am handing over is not the kernel console device", so that
 `console_tx_deinit` is skipped and the death hook restores `KERNEL_OWNED`. Whether that rides a
-flag on the publish, a field in `kos_service_cfg` (`system/include/kickos/sys/service.h`), or a
+flag on the publish, a field in `kos_service_cfg` (the service header), or a
 second service kind is **open question 1** -- it is a real ABI choice and the reviewer should
 make it rather than inherit it.
 
@@ -655,9 +655,9 @@ one genuinely new thing a USB console asks of the kernel. It asks for nothing US
 
 ### 6.3 What does NOT need to change
 
-`KOS_SVC_CONSOLE` covers this: a console publishes as a console and no new service kind is
+the console service kind covers this: a console publishes as a console and no new service kind is
 needed, exactly as `TODO.md` says. The two-thread bring-up in
-`system/init/sim/service_list_uart.cc`
+the sim's UART service list
 (`sim_uart_start`) is the structural template -- allocate the block, self-grant it, create the
 endpoint, claim the line, spawn the IRQ thread with `{window, block, line(WAIT)}`, spawn the
 service thread with `{block, endpoint(WAIT), line(SIGNAL)}`, close root's line cap -- and a USB
@@ -792,7 +792,7 @@ rather than hypothetical.
 **Stated first because the tables below must not read as coverage: there is no USB device model
 in any emulator this project uses, so essentially nothing about a USB console can be gated in CI
 or on the host.** M4.6.1's second half could at least put a real two-thread driver over a
-loopback device on the sim (`system/init/sim/service_list_uart.cc`, gated by
+loopback device on the sim (the sim's UART service list, gated by
 `tests/integration/check_sim_uartloop.sh`) because its "device" was host `fd` 1 and the doorbell was the only
 thing that could move a byte. **USB has no such trick available.** A USB device is defined by
 what a *host* does to it -- tokens, resets, a nine-stage enumeration -- and neither the sim nor
@@ -877,7 +877,7 @@ where nothing is in the way, then port it to the part with the errata.
 
 1. **How does the publisher say "this is not the kernel console device"?** Sec.6.2 needs it and
    there are three shapes: a flag argument on the publish syscall, a field in
-   `kos_service_cfg` (`system/include/kickos/sys/service.h`) that the bring-up reads, or a
+   `kos_service_cfg` (the service header) that the bring-up reads, or a
    distinct service kind. The recommendation is the `kos_service_cfg` field, because the
    knowledge is per-board configuration data and that struct exists precisely to carry
    per-instance config as data rather than as literals in a driver TU -- but it changes a

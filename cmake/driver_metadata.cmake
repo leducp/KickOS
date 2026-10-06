@@ -5,11 +5,11 @@
 # catalogue entry the manifest carries and the header its descriptor reads. Script-safe: it
 # creates no target, so tests/static/check_driver_metadata.cmake drives it under cmake -P.
 
-set(KICKOS_DRIVER_OPTIONS NOTIFY CONSOLE)
+set(KICKOS_DRIVER_OPTIONS NOTIFY CONSOLE USB_DEVICE)
 set(KICKOS_DRIVER_SINGLE CLASS REGDIR BLOCK BLOCK_CACHE POSTURE BARRIER START RECEIVER)
 set(KICKOS_DRIVER_MULTI SOURCES THREADS WINDOWS LINES CLIENT)
 set(KICKOS_DRIVER_METADATA THREADS WINDOWS LINES BLOCK BLOCK_CACHE POSTURE BARRIER START RECEIVER NOTIFY CONSOLE
-    CLIENT)
+    USB_DEVICE CLIENT)
 
 # Writes `content` to `path` unless it already holds it, so nothing that depends on the file is
 # rebuilt for an identical configure. No @-reference or ${} in `content` is expanded again.
@@ -100,9 +100,12 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
     message(FATAL_ERROR "kickos_add_driver(${name}): a driver that takes the console hands its "
       "endpoint over, so its POSTURE is handover")
   endif()
+  if(M_USB_DEVICE AND NOT M_CONSOLE)
+    message(FATAL_ERROR "kickos_add_driver(${name}): USB_DEVICE marks a console served over the "
+      "board's USB device controller, so it takes the console")
+  endif()
 
-  # A role is its thread's name, but the role `service`, whose thread takes its service-list
-  # entry's name.
+  # A role is its thread's name, but the role `service`, whose thread takes its task's name.
   set(_roles "")
   set(_prio "")
   set(_names "")
@@ -184,6 +187,10 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   if(M_CONSOLE)
     set(_console true)
   endif()
+  set(_usb_device false)
+  if(M_USB_DEVICE)
+    set(_usb_device true)
+  endif()
   set(_block 0)
   set(_qblock "\"none\"")
   if(NOT M_BLOCK STREQUAL "none")
@@ -226,7 +233,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   set(${out_json} "{\"windows\": ${_jwindows}, \"lines\": ${_jlines}, \"threads\": ${_jthreads}, \
 \"endpoints\": ${KICKOS_DRIVER_ENDPOINTS}, \"notifications\": ${_notifications}, \
 \"block\": ${_qblock}, \"block_cache\": ${_qblock_cache}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
-\"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}}"
+\"usb_device\": ${_usb_device}, \"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}}"
       PARENT_SCOPE)
 
   list(JOIN _prio ", " _prio_init)
@@ -246,7 +253,7 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
 
 #include <kickos/sys/driver_service.h>
 
-extern \"C\" int ${M_START}(struct kos_service_cfg const* cfg);
+extern \"C\" int ${M_START}(struct kos_driver_instance* instance);
 
 namespace kickos::driver::declared::${name}
 {

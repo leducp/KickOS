@@ -710,7 +710,7 @@ Linker script and memory map
 LOAD user/apps/x/CMakeFiles/x.dir/main.cc.obj
 LOAD user/libkickos_user.a
 LOAD kernel/libkickos_kernel.a
-LOAD system/libkickos_default_init.a
+LOAD user/lib/spi_proxy/libkickos_spi_proxy.a
 LOAD arch/libkickos_chip_mps2.a
 LOAD arch/libkickos_arch_armv7m.a
 LOAD lib/libkickos_lib.a
@@ -722,7 +722,7 @@ map_loaded "$TMP/st_lmap" "$LOADED_RE" > "$TMP/st_lnames"
 cat > "$TMP/st_lwant" <<'EOF'
 libkickos_user.a
 libkickos_kernel.a
-libkickos_default_init.a
+libkickos_spi_proxy.a
 libkickos_chip_mps2.a
 libkickos_arch_armv7m.a
 libkickos_lib.a
@@ -973,9 +973,8 @@ for a in $ARCHIVES; do
     nm_archive_defs "$TMP/tool" "$a" "$DEF_TYPE_RE" "$DEF_SKIP_TYPES" >> "$TMP/defs"
 done
 # An object that cannot be read is the same failure the archive arm above reports, and
-# skipping it classifies every seam the app itself defines (kickos_app_authority) as
-# having NO backend: the fallback then reads as correct and the app's narrower authority
-# mask is silently widened to the fallback's.
+# skipping it classifies every seam the app itself defines as having NO backend: the
+# fallback then reads as correct and the app's own definition is silently replaced.
 : > "$TMP/cmdline_members"
 for o in $OBJECTS; do
     if [ ! -r "$o" ]; then

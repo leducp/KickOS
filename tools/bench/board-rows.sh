@@ -123,12 +123,24 @@ console_row() {
 
 # usb_console_image <elf>
 #
-# Succeeds where the image links a USB device console driver, which defines
-# kickos_usb_device_console (<kickos/usb_console.h>): its console is the device's own ACM. The
-# driver serves stdout or admission refuses the composition, so the symbol is the image's console.
+# Succeeds where the image's kickos_usb_device_console (<kickos/usb_console.h>) is 1: its stdout
+# is a USB device console, so its console is the device's own ACM. Read from the file through
+# readelf alone, which takes every target's ELF.
 usb_console_image() {
-    LC_ALL=C readelf -sW "$1" 2>/dev/null \
-        | awk '$7 != "UND" && $8 == "kickos_usb_device_console" { found = 1 } END { exit !found }'
+    elf="$1"
+    sym=$(LC_ALL=C readelf -sW "$elf" 2>/dev/null \
+        | awk '$8 == "kickos_usb_device_console" && $7 != "UND" { print $2, $7; exit }')
+    [ -n "$sym" ] || return 1
+    value=${sym% *}
+    ndx=${sym#* }
+    sec=$(LC_ALL=C readelf -SW "$elf" 2>/dev/null \
+        | sed -n "s/^ *\[ *$ndx\] *//p" | awk '{ print $2, $3, $4; exit }')
+    [ -n "$sec" ] || return 1
+    set -- $sec
+    [ "$1" != NOBITS ] || return 1
+    at=$(( 0x$3 + 0x$value - 0x$2 ))
+    byte=$(dd if="$elf" bs=1 skip="$at" count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+    [ "$byte" = 1 ]
 }
 
 # The glob expansion, as a script, so a pattern is expanded WHERE THE DEVICES ARE and by the

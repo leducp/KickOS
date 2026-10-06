@@ -126,7 +126,6 @@ namespace kickos
             case WAIT_NOTIFY:
             case WAIT_SLEEP:
             case WAIT_JOIN:
-            case WAIT_LIVE_LAST:
             case WAIT_TASK_EMPTY:
             {
                 // Sleep and notification waits have no wait queue. wake removes the timer

@@ -314,11 +314,6 @@ int kos_thread_join(kos_thread_t thread, uint32_t timeout_us)
                                          static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
-int kos_wait_last(void)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_WAIT_LAST, 0, 0, 0, 0));
-}
-
 int kos_cap_narrow(kos_cap_t cap, uint32_t mask)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_CAP_NARROW,

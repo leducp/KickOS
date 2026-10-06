@@ -198,8 +198,6 @@ enum kos_syscall_nr
                                //   while waiting), -KOS_EBADF (never allocated / reclaimed
                                //   under this handle), -KOS_EPERM (the caller did not spawn
                                //   it), -KOS_EDEADLK (naming yourself).
-    KOS_SYS_WAIT_LAST = 49,    // () -> 0 once the caller is the last live thread, or
-                               //   -KOS_EPERM to any thread but root.
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,

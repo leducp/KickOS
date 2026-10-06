@@ -65,7 +65,7 @@ namespace tap
         // console for the remainder when index 0 is empty (-KOS_EBADF) or the driver has no
         // receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). kos_print alone is not enough, because
         // console_emit drops every byte
-        // handed to the kernel console once a service list publishes it
+        // handed to the kernel console once a console driver publishes it
         // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
         {
@@ -160,7 +160,7 @@ namespace tap
             g_verdict = v;
         }
 
-        // Is this thread's stdout cap seated (a service list published the console)?
+        // Is this thread's stdout cap seated (a console driver published the console)?
         // A zero-length send is a valid signal per <kickos/sys.h> and puts no byte on
         // the wire in either posture, unlike a 1-byte probe.
         bool stdout_published()

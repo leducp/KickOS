@@ -23,25 +23,17 @@
 #ifndef KICKOS_DRIVER_MK64F_K64UARTIRQ_H
 #define KICKOS_DRIVER_MK64F_K64UARTIRQ_H
 
-#include <kickos/sys/service.h> // kos_service_cfg (the bring-up config)
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    // Privileged one-shot bring-up: ONCE, before any client runs. Needs AUTH_MEMORY,
-    // AUTH_CONSOLE and AUTH_IRQ, so it runs as root, not as the driver.
-    //
-    // `cfg` carries the UART0 window base/size, the baud in cfg->hz (0 = 115200) and the
-    // SERVICE thread priority in cfg->prio; the IRQ thread is spawned at cfg->prio + 1,
-    // so cfg->prio must be below the priority ceiling and at or above every stdout
-    // client (no PI on a rendezvous). cfg->kind must be KOS_SVC_CONSOLE.
-    //
-    // Returns 0, or -1 on any failure. Every failure path closes the endpoint before
-    // reporting, which reclaims the console and is the only reason the tag reaches the
-    // wire at all: past the publish, a kernel-console write is a bare DROP.
-    int k64uartirq_console_start(struct kos_service_cfg const* cfg);
+    struct kos_driver_instance;
+
+    // The driver's START. The IRQ thread runs one priority above the task's, which must be
+    // below the priority ceiling and at or above every stdout client's (no PI on a
+    // rendezvous). Returns 0, or -1 on any failure.
+    int k64uartirq_console_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

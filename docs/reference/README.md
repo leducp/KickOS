@@ -30,7 +30,7 @@ and, for hardware facts, the TRM section.)
 - **`telemetry.md`** -- the trace wire-format: the record layout, the pure encoders/decoders,
   and the golden-vector source of truth.
 - **`bench.md`** -- the bench chain (`../../tools/bench/`): the flash-and-capture order per
-  board class, the refusals, the service-list coverage rule, and the boundary between what
+  board class, the refusals, the image coverage rule, and the boundary between what
   the repo knows about a board and what only one rig knows -- the gitignored rig config.
   What is on the bench right now is answered by `../../tools/bench/bench-present.sh` and is
   written down nowhere.

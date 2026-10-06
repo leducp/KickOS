@@ -12,9 +12,8 @@ namespace declared = kickos::driver::declared::testfails;
 
 namespace
 {
-    void service(void* arg)
+    void service(void*)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
         kos_exit(0);
     }
 
@@ -25,7 +24,6 @@ namespace
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_SPI, // no kind is neutral: an instance reads only whether it is KOS_SVC_CONSOLE
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
@@ -45,15 +43,15 @@ namespace
                   "the testfails descriptor departs from its kickos_add_driver declaration");
 }
 
-extern "C" int testfails_start(struct kos_service_cfg const* cfg)
+extern "C" int testfails_start(struct kos_driver_instance* instance)
 {
     // The init's thread parks on the core its watcher shares, the declared one or the only one,
     // and resumes only once nothing above the init's priority is ready there: the watcher has
     // read the attempt before this one and waits again. Any length of park orders it.
     bool pinned = false;
-    if (cfg != nullptr and cfg->instance != nullptr and cfg->instance->core_mask != 0u)
+    if (instance->core_mask != 0u)
     {
-        int const rc = kos_thread_set_affinity(kos_thread_self(), cfg->instance->core_mask);
+        int const rc = kos_thread_set_affinity(kos_thread_self(), instance->core_mask);
         if (rc != 0)
         {
             return rc;
@@ -65,5 +63,5 @@ extern "C" int testfails_start(struct kos_service_cfg const* cfg)
     {
         (void)kos_thread_set_affinity(kos_thread_self(), 0u);
     }
-    return drv::bring_up(k_desc, cfg, nullptr);
+    return drv::bring_up(k_desc, instance);
 }

@@ -365,11 +365,6 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 // EDEADLK for self. Handles remain valid after exit until the slot is reused.
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 
-// Wait until the CALLING thread is the last live one (idle aside), then return 0. Returns
-// immediately when the caller is already the last, and it is the only wait that reaches
-// threads the caller cannot NAME. ROOT ONLY and single-seat: -KOS_EPERM to anyone else.
-int kos_wait_last(void);
-
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
 // chip's shutdown, which is also what a returning kickos_init_entry does (see
 // <kickos/sys/init.h>). Needs KOS_AUTH_SYSTEM, so it is NOT noreturn: it returns -KOS_EPERM

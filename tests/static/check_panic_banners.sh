@@ -626,7 +626,7 @@ cls read   arch/arm/armv7m/arch_armv7m.cc
 cls read   kernel/amp/ampmap.cc
 cls read   include/kickos/diag.h
 cls read   lib/libc/string.cc
-cls read   system/init/common/services_none.cc
+cls read   system/init/compose/walk.cc
 cls skip   user/apps/common/selftest/main.cc
 cls skip   examples/oot-app/main.cc
 cls skip   boards/blackpill/include/kickos/board_wiring.h

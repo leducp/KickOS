@@ -12,11 +12,6 @@
 
 extern "C"
 {
-    // The walk lowers root instead, as its first act.
-    void kickos_root_lower(void)
-    {
-    }
-
     int kickos_init_entry(int argc, char** argv)
     {
         (void)argc;

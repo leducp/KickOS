@@ -111,10 +111,9 @@ static_assert(sizeof(Ctx) <= KOS_UART_BLOCK_SIZE,
 constexpr uint16_t KOS_UART_READY_OFFSET =
     static_cast<uint16_t>(offsetof(Ctx, sh) + offsetof(Shared, ready));
 
-// Lay out the block and fill the class config from the service cfg. `fallback_baud` is what
-// a cfg naming no rate asks for; 0 there means "keep the divisor the boot console left",
-// not "0 baud".
-int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud);
+// Lay out the block and fill the class config from the instance at `fallback_baud`; 0 there
+// means "keep the divisor the boot console left", not "0 baud".
+int ctx_init(Ctx* ctx, struct kos_driver_instance const* in, uint32_t fallback_baud);
 
 // ---------------------------------------------------------------------------------
 // Staging segment for one service pass, used first for RX and then for TX. Any size is
@@ -191,8 +190,7 @@ void irq_loop(Uart& dev, Shared* sh)
     if (bound != 0)
     {
         dev_shutdown(&dev);
-        driver::trap_under_init();
-        return;
+        driver::trap();
     }
     sh->ready = 1;
     // Seeded from the ack: a request raised before this thread's first wait is still pending.
@@ -223,8 +221,7 @@ void irq_loop(Uart& dev, Shared* sh)
         }
     }
     dev_shutdown(&dev);
-    driver::trap_under_init();
-    exit(0);
+    driver::trap();
 }
 
 // Per-byte cap on the first-light poll: a channel that never reports room costs a delay,
@@ -241,14 +238,12 @@ void win_puts(struct kos_uart* dev, char const* s);
 // needs it loses the first wake.
 struct UartParams
 {
-    char const* open_fail; // the kos_panic tag
     char const* announce;
     bool prime;
 };
 
 // NEVER exits on an open failure: the service thread would stay the endpoint's receiver and
-// keep accepting stdout into a ring nothing drains. Under the init the trap ends the whole task;
-// on a service list the panic is what reclaims the console (D6).
+// keep accepting stdout into a ring nothing drains. The trap ends the whole task.
 template <typename Uart>
 void irq_thread(Ctx* ctx, UartParams const& p)
 {
@@ -256,8 +251,7 @@ void irq_thread(Ctx* ctx, UartParams const& p)
     int32_t const opened = kos_uart_open(&dev, &ctx->ucfg);
     if (opened < 0)
     {
-        driver::trap_under_init();
-        kos_panic(p.open_fail);
+        driver::trap();
     }
     // The marker must precede the first pass: only a pend latched before the line's FIRST
     // irq_wait is discarded.

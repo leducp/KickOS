@@ -179,9 +179,6 @@ namespace kickos
     // already exited), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EDEADLK.
     int thread_join(kos_thread_t thread, uint32_t timeout_us);
-    // Waits until the caller is the last live thread. Root only: returns 0, or -KOS_EPERM
-    // to any other caller.
-    int thread_wait_last();
 
     // The forcible half of the pair above, and both block on the same terms as thread_join:
     // no caller-held IrqLock. A marked target executes no further unprivileged instruction.

@@ -7,8 +7,8 @@
 # kos_spi_* symbols, for a consumer that owns the DSPI0 window and clocks the bus inline. It is
 # one of the two answers system/CMakeLists.txt selects between for this image
 # (kickos_select_class_backend). Deliberately NOT a link dependency of the service below, so it
-# never enters a board's service-list closure or the shared kickos link group: the selected
-# backend must precede that group on the link line, and a group member cannot.
+# never enters the shared kickos link group: the selected backend must precede that group on
+# the link line, and a group member cannot.
 #
 # kickos_k64dspi is the SERVICE: the bring-up shim, the endpoint, the driver thread, and its OWN
 # private copy of the same engine. An image hosting this service may also hold a consumer that

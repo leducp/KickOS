@@ -2,21 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The userspace init-service seam. The kernel's root thread calls kickos_init_entry once
-// kernel init is complete. An image linking KickOS::kernel takes it from its system target's
-// KickOS::init; one linking an old leaf from the CMake target the build selected as
-// KICKOS_INIT_PROVIDER (default: kickos_default_init).
+// kernel init is complete, taking it from the image's system target (KickOS::init), which walks
+// the composition's table. RETURNING from kickos_init_entry tears the system down (root_entry
+// flushes the console, then arch_shutdown(status)).
 //
-// Lifecycle, chosen by whether the entry RETURNS:
-//   * Single-shot (the default init). It walks the board's service list
-//     (kickos_service_list_run), then runs the app's kickos_app_main; a nonzero bring-up result
-//     is returned WITHOUT running the app. RETURNING from kickos_init_entry tears the system
-//     down (root_entry flushes the console, then arch_shutdown(status)).
-//   * An init that brings services up must PERSIST: it parks and NEVER returns. Returning would
-//     exit, taking down every service it spawned.
-//
-// The app main / init body runs in an UNPRIVILEGED root holding a full authority word. An app
-// must not assume ambient privilege: the privileged acts are gated on authority bits, and what
-// root holds when main is entered is what kickos_app_authority() below declares.
+// The init runs in an UNPRIVILEGED root holding a full authority word, and grants each task the
+// authority its composition declares.
 //
 // App and libstdc++ global constructors run in the kernel root thread BEFORE
 // kickos_init_entry is entered, so a constructor cannot depend on anything init
@@ -42,7 +33,8 @@ struct kos_table_task;
 void kickos_main(struct kos_table_task const* self);
 
 // The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor window
-// and then calls kickos_init_entry above.
+// at KICKOS_PRIO_MAX, the priority the kernel creates root at, and then calls kickos_init_entry
+// above, whose walk lowers root as its first act.
 //
 // MUST stay defined app-side (libkickos_user.a): root is UNPRIVILEGED from its first
 // instruction, so on a translating board this text is fetched at EL0, where kernel-half text is
@@ -52,13 +44,6 @@ void kickos_main(struct kos_table_task const* self);
 // address of a default-visibility external function GOT-indirect while `ld -m i386pep` builds no
 // global offset table (tools/check-x86_64-no-got.sh).
 void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
-
-// The kernel creates root at KICKOS_PRIO_MAX, and kickos_root_entry calls this first, before
-// the app's constructors. An image linking no system target takes kickos_root_lower's
-// definition from its link group, which lowers root to KICKOS_PRIO_ROOT, so its constructors
-// and main run there. A system target's init defines it empty: its walk lowers root to the
-// composition's priority as its first act, so its constructors run at KICKOS_PRIO_MAX.
-void kickos_root_lower(void);
 
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it immediately before
 // calling kickos_init_entry above.
@@ -78,61 +63,8 @@ struct kos_init_args
 
 extern struct kos_init_args kickos_init_args;
 
-// The default init body: narrow root's authority to kickos_app_authority() below, then
-// run the app's kickos_app_main. Exposed so a custom init provider can delegate to it.
-// It does NOT bring the service list up (that is kickos_service_list_run below). CALL IT
-// LAST: any bring-up sequenced after it runs with the app's narrowed set and earns
-// -KOS_EPERM.
-int kickos_default_init_run(int argc, char** argv);
-
-// Run the selected board's service list (see <kickos/sys/service.h>): walk each entry's
-// start() in array order. The console, where a board has a userspace one, is the first
-// KOS_SVC_CONSOLE entry. Returns 0 on success (or empty list), or the first failing
-// entry's negative code. The default kickos_init_entry runs this AFTER the pin map and
-// BEFORE the app main, aborting the app on a nonzero result. MUST NOT use libc stdio
-// (bring-up self-deadlock rule).
-int kickos_service_list_run(void);
-
-// Apply the selected board's pin map (see <kickos/sys/pinmap.h>) BEFORE the service list.
-// A board with an empty map (count = 0) is a no-op. Returns 0 on success, or the first
-// failing entry's negative rc. The default kickos_init_entry runs this FIRST and aborts
-// the app on a nonzero result. MUST NOT use libc stdio (same bring-up rule as above).
-int kickos_pinmux_run(void);
-
-// The authority the app's main needs: a mask of kos_cap_authority KOS_AUTH_* bits
-// (<kickos/sys/abi.h>). kickos_default_init_run narrows root's authority cap to this
-// before kickos_app_main. It can only CLEAR bits.
-//
-// The fallback is KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_TASKS. An app needing another
-// set declares it in its OWN TU, at file scope next to main:
-//
-//     KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX);
-//
-// An app whose main RETURNS must keep KOS_AUTH_SYSTEM: root_entry ends the system with
-// kos_shutdown, and a refusal panics "root: shutdown refused" (kernel/init/kmain.cc). The
-// same holds for a main that calls exit() or abort(), root's kos_exit being a shutdown too
-// (<kickos/sys.h>). A never-returning app may declare 0.
-//
-// Not weak, and must not become weak: the attribute would propagate to the app's own definition
-// (GCC carries it from declaration to definition in one TU) and leave link order deciding the
-// winner. An app's definition wins instead by keeping
-// system/init/common/app_authority_default.cc from being extracted at all.
-uint32_t kickos_app_authority(void);
-
 #ifdef __cplusplus
 }
-#endif
-
-// A bare definition in a C++ app TU would mangle and be silently ignored, leaving the
-// app on the fallback mask.
-#ifdef __cplusplus
-#define KICKOS_APP_AUTHORITY(mask)                  \
-    extern "C" uint32_t kickos_app_authority(void); \
-    extern "C" uint32_t kickos_app_authority(void) { return (uint32_t)(mask); }
-#else
-#define KICKOS_APP_AUTHORITY(mask)           \
-    uint32_t kickos_app_authority(void);     \
-    uint32_t kickos_app_authority(void) { return (uint32_t)(mask); }
 #endif
 
 #endif

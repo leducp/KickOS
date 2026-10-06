@@ -211,7 +211,7 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" != "$TREE_ID" ]; then
 fi
 printf '%s\n' "$TREE_ID" > "$STAMP"
 
-# The preset list comes from the same flattener the service-list gate uses.
+# The preset list comes from the same flattener the preset gates use.
 PRESETS_TSV="$OUT/presets.tsv"
 cmake "-DSRC=$ROOT" "-DOUT=$PRESETS_TSV" -P "$ROOT/tests/static/preset_boards.cmake" >/dev/null \
     || die "could not read the configure presets"

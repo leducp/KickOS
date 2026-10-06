@@ -22,8 +22,7 @@ namespace
     constexpr uint8_t RW = KICKOS_GATE_R | KICKOS_GATE_W;
     constexpr uint8_t RWX = KICKOS_GATE_R | KICKOS_GATE_W | KICKOS_GATE_X;
 
-    // Emitted by kickos_compose for esp32c6-wroom-amp2-n0 with no composition:
-    // <build>/kickos_compose/kickos_gate/gate.c.
+    // Emitted by `kickos_compose gate` for esp32c6-wroom-amp2-n0 with no composition.
     kickos_gate_row const NO_COMPOSITION[] = {
         {0x40878000ull, 0x8000ull, 0, 0, 1, RW, 0},
         {0x4083C000ull, 0x3C000ull, 0, 0, 1, RWX, 0},

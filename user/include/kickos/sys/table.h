@@ -61,7 +61,7 @@ enum kos_table_region_flags
     KOS_TABLE_REGION_PARTITION = 1 << 7
 };
 
-struct kos_service_cfg;
+struct kos_driver_instance;
 struct kos_table_task;
 
 // The entry the init passes each task, which its lookups take.
@@ -71,7 +71,7 @@ typedef struct kos_table_task kos_self_t;
 union kos_table_entry
 {
     void (*task)(kos_self_t const* self);
-    int (*driver)(struct kos_service_cfg const* cfg);
+    int (*driver)(struct kos_driver_instance* instance);
     uint64_t width;
 };
 

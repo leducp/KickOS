@@ -70,8 +70,8 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    // Can this board host `n` workers CONCURRENTLY, right now? Slots held by service-list
-    // drivers and arena room for each stack bound this as much as KICKOS_MAX_THREADS does.
+    // Can this board host `n` workers CONCURRENTLY, right now? Slots held by driver tasks
+    // and arena room for each stack bound this as much as KICKOS_MAX_THREADS does.
     // Call immediately before the real spawns; when wait_n returns every probe slot is
     // EXITED and every probe stack is back on the free list.
     bool pool_can_host(int n)

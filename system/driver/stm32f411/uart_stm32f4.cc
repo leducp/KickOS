@@ -5,7 +5,7 @@
 // RM0383 Rev 4 sec.19; no vendor HAL/CMSIS source.
 //
 // The instance base arrives in the cfg, so this one body serves any USART on the part; the
-// console channel is USART2, the only one a service list grants.
+// console channel is USART2, the only one a composition grants.
 //
 // Clock gating belongs to the kernel: RCC_APB1ENR (RM0383 sec.6.3.11) is an
 // arch_reserved_blocks entry no domain can be granted, and arch_init has already clocked the

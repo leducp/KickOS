@@ -25,7 +25,7 @@ Each mechanism's exact contract is `reference/architecture.md`, `console.md`, `i
 - **Console handover**: this entry recorded userspace drivers on two chips
   (`system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`). The set has since grown to ten
   driver directories, polled and IRQ-driven UARTs plus two USB CDC consoles; it is whatever
-  `grep -rln KOS_SVC_CONSOLE system/driver/` reports, counted per driver directory rather than per
+  a grep of `system/driver/` for the console service kind reports, counted per driver directory rather than per
   file. G1 survives only for the boards the 2.1 table below still marks GAP.
 - **Panic reclaim**: most of the fleet now carries a real body. The set is whatever
   `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/` lists; every chip NOT in it falls back
@@ -163,7 +163,7 @@ the bus/device split). What a driver CONTRACT looks like is section 3.
 
 ### G7. Driver-era enabler services (init CLOSED, power-manager OPEN)
 - **Init service: CLOSED.** The entry seam and a default init ship
-  (`system/include/kickos/sys/init.h`, `system/init/`): `kickos_init_entry`, a `KICKOS_INIT_PROVIDER`
+  (`system/include/kickos/sys/init.h`, `system/init/`): `kickos_init_entry`, an init-provider cache variable
   target knob, and a default body that walks the board's service list before the app's
   `kickos_app_main`. It was settled EARLY on purpose, because the entry rename is a consumer-facing
   breaking change that is cheap now and expensive later, and because it is what spawns
@@ -220,7 +220,7 @@ status.
 | mps2 / virt / microbit | semihosting (no peripheral) | QEMU | polled (semihosting) | N/A | -- |
 
 `select`-only: no board names that service list as its default, so the image runs the kernel-owned
-console unless configured with `-DKICKOS_SERVICE_LIST=<provider>` (`tests/static/service_lists.txt`).
+console unless configured with the service-list selection `<provider>` (the service-list table).
 
 STM32 driver note: the family splits into TWO register models, **old SR/DR** (F411 USART2, F103
 USART1) and **NEW ISR/TDR** (F302 USART2). One STM32 driver with a compile or runtime model select
@@ -286,7 +286,7 @@ tables plus a `main`: `kos_board_pinmap` (`{port, pin, func}` routing) and `kos_
 parameters (register base, grant window, priority, target hz, CS choice, I2C address) travel as DATA
 in `kos_service_cfg` rather than baked into the driver TU, so the SAME driver-class target serves N
 instances by config alone (the LPUART1..8 and N-SPI case). Each list and pinmap definition is one
-strong symbol chosen by a CMake target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud
+strong symbol chosen by a CMake target knob (the service-list selection knob / the pin-map selection knob), fail-loud
 on a missing or misspelled target: no runtime manifest and no silent fallback, which is the anti-CapDL
 tenet. **Per-BOARD today** (the in-tree `frdmk64f` and `xmc4800-relax` configs are REFERENCE
 EXAMPLES); the per-app / fleet rollout is future work.

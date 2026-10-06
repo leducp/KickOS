@@ -175,9 +175,11 @@ if(KICKOS_BOARD STREQUAL "picopi"
   add_subdirectory(blink)
 endif()
 
-# Its composition names the board's packaged USB CDC console driver; built where the service list
-# publishes the console over USB.
-if(KICKOS_USB_CONSOLE)
+# Its composition names the board's packaged USB CDC console driver.
+if((KICKOS_BOARD STREQUAL "picopi"
+    OR KICKOS_BOARD STREQUAL "pizero2350"
+    OR KICKOS_BOARD STREQUAL "teensy41")
+   AND NOT KICKOS_AMP_NODE)
   add_subdirectory(usbcdcwit)
 endif()
 

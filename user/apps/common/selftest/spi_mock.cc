@@ -8,9 +8,9 @@
 // t_bus_device_slots can prove a transfer on slot 0 still reads back slot 0's word size after
 // slot 1 was opened. With one global profile the second open would win.
 //
-// This TU holds the PUBLIC class names alone. A selftest image on a board whose service list
-// brings up an SPI driver also carries that chip engine, which is legal only because a service
-// driver renames its four class symbols; tests/static/check_class_backend.sh asserts it per link.
+// This TU holds the PUBLIC class names alone. A selftest image whose composition brings up an
+// SPI driver also carries that chip engine, which is legal only because a service driver
+// renames its four class symbols; tests/static/check_class_backend.sh asserts it per link.
 
 #include <kickos/driver/spi.h>
 

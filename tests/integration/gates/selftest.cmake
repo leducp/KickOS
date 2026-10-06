@@ -88,7 +88,7 @@ endif()
 # slice_preempts_every_core and threads_reach_every_core each release one thread MORE than the
 # machine has kernel cores, and both ask pool_can_host for exactly that number before spawning.
 # DERIVED and not a posture list. KICKOS_MAX_THREADS is the whole bound visible here; slots a
-# service-list driver holds are NOT, which is why the arms ask at runtime too.
+# driver task holds are NOT, which is why the arms ask at runtime too.
 set(_selftest_crowd 0)
 if(KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _selftest_crowd "${KICKOS_KERNEL_CORES} + 1")
@@ -196,8 +196,7 @@ if(KICKOS_ARCH STREQUAL "x86_64")
 endif()
 # cap_chunk_span needs main's table, a child's, WIDER than the chunk granule
 # (KICKOS_CAP_CHUNK_TARGET) to reach a segmented index. A child's width is
-# KICKOS_MAX_SPAWN_GRANTS + 1 and the tree's inbound reply peak, which cmake/cap_table.cmake
-# resolves after this directory is added, so the grant floor is what is readable here.
+# KICKOS_MAX_SPAWN_GRANTS + 1.
 math(EXPR _selftest_child_floor "${KICKOS_MAX_SPAWN_GRANTS} + 1")
 if(_selftest_child_floor LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
   list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
@@ -518,14 +517,6 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
   endif()
 endif()
 
-if(KICKOS_ARCH STREQUAL "sim")
-  add_test(
-    NAME    provider_alias
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_provider_alias.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-  kickos_host_gate(provider_alias TIMEOUT 300)
-endif()
-
 if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
   add_test(
     NAME    kernel_ctor_placement
@@ -547,14 +538,6 @@ set(_seam_archives "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_lib>"
 if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
   list(APPEND _seam_archives "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
 endif()
-foreach(_lib ${KICKOS_INIT_PROVIDER} ${KICKOS_SERVICE_LIST_LIBS} ${KICKOS_BOARD_PINMAP_LIBS})
-  if(TARGET ${_lib})
-    get_target_property(_lib_type ${_lib} TYPE)
-    if(_lib_type STREQUAL "STATIC_LIBRARY")
-      list(APPEND _seam_archives "$<TARGET_FILE:${_lib}>")
-    endif()
-  endif()
-endforeach()
 # The CLASS BACKEND this image actually linked, which is outside the rescan group by
 # construction (it must precede it) and so is in none of the lists above. Without it the
 # shadowing legs below cannot see the very definition they exist to protect: MEASURED, a

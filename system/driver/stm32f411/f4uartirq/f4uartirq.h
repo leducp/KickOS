@@ -28,24 +28,17 @@
 #ifndef KICKOS_DRIVER_STM32F411_F4UARTIRQ_H
 #define KICKOS_DRIVER_STM32F411_F4UARTIRQ_H
 
-#include <kickos/sys/service.h> // kos_service_cfg (the bring-up config)
-
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    // Privileged one-shot bring-up: ONCE, before any client runs. Needs AUTH_MEMORY,
-    // AUTH_CONSOLE and AUTH_IRQ, so it runs as root, not as the driver.
-    //
-    // `cfg` carries the USART2 window base/size, the baud in cfg->hz (0 = 115200) and the
-    // SERVICE thread priority in cfg->prio; the IRQ thread is spawned at cfg->prio + 1, so
-    // cfg->prio must be below the priority ceiling and at or above every stdout client (no
-    // PI on a rendezvous). cfg->kind must be KOS_SVC_CONSOLE.
-    //
-    // A failure path must close the endpoint before reporting: past the publish, a
-    // kernel-console write is dropped and the report never reaches the wire.
-    int f4uartirq_console_start(struct kos_service_cfg const* cfg);
+    struct kos_driver_instance;
+
+    // The driver's START. The IRQ thread runs one priority above the task's, which must be
+    // below the priority ceiling and at or above every stdout client's (no PI on a
+    // rendezvous). Returns 0, or -1 on any failure.
+    int f4uartirq_console_start(struct kos_driver_instance* instance);
 
 #ifdef __cplusplus
 }

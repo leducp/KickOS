@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The root thread's entry, app-side (see <kickos/sys/init.h> for why). Lives in
-// libkickos_user.a: kmain names it unconditionally, so a build selecting its own
-// KICKOS_INIT_PROVIDER cannot take the definition away.
+// libkickos_user.a: kmain names it unconditionally.
 
 #include <kickos/sys/abi.h> // KOS_SYS_SHUTDOWN, KOS_SYS_PANIC
 #include <kickos/sys/init.h>
@@ -34,7 +33,6 @@ extern "C"
 
 extern "C" void kickos_root_entry(void*)
 {
-    kickos_root_lower();
 #if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
     // Before the ctors below, one of which may throw.
     if (__register_frame != nullptr)

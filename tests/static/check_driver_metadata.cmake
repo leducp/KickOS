@@ -137,7 +137,7 @@ endforeach()
 foreach(_want ".thread_name = {\"off\", nullptr}" ".line_count = 3" ".window_count = 1"
               ".notify = true" ".block_size = 1024u" ".block_flags = 0u" ".cap_count = {2, 2}" ".badged = {0, 1}"
               ".receiver = 1"
-              "extern \"C\" int uart_console_start(struct kos_service_cfg const* cfg);")
+              "extern \"C\" int uart_console_start(struct kos_driver_instance* instance);")
   string(FIND "${_header}" "${_want}" _at)
   if(_at EQUAL -1)
     message(FATAL_ERROR "FAIL: the generated header lacks `${_want}`:\n${_header}")

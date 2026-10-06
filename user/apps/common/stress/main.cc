@@ -148,7 +148,7 @@ namespace
 
     // Concurrent thread budget = how many prober threads can be live at once. Root holds a
     // pool slot the whole run and the pool is sized one above KICKOS_MAX_THREADS, so this
-    // still reaches KICKOS_MAX_THREADS minus whatever the service list holds. Spawn until
+    // still reaches KICKOS_MAX_THREADS minus whatever driver tasks hold. Spawn until
     // refused, then release + join them all, leaving the pool empty again.
     int probe_budget()
     {

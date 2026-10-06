@@ -22,13 +22,11 @@
 #include <kickos/driver/spi.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/emit.h> // publish-aware write; kos_print is dropped once published
-#include <kickos/sys/service.h>
 #include <kickos/sys/spi_service.h>
 
 #include <kickos/chip_mmap.h>
 
 #include <stdint.h>
-#include <stdlib.h>
 
 namespace drv = kickos::driver;
 namespace spi = kickos::spi;
@@ -37,27 +35,15 @@ namespace declared = kickos::driver::declared::xmcssc;
 
 namespace
 {
-    constexpr int USIC0_SR1_IRQ = 85; // RM Table 4-3
-    constexpr uint16_t USIC0_SR1_INDEX = 1;
-
-    // KOS_CAP_NONE = not up, or already taken.
-    kos_cap_t g_spi0_ep = KOS_CAP_NONE;
-
     // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. Diagnostics go through
     // emit, not kos_print: the console is already USER_OWNED here, so the kernel chip path drops
     // every byte.
-    //
-    // NO FAILURE PATH MAY exit on a service list: root KEEPS a WAIT-bearing cap on E under
-    // KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies, the
-    // last-receiver-gone wake never fires, and a client parked in kos_call would block forever.
-    // A bring-up refusal panics there, and traps under the init, which handles the death.
-    // serve_loop returns only once its receive fails, which means no client is parked.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
         // the first receive event needs.
         struct kos_spi_bus_config cfg;
-        cfg.irq_index = drv::line_index_of(drv::thread_start(arg));
+        cfg.irq_index = drv::line_index_of(arg);
         cfg.base = mmap::USIC0_CH1_BASE;
         cfg.ep = KOS_CAP_NONE; // a local engine reaches no endpoint
         cfg.irq = spi::KOS_SPI_CAP_LINE;
@@ -72,8 +58,7 @@ namespace
         {
             kickos::emit("[xmcssc] ERROR: channel bring-up refused (a PV register store was "
                          "discarded)\n");
-            drv::trap_under_init();
-            kos_panic("[xmcssc] channel bring-up refused (see the ERROR line above)");
+            drv::trap();
         }
 
         kickos::emit("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
@@ -81,25 +66,23 @@ namespace
         (void)spi::serve_loop(&bus);
 
         (void)kos_spi_bus_close(&bus);
-        drv::trap_under_init();
-        exit(0);
+        drv::trap();
     }
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[xmcssc] ",
-        // The thread drives U0C1 at this base, so a cfg naming the sibling channel would grant
-        // one window and program the other. The console owns U0C0.
+        // The thread drives U0C1 at this base, so an instance naming the sibling channel would
+        // grant one window and program the other. The console owns U0C0.
         .expected_base = mmap::USIC0_CH1_BASE,
         .block_size = declared::k_declared.block_size,
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
         .ep_posture = declared::k_declared.ep_posture,
-        .svc_kind = KOS_SVC_SPI,
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
         // EDGE: the receive flags are W1C'd by the engine before it acks.
-        .lines = {{USIC0_SR1_IRQ, KOS_IRQ_EDGE, USIC0_SR1_INDEX}},
+        .lines = {{KOS_IRQ_EDGE}},
         // No register access by root: it holds no DEV region at all (ARCH_MPU_DEV is attached
         // only by thread_create_call), so this thread is the only one that can address the channel.
         // USIC0's module clock is already ungated by the console (U0C0) bring-up.
@@ -126,17 +109,8 @@ namespace
 
 extern "C"
 {
-    kos_cap_t xmc_spi0_take_endpoint(void)
+    int xmc_spi0_start(struct kos_driver_instance* instance)
     {
-        kos_cap_t const ep = g_spi0_ep;
-        g_spi0_ep = KOS_CAP_NONE; // one-shot: device slots are caller-named, so ONE client only
-        return ep;
-    }
-
-    // Root KEEPS the full-rights cap so the app, on the same thread and table, can delegate a
-    // SIGNAL-narrowed copy to each client.
-    int xmc_spi0_start(struct kos_service_cfg const* cfg)
-    {
-        return drv::bring_up(k_desc, cfg, &g_spi0_ep);
+        return drv::bring_up(k_desc, instance);
     }
 }

@@ -150,7 +150,7 @@ namespace
     constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
 
     // The window arch_console_reclaim rewrites, and the one a userspace console driver is
-    // granted (system/init/esp32c6-wroom/service_list_uartirq.cc). ONE constant: a reclaim
+    // granted (c6uart). ONE constant: a reclaim
     // reaching outside the window it reports would rewrite registers whose holder was
     // never checked. UART1 sits at base + 0x1000, outside it.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
