@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Publish-aware console write for freestanding diagnostic apps (no libc stdio, no heap).
+// The one stdout writer: kos_print (user/src/print.cc), libc's _write (user/src/newlib_stubs.cc)
+// and the TAP harness (tests/tap/tap.cc) all write through stdout_write below. An app calls
+// kos_print; the names here are its implementation.
 //
 // Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
 // console for the unsent remainder when index 0 is empty (-KOS_EBADF), or nothing serves the
 // published console (-KOS_EAGAIN, -KOS_ECONNREFUSED): a driver's task that ended, or its
 // endpoint gone. A receiver taking fewer bytes than a chunk, none included, is offered the rest
-// again on the endpoint. kos_print alone is not enough: console_emit drops every byte handed
-// to the kernel console once the UART is USER_OWNED (kernel/init/console.cc). The kernel console
-// answers -KOS_EBUSY where a publish landed between the two and index 0 takes the line again,
-// and the remainder is sent there. A task that set O_NONBLOCK is answered -KOS_ETIMEDOUT by
-// either where it would wait, and the write stops there.
-//
-// libc's _write (user/src/newlib_stubs.cc) and the TAP harness (tests/tap/tap.cc) write
-// through stdout_write below.
+// again on the endpoint. The kernel console alone is not enough: console_emit drops every byte
+// handed to it once the UART is USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where
+// a publish landed between the two and index 0 takes the line again, and the remainder is sent
+// there. A task that set O_NONBLOCK is answered -KOS_ETIMEDOUT by either where it would wait,
+// and the write stops there.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H

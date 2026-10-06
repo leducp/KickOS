@@ -16,7 +16,7 @@
 # terminal report is witnessed here; every other panic gate runs semihosted and unbuffered.
 # Case 2 covers the f302nucleo defect shape: a fault reporter that produces no dump.
 #
-# The load-bearing anti-vacuity assertion is the NEGATIVE one: the app's kos_print
+# The load-bearing anti-vacuity assertion is the NEGATIVE one: the app's raw kernel console
 # witness must be ABSENT. console_emit drops kernel-console writes while the console is
 # USER_OWNED, so its absence is what proves the handover really happened. Without it a
 # regression that skipped the publish entirely would still pass here.

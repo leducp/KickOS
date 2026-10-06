@@ -3,22 +3,16 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # A capture of usbcdcwit (user/apps/common/usbcdcwit) over the board's own USB CDC console: the
-# driver accepted every byte pushed past a full ring, with no error. Nothing listens on that
-# transport before the image boots, so the kernel banner never reaches it; the app's own commit
-# line opens the boot that is read.
+# driver accepted every byte pushed past a full ring, with no error. The kernel banner never
+# reaches that console, and the identity rows its driver opens the host's stream with
+# (kickos/sys/banner_identity.h) open what is read.
 #
 #   KOS_CAPTURE=<log> check_usbcdcwit.sh <board-build> <kickos-source> <cmake>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-if ! judging_capture; then
-    jfail no-capture "no KOS_CAPTURE: usbcdcwit is judged from a capture only"
-fi
-[ -s "$KOS_CAPTURE" ] || jfail no-capture "no capture at $KOS_CAPTURE"
-_at="$(tr -d '\r' < "$KOS_CAPTURE" | awk '/^\[usbcdcwit\] commit / { at = NR } END { print at }')"
-[ -n "$_at" ] || jfail commit "the capture carries no usbcdcwit commit line, so no boot in it can be read"
-OUT="$(tr -d '\r' < "$KOS_CAPTURE" | sed -n "${_at},\$p")"
+judge_capture usbcdcwit
 
 jno_panic "a panic on usbcdcwit's path"
 if has '^\[usbcdcwit\] FAIL'; then

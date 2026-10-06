@@ -48,6 +48,12 @@
 /* The frame term where nothing interrupts: a class ending in the masked switch. */
 #define KICKOS_X86_64_TRAP_FRAME_NONE 0
 
+/* A ring 3 entry writes nothing on the thread's own stack: the syscall entry leaves it with no
+ * push or dereference, the interrupt gate delivers onto rsp0 or an IST slot, and -mno-red-zone
+ * leaves no live byte below rsp. */
+#define KICKOS_X86_64_TRAP_ENTRY_FRAME 0
+#define KICKOS_X86_64_TRAP_NEED_USER 0
+
 /* IRQ, IRQK and the frame term of every class an interrupt lands under. 408 on
  * qemu-x86_64-bench under g++ 13 and 344 under g++ 16, a timer expiry's wake re-arming the
  * slice through pick_and_seat, whose switch loads the incoming port set. 544 on qemu-x86_64

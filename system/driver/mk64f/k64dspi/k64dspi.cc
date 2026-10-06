@@ -21,7 +21,6 @@
 #include <kickos/driver/declared/k64dspi.h>
 #include <kickos/driver/spi.h>
 #include <kickos/sys/driver_service.h>
-#include <kickos/sys/emit.h> // publish-aware write; kos_print is dropped once published
 #include <kickos/sys/spi_service.h>
 
 #include <stdint.h>
@@ -48,13 +47,11 @@ namespace
         int32_t const opened = kos_spi_bus_open(&bus, &cfg);
         if (opened < 0)
         {
-            // emit, not kos_print: the console is already USER_OWNED here, so the kernel
-            // chip path drops every byte.
-            kickos::emit("[k64dspi] ERROR: bus bring-up refused, DSPI0 unreachable\n");
+            kos::print("[k64dspi] ERROR: bus bring-up refused, DSPI0 unreachable\n");
             drv::trap();
         }
 
-        kickos::emit("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)\n");
+        kos::print("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)\n");
 
         (void)spi::serve_loop(&bus);
 
@@ -101,7 +98,7 @@ extern "C"
         int32_t const muxed = k64dspi_bus_mux(instance->mmio_base);
         if (muxed != 0)
         {
-            kickos::emit("[k64dspi] ERROR: the board bus over the DSPI window was not muxed\n");
+            kos::print("[k64dspi] ERROR: the board bus over the DSPI window was not muxed\n");
             return muxed;
         }
         return drv::bring_up(k_desc, instance);

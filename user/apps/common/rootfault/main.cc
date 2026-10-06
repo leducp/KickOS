@@ -23,9 +23,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>   // emit: kos_print is dropped once the console is published
-
-using kickos::emit;
 
 namespace
 {
@@ -42,14 +39,14 @@ namespace
         // and not merely its position in program order: read the cell back first.
         if (*own != 0x1111)
         {
-            emit("[rootfault] ERROR: the child's own write did not stick\n");
+            kos::print("[rootfault] ERROR: the child's own write did not stick\n");
             kos_sem_post(CH_DONE);
             return;
         }
-        emit("[rootfault] child: wrote my own granted region\n");
+        kos::print("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
         kos_sem_wait(CH_DONE); // park: keep A's domain alive under main's write
-        emit("[rootfault] ERROR: child unparked\n");
+        kos::print("[rootfault] ERROR: child unparked\n");
     }
 }
 
@@ -62,7 +59,7 @@ int main(int, char**)
     int const done_rc = kos_sem_create(0, &done);
     if (rA == nullptr or done_rc != 0)
     {
-        emit("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
+        kos::print("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
         return 1;
     }
 
@@ -76,7 +73,7 @@ int main(int, char**)
                                              /*privileged=*/false, rA, 4096);
     if (not child.valid())
     {
-        emit("[rootfault] ERROR: child spawn refused\n");
+        kos::print("[rootfault] ERROR: child spawn refused\n");
         return 1;
     }
     kos_sem_wait(done); // the child wrote A and parked: the control half passed
@@ -89,11 +86,11 @@ int main(int, char**)
     ksnprintf(msg, sizeof(msg),
               "[rootfault] main: writing the child's granted region at %p (expect fault)\n",
               rA);
-    emit(msg);
+    kos::print(msg);
     *static_cast<volatile int*>(rA) = 0x2222;
 
     // Reached ONLY where nothing is enforced; "NOT confined" is the gate's FAIL marker.
-    emit("[rootfault] cross-domain write completed: main is NOT confined "
-         "(no enforcement)\n");
+    kos::print("[rootfault] cross-domain write completed: main is NOT confined "
+               "(no enforcement)\n");
     return 0;
 }

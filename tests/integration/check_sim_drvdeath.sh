@@ -15,7 +15,7 @@
 # console_on_driver_death, run by exit_current AFTER cap_teardown so every IRQ cap is
 # dropped and every line masked before the device is re-initialised.
 #
-# The assertion is a PAIR from the SAME kos_print call site:
+# The assertion is a PAIR from the SAME raw kernel console write:
 #   BEFORE the death: absent  (dropped; proves the handover really happened)
 #   AFTER  the death: present (the reclaimed polled route carries it)
 # Either half alone is passable by a regression. The app waits for the init's report of the

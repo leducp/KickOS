@@ -1117,6 +1117,11 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_libnosys.sh" --self-test)
   set_tests_properties(no_libnosys_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
+  _add_test(NAME string_provider_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_string_provider.sh"
+                    --self-test "${CMAKE_C_COMPILER}" "${CMAKE_AR}" "${CMAKE_NM}")
+  set_tests_properties(string_provider_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME selftest_manifest_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_selftest_manifest.sh" --self-test)
   set_tests_properties(selftest_manifest_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
@@ -1228,9 +1233,18 @@ if(KICKOS_BUILD_TESTS)
                       "${PROJECT_BINARY_DIR}" tables "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}/generated/include"
               WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(platform_tables PROPERTIES TIMEOUT 300 LABELS "host;tree")
+    _add_test(NAME usb_identity_controls
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_usb_identity.sh"
+                      "${CMAKE_CXX_COMPILER}"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(usb_identity_controls PROPERTIES TIMEOUT 120 LABELS "host;tree")
   endif()
 
 endif()
+
+# The version and board the boot banner names, and the identity rows a USB device console repeats
+# (kickos/sys/banner_identity.h) name too.
+set(KICKOS_BANNER_IDENTITY KICKOS_VERSION="${KICKOS_VERSION}" KICKOS_BOARD_NAME="${KICKOS_BOARD}")
 
 foreach(_dir lib arch kernel user system)
   add_subdirectory(${_dir})
@@ -1378,6 +1392,10 @@ if(TARGET kickos_kernel)
   add_library(kickos_kernel_leaf INTERFACE)
   set_target_properties(kickos_kernel_leaf PROPERTIES EXPORT_NAME kernel)
   target_link_libraries(kickos_kernel_leaf INTERFACE kickos_core)
+  if(TARGET kickos_string)
+    kickos_export_name(kickos_string _kickos_string_name)
+    target_link_libraries(kickos_kernel_leaf INTERFACE "$<TARGET_OBJECTS:${_kickos_string_name}>")
+  endif()
   # Every system target's table defines the symbol (<kickos/sys/table.h>), so a link of none
   # fails naming it and a link of two fails on its second definition.
   target_link_options(kickos_kernel_leaf INTERFACE

@@ -315,9 +315,9 @@ namespace
 
 extern "C"
 {
-    // Unprivileged console driver: drain the published endpoint to the "wire". The
-    // kos::print diagnostic is DROPPED on a published board; the banner written straight
-    // to the wire survives.
+    // Unprivileged console driver: drain the published endpoint to the "wire". The kernel
+    // console diagnostic is DROPPED on a published board; the banner written straight to the
+    // wire survives.
     //
     // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver parked in
     // kos_recv when the last SIGNAL holder goes, so this loop parks forever unless
@@ -325,7 +325,8 @@ extern "C"
     void simconsole_driver(void* arg)
     {
         (void)arg; // records the posture; the thread takes no arg
-        kos::print("[simcon] kos::print diagnostic (kernel console path, dropped post-publish)\n");
+        char const diag[] = "[simcon] kernel console diagnostic (dropped post-publish)\n";
+        (void)kos_kconsole_write(diag, sizeof(diag) - 1u); // a dropped line is the measurement
         wire_puts("[simcon] driver up (host fd 1)\n");
 
 #if defined(KICKOS_SIMCON_DIE_AT_BRINGUP) && KICKOS_SIMCON_DIE_AT_BRINGUP
@@ -427,7 +428,9 @@ extern "C"
             kos::print("[simcon] ERROR: console_publish failed\n");
             return pub;
         }
-        kos::print("[simcon] wedge: post-publish kernel write (must NOT reach the wire)\n");
+        char const wedge[]
+            = "[simcon] wedge: post-publish kernel write (must NOT reach the wire)\n";
+        (void)kos_kconsole_write(wedge, sizeof(wedge) - 1u); // a dropped line is the measurement
         auto const irqt = spawn_window_thread(simconsole_wedge_thread, in->ceiling, "simconirq", task);
         if (not irqt.valid())
         {

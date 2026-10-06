@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-[usbcdcwit] commit 0123abcd
+   KickOS 0.5.1  -  microkernel RTOS
+   board   picopi
+   commit  0123abcd
 [usbcdcwit] accepted=16384 of 16384 err=0 maxzero=3
 [usbcdcwit] tx=16384 drop=0 queued=16384 wakes=212 spurious=0
 [usbcdcwit] PASS (sustained output past a full ring)

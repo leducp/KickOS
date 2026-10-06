@@ -11,8 +11,7 @@
 
 namespace kos
 {
-    // Debug console output (see kos_print): the developer escape hatch, not
-    // stdout. Ordinary output = libc stdio over a userspace console driver.
+    // kos_print: the whole line to stdout, as libc's write(1) sends it.
     inline void print(char const* s)
     {
         kos_print(s);

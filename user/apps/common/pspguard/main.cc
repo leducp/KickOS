@@ -52,7 +52,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 
 // An undefined macro evaluates as 0 in the #if ladder below, i.e. as mode 0.
 #ifndef KICKOS_PSPGUARD_MODE
@@ -77,8 +76,6 @@
 #if KICKOS_PSPGUARD_MODE == 6 && KICKOS_HAVE_MPU
 #error "pspguard mode 6 needs a board that carves blocks and does NOT enforce: with enforcement the hardware refuses the entry stacking first and the block leg is never reached"
 #endif
-
-using kickos::emit;
 
 #if KICKOS_PSPGUARD_MODE == 6
 // The RUNNING thread's kernel block top (arch/arch.h). Already exported for the fault path, so
@@ -244,10 +241,12 @@ namespace
         }
         if (blown)
         {
-            emit("[pspguard] [lazyfp] CORRUPTED: a lazy FP save fired through the refused frame\n");
+            kos::print("[pspguard] [lazyfp] CORRUPTED: a lazy FP save fired through the refused "
+                       "frame\n");
             return;
         }
-        emit("[pspguard] [lazyfp] INTACT: the pending lazy FP save was discarded with the thread\n");
+        kos::print("[pspguard] [lazyfp] INTACT: the pending lazy FP save was discarded with the "
+                   "thread\n");
     }
 #endif
 
@@ -284,7 +283,7 @@ namespace
 #endif
         ksnprintf(msg, sizeof(msg), "[pspguard] ok - sp low bits read back as %u\n",
                   static_cast<unsigned>(sp_low & 3u));
-        emit(msg);
+        kos::print(msg);
 
 #if KICKOS_PSPGUARD_MODE == 6
         // The block top is this thread's own, so it is read HERE and not by main.
@@ -292,7 +291,7 @@ namespace
         uintptr_t const top = kickos_fault_stack_top();
         if (top == 0 or top <= KICKOS_KERNEL_STACK_SIZE)
         {
-            emit("[pspguard] ERROR: no kernel block seated, so there is none to park in\n");
+            kos::print("[pspguard] ERROR: no kernel block seated, so there is none to park in\n");
             return;
         }
         uintptr_t const base = top - KICKOS_KERNEL_STACK_SIZE;
@@ -300,7 +299,7 @@ namespace
         // layout it expects instead of letting a moved block report as another leg.
         if (base >= a->stack_lo)
         {
-            emit("[pspguard] ERROR: the kernel block is not below stack_lo\n");
+            kos::print("[pspguard] ERROR: the kernel block is not below stack_lo\n");
             return;
         }
         aw->canary_at = base;
@@ -312,7 +311,7 @@ namespace
                   static_cast<unsigned>(KICKOS_PSPGUARD_MODE),
                   static_cast<unsigned>(a->stack_lo), static_cast<unsigned>(a->stack_hi),
                   static_cast<unsigned>(target));
-        emit(msg);
+        kos::print(msg);
 
 #if KICKOS_PSPGUARD_MODE == 1
         // Laid at the NORMAL sp, far above it, so nothing this thread does afterwards writes it.
@@ -370,7 +369,7 @@ namespace
 #if KICKOS_PSPGUARD_MODE == 5
         // The gate matches this line and both verdicts below, so it reads an answer rather than
         // inferring one from a missing line. The acceptance must stay AHEAD of them.
-        emit("[pspguard] accepted: the syscall trap ran on the low-edge sp\n");
+        kos::print("[pspguard] accepted: the syscall trap ran on the low-edge sp\n");
         bool corrupt = false;
         for (uint32_t i = 0; i < BAND_BYTES / 4u; i++)
         {
@@ -381,13 +380,13 @@ namespace
         }
         if (corrupt)
         {
-            emit("[pspguard] [lowband] CORRUPTED: the dispatch ran below the parked sp\n");
+            kos::print("[pspguard] [lowband] CORRUPTED: the dispatch ran below the parked sp\n");
             return;
         }
-        emit("[pspguard] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
+        kos::print("[pspguard] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
         return;
 #else
-        emit("[pspguard] ERROR: the syscall trap accepted a PSP it must refuse\n");
+        kos::print("[pspguard] ERROR: the syscall trap accepted a PSP it must refuse\n");
 #endif
 #else
         uint32_t const before = g_ticks;
@@ -437,10 +436,10 @@ namespace
 
         if (observed == before)
         {
-            emit("[pspguard] ERROR: no switch landed while the PSP was out of bounds\n");
+            kos::print("[pspguard] ERROR: no switch landed while the PSP was out of bounds\n");
             return;
         }
-        emit("[pspguard] ERROR: the switcher saved through a PSP it must refuse\n");
+        kos::print("[pspguard] ERROR: the switcher saved through a PSP it must refuse\n");
 #endif
     }
 }
@@ -457,13 +456,13 @@ int main(int, char**)
     void* const pad_hi = kos_ram_alloc(PAD_BYTES);
     if (pad_lo == nullptr or pad_hi == nullptr)
     {
-        emit("[pspguard] ERROR: arena ram_alloc refused a landing pad\n");
+        kos::print("[pspguard] ERROR: arena ram_alloc refused a landing pad\n");
         return 1;
     }
 #endif
     if (st == nullptr)
     {
-        emit("[pspguard] ERROR: arena ram_alloc refused (main AUTH_MEMORY seat?)\n");
+        kos::print("[pspguard] ERROR: arena ram_alloc refused (main AUTH_MEMORY seat?)\n");
         return 1;
     }
     g_arm.stack_lo = reinterpret_cast<uintptr_t>(st);
@@ -486,14 +485,14 @@ int main(int, char**)
 
     if (g_arm.target == 0)
     {
-        emit("[pspguard] ERROR: no arm target computed\n");
+        kos::print("[pspguard] ERROR: no arm target computed\n");
         return 1;
     }
 #if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
     if (not tk.valid())
     {
-        emit("[pspguard] ERROR: ticker spawn refused\n");
+        kos::print("[pspguard] ERROR: ticker spawn refused\n");
         return 1;
     }
 #endif
@@ -502,7 +501,7 @@ int main(int, char**)
                             mem, mem_size, st, STACK_BYTES);
     if (not w.valid())
     {
-        emit("[pspguard] ERROR: wild spawn refused\n");
+        kos::print("[pspguard] ERROR: wild spawn refused\n");
         return 1;
     }
     w.join();
@@ -522,7 +521,7 @@ int main(int, char**)
                             /*privileged=*/false, st, STACK_BYTES);
     if (not fc.valid())
     {
-        emit("[pspguard] ERROR: fpcheck spawn refused\n");
+        kos::print("[pspguard] ERROR: fpcheck spawn refused\n");
         return 1;
     }
     fc.join();
@@ -533,22 +532,22 @@ int main(int, char**)
     // the park left canary_at at zero and has witnessed nothing.
     if (g_arm.canary_at == 0)
     {
-        emit("[pspguard] ERROR: the wild thread never parked inside its block\n");
+        kos::print("[pspguard] ERROR: the wild thread never parked inside its block\n");
         return 1;
     }
     uint32_t const now = *reinterpret_cast<volatile uint32_t*>(g_arm.canary_at);
     if (now != g_arm.canary_was)
     {
-        emit("[pspguard] [kcanary] CORRUPTED: the switcher saved through an in-block PSP\n");
+        kos::print("[pspguard] [kcanary] CORRUPTED: the switcher saved through an in-block PSP\n");
         return 1;
     }
-    emit("[pspguard] [kcanary] INTACT: the block leg refused the PSP before the save\n");
+    kos::print("[pspguard] [kcanary] INTACT: the block leg refused the PSP before the save\n");
 #endif
     // MAIN OUTLIVING THE REFUSAL IS THE CLAIM, and the join is what carries it: the wild
     // thread reached its death point instead of the whole system reaching one. That the
     // thread died SLAIN and not by returning normally is the wild arm's own verdicts, none of
     // which reached the wire. A backend that does not contain never gets here at all.
-    emit("[pspguard] contained: the wild thread was slain and main outlived it\n");
+    kos::print("[pspguard] contained: the wild thread was slain and main outlived it\n");
     return 0;
 #endif
 }

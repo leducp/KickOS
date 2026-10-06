@@ -23,7 +23,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
 
@@ -78,7 +77,7 @@ namespace
         char s[96];
         ksnprintf(s, sizeof(s), "[pvprobe] %s %s=0x%x\n", tag, reg,
                   static_cast<unsigned>(val));
-        kickos::emit(s);
+        kos::print(s);
     }
 
     // Write through the privileged-write seam + read back: the reference for what a write
@@ -97,7 +96,7 @@ namespace
         char s[120];
         ksnprintf(s, sizeof(s), "[pvprobe] seam %s: rc=%d wrote=0x%x read=0x%x %s\n", reg,
                   rc, static_cast<unsigned>(val), static_cast<unsigned>(got), v);
-        kickos::emit(s);
+        kos::print(s);
     }
 
     // Unprivileged write + read-back. The "writing" line is emitted BEFORE the store so
@@ -108,7 +107,7 @@ namespace
         char s[112];
         ksnprintf(s, sizeof(s), "[pvprobe] unpriv %s: pre=0x%x writing 0x%x ...\n", reg,
                   static_cast<unsigned>(pre), static_cast<unsigned>(val));
-        kickos::emit(s);
+        kos::print(s);
 
         r32(addr) = val;
 
@@ -124,23 +123,23 @@ namespace
         }
         ksnprintf(s, sizeof(s), "[pvprobe] unpriv %s: post=0x%x %s\n", reg,
                   static_cast<unsigned>(post), v);
-        kickos::emit(s);
+        kos::print(s);
     }
 
 }
 
 extern "C" void pvprobe_main(kos_self_t const* self)
 {
-    kickos::emit("[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)\n");
+    kos::print("[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)\n");
     kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < WINDOW_BYTES)
     {
-        kickos::emit("[pvprobe] ERROR: no /dev/usic0/ch1 window\n");
+        kos::print("[pvprobe] ERROR: no /dev/usic0/ch1 window\n");
         exit(1);
     }
 
-    kickos::emit("[pvprobe] unprivileged probe up (granted U0C1 window 0x200)\n");
+    kos::print("[pvprobe] unprivileged probe up (granted U0C1 window 0x200)\n");
 
     // KSCFG is U,PV: with MODEN=0 the channel is inaccessible for read AND write
     // except through KSCFG, so a dropped write measured before this point would be a
@@ -152,7 +151,7 @@ extern "C" void pvprobe_main(kos_self_t const* self)
     __asm volatile("" : : "r"(kscfg) : "memory");
     show("unpriv", "KSCFG", kscfg); // BPMODEN is a write-enable and reads back 0
 
-    kickos::emit("[pvprobe] baseline through the seam: pattern B\n");
+    kos::print("[pvprobe] baseline through the seam: pattern B\n");
     seam_write("FDR", win, off::FDR, FDR_B);
     seam_write("BRG", win, off::BRG, BRG_B);
     seam_write("CCR", win, off::CCR, CCR_B);
@@ -167,7 +166,7 @@ extern "C" void pvprobe_main(kos_self_t const* self)
 
     // The same three registers, same thread, same window, through the seam: these
     // must now read back as A.
-    kickos::emit("[pvprobe] pattern A through the seam (expect exact)\n");
+    kos::print("[pvprobe] pattern A through the seam (expect exact)\n");
     seam_write("FDR", win, off::FDR, FDR_A);
     seam_write("BRG", win, off::BRG, BRG_A);
     seam_write("CCR", win, off::CCR, CCR_A);
@@ -190,7 +189,7 @@ extern "C" void pvprobe_main(kos_self_t const* self)
               "[pvprobe] mask refusal: CCR|TBIEN rc=%d (want -%d), pre=0x%x post=0x%x %s\n",
               off_mask, KOS_EINVAL, static_cast<unsigned>(ccr_pre),
               static_cast<unsigned>(ccr_post), mask_v);
-    kickos::emit(s1);
+    kos::print(s1);
 
     // Off the allowlist: same held window, an offset the chip does not table. SCTR is
     // U,PV, so it is writable directly and the seam tables it nowhere.
@@ -202,15 +201,15 @@ extern "C" void pvprobe_main(kos_self_t const* self)
     ksnprintf(s2, sizeof(s2),
               "[pvprobe] refusals: off-allowlist rc=%d (want -%d), unheld-window rc=%d (want -%d)\n",
               off_list, KOS_EINVAL, unheld, KOS_EPERM);
-    kickos::emit(s2);
+    kos::print(s2);
 
-    kickos::emit("[pvprobe] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
+    kos::print("[pvprobe] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
     uint32_t const leaked = r32(SCU_CGATCLR0);
 
     char s[112];
     ksnprintf(s, sizeof(s),
               "[pvprobe] UNGRANTED ACCESS DID NOT FAULT (SCU=0x%x): MPU not enforcing\n",
               static_cast<unsigned>(leaked));
-    kickos::emit(s);
+    kos::print(s);
     exit(1);
 }

@@ -239,8 +239,16 @@ The console route is derived from the image. Every system target defines
 console, `rpusb` or `rt1062usb`, which is also what brings the USB clock tree up in its chip init;
 `usb_console_image` in `tools/bench/board-rows.sh` reads its value from the ELF, and such an image
 is captured over the device's own ACM. The selftest's `selftest_rpusb` on `picopi` and `pizero2350`
-and `selftest_rt1062usb` on `teensy41` are those images. `CONSOLE_PIN=1` forces the pin console
-back, for a device-controller backend that dies before it publishes.
+and `selftest_rt1062usb` on `teensy41`, `usbcdcwit` and `wallclock_usb` are those images.
+`CONSOLE_PIN=1` forces the pin console back, for a device-controller backend that dies before it
+publishes.
+
+The kernel banner never reaches that console, so the driver opens the host's stream, at each
+configuration, with the banner's identity rows: title, board and commit, in `kbanner`'s formats
+from the same version, board and stamped label (`<kickos/sys/banner_identity.h>`). `bench.sh`
+refuses a capture on that route whose last identity block does not name the build it flashed
+(`identity_verdict`, `tools/bench/banner.sh`), and a judge's capture reads from that block as it
+would from a banner.
 
 ## `fpclass` on the RX72M is captured under both presets
 

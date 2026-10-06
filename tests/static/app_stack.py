@@ -234,11 +234,15 @@ def tls_carve(map_path):
         ' are unknown' % map_path)
 
 
+# The map is named for the linked file, so an executable suffix (x86_64's .efi) comes before
+# .map.
 def find_map(build_dir, image):
+    named = re.compile(re.escape(image) + r'(\.[A-Za-z0-9]+)?\.map$')
     hits = []
     for root, _dirs, files in os.walk(build_dir):
-        if image + '.map' in files:
-            hits.append(os.path.join(root, image + '.map'))
+        for f in files:
+            if named.match(f):
+                hits.append(os.path.join(root, f))
     if len(hits) > 1:
         die('%d link maps named %s.map under %s' % (len(hits), image, build_dir))
     if hits:

@@ -13,8 +13,8 @@
 # record satisfies presence and fails this.
 #
 # A real handover is a PREMISE here, tested across rather than proven: the route being real is
-# sim_published_panic's negative assertion, where the app's kos_print witness must be ABSENT
-# for the kernel chip path to be dark.
+# sim_published_panic's negative assertion, where the app's raw kernel console witness must be
+# ABSENT for the kernel chip path to be dark.
 #
 # usage: check_sim_faultsurvive_pub.sh <faultsurvive_published>
 

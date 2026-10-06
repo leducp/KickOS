@@ -9,7 +9,7 @@
 # `stdout: kernel`, where cap index 0 is unseated and the endpoint route is never touched, so a
 # handover that silences the whole test harness passes all of them.
 #
-# The load-bearing assertion is the NEGATIVE one: the console driver's own kos::print
+# The load-bearing assertion is the NEGATIVE one: the console driver's own raw kernel console
 # banner must be ABSENT. It goes to the kernel debug console, which a published board
 # drops by design, so its absence proves the handover really happened and the TAP
 # stream we just read came through the endpoint, not through a silent fallback. Without
@@ -37,7 +37,7 @@ printf '%s\n' "$OUT"
 
 has '\[simcon\] driver up (host fd 1)' \
   || fail "the console driver never reached the wire (service bring-up failed?)"
-if has 'kos::print diagnostic'; then
+if has 'kernel console diagnostic'; then
     fail "the kernel debug console is STILL live: no real handover, so this gate proved nothing"
 fi
 has_f "# tap route: stdout endpoint -> console driver (the composition's stdout)" \

@@ -51,6 +51,9 @@ CI_SOURCE_EXT = ('.c', '.cc', '.cpp', '.cxx')
 # The configure compiles this one itself to identify the compiler, so it answers to no compile
 # command: the one unexpected .ci in a tree that is not a stale unit.
 COMPILER_ID_DIR = re.compile(r'(?:^|/)CompilerId[^/]*/')
+# The archives kickos_privatise_runtime rewrites (cmake/kickos.cmake): their .ci files keep the
+# names the compiler emitted, and the link resolves those to the kernel's private twins.
+PRIVATISED_CI = re.compile(r'/CMakeFiles/kickos_(kernel|arch_[^/]+|chip_[^/]+)\.dir/')
 # Appended to a caller key to stand for every unlocated indirect site inside it.
 UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
@@ -638,7 +641,8 @@ class Graph(object):
     narrows the corpus further, to the units an image's map LOADs.
     """
 
-    def __init__(self, ci_dir, link_maps=None):
+    def __init__(self, ci_dir, link_maps=None, renames=None):
+        self.renames = renames or {}
         self.size = {}
         self.dynobj = {}
         self.label = {}
@@ -752,6 +756,9 @@ class Graph(object):
         return skip
 
     def _read(self, ci):
+        renames = {}
+        if PRIVATISED_CI.search(ci):
+            renames = self.renames
         for line in open(ci):
             line = line.strip()
             m = NODE_RE.match(line)
@@ -774,6 +781,7 @@ class Graph(object):
             if m:
                 src = node_key(m.group(1))
                 tgt = node_key(m.group(2))
+                tgt = renames.get(tgt, tgt)
                 loc = m.group(3)
                 if tgt == INDIRECT:
                     # No label means per-caller and not per-site. The xtensa backend emits its
@@ -1146,9 +1154,24 @@ def check_file(path):
     return 0
 
 
+def read_renames(path):
+    """An objcopy --redefine-syms file, as {old: new}."""
+    renames = {}
+    for line in open(path):
+        line = line.split('#', 1)[0].split()
+        if not line:
+            continue
+        if len(line) != 2:
+            die('%s: "%s" is not an <old> <new> pair' % (path, ' '.join(line)))
+        renames[line[0]] = line[1]
+    if not renames:
+        die('%s renames nothing' % path)
+    return renames
+
+
 def parse_argv(argv):
     want = {'--ci-dir', '--arch', '--preset', '--kernel-cores', '--roots', '--indirect'}
-    opt = {}
+    opt = {'privatised': None}
     enforced = collections.OrderedDict()
     # Classes this image does not compile, per the caller's read of the live posture knob.
     # Still measured and printed; only the figure comparison is dropped.
@@ -1156,6 +1179,12 @@ def parse_argv(argv):
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == '--privatised':
+            if i + 1 >= len(argv):
+                die('--privatised wants <syms file>')
+            opt['privatised'] = argv[i + 1]
+            i += 2
+            continue
         if a == '--not-compiled':
             if i + 1 >= len(argv):
                 die('--not-compiled wants <CLASS>')
@@ -1216,7 +1245,10 @@ def run(argv):
             die('--not-compiled names class %s, which %s declares nowhere for %s'
                 % (cls, opt['roots'], arch))
 
-    graph = Graph(opt['ci-dir'], decl.link_maps)
+    renames = None
+    if opt['privatised'] is not None:
+        renames = read_renames(opt['privatised'])
+    graph = Graph(opt['ci-dir'], decl.link_maps, renames)
 
     # --- the corpus floor, before any key is resolved and any absence asserted --
     # A tree whose compile database is itself near empty agrees with it at every step. Ahead of

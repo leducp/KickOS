@@ -11,16 +11,16 @@
 // KICKOS_SIMCON_EXIT_AFTER=2, so the driver serves the handover probe and one message, then
 // exits:
 //
-//   0. kos_print, dropped because the console is USER_OWNED. Its ABSENCE is the
-//      anti-vacuity witness: a line on the wire here means the console was never
+//   0. a raw kernel console write, dropped because the console is USER_OWNED. Its ABSENCE is
+//      the anti-vacuity witness: a line on the wire here means the console was never
 //      published and every assertion below is meaningless.
-//   1. emit() -> the published route, served by the driver, reaches the wire.
+//   1. kos::print() -> the published route, served by the driver, reaches the wire.
 //   2. the driver exits, which ends its task: that end notes the console death, and the
 //      reclaim runs once no thread of it holds the device.
 //   3. the init reports the death on /init/events, then closes the endpoint for good, so a
 //      send is refused -KOS_ECONNREFUSED. That is what PROVES the driver is gone rather than
 //      merely slow, with no timing assumption.
-//   4. the SAME kos_print now has to reach the wire. Steps 0 and 4 together are the
+//   4. the SAME raw write now has to reach the wire. Steps 0 and 4 together are the
 //      whole assertion.
 //
 // Under KICKOS_SIMCON_WINDOW_THREAD the driver is THREE threads: a service thread that
@@ -39,10 +39,19 @@
 
 #include <stdlib.h>
 
-using kickos::emit;
-
 namespace
 {
+    // One raw kernel console write: on the wire only while the kernel owns the console.
+    void kconsole_raw(char const* s)
+    {
+        size_t n = 0;
+        while (s[n] != '\0')
+        {
+            n++;
+        }
+        (void)kos_kconsole_write(s, n); // a dropped line is the measurement
+    }
+
     char const BLOCKED_LINE[] = "[drvdeath] blocked line, written once after the reclaim\n";
 
     // A writer of a console whose driver is dead gets -KOS_EAGAIN while the init still holds
@@ -87,7 +96,7 @@ namespace
 
     void blocked_writer(void*)
     {
-        emit(BLOCKED_LINE);
+        kos::print(BLOCKED_LINE);
     }
 
     // Its record is held for a driver that no longer receives, so only the reclaim writes it,
@@ -201,12 +210,11 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     kos_cap_t const events = kos_grant_notify(self, "/init/events");
     if (kos_notify_bind(events) != 0)
     {
-        emit("[drvdeath] ERROR: no /init/events to wait the driver's death on\n");
+        kos::print("[drvdeath] ERROR: no /init/events to wait the driver's death on\n");
         exit(9);
     }
 
-    // Must NOT reach the wire: the console is USER_OWNED, so console_emit drops it.
-    kos_print("[drvdeath] kernel console BEFORE death (must NOT reach the wire)\n");
+    kconsole_raw("[drvdeath] kernel console BEFORE death (must NOT reach the wire)\n");
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     int bad_handle_rc = 0;
@@ -221,7 +229,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     // Served by the driver, which then exits (KICKOS_SIMCON_EXIT_AFTER=2, the handover probe
     // being the first). kos_send is a rendezvous, so this returns only once the driver has
     // taken the message.
-    emit("[drvdeath] published route live\n");
+    kos::print("[drvdeath] published route live\n");
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     // The receiver runs above main and has exited by now, and its task lives on: a send would
@@ -248,8 +256,8 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     }
     // The receiver is gone but its task is not, so the console must still be USER_OWNED.
     // Absent on the wire == correct.
-    kos_print("[drvdeath] kernel console AFTER death, window HELD "
-              "(must NOT reach the wire)\n");
+    kconsole_raw("[drvdeath] kernel console AFTER death, window HELD "
+                 "(must NOT reach the wire)\n");
     // The entry's exit ends the driver's task while the window thread still holds the
     // registers: the reclaim lands at that thread's exit.
     kickos_simcon_window_release();
@@ -264,8 +272,8 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     {
         // A live receiver means nothing below tests the reclaim. Reported through BOTH
         // routes: which one works is exactly what is in doubt here.
-        kos_print("[drvdeath] ERROR: driver still alive after its bounded serve\n");
-        emit("[drvdeath] ERROR: driver still alive after its bounded serve\n");
+        kconsole_raw("[drvdeath] ERROR: driver still alive after its bounded serve\n");
+        kos::print("[drvdeath] ERROR: driver still alive after its bounded serve\n");
         exit(1);
     }
 
@@ -325,6 +333,6 @@ extern "C" void drvdeath_main(kos_self_t const* self)
 #endif
 
     // Identical call to the one dropped above; its presence on the wire is the assertion.
-    kos_print("[drvdeath] kernel console AFTER death (reclaimed)\n");
+    kconsole_raw("[drvdeath] kernel console AFTER death (reclaimed)\n");
     exit(0);
 }

@@ -7,7 +7,6 @@
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/sys/emit.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
@@ -117,7 +116,7 @@ namespace
     {
         char out[160];
         ksnprintf(out, sizeof(out), fmt, a, b, c, d);
-        kickos::emit(out);
+        kos::print(out);
     }
 
     bool measure(uint32_t len)
@@ -311,6 +310,6 @@ int main(int, char**)
     {
         return 1;
     }
-    kickos::emit("ipc-pairs: done\n");
+    kos::print("ipc-pairs: done\n");
     return 0;
 }

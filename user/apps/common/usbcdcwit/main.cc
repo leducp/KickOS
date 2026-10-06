@@ -21,9 +21,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-// Emitted by cmake/build_stamp.cmake and carried by every image.
-extern "C" char const kickos_build_commit[];
-
 namespace
 {
     // Cap 0 is this thread's stdout: the console endpoint the driver published.
@@ -175,10 +172,6 @@ int main(int, char**)
     }
 
     char b[128];
-    // Nothing can listen on this transport until the image has booted, so the kernel
-    // banner is lost from every capture. Reprinted here, `-dirty` included.
-    ksnprintf(b, sizeof(b), "\n[usbcdcwit] commit %s\n", kickos_build_commit);
-    say(b);
     ksnprintf(b, sizeof(b), "[usbcdcwit] accepted=%u of %u err=%d maxzero=%u\n",
               static_cast<unsigned>(sent), static_cast<unsigned>(TOTAL), err,
               static_cast<unsigned>(max_zero_run));

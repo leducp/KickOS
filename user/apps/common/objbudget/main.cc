@@ -10,10 +10,7 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/cap_index.h>
-#include <kickos/sys/emit.h>
 #include <kickos/sys/errno.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -27,19 +24,19 @@ namespace
         {
             arms = arms + 1;
             ksnprintf(msg, sizeof(msg), "[objbudget] ok - %s\n", what);
-            emit(msg);
+            kos::print(msg);
             return;
         }
         failures = failures + 1;
         ksnprintf(msg, sizeof(msg), "[objbudget] ERROR: %s\n", what);
-        emit(msg);
+        kos::print(msg);
     }
 
     void report_rc(char const* what, int rc)
     {
         char msg[128];
         ksnprintf(msg, sizeof(msg), "[objbudget]   %s rc=%d\n", what, rc);
-        emit(msg);
+        kos::print(msg);
     }
 
     // More endpoints than any pool in the fleet, so the loop below is bounded by the kernel's
@@ -176,12 +173,12 @@ int main(int, char**)
     if (failures != 0)
     {
         ksnprintf(msg, sizeof(msg), "[objbudget] FAIL (%d)\n", failures);
-        emit(msg);
+        kos::print(msg);
         return 1;
     }
     // The count comes from a counter and the `ok -` lines from one emit per arm, so the gate
     // cross-checks the two and output lost between them cannot read as a clean run.
     ksnprintf(msg, sizeof(msg), "[objbudget] PASS (%d arms)\n", arms);
-    emit(msg);
+    kos::print(msg);
     return 0;
 }

@@ -22,8 +22,12 @@
 # ways from each preset's resolved configuration. A token after a record's fixed fields that is
 # no key its kind takes fails the parse.
 #
-# armv8a, rv64imac and x86_64 declare no thread, so the reclaim witness's console driver goes
-# unbounded on their self-test presets, which link it; check_app_stack_presets.sh names them.
+# NO ARCH CATCHES A USER STACK OVERFLOW IN HARDWARE, so every one is bounded here. armv8a,
+# rv64imac and x86_64 enter from user mode onto the thread's kernel block, but only a stack the
+# kernel allocates has an unmapped page below it (kernel/include/kickos/ustack.h): a spawn naming
+# its own stack is admitted on any range granted R|W in the child's space
+# (syscall_thread.cc spawn_stack_admit), and the thread-local block is carved off the low end of
+# every stack (kernel/include/kickos/tls.h), so an overrun corrupts before it can fault.
 #
 # ONLY A THREAD WHOSE WHOLE GRAPH CLOSES CAN BE DECLARED. Prebuilt newlib and libstdc++ carry
 # no .ci, so a call into them is an unsized node, and the ones a thread reaches through a
@@ -107,3 +111,49 @@ thread  lx6 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STA
 unsized lx6 _free_r 32 calls=__malloc_lock,__malloc_unlock \
                reason: newlib, measured on the linked images: entry a1 32 and call8 into the two
 unsized lx6 __umoddi3 32 reason: libgcc's _umoddi3.o, entry a1 32, and it references no other symbol
+
+# --- armv8a ------------------------------------------------------------------------------
+need    armv8a header=arch/arm64/armv8a/include/kickos/arch/armv8a_trap_stack.h \
+               frame=KICKOS_ARMV8A_TRAP_ENTRY_FRAME zone=KICKOS_ARMV8A_TRAP_NEED_USER \
+               reason: an EL0 entry runs on SP_EL1 and builds its frame on the kernel block, writing nothing on the thread's stack
+thread  armv8a reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=imx8mp-evk,qemu-arm64,qemu-arm64-amp,qemu-arm64-amp2-n0,qemu-arm64-amp2-n1 \
+               presets=qemu-arm64-amp3-n0,qemu-arm64-amp3-n1,qemu-arm64-amp3-n2,qemu-arm64-bench \
+               presets=qemu-arm64-benchgicv3,qemu-arm64-benchsmp,qemu-arm64-benchsmp12 \
+               presets=qemu-arm64-benchsmp2,qemu-arm64-gicv3,qemu-arm64-smp,qemu-arm64-smpiso \
+               reason: the published console driver, spawned on a stack main allocates
+thread  armv8a reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=imx8mp-evk,qemu-arm64,qemu-arm64-amp,qemu-arm64-amp2-n0,qemu-arm64-amp2-n1 \
+               presets=qemu-arm64-amp3-n0,qemu-arm64-amp3-n1,qemu-arm64-amp3-n2,qemu-arm64-bench \
+               presets=qemu-arm64-benchgicv3,qemu-arm64-benchsmp,qemu-arm64-benchsmp12 \
+               presets=qemu-arm64-benchsmp2,qemu-arm64-gicv3,qemu-arm64-smp,qemu-arm64-smpiso \
+               reason: the published console driver, spawned on a stack main allocates
+unsized armv8a arch_syscall 0 reason: switch.S, an svc and a ret, which write no stack
+
+# --- rv64imac ----------------------------------------------------------------------------
+need    rv64imac header=arch/riscv/rv64imac/include/kickos/arch/rv64_trap_stack.h \
+               frame=KICKOS_RV64_TRAP_ENTRY_FRAME zone=KICKOS_RV64_TRAP_NEED_USER \
+               reason: a U-mode trap swaps to the trap stack before its first store and builds its frame on the kernel block
+thread  rv64imac reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-riscv64,qemu-riscv64-bench,qemu-riscv64-benchsmp \
+               presets=qemu-riscv64-benchsmp2,qemu-riscv64-smp,qemu-riscv64-sv48 \
+               reason: the published console driver, spawned on a stack main allocates
+thread  rv64imac reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-riscv64,qemu-riscv64-bench,qemu-riscv64-benchsmp \
+               presets=qemu-riscv64-benchsmp2,qemu-riscv64-smp,qemu-riscv64-sv48 \
+               reason: the published console driver, spawned on a stack main allocates
+unsized rv64imac arch_syscall 0 reason: switch.S, an ecall and a ret, which write no stack
+
+# --- x86_64 ------------------------------------------------------------------------------
+need    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h \
+               frame=KICKOS_X86_64_TRAP_ENTRY_FRAME zone=KICKOS_X86_64_TRAP_NEED_USER \
+               reason: a ring 3 entry lands on rsp0, an IST slot or the per-core kernel sp, and -mno-red-zone leaves nothing live below rsp
+thread  x86_64 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-x86_64,qemu-x86_64-bench,qemu-x86_64-smp12,qemu-x86_64-smp2 \
+               presets=qemu-x86_64-smp2root1,qemu-x86_64-smp4,qemu-x86_64-smp8 \
+               reason: the published console driver, spawned on a stack main allocates
+thread  x86_64 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-x86_64,qemu-x86_64-bench,qemu-x86_64-smp12,qemu-x86_64-smp2 \
+               presets=qemu-x86_64-smp2root1,qemu-x86_64-smp4,qemu-x86_64-smp8 \
+               reason: the published console driver, spawned on a stack main allocates
+unsized x86_64 arch_syscall 8 reason: switch.S, a move, the syscall and a ret; the 8 is the return address the caller pushed, which an x86_64 gcc frame charges to the callee

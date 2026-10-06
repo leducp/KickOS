@@ -7,7 +7,6 @@
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/sys/emit.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
@@ -59,7 +58,7 @@ namespace
     {
         char out[128];
         ksnprintf(out, sizeof(out), fmt, a, b, c);
-        kickos::emit(out);
+        kos::print(out);
     }
 }
 
@@ -148,11 +147,11 @@ int main(int, char**)
               static_cast<unsigned>(elapsed / 1000000ull),
               static_cast<unsigned>((latest - earliest) / 1000000ull),
               static_cast<unsigned>(rate));
-    kickos::emit(out);
+    kos::print(out);
     if (completed != ROUNDS * KICKOS_KERNEL_CORES)
     {
         return 1;
     }
-    kickos::emit("smp-lock: done\n");
+    kos::print("smp-lock: done\n");
     return 0;
 }

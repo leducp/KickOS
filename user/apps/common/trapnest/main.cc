@@ -11,13 +11,10 @@
 #include <kickos/libc/fmt.h>
 #include <kickos/sys.h>
 #include <kickos/sys/abi.h>
-#include <kickos/sys/emit.h>
 
 #if !defined(__riscv)
 #error "trapnest moves sp with RISC-V asm and reads rv32imac's own figures; not for this ISA"
 #endif
-
-using kickos::emit;
 
 namespace
 {
@@ -131,11 +128,11 @@ namespace
         ksnprintf(msg, sizeof(msg), "[trapnest] worker parks sp at 0x%x (stack_lo 0x%x + %u)\n",
                   static_cast<unsigned>(low), static_cast<unsigned>(g_tn_stack_lo),
                   static_cast<unsigned>(TN_PARK_ROOM));
-        emit(msg);
+        kos::print(msg);
         // Bind delivery to this worker before waiting.
         if (kos_notify_bind(TN_NOTE) != 0)
         {
-            emit("[trapnest] ERROR: notify_bind refused the delegated object\n");
+            kos::print("[trapnest] ERROR: notify_bind refused the delegated object\n");
             return;
         }
         for (uint32_t i = 0; i < TN_INJECTS; i++)
@@ -158,7 +155,7 @@ namespace
         {
             spawn_from(low);
         }
-        emit("[trapnest] worker done\n");
+        kos::print("[trapnest] worker done\n");
     }
 }
 
@@ -169,13 +166,13 @@ int main(int, char**)
     void* const raw = kos_ram_alloc(2u * TN_STACK_SIZE);
     if (raw == nullptr)
     {
-        emit("[trapnest] ERROR: the arena cannot spare a caller-owned stack\n");
+        kos::print("[trapnest] ERROR: the arena cannot spare a caller-owned stack\n");
         return 1;
     }
     uintptr_t const lo = reinterpret_cast<uintptr_t>(raw) + TN_STACK_SIZE;
     if ((lo & (TN_STACK_SIZE - 1u)) != 0)
     {
-        emit("[trapnest] ERROR: the arena block is not aligned to the stack size\n");
+        kos::print("[trapnest] ERROR: the arena block is not aligned to the stack size\n");
         return 1;
     }
     g_tn_stack_lo = lo;
@@ -194,13 +191,13 @@ int main(int, char**)
     kos_cap_t line = KOS_CAP_NONE;
     if (kos_irq_claim(TN_LINE, KOS_IRQ_EDGE, &line) != 0)
     {
-        emit("[trapnest] ERROR: irq_claim refused, so the line stays masked\n");
+        kos::print("[trapnest] ERROR: irq_claim refused, so the line stays masked\n");
         return 1;
     }
     kos_cap_t note = KOS_CAP_NONE;
     if (kos_notify_create(&note) != 0 or kos_irq_bind_notify(line, note) != 0)
     {
-        emit("[trapnest] ERROR: the line could not be attached to a notification\n");
+        kos::print("[trapnest] ERROR: the line could not be attached to a notification\n");
         return 1;
     }
     kos_irq_ack(line); // a claim leaves the line masked, and the worker injects into it
@@ -209,7 +206,7 @@ int main(int, char**)
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "tntick", 20);
     if (not tk.valid())
     {
-        emit("[trapnest] ERROR: ticker spawn refused\n");
+        kos::print("[trapnest] ERROR: ticker spawn refused\n");
         return 1;
     }
     kos::thread::Handle const w = kos::thread::create_caps(
@@ -218,12 +215,12 @@ int main(int, char**)
         reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())
     {
-        emit("[trapnest] ERROR: worker spawn refused\n");
+        kos::print("[trapnest] ERROR: worker spawn refused\n");
         return 1;
     }
     if (w.join(KOS_TIMEOUT_NONE) != 0)
     {
-        emit("[trapnest] ERROR: join did not report the worker gone\n");
+        kos::print("[trapnest] ERROR: join did not report the worker gone\n");
         return 1;
     }
 
@@ -235,14 +232,14 @@ int main(int, char**)
     uint32_t const room = kos_nest_witness(KOS_NEST_ROOM);
     char msg[160];
     ksnprintf(msg, sizeof(msg), "[nestwitness] traps=%u onstack=%u\n", traps, onstack);
-    emit(msg);
+    kos::print(msg);
     if (room != KOS_NEST_UNSET)
     {
         ksnprintf(msg, sizeof(msg),
                   "[nestwitness] closest frame sat %u bytes above stack_lo\n",
                   static_cast<unsigned>(room));
-        emit(msg);
+        kos::print(msg);
     }
-    emit("[trapnest] main ran after the worker\n");
+    kos::print("[trapnest] main ran after the worker\n");
     return 0;
 }

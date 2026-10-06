@@ -12,7 +12,6 @@
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 
 #include <stdint.h>
 
@@ -43,12 +42,12 @@ int main(int, char**)
     uint32_t const* const rec = kickos_c6_txidle_record;
     if (rec[REC_DONE] == 2u)
     {
-        kickos::emit("[c6txidle] ERROR: the console FIFO never stayed empty\n");
+        kos::print("[c6txidle] ERROR: the console FIFO never stayed empty\n");
         return 1;
     }
     if (rec[REC_DONE] != 1u)
     {
-        kickos::emit("[c6txidle] ERROR: the kernel probe recorded nothing\n");
+        kos::print("[c6txidle] ERROR: the kernel probe recorded nothing\n");
         return 1;
     }
     uint32_t const frame = rec[REC_FRAME];
@@ -64,33 +63,34 @@ int main(int, char**)
               "[c6txidle] frame %u ticks, flush held %u ticks past the FIFO's last byte (late past"
               " %u)\n",
               static_cast<unsigned>(frame), static_cast<unsigned>(held), static_cast<unsigned>(late));
-    kickos::emit(line);
+    kos::print(line);
     ksnprintf(line, sizeof(line),
               "[c6txidle] ST_UTX_OUT %u while shifting, %u after 10 ms quiet, %u at the flush's"
               " return; idle is %u\n",
               static_cast<unsigned>(busy), static_cast<unsigned>(quiet), static_cast<unsigned>(ret),
               static_cast<unsigned>(ST_UTX_OUT_IDLE));
-    kickos::emit(line);
+    kos::print(line);
     if (busy == ST_UTX_OUT_IDLE)
     {
-        kickos::emit("[c6txidle] FAIL the transmitter reads the idle encoding while it shifts\n");
+        kos::print("[c6txidle] FAIL the transmitter reads the idle encoding while it shifts\n");
         return 1;
     }
     if (quiet != ST_UTX_OUT_IDLE or ret != ST_UTX_OUT_IDLE)
     {
-        kickos::emit("[c6txidle] FAIL the transmitter does not idle at the encoding the flush waits for\n");
+        kos::print("[c6txidle] FAIL the transmitter does not idle at the encoding the flush "
+                   "waits for\n");
         return 1;
     }
     if (held < frame / 2u)
     {
-        kickos::emit("[c6txidle] FAIL the flush returned before the last frame could finish\n");
+        kos::print("[c6txidle] FAIL the flush returned before the last frame could finish\n");
         return 1;
     }
     if (held > late)
     {
-        kickos::emit("[c6txidle] FAIL the flush returned late, at its spin bound\n");
+        kos::print("[c6txidle] FAIL the flush returned late, at its spin bound\n");
         return 1;
     }
-    kickos::emit("[c6txidle] PASS the flush returned once the last frame had left\n");
+    kos::print("[c6txidle] PASS the flush returned once the last frame had left\n");
     return 0;
 }

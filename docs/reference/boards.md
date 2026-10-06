@@ -433,18 +433,15 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `# tap route: stdout endpoint -> console driver (service list published)`. Measured with the
   **default full service list** on both boards: 59 cases, 58 `ok`, 1 skip, 0 fail. The skip is
   `mutex_deadlock # SKIP pool too small` on both, a genuine `KICKOS_MAX_THREADS` constraint.
-- **An app's own diagnostics are still dropped if it uses `kos_print` on a published board** --
-  same `console_emit` drop, and it is not visible in the TAP stream because the harness has its own
+- **An app's own diagnostics were dropped when `kos_print` was the raw kernel console write** --
+  the same `console_emit` drop, invisible in the TAP stream because the harness has its own
   writer. This is why `apps/mpu_fault`'s `[domain]` lines were absent from every service-list
-  silicon capture, leaving the fault marker with nothing to check it against. Diagnostic apps should
-  use `kickos::emit` (`user/include/kickos/sys/emit.h`); the `k64dspi` and `xmcssc` client apps use
-  `kos::print`, so everything they report is RTT-only.
-  **The bench rule that follows**, and it is narrower than "app output is invisible": on a board
-  whose console is published, output through a `kos_print` / `kos::print` writer is gone from the
-  VCOM, so *that* kind of line going quiet after console-up is no evidence a service stopped. The
-  publish-aware writers are unaffected -- `kickos::emit`, the TAP `emit`, and libc `_write`, so
-  `printf` and `std::cout` do reach the published driver. For a `kos_print`-based app, build
-  `-DKICKOS_CONSOLE=both` and capture RTT, or halt the target and read the peripheral's registers.
+  silicon capture of that era. `kos_print` now writes through the stdout policy
+  (`user/include/kickos/sys/emit.h`), as libc `_write` and the TAP harness do, so its lines reach a
+  published driver. **The bench rule that remains**: only a raw `kos_kconsole_write` line is gone
+  from the VCOM once the console is published, and every app that writes one marks it as the
+  measurement. For such a line, build `-DKICKOS_CONSOLE=both` and capture RTT, or halt the target
+  and read the peripheral's registers.
   All three `xmc4800-relax` variants (`base`, `st`, `flat`) state `CONFIG_CONSOLE_BOTH=y` in their
   defconfig, plus `sim-telem` and `qemu-telem` which are not boards; every other board preset
   carries neither, so on those it has to be passed on the configure line, and a VCOM-only capture
@@ -1916,7 +1913,7 @@ base preset in `cmake/presets/*.json` sets `CMAKE_BUILD_TYPE=MinSizeRel`.
 list** -- `pvprobe`, `conreclaim`, `inprstorm`, `xmcspi` and `xmccshold`, at every tip they were taken
 at. An earlier revision of this line said console-only, and said four, and was wrong on both. Two
 independent proofs: they were flashed from a `kickos_services_none` build dir, and every one of them
-prints via `kos::print`, which a PUBLISHED console DROPS -- so a console-only list would have
+printed via `kos::print`, which a PUBLISHED console then dropped -- so a console-only list would have
 produced silent captures. No `[xmcuart] driver up` line appears in any of them either. The
 consequence matters most for `inprstorm`: what survived that storm was the **KERNEL console path**,
 not the userspace `xmcuart` driver. The sixth XMC capture, `xmcssc` as a SERVICE, is the exception

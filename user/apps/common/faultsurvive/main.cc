@@ -32,14 +32,11 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/emit.h>
 
 // An unset mode compares equal to 0, so it would silently build that arm.
 #ifndef KICKOS_FS_MODE
 #error "KICKOS_FS_MODE must be set by this app's CMakeLists"
 #endif
-
-using kickos::emit;
 
 // rv32imac only: this app's CMakeLists puts that backend's include directory on modes 3 and 4
 // alone.
@@ -150,7 +147,7 @@ namespace
 
     void faulter(void*)
     {
-        emit("[fs] worker about to fault\n");
+        kos::print("[fs] worker about to fault\n");
 #if KICKOS_FS_MODE == 1
         g_sink = burn(4096, nullptr); // deeper than any thread stack in the tree
 #elif KICKOS_FS_MODE == 2
@@ -218,7 +215,7 @@ namespace
 #else
         KICKOS_FS_TRAP();
 #endif
-        emit("[fs] ERROR: worker did not fault\n");
+        kos::print("[fs] ERROR: worker did not fault\n");
     }
 }
 
@@ -235,20 +232,20 @@ int main(int, char**)
     void* const raw = kos_ram_alloc(2u * FS_STACK_SIZE);
     if (raw == nullptr)
     {
-        emit("[fs] ERROR: the arena cannot spare a caller-owned stack for this arm\n");
+        kos::print("[fs] ERROR: the arena cannot spare a caller-owned stack for this arm\n");
         return 1;
     }
     uintptr_t const lo = reinterpret_cast<uintptr_t>(raw) + FS_STACK_SIZE;
     if ((lo & (FS_STACK_SIZE - 1u)) != 0)
     {
-        emit("[fs] ERROR: the arena block is not aligned to the stack size\n");
+        kos::print("[fs] ERROR: the arena block is not aligned to the stack size\n");
         return 1;
     }
     // The BAND only, never the whole block: the stack half becomes a kernel-reserved region at
     // the spawn below and the same admission predicate would then refuse it.
     if (kos_mem_self_grant(reinterpret_cast<void*>(lo - FS_BAND_SIZE), FS_BAND_SIZE, 0) != 0)
     {
-        emit("[fs] ERROR: main cannot reach the band it has to read back\n");
+        kos::print("[fs] ERROR: main cannot reach the band it has to read back\n");
         return 1;
     }
     volatile uint32_t* const band = reinterpret_cast<volatile uint32_t*>(lo - FS_BAND_SIZE);
@@ -267,10 +264,10 @@ int main(int, char**)
     kos_task_t victim = KOS_TASK_NONE;
     if (kos_task_create(nullptr, 0, 0, &victim) != 0)
     {
-        emit("[fs] ERROR: no task slot for the faulter\n");
+        kos::print("[fs] ERROR: no task slot for the faulter\n");
         return 1;
     }
-    emit("[fs] spawning the faulter\n");
+    kos::print("[fs] spawning the faulter\n");
     kos::thread::Handle t = kos::thread::create(faulter, nullptr, "faulter", 10,
                                                 KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                                 nullptr, 0, stack, stack_size,
@@ -279,7 +276,7 @@ int main(int, char**)
     // Drops main's hold on a group that is already empty, so the slot goes back here rather
     // than at main's own exit.
     (void)kos_task_kill(victim);
-    emit("[fs] survivor ran after the fault\n");
+    kos::print("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4
     // Both outcomes PRINT: a silent arm is indistinguishable from a deleted band check, a spawn
     // that never happened, or a worker that never faulted.
@@ -293,16 +290,16 @@ int main(int, char**)
     }
     if (corrupt)
     {
-        emit("[fs] [lowband] CORRUPTED: the kernel ran below stack_lo on a U-mode sp\n");
+        kos::print("[fs] [lowband] CORRUPTED: the kernel ran below stack_lo on a U-mode sp\n");
     }
     else
     {
-        emit("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
+        kos::print("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
     }
 #endif
     if (rc != 0)
     {
-        emit("[fs] ERROR: join did not report the worker gone\n");
+        kos::print("[fs] ERROR: join did not report the worker gone\n");
         return 1;
     }
     return 0;

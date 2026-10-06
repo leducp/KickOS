@@ -9,7 +9,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
-#include <kickos/sys/emit.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 
@@ -87,36 +86,25 @@ namespace
         kos::print(line);
     }
 
-    // Not kos_print: the key outruns the wire, and kos_print drops each line the full ring
-    // refuses, which reads as a console that went dark at the publish.
-    void key(char const* s)
-    {
-        size_t n = 0;
-        while (s[n] != '\0')
-        {
-            n++;
-        }
-        kickos::kconsole_write_all(s, n);
-    }
-
     void print_reading_key(void)
     {
-        key("[reclaimwit] console reclaim + terminate drain witness\n");
-        key("[reclaimwit] HOW TO READ THIS CAPTURE:\n");
-        key("[reclaimwit]  1. this block is on the wire, so the kernel owns the console\n");
-        key("[reclaimwit]  2. the app now publishes the console to a driver it spawns\n");
-        key("[reclaimwit]  3. that driver never writes to a console, so the wire must go\n");
-        key("[reclaimwit]     silent: a MUTE line below must occur ZERO times\n");
-        key("[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line with\n");
-        key("[reclaimwit]     the same kos_print call the MUTE line used\n");
-        key("[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.\n");
-        key("[reclaimwit]     MUTE present == the publish never took, verdict void.\n");
-        key("[reclaimwit]     both absent == the reclaim did not fire, console still dark.\n");
+        kos::print("[reclaimwit] console reclaim + terminate drain witness\n");
+        kos::print("[reclaimwit] HOW TO READ THIS CAPTURE:\n");
+        kos::print("[reclaimwit]  1. this block is on the wire, so the kernel owns the console\n");
+        kos::print("[reclaimwit]  2. the app now publishes the console to a driver it spawns\n");
+        kos::print("[reclaimwit]  3. that driver never writes to a console, so the wire must go\n");
+        kos::print("[reclaimwit]     silent: a MUTE line below must occur ZERO times\n");
+        kos::print("[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line to\n");
+        kos::print("[reclaimwit]     the kernel console the MUTE line was dropped from\n");
+        kos::print("[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.\n");
+        kos::print("[reclaimwit]     MUTE present == the publish never took, verdict void.\n");
+        kos::print("[reclaimwit]     both absent == the reclaim did not fire, console still "
+                   "dark.\n");
 #if KICKOS_RW_RTT
         // kconsole_write feeds RTT in every ownership state, so the MUTE line reaches an
         // RTT viewer even on a correct run.
-        key("[reclaimwit] NOTE: this image also carries RTT. Read the CHIP UART capture;\n");
-        key("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
+        kos::print("[reclaimwit] NOTE: this image also carries RTT. Read the CHIP UART capture;\n");
+        kos::print("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
 #endif
     }
 }
@@ -182,9 +170,8 @@ int main(int, char**)
     // the driver is dead. The kernel's stdout ref keeps the endpoint alive.
     int const close_rc = kos_handle_close(ep);
 
-    // The same kos_print call as the LIVE line below. Its absence from the capture is the
-    // assertion that the publish took.
-    kos::print("[reclaimwit] MUTE kernel console while the driver holds it\n");
+    char const mute[] = "[reclaimwit] MUTE kernel console while the driver holds it\n";
+    (void)kos_kconsole_write(mute, sizeof(mute) - 1u); // a dropped line is the measurement
 
     // Returns only once the driver has TAKEN the bytes, so the published route is served
     // and not merely created.

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The stdout policy against a scripted kernel. Each send and each kernel console write takes
-// the next answer of its own script; an answer that accepts bytes records them on that route.
+// The stdout policy, and kos_print over it, against a scripted kernel. Each send and each kernel
+// console write takes the next answer of its own script; an answer that accepts bytes records
+// them on that route.
 // The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
 // task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait.
 
@@ -346,5 +347,43 @@ namespace
     {
         reset({-KOS_EAGAIN}, {-KOS_ECANCELED});
         EXPECT_EQ(kickos::stdout_write("line\n", 5), 5u);
+    }
+
+    // kos_print is the same writer: a full kernel console ring is waited out, not dropped.
+    TEST(KosPrint, AFullRingIsWaitedOut)
+    {
+        reset({-KOS_EBADF}, {-KOS_EAGAIN, -KOS_EAGAIN, TAKE_ALL});
+        kos_print("line\n");
+        EXPECT_EQ(g_kconsole, "line\n");
+        EXPECT_EQ(g_yields, 2);
+        EXPECT_TRUE(g_kconsole_script.empty());
+    }
+
+    // A driver owns the UART: the line goes to the console it publishes, never to the kernel's.
+    TEST(KosPrint, AUserOwnedUartTakesTheLineThroughStdout)
+    {
+        reset({TAKE_ALL}, {});
+        kos_print("line\n");
+        EXPECT_EQ(g_endpoint, "line\n");
+        EXPECT_EQ(g_kconsole_writes, 0);
+    }
+
+    // The publish lands between the send and the kernel console, which refuses the line to it.
+    TEST(KosPrint, APublishLandingBetweenSendsTheLineToStdout)
+    {
+        reset({-KOS_EBADF, TAKE_ALL}, {-KOS_EBUSY});
+        kos_print("line\n");
+        EXPECT_EQ(g_endpoint, "line\n");
+        EXPECT_EQ(g_kconsole, "");
+    }
+
+    // A non-blocking task stops at the first byte that would make it wait.
+    TEST(KosPrint, ANonBlockingTaskStopsWhereItWouldWait)
+    {
+        reset({-KOS_EBADF}, {2, -KOS_ETIMEDOUT});
+        kos_print("line\n");
+        EXPECT_EQ(g_kconsole, "li");
+        EXPECT_EQ(g_yields, 0);
+        EXPECT_TRUE(g_kconsole_script.empty());
     }
 }

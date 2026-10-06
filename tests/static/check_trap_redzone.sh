@@ -387,9 +387,13 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
 done < "$TMP/classes"
 
 # --- the measurement ---------------------------------------------------------
+PRIVATISED=""
+if grep -q '^[[:space:]]*set(KICKOS_HAVE_ASPACE[[:space:]]\{1,\}1)' "$CFGFILE"; then
+    PRIVATISED="$SRC/cmake/kernel_runtime.syms"
+fi
 # shellcheck disable=SC2086
 python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
-    --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS
+    --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS ${PRIVATISED:+--privatised "$PRIVATISED"}
 prc=$?
 if [ "$prc" -ne 0 ]; then
     rc="$prc"

@@ -75,6 +75,8 @@ tests/integration/check_wallclock.sh|wallclock.capture||stamps|times-swap|advanc
 tests/integration/check_wallclock.sh|wallclock.capture||stamps|times-drop|[wallclock] mark 0|
 tests/integration/check_wallclock.sh|wallclock.capture||stamps|log-drop|[wallclock] mark 0|
 tests/integration/check_wallclock.sh|wallclock-nomark0.capture||mark-2|drop|[wallclock] mark 2|
+tests/integration/check_wallclock.sh|wallclock-usb.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_wallclock.sh|wallclock-usb.capture||mark-2|drop|[wallclock] mark 2|
 tests/integration/check_wallclock.sh|wallclock-nomark0.capture||host-time|swap|11.222058|11.272058
 tests/integration/check_k64drv.sh|k64drv.capture||tick|drop|[k64drv] tick 7|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|swap|[k64drv] tick 2|[k64drv] tick 22
@@ -362,7 +364,8 @@ tests/integration/check_specfault.sh|specfault.capture||address|swap|ADDR=0x6080
 tests/integration/check_specfault.sh|specfault.capture||address|drop|ADDR=|
 tests/integration/check_specfault.sh|specfault.capture||address|swap|reading 0x60800000|reading 0x60800004
 tests/integration/check_specfault.sh|specfault.capture||order|order|[specfault] reading|=== THREAD FAULT
-tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||commit|drop|[usbcdcwit] commit|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|drop|   KickOS 0.5.1  -  microkernel RTOS|
+tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||no-banner|swap|   KickOS 0.5.1  -  microkernel RTOS|[usbcdcwit] commit 0123abcd
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|accepted=16384 of|accepted=16000 of
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|swap|err=0|err=-11
 tests/integration/check_usbcdcwit.sh|usbcdcwit.capture||accepted|drop|accepted=|

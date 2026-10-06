@@ -13,11 +13,14 @@
 #     ambiguous once both are linked;
 #   - the unit's own flags reach the figures: a header that selects its frame on a macro the
 #     compile command's -f flag predefines answers the wider one;
-#   - an image not linked fails on a preset its thread names and passes on any other;
+#   - an image not linked fails on a preset its thread names and passes on any other, and a map
+#     named for an executable suffix is the image's;
 #   - a token after a record's fixed fields that is no key its kind takes, or a key stated twice,
 #     fails the parse naming the record, while the reason may say anything;
 #   - the real app_stack_roots.txt parses, and each thread names only presets the trap_redzone
-#     gate runs on for its arch.
+#     gate runs on for its arch;
+#   - each arch's real need record, read through its own header, passes a planted thread at
+#     exactly its need and fails one a byte deeper.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -64,7 +67,7 @@ def edge(a, b, loc):
 
 
 def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, both=False,
-          fflag='', map1=True, bound=False, roots_sys=None):
+          fflag='', map1=True, bound=False, roots_sys=None, need=None, map_suffix=''):
     for d in (src, build):
         subprocess.run(['rm', '-rf', d])
     write(os.path.join(src, 'hdr.h'),
@@ -98,10 +101,12 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     if both:
         loads += 'LOAD c.cc.o\n'
     if map1:
-        write(os.path.join(build, 'app1', 'app1.map'), loads + carve_line)
+        write(os.path.join(build, 'app1', 'app1%s.map' % map_suffix), loads + carve_line)
     write(os.path.join(build, 'app2', 'app2.map'), 'LOAD a.cc.o\nLOAD c.cc.o\n' + carve_line)
-    decl = ('need plant header=hdr.h frame=PLANT_FRAME zone=PLANT_ZONE reason: planted\n'
-            'thread plant app1 t root=a.cc:entry stack=PLANT_STACK presets=p1 reason: planted\n')
+    if need is None:
+        need = ('hdr.h', 'PLANT_FRAME', 'PLANT_ZONE')
+    decl = 'need plant header=%s frame=%s zone=%s reason: planted\n' % need
+    decl += 'thread plant app1 t root=a.cc:entry stack=PLANT_STACK presets=p1 reason: planted\n'
     if sys_sized:
         decl += 'unsized plant sys 0 reason: planted\n'
     write(os.path.join(tmp, 'decl.txt'), decl)
@@ -118,8 +123,10 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     write(os.path.join(tmp, 'indirect.txt'), sites)
 
 
-def run(preset):
-    r = subprocess.run(['python3', '-B', tool, '--ci-dir', build, '--src', src,
+def run(preset, src_dir=None):
+    if src_dir is None:
+        src_dir = src
+    r = subprocess.run(['python3', '-B', tool, '--ci-dir', build, '--src', src_dir,
                         '--arch', 'plant', '--preset', preset, '--decl', os.path.join(tmp, 'decl.txt'),
                         '--roots', os.path.join(tmp, 'roots.txt'),
                         '--indirect', os.path.join(tmp, 'indirect.txt'), '--kernel-cores', '1'],
@@ -160,6 +167,8 @@ expect('an image not linked where its thread is bounded fails', 1,
        ['IMAGE NOT LINKED: app1/t is bounded on p1'], map1=False)
 expect('an image not linked elsewhere is named', 0, ['app1/t: not bounded on p2'], preset='p2',
        map1=False)
+expect('a map named for an executable suffix is the image\'s', 0, ['app_stack: OK'],
+       map_suffix='.efi')
 
 # The real declarations parse, for every arch they name, on a host that builds none of them.
 sys.path.insert(0, os.path.dirname(os.path.abspath(tool)))
@@ -223,4 +232,27 @@ for arch in sorted(arches):
                 die('%s: %s/%s is bounded on %s, which %s runs no trap_redzone gate on'
                     % (real, image, name, preset, os.path.basename(roots)))
 print('app_stack control: %s parses for %s' % (os.path.basename(real), ', '.join(sorted(arches))))
+
+# Each arch's real need record, read through its own header, bounds a planted thread: one at
+# exactly its need passes and one a byte deeper than its stack fails.
+repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(tool))))
+for arch in sorted(arches):
+    need = app_stack.Decl(real, arch).need
+    plant(stack='(PLANT_BASE + 100000)', need=need)
+    rc, out = run('p1', repo)
+    figure = None
+    for line in out.splitlines():
+        if line.startswith('app_stack: app1/t: depth '):
+            figure = int(line.split(' = ')[1].split(' ')[0])
+    if rc != 0 or figure is None:
+        die('%s: the need record does not bound a planted thread\n%s' % (arch, out))
+    plant(stack=str(figure), need=need)
+    rc, out = run('p1', repo)
+    if rc != 0 or 'headroom 0' not in out:
+        die('%s: a thread at exactly its need of %d fails\n%s' % (arch, figure, out))
+    plant(stack=str(figure - 1), need=need)
+    rc, out = run('p1', repo)
+    if rc != 1 or 'STACK BELOW ITS THREAD' not in out:
+        die('%s: a thread one byte deeper than its stack passes\n%s' % (arch, out))
+    print('app_stack control: %s bounds a planted thread at its need of %d' % (arch, figure))
 PYEOF

@@ -48,17 +48,17 @@
 // (kickos_add_diagnostic_apps): never a production image.
 //
 // The kernel console_tx path is the target, so its composition's stdout is the kernel's: an
-// xmcuart handover would deinit it. Every line but the heartbeat goes through kickos::emit, which
-// waits out a full console ring where kos::print drops.
+// xmcuart handover would deinit it. The heartbeat is a raw kernel console write, which drops
+// what a full ring cannot take.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
 
 #include <stdint.h>
+#include <string.h>
 
 #if !KICKOS_HAVE_MPU
 #error "inprstorm requires enforcement: build the board's base variant, not its flat one"
@@ -133,7 +133,7 @@ namespace
     {
         char s[80];
         ksnprintf(s, sizeof(s), "[inprstorm] %s=0x%x\n", tag, static_cast<unsigned>(v));
-        kickos::emit(s);
+        kos::print(s);
     }
 
     // One PV-classified register through the seam, then read back: a discarded store is
@@ -156,7 +156,7 @@ namespace
         ksnprintf(s, sizeof(s), "[inprstorm] seam %s: rc=%d wrote=0x%x read=0x%x %s\n",
                   reg, rc, static_cast<unsigned>(val), static_cast<unsigned>(got),
                   verdict);
-        kickos::emit(s);
+        kos::print(s);
         return ok;
     }
 
@@ -164,7 +164,7 @@ namespace
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
 
-        kickos::emit("[inprstorm] unpriv up (granted U0C1 window 0x200)\n");
+        kos::print("[inprstorm] unpriv up (granted U0C1 window 0x200)\n");
 
         // Printed before the storm runs: the divider chain the seam let the holder program,
         // and the branch clock the kernel reports for this block (0 when the chip does not
@@ -178,7 +178,7 @@ namespace
                       static_cast<unsigned>(P_PDIV + 1u), static_cast<unsigned>(P_PCTQ + 1u),
                       static_cast<unsigned>(P_DCTQ + 1u),
                       static_cast<unsigned>(kos_periph_clock_hz(win)));
-            kickos::emit(s);
+            kos::print(s);
         }
 
         // KSCFG first: until MODEN is set the channel answers nothing else. INPR starts on
@@ -226,7 +226,7 @@ namespace
             char s[112];
             ksnprintf(s, sizeof(s), "[inprstorm] TBCTR=0x%x SIZE=64 %s\n",
                       static_cast<unsigned>(tbctr), verdict);
-            kickos::emit(s);
+            kos::print(s);
         }
         // The backlog proof needs fill to outrun drain, so it runs at the slow 115.2k
         // divider: at the profile's max divider the drain outpaces any fill and the FIFO
@@ -254,7 +254,7 @@ namespace
                       "[inprstorm] slow-divider preload TBFLVL=%u, after 10ms no-fill=%u"
                       " (backlog drains autonomously if falling)\n",
                       static_cast<unsigned>(lvl_pre), static_cast<unsigned>(lvl_post));
-            kickos::emit(s);
+            kos::print(s);
         }
         // Restore the profile's max-rate divider for the worst-case sustained storm.
         seam_write("FDR", win, off::FDR, FDR_WORD, ~FDR_RESULT_MASK);
@@ -267,7 +267,7 @@ namespace
 
         // The attack: RINP/AINP field 0 routes the receive interrupt to SR0. INPR is U,PV
         // and in-window, so this unprivileged store lands.
-        kickos::emit("[inprstorm] rerouting INPR RINP/AINP -> SR0 (console node)\n");
+        kos::print("[inprstorm] rerouting INPR RINP/AINP -> SR0 (console node)\n");
         show("INPR before", r32(win + off::INPR));
         r32(win + off::INPR) = 0u;
         show("INPR after ", r32(win + off::INPR));
@@ -278,7 +278,8 @@ namespace
         // the queued words out on its own, pulsing SR0 per word with no attacker CPU, so
         // the receive-event rate follows the shift clock, not this thread's CPU share.
         // RIF/AIF are never cleared (edge, one pulse per received word).
-        kickos::emit("[inprstorm] FIFO drain storm: refilling TX FIFO, channel clocks SR0 autonomously\n");
+        kos::print("[inprstorm] FIFO drain storm: refilling TX FIFO, channel clocks SR0 "
+                   "autonomously\n");
         volatile uint32_t* in0 = reinterpret_cast<volatile uint32_t*>(win + IN0);
         while (true)
         {
@@ -290,7 +291,7 @@ namespace
 #else
         // Continuous receive-event storm: keep clocking loopback words as fast as the
         // channel accepts them and NEVER clear RIF/AIF. Every completed word pulses SR0.
-        kickos::emit("[inprstorm] storming TBUF0 forever (RIF/AIF never cleared) ...\n");
+        kos::print("[inprstorm] storming TBUF0 forever (RIF/AIF never cleared) ...\n");
         volatile uint32_t* tbuf0 = reinterpret_cast<volatile uint32_t*>(win + off::TBUF0);
         volatile uint32_t* tcsr = reinterpret_cast<volatile uint32_t*>(win + off::TCSR);
         volatile uint32_t* rbuf = reinterpret_cast<volatile uint32_t*>(win + off::RBUF);
@@ -322,7 +323,7 @@ namespace
                       static_cast<unsigned>(beat),
                       static_cast<unsigned>((now - t0) / 1000000ull),
                       static_cast<unsigned>((now - prev) / 1000000ull));
-            kos::print(s); // a dropped beat is the measurement
+            (void)kos_kconsole_write(s, strlen(s)); // a dropped beat is the measurement
             prev = now;
             beat++;
             kos_sleep_ns(300000000ull);
@@ -332,12 +333,12 @@ namespace
 
 extern "C" void inprstorm_main(kos_self_t const* self)
 {
-    kickos::emit("[inprstorm] XMC4800 console DoS probe via U0C1 INPR reroute onto SR0\n");
-    kickos::emit("[inprstorm] MARKER: root up, starting the heartbeat\n");
+    kos::print("[inprstorm] XMC4800 console DoS probe via U0C1 INPR reroute onto SR0\n");
+    kos::print("[inprstorm] MARKER: root up, starting the heartbeat\n");
     {
         char s[80];
         ksnprintf(s, sizeof(s), "[inprstorm] rate profile: %s\n", PROFILE_NAME);
-        kickos::emit(s);
+        kos::print(s);
     }
 
     kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
