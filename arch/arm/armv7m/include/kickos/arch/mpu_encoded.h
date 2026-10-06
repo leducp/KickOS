@@ -14,6 +14,7 @@
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <kickos/arch/mpu_overlap.h>
@@ -34,6 +35,12 @@ struct arch_mpu_encoded
     uint32_t word2[ARCH_MPU_ENCODED_SLOTS]; // master access rights, 0 deactivates the slot
 };
 
+// Whether slot `i` holds a descriptor.
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return img->word2[i] != 0u;
+}
+
 #elif KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
 
 // ARMv8-M ARM, MPU region matching: an address two enabled regions match faults for every
@@ -46,6 +53,11 @@ struct arch_mpu_encoded
     uint32_t rlar[ARCH_MPU_ENCODED_SLOTS]; // 0 deactivates the slot
 };
 
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return img->rlar[i] != 0u;
+}
+
 #elif KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
 
 // ARMv7-M ARM B3.5: the highest-numbered region matching an address decides its access.
@@ -57,6 +69,11 @@ struct arch_mpu_encoded
     uint32_t rbar[ARCH_MPU_ENCODED_SLOTS];
     uint32_t rasr[ARCH_MPU_ENCODED_SLOTS]; // 0 deactivates the slot
 };
+
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return img->rasr[i] != 0u;
+}
 
 #else
 

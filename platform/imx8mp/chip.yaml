@@ -16,6 +16,8 @@ manual: "i.MX 8M Plus Applications Processor Reference Manual, IMX8MPRM Rev. 3 (
 # which one it composes. The clusters' caches are not coherent with each other, so memory
 # both reach is shared uncached or with cache maintenance by its users.
 clusters_coherent: false
+# The A53's GIC routing is the seat a doorbell raise is withheld or deferred by.
+doorbell_seat: true
 # PMCCNTR_EL0 counts core cycles and the part reports no core clock to convert them by.
 cycle_counter: { hz: 0 }
 cores:

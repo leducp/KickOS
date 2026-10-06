@@ -169,6 +169,7 @@ def limit_values(view):
     if chip.cycle_counter.get("glitches"):
         values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
+    values.append(("KICKOS_CHIP_DOORBELL_SEAT", int(chip.doorbell_seat), None))
     return values
 
 
@@ -398,8 +399,12 @@ def emit_cmake(view):
     privilege = "OFF"
     if not units or any(unit.privilege is not False for unit in units):
         privilege = "ON"
+    seat = "OFF"
+    if view.chip.doorbell_seat:
+        seat = "ON"
     facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege,
-             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(table_rows(view)["reserved_blocks"])]
+             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(table_rows(view)["reserved_blocks"]),
+             "set(KICKOS_CHIP_DOORBELL_SEAT %s)\n" % seat]
     if view.chip.esptool_image is not None:
         facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
     if view.board is not None and view.board.emulator is not None:

@@ -17,8 +17,13 @@
 #
 # stack= is a macro of the unit that defines the root, and the spawn has to pass exactly it.
 # Every macro resolves under that unit's own compile command, ISA flags included. presets= names
-# every trap_redzone preset whose tree links the image, and the thread fails on one that does not;
-# presets= may repeat.
+# exactly the trap_redzone presets of the arch whose tree links the image, and may repeat; the
+# thread fails on one that does not, and check_app_stack_presets.sh holds the list to that both
+# ways from each preset's resolved configuration. A token after a record's fixed fields that is
+# no key its kind takes fails the parse.
+#
+# armv8a, rv64imac and x86_64 declare no thread, so the reclaim witness's console driver goes
+# unbounded on their self-test presets, which link it; check_app_stack_presets.sh names them.
 #
 # ONLY A THREAD WHOSE WHOLE GRAPH CLOSES CAN BE DECLARED. Prebuilt newlib and libstdc++ carry
 # no .ci, so a call into them is an unsized node, and the ones a thread reaches through a

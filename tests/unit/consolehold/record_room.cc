@@ -204,23 +204,56 @@ TEST(ConsoleRecordRoom, ARecordNestedInTheRoomIsRefused)
     });
 }
 
-// A panic flush taken in the polled writer sends each queued byte once, and the interrupted
-// record line moves no tail back when it resumes.
+// A panic flush taken in the polled writer sends each queued byte once: the rest of the run in
+// flight is not the flush's to send, and the interrupted record line moves no tail back when it
+// resumes.
 TEST(ConsoleRecordRoom, APanicFlushInTheRoomResendsNothing)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_isr_runs_in_gap(false);
         std::string const queued = fill();
+        std::string const line(64u, 'r');
+        size_t const primed = consoleseam::wire().size();
+        size_t const run = line.size() - (kRing - 1u - (queued.size() - primed));
         consoleseam::run_in_sync_write(1u, []() {
             console_tx_flush_sync();
             g_seen = consoleseam::wire();
         });
-        std::string const line(64u, 'r');
         EXPECT_EQ(console_tx_insert_record_line(line.data(), line.size(), 0),
                   static_cast<int>(line.size()));
-        EXPECT_EQ(g_seen, queued);
+        EXPECT_EQ(g_seen, queued.substr(0, primed + 1u) + queued.substr(primed + run));
         console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + line);
+        EXPECT_EQ(consoleseam::wire(), g_seen + queued.substr(primed + 1u, run - 1u) + line);
+    });
+}
+
+// A wedged channel: every record line still queues, and each costs at most one stall window of
+// the polled writer under the mask, even where the room it makes wraps the ring's end.
+TEST(ConsoleRecordRoom, AWedgedChannelCostsOneStallPerLine)
+{
+    run_isolated([]() {
+        consoleseam::reset(kRing);
+        consoleseam::set_isr_runs_in_gap(false);
+        std::string const lead(kRing - 6u, 'y');
+        ASSERT_NE(console_tx_insert_line(lead.data(), lead.size(), 0), 0);
+        console_tx_flush_sync();
+        std::string const queued = fill();
+        ASSERT_LT(kRing - 1u - queued.size(), static_cast<size_t>(head_len("t1")))
+            << "premise: the record's first line needs room past the ring's end";
+        ASSERT_GT(static_cast<size_t>(head_len("t1")) - (kRing - 1u - queued.size()), 6u)
+            << "premise: the room the first line makes wraps the ring's end";
+
+        consoleseam::set_sync_stalls(true);
+        record("t1", 0x100u);
+        EXPECT_GE(consoleseam::max_masked_stalls(), 1u) << "premise: no line met the stall";
+        EXPECT_LE(consoleseam::max_masked_stalls(), 1u)
+            << "a record line spent more than one stall window under the mask";
+        consoleseam::set_sync_stalls(false);
+        console_tx_flush_sync();
+        std::string const sent = consoleseam::wire();
+        std::string const want = text("t1", 0x100u);
+        ASSERT_GE(sent.size(), want.size());
+        EXPECT_EQ(sent.substr(sent.size() - want.size()), want);
     });
 }

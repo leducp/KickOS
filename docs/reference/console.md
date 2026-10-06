@@ -211,13 +211,16 @@ own console is not dropped by a full ring: under the mask, the oldest queued byt
 (`console_tx_insert_record_line`). The drain ISR and every producer are held off for that span, so
 the device still has one writer and the lines queued first go out first and whole. The span is per
 LINE, each line its own masked span: it sends at most the line's own length of queued bytes, CRs
-included, so a line, at most `KDIAG_FAULT_LINE_MAX - 1` characters, masks for at most twice that
-many bytes of wire time, the time scaling with the console's baud. On a backend with no TX interrupt
-the drain that sends the rest runs after the mask is dropped. A record line is still refused by a
-line wider than the ring, by an insert or a record line it interrupted, and on a backend with no TX
-interrupt by a producer drain holding a byte it took, the one writer the mask does not stop. Each
-queued byte is taken before it is written, so a synchronous fault in the polled writer whose handler
-records again or flushes for a panic sends no byte twice.
+included, in at most two runs, the second only where the ring wraps. On a live channel a line, at
+most `KDIAG_FAULT_LINE_MAX - 1` characters, masks for at most twice that many bytes of wire time, the
+time scaling with the console's baud. On a wedged channel it masks for at most one stall window of
+the polled writer: once a run reports a stall, the rest of the room is taken unsent. On a backend
+with no TX interrupt the drain that sends the rest runs after the mask is dropped. A record line is
+still refused by a line wider than the ring, by an insert or a record line it interrupted, and on a
+backend with no TX interrupt by a producer drain holding a byte it took, the one writer the mask does
+not stop. Each run is taken before it is written, so a synchronous fault in the polled writer whose
+handler records again or flushes for a panic sends no byte twice; that flush loses the unsent rest
+of the run.
 
 **The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file, under
 `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,
@@ -296,7 +299,10 @@ carry a distinct implementation:
 
 - Every chip **defines its own** bounded polled writer (the fleet wraps its TX-ready poll
   in a spin-then-drop guard, so a wedged UART drops bytes instead of hanging the panic
-  path); the sim defines a bounded one-byte-at-a-time `write(1, ...)` to host stdout.
+  path, and answers false once it stalled); the sim defines a bounded `write(1, ...)` to
+  host stdout.
+- On an own-image AMP node the writer drops the rest of a line whose claim it lost, up to
+  its newline, across every call that carries the line.
 - A **fallback TU** (`arch/common/arch_console_write_sync_default.cc`) forwards
   `arch_console_write_sync` -> `arch_console_write` and is extracted by nothing. It is kept
   as a trap marker, not as a service: `arch_console_write` enters the line insert, whose

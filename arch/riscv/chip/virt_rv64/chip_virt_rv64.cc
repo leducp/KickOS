@@ -290,7 +290,7 @@ int arch_console_write(char const* buf, size_t n)
 // The UART comes out of QEMU's reset already usable at the machine's default baud, so the
 // polled path needs no bring-up. Bounded because this body is the panic path's writer, where
 // a wedged UART must cost a dropped tail.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -299,8 +299,13 @@ void arch_console_write_sync(char const* buf, size_t n)
         {
             spin++;
         }
+        if (spin == UART_POLL_BOUND)
+        {
+            return false;
+        }
         *r8p(UART_THR) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)

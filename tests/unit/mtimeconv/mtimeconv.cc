@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <random>
+#include <string>
 
 namespace
 {
@@ -198,4 +199,18 @@ TEST(MtimeConv, ClockTreeReadings)
     EXPECT_EQ(cpu_clk_hz(2u, 40u, 0u, 0u, false), 0u);
     EXPECT_EQ(cpu_clk_hz(3u, 40u, 0u, 0u, false), 0u);
     EXPECT_EQ(mtime_shift_of(0u), -1);
+}
+
+// A boot stopped by a clock MTIME cannot count names the rate it decoded and the two words.
+TEST(MtimeConv, ClockRefusalNamesWhatItDecoded)
+{
+    char why[kickos::esp32c6::CLOCK_REFUSAL_MAX];
+    size_t const n = kickos::esp32c6::clock_refusal(why, 120000000u, 0x28010000u, 0x00010000u);
+    EXPECT_EQ(std::string(why, n),
+              "KickOS: ESP32-C6 CPU clock of 120000000 Hz is not 160 MHz >> n, so MTIME has no "
+              "exact rate (SYSCLK_CONF 0x28010000, CPU_FREQ_CONF 0x00010000)\n");
+
+    size_t const widest = kickos::esp32c6::clock_refusal(why, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u);
+    EXPECT_LE(widest, sizeof(why));
+    EXPECT_NE(std::string(why, widest).find("CPU clock of 4294967295 Hz"), std::string::npos);
 }

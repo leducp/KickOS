@@ -31,9 +31,9 @@
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN"
 // citations are the manual's printed page numbers.
 
-#include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/sys/emit.h>
 
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
 
@@ -184,7 +184,7 @@ namespace
         ksnprintf(s, sizeof(s), "[xmccshold] seam %s: rc=%d wrote=0x%x read=0x%x %s\n",
                   reg, rc, static_cast<unsigned>(val), static_cast<unsigned>(got),
                   verdict);
-        kos::print(s);
+        kickos::emit(s);
         return ok;
     }
 
@@ -228,20 +228,20 @@ extern "C" void xmccshold_main(kos_self_t const* self)
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < WINDOW_BYTES)
     {
-        kos::print("[xmccshold] ERROR: no /dev/usic0/ch1 window\n");
+        kickos::emit("[xmccshold] ERROR: no /dev/usic0/ch1 window\n");
         exit(1);
     }
     volatile uint32_t* pcr = reinterpret_cast<volatile uint32_t*>(win + off::PCR);
 
     if (not bring_up(win))
     {
-        kos::print("[xmccshold] ERROR: bring-up: a PV register did not take the seam write\n");
+        kickos::emit("[xmccshold] ERROR: bring-up: a PV register did not take the seam write\n");
         exit(1);
     }
 
     // Run 1: FEM=1 (PCR carries FEM from the bring-up above).
     // Announce before the polling frame so a wedged board is diagnosable.
-    kos::print("[xmccshold] run 1 FEM=1: driving 4-word software-paced frame\n");
+    kickos::emit("[xmccshold] run 1 FEM=1: driving 4-word software-paced frame\n");
     unsigned fem1_edges = run_frame(win);
 
     char s[96];
@@ -252,14 +252,14 @@ extern "C" void xmccshold_main(kos_self_t const* self)
     }
     ksnprintf(s, sizeof(s), "[xmccshold] FEM=1: MSLS edges = %u : %s\n",
               fem1_edges, v1);
-    kos::print(s);
+    kickos::emit(s);
 
     // Reconfigure for run 2: flip FEM to 0 (PCR is U-writable, RM Table 18-20).
     // The channel is idle (frame ended, MSLS forced inactive above), and this is
     // a same-protocol parameter change, so no CCR MODE cycle is needed.
     *pcr = PCR_SSC_BASE; // FEM bit cleared
 
-    kos::print("[xmccshold] run 2 FEM=0: driving 4-word software-paced frame\n");
+    kickos::emit("[xmccshold] run 2 FEM=0: driving 4-word software-paced frame\n");
     unsigned fem0_edges = run_frame(win);
 
     char const* v0 = "FAIL";
@@ -272,7 +272,7 @@ extern "C" void xmccshold_main(kos_self_t const* self)
     }
     ksnprintf(s, sizeof(s), "[xmccshold] FEM=0: MSLS edges = %u : %s\n",
               fem0_edges, v0);
-    kos::print(s);
+    kickos::emit(s);
 
     // Verdict: the HW CS-hold is usable ONLY if the bit provably governs:
     // FEM=1 holds (2 edges = one bracket) AND FEM=0 pulses (~8 = per-word). A
@@ -283,7 +283,7 @@ extern "C" void xmccshold_main(kos_self_t const* self)
         verdict = "hardware CS-hold USABLE (FEM=1 holds, FEM=0 pulses)";
     }
     ksnprintf(s, sizeof(s), "[xmccshold] VERDICT: %s\n", verdict);
-    kos::print(s);
+    kickos::emit(s);
     if (fem1_edges != 2u or fem0_edges < 6u or fem0_edges > 10u)
     {
         exit(1);

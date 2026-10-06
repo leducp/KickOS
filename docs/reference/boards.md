@@ -1019,11 +1019,11 @@ operational belongs in this file.
 ### The selftest ships as SEVERAL images on five boards
 
 `bluepill-c8`, `f302nucleo`, `microbit`, the ENFORCING and own-image AMP `esp32c6-wroom`
-variants and every `esp32-wroom` bench build. The
+variants and every `esp32-wroom` bench or multi-core build. The
 condition is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three
 (`stm32f103`, `stm32f302`, `nrf51`), the chip plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE`
 for `esp32c6`, whose flat variant carves no code window and stays one image, and the chip plus
-`KICKOS_BENCH` for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
+`KICKOS_BENCH` or more than one kernel core (`KICKOS_KERNEL_CORES`) for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
 the arms between them.
 
 **FIVE BOARDS, FOUR DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
@@ -1036,7 +1036,7 @@ slice of the suite. `microbit` takes FIVE (regions 1-4,
 and FOUR on the enforcing or own-image AMP variants (1-3, 4-6, 7-9, 10).
 An enforcing `xmc4800-relax` build takes ONE: its thread arena runs from the app window through
 DSRAM2 to the kernel stack, about 184 KiB, which the whole suite never spends.
-An `esp32-wroom` bench build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
+An `esp32-wroom` bench or multi-core build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
 from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench probes beside a
 console driver or the second core's code put the whole suite past it.
 

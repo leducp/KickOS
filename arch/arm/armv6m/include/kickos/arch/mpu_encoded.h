@@ -8,6 +8,7 @@
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <kickos/arch/mpu_overlap.h>
@@ -30,6 +31,12 @@ struct arch_mpu_encoded
     uint32_t rbar[ARCH_MPU_ENCODED_SLOTS];
     uint32_t rasr[ARCH_MPU_ENCODED_SLOTS]; // 0 deactivates the slot
 };
+
+// Whether slot `i` holds a descriptor.
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return img->rasr[i] != 0u;
+}
 
 #else
 

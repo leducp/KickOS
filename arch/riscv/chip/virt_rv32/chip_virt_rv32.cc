@@ -171,13 +171,14 @@ int arch_console_write(char const* buf, size_t n)
 
 // SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
 // here and arch_console_flush_sync is left to its no-op fallback.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         char c = buf[i];
         semihost(SYS_WRITEC, &c);
     }
+    return true;
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)

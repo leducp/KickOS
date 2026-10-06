@@ -27,12 +27,7 @@ namespace kickos::virt_arm64::console
     bool wait_room(void);
     void store(char c);
 
-    enum class Put
-    {
-        STORED,
-        LOST,   // the claim ended or could not be had; released
-        WEDGED, // the FIFO never drained; released
-    };
+    using kickos::console_retry::Put;
 
     class Claim
     {
@@ -101,28 +96,13 @@ namespace kickos::virt_arm64::console
             });
         }
 
-        // Panic, fault and ISR output, already masked and with no caller to offer the rest
-        // again: waits for the claim and drops the rest of a line it loses.
-        void polled_write(char const* buf, size_t n, uint32_t budget)
+        // Panic, fault and ISR output, already masked: waits for the claim. False once the
+        // FIFO wedged.
+        bool polled_write(char const* buf, size_t n, uint32_t budget)
         {
-            // Scoped to this call: a line this writer lost must not cost the next writer its
-            // own.
-            bool dropping = false;
-            for (size_t i = 0; i < n; i++)
-            {
-                char const c = buf[i];
-                if (dropping)
-                {
-                    dropping = c != '\n';
-                    continue;
-                }
-                Put const put_result = put(c, budget, Take::WAIT, Renew::KERNEL_LINE);
-                if (put_result == Put::WEDGED)
-                {
-                    return;
-                }
-                dropping = put_result == Put::LOST and c != '\n';
-            }
+            return polled_.write(buf, n, [this, budget](char c) {
+                return put(c, budget, Take::WAIT, Renew::KERNEL_LINE);
+            });
         }
 
     private:
@@ -141,6 +121,7 @@ namespace kickos::virt_arm64::console
         uint32_t owner_;
         uint64_t token_ = 0;
         uint32_t kernel_bytes_ = 0; // bytes a renewing writer put under this grant
+        kickos::console_retry::PolledLine polled_;
 
         // One byte under the claim, checked after the FIFO wait: the grant can end while a
         // byte waits for room.

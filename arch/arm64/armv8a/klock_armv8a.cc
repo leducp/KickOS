@@ -14,6 +14,7 @@
 // this file.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 
 #include "../common/gic.h"
 
@@ -252,6 +253,8 @@ uint32_t arch_ipi_deferred(uint32_t core)
     return kickos_armv8a_gic_deferred(core);
 }
 
+static_assert(KICKOS_CHIP_DOORBELL_SEAT == 1,
+              "this doorbell keeps a seat, which the chip file must state as doorbell_seat: true");
 uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated)
 {
     return kickos_armv8a_gic_seat_set(core, seated);

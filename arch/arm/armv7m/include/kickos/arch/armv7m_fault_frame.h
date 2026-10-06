@@ -33,6 +33,7 @@ constexpr uint32_t ARMV7M_CFSR_UFSR = 0xFFFF0000u;
 
 // Whether an address arch_fault_chip_addr latched can explain this fault: a bus fault the core
 // holds no address for, imprecise or precise with BFAR invalid, and no other fault beside it.
+// An instruction fetch (IBUSERR, as IACCVIOL) keeps none: its stacked PC names the address.
 static inline bool armv7m_chip_addr_explains(uint32_t cfsr)
 {
     if ((cfsr & (ARMV7M_CFSR_UFSR | ARMV7M_CFSR_MMFSR)) != 0u)

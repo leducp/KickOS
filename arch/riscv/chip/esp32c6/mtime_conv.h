@@ -4,14 +4,13 @@
 // MTIME rate and tick <-> nanosecond conversion, free of the chip's register headers so a host
 // unit test can pin them.
 //
-// MTIME counts CPU_CLK (on silicon it tracks the CPU cycle counter, divider changes included),
-// and KickOS does not set the clock tree: CPU_CLK is whatever the boot path left, XTAL / 1 =
-// 40 MHz from the ROM, the PLL where a boot keeps the download ROM's clock. Every rate the XTAL
-// and PLL dividers produce is 160 MHz >> shift.
+// MTIME counts CPU_CLK, so its rate is 160 MHz >> shift: every rate the XTAL and PLL dividers
+// produce has that form.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_MTIME_CONV_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_MTIME_CONV_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace kickos::esp32c6
@@ -53,6 +52,60 @@ namespace kickos::esp32c6
             return 0u;
         }
         return root / div;
+    }
+
+    namespace detail
+    {
+        inline size_t put_text(char* out, size_t at, char const* s)
+        {
+            while (*s != '\0')
+            {
+                out[at++] = *s++;
+            }
+            return at;
+        }
+
+        inline size_t put_dec(char* out, size_t at, uint32_t v)
+        {
+            char digits[10];
+            size_t n = 0;
+            do
+            {
+                digits[n++] = static_cast<char>('0' + v % 10u);
+                v /= 10u;
+            } while (v != 0u);
+            while (n != 0u)
+            {
+                out[at++] = digits[--n];
+            }
+            return at;
+        }
+
+        inline size_t put_hex(char* out, size_t at, uint32_t v)
+        {
+            at = put_text(out, at, "0x");
+            for (int nibble = 7; nibble >= 0; nibble--)
+            {
+                out[at++] = "0123456789abcdef"[(v >> (4 * nibble)) & 0xFu];
+            }
+            return at;
+        }
+    }
+
+    constexpr size_t CLOCK_REFUSAL_MAX = 160u;
+
+    // The boot's refusal of a CPU clock MTIME cannot count exactly, naming the rate decoded (0 for
+    // none) and the two PCR words it came from. Answers the length written into `out`.
+    inline size_t clock_refusal(char (&out)[CLOCK_REFUSAL_MAX], uint32_t hz, uint32_t sysclk_conf,
+                                uint32_t cpu_freq_conf)
+    {
+        size_t at = detail::put_text(out, 0, "KickOS: ESP32-C6 CPU clock of ");
+        at = detail::put_dec(out, at, hz);
+        at = detail::put_text(out, at, " Hz is not 160 MHz >> n, so MTIME has no exact rate (SYSCLK_CONF ");
+        at = detail::put_hex(out, at, sysclk_conf);
+        at = detail::put_text(out, at, ", CPU_FREQ_CONF ");
+        at = detail::put_hex(out, at, cpu_freq_conf);
+        return detail::put_text(out, at, ")\n");
     }
 
     // The shift with hz == MTIME_TOP_HZ >> shift, or -1 for a rate the conversions below cannot

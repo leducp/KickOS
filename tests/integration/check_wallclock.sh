@@ -2,40 +2,64 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A silicon capture of wallclock (user/apps/common/wallclock): the kernel's requested sleep lasted
-# that long on the capture host's clock, within one percent, by the arrival stamps the capture
-# route writes beside the log (<log>.times, `<seconds>\t<line>`), and nothing panicked.
+# A silicon capture of wallclock (user/apps/common/wallclock): between its second and third marks
+# the sleep the app declares took that long, within one percent, on the kernel clock and on the
+# capture host's clock alike, by the arrival stamps the capture route writes beside the log
+# (<log>.times, `<seconds>\t<line>`, whose mark lines must be this log's), and nothing panicked.
+# The first mark is never needed.
 #
 #   KOS_CAPTURE=<log> check_wallclock.sh <board-build> <kickos-source> <cmake>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
+SRC="${2:?usage: check_wallclock.sh <board-build> <kickos-source> <cmake>}/user/apps/common/wallclock/main.cc"
+REQ="$(sed -n 's/^ *constexpr uint64_t SLEEP_NS = \([0-9][0-9]*\)ull;$/\1/p' "$SRC")"
+[ -n "$REQ" ] || fail "$SRC declares no SLEEP_NS"
+TOL=$((REQ / 100))
+
 judge_capture wallclock
 
 jno_panic "a panic in wallclock"
-jafter mark-0 1 '[wallclock] mark 0, sleeping ' "first mark" part
-jafter mark-1 "$AT" '[wallclock] mark 1, the kernel clock advanced ' "second mark" part
+jafter mark-1 1 '[wallclock] mark 1, the kernel clock advanced ' "second mark" part
+M1="$(printf '%s\n' "$OUT" | sed -n "${AT}p")"
+jafter mark-2 "$AT" '[wallclock] mark 2, the kernel clock advanced ' "third mark" part
+M2="$(printf '%s\n' "$OUT" | sed -n "${AT}p")"
 jafter done "$AT" '[wallclock] done' "end line"
 
-REQ="$(printf '%s\n' "$OUT" | sed -n 's/^\[wallclock\] mark 0, sleeping \([0-9][0-9]*\) ns$/\1/p' | tail -n 1)"
-[ -n "$REQ" ] || jfail mark-0 "the first mark names no sleep length"
-KERN="$(printf '%s\n' "$OUT" | sed -n 's/^\[wallclock\] mark 1, the kernel clock advanced \([0-9][0-9]*\) ns$/\1/p' | tail -n 1)"
-[ -n "$KERN" ] || jfail mark-1 "the second mark names no kernel time"
+SLEPT="$(printf '%s\n' "$M1" | sed -n 's/^\[wallclock\] mark 1, the kernel clock advanced [0-9][0-9]* ns, sleeping \([0-9][0-9]*\) ns$/\1/p')"
+[ "$SLEPT" = "$REQ" ] || jfail declared "the second mark sleeps '$SLEPT' ns, not the $REQ ns the app declares"
+M0="$(printf '%s\n' "$OUT" | grep -a '^\[wallclock\] mark 0, ' | grep -avxF "[wallclock] mark 0, sleeping $REQ ns")"
+[ -z "$M0" ] || jfail declared "the first mark reads '$M0', not a sleep of the $REQ ns the app declares"
+KERN="$(printf '%s\n' "$M2" | sed -n 's/^\[wallclock\] mark 2, the kernel clock advanced \([0-9][0-9]*\) ns$/\1/p')"
+[ -n "$KERN" ] || jfail mark-2 "the third mark names no kernel time"
 if [ "$KERN" -lt "$REQ" ]; then
     jfail sleep-short "the kernel clock advanced $KERN ns over a sleep of $REQ ns"
+fi
+if [ "$((KERN - REQ))" -gt "$TOL" ]; then
+    jfail kernel-long "the kernel clock advanced $KERN ns over a sleep of $REQ ns, over one percent more"
 fi
 
 TIMES="$KOS_CAPTURE.times"
 [ -s "$TIMES" ] || jfail no-times "no arrival stamps at $TIMES, so no clock outside the chip times the sleep"
-HOST="$(tr -d '\r' < "$TIMES" | awk -F '\t' '
-    index($2, "[wallclock] mark 0, sleeping ") == 1 { t0 = $1; t1 = "" }
-    index($2, "[wallclock] mark 1, the kernel clock advanced ") == 1 && t0 != "" && t1 == "" { t1 = $1 }
-    END { if (t0 != "" && t1 != "") { printf "%.0f\n", (t1 - t0) * 1000000000 } }')"
-[ -n "$HOST" ] || jfail no-times "the arrival stamps carry no mark 0 followed by a mark 1"
+_marks='^\[wallclock\] mark [0-9]'
+LOGMARKS="$(tr -d '\r' < "$KOS_CAPTURE" | grep -a "$_marks")"
+STAMPMARKS="$(tr -d '\r' < "$TIMES" | cut -f2- | grep -a "$_marks")"
+[ "$LOGMARKS" = "$STAMPMARKS" ] \
+    || jfail stamps "the arrival stamps' mark lines are not this capture's: [$STAMPMARKS] against [$LOGMARKS]"
+HOST="$(tr -d '\r' < "$TIMES" | KOS_M1="$M1" KOS_M2="$M2" awk -F '\t' '
+    BEGIN { m1 = ENVIRON["KOS_M1"]; m2 = ENVIRON["KOS_M2"] }
+    { line = substr($0, index($0, "\t") + 1) }
+    t1 == "" && line == m1 { t1 = $1; next }
+    t1 != "" && line == m2 { printf "%.0f\n", ($1 - t1) * 1000000000; exit }')"
+[ -n "$HOST" ] || jfail no-times "the arrival stamps carry no second mark followed by a third"
 
 DEV="$(awk -v h="$HOST" -v r="$REQ" 'BEGIN { d = h - r; if (d < 0) { d = -d } printf "%.0f\n", d }')"
-if [ "$DEV" -gt "$((REQ / 100))" ]; then
+if [ "$DEV" -gt "$TOL" ]; then
     jfail host-time "a sleep of $REQ ns took $HOST ns on the capture host, off by more than one percent"
+fi
+DEV="$(awk -v h="$HOST" -v k="$KERN" 'BEGIN { d = h - k; if (d < 0) { d = -d } printf "%.0f\n", d }')"
+if [ "$DEV" -gt "$TOL" ]; then
+    jfail kernel-host "the kernel clock advanced $KERN ns where the capture host took $HOST ns, more than one percent of the sleep apart"
 fi
 echo "PASS: a sleep of $REQ ns took $HOST ns on the capture host and $KERN ns on the kernel clock"

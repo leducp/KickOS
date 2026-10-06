@@ -14,6 +14,8 @@
 #   - the unit's own flags reach the figures: a header that selects its frame on a macro the
 #     compile command's -f flag predefines answers the wider one;
 #   - an image not linked fails on a preset its thread names and passes on any other;
+#   - a token after a record's fixed fields that is no key its kind takes, or a key stated twice,
+#     fails the parse naming the record, while the reason may say anything;
 #   - the real app_stack_roots.txt parses, and each thread names only presets the trap_redzone
 #     gate runs on for its arch.
 
@@ -163,6 +165,44 @@ expect('an image not linked elsewhere is named', 0, ['app1/t: not bounded on p2'
 sys.path.insert(0, os.path.dirname(os.path.abspath(tool)))
 import app_stack  # noqa: E402
 import trap_redzone  # noqa: E402
+
+NEED = 'need plant header=hdr.h frame=F zone=Z reason: planted\n'
+
+
+def parsed(what, text, words, want_refused=True):
+    path = os.path.join(tmp, 'tokens.txt')
+    write(path, text)
+    try:
+        app_stack.Decl(path, 'plant')
+    except trap_redzone.Bad as e:
+        if not want_refused:
+            die('%s: refused\n%s' % (what, e))
+        for w in words:
+            if w not in str(e):
+                die('%s: refusal lacks "%s"\n%s' % (what, w, e))
+    else:
+        if want_refused:
+            die('%s: parsed' % what)
+    print('app_stack control: %s' % what)
+
+
+THREAD = 'thread plant app1 t root=a.cc:entry stack=S presets=p1 %s reason: planted %s\n'
+parsed('a key=value in the reason is the reason', NEED + THREAD % ('', 'presets=p9 frob=1'),
+       [], want_refused=False)
+parsed('a thread naming preset= is refused', NEED + THREAD % ('preset=p2', ''),
+       ['tokens.txt:2', 'thread plant app1 t', '"preset=p2"'])
+parsed('a thread naming an unknown key is refused', NEED + THREAD % ('frob=1', ''),
+       ['tokens.txt:2', '"frob=1"'])
+parsed('a thread stating root= twice is refused', NEED + THREAD % ('root=b.cc:entry', ''),
+       ['tokens.txt:2', 'root= twice'])
+parsed('a bare token on a thread is refused', NEED + THREAD % ('presets', ''),
+       ['tokens.txt:2', '"presets"'])
+parsed('a need naming an unknown key is refused',
+       'need plant header=hdr.h frame=F zone=Z depth=D reason: planted\n',
+       ['tokens.txt:1', '"depth=D"'])
+parsed('an unsized naming call= is refused',
+       NEED + 'unsized plant sys 0 call=x reason: planted\n', ['tokens.txt:2', '"call=x"'])
+
 real = os.path.join(os.path.dirname(os.path.abspath(tool)), 'app_stack_roots.txt')
 arches = set(f[1] for _n, f, _r in trap_redzone.records(real) if len(f) > 1)
 if not arches:

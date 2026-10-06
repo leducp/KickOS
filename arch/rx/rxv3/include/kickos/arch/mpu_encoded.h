@@ -7,6 +7,7 @@
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <kickos/arch/mpu_overlap.h>
@@ -23,5 +24,11 @@ struct arch_mpu_encoded
     uint32_t rspage[ARCH_MPU_ENCODED_SLOTS]; // region start page
     uint32_t repage[ARCH_MPU_ENCODED_SLOTS]; // region end page + UAC + V
 };
+
+// Whether slot `i` holds a descriptor: V, REPAGEn bit 0.
+static inline bool arch_mpu_encoded_seated(struct arch_mpu_encoded const* img, unsigned i)
+{
+    return (img->repage[i] & 1u) != 0u;
+}
 
 #endif

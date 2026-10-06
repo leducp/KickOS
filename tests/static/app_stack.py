@@ -52,7 +52,7 @@ class Decl(object):
             if not reason:
                 die('%s: every record carries a reason:' % where)
             kind = f[0]
-            fields = dict(x.split('=', 1) for x in f[2:] if '=' in x)
+            fields = self._fields(where, kind, f)
             if kind == 'need':
                 if self.need is not None:
                     die('%s: a second need record for %s' % (where, arch))
@@ -65,7 +65,7 @@ class Decl(object):
                 for x in f[4:]:
                     if x.startswith('presets='):
                         presets.update(p for p in x[len('presets='):].split(',') if p)
-                if len(f) < 7 or 'root' not in fields or 'stack' not in fields or not presets:
+                if 'root' not in fields or 'stack' not in fields or not presets:
                     die('%s: thread wants <arch> <image> <name> root=<symbol> stack=<macro>'
                         ' presets=<preset>[,<preset>...]...' % where)
                 self.threads.append((f[2], f[3], fields['root'], fields['stack'],
@@ -92,11 +92,34 @@ class Decl(object):
                 if f[2] in self.unsized:
                     die('%s: unsized %s declared twice for this posture' % (where, f[2]))
                 self.unsized[f[2]] = (cost, calls)
-            else:
-                die('%s: unknown record kind "%s"' % (where, kind))
         if self.threads and self.need is None:
             die('%s declares app threads for %s and no need record, so there is no trap'
                 ' reservation to add below them' % (path, arch))
+
+    KEYS = {'need': (2, ('header', 'frame', 'zone'), ()),
+            'thread': (4, ('root', 'stack'), ('presets',)),
+            'unsized': (4, ('calls',), ())}
+
+    @staticmethod
+    def _fields(where, kind, f):
+        if kind not in Decl.KEYS:
+            die('%s: unknown record kind "%s"' % (where, kind))
+        fixed, once, repeat = Decl.KEYS[kind]
+        if len(f) < fixed:
+            return {}
+        fields = {}
+        for x in f[fixed:]:
+            if kind == 'unsized' and x.startswith('cores'):
+                continue
+            key = x.split('=', 1)[0]
+            if '=' not in x or (key not in once and key not in repeat):
+                die('%s: %s %s carries "%s", which is no key a %s record takes (%s)'
+                    % (where, kind, ' '.join(f[1:fixed]), x, kind,
+                       ', '.join(k + '=' for k in once + repeat)))
+            if key in once and key in fields:
+                die('%s: %s %s states %s= twice' % (where, kind, ' '.join(f[1:fixed]), key))
+            fields[key] = x.split('=', 1)[1]
+        return fields
 
 
 class ImageGraph(T.Graph):

@@ -39,9 +39,10 @@ extern "C"
         return static_cast<int>(n);
     }
 
-    void arch_console_write_sync(char const* buf, size_t n)
+    bool arch_console_write_sync(char const* buf, size_t n)
     {
         darkseam::g_wire.append(buf, n);
+        return true;
     }
 
     void arch_console_flush_sync(void)

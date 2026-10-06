@@ -8,9 +8,9 @@
 // data path is the engine's internal loop-back (DX0 = own transmitter), so every byte echoes with
 // no external SPI device on the bench.
 
-#include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/sys/emit.h>
 
 #include <kickos/driver/spi.h>
 
@@ -43,7 +43,7 @@ namespace
             g_fails++;
         }
         ksnprintf(s, sizeof(s), "[xmcssc] %s: %s\n", label, verdict);
-        kos::print(s);
+        kickos::emit(s);
     }
 
     bool buffers_equal(unsigned char const* a, unsigned char const* b, size_t n)
@@ -81,7 +81,7 @@ namespace
         {
             char s[80];
             ksnprintf(s, sizeof(s), "[xmcssc] bus open rc=%d\n", static_cast<int>(brc));
-            kos::print(s);
+            kickos::emit(s);
         }
 
         // hz = 0 is the only rate this channel accepts: its baud profile is fixed at bring-up
@@ -104,7 +104,7 @@ namespace
             char s[80];
             ksnprintf(s, sizeof(s), "[xmcssc] device open rc=%d achieved=%lu Hz\n",
                       static_cast<int>(hz), static_cast<unsigned long>(dev.hz));
-            kos::print(s);
+            kickos::emit(s);
         }
         report("device open", hz > 0);
 
@@ -166,10 +166,10 @@ namespace
 
         if (g_fails == 0)
         {
-            kos::print("[xmcssc] loopback PASS (the SSC bus echoes tx == rx)\n");
+            kickos::emit("[xmcssc] loopback PASS (the SSC bus echoes tx == rx)\n");
             return 0;
         }
-        kos::print("[xmcssc] loopback FAIL (see per-case lines above)\n");
+        kickos::emit("[xmcssc] loopback FAIL (see per-case lines above)\n");
         return 1;
     }
 }
@@ -186,7 +186,7 @@ extern "C" void xmcssc_main(kos_self_t const* self)
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < U0C1_WINDOW or line.cap == KOS_CAP_NONE)
     {
-        kos::print("[xmcssc] ERROR: no /dev/usic0/ch1 window or irq line\n");
+        kickos::emit("[xmcssc] ERROR: no /dev/usic0/ch1 window or irq line\n");
         exit(1);
     }
     kos_cap_t note = KOS_CAP_NONE;
@@ -203,7 +203,7 @@ extern "C" void xmcssc_main(kos_self_t const* self)
     {
         char e[64];
         ksnprintf(e, sizeof(e), "[xmcssc] ERROR: the line's notification rc %d\n", rc);
-        kos::print(e);
+        kickos::emit(e);
         exit(1);
     }
     bcfg.base = win;
@@ -216,7 +216,7 @@ extern "C" void xmcssc_main(kos_self_t const* self)
     kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
-        kos::print("[xmcssc] ERROR: no /svc/spi0 endpoint\n");
+        kickos::emit("[xmcssc] ERROR: no /svc/spi0 endpoint\n");
         exit(1);
     }
     bcfg.base = 0u;

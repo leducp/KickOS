@@ -653,8 +653,11 @@ v6-M) and the sim let the higher-numbered region decide; the **RISC-V PMP** the 
 one; **K64F SYSMPU** and the **RX MPU** take the union. A set is admitted only where its rule
 decides every shared byte as the kernel's checks do (`mpu_overlap_expressible`,
 `kernel/include/kickos/mpuset.h`): readable where either region grants read (`user_range_ok`),
-writable only where both grant write (`read_only_overlaps`), and of the one memory type both
-regions name. Execute is not asked, no kernel check reading it. That is no overlap at all on
+writable only where both grant write (`read_only_overlaps`), each region as the encoder seated
+it: a region with no descriptor decides nothing in the hardware. The kernel also requires one memory
+type per shared byte on every backend, those with no memory type among them. Execute is not asked, no
+kernel check reading it. `tests/unit/mpuoverlap` runs each backend's own encoder and decodes what its
+hardware grants each shared byte. That is no overlap at all on
 PMSAv8, equal write rights on a union MPU, and on a priority one a deciding region that grants
 read wherever the other does and write only where the other does. The spawn refuses
 `-KOS_EINVAL` a child whose set, assembled as `thread_create` would seat it, breaks it, and a

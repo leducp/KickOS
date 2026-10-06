@@ -254,25 +254,22 @@ void arch_console_reclaim(void)
     u::reg32(CONSOLE_WIN_BASE + u::off::CCR) = ru::CCR_MODE_ASC;
 }
 
-void kickos_xmc_usic_write(char const* buf, size_t n)
+bool kickos_xmc_usic_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         if (not tx_wait_ready())
         {
-            return; // give up rather than hang the caller on a misconfiguration
+            return false; // give up rather than hang the caller on a misconfiguration
         }
         u::tx_put(U0C0, static_cast<uint8_t>(buf[i]));
     }
-    // Drain before returning: the caller frequently sleeps (WFI) right after a
-    // print. clock_init() sets SLEEPCR.SYSSEL=1 so WFI no longer drops the USIC
-    // clock to fOFI mid-shift (the root cause of the old garbled last byte), so
-    // this is now a pure status drain: wait for the buffer->shifter handoff (TDV
-    // clear) then for the shifter to empty (PSR.BUSY clear), both bounded.
-    if (tx_wait_ready())
+    // Drained before returning: the caller frequently sleeps (WFI) right after a print.
+    if (not tx_wait_ready())
     {
-        (void)tx_wait_idle();
+        return false;
     }
+    return tx_wait_idle();
 }
 
 // Clock-select console coherence (arch.h). fPERIPH = fCPU/2 tracks a clock-select, so

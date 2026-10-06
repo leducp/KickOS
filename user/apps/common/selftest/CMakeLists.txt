@@ -63,9 +63,9 @@ set(_selftest_regions 10)
 # runs from (`IRAM` in arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a
 # console driver or the second core's code. The bench probes take the C6's code window past one
 # more cut. None of these is a number the build can read back from the board, so the cut is stated
-# here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from
-# the board's own config, and every gate takes the image list and each image's arm count off the
-# targets below rather than restating either.
+# here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE, KICKOS_BENCH and
+# KICKOS_KERNEL_CORES come from the board's own config, and every gate takes the image list and each
+# image's arm count off the targets below rather than restating either.
 set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
   set(_selftest_firsts 1 2 3 4 5 6 7 8 9 10)

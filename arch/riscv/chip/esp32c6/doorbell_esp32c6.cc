@@ -5,6 +5,7 @@
 // carry the request and its answer; LP SRAM cannot hold their atomics.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 #include <kickos/arch/amp_shared.h>
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/sys/atomic.h>
@@ -108,6 +109,8 @@ uint32_t arch_ipi_deferred(uint32_t)
     return 0;
 }
 
+static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
+              "this doorbell keeps no seat, which the chip file must state by leaving doorbell_seat out");
 uint32_t arch_ipi_seat_set(uint32_t, uint32_t)
 {
     return ARCH_IPI_SEAT_NONE;

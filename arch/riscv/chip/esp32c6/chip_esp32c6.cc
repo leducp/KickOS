@@ -98,7 +98,7 @@ extern "C"
         __kickos_appdata_end;
 #endif
 
-    // CPU_CLK, read off PCR by arch_init (mtime_conv.h).
+    // CPU_CLK, read off PCR before the constructors run (mtime_conv.h).
     uint32_t SystemCoreClock = 0u;
 }
 
@@ -110,7 +110,7 @@ namespace
     using kickos::esp32c6::mtime_ns_to_ticks;
     using kickos::esp32c6::mtime_ticks_to_ns;
 
-    // MTIME's rate as MTIME_TOP_HZ >> g_mtime_shift, set by arch_init before MTIME counts.
+    // MTIME's rate as MTIME_TOP_HZ >> g_mtime_shift, set before the constructors run.
     uint32_t g_mtime_shift = 0u;
 
     // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on the board's console
@@ -436,7 +436,7 @@ int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
 // Synchronous polled writer for the panic / fault / pre-arm path (console.cc picks it when
 // the ring is unarmed or in ISR/panic context); it replaces a fallback TU that would
 // re-enter the buffered writer. Bounded so a wedged UART cannot hang the panic path.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -448,11 +448,12 @@ void arch_console_write_sync(char const* buf, size_t n)
             // panic path.
             if (++spin > 200000u)
             {
-                return; // FIFO not draining -> drop (never block the kernel)
+                return false; // FIFO not draining -> drop (never block the kernel)
             }
         }
         r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
     }
+    return true;
 }
 
 // Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
@@ -856,6 +857,14 @@ static void apm_write(uintptr_t at, uint32_t value)
     r32(at) = value;
 }
 
+// A refusal ahead of arch_init must not leave the ROM-armed watchdogs to reset into it again.
+static void c6_refuse_n(char const* msg, size_t n)
+{
+    arch_console_write_sync(msg, n);
+    wdt_disable_all();
+    arch_shutdown(1);
+}
+
 static void c6_refuse(char const* msg)
 {
     size_t n = 0;
@@ -863,8 +872,7 @@ static void c6_refuse(char const* msg)
     {
         n++;
     }
-    arch_console_write_sync(msg, n);
-    arch_shutdown(1);
+    c6_refuse_n(msg, n);
 }
 
 // Every node's rows at once: node 1's stay inert until arch_amp_release_peers moves the LP
@@ -915,9 +923,10 @@ static void apm_program_gate(void)
     __asm volatile("fence" ::: "memory");
 }
 
-// CPU_CLK as the boot path left it, which MTIME counts. A source with no exact rate would leave
-// every sleep and timeout wrong, so it stops the boot.
-static void mtime_rate_init(void)
+// MTIME counts CPU_CLK, so a CPU clock that is not 160 MHz >> n stops the boot.
+//
+// noinline: tests/static/check_c6_clock_first.sh finds its call in Reset_Handler.
+static __attribute__((noinline)) void mtime_rate_init(void)
 {
     uint32_t const sys = r32(reg::pcr::SYSCLK_CONF);
     uint32_t const cpu = r32(reg::pcr::CPU_FREQ_CONF);
@@ -930,7 +939,8 @@ static void mtime_rate_init(void)
     int const shift = kickos::esp32c6::mtime_shift_of(hz);
     if (shift < 0)
     {
-        c6_refuse("KickOS: ESP32-C6 CPU clock is not 160 MHz >> n, so MTIME has no exact rate\n");
+        char why[kickos::esp32c6::CLOCK_REFUSAL_MAX];
+        c6_refuse_n(why, kickos::esp32c6::clock_refusal(why, hz, sys, cpu));
     }
     g_mtime_shift = static_cast<uint32_t>(shift);
     SystemCoreClock = hz;
@@ -940,7 +950,6 @@ void arch_init(void)
 {
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
     c6_early_mark('E'); // watchdogs disabled
-    mtime_rate_init();
 
     // Before anything unprivileged exists: arch_console_reclaim has no other way back to a
     // working baud (see g_console_clkdiv).
@@ -1028,6 +1037,7 @@ void Reset_Handler(void)
     {
         __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
     }
+    mtime_rate_init(); // a constructor may read SystemCoreClock
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

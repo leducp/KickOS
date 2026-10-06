@@ -14,6 +14,7 @@
 
 #include "chip_layout.h"
 #include "irq.h"
+#include "sim_mpu.h"
 
 #include <new> // placement new (arch_context_init)
 
@@ -287,24 +288,6 @@ namespace
         kickos_thread_return(); // noreturn
     }
 
-    int prot_from_attr(uint32_t attr)
-    {
-        int prot = PROT_NONE;
-        if (attr & ARCH_MPU_R)
-        {
-            prot |= PROT_READ;
-        }
-        if (attr & ARCH_MPU_W)
-        {
-            prot |= PROT_WRITE;
-        }
-        if (attr & ARCH_MPU_X)
-        {
-            prot |= PROT_EXEC;
-        }
-        return prot;
-    }
-
     // Privileged posture: whole arena accessible (the background-region analog), used
     // while KERNEL code runs. An unprivileged thread's own stack is an arena block, so
     // kernel code running ON that stack MUST keep it mapped.
@@ -389,15 +372,11 @@ namespace
         {
             mprotect(reinterpret_cast<void*>(cursor), aend - cursor, PROT_NONE);
         }
-        // In slot order, never base order: under ARCH_MPU_OVERLAP_HIGHER the last call decides.
-        for (size_t i = 0; i < sim().applied_n; i++)
-        {
-            arch_mpu_region const& r = sim().applied[i];
-            if (arena_region_valid(r.base, r.size))
-            {
-                mprotect(reinterpret_cast<void*>(r.base), r.size, prot_from_attr(r.attr));
-            }
-        }
+        kickos::sim::protect_in_slot_order(
+            sim().applied, sim().applied_n, arena_region_valid,
+            [](uintptr_t base, size_t size, int prot) {
+                mprotect(reinterpret_cast<void*>(base), size, prot);
+            });
     }
 
     // Restore MPU state for the now-running context after a switch-in. A context
@@ -958,7 +937,7 @@ int arch_console_write(char const* buf, size_t n)
 
 // The bounded synchronous stdout writer (panic / fault / pre-arm boot). The ring's
 // prime/flush/overflow paths land here too, one byte at a time, via sim_tx_push.
-void arch_console_write_sync(char const* buf, size_t n)
+bool arch_console_write_sync(char const* buf, size_t n)
 {
 #if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
     for (size_t i = 0; i < n; i++)
@@ -968,6 +947,7 @@ void arch_console_write_sync(char const* buf, size_t n)
     // Panic and fault reach here, and neither returns to a newline, so an unterminated
     // tail would otherwise be lost.
     sim_line_flush();
+    return true;
 #else
     size_t off = 0;
     while (off < n)
@@ -982,14 +962,15 @@ void arch_console_write_sync(char const* buf, size_t n)
             {
                 continue;
             }
-            break;
+            return false;
         }
         if (w == 0)
         {
-            break;
+            return false;
         }
         off += static_cast<size_t>(w);
     }
+    return true;
 #endif
 }
 

@@ -29,6 +29,9 @@ namespace
     uint32_t g_sync_pushes = 0;
     uint32_t g_sync_seat = 0;
     void (*g_sync_fn)(void) = nullptr;
+    bool g_sync_stalls = false;
+    uint32_t g_cur_stalls = 0;
+    uint32_t g_max_stalls = 0;
     std::string g_wire;
     char g_storage[consoleseam::STORAGE_SIZE];
 
@@ -149,6 +152,9 @@ namespace consoleseam
         g_sync_pushes = 0;
         g_sync_seat = 0;
         g_sync_fn = nullptr;
+        g_sync_stalls = false;
+        g_cur_stalls = 0;
+        g_max_stalls = 0;
         g_wire.clear();
         console_tx_init(&g_backend, g_storage, ring_size, irq_line);
     }
@@ -200,6 +206,16 @@ namespace consoleseam
         g_sync_seat = ordinal;
         g_sync_fn = fn;
     }
+
+    void set_sync_stalls(bool stalls)
+    {
+        g_sync_stalls = stalls;
+    }
+
+    uint32_t max_masked_stalls()
+    {
+        return g_max_stalls;
+    }
 }
 
 extern "C"
@@ -217,6 +233,7 @@ extern "C"
         if (g_mask_depth == 0)
         {
             g_cur_masked = 0;
+            g_cur_stalls = 0;
             on_gap();
         }
     }
@@ -227,8 +244,20 @@ extern "C"
     }
 
     // Counted against the masked-push metric whenever the caller holds the mask.
-    void arch_console_write_sync(char const* buf, size_t n)
+    bool arch_console_write_sync(char const* buf, size_t n)
     {
+        if (g_sync_stalls)
+        {
+            if (g_mask_depth > 0)
+            {
+                g_cur_stalls++;
+                if (g_cur_stalls > g_max_stalls)
+                {
+                    g_max_stalls = g_cur_stalls;
+                }
+            }
+            return false;
+        }
         for (size_t i = 0; i < n; i++)
         {
             mock_push(static_cast<uint8_t>(buf[i]));
@@ -240,6 +269,7 @@ extern "C"
                 fn();
             }
         }
+        return true;
     }
 
     void arch_irq_mask(int)

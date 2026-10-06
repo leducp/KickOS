@@ -179,11 +179,8 @@
 #define KICKOS_ARMV6M_TRAP_NEED_SVC \
     (KICKOS_ARMV6M_TRAP_NEST_SVC + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC)
 
-/* The exception frame the SVC entry stacks ABOVE the PSP the guard validates: NEST_SVC's
-   P1 - P0, which the guard does not count and the thread's own stack still pays. So a thread
-   needs this plus KICKOS_ARMV6M_TRAP_NEED_SVC below its deepest sp, which also covers a
-   preemption's frame and the PendSV push, 64 together. tests/static/app_stack_roots.txt prices
-   app threads on it. */
+/* ENTRY_FRAME is spent ABOVE the validated sp: the SVC entry's frame (NEST_SVC's P1 - P0),
+   which the guard does not count and the thread's own stack still pays. */
 #define KICKOS_ARMV6M_TRAP_ENTRY_FRAME 32
 
 /* What one kernel block has to hold: a requirement on KICKOS_KERNEL_STACK_SIZE, not a bound
