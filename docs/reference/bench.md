@@ -161,14 +161,25 @@ TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, whic
 runs against the image's row of `<build>/kickos-selftest-manifest.txt`, a board app's
 `kickos_app_judge`, or `-` for an image nothing judges.
 
-`bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, counts the
-unjudged ones in a row of their own, and prints an "image coverage" table naming each judged
-image as `captured` or `NOT RUN`. Any `NOT RUN` makes the pass `INCOMPLETE` and the script
-exits nonzero. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
+`bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then, on a board
+whose tree declares a `<board>-flat` preset, every image only that flat build ships (`c6lpprobe`,
+which reads a kernel word), labelled `(flat)`, and, on a board whose tree declares a
+`<board>-amp2-n0` preset, its AMP partition, and prints an "image coverage"
+table naming each image as `captured`, `NOT RUN`, or `NO JUDGE` for one no judge names. Any
+`NOT RUN` or `NO JUDGE` makes the pass `INCOMPLETE` and the script exits nonzero. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
 (`<session>/logs/<tag>-<board>-<image>.log`), so the captures of one pass never share a log.
 
 `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
 either, so no line it prints is a witness.
+
+    AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh <board>
+
+builds the board's AMP partition, every node's image merged into one by the node 0 build's
+`amp_partition` target, flashes it, and judges the capture with the judge `ampping_n0`'s row
+names: `tests/integration/check_c6_amp_capture.sh` on `esp32c6-wroom`, which reads both node
+images' ROM load lines, the LP core's APM witness and the four rounds across, and
+`tests/integration/check_pizero_amp_gate.sh` on `pizero2350`, which reads the ACCESSCTRL readback,
+node 1's bus fault on UART0 and the four rounds across. No emulator runs either partition.
 
 The console route is derived from the image. Every system target defines
 `kickos_usb_device_console` (`<kickos/usb_console.h>`), 1 where its stdout driver is a USB device

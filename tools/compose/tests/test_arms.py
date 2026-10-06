@@ -838,19 +838,16 @@ ADMISSION_ARMS = [
     (None, "xmc4800-relax.yaml", [("    priority: 8\n", "    priority: 1\n")], [], False),
     ("scheduling.ceiling", "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 7\n")],
      [], False),
-    (("scheduling.ceiling", "scheduling.stdout-priority"), "xmc4800-relax.yaml",
+    ("scheduling.ceiling", "xmc4800-relax.yaml",
      [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 32\n")], [], False),
-    ("scheduling.stdout-priority", "xmc4800-relax.yaml",
-     [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 13\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 12\n")],
+    (None, "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 31\n")],
      [], False),
     (None, "qemu-x86_64.yaml", [("    priority: 8\n    ceiling: 8\n", "    priority: 8\n    ceiling: 31\n")], [], False),
     ("form.missing", "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n")],
      [], True),
     ("form.inapplicable", "xmc4800-relax.yaml", [("    priority: 11\n    restart: { max: 3 }\n", "    priority: 11\n    ceiling: 12\n    restart: { max: 3 }\n")],
      [], False),
-    ("scheduling.stdout-priority", "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 13\n    ceiling: 13\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 12\n    ceiling: 12\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 31\n    ceiling: 31\n")], [], False),
     ("scheduling.stdout-order", "xmc4800-relax.yaml",
      [("\ntasks:\n", "\ntasks:\n  - name: early\n    entry: early_main\n    stack: 2048\n    priority: 5\n    ceiling: 5\n")], [], False),
     (("ownership.console", "scheduling.console-driver"), "xmc4800-relax.yaml", [("stdout: /svc/console", "stdout: kernel")],
@@ -1330,6 +1327,21 @@ tasks:
     accepts: [device_not_isolated, coarse_gate]
 """
 
+RX_SYSTEM = """version: 1
+board: rx72m
+stdout: kernel
+ends: never
+heap: 0
+tasks:
+  - name: pins
+    entry: pins_main
+    stack: 1024
+    priority: 9
+    ceiling: 9
+    devices: [/dev/port]
+    accepts: [coarse_gate]
+"""
+
 C6_SYSTEM = """version: 1
 board: esp32c6-wroom
 stdout: kernel
@@ -1387,7 +1399,7 @@ def composed(name, text, edits, expect, board=None, platform_edits=(), names=Non
         for entry in expect:
             where = path
             if len(entry) == 3:
-                where = os.path.join(root, entry[0])
+                where = os.path.normpath(os.path.join(root, entry[0]))
             found = (where, line_starting(where, entry[-2]), entry[-1])
             if names is not None:
                 found = found + (names,)
@@ -1411,6 +1423,10 @@ def on_k64f(edits, expect, chip_edits=(), names=None, manifest=None):
         platform_edits = (("mk64f/chip.yaml", chip_edits),)
     return composed("frdmk64f.yaml", K64F_SYSTEM, edits, expect, platform_edits=platform_edits, names=names,
                     manifest=manifest)
+
+
+def on_rx(edits, expect):
+    return composed("rx72m.yaml", RX_SYSTEM, edits, expect)
 
 
 def on_arm64(edits, expect, chip_edits, manifest=None):
@@ -1738,6 +1754,12 @@ IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoh
 SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    entry: spare_main\n"
          "    stack: 8192\n    priority: 8\n    ceiling: 8\n    serves:  /amp/3\n")
 C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
+# The HP gate fronting less than timg1.
+C6_HP_NARROW = [("ranges: [[0x60000000, 0xB0000]]", "ranges: [[0x60000000, 0x9000]]")]
+# Two UART0 instances one ACCESSCTRL register assigns.
+RP_UART_REPEAT = [("    window: [0x40070000, 0x4000]\n    gate_register: 0xA0\n",
+                   "    window: [0x40070000, 0x4000]\n    count: 2\n    stride: 0x4000\n    gate_register: 0xA0\n"),
+                  ('    lines: { irq: { number: 33, ref: "Table 95 System-level interrupts, p.82" } }\n', "")]
 # A node composition with neither crossing nor partition region.
 LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    partition: true\n", ""),
         ("    uses: [/amp/3]\n", ""), ("    maps: { /shm/book: rw }\n", "")]
@@ -1745,13 +1767,16 @@ LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    par
 # whose peers run no kernel.
 ARM64_CROSSING_ONLY = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: uncached\n    partition: true\n", ""),
                        ("    maps: { /shm/book: rw }\n", "")]
+LOCAL = ("    partition: true\n", "")
+ARM64_AMP3 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 3\n")])[0]
 ARM64_SHARED = mutate(ARM64_AMP, [("    share_cache: uncached\n", "    share_cache: uncached\n    image: shared\n")])[0]
 
 
-def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=None):
+def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=None, names=None):
     """Node compositions written beside the golden ones and admitted together against `manifest`,
     node 0's. `edits` maps a node to its (old, new) list; `expect` names each refusal as (node, the
-    prefix of its line, rule), a node of None naming the manifest's first line."""
+    prefix of its line, rule), a node of None naming the manifest's first line, and `names` is text
+    every refusal's message carries."""
     def scenario(root):
         for target, target_edits in platform_edits:
             target_path = os.path.join(root, target)
@@ -1766,9 +1791,12 @@ def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=N
         expected = []
         for k, prefix, rule in expect:
             if k is None:
-                expected.append((manifest_path, 1, rule))
+                found = (manifest_path, 1, rule)
             else:
-                expected.append((written[k], line_starting(written[k], prefix), rule))
+                found = (written[k], line_starting(written[k], prefix), rule)
+            if names is not None:
+                found = found + (names,)
+            expected.append(found)
         if paths is not None:
             return paths(written, manifest_path), expected
         report, found = partition.admit_partition(written, manifest_path, 0)
@@ -1831,6 +1859,12 @@ SCENARIOS = [
                                    [("    devices: ", "name.device-unknown")])),
     ("ownership.kernel", on_imx([("[/dev/sai5, /dev/sai6]", "[/dev/sai5, /dev/sai6, /dev/mu1_a]")],
                                 [("    devices: ", "ownership.kernel")])),
+    (None, on_rx([], [])),
+    ("ownership.kernel", on_c6([("    devices: [/dev/gpio]", "    devices: [/dev/gpio, /dev/gpio_matrix]")],
+                               [("    devices: ", "ownership.kernel")])),
+    ("ownership.kernel", on_c6([("    devices: [/dev/gpio]", "    devices: [/dev/gpio, /dev/lp_tee]")],
+                               [("    devices: ", "ownership.kernel")])),
+    ("ownership.kernel", on_rx([("[/dev/port]", "[/dev/port, /dev/mpc]")], [("    devices: ", "ownership.kernel")])),
     ("ownership.line", on_imx([("    lines: { irq: /dev/sai5/shared }\n",
                                 "    lines: { irq: /dev/sai5/shared }\n  - name: echo\n    entry: echo_main\n"
                                 "    stack: 4096\n    priority: 8\n    ceiling: 8\n    lines: { irq: /dev/sai6/shared }\n")],
@@ -1900,6 +1934,13 @@ SCENARIOS = [
                                 manifest=mutate(K64F_MANIFEST, [("descriptions:\n  chip: platform/mk64f/chip.yaml\n"
                                                                  "  board: platform/mk64f/frdmk64f.yaml\n", "")])[0])),
     (None, on_c6(BOARD_LESS_C6, [], manifest=defaulted(C6_MANIFEST, "esp32c6-wroom"))),
+    ("form.missing", composed("esp32c6-wroom.yaml", C6_SYSTEM, BOARD_LESS_C6,
+                              [("../boards/esp32c6-wroom/composition.yaml", "version: ", "form.missing"),
+                               ("../boards/esp32c6-wroom/composition.yaml", "work:", "form.unknown-field"),
+                               ("version: ", "form.missing"), ("version: ", "enforcement.no-protection"),
+                               ("version: ", "enforcement.no-privilege-split"), ("  - name: blink", "form.missing")],
+                              platform_edits=(("../boards/esp32c6-wroom/composition.yaml", [("\ntasks:\n", "\nwork:\n")]),),
+                              manifest=defaulted(C6_MANIFEST, "esp32c6-wroom"))),
     ("form.missing", on_c6(BOARD_LESS_C6, [("version: ", "form.missing"), ("version: ", "enforcement.no-protection"),
                                            ("version: ", "enforcement.no-privilege-split"),
                                            ("  - name: blink", "form.missing")])),
@@ -2024,6 +2065,14 @@ SCENARIOS = [
                                        [(0, "    uses: ", "partition.unserved")], ARM64_AMP)),
     ("partition.region", partitioned("arm64", ARM64_PAIR, {1: [("size: 64", "size: 128")]},
                                      [(1, "    size: ", "partition.region")], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {1: [LOCAL]},
+                                     [(1, "  - name: /shm/book", "partition.region")], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [LOCAL]},
+                                     [(0, "  - name: /shm/book", "partition.region")], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR + ARM64_PAIR[:1], {1: [LOCAL], 2: [LOCAL]},
+                                     [(1, "  - name: /shm/book", "partition.region"),
+                                      (2, "  - name: /shm/book", "partition.region")], ARM64_AMP3)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: [LOCAL], 1: [LOCAL]}, [], ARM64_AMP)),
     ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [("size: 64", "size: 0x300000")],
                                                            1: [("size: 64", "size: 0x300000")]},
                                      [(0, "  - name: /shm/book", "partition.region"),
@@ -2071,6 +2120,39 @@ SCENARIOS = [
                                           [("rp2350/chip.yaml", [("    gate_register: 0xA0\n", "")])])),
     ("manifest.amp", partitioned("arm64", ARM64_PAIR, {}, [(0, "version: ", "manifest.amp")], ARM64_AMP,
                                  paths=three_nodes)),
+    ("partition.gate-budget", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n",
+                                                                "    serves: /amp/3\n    devices: [/dev/timg1]\n")]},
+                                          [(1, "    devices: ", "partition.gate-budget")], C6_AMP,
+                                          [("esp32c6/chip.yaml", C6_HP_NARROW)])),
+    (None, partitioned("rp", RP_PAIR, {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0/0, /dev/uart0/1]\n")]},
+                       [], RP_AMP, [("rp2350/chip.yaml", RP_UART_REPEAT)])),
+    ("partition.gate-budget", partitioned("rp", RP_PAIR,
+                                          {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0/0]\n")],
+                                           1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/uart0/1]\n")]},
+                                          [(1, "    devices: ", "partition.gate-budget")], RP_AMP,
+                                          [("rp2350/chip.yaml", RP_UART_REPEAT)])),
+    ("form.unknown-field", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")), [("heap: 16384\n", "heap: 16384\nhaep: 1\n")],
+                                    [("haep: ", "form.unknown-field")],
+                                    names="no field `haep` (did you mean `heap`?); its fields are `version`, ")),
+    ("form.missing", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")), [("heap: 16384\n", "")], [("version: ", "form.missing")],
+                              names="the bytes of libc heap its image carves (0 for none); a composition naming no "
+                                    "`board` inherits its build board's")),
+    ("form.missing", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")), [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n")],
+                              [("  - name: app", "form.missing")],
+                              names="the highest priority its threads may take; the usual value is the kernel "
+                                    "build's top priority")),
+    ("scheduling.ceiling", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")), [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 7\n")],
+                                    [("    ceiling: 7", "scheduling.ceiling")],
+                                    names="the highest priority its threads may take, is below its priority 8")),
+    ("scheduling.ceiling", on_xmc([("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 32\n")],
+                                  [("    ceiling: 32", "scheduling.ceiling")], [], XMC_MANIFEST,
+                                  names="range [1, 31]; the usual value is its top, 31")),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/9]")]},
+                                   [(0, "    uses: ", "partition.port")], ARM64_AMP,
+                                   names="does not name; it names port 2..4")),
+    ("partition.lone", partitioned("arm64", ARM64_PAIR, {0: ARM64_CROSSING_ONLY},
+                                   [(0, "    uses: ", "partition.lone")], ARM64_AMP, paths=single_emit,
+                                   names="`kickos_compose partition`, or kickos_compose(... PARTITION ...) in CMake")),
 ]
 
 

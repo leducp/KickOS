@@ -22,5 +22,5 @@ elseif(KICKOS_QEMU_MPS2
   # The board list is enumerated rather than left to every board with an emulator: microbit and
   # the arm64 and x86_64 boards build the app and register no arm today.
   kickos_add_qemu_test(NAME ${_tag}_reboot_declined TARGET rebootdemo
-    SCRIPT "${_reboot_script}" TIMEOUT 40)
+    SCRIPT "${_reboot_script}")
 endif()

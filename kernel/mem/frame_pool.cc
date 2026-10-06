@@ -3,6 +3,8 @@
 
 #include <kickos/frame_pool.h>
 
+#include "frame_pool_unwritten.h"
+
 #if KICKOS_HAVE_ASPACE
 
 #include <kickos/frame.h>
@@ -24,10 +26,8 @@ namespace kickos
     {
         FrameAllocator g_frames;
         size_t g_refused = 0;
-#if defined(KICKOS_ENABLE_SELFTEST)
         uintptr_t g_base = 0;
         uintptr_t g_top = 0;
-#endif
 
         // volatile keeps this a relocated word; a plain constant folds back into each caller.
         unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
@@ -58,15 +58,19 @@ namespace kickos
         uintptr_t base = 0;
         uintptr_t top = 0;
         arch_frame_pool_bounds(&base, &top);
-#if defined(KICKOS_ENABLE_SELFTEST)
         g_base = base;
         g_top = top;
-#endif
         if (top <= base)
         {
             return false;
         }
         return g_frames.init(base, static_cast<size_t>(top - base), arch_aspace_granule());
+    }
+
+    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi)
+    {
+        *lo = static_cast<arch_phys_addr_t>(g_base - pool_delta());
+        *hi = static_cast<arch_phys_addr_t>(g_top - pool_delta());
     }
 
     size_t frame_pool_free()
@@ -91,12 +95,6 @@ namespace kickos
     {
         IrqLock lock;
         g_fail_in = nth;
-    }
-
-    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi)
-    {
-        *lo = static_cast<arch_phys_addr_t>(g_base - pool_delta());
-        *hi = static_cast<arch_phys_addr_t>(g_top - pool_delta());
     }
 
     bool frame_pool_fail_armed()

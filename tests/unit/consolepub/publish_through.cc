@@ -133,5 +133,44 @@ namespace kickos
             EXPECT_TRUE(cap_console_target(&target));
             EXPECT_EQ(target, p.handle);
         }
+
+        bool serves(Thread const* t)
+        {
+            IrqLock lock;
+            return cap_console_serves(t);
+        }
+
+        // cap_console_serves answers for the thread's own stdout slot and the published
+        // endpoint's state, and for nothing else.
+        TEST_F(ConsolePublish, only_a_receiving_published_stdout_serves)
+        {
+            Published const p = hold(CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT);
+            EXPECT_FALSE(serves(p.publisher)) << "nothing is published yet";
+            ASSERT_EQ(publish(p), 0);
+            EXPECT_TRUE(serves(p.publisher));
+
+            Thread* const runless = spawn(1, PRIO_PUBLISHER);
+            EXPECT_FALSE(serves(runless)) << "a thread with no table";
+
+            Thread* const empty = spawn(2, PRIO_PUBLISHER);
+            attach_caps(empty, PUBLISH_INDEX + 1);
+            EXPECT_FALSE(serves(empty)) << "an empty stdout slot";
+
+            CapEntry& out = *cap_slot(p.publisher->caps, KOS_CAP_STDOUT);
+            uint8_t const rights = out.rights;
+            out.rights = 0;
+            EXPECT_FALSE(serves(p.publisher)) << "a slot without SIGNAL";
+            out.rights = rights;
+
+            int const obj = out.obj;
+            out.obj = kernel().endpoints.handle_for(kernel().endpoints.index_of(endpoint()));
+            EXPECT_FALSE(serves(p.publisher)) << "a slot naming another endpoint";
+            out.obj = obj;
+
+            p.ep->vacated = 1;
+            EXPECT_FALSE(serves(p.publisher)) << "a vacated endpoint";
+            p.ep->vacated = 0;
+            EXPECT_TRUE(serves(p.publisher)) << "restored, the slot serves again";
+        }
     }
 }

@@ -20,4 +20,4 @@ tasks:
     entry: selftest_main
     priority: 2
     ceiling: 30
-    authority: [memory, system, pinmux, irq, console, tasks]
+    authority: [memory, system, pinmux, irq, console, tasks, bus_master]

@@ -124,12 +124,25 @@ again under a fresh claim. A newline spends CR and LF on the UART; if the claim 
 the thread remembers it and its next offer sends only LF, without repeating CR. A write
 with no complete input byte answers `-KOS_EAGAIN`. Panic, fault and ISR output, already masked
 and with no caller to offer the rest again, waits the bounded claim masked and drops the rest
-of a line it loses,
-uncounted. The holder rechecks its claim before each byte's store and stops a margin short
-of the deadline: only a stall longer than that margin between check and store writes into
-an expired grant. A lease expiry can split a line around a peer's; no claim promises that a
-dying node completes its output. The console is still a debug facility, not a reliable
-inter-node message channel.
+of a line it loses, uncounted. The holder rechecks its claim before each byte's store and
+stops a margin short of the deadline: only a stall longer than that margin between check and
+store writes into an expired grant.
+
+**Only the ARM64 own-image claim renews.** There a KERNEL line (`arch_console_write` and the
+polled writer) renews a grant that has ended, or reached its margin, while no peer has taken
+it, so a host stall under QEMU does not cut a line no other node wanted the UART for. The
+renewal is a compare-exchange of the one claim word, and a peer's steal is a compare-exchange
+of the same word, so exactly one of them wins. User writes never renew: they keep the short
+count and the fresh claim. A renewal can begin inside the margin, where no peer may take the
+grant yet, so it is bounded: once renewing writers have put `KICKOS_DIAG_LINE_MAX` bytes under
+one grant, the next ended grant expires like any other write's. Bytes a user write put under
+the same grant do not count. The RP2350 never renews. Its owner and deadline are two words
+beside the spinlock, so a renewal could not exclude a peer's steal already under way, and on
+silicon only a debugger halt outlasts the hold mid-line.
+
+A lease expiry can split a line around a peer's; no claim promises that a dying node
+completes its output. The console is still a debug facility, not a reliable inter-node
+message channel.
 
 The ring is therefore MULTI-producer, and the exclusion is the lock rather than a structural
 claim about callers. What the ring buys over the locked writer is the SHAPE of the masked
@@ -177,38 +190,42 @@ around the fallback fixes that, because the interleaving is between the fallback
 drain that is not holding the lock. Waiting instead is a decision for the caller, not
 one the kernel takes on its behalf.
 
-**The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file,
-under `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time
-at 115200, so the ring fills a dozen rows in and the rest are refused; three silicon captures
-of one campaign carried 6, 9 and 7 of 40. It offers a refused line again rather than losing
-it, waiting between attempts with **interrupts open and no lock held** (`console_tx_wait_drain`),
-which is what lets the drain ISR run at all. It gives up once a whole attempt passes with
-nothing leaving the ring, so a dead or unread console costs one bounded poll window per line
-and never a hang: a board that gets itself back through `KICKOS_SHUTDOWN_TO_BOOTLOADER` must
-not need a button press because nobody had a terminal open. Every multi-line printer in
-`kernel/bench/bench.cc` uses it, not the forty-row table alone: the ring holds about eleven
-lines at the default 256-byte bound and about five on a board that lowers it, which is inside
-the length of the shorter blocks.
+**The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file, under
+`KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,
+so the ring fills a dozen rows in and the rest are refused; three silicon captures of one campaign
+carried 6, 9 and 7 of 40. It offers a refused line again rather than losing it, waiting between
+attempts with **interrupts open and no lock held** until the drain has taken at least one byte
+(`console_tx_wait_progress`), which is what lets the drain ISR run at all. It gives up once a whole
+attempt passes with nothing leaving the ring, so a dead or unread console costs one bounded poll
+window per line and never a hang: a board that gets itself back through
+`KICKOS_SHUTDOWN_TO_BOOTLOADER` must not need a button press because nobody had a terminal open.
+Every multi-line printer in `kernel/bench/bench.cc` uses it, not the forty-row table alone: the ring
+holds about eleven lines at the default 256-byte bound and about five on a board that lowers it,
+which is inside the length of the shorter blocks.
 
-The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing
-counts it. The USER path is different: `kos_kconsole_write` splits a write into chunks,
-and the syscall STOPS at the first byte the console refused and returns how much landed,
-in the shape of `write(2)`: a short count, or `-KOS_EAGAIN` when no input byte completed, so userspace
-retries or gives up. Carrying on past a refusal would put a hole in the
-middle of a line whose tail arrived, which is worse than losing the line.
+The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing counts it.
+The USER path is different: `kos_kconsole_write` splits a write into chunks, and the syscall STOPS
+at the first byte the console refused and returns how much landed, in the shape of `write(2)`: a
+short count, or `-KOS_EAGAIN` when no input byte completed, so userspace retries or gives up, or
+`-KOS_EBUSY` when a driver serves the console and the caller's own stdout send would be taken now,
+so userspace sends there instead. Carrying on past a refusal would put a hole in the middle of a
+line whose tail arrived, which is worse than losing the line.
 
-**What userspace does with that short count is `kconsole_write_all`
-(`<kickos/sys/emit.h>`), and it is the one copy of the policy for every producer**: the TAP
-harness, the freestanding `emit()` and libc's `_write` all reach it. It offers the remainder
-again, yielding between attempts, until a byte is accepted or ONE FULL RING'S WIRE TIME has
-passed with none. That bound is `KICKOS_CONSOLE_TX_SIZE` byte times at 115200 8N1, 44.4 ms
-at the 512-byte default: past it every byte that was queued when the stall began has had
-time to leave, so a ring still refusing is not draining, and no one chunk ever needs more
-than a ring to fit. It is `kprintf_paced`'s reasoning above in the only currency userspace
-has. A COUNT OF YIELDS IS NOT ONE, an idle single-core board spending 256 of them in far
-less than a single byte time, and that is what made the give-up silent and routine: a
-selftest capture on any board whose TAP routes through this console lost whole lines, and
-neither end said so.
+**The one copy of the userspace policy is `stdout_write` (`<kickos/sys/emit.h>`)**: the TAP harness,
+the freestanding `emit()` and libc's `_write` all write through it. It sends on capability 0, and a
+receiver taking fewer bytes than a chunk, none included, is offered the rest again there: the
+rendezvous consumed the receive, so the next send parks until the driver receives again and the
+retry never spins. With no receiver it hands the remainder to the kernel console, and
+`kconsole_write_all`, the entry for a writer that starts at the kernel console, hands it back to
+`stdout_write` on `-KOS_EBUSY`. The kernel console's short count is offered again, yielding between
+attempts, until a byte is accepted or ONE FULL RING'S WIRE TIME has passed with none. That bound is
+`KICKOS_CONSOLE_TX_SIZE` byte times at 115200 8N1, 44.4 ms at the 512-byte default: past it every
+byte that was queued when the stall began has had time to leave, so a ring still refusing is not
+draining, and no one chunk ever needs more than a ring to fit. It is `kprintf_paced`'s reasoning
+above in the only currency userspace has. A COUNT OF YIELDS IS NOT ONE, an idle single-core board
+spending 256 of them in far less than a single byte time, and that is what made the give-up silent
+and routine: a selftest capture on any board whose TAP routes through this console lost whole lines,
+and neither end said so.
 
 **A give-up is now ANNOUNCED.** The bytes dropped are counted and reach the wire as
 `# console dropped N byte(s)` on the first write that fits afterwards; the console being the
@@ -340,7 +357,9 @@ Details specific to the sim:
    one atomic owner/deadline word in the shared window.
    **Ownership is bounded by a DEADLINE taken when the claim is, never by what the
    holder writes next**: a node that stops mid-line, or dies there, would otherwise
-   keep the UART indefinitely. A peer may take an expired claim. A write stops at the
+   keep the UART indefinitely. On ARM64 a kernel line may renew a grant no peer took,
+   until renewing writers have put `KICKOS_DIAG_LINE_MAX` bytes under it, so the bound is
+   that line's length past one hold. A peer may take an expired claim. A write stops at the
    first byte its claim does not cover and counts only what went out; it never
    deliberately writes into a peer's claim. An expired holder can still leave a split
    line on the wire.
@@ -404,6 +423,11 @@ held low across the fault, and reclaim's return to idle-high frames exactly one 
 leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recovery
 transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
 
+**On q35 the kernel writes COM1 under a holder.** `arch_shutdown` prints the exit line there, and
+a panic its report, whatever task holds the 16550's ports, and the no-op reclaim below restores
+nothing first: a holder that reprogrammed the device garbles both (`boards.md`, the
+`qemu-x86_64` caveats).
+
 Still **not built**: a real `arch_console_reclaim` body on the chips that have none, which
 today are `an505`, `imx8mp`, `mps2`, `nrf51`, `q35`, `sam3x8e`, `stm32f103`, `stm32f302` and the
 three `virt_*` machines. Those keep the no-op fallback, so on their boards the reclaim is wiring with nothing behind it. The chips
@@ -463,10 +487,16 @@ exists yet. Output is not lost in it: the publisher holds WAIT and the endpoint 
 client `send` before the driver's first wait parks on `send_waiters` (bounded when timed) and the
 rendezvous absorbs the gap, which is why there is no "handover in progress" state to size. A
 restart's window is the same, its publish making the vacated endpoint receive again. Between a
-driver's death and its restart's publish the endpoint is vacated: a send answers `-KOS_EAGAIN`
-and `_write` emits that chunk through the kernel console, which the death gave back. What the
-window does mean is that the console is dark on the wire for its duration, and that a failure
-inside it is the case the atomicity rule above exists to forbid.
+driver's death and its restart's publish the endpoint is vacated: a send answers `-KOS_EAGAIN` and
+`_write` emits that chunk through the kernel console, which the death gave back. While the reclaim
+still waits on a thread of the dead driver holding the device, the kernel may not touch the device
+either, so the kernel console takes nothing and answers `-KOS_EAGAIN`, and the writer retries until
+that thread's exit reclaims the device. That retry is bounded like any other
+(`<kickos/sys/emit.h>`), so a holder that never exits costs announced lines, never silent ones. A
+publish landing between that send and that emit makes the endpoint take the chunk again, and
+`kickos::stdout_write` (`<kickos/sys/emit.h>`) sends it there on the `-KOS_EBUSY` above. What the
+window does mean is that the console is dark on the wire for its duration, and that a failure inside
+it is the case the atomicity rule above exists to forbid.
 
 ## The two protocols a published console endpoint carries
 
@@ -493,8 +523,11 @@ refusing costs the caller an error, ignoring costs it the system.
 
 **A zero-length plain send is a flush.** The driver goes back to its receive only once its TX
 ring and the device's transmit path have drained, so a sender knows its earlier bytes have left
-when its next send on the endpoint is taken. The init ends the system on exactly that, with two
-zero-length sends ([design-m10-target.md](../design-m10-target.md), section 1.5). Drained is as
+when its next send on the endpoint is taken. `kos_console_flush(timeout_us)` (`<kickos/sys.h>`)
+is those two zero-length sends on a thread's stdout, each bounded by the timeout, and the init
+ends the system on exactly that ([design-m10-target.md](../design-m10-target.md), section 1.5).
+Bytes stdio still buffers were never sent, so an app flushing its output calls
+`fflush(stdout)` first. Drained is as
 strong as the device allows: the last stop bit on every UART, and the host's acknowledgement of
 the last bulk IN packet on USB CDC, where a transfer ending on a full packet is closed by a
 zero-length one. The wait is bounded inside the driver, so a device that never drains costs that bound and

@@ -5,7 +5,11 @@
  * cause arrives at kickos_rv64_stvec and one frame format serves every path.
  *
  * SIE stays masked through the syscall dispatch and nothing here sets it: that is what keeps
- * every interrupt frame a resumable thread context on a stack that outlives the trap.
+ * every interrupt frame a resumable thread context on a stack that outlives the trap. The one
+ * opening is arch_irq_window, outside every lock: the interrupt it lets in is an S-mode one,
+ * built on the thread's own kernel block by .Ltrap_from_s_ctx and resumed by sret at SPP = S.
+ * Its return goes through .Lrestore, which reloads tp from the thread's reent pointer, so the
+ * syscall code entered with tp = 0 runs on with that pointer: the kernel takes no TLS.
  *
  * SSCRATCH INVARIANT: outside the prologue, sscratch holds the trap-stack TOP, which is also
  * this hart's per-CPU block address (percpu.h). U-mode can neither read nor write it.

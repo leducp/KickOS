@@ -12,6 +12,7 @@
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
 #include <kickos/mpuset.h>
+#include <kickos/ramown.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -622,13 +623,18 @@ namespace kickos
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
     void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr)
     {
-        constexpr uint32_t TYPE = ARCH_MPU_NOCACHE | ARCH_MPU_DEV;
-        bool owed = (attr & TYPE) == ARCH_MPU_NOCACHE;
+        if ((attr & ARCH_MPU_DEV) != 0)
+        {
+            return;
+        }
+        bool const nocache = (attr & ARCH_MPU_NOCACHE) != 0;
+        bool owed = nocache or ram_owner_sync_owed(base, size);
         if (not owed and held != nullptr)
         {
             for (arch_mpu_region const& r : *held)
             {
-                if (r.base == base and r.size == size and (r.attr & TYPE) == ARCH_MPU_NOCACHE)
+                if (r.base == base and r.size == size
+                    and (r.attr & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) == ARCH_MPU_NOCACHE)
                 {
                     owed = true;
                 }
@@ -638,6 +644,7 @@ namespace kickos
         {
             alias_sync(reinterpret_cast<void const*>(base), size);
         }
+        ram_owner_set_sync_owed(base, size, nocache);
     }
 #endif
 

@@ -334,6 +334,12 @@ namespace kickos
                 return -KOS_EPERM; // reserved block / bit-band alias
             }
 #endif
+            // A bus master reaches memory by physical address past every unit.
+            if (grant_window_bus_master(w.base, w.size)
+                and not cap_check_authority(c, AUTH_BUS_MASTER))
+            {
+                return -KOS_EPERM;
+            }
             if (not dev_window_free(w.base, w.size))
             {
                 return -KOS_EBUSY; // already held: no stealing
@@ -351,6 +357,355 @@ namespace kickos
             return 0;
         }
 
+        bool spawn_builds_task(kos_thread_params const& p, Thread const* spawner)
+        {
+            return p.task == KOS_TASK_NONE
+                   and not(spawner->task != nullptr
+                           and (p.privileged != 0) == spawner->privileged
+                           and (p.mem_base == nullptr or p.mem_size == 0));
+        }
+
+        int task_create_admit(Thread* c, void* mem_base, size_t mem_size)
+        {
+            if (not cap_check_authority(c, AUTH_TASKS))
+            {
+                return -KOS_EPERM;
+            }
+            if (mem_base != nullptr and mem_size != 0)
+            {
+                uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
+                if (base + mem_size < base)
+                {
+                    return -KOS_EINVAL;
+                }
+                // Unconditional, unlike the spawn's arm: task_create drops
+                // DOM_CALLER_PRIVILEGED, so this grant becomes an unprivileged domain's region
+                // whatever the caller is.
+                if (not ram_owner_nameable(c->task, base, mem_size))
+                {
+                    return -KOS_EPERM;
+                }
+            }
+            return 0;
+        }
+
+#if KICKOS_PRESYNC
+        // A call working outside the lock reads only what its first round copied, never user
+        // memory.
+        PresyncRecord const* spawn_record()
+        {
+            PresyncRecord const* const r = presync_record();
+            if (r == nullptr or not r->active)
+            {
+                return nullptr;
+            }
+            return r;
+        }
+#endif
+
+        // The name pointer inside the copy is still user memory. user_readable_ok, because an
+        // app global lies in no granted region on a backend modelling no static-data region.
+        int spawn_params_in(uintptr_t pu, kos_thread_params* out)
+        {
+#if KICKOS_PRESYNC
+            PresyncRecord const* const r = spawn_record();
+            if (r != nullptr)
+            {
+                if (not r->has_params)
+                {
+                    return -KOS_EFAULT;
+                }
+                *out = r->params;
+                return 0;
+            }
+#endif
+            if (not user_readable_ok(pu, sizeof(*out)))
+            {
+                return -KOS_EFAULT;
+            }
+            // Can still refuse after user_readable_ok: the granted-range record and the page
+            // tables may disagree (kickos/aspace.h).
+            if (not kaccess_from_user(out, user_space_of(sched::current()), pu, sizeof(*out)))
+            {
+                return -KOS_EFAULT;
+            }
+            return 0;
+        }
+
+        // `p`'s window count and pointer already admitted.
+        int spawn_windows_in(kos_thread_params const* p, kos_window* out)
+        {
+            uint16_t const n = p->window_count;
+#if KICKOS_PRESYNC
+            PresyncRecord const* const r = spawn_record();
+            if (r != nullptr)
+            {
+                if (not r->has_windows)
+                {
+                    return -KOS_EFAULT;
+                }
+                for (uint16_t i = 0; i < n; i++)
+                {
+                    out[i] = r->windows[i];
+                }
+                return 0;
+            }
+#endif
+            uintptr_t const wu = reinterpret_cast<uintptr_t>(p->windows);
+            if (not user_readable_ok(wu, sizeof(kos_window) * n)
+                or not kaccess_from_user(out, user_space_of(sched::current()), wu,
+                                         sizeof(kos_window) * n))
+            {
+                return -KOS_EFAULT;
+            }
+            return 0;
+        }
+
+        // The stack a spawn names. Validated before the slot claim, or a bad stack leaks a slot.
+        int spawn_stack_admit(kos_thread_params const* p)
+        {
+            if (p->stack_base != nullptr)
+            {
+                uintptr_t const base = reinterpret_cast<uintptr_t>(p->stack_base);
+                // The floor binds what is left once the TLS carve comes off the block.
+                if (p->stack_size < KICKOS_MIN_STACK_SIZE + tls_block_size()
+                    or (base & (KICKOS_STACK_ALIGN - 1)) != 0
+                    or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0
+                    or base + p->stack_size < base)
+                {
+                    return -KOS_EINVAL;
+                }
+                // An unprivileged stack is committed as one R|W region, so it must be encodable by
+                // one descriptor on this arch; otherwise PMSA/NAPOT snap the base and the enforced
+                // window covers the wrong span.
+#if KICKOS_MEMORY_ENFORCED
+                // The child's privilege, not the caller's: a privileged child gets the whole arena
+                // plus the background region and needs no stack descriptor.
+                if (p->privileged == 0)
+                {
+#if KICKOS_HAVE_ASPACE
+                    // A range granted R|W in the space the child will run in, which is not always
+                    // the caller's: a member joins a group whose space the caller does not hold. A
+                    // task that does not resolve is left to the -KOS_EBADF below. The image is
+                    // excluded: a stack carved out of an app global would sit in its static data.
+                    Domain const* target = task_domain(sched::current()->task);
+                    if (p->task != KOS_TASK_NONE)
+                    {
+                        Task const* const named = task_resolve(p->task);
+                        target = nullptr;
+                        if (named != nullptr)
+                        {
+                            target = task_domain(named);
+                        }
+                    }
+                    VirtualRanges const* const cr = domain_ranges(target);
+                    VirtualRange const* e = nullptr;
+                    if (cr != nullptr)
+                    {
+                        e = cr->find(base, p->stack_size);
+                    }
+                    if (cr != nullptr
+                        and (not vr_caller_nameable(e) or e->state != VirtualState::Granted
+                             or (e->rights & (ARCH_MAP_R | ARCH_MAP_W))
+                                    != (ARCH_MAP_R | ARCH_MAP_W)))
+                    {
+                        return -KOS_EPERM;
+                    }
+                    // A spawn bringing its own grant opens a new space whose only app memory is
+                    // that grant, so the stack must lie in the same reservation or the child starts
+                    // on a page its space never maps.
+                    if (cr != nullptr and p->task == KOS_TASK_NONE and p->mem_base != nullptr
+                        and p->mem_size != 0
+                        and e != cr->find(reinterpret_cast<uintptr_t>(p->mem_base), p->mem_size))
+                    {
+                        return -KOS_EPERM;
+                    }
+#else
+                    size_t const rsz = arch_ram_region_size(p->stack_size);
+                    if (not arch_ram_region_admissible(base, rsz))
+                    {
+                        return -KOS_EINVAL;
+                    }
+                    // Rule 7 admission, arena-confined with no privileged waiver: otherwise an
+                    // out-of-arena stack_base grants an R|W window over peripheral or kernel SRAM.
+                    // The RAM arm ignores the authorization flag.
+                    if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+                                                    cap_check_authority(sched::current(),
+                                                                        AUTH_MEMORY)))
+                    {
+                        return -KOS_EPERM; // stack outside the arena / hits a reserved block
+                    }
+                    // A sibling's block is in-arena and descriptor-encodable too, so the stack has
+                    // to name one this task reserved. Ownership is per task, so a task-mate's block
+                    // still passes.
+                    if (not ram_owner_nameable(sched::current()->task, base, p->stack_size))
+                    {
+                        return -KOS_EPERM;
+                    }
+#endif
+                }
+#endif
+            }
+            return 0;
+        }
+
+        int spawn_grant_admit(kos_thread_params const* p)
+        {
+            // mem_base's arena confinement and admission belong to domain_for, which repeats
+            // these. The wrap test is ungated because domain_for's predicate is a stub on a
+            // no-MPU part.
+            if (p->mem_base != nullptr and p->mem_size != 0)
+            {
+                uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
+                if (dbase + p->mem_size < dbase)
+                {
+                    return -KOS_EINVAL;
+                }
+#if KICKOS_MEMORY_ENFORCED
+                // Guarded and not left to the inline stub: the stub folds the branch away but not
+                // the sched::current() the argument costs, and the spawn path is measured.
+                //
+                // A privileged child resolves the kernel domain, and a member's memory is refused
+                // -KOS_EINVAL further down. Widening this past them would answer EPERM where the
+                // tree answers EINVAL.
+                if (p->privileged == 0 and p->task == KOS_TASK_NONE
+                    and not ram_owner_nameable(sched::current()->task, dbase, p->mem_size))
+                {
+                    return -KOS_EPERM;
+                }
+#endif
+            }
+            return 0;
+        }
+
+        // Leaves the admitted window list in window_stage.
+        int spawn_windows_admit(kos_thread_params const* p)
+        {
+            // A window is the thread's own region, carried by no task or domain. The call's
+            // admission and the commit in thread_create run inside one IrqLock, so the pair is
+            // atomic. Snapshotted in one pass and admitted from the copy, as the grant list is.
+            if (p->window_count > 0)
+            {
+                uint16_t const nwin = p->window_count;
+                kos_window* const wbuf = kernel().window_stage;
+                if (nwin > KICKOS_MAX_THREAD_WINDOWS)
+                {
+                    return -KOS_ENOMEM;
+                }
+                uintptr_t const wu = reinterpret_cast<uintptr_t>(p->windows);
+                if (p->windows == nullptr or (wu & (alignof(kos_window) - 1)) != 0)
+                {
+                    return -KOS_EINVAL;
+                }
+                int const crc = spawn_windows_in(p, wbuf);
+                if (crc != 0)
+                {
+                    return crc;
+                }
+                for (uint16_t i = 0; i < nwin; i++)
+                {
+                    int const wrc = window_admit(wbuf, i, p);
+                    if (wrc != 0)
+                    {
+                        return wrc;
+                    }
+                }
+            }
+#if KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_ASPACE
+            // A cacheable stack over a block held non-cacheable, this spawn's own windows included,
+            // is incoherent.
+            if (p->stack_base != nullptr and p->privileged == 0
+                and not stack_type_free(reinterpret_cast<uintptr_t>(p->stack_base),
+                                        arch_ram_region_size(p->stack_size), kernel().window_stage,
+                                        p->window_count))
+            {
+                return -KOS_EBUSY;
+            }
+#endif
+            return 0;
+        }
+
+        // The authority word and the grant list's shape; its entries are the locked pass's.
+        int spawn_authority_admit(kos_thread_params const* p)
+        {
+            if (p->authority != 0)
+            {
+                if ((p->authority & ~CAP_AUTH_ALL) != 0)
+                {
+                    // Refused, never masked off. The authority word has its own numbering, so this
+                    // catches only bits above the defined authorities, not an object right.
+                    return -KOS_EINVAL;
+                }
+                if (not cap_check_authority(sched::current(), p->authority))
+                {
+                    return -KOS_EPERM;
+                }
+            }
+            int const ncaps = static_cast<int>(p->cap_count);
+            if (ncaps > 0)
+            {
+                // Delegated cap i lands at child index i+1 by default, index 0 being the kernel's
+                // stdout slot. The default indices fit because KICKOS_MAX_SPAWN_GRANTS <
+                // KICKOS_CAP_CHILD_WIDTH; a caller-named destination is refused at the child
+                // table's bound.
+                if (ncaps > KICKOS_MAX_SPAWN_GRANTS)
+                {
+                    return -KOS_EINVAL;
+                }
+                uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
+                if (p->caps == nullptr or (cu & (alignof(kos_cap_grant) - 1)) != 0)
+                {
+                    return -KOS_EINVAL;
+                }
+            }
+            return 0;
+        }
+
+        // Shared by the plan and the locked pass, before any claim. Leaves the admitted window
+        // list in window_stage. Caller holds IrqLock.
+        int spawn_admit(kos_thread_params const* p)
+        {
+            // prio indexes the ready lists and drives a 1u<<prio bitmap shift, so an
+            // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
+            if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
+            {
+                return -KOS_EINVAL;
+            }
+            if (p->privileged != 0 and not sched::current()->privileged)
+            {
+                return -KOS_EPERM;
+            }
+            int rc = spawn_stack_admit(p);
+            if (rc == 0)
+            {
+                rc = spawn_grant_admit(p);
+            }
+            if (rc == 0)
+            {
+                rc = spawn_windows_admit(p);
+            }
+            if (rc == 0)
+            {
+                rc = spawn_authority_admit(p);
+            }
+            if (rc != 0)
+            {
+                return rc;
+            }
+#if KICKOS_HAVE_ASPACE
+            // A grant handed to the new space must be one whole reservation of the spawner's.
+            if (p->privileged == 0 and p->task == KOS_TASK_NONE and p->mem_base != nullptr
+                and p->mem_size != 0
+                and aspace_handoff_admit(domain_ranges(task_domain(sched::current()->task)),
+                                         reinterpret_cast<uintptr_t>(p->mem_base), p->mem_size)
+                        != 0)
+            {
+                return -KOS_EPERM;
+            }
+#endif
+            return 0;
+        }
+
         // kill_tag_of never answers KILL_TAG_NONE, so an orphan (a child whose spawner's slot
         // changed hands) matches nobody. Caller holds IrqLock.
         bool caller_spawned(Thread const* t, Thread const* c)
@@ -363,6 +718,103 @@ namespace kickos
         }
     }
 
+#if KICKOS_PRESYNC
+    void spawn_presync_enter(kos_thread_params const* p)
+    {
+        Thread const* const c = sched::current();
+        PresyncRecord* const r = presync_record();
+        uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
+        if (c == nullptr or r == nullptr or p == nullptr
+            or (pu & (alignof(kos_thread_params) - 1)) != 0
+            or not user_readable_ok(pu, sizeof(r->params))
+            or not kaccess_from_user(&r->params, user_space_of(c), pu, sizeof(r->params)))
+        {
+            return;
+        }
+        r->has_params = true;
+        uint16_t const n = r->params.window_count;
+        uintptr_t const wu = reinterpret_cast<uintptr_t>(r->params.windows);
+        size_t const bytes = sizeof(kos_window) * n;
+        if (n == 0 or n > KICKOS_MAX_THREAD_WINDOWS or wu == 0
+            or (wu & (alignof(kos_window) - 1)) != 0 or not user_readable_ok(wu, bytes))
+        {
+            return;
+        }
+        r->has_windows = kaccess_from_user(r->windows, user_space_of(c), wu, bytes);
+    }
+
+    void spawn_presync_plan()
+    {
+        Thread* const c = sched::current();
+        PresyncRecord const* const r = presync_record();
+        if (c == nullptr or c->task == nullptr or r == nullptr or not r->has_params)
+        {
+            return;
+        }
+        kos_thread_params const& p = r->params;
+        if (spawn_admit(&p) != 0)
+        {
+            return;
+        }
+        bool const builds = spawn_builds_task(p, c);
+        if (builds and (p.privileged != 0 or not cap_check_authority(c, AUTH_TASKS)))
+        {
+            return;
+        }
+        if (builds)
+        {
+            presync_stage_image(false, domain_space(task_domain(c->task)));
+        }
+#if KICKOS_ARCH_ALIAS_DCACHE
+        VirtualRanges const* const own = domain_ranges(task_domain(c->task));
+        if (builds and p.mem_base != nullptr and p.mem_size != 0)
+        {
+            aspace_reservation_note(own, reinterpret_cast<uintptr_t>(p.mem_base), p.mem_size,
+                                    ARCH_MAP_NORMAL);
+        }
+        for (uint16_t i = 0; i < p.window_count; i++)
+        {
+            kos_window const& w = r->windows[i];
+            if (w.kind != KOS_WINDOW_MEMORY)
+            {
+                continue;
+            }
+            enum arch_map_memtype type = ARCH_MAP_NORMAL;
+            if ((w.flags & KOS_WINDOW_UNCACHED) != 0)
+            {
+                type = ARCH_MAP_NOCACHE;
+            }
+            aspace_reservation_note(own, w.base, w.size, type);
+        }
+#endif
+    }
+
+    void task_create_presync_plan(void* mem_base, size_t mem_size, uint32_t mem_attr)
+    {
+        Thread* const c = sched::current();
+        if (c == nullptr or c->task == nullptr or task_create_admit(c, mem_base, mem_size) != 0)
+        {
+            return;
+        }
+        presync_stage_image(true, domain_space(task_domain(c->task)));
+#if KICKOS_ARCH_ALIAS_DCACHE
+        if (mem_base == nullptr or mem_size == 0)
+        {
+            return;
+        }
+        enum arch_map_memtype type = ARCH_MAP_NORMAL;
+        if ((mem_attr & ARCH_MPU_NOCACHE) != 0)
+        {
+            type = ARCH_MAP_NOCACHE;
+        }
+        aspace_reservation_note(domain_ranges(task_domain(c->task)),
+                                reinterpret_cast<uintptr_t>(mem_base), mem_size, type);
+#else
+        (void)mem_attr;
+#endif
+    }
+#endif
+
     static int spawn_masked(kos_thread_params const* p, kos_thread_t* out_thread,
                             Thread** out_child)
     {
@@ -372,8 +824,6 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // The name pointer inside the copy is still user memory. user_readable_ok, because an
-        // app global lies in no granted region on a backend modelling no static-data region.
         // The misalignment reject must precede the typed copy: on a strict-align arch a
         // misaligned word load traps in the kernel.
         uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
@@ -381,180 +831,17 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        if (not user_readable_ok(pu, sizeof(*p)))
-        {
-            return -KOS_EFAULT;
-        }
         kos_thread_params params;
-        // Can still refuse after user_readable_ok: the granted-range record and the page tables
-        // may disagree (kickos/aspace.h).
-        if (not kaccess_from_user(&params, user_space_of(sched::current()), pu, sizeof(params)))
+        int const prc = spawn_params_in(pu, &params);
+        if (prc != 0)
         {
-            return -KOS_EFAULT;
+            return prc;
         }
         p = &params;
-        // prio indexes the ready lists and drives a 1u<<prio bitmap shift, so an
-        // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
-        if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
+        int const arc = spawn_admit(p);
+        if (arc != 0)
         {
-            return -KOS_EINVAL;
-        }
-        if (p->privileged != 0 and not sched::current()->privileged)
-        {
-            return -KOS_EPERM;
-        }
-        // Validated before the slot claim, or a bad stack leaks a slot.
-        if (p->stack_base != nullptr)
-        {
-            uintptr_t const base = reinterpret_cast<uintptr_t>(p->stack_base);
-            // The floor binds what is left once the TLS carve comes off the block.
-            if (p->stack_size < KICKOS_MIN_STACK_SIZE + tls_block_size()
-                or (base & (KICKOS_STACK_ALIGN - 1)) != 0
-                or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0
-                or base + p->stack_size < base)
-            {
-                return -KOS_EINVAL;
-            }
-            // An unprivileged stack is committed as one R|W region, so it must be encodable by
-            // one descriptor on this arch; otherwise PMSA/NAPOT snap the base and the enforced
-            // window covers the wrong span.
-#if KICKOS_MEMORY_ENFORCED
-            // The child's privilege, not the caller's: a privileged child gets the whole arena
-            // plus the background region and needs no stack descriptor.
-            if (p->privileged == 0)
-            {
-#if KICKOS_HAVE_ASPACE
-                // A range granted R|W in the space the child will run in, which is not always
-                // the caller's: a member joins a group whose space the caller does not hold. A
-                // task that does not resolve is left to the -KOS_EBADF below. The image is
-                // excluded: a stack carved out of an app global would sit in its static data.
-                Domain const* target = task_domain(sched::current()->task);
-                if (p->task != KOS_TASK_NONE)
-                {
-                    Task const* const named = task_resolve(p->task);
-                    target = nullptr;
-                    if (named != nullptr)
-                    {
-                        target = task_domain(named);
-                    }
-                }
-                VirtualRanges const* const cr = domain_ranges(target);
-                VirtualRange const* e = nullptr;
-                if (cr != nullptr)
-                {
-                    e = cr->find(base, p->stack_size);
-                }
-                if (cr != nullptr
-                    and (not vr_caller_nameable(e) or e->state != VirtualState::Granted
-                         or (e->rights & (ARCH_MAP_R | ARCH_MAP_W))
-                                != (ARCH_MAP_R | ARCH_MAP_W)))
-                {
-                    return -KOS_EPERM;
-                }
-                // A spawn bringing its own grant opens a new space whose only app memory is
-                // that grant, so the stack must lie in the same reservation or the child starts
-                // on a page its space never maps.
-                if (cr != nullptr and p->task == KOS_TASK_NONE and p->mem_base != nullptr
-                    and p->mem_size != 0
-                    and e != cr->find(reinterpret_cast<uintptr_t>(p->mem_base), p->mem_size))
-                {
-                    return -KOS_EPERM;
-                }
-#else
-                size_t const rsz = arch_ram_region_size(p->stack_size);
-                if (not arch_ram_region_admissible(base, rsz))
-                {
-                    return -KOS_EINVAL;
-                }
-                // Rule 7 admission, arena-confined with no privileged waiver: otherwise an
-                // out-of-arena stack_base grants an R|W window over peripheral or kernel SRAM.
-                // The RAM arm ignores the authorization flag.
-                if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
-                                                cap_check_authority(sched::current(),
-                                                                    AUTH_MEMORY)))
-                {
-                    return -KOS_EPERM; // stack outside the arena / hits a reserved block
-                }
-                // A sibling's block is in-arena and descriptor-encodable too, so the stack has
-                // to name one this task reserved. Ownership is per task, so a task-mate's block
-                // still passes.
-                if (not ram_owner_nameable(sched::current()->task, base, p->stack_size))
-                {
-                    return -KOS_EPERM;
-                }
-#endif
-            }
-#endif
-        }
-        // mem_base's arena confinement and admission belong to domain_for. Only the wrap test
-        // is repeated, ungated, because domain_for's predicate is a stub on a no-MPU part.
-        if (p->mem_base != nullptr and p->mem_size != 0)
-        {
-            uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
-            if (dbase + p->mem_size < dbase)
-            {
-                return -KOS_EINVAL;
-            }
-#if KICKOS_MEMORY_ENFORCED
-            // Guarded and not left to the inline stub: the stub folds the branch away but not
-            // the sched::current() the argument costs, and the spawn path is measured.
-            //
-            // A privileged child resolves the kernel domain, and a member's memory is refused
-            // -KOS_EINVAL further down. Widening this past them would answer EPERM where the
-            // tree answers EINVAL.
-            if (p->privileged == 0 and p->task == KOS_TASK_NONE
-                and not ram_owner_nameable(sched::current()->task, dbase, p->mem_size))
-            {
-                return -KOS_EPERM;
-            }
-#endif
-        }
-        // A window is the thread's own region, carried by no task or domain. This admission and
-        // the commit in thread_create both run inside this IrqLock, so the pair is atomic.
-        // Snapshotted in one pass and admitted from the copy, as the grant list is below.
-        if (p->window_count > 0)
-        {
-            uint16_t const nwin = p->window_count;
-            kos_window* const wbuf = kernel().window_stage;
-            if (nwin > KICKOS_MAX_THREAD_WINDOWS)
-            {
-                return -KOS_ENOMEM;
-            }
-            uintptr_t const wu = reinterpret_cast<uintptr_t>(p->windows);
-            if (p->windows == nullptr or (wu & (alignof(kos_window) - 1)) != 0)
-            {
-                return -KOS_EINVAL;
-            }
-            if (not user_readable_ok(wu, sizeof(kos_window) * nwin))
-            {
-                return -KOS_EFAULT;
-            }
-            if (not kaccess_from_user(wbuf, user_space_of(sched::current()), wu,
-                                      sizeof(kos_window) * nwin))
-            {
-                return -KOS_EFAULT;
-            }
-            for (uint16_t i = 0; i < nwin; i++)
-            {
-                int const wrc = window_admit(wbuf, i, p);
-                if (wrc != 0)
-                {
-                    return wrc;
-                }
-            }
-        }
-        if (p->authority != 0)
-        {
-            if ((p->authority & ~CAP_AUTH_ALL) != 0)
-            {
-                // Refused, never masked off. The authority word has its own numbering, so this
-                // catches only bits above the defined authorities, not an object right.
-                return -KOS_EINVAL;
-            }
-            if (not cap_check_authority(sched::current(), p->authority))
-            {
-                return -KOS_EPERM;
-            }
+            return arc;
         }
         // The whole grant list is validated before anything is claimed. Sized by the grant
         // bound: these, plus gbuf and dbuf below, live on the caller's stack, which can be 1 KiB.
@@ -573,18 +860,7 @@ namespace kickos
         Thread* const spawner = sched::current();
         if (ncaps > 0)
         {
-            // Delegated cap i lands at child index i+1 by default, index 0 being the kernel's
-            // stdout slot. The default indices fit because KICKOS_MAX_SPAWN_GRANTS <
-            // KICKOS_CAP_CHILD_WIDTH; a caller-named destination is refused at the bound below.
-            if (ncaps > KICKOS_MAX_SPAWN_GRANTS)
-            {
-                return -KOS_EINVAL;
-            }
             uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
-            if (p->caps == nullptr or (cu & (alignof(kos_cap_grant) - 1)) != 0)
-            {
-                return -KOS_EINVAL;
-            }
             // user_readable_ok, as for the params struct: the array may be a global.
             if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
@@ -704,12 +980,10 @@ namespace kickos
                 return -KOS_EPERM;
             }
         }
-        else if (spawner->task != nullptr and (p->privileged != 0) == spawner->privileged
-                 and (p->mem_base == nullptr or p->mem_size == 0))
+        else if (not spawn_builds_task(*p, spawner))
         {
-            // A plain spawn is a thread of the caller's task and shares its domain. A spawn
-            // bringing its own data grant is excluded, since admitting it here hands every
-            // sibling a region only the child asked for; so is a privilege change.
+            // A spawn bringing its own data grant builds a task, since admitting it here hands
+            // every sibling a region only the child asked for; so does a privilege change.
             tk = spawner->task;
         }
         else
@@ -963,6 +1237,7 @@ namespace kickos
         // returns to its continuation (switch_book redirects a CANCEL_SLAY thread to the exit
         // stub), leaving a fully built INACTIVE orphan that nothing frees.
         sched::add(child);
+        presync_commit();
         *out_thread = k.threads.handle_for(i);
         *out_child = child;
         return 0;
@@ -1212,23 +1487,10 @@ namespace kickos
         IrqLock lock;
         *out_task = KOS_TASK_NONE; // seated before every early return
         Thread* const c = sched::current();
-        if (not cap_check_authority(c, AUTH_TASKS))
+        int const arc = task_create_admit(c, mem_base, mem_size);
+        if (arc != 0)
         {
-            return -KOS_EPERM;
-        }
-        if (mem_base != nullptr and mem_size != 0)
-        {
-            uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
-            if (base + mem_size < base)
-            {
-                return -KOS_EINVAL;
-            }
-            // Unconditional, unlike the spawn's arm: task_create drops DOM_CALLER_PRIVILEGED,
-            // so this grant becomes an unprivileged domain's region whatever the caller is.
-            if (not ram_owner_nameable(c->task, base, mem_size))
-            {
-                return -KOS_EPERM;
-            }
+            return arc;
         }
         int derr = 0;
         uint32_t caller = 0;
@@ -1243,6 +1505,7 @@ namespace kickos
             return -derr; // EPERM inadmissible grant, ENOTSUP memory type, ENOMEM pool/space
         }
         task_sched_inherit(t, c->task);
+        presync_commit();
         *out_task = task_handle(t);
         return 0;
     }

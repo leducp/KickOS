@@ -55,17 +55,38 @@ extern "C"
 }
 
 #if not KICKOS_HAVE_ASPACE
+namespace
+{
+    // The data region every domain task.cc creates states, when one is seeded.
+    arch_mpu_region g_data_region = {};
+    size_t g_data_regions = 0;
+    // What the arena's ownership record answers, and the last mark grant_sync made in it.
+    bool g_owed = false;
+    int g_marked = -1;
+}
+
 namespace kickos
 {
-    // task.cc's task-data sync asks these; no arm here creates a task.
     size_t domain_region_count(Domain const*)
     {
-        return 0;
+        return g_data_regions;
     }
 
     arch_mpu_region const* domain_region_at(Domain const*, size_t)
     {
-        return nullptr;
+        return &g_data_region;
+    }
+
+    // The record itself is ram_owner's gate's subject and region_sync's; here it is what
+    // grant_sync is handed and what it leaves.
+    bool ram_owner_sync_owed(uintptr_t, size_t)
+    {
+        return g_owed;
+    }
+
+    void ram_owner_set_sync_owed(uintptr_t, size_t, bool owed)
+    {
+        g_marked = static_cast<int>(owed);
     }
 }
 #endif
@@ -210,6 +231,7 @@ namespace kickos
             TEST_F(AliasSync, a_non_cacheable_region_grant_maintains_the_block_once)
             {
                 uintptr_t const base = reinterpret_cast<uintptr_t>(&g_mem[PAGE]);
+                g_owed = false;
                 grant_sync(nullptr, base, PAGE, ARCH_MPU_R | ARCH_MPU_W);
                 grant_sync(nullptr, base, PAGE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV);
                 grant_sync(nullptr, base, PAGE,
@@ -218,11 +240,13 @@ namespace kickos
                 grant_sync(nullptr, base, PAGE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_NOCACHE);
                 ASSERT_EQ(dcache_count(), 1u);
                 expect_op(0, PAGE, PAGE, false);
+                EXPECT_EQ(g_marked, 1) << "the next cacheable region owes the sync";
             }
 
             TEST_F(AliasSync, a_retype_to_cacheable_maintains_the_block)
             {
                 uintptr_t const base = reinterpret_cast<uintptr_t>(g_mem);
+                g_owed = false;
                 grant_sync(&owner_->mpu, base, PAGE, ARCH_MPU_R | ARCH_MPU_W);
                 grant_sync(&owner_->mpu, base + PAGE, 2 * PAGE, ARCH_MPU_R | ARCH_MPU_W);
                 EXPECT_EQ(dcache_count(), 0u)
@@ -230,6 +254,49 @@ namespace kickos
                 grant_sync(&owner_->mpu, base + PAGE, PAGE, ARCH_MPU_R | ARCH_MPU_W);
                 ASSERT_EQ(dcache_count(), 1u) << "the stale lines of the non-cacheable use go";
                 expect_op(0, PAGE, PAGE, false);
+                EXPECT_EQ(g_marked, 0);
+            }
+
+            TEST_F(AliasSync, a_cacheable_region_over_a_block_owing_a_sync_maintains_it)
+            {
+                uintptr_t const base = reinterpret_cast<uintptr_t>(&g_mem[PAGE]);
+                g_owed = true;
+                grant_sync(nullptr, base, PAGE, ARCH_MPU_R | ARCH_MPU_W);
+                g_owed = false;
+                ASSERT_EQ(dcache_count(), 1u)
+                    << "a non-cacheable holder's teardown left the kernel's lines stale";
+                expect_op(0, PAGE, PAGE, false);
+                EXPECT_EQ(g_marked, 0) << "paid";
+            }
+
+            // task.cc's seat of a new task's data region.
+            TEST_F(AliasSync, a_task_data_region_is_synced_by_type_at_task_create)
+            {
+                uintptr_t const base = reinterpret_cast<uintptr_t>(&g_mem[PAGE]);
+                g_data_regions = 1;
+                int err = 0;
+                g_owed = false;
+                g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_NOCACHE};
+                Task* const nc = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                size_t const nc_ops = dcache_count();
+                int const nc_mark = g_marked;
+                dcache_reset(nullptr);
+                g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W};
+                Task* const plain = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                size_t const plain_ops = dcache_count();
+                dcache_reset(nullptr);
+                g_owed = true;
+                Task* const owed = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                g_owed = false;
+                g_data_regions = 0;
+                ASSERT_NE(nc, nullptr);
+                ASSERT_NE(plain, nullptr);
+                ASSERT_NE(owed, nullptr);
+                EXPECT_EQ(nc_ops, 1u);
+                EXPECT_EQ(nc_mark, 1);
+                EXPECT_EQ(plain_ops, 0u);
+                EXPECT_EQ(dcache_count(), 1u);
+                EXPECT_EQ(g_marked, 0);
             }
 
             TEST_F(AliasSync, a_device_region_over_the_end_is_not_maintained)

@@ -94,6 +94,12 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
     COMMENT "assembling the AMP partition into one artefact")
   add_custom_target(amp_partition DEPENDS "${_amp_artefact}")
   set_target_properties(ampping_n0 PROPERTIES KICKOS_AMP_ARTEFACT "${_amp_artefact}")
+  # The judge of the partition's silicon capture, which no emulator runs on these boards.
+  if(KICKOS_BOARD STREQUAL "esp32c6-wroom")
+    kickos_app_judge(ampping_n0 tests/integration/check_c6_amp_capture.sh)
+  elseif(KICKOS_BOARD STREQUAL "pizero2350")
+    kickos_app_judge(ampping_n0 tests/integration/check_pizero_amp_gate.sh)
+  endif()
 
   # The flashers take an image by its base name.
   set(_amp_base "${CMAKE_BINARY_DIR}/kickos-partition")
@@ -104,26 +110,26 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   add_custom_target(amp_partition_base DEPENDS "${_amp_base}")
   add_dependencies(amp_partition amp_partition_base)
 
-  if(KICKOS_CHIP STREQUAL "esp32c6")
-    set(_c6_amp_flash "${CMAKE_BINARY_DIR}/kickos-partition.app.bin")
+  if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
+    set(_esp_amp_flash "${CMAKE_BINARY_DIR}/kickos-partition.app.bin")
     # Only the bench flash reads the ROM image, so a missing esptool skips it as it
-    # does every other C6 image's .app.bin.
+    # does every other image's .app.bin.
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
     if(KICKOS_ESPTOOL)
-      add_custom_command(OUTPUT "${_c6_amp_flash}"
-        COMMAND "${KICKOS_ESPTOOL}" --chip esp32c6 elf2image
-                --ram-only-header --dont-append-digest --flash_mode dio
-                --output "${_c6_amp_flash}" "${_amp_artefact}"
+      add_custom_command(OUTPUT "${_esp_amp_flash}"
+        COMMAND "${KICKOS_ESPTOOL}" --chip ${KICKOS_CHIP} elf2image ${KICKOS_CHIP_ESPTOOL_IMAGE}
+                --output "${_esp_amp_flash}" "${_amp_artefact}"
         DEPENDS "${_amp_artefact}"
-        COMMENT "packing both C6 AMP node LOAD segments into one ROM image"
+        COMMENT "packing every AMP node's LOAD segments into one ROM image"
         VERBATIM)
-      add_custom_target(c6_amp_partition_image DEPENDS "${_c6_amp_flash}")
-      add_dependencies(amp_partition c6_amp_partition_image)
+      add_custom_target(esp_amp_partition_image DEPENDS "${_esp_amp_flash}")
+      add_dependencies(amp_partition esp_amp_partition_image)
     else()
+      list(JOIN KICKOS_CHIP_ESPTOOL_IMAGE " " _esp_options)
       message(STATUS "KickOS: esptool not found: kickos-partition.app.bin (bootable "
-        "esp32c6 AMP partition) not produced. Activate the esp-idf env, or run: "
-        "esptool --chip esp32c6 elf2image --ram-only-header --dont-append-digest "
-        "--flash_mode dio --output kickos-partition.app.bin kickos-partition.elf")
+        "${KICKOS_CHIP} AMP partition) not produced. Activate the esp-idf env, or run: "
+        "esptool --chip ${KICKOS_CHIP} elf2image ${_esp_options} --output kickos-partition.app.bin "
+        "kickos-partition.elf")
     endif()
   endif()
 

@@ -353,6 +353,16 @@ Verdict: **defer DMA to a dedicated sub-topic**, drivers polled or IRQ first. Wh
 kernel-mediated descriptor validation plus a central channel allocator is the shape. A distinct HARD
 problem, not part of the first driver-framework cut.
 
+**Where the chip confines a master, the grant narrows it in hardware** (maintainer, 2026-10-04). Some
+parts check a bus master's accesses on the bus side: the i.MX 8M Plus's RDC (each master assigned a
+domain, memory regions and peripherals checked per domain), the ESP32-C6's TEE and APM (an access
+mode per master, the GDMA included), the K64F's SYSMPU (region descriptors checked per master), and
+on the RP2350 a DMA-side MPU and ACCESSCTRL's per-master peripheral masks (to be confirmed against
+the datasheet). There the chip file declares the unit, and the master's allowed regions are derived
+from the driver's grants the way a partition gate's are, so a granted DMA engine reaches its
+driver's memory and nothing else. A chip without such a unit (the RT1062, the STM32 parts) has only
+`KOS_AUTH_BUS_MASTER` between a spawner and all of memory, and admission names that limitation.
+
 ### 3.5 GPIO, a direct-MMIO grant rather than a kernel service
 **DECIDED (spike `design-m4-gpio-direct-spike.md`).** GPIO is NOT a kernel service and not a pin
 allocator that mints caps. The kernel touches GPIO only for the ONE-SHOT privileged PINMUX at init

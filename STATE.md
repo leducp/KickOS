@@ -4009,6 +4009,14 @@ The reversible ruling that a publish through HANDOUT seats WAIT is now the maint
 drops bytes (they now fail naming the drop); x86 selftest fault arms and `hello` hit their QEMU
 timeouts while two sweeps shared the box, and passed alone.
 
+## M10.5: the fleet, and what these green runs do NOT say
+
+**WHAT IT DOES NOT SAY.**
+- The ESP32-C6 UART flush waits for `ST_UTX_OUT` 0, the ESP32's TX_IDLE encoding, because the C6
+  manual prints no encoding for the field. That the C6's transmitter reads 0 only once the last
+  stop bit has left the pin is inferred, not witnessed: a C6 capture of `c6txidle`, which takes
+  the TX pad from the UART the moment the flush returns, is owed (M10.5.14).
+
 ## Where to go next
 
 - `docs/README.md` -- the docs map (Book vs Reference, conventions).

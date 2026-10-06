@@ -130,8 +130,9 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   requirement is per *thread*: a bring-up body
   muxing thirty pins needs thirty live slots in its own table, so the cost scales with
   **concurrency** and not with the pin count -- which is what makes it unanswerable at any table
-  size. So authority is granted per *class* -- the six bits `AUTH_MEMORY`, `AUTH_PINMUX`,
-  `AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE` -- rather than per instance. The
+  size. So authority is granted per *class*, the bits `AUTH_MEMORY`, `AUTH_PINMUX`,
+  `AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE`, `AUTH_TASKS` and `AUTH_BUS_MASTER`,
+  rather than per instance. The
   consequence is honest and worth stating: a holder of `AUTH_PINMUX` may mux **any** pin.
 
 The common thread is that a run is statically reserved for every possible thread -- the TCB holds only
@@ -742,9 +743,11 @@ and `GPIO_IN` (`+0x003C`).
 The matrix out-sel `GPIO_FUNCn_OUT_SEL_CFG` (`+0x0554 + 0x4*n`) and the per-pin config and
 interrupt registers (`+0x0074` up) stay OUTSIDE it, which is what makes it a capability rather
 than the block: the holder drives and reads its bank but cannot ROUTE a peripheral signal onto a
-pad. Re-muxing is out of reach on the other stage too -- IO MUX (`0x6009_0000`) and PCR
-(`0x6009_6000`) are never granted, and the pad plus out-sel are reached only through the mediated
-`arch_pinmux_set` seam, which refuses a kernel-owned pin on BOTH stages.
+pad. The rest of the block, `0x6009_1040` to its end, is the kernel-owned `gpio_matrix` device, so
+no window reaches the routing either. Re-muxing is out of reach on the other stage too -- IO MUX
+(`0x6009_0000`) and PCR (`0x6009_6000`) are never granted, and the pad plus out-sel are reached
+only through the mediated `arch_pinmux_set` seam, which refuses a kernel-owned pin on BOTH stages.
+LP_TEE (`0x600B_3400`), which holds the LP CPU's security mode, is kernel-owned as well.
 
 The caveat is what the window's own registers are: `W1TS`/`W1TC` and `ENABLE`/`ENABLE_W1TS` are
 WHOLE-PORT -- bit p addresses pin p -- so a thread holding the bank can toggle the output latch,

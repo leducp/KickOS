@@ -59,43 +59,9 @@ namespace tap
         // Repair for the failing path, or null.
         TestFn g_after_failure = nullptr;
 
-        // The one writer for the whole stream, and the third copy of a policy libc's
-        // _write (user/src/newlib_stubs.cc) and <kickos/sys/emit.h> also carry: keep them in
-        // step. Try this thread's stdout cap at index 0, fall back to the kernel debug
-        // console for the remainder when index 0 is empty (-KOS_EBADF) or the driver has no
-        // receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). kos_print alone is not enough, because
-        // console_emit drops every byte
-        // handed to the kernel console once a console driver publishes it
-        // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
         {
-            size_t const total = strlen(s);
-            size_t sent = 0;
-            while (sent < total)
-            {
-                size_t chunk = total - sent;
-                if (chunk > KOS_EP_MSG_MAX)
-                {
-                    chunk = KOS_EP_MSG_MAX;
-                }
-                long const r = kos_send(0, s + sent, chunk); // index 0 == the stdout endpoint cap
-                // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
-                if (r <= 0)
-                {
-                    // Close on ECONNREFUSED only, and emit.h states why: the peer closing
-                    // does not free this side, -KOS_EAGAIN may be served again, and
-                    // -KOS_EBADF is pre-publish with nothing to close.
-                    if (r == -KOS_ECONNREFUSED)
-                    {
-                        (void)kos_handle_close(KOS_CAP_STDOUT);
-                    }
-                    // Remainder only: resending from the start would duplicate the
-                    // chunks the driver already took.
-                    kickos::kconsole_write_all(s + sent, total - sent);
-                    return;
-                }
-                sent += static_cast<size_t>(r);
-            }
+            kickos::emit(s);
         }
 
         // Stands in for the tail of a line the assembly buffer could not hold, and carries
@@ -254,7 +220,7 @@ namespace tap
         emitf("1..%d", plan);
         if (stdout_published())
         {
-            diag("tap route: stdout endpoint -> console driver (service list published)");
+            diag("tap route: stdout endpoint -> console driver (the composition's stdout)");
         }
         else
         {

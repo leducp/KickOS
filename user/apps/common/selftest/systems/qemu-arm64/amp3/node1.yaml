@@ -20,7 +20,7 @@ tasks:
     entry: selftest_main
     priority: 2
     ceiling: 31
-    authority: [memory, system, pinmux, irq, console, tasks]
+    authority: [memory, system, pinmux, irq, console, tasks, bus_master]
     serves: /amp/3
     uses: [/amp/2, /amp/5]
     maps: { /shm/share: rw }

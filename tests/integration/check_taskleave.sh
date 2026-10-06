@@ -32,7 +32,7 @@ if has "TASKLEAVE FAIL"; then
 fi
 assert_no_panic "a member's death panicked the kernel"
 if [ "$RC" -eq 124 ]; then
-    fail "the image did not exit within ${QEMU_TIMEOUT:-20}s: a core walking freed tables?"
+    fail "the image did not exit within ${KOS_BOOT_BOUND_S}s: a core walking freed tables?"
 fi
 require_on_wire "release peer hits: 0" \
     "the peer-hit counter did not read 0 (or the run never reached it)"

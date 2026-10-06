@@ -265,7 +265,9 @@ enum kos_syscall_nr
                                //   -> 0, or -KOS_EPERM without AUTH_MEMORY, -KOS_EBADF on a
                                //   cap that does not resolve, -KOS_EINVAL on a misaligned
                                //   address, -KOS_ENOMEM when the space cannot take the range
-                               //   there. The ADDRESS is an argument and never a struct field.
+                               //   there, -KOS_EBUSY while another mapping of the run carries
+                               //   another memory type. The ADDRESS is an argument and never a
+                               //   struct field.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
                                //    -KOS_EBADF for an invalid cap, -KOS_EINVAL for a nontranslating space,
                                //    -KOS_EPERM for a range not mapped through KOS_SYS_FRAME_MAP.
@@ -668,7 +670,8 @@ enum kos_cap_authority
     KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
     KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
     KOS_AUTH_CONSOLE = 1 << 5, // kos_console_publish
-    KOS_AUTH_TASKS = 1 << 6    // kos_task_create, and a spawn that builds a task of its own
+    KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own
+    KOS_AUTH_BUS_MASTER = 1 << 7 // a spawn's device window over a device that masters the bus
 };
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the parent cap
@@ -689,7 +692,8 @@ enum kos_window_kind
 {
     // Device registers, R|W and never executable, with one holder: overlapping a window a
     // live thread holds, or another device entry of the same list, is -KOS_EBUSY. Needs
-    // KOS_AUTH_MEMORY, takes no flag, and is what kos_periph_enable and
+    // KOS_AUTH_MEMORY, and KOS_AUTH_BUS_MASTER as well over a device its chip file marks
+    // `bus_master` (-KOS_EPERM). Takes no flag, and is what kos_periph_enable and
     // kos_periph_reg_write accept.
     KOS_WINDOW_DEVICE = 0,
     // A block the spawner's task reserved with kos_ram_alloc, or any part on whole granules of

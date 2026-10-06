@@ -98,7 +98,8 @@ namespace selftest
     // main's `authority` in system.yaml and consoles/*.yaml. Never KOS_AUTH_PSTATE: a retune
     // would retime every deadline the timing arms assert.
     constexpr uint32_t SELFTEST_AUTHORITY = KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX
-                                            | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS;
+                                            | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS
+                                            | KOS_AUTH_BUS_MASTER;
 
     // main's region set is [app code RX, app static data RW, its own stack], and
     // kos_ram_alloc grants the caller nothing: a test that must touch its own allocation
@@ -114,6 +115,10 @@ namespace selftest
     // main's own KICKOS_PRIO_MIN + 1, so it also waits on main reaching its wait.
     constexpr uint8_t TAP_PRIO_PARKS = 10;
     constexpr uint8_t TAP_PRIO_AFTER = 1;
+
+    // Bounds an event the kernel will deliver, not how soon: an emulated core the host
+    // deschedules holds it back by hundreds of milliseconds, a dying thread's teardown most.
+    constexpr uint32_t STALL_TOLERANT_US = 5000000;
 
     // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
     // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
@@ -216,6 +221,15 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_grant_kernel_word_refused();
     KICKOS_SELFTEST_LOCAL void t_self_grant_retype();
     KICKOS_SELFTEST_LOCAL void t_uncached_alias_sync();
+    KICKOS_SELFTEST_LOCAL void t_uncached_teardown();
+    KICKOS_SELFTEST_LOCAL void t_presync_retried();
+    KICKOS_SELFTEST_LOCAL void t_presync_race();
+    KICKOS_SELFTEST_LOCAL void t_presync_flip();
+    KICKOS_SELFTEST_LOCAL void t_presync_slain();
+    KICKOS_SELFTEST_LOCAL void t_presync_staged();
+    KICKOS_SELFTEST_LOCAL void t_presync_cancel();
+    KICKOS_SELFTEST_LOCAL void t_presync_late_params();
+    KICKOS_SELFTEST_LOCAL void t_out_of_lock_windows();
     KICKOS_SELFTEST_LOCAL void t_recv_buf_unmapped();
     KICKOS_SELFTEST_LOCAL void t_frame_run_slot_recycle();
     KICKOS_SELFTEST_LOCAL void t_call_reply_undisclosed();
@@ -224,6 +238,9 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_reent_seating();
     KICKOS_SELFTEST_LOCAL void t_aspace_acquire_balance();
     KICKOS_SELFTEST_LOCAL void t_map_tlbi_elided();
+#if KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
+    KICKOS_SELFTEST_LOCAL void t_shootdown_per_change();
+#endif
     KICKOS_SELFTEST_LOCAL void t_aspace_active_cores();
     KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
 #endif
@@ -283,6 +300,9 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_isolated_unpin_excludes();
     KICKOS_SELFTEST_LOCAL void t_isolated_takes_pinned();
     KICKOS_SELFTEST_LOCAL void t_isolated_mixed_mask_ok();
+#if KICKOS_HAVE_ASPACE
+    KICKOS_SELFTEST_LOCAL void t_crowd_room_in_root_space();
+#endif
     KICKOS_SELFTEST_LOCAL void t_slice_preempts_every_core();
     KICKOS_SELFTEST_LOCAL void t_threads_reach_every_core();
     KICKOS_SELFTEST_LOCAL void t_irq_cross_core_wake();

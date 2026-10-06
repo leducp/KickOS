@@ -30,5 +30,5 @@ if(KICKOS_ARCH STREQUAL "x86_64")
     endforeach()
   endif()
   kickos_add_qemu_test(TARGET errnoprobe SCRIPT "${_errnoprobe_script}"
-    ARGS --first-core ${_errnoprobe_core} TIMEOUT 180)
+    ARGS --first-core ${_errnoprobe_core})
 endif()

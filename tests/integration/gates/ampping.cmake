@@ -41,7 +41,7 @@ if(_amp_st_artefact AND _amp_emulated)
   kickos_add_qemu_test(NAME amp_peer_arms TARGET ampping_n0
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_peer_arms.sh"
     ARGS "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}" "${_amp_st_artefact}"
-    TIMEOUT 900)
+    WORK 900)
   set_tests_properties(amp_peer_arms PROPERTIES RUN_SERIAL TRUE)
 endif()
 add_test(NAME amp_peer_arms_controls
@@ -71,7 +71,7 @@ if(_amp_emulated)
   kickos_add_qemu_test(NAME amp_partition TARGET ampping_n0
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_partition.sh"
     ARGS "${CMAKE_COMMAND}" "${CMAKE_BINARY_DIR}" "${_amp_artefact}" "${KICKOS_AMP_NODES}"
-    TIMEOUT 900)
+    WORK 900)
   set_tests_properties(amp_elf_agree PROPERTIES DEPENDS amp_partition)
 endif()
 # RUN_SERIAL is CORRECTNESS here. Each of these gates begins by running `cmake --build` on an

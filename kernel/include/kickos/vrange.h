@@ -56,7 +56,11 @@ namespace kickos
         VR_WINDOW = 1u << 4,
         // The partition's user share (kickos/ampshare.h), reserved at boot in root's space. Its
         // frames are no pool's: teardown unmaps them and frees none.
-        VR_SHARE = 1u << 5
+        VR_SHARE = 1u << 5,
+        // On a reservation: a mapping of its frames of another type than cacheable has been
+        // installed, in any space, since they were last synced, so a cacheable one owes them a
+        // sync. Survives that mapping's teardown, which syncs nothing.
+        VR_SYNC_OWED = 1u << 6
     };
 
     // What the KERNEL placed rather than the caller: the process image, every thread stack
@@ -193,6 +197,9 @@ namespace kickos
 
         // Drop the entry starting at `base`, whatever its state.
         bool release(uintptr_t base);
+
+        // Set or clear VR_SYNC_OWED on the entry starting at `base`; false when there is none.
+        bool set_sync_owed(uintptr_t base, bool owed);
 
         // The entry-path question: does [addr, addr + len) lie inside one granted range that
         // carries every right in `rights`? A range spanning two entries is refused even when

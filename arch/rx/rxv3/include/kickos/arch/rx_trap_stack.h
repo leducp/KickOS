@@ -110,12 +110,14 @@
  *                    -> kprintf_paced[288] -> console_emit[36] -> arch_console_write[4]
  *                    -> console_tx_insert_line[48] -> console_write_line_sync[32]
  *                    -> bench_lock_hold_add[20].
- *                    rx72m and rx72m-st read 516, a spawn's grant admission:
- *                    syscall_dispatch[52] -> thread_create_call[252] -> thread_create[72]
- *                    -> task_for[36] -> domain_for[40] -> grant_region_admissible[32]
- *                    -> grant_hits_reserved[28] -> arch_bitband_present[4].
- *                    rx72m-flat reads 504, FLAT dropping the grant admission arm entirely:
- *                    syscall_dispatch[52] -> endpoint_reply_recv[116] -> exit_current[44]
+ *                    rx72m reads 512 and rx72m-st 568, a spawn's grant admission, at 6 and
+ *                    9 grants; arch_rxv3.cc refuses more than 9:
+ *                    syscall_dispatch[48] -> thread_create_call[8] -> spawn_masked[300]
+ *                    -> thread_create[72] -> task_for[36] -> domain_for[40]
+ *                    -> grant_region_admissible[32] -> grant_hits_reserved[28]
+ *                    -> arch_bitband_present[4].
+ *                    rx72m-flat reads 496, FLAT dropping the grant admission arm entirely:
+ *                    syscall_dispatch[48] -> endpoint_reply_recv[116] -> exit_current[40]
  *                    -> cap_teardown[40] -> teardown_entry[48] -> obj_close_protocol[24]
  *                    -> endpoint_rights_dropped[32] -> wake[8] -> resched_after_wake[4]
  *                    -> pick_and_seat[24] -> ktime_rearm[24] -> arch_timer_arm[24]

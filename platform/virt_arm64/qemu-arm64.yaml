@@ -8,5 +8,14 @@ version: 1
 board: qemu-arm64
 chip: virt_arm64
 
+# `virt` comes up as a cortex-a15, which refuses an A64 image, and with a GICv2, whose CPU
+# interface a GICv3 image does not find. -nic none drops the virtio-net-pci whose option ROM a
+# separate distro package ships.
+emulator:
+  qemu: qemu-system-aarch64
+  machine: virt
+  gicv3_machine: virt,gic-version=3
+  options: [-cpu, cortex-a53, -nic, none]
+
 console:
   device: /dev/uart0

@@ -282,10 +282,12 @@ rescan group, because every backend of one class defines the same four symbols a
 would otherwise decide the engine. The default selection is `KickOS::kickos_spi_proxy`, whose
 four bodies marshal onto this protocol; `-DKICKOS_SPI_LOCAL_ENGINE=ON` selects the chip's local
 engine instead, and a client body is identical either way. An app built both ways carries two
-compositions and picks one on the same option, its source reading `KICKOS_SPI_LOCAL`: the proxy
-one runs the packaged service on `/svc/spi0`, the local one grants the client the peripheral's
-window, and its line where the engine is interrupt-paced (`xmcssc`, `k64dspi`; the K64F client
-also takes `pinmux` and calls `k64dspi_bus_mux` before `kos_spi_bus_open`). The mapping IS the
+compositions: the proxy one runs the packaged service on `/svc/spi0`, the local one grants the
+client the peripheral's window, and its line where the engine is interrupt-paced. `k64dspi` picks
+one on the same option, its source reading `KICKOS_SPI_LOCAL` (the K64F client also takes
+`pinmux` and calls `k64dspi_bus_mux` before `kos_spi_bus_open`); `xmcssc` emits both in every
+configure, `xmcssc` on the proxy and `xmcssc_local` linking the local engine itself, its source
+reading `XMCSSC_LOCAL`. The mapping IS the
 1:1 rule:
 
 | class call | request |

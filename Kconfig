@@ -574,7 +574,7 @@ config KICKOS_MAX_ENDPOINTS
 config KICKOS_ASPACE_RANGES
 	int "Virtual ranges one address space can name"
 	range 8 256
-	default 64
+	default 96
 	help
 	  Slots in one address space's range list (vrange.h). THREE KINDS OF CLAIM SHARE
 	  THEM and they are spent differently, so a figure sized against one of them is
@@ -593,10 +593,10 @@ config KICKOS_ASPACE_RANGES
 	  without raising this fails the BUILD rather than a spawn.
 
 	  THE DEFAULT IS SIZED AGAINST AN APP AND THE FLOOR IS NOT, which is why they are
-	  different figures. 64 is what the fleet's own selftest needs, with room: on
-	  qemu-x86_64's twelve-core variant its root holds 36 slots when two arms each spawn
-	  a crowd of thirteen threads, so the need there is 49, and at 40 those arms could
-	  not spawn. An app that reserves less can go lower, down to the floor.
+	  different figures. 96 is what the fleet's own selftest needs, with room: on
+	  qemu-arm64's twelve-core variant its root holds 57 slots when two arms each spawn
+	  a crowd of thirteen threads, so the need there is 70, and at 64 those arms could
+	  spawn only seven. An app that reserves less can go lower, down to the floor.
 
 	  Only a translating board keeps a range list at all, so no region board pays for
 	  this.
@@ -738,7 +738,11 @@ config KICKOS_MAX_SPAWN_GRANTS
 	default 6
 	help
 	  Costs caller stack, not .bss: thread_create_call stages the grant list in arrays
-	  on the calling thread's own stack. The floor is 2, not 1: the child width is
+	  on the calling thread's own stack. The trap figures that price that stack were
+	  each measured at a grant count, which the arch's trap header states, and the build
+	  refuses more until they are re-measured. lx6 runs a system call as a plain call on
+	  the caller's own stack, which no trap figure prices, so it refuses nothing here.
+	  The floor is 2, not 1: the child width is
 	  this plus one plus the reply peak, and a width inside the reserved index
 	  range leaves a child no slot of its own, which configure refuses.
 
@@ -1018,7 +1022,7 @@ config KICKOS_MIN_STACK_SIZE
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
 	# An interrupt nests below the death path on the thread's own stack.
-	default 2816 if ARCH_ARMV8A
+	default 2848 if ARCH_ARMV8A
 	# Bench and own-image AMP need the wider privileged syscall/return reservation.
 	# Other rv32imac boards keep their smaller measured floor. rv_trap_stack.h.
 	default 1088 if ARCH_RV32IMAC && (KICKOS_BENCH || KICKOS_AMP_POSTURE_OWN_IMAGE)
@@ -1027,7 +1031,7 @@ config KICKOS_MIN_STACK_SIZE
 	default 2304 if ARCH_RV64IMAC
 	# An interrupt nests below a privileged caller's syscall on its own stack, a spawn seeding
 	# a whole address space at its deepest (x86_64_trap_stack.h).
-	default 3344 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
+	default 3392 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
 	default 2752 if ARCH_X86_64
 	# Above one core the PREEMPT zone alone is 896 (lx6_trap_stack.h).
 	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1

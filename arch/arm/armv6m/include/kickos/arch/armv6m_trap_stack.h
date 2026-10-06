@@ -91,14 +91,14 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  picopi-st at 600, the deepest of this arch's four declared presets, a spawn
+     _SVCK   808  picopi-st at 592, the deepest of this arch's four declared presets, a spawn
                   staging KICKOS_MAX_SPAWN_GRANTS 9 grants:
-                    syscall_dispatch[64] -> thread_create_call[16] -> spawn_masked[304]
+                    syscall_dispatch[56] -> thread_create_call[16] -> spawn_masked[304]
                     -> thread_create[72] -> task_for[24] -> domain_for[40]
                     -> grant_region_admissible[32] -> grant_hits_reserved[40]
                     -> arch_reserved_blocks[8]
-                  microbit, also at 9, reads 536, and picopi and picopi-flat, at 6, read 544
-                  and 536.
+                  microbit, also at 9, reads 520, and picopi and picopi-flat, at 6, read 528
+                  and 520. arch_armv6m.cc refuses more than 9 grants.
 
    THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
    (kickos_panic_stack_enter, switch.S), so what 544 measures at picopi is the exit path

@@ -280,12 +280,12 @@ believe before it reads them, and this is the part that is easy to get wrong.
 
 - `KICKOS_HAVE_PRIV_RING` answers whether the core has a privilege ring to read at all.
   Every discriminator above is one, so a core without one can never tell a thread's own fault
-  from a kernel bug in code it called and MUST keep panicking. It is per BOARD and not per
-  arch, because the ARMv6-M Unprivileged/Privileged Extension is OPTIONAL and separate from
-  the MPU extension: Cortex-M0 omits it, Cortex-M0+ implements it, and both are
-  `KICKOS_ARCH=armv6m` with no predefined macro between them. armv6m is therefore ENUMERATED
-  per `KICKOS_BOARD` with a `FATAL_ERROR` default, so a new armv6m board must declare its
-  class instead of silently inheriting one.
+  from a kernel bug in code it called and MUST keep panicking. It is the chip file's
+  `protection` `privilege` (absent is read as `true`), which the generator carries as
+  `KICKOS_CHIP_PRIVILEGE`, and not an arch fact, because the ARMv6-M Unprivileged/Privileged
+  Extension is OPTIONAL and separate from the MPU extension: Cortex-M0 omits it, Cortex-M0+
+  implements it, and both are `KICKOS_ARCH=armv6m` with no predefined macro between them. A
+  chip whose core has no unprivileged mode states `privilege: false`.
 - `KICKOS_FAULT_ISOLATION` is the derived flag, and it does two jobs from one fact. It
   selects the backend seam TUs (`arch/CMakeLists.txt` drops the two declining fallbacks from
   the shared list, and `arch/arm/armv6m/sources.cmake` adds
@@ -301,7 +301,7 @@ believe before it reads them, and this is the part that is easy to get wrong.
 **Why lx6 declines, and what rxv3's opt-in costs.**
 
 - lx6 CANNOT. `PS.UM` is 1 for kernel and thread alike and `arch_context_init` discards
-  `privileged`, so it has no privilege ring and `KICKOS_HAVE_PRIV_RING` refuses it. This is a
+  `privileged`, so it has no privilege ring and its chip file states `privilege: false`. This is a
   HARDWARE fact, not an unported feature: there is no unprivileged thread to kill, so the rule has
   nothing to discriminate and no amount of backend code would give it something.
 - **rxv3 opted in during M4.8.3 and is witnessed on SILICON ONLY.** It has an exact discriminator
@@ -692,7 +692,7 @@ silicon-proven unless the row says otherwise:
 | `imxrt1062` | teensy41 | **M7** | PMSAv7 + fixed | **hardware** (enforcement selftest + soak). The only speculating core: needs the fixed-region wrap (`../design-teensy-mpu-hang.md`) |
 | `rx72m` | rx72m | RXv3 | RX MPU | **hardware** (selftest + SCI6 console; DPFPU switch; enforcement + a granted peripheral window). **No CI gate** -- see below |
 | `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-domain MPU and no privilege split |
-| `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs the one-time bus-side APM open, which `arch_init` programs at boot |
+| `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs the bus-side APM, whose rows `arch_init` derives at boot from the image's composition |
 | `sam3x8e` | due | M3 | -- | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
 Build-only chips are verified by construction (register review + image
@@ -808,8 +808,8 @@ which `arch_reserved_blocks` protects by address. So the PIT gets no entry and
 `pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc`).
 
 Backends exist for **four** chips; every other chip keeps the fallback, deliberately
-including `esp32c6` (its one-time bus-side APM open is programmed by `arch_init`, not
-per block):
+including `esp32c6` (its bus-side APM rows are derived by `arch_init` from the image's
+composition, not opened per block):
 
 | Chip | Block | Clock gate | Bus protect |
 |------|-------|------------|-------------|
@@ -876,6 +876,29 @@ which halves it declares, so a marker set after that include arrives too late: t
 prototype is already declared and the `static inline` definition below it is then a
 `declared 'extern' and later 'static'` error. The header includes `arch.h` for
 `arch_irq_state_t`, so the order inside it is markers, then the include, then the bodies.
+
+### Letting an interrupt in (`arch_irq_window`)
+
+Take any interrupt pending now, then mask again. Called with interrupts masked and no lock held,
+by a system call whose trap entry masked interrupts its caller ran with: the interrupt nests on the
+caller's kernel block, and its exit may switch the caller out mid-call, as it would a privileged
+thread. A port whose syscall entry leaves interrupts as they were does not need it, and only the
+translating ports, whose clear, copy and maintenance of a call's frames call it, define it, each
+with `KICKOS_ARCH_IRQ_WINDOW` in its `context.h`. The nested interrupt's frame must be a resumable
+context like any other: the syscall's own state saved in memory before its dispatch, nothing after
+the dispatch read back from a trap register, and an exit that switches the caller out resuming it
+later, on any core, at the instruction after the window.
+
+**An interrupt already signalled to the core must be taken before the re-mask.** armv8a puts an
+`isb` between `msr daifclr` and `msr daifset`; x86_64 puts a `nop` behind `sti`, whose shadow
+holds recognition off until the next instruction ends; rv64imac puts a `nop` between
+`csrsi sstatus` and `csrci`, an instruction boundary with SIE set, and a hart that takes the
+interrupt later than that, as the privileged specification allows, takes it at a later window.
+None waits for one still on its way from the interrupt controller, which a later window takes,
+so the masked span between two windows is the work between them plus that delivery delay, and
+on rv64imac whatever delay the core adds. The trap red-zone gate prices the
+nested interrupt as its own class at the deepest call into this function (`at=` in
+`tests/static/trap_redzone_roots.txt`).
 
 ### Which core am I (`arch_cpu_id`)
 
@@ -1018,14 +1041,18 @@ worse than a link error. armv8a cleans the boot-register block for cores that re
 caches off. A translating port defines it because the kernel's own view of a frame a task maps
 non-cacheable is a cacheable alias (the acquire pair below). x86_64 issues `CLFLUSH` over the
 range for both operations, stepping by the 64-byte line the floor requires (section 9 of
-`docs/design-m10-kernel-share.md`), then `MFENCE`, which loads do not pass. `kos_ram_alloc` on a region board cleans AND invalidates each block it has zeroed,
-through `arch_dcache_invalidate`, where the arch defines `KICKOS_ARCH_ARENA_DCACHE` in its
-`context.h`: a mapping of the block that bypasses the cache then reads the zeroes, and no line of
-the block is left in the cache to be read through a cached alias or evicted over what that mapping
-stores. An arch defining it therefore provides `arch_dcache_invalidate` as a clean-and-invalidate
-by address to the point of coherency over the whole range. A clean alone (`DCCMVAC`) leaves the
-lines valid and does not meet that contract. armv7m defines it with `DCCIMVAC` and maintains
-nothing while `CCR.DC` is clear, which leaves the Teensy 4.1's Cortex-M7 the one board it acts on.
+`docs/design-m10-kernel-share.md`), then `MFENCE`, which loads do not pass. `kos_ram_alloc` on
+a region board cleans AND invalidates each block it has zeroed, through `arch_dcache_invalidate`,
+where the arch defines `KICKOS_ARCH_ARENA_DCACHE` in its `context.h`: a mapping of the block
+that bypasses the cache then reads the zeroes, and no line of the block is left in the cache to be
+read through a cached alias or evicted over what that mapping stores. An arch defining it
+therefore provides `arch_dcache_invalidate` as a clean-and-invalidate by address to the point of
+coherency over the whole range. A clean alone (`DCCMVAC`) leaves the
+lines valid and does not meet that contract. armv7m defines it from the chip file's `data_cache`,
+which the generator emits as `KICKOS_CHIP_DCACHE` in `chip_limits.h`, so an armv7m chip stating no
+data cache compiles none of this maintenance; the i.MX RT1062 is the one chip in the fleet that
+states one. Its `arch_dcache_invalidate` is `DCCIMVAC` by address, and it maintains nothing while
+`CCR.DC` is clear.
 
 The same macro makes the kernel's copies into and out of user memory maintain an end the owning
 thread's region set holds non-cacheable, as the acquire pair below does under translation: the
@@ -1035,10 +1062,89 @@ the ones loaded.
 It also makes every change of a block's memory type maintained once, before the region takes
 effect: a grant that seats a non-cacheable region (a self-grant, a spawn window, a task's data)
 cleans the block's lines to memory then drops them, so no dirty line an earlier cacheable use left
-is evicted over what the region stores, and a self-grant that retypes a non-cacheable region back
-to cacheable does the same, so no clean line the kernel's reads left is served stale to the
-cacheable region. The task cannot do either itself, the Cortex-M7's maintenance registers being
-privileged.
+is evicted over what the region stores, and a cacheable grant over a block a non-cacheable region
+held since its last sync does the same, so no clean line the kernel's reads left is served stale
+to the cacheable region. The arena's ownership record carries that debt from the non-cacheable
+grant to the next cacheable one (`ram_owner_sync_owed`), so a window or a task's data torn down
+with its holder owes it too, and the teardown itself maintains nothing. The task cannot do either
+itself, the Cortex-M7's maintenance registers being privileged.
+
+**No masked span of this maintenance, of a translating backend's clear of a reservation or of
+its copy of a new space's static data scales with a size a task chose, but for the spans listed
+after these bullets.** The worst case each backend runs with interrupts masked:
+
+- armv7m maintains a range by line below the size of the data cache and once over every set and
+  way from that size up, so one call runs at most as many operations as the cache has lines: 1,024
+  on the i.MX RT1062's 32 KiB cache (256 sets of 4 ways of 32-byte lines), whatever the range. A
+  grant, a retype and a task's data each make one call.
+- armv8a and x86_64 sync a mapping's frames outside the kernel lock, in the system call that maps
+  them (`presync_prepare`, `kernel/syscall/syscall.cc`), one granule at a time with interrupts
+  masked and an interrupt window (`arch_irq_window`) after each: at most one granule's lines in a
+  masked span, 64 operations at 64-byte lines over 4 KiB granules, however many granules the
+  mapping has. The locked pass maintains nothing: it maps only frames this call synced and no
+  other call has mapped since, and otherwise sends the call back to sync again. The calls that
+  sync are a self-grant, a frame capability's map, a spawn's memory windows and its task data,
+  and an explicit task's data. The window opens only for an unprivileged caller, whose trap is
+  known to have interrupted code running with interrupts unmasked; a privileged caller's syscall
+  runs at its own interrupt state throughout. A caller told to stop is stopped between two rounds
+  (a cancel) or at a window (a slay), privileged or not.
+- A copy into or out of a non-cacheable block makes up to three sweeps of what it copies
+  (`chunk_copy`: the source before the copy, the destination before and after it), and a message
+  is at most `KOS_EP_MSG_MAX` (256) bytes: at most 5 lines a sweep at 64-byte lines, 15
+  operations, and 9 lines a sweep at 32-byte lines, 27 operations.
+- armv8a, x86_64 and rv64imac clear a new reservation's frames (`kos_ram_alloc`) and copy a new
+  space's static data from its spawner's space or from the snapshot (a spawn that builds a task,
+  an explicit task) outside the kernel lock in the same way, one granule under the lock at a time
+  with an interrupt window after each, into a run no range names yet (`presync_run`). The copy is
+  therefore no snapshot of one instant, on any core count: a store the spawner's other threads
+  make to static data while it runs can reach the child torn. A run the round does not take is
+  freed the same way, a granule a window (`presync_release`). A call refused its authority or its
+  out-word stages nothing, and nor does a spawn its arguments refuse: its plan and its locked
+  pass share one admission (`spawn_admit`), and only the grant list's entries, the priority
+  ceiling and the pools are left to the locked pass. The snapshot itself is taken once, under
+  the lock, at the first explicit task or at root's release, a copy the size of the image's
+  static data and no task's choice.
+
+Not covered, each running in one masked span that scales with a size a task chose: a mapping's
+page-table edit, under the kernel lock, one entry per granule of the mapping; the free of a run
+staged by a thread that leaves inside its call, which its exit gives back whole under the lock
+(`presync_exit`); a space's release, which frees every frame its ranges and tables hold
+(`aspace_release`); and a privileged caller's work outside the lock, which opens no window
+between granules: its sync, clear, copy and release run at the caller's own interrupt state,
+one span the size of what it stages wherever that state is masked. A region chip's clear of a
+new arena block (`ram_block_clear`) is no masked span: it runs outside the kernel lock in the
+system call's trampoline, with interrupts open.
+
+**A store into frames whose mapping their owning task is changing may be lost.** From the call's
+entry to its return, a store the task's other threads make through one of its mappings of those
+frames that is still cacheable, or one the kernel delivers into them, an IPC sender's included,
+may leave a line the sync has already passed, and the store can then be lost. The loss stays
+inside the owning task's view of its own frames: the sender loses nothing of its own memory, and
+no other mapping of the frames can take a store unseen, the call being refused `-KOS_EBUSY`
+while another mapping carries another memory type and sent round again by any mapping another
+call completes over them. A task that changes the type of its own receive buffer while a receive
+is pending on it has raced itself.
+
+**The call completes once its frames stop changing under it.** A record is dropped only by
+another call's mapping over a noted frame, and only when that call completes, at the point it
+completes and before it delivers a handle: a failed or refused call drops nothing, nor does the
+dropping call's own work outside the lock, and a completed call whose out-word then faults still
+drops it. The type rule is what makes a late drop safe: a peer's mapping of another type over a
+noted frame is refused `-KOS_EBUSY` whichever order the two calls end in, so the drop only spares
+the call a round. An unmap
+drops nothing either, the mapping it removes having been installed during the call, which
+dropped the record when it completed, or been there when the call noted its frames and agreed
+on their type; and no free can reach a noted frame, which the caller's own task or capability
+pins for the call's life. So every round a call goes back to stands for another call that
+completed, and two callers over shared frames cannot hold each other back; a peer that keeps
+completing mappings over them can keep one waiting. A spawn's parameters and window list are
+copied into the kernel once, at its first round, and every round's plan and locked pass read that
+copy, so a sibling rewriting them cannot send it round.
+
+Under translation a cacheable mapping over frames a non-cacheable mapping held since their last
+sync owes the sync as well (`VR_SYNC_OWED` on the reservation, `FrameRun::sync_owed` on a frame
+capability's run), so a spawn window, a task's data and a frame capability's mapping all leave
+the debt behind at teardown, which maintains nothing.
 
 ### The map editor's acquire pair (`arch_aspace_acquire`, `arch_aspace_release`)
 
@@ -1068,10 +1174,12 @@ after it writes, so no dirty line of the alias is evicted later over what the ta
 stores. A cacheable page costs the caller one test. Every change of a mapping's memory type is
 maintained the same way through the frame pool's view, before the new leaf is installed: a
 non-cacheable leaf drops the pool's zeroes and any dirty line a cacheable mapping left, and a
-self-grant back to cacheable drops the clean lines the kernel's reads left, which would be stale to
-the cacheable mapping. Bytes that share a cache line with the copied range are read back and written
-back with it, so a task that writes them during the copy from another core races the kernel, as it
-races a device on any line it shares with a DMA buffer.
+cacheable leaf over frames a non-cacheable one held since their last sync, a self-grant back to
+cacheable or a mapping made after that holder's teardown, drops the clean lines the kernel's reads
+left, which would be stale to the cacheable mapping. Bytes that share a cache line with the
+copied range are read back and written back with it, so a task that writes them during the
+copy from another core races the kernel, as it races a device on any line it shares with a DMA
+buffer.
 
 **It is measured from the tree rather than chosen.** The deepest holder is the page-split access
 scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
@@ -1760,7 +1868,7 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
   SIX images today, so the board emits no single `1..63` plan; read the plan sizes off the
-  configure line (see `boards.md`, *The selftest ships as SEVERAL images on five boards*).
+  configure line (see `boards.md`, *The selftest ships as SEVERAL images on six boards*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was inherited from its

@@ -14,6 +14,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/errno.h>
 
 #include <stdarg.h>
 
@@ -83,13 +84,21 @@ namespace
     // sees 0, the driver starts, and the woken writer then bit-bangs a UART it no longer
     // owns. Refuses HANDING_OFF as well as USER_OWNED: a publish that admitted new writers
     // would have nothing left to make its drain converge. `out_state` IS the decisive read:
-    // a caller must not re-read the state.
-    bool chip_writer_enter(ConsoleState* out_state)
+    // a caller must not re-read the state. On a refusal, `*served` answers under the same read
+    // whether `asker`'s own stdout send would be taken now, and `*owed` whether a dead driver's
+    // reclaim is waiting on a thread still holding the device.
+    bool chip_writer_enter(ConsoleState* out_state, kickos::Thread const* asker, bool* served,
+                           bool* owed)
     {
         kickos::IrqLock lock;
         ConsoleState const state = g_console_state;
         if (state == ConsoleState::USER_OWNED or state == ConsoleState::HANDING_OFF)
         {
+            if (asker != nullptr)
+            {
+                *served = kickos::cap_console_serves(asker);
+                *owed = state == ConsoleState::USER_OWNED and g_console_driver_died;
+            }
             return false;
         }
         *out_state = state;
@@ -251,7 +260,8 @@ extern "C" void console_write_line_sync(char const* buf, size_t n)
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    static int console_emit(char const* buf, size_t n, bool force_sync, bool* cr_pending)
+    static int console_emit(char const* buf, size_t n, bool force_sync, bool* cr_pending,
+                            Thread const* asker)
     {
         // The count is taken under the same masked read that selects the transport, so
         // publish either drains this writer or the writer never reaches the device. The
@@ -259,7 +269,9 @@ namespace kickos
         // KERNEL_OWNED does: a console published again after a reclaim flips straight out
         // of it.
         ConsoleState state = ConsoleState::KERNEL_OWNED;
-        if (chip_writer_enter(&state))
+        bool served = false;
+        bool owed = false;
+        if (chip_writer_enter(&state, asker, &served, &owed))
         {
             // PANIC KEEPS THE SYNCHRONOUS PATH. The system stops after a panic, so a line
             // left queued is a line nobody reads.
@@ -289,16 +301,33 @@ namespace kickos
             console_chip_writer_leave();
             return took;
         }
+        // A thread whose send failed before a publish lands here after it: its bytes now
+        // belong on the endpoint, which takes them.
+        if (served)
+        {
+            if (cr_pending != nullptr)
+            {
+                *cr_pending = false;
+            }
+            return -KOS_EBUSY;
+        }
+        // The device comes back to the kernel when that thread exits; until then the writer is
+        // told to retry rather than have its line dropped. The retry offers the same bytes here
+        // again, so a CR already on the wire stays owed.
+        if (owed)
+        {
+            return -KOS_EAGAIN;
+        }
+        if (cr_pending != nullptr)
+        {
+            *cr_pending = false;
+        }
         // USER_OWNED: DROP, the driver owns the UART (RTT still carries it, see
         // kconsole_write). force_sync accepts interleaving with the driver's in-flight
         // bytes, and is set only after the published route has already refused these ones.
         if (force_sync)
         {
             console_write_line_sync(buf, n);
-        }
-        if (cr_pending != nullptr)
-        {
-            *cr_pending = false;
         }
         // USER_OWNED: the driver owns the UART and a kernel chip write is dropped BY DESIGN,
         // not by pressure. Reported as taken, because the distinction the caller acts on is
@@ -313,10 +342,11 @@ namespace kickos
     // transport masks the ring COPY alone; only its refusal path masks a whole transmission,
     // which at 115200 is ~22 ms for a 256 B line.
     static int kconsole_write_impl(char const* buf, size_t n, bool force_sync,
-                                   bool* cr_pending = nullptr)
+                                   bool* cr_pending = nullptr, Thread const* asker = nullptr)
     {
         (void)force_sync;
         (void)cr_pending;
+        (void)asker;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
         // KICKOS_CONSOLE=none: the writer is a sink. Panic, fault and boot still run their
         // full paths and terminate the same way.
@@ -332,7 +362,7 @@ namespace kickos
 #if KICKOS_CONSOLE_CHIP
         // RAW: the '\n' lowering happens at the device end of the path, where one line stays
         // one emit. RTT above stays raw either way, its viewer cooking.
-        return console_emit(buf, n, force_sync, cr_pending);
+        return console_emit(buf, n, force_sync, cr_pending, asker);
 #else
         return static_cast<int>(n);
 #endif
@@ -353,11 +383,11 @@ namespace kickos
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
         Thread* const t = sched::current();
         bool pending = t->console_cr_pending != 0;
-        int const took = kconsole_write_impl(buf, n, false, &pending);
+        int const took = kconsole_write_impl(buf, n, false, &pending, t);
         t->console_cr_pending = pending;
         return took;
 #else
-        return kconsole_write(buf, n);
+        return kconsole_write_impl(buf, n, false, nullptr, sched::current());
 #endif
     }
 
@@ -403,7 +433,7 @@ namespace kickos
     // It does NOT route to a published console: a report belongs on the wire the bench is
     // captured from.
     //
-    // The progress test spans the WHOLE attempt, not console_tx_wait_drain alone: the offer
+    // The progress test spans the WHOLE attempt, not console_tx_wait_progress alone: the offer
     // itself opens mask gaps, and on a backend whose drain lands in one of them that is where
     // the bytes leave. The attempt bound is the ring's own size because one attempt that makes
     // progress frees at least one byte and no line needs more than the ring to fit.
@@ -416,14 +446,13 @@ namespace kickos
         va_end(ap);
         size_t const n = kstrlen(buf);
         uint32_t queued = console_tx_used();
-        bool cr_pending = false;
         for (uint32_t attempt = 0; attempt < KICKOS_CONSOLE_TX_SIZE; attempt++)
         {
-            if (kconsole_write_impl(buf, n, false, &cr_pending) != 0)
+            if (kconsole_write_impl(buf, n, false) != 0)
             {
                 return;
             }
-            console_tx_wait_drain();
+            console_tx_wait_progress();
             uint32_t const now = console_tx_used();
             if (now >= queued)
             {

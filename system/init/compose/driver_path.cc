@@ -103,11 +103,6 @@ namespace kickos::init::driver_path
         {
             return;
         }
-        // The second send completes once the driver has taken the first, which a console's one
-        // receiver does only after it has written the bytes before it; a failed send ends it.
-        if (kos_send_timed(KOS_CAP_STDOUT, "", 0, kickos::driver::KOS_DRV_HANDOVER_PROBE_US) >= 0)
-        {
-            (void)kos_send_timed(KOS_CAP_STDOUT, "", 0, kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
-        }
+        (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
     }
 }

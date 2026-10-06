@@ -30,7 +30,6 @@ endif()
 # The secondary-arrival gate, on the smallest image that boots the chip: every core comes up
 # in arch_init, so the app itself is only what carries the release there. The expected count is
 # the configured one, and the script boots the image a second time on a machine one core short.
-# TIMEOUT covers two boots plus the arrival spin bound the refusal path has to reach.
 #
 # Both backends bind the short-machine arm to the count, by different mechanisms: arm64 has
 # firmware that refuses a start, and rv64 has none, so there the missing hart never publishes
@@ -40,7 +39,7 @@ if(KICKOS_NUM_CORES GREATER 1
   kickos_add_qemu_test(NAME ${_tag}_smp_arrival TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
     ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH}
-    TIMEOUT 240)
+    BOOTS 2)
 endif()
 
 # The doorbell-and-lock gate, on the same image: the round runs in arch_init, so the app is only
@@ -60,8 +59,7 @@ endif()
 if(_hello_doorbell)
   kickos_add_qemu_test(NAME ${_tag}_smp_doorbell TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_doorbell.sh"
-    ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH}
-    TIMEOUT 240)
+    ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH})
   # Serial: the emulator arm reads whether a core took the doorbell interrupt, and a core that
   # is already spinning in the lock's acquire loop answers by polling instead and acknowledges
   # nothing. Which path runs depends on host scheduling, the guest clock tracking host time, so

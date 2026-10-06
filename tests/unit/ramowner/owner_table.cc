@@ -149,6 +149,25 @@ namespace
         EXPECT_EQ(g_arena_used, before);
     }
 
+    // A non-cacheable holder's mark stays on the block it met, whoever holds it next, and a new
+    // block owes nothing.
+    TEST_F(OwnerTable, ASyncOwedMarksTheBlocksItMeetsAlone)
+    {
+        void* const first = ram_owner_alloc(task_a(), 128);
+        void* const second = ram_owner_alloc(task_b(), 128);
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+        uintptr_t const a = reinterpret_cast<uintptr_t>(first);
+        uintptr_t const c = reinterpret_cast<uintptr_t>(second);
+        EXPECT_FALSE(kickos::ram_owner_sync_owed(a, 128));
+        kickos::ram_owner_set_sync_owed(a + 32u, 32, true);
+        EXPECT_TRUE(kickos::ram_owner_sync_owed(a, 128));
+        EXPECT_TRUE(kickos::ram_owner_sync_owed(a + 96u, 16));
+        EXPECT_FALSE(kickos::ram_owner_sync_owed(c, 128));
+        kickos::ram_owner_set_sync_owed(a, 128, false);
+        EXPECT_FALSE(kickos::ram_owner_sync_owed(a, 128));
+    }
+
     // The kernel's own arena blocks (the boot stacks, the thread pool's default stacks,
     // the sim's guard page) reach arch_ram_alloc directly and are recorded nowhere.
     TEST_F(OwnerTable, AKernelPlacedBlockIsNobodys)

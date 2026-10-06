@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   pizero2350
+   arch    armv7m
+   cpu     rp2350
+# accessctrl: 0xa0 = 0x9c
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   pizero2350
+   arch    armv7m
+   cpu     rp2350
+# accessctrl probe: 0xa0 = 0x9c, node 1 read 0x40070fe0: fault CFSR=0x8200 BFAR=0x40070fe0
+ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
+ampping: gate: node 0 read 0x11 from its uart0, node 1's kernel's read of it took a fault
+ampping: node 0 calls node 1 port 3
+  ping 1 -> pong 2 from node 1 (4 byte(s))
+  ping 2 -> pong 3 from node 1 (4 byte(s))
+  ping 3 -> pong 4 from node 1 (4 byte(s))
+  ping 4 -> pong 5 from node 1 (4 byte(s))
+ampping: node 1 answered 4 round(s), its own record says 4
+ampping: node 0 done, 4 round(s) across the partition

@@ -109,6 +109,7 @@ class Decl(object):
         self.trap_stack = set()                      # classes declared stack=trap
         self.kernel_stack = set()                    # classes declared stack=kernel
         self.panic_stack = set()                     # classes declared stack=panic
+        self.at = {}                                 # class -> the one callee it prices below
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
         self.excludes = []                           # [(mangled, reason, optional)]
@@ -150,9 +151,12 @@ class Decl(object):
                 on_trap = False
                 on_kernel = False
                 on_panic = False
+                at = None
                 for opt in f[3:]:
                     if opt.startswith('frame='):
                         frame = opt[len('frame='):]
+                    elif opt.startswith('at=') and len(opt) > len('at='):
+                        at = opt[len('at='):]
                     elif opt.startswith('depth='):
                         depth = opt[len('depth='):]
                     elif opt == 'stack=trap':
@@ -181,6 +185,8 @@ class Decl(object):
                     self.kernel_stack.add(name)
                 if on_panic:
                     self.panic_stack.add(name)
+                if at is not None:
+                    self.at[name] = at
                 self.classes.append(name)
                 self.macros[name] = (frame, depth)
                 self.roots[name] = []
@@ -942,6 +948,11 @@ class Walk(object):
         self.stack = []
         self.onstack = set()
         self.cycles = []
+        self.memo_to = {}
+        self.comp_to = {}
+        self.index_to = {}
+        self.low_to = {}
+        self.stack_to = []
 
     def out(self, fn):
         for t in sorted(self.g.edges.get(fn, ())):
@@ -970,6 +981,94 @@ class Walk(object):
         self.onstack.discard(fn)
         self.memo[fn] = self.weight(fn) + best
         return self.memo[fn]
+
+    def depth_to(self, fn, target):
+        """The longest weighted path from fn whose last node is target, target's own frame
+        included, or None where no path reaches it. A strongly connected component is charged
+        every member's frame, which bounds any simple path through it."""
+        key = (fn, target)
+        if key not in self.memo_to:
+            self.index_to = {}
+            self.low_to = {}
+            self.stack_to = []
+            self.component_to(fn, target)
+        return self.memo_to[key]
+
+    def component_to(self, fn, target):
+        self.index_to[fn] = len(self.index_to)
+        self.low_to[fn] = self.index_to[fn]
+        self.stack_to.append(fn)
+        succ = []
+        if fn != target:
+            succ = list(self.out(fn))
+        for t in succ:
+            if (t, target) in self.memo_to:
+                continue
+            if t not in self.index_to:
+                self.component_to(t, target)
+                self.low_to[fn] = min(self.low_to[fn], self.low_to[t])
+            else:
+                # Seen and not yet charged means still on the stack, in fn's component.
+                self.low_to[fn] = min(self.low_to[fn], self.index_to[t])
+        if self.low_to[fn] != self.index_to[fn]:
+            return
+        members = []
+        while True:
+            m = self.stack_to.pop()
+            members.append(m)
+            if m == fn:
+                break
+        # target walks no edge, so it is always a component of its own.
+        if fn == target:
+            self.memo_to[(fn, target)] = self.weight(fn)
+            return
+        inside = set(members)
+        best = None
+        for m in members:
+            for t in self.out(m):
+                if t in inside:
+                    continue
+                d = self.memo_to[(t, target)]
+                if d is not None and (best is None or d > best):
+                    best = d
+        if best is not None:
+            best += sum(self.weight(m) for m in members)
+        component = tuple(members)
+        for m in members:
+            self.memo_to[(m, target)] = best
+            self.comp_to[(m, target)] = component
+
+    def chain_to(self, fn, target):
+        """The path depth_to charged. A strongly connected component is one step, named as a
+        cycle with the member it is left from, then the deepest edge out of it."""
+        chain = []
+        while True:
+            self.depth_to(fn, target)
+            step = '%s[%d]' % (self.g.label.get(fn, fn), self.g.size.get(fn, 0))
+            if fn == target:
+                return chain + [step]
+            members = self.comp_to.get((fn, target), (fn,))
+            inside = set(members)
+            best = None
+            nxt = None
+            exit_from = fn
+            for m in members:
+                for t in self.out(m):
+                    if t in inside:
+                        continue
+                    d = self.depth_to(t, target)
+                    if d is not None and (best is None or d > best):
+                        best = d
+                        nxt = t
+                        exit_from = m
+            if len(members) > 1 or fn in self.out(fn):
+                step += ' (CYCLE of %d, left at %s[%d])' % (
+                    len(members), self.g.label.get(exit_from, exit_from),
+                    self.g.size.get(exit_from, 0))
+            chain.append(step)
+            if nxt is None:
+                return chain
+            fn = nxt
 
     def chain(self, fn, seen=()):
         if fn in seen:
@@ -1238,15 +1337,40 @@ def run(argv):
     for line in report:
         print(line)
 
+    # An at= class prices what nests below ONE callee, so it measures only the paths that end
+    # there. A target no root reaches would measure 0 and pass forever.
+    # A class this image does not compile measures 0 and is not compared.
+    targets = {}
+    for cls, sym in decl.at.items():
+        key = graph.resolve(sym)
+        if key is None and cls not in not_compiled:
+            die('%s prices what nests below at=%s, which is not in the graph' % (cls, sym))
+        targets[cls] = key
+
+    def class_depth(walk, cls, key):
+        if cls in targets:
+            if targets[cls] is None:
+                return 0
+            d = walk.depth_to(key, targets[cls])
+            # depth_to charges a reachable cycle; depth records it, and that fails the gate.
+            walk.depth(key)
+            if d is None:
+                return 0
+            return d
+        return walk.depth(key)
+
     measured = {}
     for cls in decl.classes:
         best = 0
         winner = None
         for key in roots[cls]:
-            d = walk_for(cls).depth(key)
+            d = class_depth(walk_for(cls), cls, key)
             if winner is None or d > best:
                 best = d
                 winner = key
+        if cls in targets and best == 0 and cls not in not_compiled:
+            die('%s prices what nests below at=%s, and no root of it reaches that callee'
+                % (cls, decl.at[cls]))
         measured[cls] = best
         frame, enf_depth = enforced[cls]
         macro_frame, macro_depth = decl.macros[cls]
@@ -1265,9 +1389,12 @@ def run(argv):
               % (cls, best, macro_depth, enf_depth, where))
         print('  red zone = %s %d + %s %d = %d bytes'
               % (macro_frame, frame, macro_depth, enf_depth, frame + enf_depth))
-        if winner is not None:
+        if winner is not None and (cls not in targets or targets[cls] is not None):
             print('  deepest root %s:' % winner)
-            print('    ' + ' -> '.join(walk_for(cls).chain(winner)))
+            if cls in targets:
+                print('    ' + ' -> '.join(walk_for(cls).chain_to(winner, targets[cls])))
+            else:
+                print('    ' + ' -> '.join(walk_for(cls).chain(winner)))
 
     # Report-only: the same measurement with nothing excluded, so a deliberately excluded
     # tail cannot grow unwatched.
@@ -1286,7 +1413,7 @@ def run(argv):
                 continue
             b = 0
             for key in roots[cls]:
-                b = max(b, bare.depth(key))
+                b = max(b, class_depth(bare, cls, key))
             frame, enf_depth = enforced[cls]
             note = ''
             if cls in not_compiled:

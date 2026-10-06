@@ -14,6 +14,7 @@ tasks:
   - name: rt1062usb
     driver: rt1062usb
     devices: [/dev/usb1]
+    accepts: [bus_master]
     lines: { irq: /dev/usb1/irq }
     core: 0
     serves: /svc/console

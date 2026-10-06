@@ -972,15 +972,15 @@ namespace selftest
     // KICKOS_KERNEL_CORES + 1: tests/integration/gates/selftest.cmake derives the expected
     // pool-too-small skip from this count.
     constexpr unsigned PL_CROWD = KICKOS_KERNEL_CORES + 1u;
-    constexpr uint64_t PL_BURN_QUANTA = 8ull; // per round, so a slice can expire several times
 
-    // Read-only to the burners, published before the first one is created.
-    uint64_t g_pl_burn_ns = 32000000ull;
+    // The round's core, as its probe bit. Read-only to the burners, published before the first
+    // one is created. A round burns until the probe records it: an emulator under host load can
+    // deliver an overdue comparator milliseconds late while the core runs on, so no fixed count
+    // of quanta is sure to contain an expiry.
+    uint32_t g_pl_target = 0;
 
-    // `first`/`last` are the low 32 bits of the clock at a burner's first and last sample, both
-    // instants it was seen executing, so their span is not wall clock the host can inflate. A
-    // span of one quantum contains the deadline armed at switch-in, so the closing sample
-    // cannot have run unless the core took that deadline's interrupt.
+    // `first`/`last` are the clock in microseconds at a burner's first and last sample, both
+    // instants it was seen executing.
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_seen[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_first[PL_CROWD];
     Atomic<uint32_t, Order::RELAXED> g_pl_burn_last[PL_CROWD];
@@ -1004,15 +1004,19 @@ namespace selftest
         while (true)
         {
             uint64_t const now = kos_clock_now();
-            if (now - start >= g_pl_burn_ns)
+            if (now - start >= STALL_TOLERANT_US * 1000ull)
             {
                 break;
             }
             pass++;
             if ((pass & 0xFu) == 0u)
             {
+                if ((kos_sched_probe(KOS_SCHED_OP_PREEMPTED) & g_pl_target) != 0u)
+                {
+                    break;
+                }
                 seen |= 1u << static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
-                last = static_cast<uint32_t>(now);
+                last = static_cast<uint32_t>(now / 1000u);
                 if (samples == 0u)
                 {
                     first = last;
@@ -1045,6 +1049,17 @@ namespace selftest
         }
         return others[n % count];
     }
+
+#if KICKOS_HAVE_ASPACE
+    // Each crowd thread's stack takes one range slot in main's space.
+    void t_crowd_room_in_root_space()
+    {
+        uint64_t const room = kos_aspace_probe(KOS_ASPACE_OP_RANGES_FREE, 0);
+        tap::diag("main's space has %lu range slot(s) free, a crowd takes %u",
+                  static_cast<unsigned long>(room), PL_CROWD);
+        TAP_CHECK(room >= PL_CROWD);
+    }
+#endif
 
     void t_slice_preempts_every_core()
     {
@@ -1080,7 +1095,6 @@ namespace selftest
         {
             quantum = granule * 4;
         }
-        g_pl_burn_ns = quantum * PL_BURN_QUANTA;
 
         uint32_t prewitnessed = 0; // the probe is monotonic, so these owe this arm no round
         uint32_t unproven = 0;     // ran their round and the bit stayed clear
@@ -1109,6 +1123,7 @@ namespace selftest
                 g_pl_burn_last[i] = 0;
                 g_pl_burn_samples[i] = 0;
             }
+            g_pl_target = 1u << k;
             g_pl_go = 0; // released once every burner of the round exists
             kos::thread::Handle w[PL_CROWD];
             unsigned made = 0;
@@ -1131,6 +1146,8 @@ namespace selftest
                                                 0, nullptr, KOS_TASK_NONE, nullptr, 0, pin);
                 if (not w[i].valid())
                 {
+                    tap::diag("core %u: the crowd stopped at %u of %u, create %d",
+                              static_cast<unsigned>(k), made, PL_CROWD, w[i].error());
                     break;
                 }
                 made++;
@@ -1172,22 +1189,22 @@ namespace selftest
             {
                 strayed |= 1u << k;
             }
-            else if (span < static_cast<uint32_t>(quantum))
+            else if (span < static_cast<uint32_t>(quantum / 1000u))
             {
                 starved |= 1u << k;
             }
             tap::diag("core %u: no preemption recorded; its pinned pair held it for %u us "
                       "across %u sample(s), against a %u us quantum",
-                      static_cast<unsigned>(k), static_cast<unsigned>(span / 1000u),
+                      static_cast<unsigned>(k), static_cast<unsigned>(span),
                       static_cast<unsigned>(pair_samples),
                       static_cast<unsigned>(quantum / 1000u));
         }
 
-        tap::diag("quantum %u ns, %u round(s) of %llu quanta with a pinned pair: slice "
+        tap::diag("quantum %u ns, %u round(s) with a pinned pair: slice "
                   "preemptions 0x%x -> 0x%x, wanted 0x%x, already witnessed 0x%x, unproven 0x%x,"
                   " starved 0x%x",
                   static_cast<unsigned>(quantum), static_cast<unsigned>(KICKOS_KERNEL_CORES),
-                  static_cast<unsigned long long>(PL_BURN_QUANTA), static_cast<unsigned>(before),
+                  static_cast<unsigned>(before),
                   static_cast<unsigned>(after), static_cast<unsigned>(want),
                   static_cast<unsigned>(prewitnessed), static_cast<unsigned>(unproven),
                   static_cast<unsigned>(starved));
@@ -1293,6 +1310,8 @@ namespace selftest
                                        "spread", 12);
             if (not w[i].valid())
             {
+                tap::diag("the crowd stopped at %u of %u, create %d", made, PL_CROWD,
+                          w[i].error());
                 break;
             }
             made++;

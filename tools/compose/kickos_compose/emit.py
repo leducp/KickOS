@@ -127,11 +127,12 @@ def emit(path, manifest_path):
     return report, render(table, os.path.basename(path), path)
 
 
-def emit_system(path, manifest_path, output="table.c", partition=None):
+def emit_system(path, manifest_path, output="table.c", partition=None, name=None):
     """(the Report, None once refused, or the (C source, asserts script, CMake fragment, gate C source
-    or None) a system target is built from); `output` is the name the C source is compiled under.
-    With `partition`, the node compositions in node order, the composition is the one at this
-    build's node index, admitted with every other."""
+    or None) a system target is built from); `output` is the name the C source is compiled under,
+    and `name`, where given, the name the emitted files cite the composition by. With `partition`,
+    the node compositions in node order, the composition is the one at this build's node index,
+    admitted with every other."""
     if partition is not None:
         report, found = admit_partition(partition, manifest_path, node_of(manifest_path))
         if found is None:
@@ -153,7 +154,9 @@ def emit_system(path, manifest_path, output="table.c", partition=None):
     gate = None
     if emits_gate(admitted.manifest, admitted.chip):
         gate = render_gate(rows, source)
-    return report, (render(table, source, path, output), render_asserts(admitted, path),
+    if name is None:
+        name = path
+    return report, (render(table, source, name, output), render_asserts(admitted, name),
                     render_fragment(admitted, table, source, gate is not None), gate)
 
 
@@ -398,8 +401,12 @@ def build(admitted):
 
     for path, region in admitted.shared.items():
         size = region_size(region.size, admitted.chip, admitted.cluster, manifest)
-        table.regions.append(RegionEntry(pool.add(path), size, region.cache == "uncached",
-                                         admitted.offsets.get(path)))
+        offset = None
+        if region.partition:
+            if path not in admitted.offsets:
+                raise ValueError("partition region `%s` was never placed in the user share" % path)
+            offset = admitted.offsets[path]
+        table.regions.append(RegionEntry(pool.add(path), size, region.cache == "uncached", offset))
     return table
 
 

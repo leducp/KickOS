@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800/USIC0-CH1 SSC silicon validation through the SPI class <kickos/driver/spi.h>, run by the
-// task's entry over the grants its composition hands it. Built BOTH WAYS from this one source: with
-// KICKOS_SPI_LOCAL (KICKOS_SPI_LOCAL_ENGINE=ON) the client owns the channel window and its line and
-// links the local engine, otherwise the same calls marshal onto the packaged xmcssc service
-// endpoint. The data path is the engine's internal loop-back (DX0 = own transmitter), so every byte
-// echoes with no external SPI device on the bench.
+// task's entry over the grants its composition hands it. Built BOTH WAYS from this one source: in
+// `xmcssc_local` (XMCSSC_LOCAL) the client owns the channel window and its line and links the local
+// engine, and in `xmcssc` the same calls marshal onto the packaged xmcssc service endpoint. The
+// data path is the engine's internal loop-back (DX0 = own transmitter), so every byte echoes with
+// no external SPI device on the bench.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -27,7 +27,7 @@ namespace
     // The single device on the bench's bus; a slot is per device and stays < KOS_BUS_DEV_MAX.
     constexpr uint8_t SPI_SLOT = 0u;
 
-#if KICKOS_SPI_LOCAL
+#if XMCSSC_LOCAL
     constexpr uint32_t U0C1_WINDOW = 0x200u;
 #endif
 
@@ -178,7 +178,7 @@ extern "C" void xmcssc_main(kos_self_t const* self)
 {
     struct kos_spi_bus_config bcfg;
     bcfg.notify_bit = 0;
-#if KICKOS_SPI_LOCAL
+#if XMCSSC_LOCAL
     // The client owns the channel: the window and the USIC0 line its composition grants, and a
     // notification it binds the line to.
     kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");

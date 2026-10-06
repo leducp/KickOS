@@ -26,9 +26,12 @@ devices:
     window: [0x40198000, 0x4000]
     ref: "Table 3-3 AIPS-2 memory map, p.38"
     lines: { irq: { number: 25, ref: "Table 4-2 CM7 domain interrupt summary, p.45" } }
-  # The OTG1 core. OTG2 and the non-core block share its slot and stay the kernel's.
+  # The OTG1 core. OTG2 and the non-core block share its slot and stay the kernel's. A bus
+  # master: it reads its queue heads and moves its transfers through memory itself
+  # (42.5.3.15.2.4 Host System Error, p.2384).
   usb1:
     window: [0x402E0000, 0x200]
+    bus_master: true
     ref: "42.7 USB Core Memory Map/Register Definition, p.2433"
     lines: { irq: { number: 113, symbol: USB_OTG1_IRQ, ref: "Table 4-2 CM7 domain interrupt summary, p.48" } }
   # Disabled at boot, then grantable.

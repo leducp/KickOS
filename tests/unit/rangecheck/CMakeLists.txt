@@ -42,7 +42,7 @@ kickos_add_kernel_host_lib(kickos_kseam_rangecheck_aspace
   SOURCES ${_rc_kseam}
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
            "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1)
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_
   LIBRARIES kickos_kseam_rangecheck_aspace)

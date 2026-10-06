@@ -23,16 +23,13 @@ elf="${1:?$_usage}"
 outcome="${2:?$_usage}"
 
 case "$outcome" in
-    panic)
-        run_image "$elf"
-        ;;
-    thread-kill)
-        run_image "$elf"
+    panic|thread-kill)
         ;;
     *)
         fail "$_usage"
         ;;
 esac
+run_image "$elf"
 
 if has "ERROR"; then
     fail "rootfault reported a failed setup or control arm"

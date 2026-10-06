@@ -59,7 +59,7 @@
 // Image and reservation records persist; capability mappings release their
 // records on unmap, and thread stacks release theirs at exit.
 #ifndef KICKOS_ASPACE_RANGES
-#define KICKOS_ASPACE_RANGES 64
+#define KICKOS_ASPACE_RANGES 96
 #endif
 // Lifetime arena ownership records for region backends. Exhaustion makes
 // kos_ram_alloc return null; records are not individually freed.

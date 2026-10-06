@@ -238,41 +238,24 @@ function(kickos_emit_image target)
       VERBATIM)
   endif()
 
-  # Espressif chips (Xtensa esp32, RISC-V esp32c6): the raw objcopy .bin is NOT bootable, the
-  # ROM loader needing the Espressif image format that esptool elf2image builds from the ELF.
-  # A missing esptool skips with a message rather than failing the build. Prefer `esptool`,
-  # esptool.py being deprecated in v5.
-  if(KICKOS_CHIP STREQUAL "esp32" OR KICKOS_CHIP STREQUAL "esp32c6")
+  # Where the ROM boots esptool's image format alone (the chip file's `esptool_image`), the raw
+  # objcopy .bin is not bootable. A missing esptool skips with a message rather than failing.
+  if(DEFINED KICKOS_CHIP_ESPTOOL_IMAGE)
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
-    # Our app IS the image at the ROM bootloader offset (0x1000 on esp32), so the
-    # first-stage ROM loads it using the header's flash mode BEFORE any code reconfigures
-    # the SPI pins. esptool's elf2image default is QIO, which the esp32 ROM reads unreliably
-    # from that position: it loads segment 0, then reads a garbage segment-1 header
-    # (`load:0xffffffff,len:-1`) and RTC-WDT reset-loops. Force DIO for esp32.
-    set(_kos_img_mode "")
-    if(KICKOS_CHIP STREQUAL "esp32")
-      set(_kos_img_mode --flash_mode dio)
-    elseif(KICKOS_CHIP STREQUAL "esp32c6")
-      # ESP32-C6: our app is a RAM-only image at flash 0x0 with NO 2nd-stage bootloader, so
-      # the RISC-V ROM loader needs --ram-only-header (which implies --dont-append-digest)
-      # to boot it. A plain elf2image image is loaded but never entered
-      # (`ets_loader.c 67`). DIO for the same reason as esp32: the ROM mis-reads a QIO
-      # header from the boot position and "Checksum failure" reset-loops.
-      set(_kos_img_mode --ram-only-header --dont-append-digest --flash_mode dio)
-    endif()
     if(KICKOS_ESPTOOL)
       add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image ${_kos_img_mode}
+        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image ${KICKOS_CHIP_ESPTOOL_IMAGE}
                 --output $<TARGET_FILE_DIR:${target}>/${target}.app.bin
                 $<TARGET_FILE:${target}>
         BYPRODUCTS ${target}.app.bin
         COMMENT "esptool elf2image -> ${target}.app.bin (bootable ${KICKOS_CHIP} image)"
         VERBATIM)
     else()
+      list(JOIN KICKOS_CHIP_ESPTOOL_IMAGE " " _kos_img_options)
       message(STATUS "KickOS: esptool not found: ${target}.app.bin (bootable "
         "${KICKOS_CHIP} image) not produced. Activate the esp-idf env, or run: "
-        "esptool --chip ${KICKOS_CHIP} elf2image --output ${target}.app.bin <elf>  "
-        "(the raw ${target}.bin is NOT bootable).")
+        "esptool --chip ${KICKOS_CHIP} elf2image ${_kos_img_options} --output ${target}.app.bin "
+        "<elf>  (the raw ${target}.bin is NOT bootable).")
     endif()
   endif()
 endfunction()
@@ -426,22 +409,6 @@ function(kickos_add_driver name)
   target_include_directories(kickos_${name} PRIVATE "${_declared_dir}")
 endfunction()
 
-# ---------------------------------------------------------------------------
-# kickos_is_board(<board> <out>)
-#   Whether the name names a board at all, which is a different question from whether that
-#   board has an emulator. In tree the descriptor is the authority; an installed package ships
-#   no boards/ tree, so the one board it was built for is the only name it can vouch for.
-# ---------------------------------------------------------------------------
-function(kickos_is_board board out)
-  if(EXISTS "${KICKOS_BOARDS_DIR}/${board}/board.cmake")
-    set(${out} TRUE PARENT_SCOPE)
-  elseif(NOT KICKOS_IN_TREE AND board STREQUAL "${KICKOS_BOARD}")
-    set(${out} TRUE PARENT_SCOPE)
-  else()
-    set(${out} FALSE PARENT_SCOPE)
-  endif()
-endfunction()
-
 # The processor every x86_64 emulation runs, the application gates and the boot witnesses
 # alike: qemu64, which is below the floor, plus the features x86-64-v3 requires
 # (arch/x86/x86_64/floor_x86_64.cc). It reaches both runners as KICKOS_X86_64_CPU.
@@ -455,139 +422,59 @@ set(KICKOS_X86_64_QEMU_CPU
 
 # ---------------------------------------------------------------------------
 # kickos_qemu_machine(<board> <out_env> <out_machine>)
-#   This is the ONE board -> machine map, and the sole answer to "can this board be booted in
-#   this environment": out_machine comes back EMPTY for a board with no emulator, and the
-#   configure stops for a name that is no board.
-#     qemu       -> mps2-an386  (Cortex-M4F)
-#     qemu-m33   -> mps2-an505  (Cortex-M33, PMSAv8)
-#     qemu-m7    -> mps2-an500  (Cortex-M7)
-#     qemu-m3    -> mps2-an385  (Cortex-M3, soft-float)
-#     microbit   -> microbit    (armv6m Cortex-M0)
-#     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
-#                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
-#     qemu-riscv64 -> virt, plus QEMU=qemu-system-riscv64 QEMU_EXTRA=-bios none
-#                   (RV64IMAC bare metal, no OpenSBI).
-#     qemu-arm64 -> virt, plus QEMU=qemu-system-aarch64 QEMU_EXTRA=-cpu cortex-a53 -nic none
-#                   (AArch64 bare metal at EL1), and virt,gic-version=3 under that posture.
-#     qemu-x86_64 -> q35, plus QEMU=qemu-system-x86_64 and KICKOS_BOOT=uefi-pe, which is
-#                   what makes gate.sh build an EFI system partition and boot OVMF instead
-#                   of passing -kernel (the image is a PE32+ application, which -kernel
-#                   cannot start at all).
+#   The emulator the configured board's board file states (its `emulator`, which chip.cmake
+#   carries), as the environment a gate runs under and the QEMU machine: out_machine comes back
+#   EMPTY for a board no emulator runs. <board> must be the configured board.
 #
-#   A caller that has something to SAY about the absence (an operator told to flash and
-#   capture instead) reads the same answer here rather than keeping a board list of its own.
+#   -smp is what makes a multi-core build's cores exist, and under one image per node the
+#   machine's cores and memory are the PARTITION's: sized from KICKOS_NUM_CORES instead, a PSCI
+#   CPU_ON would fail on the one CPU the machine has and its DRAM would end below the region
+#   every node writes.
 # ---------------------------------------------------------------------------
 function(kickos_qemu_machine board out_env out_machine)
-  set(_env "")
-  if(board STREQUAL "qemu-riscv")
-    set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
-    set(_machine virt)
-  elseif(board STREQUAL "qemu-riscv64")
-    # No -cpu: qemu-system-riscv64 -M virt defaults to the `rv64` generic core.
-    # -smp is what MAKES the harts exist, and with no firmware every one of them enters _start:
-    # the park in startup.S is what holds all but the boot hart there.
-    set(_smp "")
-    if(KICKOS_NUM_CORES GREATER 1)
-      set(_smp " -smp ${KICKOS_NUM_CORES}")
-    endif()
-    set(_env QEMU=qemu-system-riscv64 "QEMU_EXTRA=-bios none${_smp}")
-    set(_machine virt)
-  elseif(board STREQUAL "qemu-arm64")
-    # -cpu is required: qemu-system-aarch64 -M virt comes up as a cortex-a15 and REFUSES an
-    # A64 image. `-bios none` errors here, there being no firmware to suppress. -nic none
-    # drops the default virtio-net-pci, whose option ROM ships in a separate distro package
-    # QEMU aborts without.
-    # -smp is what MAKES the cores exist: PSCI CPU_ON answers INVALID_PARAMETERS for a core
-    # the machine was not given, so a multi-core image on a one-core machine refuses at boot.
-    # Under one image per node the machine geometry is the PARTITION's: sized from
-    # KICKOS_NUM_CORES instead, the machine would have one CPU for a PSCI CPU_ON to fail on and
-    # its DRAM would end below the region every node writes.
-    set(_smp "")
-    set(_mem "")
-    if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-      set(_smp " -smp ${KICKOS_AMP_PARTITION_CORES}")
-      math(EXPR _part_mib
-           "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
-      set(_mem " -m ${_part_mib}M")
-    elseif(KICKOS_NUM_CORES GREATER 1)
-      set(_smp " -smp ${KICKOS_NUM_CORES}")
-    endif()
-    set(_env QEMU=qemu-system-aarch64 "QEMU_EXTRA=-cpu cortex-a53 -nic none${_smp}${_mem}")
-    # -M virt defaults to a GICv2, so the GICv3 posture has to ask for the model it is built
-    # against: an image whose CPU interface is the ICC_* registers finds none on a GICv2
-    # machine and traps on the first access.
-    set(_machine virt)
-    if(KICKOS_ARM64_GIC_VERSION EQUAL 3)
-      set(_machine "virt,gic-version=3")
-    endif()
-  elseif(board STREQUAL "imx8mp-evk")
-    # No -cpu and no gic-version: the machine fixes both, being a model of a die rather than a
-    # configurable board.
-    # -m bounds the machine's DDR window, which defaults to the EVK's 6 GiB and is mapped
-    # lazily; the linker script carves 64 MiB of it, so this is headroom rather than a fit.
-    set(_env QEMU=qemu-system-aarch64 QEMU_EXTRA=-m\ 512M)
-    set(_machine imx8mp-evk)
-  elseif(board STREQUAL "microbit")
-    # QEMU's nRF51 SoC exposes SRAM size as a QOM property and -m is ignored by a fixed-SoC
-    # machine, so an image linked for the chip's real SRAM without this locks up on its first
-    # push, before any vector table is live, as "can't escalate 3 to HardFault". The figure is
-    # the RAM link region chip.cmake carries, so it cannot drift from what the image was
-    # linked for. Only the configured board's chip facts are at hand: asked for another
-    # board, this answers its machine alone.
-    if(board STREQUAL KICKOS_BOARD)
-      if(NOT DEFINED KICKOS_CHIP_LINK_RAM_LENGTH)
-        message(FATAL_ERROR "kickos_qemu_machine: the chip file states no RAM link region to "
-          "size the microbit QEMU sram-size from")
-      endif()
-      math(EXPR _nrf51_sram_bytes "${KICKOS_CHIP_LINK_RAM_LENGTH}" OUTPUT_FORMAT DECIMAL)
-      set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=${_nrf51_sram_bytes})
-    endif()
-    set(_machine microbit)
-  elseif(board STREQUAL "qemu")
-    set(_machine mps2-an386)
-  elseif(board STREQUAL "qemu-m33")
-    set(_machine mps2-an505)
-  elseif(board STREQUAL "qemu-m7")
-    set(_machine mps2-an500)
-  elseif(board STREQUAL "qemu-m3")
-    set(_machine mps2-an385)
-  elseif(board STREQUAL "qemu-x86_64")
-    # tests/lib/gate.sh builds the firmware, the writable variable store and the EFI system
-    # partition per run: the shipped OVMF variable store is root-owned, and an ESP has to be
-    # made from the image under test or a stale BOOTX64.EFI boots and prints the same banner.
-    # -smp is what makes the application processors exist, and q35 SMP refuses to start without
-    # x2APIC, which qemu64 does not advertise.
-    set(_env QEMU=qemu-system-x86_64 KICKOS_BOOT=uefi-pe)
-    set(_cpu "${KICKOS_X86_64_QEMU_CPU}")
-    if(KICKOS_NUM_CORES GREATER 1)
-      string(APPEND _cpu ",+x2apic")
-      list(APPEND _env "QEMU_EXTRA=-smp ${KICKOS_NUM_CORES}")
-    endif()
-    list(APPEND _env "KICKOS_X86_64_CPU=${_cpu}")
-    set(_machine q35)
-  else()
-    # No emulator for this board. NOT the caller's problem, so the answer is an empty machine
-    # rather than a refusal: an app gate reads as "this gate rides this target" with no board
-    # predicate wrapped round it. A name that is no board AT ALL still stops the configure,
-    # so a typo cannot vanish into that silence.
-    kickos_is_board("${board}" _known)
-    if(NOT _known)
-      message(FATAL_ERROR "kickos_qemu_machine: '${board}' names no board (no "
-        "${KICKOS_BOARDS_DIR}/${board}/board.cmake, and it is not the board this package was "
-        "built for)")
-    endif()
-    # BOTH out-parameters, or a caller looping over boards keeps the previous board's answer.
+  if(NOT board STREQUAL KICKOS_BOARD)
+    message(FATAL_ERROR "kickos_qemu_machine: answers for the configured board '${KICKOS_BOARD}', "
+      "not '${board}'")
+  endif()
+  if("${KICKOS_QEMU_MACHINE}" STREQUAL "")
     set(${out_env} "" PARENT_SCOPE)
     set(${out_machine} "" PARENT_SCOPE)
     return()
+  endif()
+  set(_machine "${KICKOS_QEMU_MACHINE}")
+  if(KICKOS_ARM64_GIC_VERSION EQUAL 3 AND NOT "${KICKOS_QEMU_GICV3_MACHINE}" STREQUAL "")
+    set(_machine "${KICKOS_QEMU_GICV3_MACHINE}")
+  endif()
+  set(_extra ${KICKOS_QEMU_OPTIONS})
+  if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+    math(EXPR _part_mib
+         "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
+    list(APPEND _extra -smp ${KICKOS_AMP_PARTITION_CORES} -m ${_part_mib}M)
+  elseif(KICKOS_NUM_CORES GREATER 1)
+    list(APPEND _extra -smp ${KICKOS_NUM_CORES})
+  endif()
+  set(_env "QEMU=${KICKOS_QEMU_BINARY}")
+  if(_extra)
+    list(JOIN _extra " " _extra)
+    list(APPEND _env "QEMU_EXTRA=${_extra}")
+  endif()
+  if(KICKOS_ARCH STREQUAL "x86_64")
+    # tests/lib/gate.sh builds the firmware, the writable variable store and the EFI system
+    # partition per run, the image being a PE32+ application -kernel cannot start. q35 SMP
+    # refuses to start without x2APIC, which qemu64 does not advertise.
+    set(_cpu "${KICKOS_X86_64_QEMU_CPU}")
+    if(KICKOS_NUM_CORES GREATER 1)
+      string(APPEND _cpu ",+x2apic")
+    endif()
+    list(APPEND _env KICKOS_BOOT=uefi-pe "KICKOS_X86_64_CPU=${_cpu}")
   endif()
   set(${out_env} "${_env}" PARENT_SCOPE)
   set(${out_machine} "${_machine}" PARENT_SCOPE)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_qemu_test([NAME <n>] TARGET <app> [BOARD <b>] SCRIPT <sh>
-#                      [MACHINE <m>] [TIMEOUT <s>] [ARGS <arg...>])
+# kickos_add_qemu_test([NAME <n>] TARGET <app> SCRIPT <sh>
+#                      [MACHINE <m>] [BOOTS <n>] [WORK <s>] [ARGS <arg...>])
 #   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77 as SKIP (a
 #   missing qemu-system is a skip, not a failure).
 #
@@ -596,29 +483,25 @@ endfunction()
 #   about the CLAIM rather than about the emulator: an arch, an MPU posture, a core count, or
 #   the existence of the target this gate rides.
 #
-#   BOARD defaults to KICKOS_BOARD, which is the board every in-tree gate means.
 #   NAME defaults to <board tag>_<target>, the board name with `-` turned into `_`; state it
 #   explicitly where the ctest name is not that (one target carrying several gates, or one
 #   gate whose name is the claim rather than the image).
 #   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
 #   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
 #   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
-#   TIMEOUT defaults to 60s.
+#   BOOTS and WORK size the TIMEOUT, see kickos_qemu_timeout.
 #   TARGET names an app target, whose image is $<TARGET_FILE:>.
 # ---------------------------------------------------------------------------
 function(kickos_add_qemu_test)
-  cmake_parse_arguments(QT "" "NAME;TARGET;BOARD;SCRIPT;MACHINE;TIMEOUT" "ARGS" ${ARGN})
+  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK" "ARGS" ${ARGN})
   if(NOT QT_TARGET OR NOT QT_SCRIPT)
     message(FATAL_ERROR "kickos_add_qemu_test: TARGET and SCRIPT are required")
   endif()
-  if(NOT QT_BOARD)
-    set(QT_BOARD "${KICKOS_BOARD}")
-  endif()
   if(NOT QT_NAME)
-    string(REPLACE "-" "_" _tag "${QT_BOARD}")
+    string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
     set(QT_NAME "${_tag}_${QT_TARGET}")
   endif()
-  kickos_qemu_machine("${QT_BOARD}" _env _machine)
+  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine)
   if(_machine STREQUAL "")
     return()
   endif()
@@ -629,10 +512,56 @@ function(kickos_add_qemu_test)
   add_test(NAME "${QT_NAME}"
     COMMAND "${CMAKE_COMMAND}" -E env ${_env}
             "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
-  if(NOT QT_TIMEOUT)
-    set(QT_TIMEOUT 60)
+  set_tests_properties("${QT_NAME}" PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_qemu_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK})
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_qemu_timeout(<test> <script> [BOOTS <n>] [WORK <s>])
+#   Register the TIMEOUT of a test booting the configured board's emulator as the charge
+#   tests/lib/gate.sh's boot_bound puts on its boots, plus one second, so that charge can refuse
+#   only a test whose BOOTS is miscounted. Each boot is bounded at the QEMU_TIMEOUT this
+#   configure sees, else at <script>'s own default, else at run_image's, and carries gate.sh's
+#   firmware allowance under uefi-pe and its stop. A ctest run under another QEMU_TIMEOUT needs
+#   a reconfigure.
+#
+#   BOOTS (default 1) counts the boots gate.sh charges, those of a script <script> runs
+#   included. WORK is what the test spends beside them, such as building the image it boots.
+# ---------------------------------------------------------------------------
+function(kickos_qemu_timeout test script)
+  cmake_parse_arguments(QB "" "BOOTS;WORK" "" ${ARGN})
+  if(NOT DEFINED QB_BOOTS)
+    set(QB_BOOTS 1)
   endif()
-  set_tests_properties("${QT_NAME}" PROPERTIES TIMEOUT ${QT_TIMEOUT} SKIP_RETURN_CODE 77)
+  if(NOT DEFINED QB_WORK)
+    set(QB_WORK 0)
+  endif()
+  set(_lib "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tests/lib/gate.sh")
+  set(_default_re "(^: |boot_bound )\"\\$\\{QEMU_TIMEOUT:[-=][0-9]+\\}\"")
+  set(_bound "$ENV{QEMU_TIMEOUT}")
+  if(_bound STREQUAL "")
+    file(STRINGS "${script}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
+  endif()
+  if(_bound STREQUAL "")
+    file(STRINGS "${_lib}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
+  endif()
+  string(REGEX REPLACE "^.*QEMU_TIMEOUT:[-=]([0-9]+)}\"$" "\\1" _bound "${_bound}")
+  file(STRINGS "${_lib}" _firmware REGEX "^KOS_UEFI_FIRMWARE_S=[0-9]+$")
+  file(STRINGS "${_lib}" _ticks REGEX "^KOS_STOP_TICKS=[0-9]+$")
+  string(REPLACE "KOS_UEFI_FIRMWARE_S=" "" _firmware "${_firmware}")
+  string(REPLACE "KOS_STOP_TICKS=" "" _ticks "${_ticks}")
+  foreach(_n IN ITEMS _bound _firmware _ticks)
+    if(NOT "${${_n}}" MATCHES "^[0-9]+$")
+      message(FATAL_ERROR "kickos_qemu_timeout(${test}): ${_n} reads '${${_n}}', not whole "
+        "seconds, from QEMU_TIMEOUT, ${script} or ${_lib}")
+    endif()
+  endforeach()
+  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine)
+  if(NOT "KICKOS_BOOT=uefi-pe" IN_LIST _env)
+    set(_firmware 0)
+  endif()
+  math(EXPR _timeout "${QB_WORK} + ${QB_BOOTS} * (${_bound} + ${_firmware} + ${_ticks} / 5) + 1")
+  set_tests_properties("${test}" PROPERTIES TIMEOUT ${_timeout})
 endfunction()
 
 # ---------------------------------------------------------------------------

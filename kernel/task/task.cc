@@ -11,6 +11,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/notify.h>
+#include <kickos/ramown.h>
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 

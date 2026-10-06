@@ -12,6 +12,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
+#include <kickos/ramown.h>
 #include <kickos/task.h>
 #include <kickos/reent.h>
 #include <kickos/tls.h>
@@ -296,23 +297,109 @@ namespace kickos
             return fitted;
         }
 
-#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
-        // Out of seat_windows and noinline: thread_create's other callees are the deeper chain.
-        __attribute__((noinline)) void sync_windows(Thread const* t)
+    }
+
+#if KICKOS_MEMORY_ENFORCED and not KICKOS_HAVE_ASPACE
+    bool stack_type_free(uintptr_t base, size_t size, kos_window const* list, uint16_t n)
+    {
+        uintptr_t const last = base + size - 1u;
+        if (not memory_type_free(base, size, ARCH_MPU_R | ARCH_MPU_W, nullptr))
         {
-            for (uint32_t place = 0; place < KICKOS_MAX_THREAD_WINDOWS; place++)
+            return false;
+        }
+        for (uint16_t i = 0; i < n; i++)
+        {
+            kos_window const& w = list[i];
+            if (w.kind == KOS_WINDOW_MEMORY
+                and (window_memory_attr(w.flags) & ARCH_MPU_NOCACHE) != 0
+                and grant_ranges_overlap(base, last, w.base,
+                                         w.base + arch_ram_region_size(w.size) - 1u))
             {
-                uint8_t flags = 0;
-                arch_mpu_region const* const r = t->mpu.window(place, &flags);
-                if (r != nullptr
-                    and (r->attr & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) == ARCH_MPU_NOCACHE)
-                {
-                    alias_sync(reinterpret_cast<void const*>(r->base), r->size);
-                }
+                return false;
             }
         }
-#endif
+        return true;
     }
+#endif
+
+#if not KICKOS_HAVE_ASPACE
+    // `c` holds memory authority.
+    int thread_self_grant(Thread* c, uintptr_t base, size_t size, uint32_t attr)
+    {
+        // Admitted at the extent the descriptor commits: a window rounded up after admission
+        // could cover a neighbour the request did not.
+        size_t const rsz = arch_ram_region_size(size);
+        if (rsz == 0)
+        {
+            return -KOS_EINVAL;
+        }
+        // Nameable by one descriptor: PMSAv7's MPU_RBAR masks the base down to the region
+        // size, so an unaligned base would start the window below what the caller named.
+        if (not arch_ram_region_admissible(base, rsz))
+        {
+            return -KOS_EINVAL;
+        }
+        if (not grant_region_admissible(base, rsz, attr, true))
+        {
+            return -KOS_EPERM;
+        }
+        // Rule 7 bounds the arena, not who inside it reserved what: a sibling task's block
+        // is in-arena too.
+        if (not ram_owner_nameable(c->task, base, size))
+        {
+            return -KOS_EPERM;
+        }
+        // Another thread holding the block with another memory type keeps it: a window
+        // over it, or a sibling's grant.
+        if (not memory_type_free(base, rsz, attr, c))
+        {
+            return -KOS_EBUSY;
+        }
+        grant_sync(&c->mpu, base, rsz, attr);
+        // Retyped in place: two overlapping descriptors of one block would conflict.
+        if (not c->mpu.add_enforced_retyping(base, rsz, attr))
+        {
+            return -KOS_ENOMEM;
+        }
+        // Must be effective BEFORE the return: the caller's next instruction may
+        // dereference the region, and on a deferred-switch arch apply() only STASHES.
+        // apply_now and NOT apply plus commit: a switch to another thread may already be
+        // pended, and the pair would leave its epilogue the caller's image to program.
+        c->mpu.apply_now();
+        return 0;
+    }
+#endif
+
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+    __attribute__((noinline)) void thread_region_sync(Thread const* t)
+    {
+        for (uint32_t place = 0; place < KICKOS_MAX_THREAD_WINDOWS; place++)
+        {
+            uint8_t flags = 0;
+            arch_mpu_region const* const r = t->mpu.window(place, &flags);
+            if (r != nullptr)
+            {
+                grant_sync(nullptr, r->base, r->size, r->attr);
+            }
+        }
+        // A non-cacheable data region was synced when its task was created, and owes nothing
+        // per member.
+        Domain const* const d = task_domain(t->task);
+        if (d != nullptr and d != domain_kernel() and domain_region_count(d) != 0)
+        {
+            arch_mpu_region const* const r = domain_region_at(d, 0);
+            if ((r->attr & ARCH_MPU_NOCACHE) == 0)
+            {
+                grant_sync(nullptr, r->base, r->size, r->attr);
+            }
+        }
+        if (t->stack_base != nullptr and t->stack_size != 0)
+        {
+            grant_sync(nullptr, reinterpret_cast<uintptr_t>(t->stack_base),
+                       arch_ram_region_size(t->stack_size), ARCH_MPU_R | ARCH_MPU_W);
+        }
+    }
+#endif
 
     // Code, static data, the task's data region and the stack come first.
     static_assert(KICKOS_MAX_THREAD_WINDOWS + 4 <= KICKOS_MPU_MAX_REGIONS,
@@ -327,6 +414,9 @@ namespace kickos
         kmemset(t, 0, sizeof(*t));
 #if KICKOS_KERNEL_CORES > 1
         thread_slot_restore(t, keep);
+#endif
+#if KICKOS_PRESYNC
+        presync_fresh(t);
 #endif
         // Must follow the kmemset, which would otherwise zero the chunk directory AND the
         // free-list head the caller already reserved and threaded.
@@ -431,7 +521,7 @@ namespace kickos
         {
             fitted = seat_windows(t, attr) and fitted;
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
-            sync_windows(t);
+            thread_region_sync(t);
 #endif
         }
         if (wants_stack)

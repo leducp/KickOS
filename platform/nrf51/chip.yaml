@@ -5,7 +5,7 @@
 
 version: 1
 chip: nrf51
-manual: "QEMU 11.1 `microbit` machine (hw/arm/nrf51_soc.c), nRF51822 QFAC"
+manual: "nRF51 Series Reference Manual v3.0 and nRF51822 Product Specification v3.4 (QFAC); the emulated machine QEMU 11.1 `microbit` (hw/arm/nrf51_soc.c)"
 arch: armv6m
 # The Cortex-M0 has no MPU, and no unprivileged mode: every thread runs privileged.
 protection: { unit: none, privilege: false }

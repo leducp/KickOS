@@ -40,7 +40,8 @@ has '\[simcon\] driver up (host fd 1)' \
 if has 'kos::print diagnostic'; then
     fail "the kernel debug console is STILL live: no real handover, so this gate proved nothing"
 fi
-has '^# tap route: stdout endpoint' || fail "TAP did not take the published endpoint route"
+has_f "# tap route: stdout endpoint -> console driver (the composition's stdout)" \
+  || fail "TAP did not take the published endpoint route"
 
 # The stream verdict is check_tap_stream.sh's, so plan against case count against expected
 # arms, the completion marker and the by-name permission sets stay in one place.

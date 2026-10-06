@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[testusic] driver up (polled TX)
+[conreclaim] writing through the test console driver
+[testusic] scrambling the channel, its clock gated last
+
+KERNEL PANIC: [conreclaim] PASS: the dead channel came back

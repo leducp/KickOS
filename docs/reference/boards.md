@@ -45,7 +45,7 @@ link within 1,700 bytes of one another -- each link prints its own `size` line, 
 and by how much is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` and
-`selftest_p2` to `selftest_p9`: see *The selftest ships as SEVERAL images on five boards* below.
+`selftest_p2` to `selftest_p9`: see *The selftest ships as SEVERAL images on six boards* below.
 
 ### Recommended: `microbit` is exactly this tier
 
@@ -107,7 +107,7 @@ code wins, then this file.
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
-| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on six boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
@@ -402,6 +402,13 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     And the timeout code 124 is never overridden, so an image killed for making no progress reads as
     killed whatever it printed before the kill. Without the line no arm asserting a status of 128 or
     more could run here.
+  - **COM1 is a port aperture, and the kernel keeps writing it.** The console's 16550 at `0x3f8` is
+    a device the task its composition names `stdout` holds (`com1` in `../../platform/q35/chip.yaml`),
+    and the kernel still writes it directly, without a handover, through `com1_putc`: the boot
+    banner before any task holds it, and `arch_shutdown`'s exit line and a panic's report whatever
+    holds it then. q35 keeps the no-op `arch_console_reclaim`, so nothing restores the device
+    first: a holder that reprogrammed the divisor, the line control or the FIFO garbles those
+    lines, and the exit line's status recovery above then refuses the run.
   - **The chip selects no memory family, so the map is flat.** An unprivileged thread on this board
     can read and write kernel memory. What it cannot do is reach a device register, execute a
     privileged instruction, touch a port, raise its own privilege level or write the MSR the syscall
@@ -1009,17 +1016,17 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### The selftest ships as SEVERAL images on five boards
+### The selftest ships as SEVERAL images on six boards
 
 `bluepill-c8`, `f302nucleo`, `microbit`, the ENFORCING and own-image AMP `esp32c6-wroom`
-variants and every `esp32-wroom` bench build. The condition
-is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three (`stm32f103`,
-`stm32f302`, `nrf51`), the chip plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE` for `esp32c6`,
-whose flat variant carves no code window and stays one image, and the chip plus `KICKOS_BENCH`
-for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
+variants, the ENFORCING `xmc4800-relax` variants and every `esp32-wroom` bench build. The
+condition is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three
+(`stm32f103`, `stm32f302`, `nrf51`), the chip plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE`
+for `esp32c6`, whose flat variant carves no code window and stays one image, the chip plus
+`KICKOS_HAVE_MPU` for `xmc4800`, and the chip plus `KICKOS_BENCH` for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
 the arms between them.
 
-**FIVE BOARDS, FOUR DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
+**SIX BOARDS, FIVE DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
 registration list into TEN regions; each image carries a contiguous RUN of them and elides the
 rest, so the number of images is what varies by board and the cut points do not. Each board's cut
 is `_selftest_firsts` in `user/apps/common/selftest/CMakeLists.txt`, the first region of each
@@ -1027,6 +1034,10 @@ image. The two STM32 parts take NINE images, one region each and the last carryi
 10, because 64 KiB of FLASH holds only a slice of the suite. `microbit` takes FIVE (regions 1-4,
 5-6, 7-8, 9, 10). `esp32c6` takes FIVE on the enforcing bench variant (1-2, 3-4, 5-6, 7-9, 10)
 and FOUR on the enforcing or own-image AMP variants (1-4, 5-6, 7-9, 10).
+An enforcing `xmc4800-relax` build takes TWO, regions 1 to 8 and 9 to 10: its thread arena is
+the 56 KiB between the app window and the kernel stack, the allocator never takes a block back,
+and by region 9 the earlier arms' blocks and the suite's stacks have spent it, so region 9's
+grants and stacks need an image of their own.
 An `esp32-wroom` bench build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
 from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench probes beside a
 console driver or the second core's code put the whole suite past it.
@@ -1439,7 +1450,11 @@ the system. The bank also holds the console's and the reserved pins, and the tas
 `coarse_gate`: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and
 admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture, and
 `tests/integration/check_c6lpprobe.sh` the LP probe's, which runs on the board's default
-composition in the flat build.
+composition in the flat build. `c6txidle` runs there too: it loads a line straight into UART0's
+FIFO, calls `arch_console_flush_sync`, and takes the TX pad from the UART the moment the flush
+returns, so `tests/integration/check_c6txidle.sh` finds the line's last byte whole only where the
+flush waited for the frame; the image also times the wait against the measured frame and reads
+`ST_UTX_OUT` after 10 ms of quiet line.
 
 #### `pizero2350` -- PMSAv8
 

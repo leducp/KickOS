@@ -59,10 +59,21 @@ static_assert(ARMV8A_F_FP % 16 == 0, "the vector bank needs 16-byte alignment fo
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv8a selects ARCH_KERNEL_STACKS_MANDATORY, so the blocks must exist");
 
+// The spawn stages its grant list on the kernel block, and _SYSK holds the list it was measured
+// at (armv8a_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 13,
+              "KICKOS_ARMV8A_TRAP_DEPTH_SYSK was measured at a spawn staging 13 grants on the "
+              "kernel block: re-measure with tests/static/check_trap_redzone.sh first");
+
 // The gate reads KICKOS_ARMV8A_TRAP_NEST as an immediate, so the sum is spelled out there.
 static_assert(KICKOS_ARMV8A_TRAP_NEST == KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_TRAP_DEPTH_IRQ,
               "KICKOS_ARMV8A_TRAP_NEST is an interrupt's frame plus its dispatch");
+static_assert(KICKOS_ARMV8A_TRAP_WINDOW == KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_TRAP_NEST,
+              "KICKOS_ARMV8A_TRAP_WINDOW is the EL0 entry's frame plus an interrupt's extent");
 // The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_ARMV8A_TRAP_WINDOW + KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN,
+              "the kernel block cannot hold an interrupt taken in a system call's window");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_ARMV8A_TRAP_FRAME + KICKOS_ARMV8A_TRAP_DEPTH_SYSK,
               "the kernel block cannot hold the EL0 synchronous entry plus its canary word");
@@ -666,6 +677,32 @@ void kickos_armv8a_irq(void)
     depth++;
     kickos_armv8a_gic_dispatch();
     depth--;
+}
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Per core, each written by its own core with interrupts masked.
+static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
+
+uint32_t arch_irq_windows(void)
+{
+    uint32_t sum = 0;
+    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
+    {
+        sum += n.load();
+    }
+    return sum;
+}
+#endif
+
+// The ISB takes an interrupt already signalled to the PE before the re-mask; one still on its
+// way from the controller may wait for a later window.
+void arch_irq_window(void)
+{
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
+    mine.store(mine.load() + 1u);
+#endif
+    __asm volatile("msr daifclr, #2\n\tisb\n\tmsr daifset, #2" ::: "memory");
 }
 
 // --- Idle -------------------------------------------------------------------

@@ -14,8 +14,7 @@ endif()
 if(KICKOS_KERNEL_CORES GREATER 1)
   kickos_add_qemu_test(NAME ${_tag}_bench_percore TARGET bench
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_percore.sh"
-    ARGS ${KICKOS_KERNEL_CORES}
-    TIMEOUT 240)
+    ARGS ${KICKOS_KERNEL_CORES})
   if(TEST ${_tag}_bench_percore)
     set_tests_properties(${_tag}_bench_percore PROPERTIES RUN_SERIAL TRUE)
   endif()
@@ -27,8 +26,7 @@ kickos_host_gate(${_tag}_bench_percore_controls)
 
 # Check phase-table completeness at every core count.
 kickos_add_qemu_test(NAME ${_tag}_bench_phase_table TARGET bench
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_phase_table.sh"
-  TIMEOUT 240)
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_phase_table.sh")
 if(TEST ${_tag}_bench_phase_table)
   set_tests_properties(${_tag}_bench_phase_table PROPERTIES RUN_SERIAL TRUE)
 endif()
@@ -77,8 +75,7 @@ endif()
 # Check outermost lock sampling at every core count; WAIT exists only on SMP.
 kickos_add_qemu_test(NAME ${_tag}_bench_lock TARGET bench
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_lock.sh"
-  ARGS ${KICKOS_KERNEL_CORES}
-  TIMEOUT 300)
+  ARGS ${KICKOS_KERNEL_CORES})
 if(KICKOS_KERNEL_CORES GREATER 1)
   # Run serially to avoid host contention during the sweep.
   if(TEST ${_tag}_bench_lock)
@@ -94,8 +91,7 @@ kickos_host_gate(${_tag}_bench_lock_controls)
 if(KICKOS_KERNEL_CORES GREATER 1)
   kickos_add_qemu_test(NAME ${_tag}_bench_doorbell TARGET bench
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_doorbell.sh"
-    ARGS ${KICKOS_KERNEL_CORES}
-    TIMEOUT 300)
+    ARGS ${KICKOS_KERNEL_CORES})
   if(TEST ${_tag}_bench_doorbell)
     set_tests_properties(${_tag}_bench_doorbell PROPERTIES RUN_SERIAL TRUE)
   endif()
@@ -108,8 +104,7 @@ kickos_host_gate(${_tag}_bench_doorbell_controls)
 # Kernel-core count determines whether the cross-core IRQ row exists.
 kickos_add_qemu_test(NAME ${_tag}_bench_irqspan TARGET bench
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_irqspan.sh"
-  ARGS ${KICKOS_KERNEL_CORES}
-  TIMEOUT 480)
+  ARGS ${KICKOS_KERNEL_CORES})
 if(TEST ${_tag}_bench_irqspan)
   set_tests_properties(${_tag}_bench_irqspan PROPERTIES RUN_SERIAL TRUE)
 endif()
@@ -123,6 +118,5 @@ kickos_host_gate(${_tag}_bench_irqspan_controls)
 if(TARGET benchauth)
   kickos_add_qemu_test(NAME ${_tag}_benchauth TARGET benchauth
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
-    ARGS benchauth 22
-    TIMEOUT 240)
+    ARGS benchauth 22)
 endif()

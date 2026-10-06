@@ -328,8 +328,9 @@ if "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/mismatch" -G "$GEN" \
 fi
 # A configure can fail for a dozen reasons. One of the plausible ones, a toolchain file that
 # resolves no CPU baseline, names the REQUESTED board too; only the guard names BOTH, so that
-# is the discriminator, and it survives a rewording of the message.
-if ! grep -q "$PKG_BOARD" "$TMP/mismatch.log" || ! grep -q "$OTHER_BOARD" "$TMP/mismatch.log"; then
+# is the discriminator, and it survives a rewording of the message. Each is matched as the guard
+# quotes it, since one board's name can be a part of another's or of a path.
+if ! grep -qF "'$PKG_BOARD'" "$TMP/mismatch.log" || ! grep -qF "'$OTHER_BOARD'" "$TMP/mismatch.log"; then
   fail "the cross-board configure failed without naming both the packaged board \
 ($PKG_BOARD) and the requested one ($OTHER_BOARD), so it failed for some other reason than \
 the single-board guard and this arm witnesses nothing: \

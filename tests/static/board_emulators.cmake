@@ -7,34 +7,50 @@
 #
 # Run as: cmake -DSRC=<repo root> -DBOARDS=<;-list> -DOUT=<file> -P tests/static/board_emulators.cmake
 #
-# The answer comes from kickos_qemu_machine, the one body that maps a board to its emulator,
-# so a sweep cannot disagree with what a ctest registration would spend. A board that boots on
-# silicon emits no line.
+# The answer is the `emulator` of each board's board file, read through the chip.cmake the chip
+# generator writes for it, which is what a configure of that board hands kickos_qemu_machine. A
+# board that boots on silicon emits no line. Requires uv on PATH, as a configure does.
 
 if(NOT DEFINED SRC OR NOT DEFINED OUT OR NOT DEFINED BOARDS)
   message(FATAL_ERROR "board_emulators.cmake needs -DSRC=, -DBOARDS= and -DOUT=")
 endif()
+find_program(_uv uv)
+if(NOT _uv)
+  message(FATAL_ERROR "board_emulators.cmake: uv not found on PATH; the board files are read by tools/compose")
+endif()
+set(_scratch "${OUT}.d")
+file(REMOVE_RECURSE "${_scratch}")
 
-include("${SRC}/cmake/kickos.cmake")
+function(_emulator_of board out)
+  set(_descriptor "${SRC}/boards/${board}/board.cmake")
+  if(NOT EXISTS "${_descriptor}")
+    message(FATAL_ERROR "board_emulators.cmake: '${board}' names no board (no ${_descriptor})")
+  endif()
+  include("${_descriptor}")
+  set(_dir "${_scratch}/${board}")
+  file(MAKE_DIRECTORY "${_dir}/tmp")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "UV_PROJECT_ENVIRONMENT=${_scratch}/venv" UV_PYTHON_DOWNLOADS=never
+            "PYTHONPATH=${SRC}/tools/compose" PYTHONDONTWRITEBYTECODE=1 "TMPDIR=${_dir}/tmp"
+            "${_uv}" run --project "${SRC}/tools/compose" --locked --quiet
+            python -m kickos_compose chip "${SRC}/platform/${KICKOS_CHIP}/${board}.yaml" --arch "${KICKOS_ARCH}"
+            --include-dir "${_dir}/include" --chip-dir "${_dir}"
+    RESULT_VARIABLE _rc ERROR_VARIABLE _err OUTPUT_VARIABLE _out)
+  if(NOT _rc STREQUAL "0")
+    message(FATAL_ERROR "board_emulators.cmake: the chip generator failed on board '${board}' (${_rc}):\n${_out}${_err}")
+  endif()
+  include("${_dir}/chip.cmake")
+  set(${out} "${KICKOS_QEMU_BINARY}" PARENT_SCOPE)
+endfunction()
 
 set(_lines "")
 foreach(_board IN LISTS BOARDS)
-  kickos_qemu_machine("${_board}" _env _machine)
-  set(_emu "")
-  foreach(_kv IN LISTS _env)
-    if(_kv MATCHES "^QEMU=(.+)$")
-      set(_emu "${CMAKE_MATCH_1}")
-    endif()
-  endforeach()
-  # A machine with no QEMU= in its env is an arm one: qemu-system-arm is the default the
-  # gate runner falls back to, and only the boards needing another binary name it.
-  if(_emu STREQUAL "" AND NOT _machine STREQUAL "")
-    set(_emu qemu-system-arm)
-  endif()
+  _emulator_of("${_board}" _emu)
   if(NOT _emu STREQUAL "")
     string(APPEND _lines "${_board}\t${_emu}\n")
   endif()
 endforeach()
+file(REMOVE_RECURSE "${_scratch}")
 
 if(_lines STREQUAL "")
   message(FATAL_ERROR "no board resolved to an emulator; the map would claim the fleet boots natively")

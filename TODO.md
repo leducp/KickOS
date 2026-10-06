@@ -5893,7 +5893,10 @@ milestone does not close while any of them still composes a system.
       main`). Run the fleet sweep and the silicon witnesses
       against the result. Owed: esp32-wroom-smp silicon selftest (5.14), the witness `lx6smp`'s
       deletion in M10.5.11 rests on (`S32C1I` from both cores, `PRID` per core); its capture is
-      named in `docs/reference/boards.md`.
+      named in `docs/reference/boards.md`. Owed: the pizero2350-amp2 partition's ACCESSCTRL gate
+      witness (5.14), a silicon capture `tests/integration/check_pizero_amp_gate.sh` passes,
+      taken by `AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh pizero2350`;
+      until then the judge holds only its planted capture.
 
 - [ ] **M10.6: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
@@ -6138,7 +6141,8 @@ resolved centrally rather than patched at a call site.
       returning its capability directory to the slab itself, and `ThreadPool::alloc` retires
       `ROOT_INDEX` so every reader of root's permanence stays right; `invariants.md` states the
       retirement under `every-syscall-caller-holds-a-pool-slot` and `init-return-is-shutdown`.
-      Witnessed by the `RootRetire` kseam gate and the `rootgone` image.
+      Witnessed by the `RootRetire` kseam gate, and on images by the selftest's `task_exit`,
+      `task_slay` and `task_creator_gate` arms, which took over from the deleted `rootgone` image.
 
 - [x] **SM-1 (WITH C2), M8.1: THE RESOLVE IS DECIDED -- ROOT MAY DIE -- AND THE EXTERNAL AUDIT
       NAMES THE EXACT SLOT-0 RECLAIM THAT MAKES THE OPEN QUESTION ABOVE A LIVE DEFECT TODAY.**
@@ -6163,7 +6167,8 @@ resolved centrally rather than patched at a call site.
       **RESOLVED:** `ThreadPool::alloc` skips `ROOT_INDEX` ahead of the `EXITED` key, so no spawn
       can land on root's slot and inherit its kill tag, its `is_root` identity or its AMP probe;
       `exit_current` frees root's ustack on the `kstack_owned` arm, which closes SM-6. Witnessed
-      by the `RootRetire` kseam gate and the `rootgone` image.
+      by the `RootRetire` kseam gate, and on images by the selftest's `task_exit`, `task_slay` and
+      `task_creator_gate` arms, which took over from the deleted `rootgone` image.
 
 ## M7.7 -- AMP
 

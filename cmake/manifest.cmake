@@ -48,7 +48,14 @@ function(kickos_export_manifest export_dir)
     set(_amp "{\"node\": ${_node}, \"ports\": ${_jports}}")
   endif()
 
-  file(REMOVE_RECURSE "${export_dir}/platform")
+  set(_exported "${export_dir}/platform/${KICKOS_CHIP}/chip.yaml"
+                "${export_dir}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml"
+                "${export_dir}/boards/${KICKOS_BOARD}/composition.yaml")
+  file(GLOB_RECURSE _stale "${export_dir}/platform/*" "${export_dir}/boards/*")
+  list(REMOVE_ITEM _stale ${_exported})
+  if(_stale)
+    file(REMOVE ${_stale})
+  endif()
   set(_platform "${PROJECT_SOURCE_DIR}/platform/${KICKOS_CHIP}")
   foreach(_file chip.yaml "${KICKOS_BOARD}.yaml")
     configure_file("${_platform}/${_file}" "${export_dir}/platform/${KICKOS_CHIP}/${_file}" COPYONLY)
@@ -57,7 +64,6 @@ function(kickos_export_manifest export_dir)
   _kickos_json_quote("platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml" _qboard)
   set(_descriptions "{\"chip\": ${_qchip}, \"board\": ${_qboard}}")
 
-  file(REMOVE_RECURSE "${export_dir}/boards")
   set(_composition "boards/${KICKOS_BOARD}/composition.yaml")
   configure_file("${PROJECT_SOURCE_DIR}/${_composition}" "${export_dir}/${_composition}" COPYONLY)
   _kickos_json_quote("${_composition}" _default)

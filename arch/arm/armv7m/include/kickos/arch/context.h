@@ -18,8 +18,10 @@
 // compiler adds the offset the linker computed.
 #define KICKOS_ARCH_TLS_TCB 8
 
-// A Cortex-M7 chip may enable its L1 data cache over the arena (cache.cc).
-#define KICKOS_ARCH_ARENA_DCACHE 1
+#include <kickos/chip_limits.h>
+
+// A chip whose file states a data cache enables it over the arena (cache.cc).
+#define KICKOS_ARCH_ARENA_DCACHE KICKOS_CHIP_DCACHE
 
 
 #include <stdint.h>

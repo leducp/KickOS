@@ -2345,8 +2345,6 @@ namespace selftest
     // Access-denial tests.
 
 #if KICKOS_FAULT_ISOLATION
-    constexpr uint32_t FAULT_JOIN_US = 60000;
-
     // Faults through an ungranted reservation owned by main, which no worker space maps.
     void fault_toucher(void* arg)
     {
@@ -2416,8 +2414,8 @@ namespace selftest
         tap::diag("faulting on 0x%lx, reserved by main and mapped in no space",
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(absent)));
         // Both joins must succeed without timeout; reaching this check proves main survived.
-        TAP_CHECK(victim.join(FAULT_JOIN_US) == 0);
-        TAP_CHECK(sibling.join(FAULT_JOIN_US) == 0);
+        TAP_CHECK(victim.join(STALL_TOLERANT_US) == 0);
+        TAP_CHECK(sibling.join(STALL_TOLERANT_US) == 0);
         // Drop main's creator hold before checking pool counts; it keeps an empty task alive.
         TAP_CHECK(kos_task_kill(task) == 0);
         uint64_t const frames_after = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
@@ -2485,8 +2483,8 @@ namespace selftest
                 what = "per-core block";
             }
             tap::diag("%s at 0x%lx, read from ring 3", what, static_cast<unsigned long>(addr));
-            TAP_CHECK(victim.join(FAULT_JOIN_US) == 0);
-            TAP_CHECK(sibling.join(FAULT_JOIN_US) == 0);
+            TAP_CHECK(victim.join(STALL_TOLERANT_US) == 0);
+            TAP_CHECK(sibling.join(STALL_TOLERANT_US) == 0);
             TAP_CHECK(kos_task_kill(task) == 0);
             TAP_CHECK(kos_handle_close(park) == 0);
             ++probed;
@@ -2718,6 +2716,43 @@ namespace selftest
         kos_exit(0);
     }
     void wa_noop(void*) {}
+#if defined(KICKOS_SELFTEST_BUS_MASTER_DEV)
+    struct WaBusMaster
+    {
+        int32_t spare;
+        int32_t bus_master;
+    };
+    // [0] holds AUTH_MEMORY, AUTH_TASKS and AUTH_SYSTEM; [1] AUTH_MEMORY, AUTH_TASKS and
+    // AUTH_BUS_MASTER.
+    WaBusMaster g_wa_bm[2] = {{-99, -99}, {-99, -99}};
+    kos_window const g_wa_bm_dev = {KICKOS_SELFTEST_BUS_MASTER_DEV, WA_SIZE, KOS_WINDOW_DEVICE, 0};
+    void wa_bus_master_spawner(void* arg) // caps: done@1
+    {
+        WaBusMaster* const out = static_cast<WaBusMaster*>(arg);
+        kos_task_t t = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &t) == 0)
+        {
+            kos_window const spare = {WA_DEV, WA_SIZE, KOS_WINDOW_DEVICE, 0};
+            auto const h = kos::thread::create(wa_noop, nullptr, "wbs", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &spare, 1,
+                                               nullptr, 0, 0, nullptr, t);
+            out->spare = h.error();
+            (void)h.join(WA_JOIN_US);
+            (void)kos_task_kill(t);
+        }
+        // A task of its own: the one above ended with its entry.
+        if (kos_task_create(nullptr, 0, 0, &t) == 0)
+        {
+            auto const b = kos::thread::create(wa_noop, nullptr, "wbm", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &g_wa_bm_dev, 1,
+                                               nullptr, 0, 0, nullptr, t);
+            out->bus_master = b.error();
+            (void)b.join(WA_JOIN_US);
+            (void)kos_task_kill(t);
+        }
+        kos_sem_post(CH_DONE);
+    }
+#endif
     // Spawns a holder of the device in `task` and receives its report.
     kos::thread::Handle wa_spawn(kos_task_t task, kos_cap_t ep, kos_cap_t hold, WaSeen* seen)
     {
@@ -2787,6 +2822,38 @@ namespace selftest
         auto const next = wa_spawn(other, ep, hold, &again);
         TAP_CHECK(next.valid() and next.join(WA_JOIN_US) == 0);
         TAP_CHECK(again.rc == 0 and again.value != 0);
+#if defined(KICKOS_SELFTEST_BUS_MASTER_DEV)
+        // A bus master's window takes AUTH_BUS_MASTER of its spawner; AUTH_SYSTEM is not it.
+        kos_task_t bt = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &bt) == 0);
+        auto const bm = kos::thread::create(wa_noop, nullptr, "wbm", 10, KOS_POLICY_FIFO, 0, false,
+                                            nullptr, 0, nullptr, 0, &g_wa_bm_dev, 1, nullptr, 0,
+                                            0, nullptr, bt);
+        TAP_CHECK(bm.valid() and bm.join(WA_JOIN_US) == 0);
+        (void)kos_task_kill(bt);
+        uint32_t const bauth[2] = {KOS_AUTH_MEMORY | KOS_AUTH_TASKS | KOS_AUTH_SYSTEM,
+                                   KOS_AUTH_MEMORY | KOS_AUTH_TASKS | KOS_AUTH_BUS_MASTER};
+        for (int i = 0; i < 2; i++)
+        {
+            g_wa_bm[i] = {-99, -99};
+            kos_cap_grant const bcaps[] = {{g_done, CH_FULL}};
+            auto const spawner = kos::thread::create_caps(wa_bus_master_spawner, &g_wa_bm[i],
+                                                          "wbp", 10, bcaps, 1, KOS_POLICY_FIFO,
+                                                          0, false, nullptr, 0, bauth[i]);
+            TAP_CHECK(spawner.valid());
+            if (spawner.valid())
+            {
+                wait_n(1);
+                (void)spawner.join();
+            }
+        }
+        tap::diag("bus master window: memory and system %ld, bus_master %ld",
+                  static_cast<long>(g_wa_bm[0].bus_master),
+                  static_cast<long>(g_wa_bm[1].bus_master));
+        TAP_CHECK(g_wa_bm[0].spare == 0 and g_wa_bm[1].spare == 0);
+        TAP_CHECK(g_wa_bm[0].bus_master == -KOS_EPERM);
+        TAP_CHECK(g_wa_bm[1].bus_master == 0);
+#endif
         (void)kos_task_kill(other);
         (void)kos_handle_close(hold);
         (void)kos_handle_close(go);
@@ -2888,6 +2955,87 @@ namespace selftest
     {
         return kos_aspace_probe(KOS_ASPACE_OP_ALIAS_SYNCS, 0);
     }
+    uint64_t pr_refusals()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_REFUSALS, 0);
+    }
+    uint64_t pr_granules()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_GRANULES, 0) & 0xFFFFFFFFull;
+    }
+    uint64_t pr_staged()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_GRANULES, 0) >> 32;
+    }
+    uint64_t pr_windows()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_IRQ_WINDOWS, 0);
+    }
+    constexpr uint64_t UA_WIDE_PAGES = 32;
+    void ua_noop(void*) {}
+    void* g_ua_unauth_blk = nullptr;
+    int32_t g_ua_unauth = 0;
+    uint64_t g_ua_unauth_syncs = 0;
+    void ua_unauthorised(void*)
+    {
+        uint64_t const before = kos_aspace_probe(KOS_ASPACE_OP_ALIAS_SYNCS, 0);
+        g_ua_unauth = kos_mem_self_grant(g_ua_unauth_blk, UA_BLK, KOS_MEM_NOCACHE);
+        g_ua_unauth_syncs = kos_aspace_probe(KOS_ASPACE_OP_ALIAS_SYNCS, 0) - before;
+        kos_sem_post(CH_DONE);
+    }
+    // A wide non-cacheable block self-granted, mapped as a child's window and handed to a task
+    // as its data, each sync made ahead of the kernel lock with an interrupt window per granule.
+    void ua_wide()
+    {
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(UA_WIDE_PAGES * g);
+        void* const wide = kos_ram_alloc(bytes);
+        if (g == 0 or wide == nullptr)
+        {
+            tap::skip("no reservation left for the wide block");
+            return;
+        }
+        uint64_t const r0 = pr_refusals();
+        uint64_t const g0 = pr_granules();
+        uint64_t const st0 = pr_staged();
+        uint64_t const w0 = pr_windows();
+        uint64_t const s0 = ua_syncs();
+        TAP_CHECK(kos_mem_self_grant(wide, bytes, KOS_MEM_NOCACHE) == 0);
+        uint64_t const s1 = ua_syncs();
+        kos_window const win = {reinterpret_cast<uintptr_t>(wide), bytes, KOS_WINDOW_MEMORY,
+                                KOS_WINDOW_UNCACHED};
+        kos_task_t t = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
+        auto const child = kos::thread::create(ua_noop, nullptr, "uaw", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &win, 1, nullptr, 0,
+                                               0, nullptr, t);
+        TAP_CHECK(child.valid() and child.join(UA_US) == 0);
+        (void)kos_task_kill(t);
+        uint64_t const s2 = ua_syncs();
+        kos_task_t data = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(wide, bytes, KOS_MEM_NOCACHE, &data) == 0);
+        (void)kos_task_kill(data);
+        uint64_t const s3 = ua_syncs();
+        uint64_t const windows = pr_windows() - w0;
+        uint64_t const masked = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_MASKED, 0);
+        tap::diag("alias syncs over %lu granules: self-grant %lu, window %lu, task data %lu",
+                  static_cast<unsigned long>(UA_WIDE_PAGES), static_cast<unsigned long>(s1 - s0),
+                  static_cast<unsigned long>(s2 - s1), static_cast<unsigned long>(s3 - s2));
+        tap::diag("ahead of the lock: %lu granules, %lu interrupt windows, %lu rounds sent back;"
+                  " at most %lu granules and %lu ns between two windows",
+                  static_cast<unsigned long>(pr_granules() - g0),
+                  static_cast<unsigned long>(windows),
+                  static_cast<unsigned long>(pr_refusals() - r0),
+                  static_cast<unsigned long>(masked & 0xFFFFFFFFull),
+                  static_cast<unsigned long>(masked >> 32));
+        TAP_CHECK(s1 - s0 == UA_WIDE_PAGES * UA_PER);
+        TAP_CHECK(s2 - s1 == UA_WIDE_PAGES * UA_PER);
+        TAP_CHECK(s3 - s2 == UA_WIDE_PAGES * UA_PER);
+        TAP_CHECK(pr_granules() - g0 == 3u * UA_WIDE_PAGES * UA_PER);
+        TAP_CHECK(pr_refusals() == r0);
+        // Counted where the arch opens each window, not by the loop that asks for one.
+        TAP_CHECK(windows >= (pr_granules() - g0) + (pr_staged() - st0));
+    }
     void t_uncached_alias_sync()
     {
         settle_exits();
@@ -2914,6 +3062,29 @@ namespace selftest
                   static_cast<unsigned long>(mapped - at_unc));
         TAP_CHECK(at_unc - at_cac == 0);
         TAP_CHECK(mapped - at_unc == UA_PER);
+        // Refused, or mapped so already: the call answers before it syncs anything.
+        g_ua_unauth_blk = cac;
+        g_ua_unauth = 99;
+        kos_cap_grant const ucaps[] = {{g_done, CH_FULL}};
+        if (kos::thread::create_caps(ua_unauthorised, nullptr, "uanA", 10, ucaps, 1,
+                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0)
+                .valid())
+        {
+            wait_n(1);
+            tap::diag("a non-cacheable grant with no memory authority: %ld, %lu alias syncs",
+                      static_cast<long>(g_ua_unauth),
+                      static_cast<unsigned long>(g_ua_unauth_syncs));
+            TAP_CHECK(g_ua_unauth == -KOS_EPERM);
+            TAP_CHECK(g_ua_unauth_syncs == 0);
+        }
+        uint64_t const pr_at = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_GRANULES, 0);
+        TAP_CHECK(kos_mem_self_grant(unc, UA_BLK, KOS_MEM_NOCACHE) == 0);
+        uint64_t const pr_again = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_GRANULES, 0) - pr_at;
+        uint64_t const again = ua_syncs() - mapped;
+        tap::diag("the same grant again: %lu alias syncs, %lu granules ahead of the lock",
+                  static_cast<unsigned long>(again), static_cast<unsigned long>(pr_again));
+        TAP_CHECK(again == 0);
+        TAP_CHECK(UA_PER == 0 or pr_again == 0);
         for (size_t i = 0; i < UA_LEN; i++)
         {
             cac[UA_LEN * 2 + i] = static_cast<unsigned char>(0x40u + i);
@@ -2969,7 +3140,8 @@ namespace selftest
         uint64_t const back = ua_syncs() - at_back;
         tap::diag("alias syncs: retype to cacheable %lu", static_cast<unsigned long>(back));
         TAP_CHECK(back == UA_PER);
-        // A frame capability's run outlives its non-cacheable leaf, so the unmap owes it too.
+        // A frame capability's run outlives its non-cacheable leaf: the unmap syncs nothing, and
+        // the next cacheable mapping of the run owes the sync, once.
         uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 0);
         uintptr_t const fva = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 0);
         TAP_CHECK(seed != 0 and fva != 0);
@@ -2977,18 +3149,1250 @@ namespace selftest
         {
             kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
             kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+            uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
             uint64_t const c0 = ua_syncs();
             TAP_CHECK(kos_frame_map(fcap, acap, fva, KOS_MEM_NOCACHE) == 0);
             uint64_t const c1 = ua_syncs();
+            // One run, two types at once, is incoherent.
+            int32_t const mixed = kos_frame_map(fcap, acap, fva + 4u * g, 0);
+            TAP_CHECK(mixed == -KOS_EBUSY);
+            if (mixed == 0)
+            {
+                (void)kos_frame_unmap(fcap, acap, fva + 4u * g);
+            }
             TAP_CHECK(kos_frame_unmap(fcap, acap, fva) == 0);
             uint64_t const c2 = ua_syncs();
+            TAP_CHECK(kos_frame_map(fcap, acap, fva, 0) == 0);
+            uint64_t const c3 = ua_syncs();
+            TAP_CHECK(kos_frame_unmap(fcap, acap, fva) == 0);
+            TAP_CHECK(kos_frame_map(fcap, acap, fva, 0) == 0);
+            uint64_t const c4 = ua_syncs();
+            TAP_CHECK(kos_frame_unmap(fcap, acap, fva) == 0);
             (void)kos_handle_close(fcap);
             (void)kos_handle_close(acap);
-            tap::diag("alias syncs: frame map %lu, frame unmap %lu",
-                      static_cast<unsigned long>(c1 - c0), static_cast<unsigned long>(c2 - c1));
+            tap::diag("alias syncs: frame map %lu, unmap %lu, cacheable map %lu, again %lu",
+                      static_cast<unsigned long>(c1 - c0), static_cast<unsigned long>(c2 - c1),
+                      static_cast<unsigned long>(c3 - c2), static_cast<unsigned long>(c4 - c3));
             TAP_CHECK(c1 - c0 == UA_PER);
-            TAP_CHECK(c2 - c1 == UA_PER);
+            TAP_CHECK(c2 - c1 == 0);
+            TAP_CHECK(c3 - c2 == UA_PER);
+            TAP_CHECK(c4 - c3 == 0);
         }
+        ua_wide();
+    }
+
+    // A non-cacheable mapping torn down without a sync of its own: a spawn window at its
+    // holder's exit, a task's data at the task's end. The next cacheable mapping of the frames
+    // owes the sync the kernel's reads through its cacheable view left.
+    void td_holder(void*) // caps: gate@1
+    {
+        kos_sem_wait(1);
+    }
+    constexpr uint64_t TD_PAGES = 3;
+    void t_uncached_teardown()
+    {
+        settle_exits();
+        if (kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) == 0)
+        {
+            tap::skip("this backend honours no non-cacheable type");
+            return;
+        }
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(TD_PAGES * g);
+        void* const held = kos_ram_alloc(bytes);
+        void* const data = kos_ram_alloc(bytes);
+        kos_task_t t = KOS_TASK_NONE;
+        kos_task_t later = KOS_TASK_NONE;
+        if (g == 0 or held == nullptr or data == nullptr or kos_task_create(nullptr, 0, 0, &t) != 0
+            or kos_task_create(nullptr, 0, 0, &later) != 0)
+        {
+            tap::skip("no reservation or task left for the teardown pair");
+            return;
+        }
+        kos_cap_t gate = KOS_CAP_NONE;
+        TAP_CHECK(kos_sem_create(0, &gate) == 0);
+        kos_window const win = {reinterpret_cast<uintptr_t>(held), bytes, KOS_WINDOW_MEMORY,
+                                KOS_WINDOW_UNCACHED};
+        kos_cap_grant const caps[] = {{gate, KOS_CAP_WAIT}};
+        // Held until the count below is taken, so the teardown falls inside it.
+        auto const child = kos::thread::create(td_holder, nullptr, "utd", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &win, 1, caps, 1,
+                                               0, nullptr, t);
+        kos_task_t d = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(data, bytes, KOS_MEM_NOCACHE, &d) == 0);
+        uint64_t const before = ua_syncs();
+        kos_sem_post(gate);
+        TAP_CHECK(child.valid() and child.join(UA_US) == 0);
+        (void)kos_task_kill(t);
+        (void)kos_task_kill(d);
+        settle_exits();
+        uint64_t const s0 = ua_syncs();
+        int32_t const w = kos_mem_self_grant(held, bytes, 0);
+        uint64_t const s1 = ua_syncs();
+        int32_t const h = kos_mem_self_grant(data, bytes, 0);
+        uint64_t const s2 = ua_syncs();
+        kos_window const plain = {reinterpret_cast<uintptr_t>(held), bytes, KOS_WINDOW_MEMORY, 0};
+        auto const second = kos::thread::create(ua_noop, nullptr, "utc", 10, KOS_POLICY_FIFO, 0,
+                                                false, nullptr, 0, nullptr, 0, &plain, 1, nullptr,
+                                                0, 0, nullptr, later);
+        uint64_t const s2b = ua_syncs();
+        TAP_CHECK(second.valid() and second.join(UA_US) == 0);
+        (void)kos_task_kill(later);
+        int32_t const again = kos_mem_self_grant(held, bytes, KOS_MEM_NOCACHE);
+        int32_t const back = kos_mem_self_grant(held, bytes, 0);
+        uint64_t const s3 = ua_syncs();
+        (void)kos_handle_close(gate);
+        tap::diag("across the teardowns %lu; cacheable grants after them: window %ld syncing %lu,"
+                  " task data %ld syncing %lu, a second cacheable mapping %lu; a retype round trip"
+                  " %ld %ld syncing %lu",
+                  static_cast<unsigned long>(s0 - before), static_cast<long>(w),
+                  static_cast<unsigned long>(s1 - s0), static_cast<long>(h),
+                  static_cast<unsigned long>(s2 - s1), static_cast<unsigned long>(s2b - s2),
+                  static_cast<long>(again), static_cast<long>(back),
+                  static_cast<unsigned long>(s3 - s2b));
+        TAP_CHECK(s0 - before == 0);
+        TAP_CHECK(w == 0 and h == 0 and again == 0 and back == 0);
+        TAP_CHECK(s1 - s0 == TD_PAGES * UA_PER);
+        TAP_CHECK(s2 - s1 == TD_PAGES * UA_PER);
+        TAP_CHECK(s2b - s2 == 0);
+        TAP_CHECK(s3 - s2b == 2u * TD_PAGES * UA_PER);
+    }
+
+    // Each call that syncs ahead of its lock, its record lost on its first PR_DROPS rounds as
+    // to another call's completed edit: the call syncs again each round and then succeeds.
+    constexpr uint32_t PR_PAGES = 20;
+    constexpr uint64_t PR_DROPS_SHIFT = 16;
+    constexpr uint64_t PR_DROPS = 3;
+    constexpr uint64_t PR_DROPS_FOREVER = 0xFF;
+    constexpr uint64_t PR_FAULT_OUT = 1ull << 24;
+    uint64_t pr_own_windows()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_WINDOWS, 0);
+    }
+    void pr_drop_next(uint64_t drops)
+    {
+        (void)kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_ARM, drops << PR_DROPS_SHIFT);
+    }
+    uint64_t pr_threads_live()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_THREADS_LIVE, 0);
+    }
+    void t_presync_retried()
+    {
+        settle_exits();
+        if (kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) == 0 or UA_PER == 0)
+        {
+            tap::skip("no cacheable kernel view of a non-cacheable frame here");
+            return;
+        }
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(PR_PAGES * g);
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, PR_PAGES);
+        uintptr_t const va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, PR_PAGES);
+        // One block for three calls: a non-cacheable handoff and window sync whatever the
+        // block's live mappings, as long as they are non-cacheable too.
+        void* const blk = kos_ram_alloc(bytes);
+        kos_task_t into = KOS_TASK_NONE;
+        if (seed == 0 or va == 0 or blk == nullptr or kos_task_create(nullptr, 0, 0, &into) != 0)
+        {
+            tap::skip("no frame run, reservation or task left for the four calls");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        uint64_t const live0 = pr_threads_live();
+        uint64_t r[5] = {};
+        uint64_t const g0 = pr_granules();
+        r[0] = pr_refusals();
+        pr_drop_next(PR_DROPS);
+        int32_t const mapped = kos_frame_map(fcap, acap, va, KOS_MEM_NOCACHE);
+        r[1] = pr_refusals();
+        uint64_t const g1 = pr_granules();
+        int32_t const unmapped = kos_frame_unmap(fcap, acap, va);
+        pr_drop_next(PR_DROPS);
+        int32_t const granted = kos_mem_self_grant(blk, bytes, KOS_MEM_NOCACHE);
+        r[2] = pr_refusals();
+        kos_task_t data = KOS_TASK_NONE;
+        pr_drop_next(PR_DROPS);
+        int32_t const created = kos_task_create(blk, bytes, KOS_MEM_NOCACHE, &data);
+        r[3] = pr_refusals();
+        kos_window const win = {reinterpret_cast<uintptr_t>(blk), bytes, KOS_WINDOW_MEMORY,
+                                KOS_WINDOW_UNCACHED};
+        pr_drop_next(PR_DROPS);
+        auto const child = kos::thread::create(ua_noop, nullptr, "prc", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &win, 1, nullptr, 0,
+                                               0, nullptr, into);
+        r[4] = pr_refusals();
+        bool const joined = child.valid() and child.join(UA_US) == 0;
+        (void)kos_task_kill(into);
+        (void)kos_task_kill(data);
+        (void)kos_handle_close(fcap);
+        (void)kos_handle_close(acap);
+        settle_exits();
+        tap::diag("rounds sent back over %lu dropped records: frame map %ld after %lu, self-grant"
+                  " %ld after %lu, task data %ld after %lu, window %d after %lu; %lu granules",
+                  static_cast<unsigned long>(PR_DROPS), static_cast<long>(mapped),
+                  static_cast<unsigned long>(r[1] - r[0]), static_cast<long>(granted),
+                  static_cast<unsigned long>(r[2] - r[1]), static_cast<long>(created),
+                  static_cast<unsigned long>(r[3] - r[2]), child.error(),
+                  static_cast<unsigned long>(r[4] - r[3]),
+                  static_cast<unsigned long>(g1 - g0));
+        TAP_CHECK(mapped == 0 and unmapped == 0 and r[1] - r[0] == PR_DROPS);
+        TAP_CHECK(g1 - g0 == (PR_DROPS + 1u) * PR_PAGES);
+        TAP_CHECK(granted == 0 and r[2] - r[1] == PR_DROPS);
+        TAP_CHECK(created == 0 and data != KOS_TASK_NONE and r[3] - r[2] == PR_DROPS);
+        TAP_CHECK(joined and r[4] - r[3] == PR_DROPS);
+        TAP_CHECK(pr_threads_live() == live0);
+    }
+
+    // An interrupt pending when a call starts its work outside the lock is taken inside it, and
+    // wakes a thread that acts while the call is still in its system call. A mapping that thread
+    // completes over the call's frames sends the call round again, its handle lost or not; a
+    // failed one, an unmap, a close or a read does not.
+#if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
+    constexpr int PR_LINE = KICKOS_IRQ_SOFT_ONLY_BASE + 2;
+#else
+    constexpr int PR_LINE = KICKOS_IRQ_FREE_BASE + 12;
+#endif
+    constexpr int CH_PR_NOTE = 2;
+    constexpr int CH_PR_FRAME = 3;
+    constexpr int CH_PR_SPACE = 4;
+    constexpr uint8_t PR_PRIO = 20;
+    enum PrAction
+    {
+        PR_CAP_MAP,
+        PR_SELF_GRANT,
+        PR_WINDOW,
+        PR_HANDOFF,
+        PR_FAULTED_OUT,
+        PR_FAILED_SPAWN,
+        PR_UNMAP,
+        PR_CLOSE,
+        PR_FLIP,
+        PR_WATCH,
+        PR_LATE_PARAMS,
+        PR_ACTIONS
+    };
+    struct PrEdit
+    {
+        int action;
+        void* blk;
+        uint32_t bytes;
+        int32_t woke;
+        int32_t rc;
+        uint64_t main_live;
+        uint64_t main_live_after;
+        int in_call;
+    };
+    PrEdit g_pr = {};
+    uintptr_t g_pr_va = 0;
+    uintptr_t g_pr_va2 = 0;
+    kos_thread_t g_pr_main = KOS_THREAD_NONE;
+    volatile int g_pr_in_call = 0;
+    kos_thread_params g_flip = {};
+    void const* g_pl_src = nullptr;
+    size_t g_pl_len = 0;
+    // Before anything that can block: main runs again on this core once this thread waits, and
+    // its next round re-arms the record.
+    void pr_edited()
+    {
+        g_pr.main_live_after = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_LIVE, g_pr_main);
+    }
+    void pr_edit()
+    {
+        kos_window const win = {reinterpret_cast<uintptr_t>(g_pr.blk), g_pr.bytes,
+                                KOS_WINDOW_MEMORY, KOS_WINDOW_UNCACHED};
+        kos_task_t t = KOS_TASK_NONE;
+        switch (g_pr.action)
+        {
+            case PR_CAP_MAP:
+            {
+                g_pr.rc = kos_frame_map(CH_PR_FRAME, CH_PR_SPACE, g_pr_va2, 0);
+                pr_edited();
+                (void)kos_frame_unmap(CH_PR_FRAME, CH_PR_SPACE, g_pr_va2);
+                break;
+            }
+            case PR_SELF_GRANT:
+            {
+                g_pr.rc = kos_mem_self_grant(g_pr.blk, g_pr.bytes, KOS_MEM_NOCACHE);
+                pr_edited();
+                break;
+            }
+            case PR_WINDOW:
+            case PR_FAULTED_OUT:
+            case PR_FAILED_SPAWN:
+            {
+                if (kos_task_create(nullptr, 0, 0, &t) != 0)
+                {
+                    break;
+                }
+                // A destination past the child's table fails the spawn after its window is
+                // mapped.
+                kos_cap_grant const caps[] = {{CH_DONE, KOS_CAP_SIGNAL}};
+                uint16_t const dest[] = {0x7FFFu};
+                uint8_t ncaps = 0;
+                uint16_t const* at = nullptr;
+                if (g_pr.action == PR_FAILED_SPAWN)
+                {
+                    ncaps = 1;
+                    at = dest;
+                }
+                if (g_pr.action == PR_FAULTED_OUT)
+                {
+                    (void)kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_ARM, PR_FAULT_OUT);
+                }
+                auto const c = kos::thread::create(ua_noop, nullptr, "pre", 10, KOS_POLICY_FIFO,
+                                                   0, false, nullptr, 0, nullptr, 0, &win, 1,
+                                                   caps, ncaps, 0, at, t);
+                g_pr.rc = c.error();
+                pr_edited();
+                if (c.valid())
+                {
+                    (void)c.join(UA_US);
+                }
+                (void)kos_task_kill(t);
+                break;
+            }
+            case PR_HANDOFF:
+            {
+                g_pr.rc = kos_task_create(g_pr.blk, g_pr.bytes, KOS_MEM_NOCACHE, &t);
+                pr_edited();
+                (void)kos_task_kill(t);
+                break;
+            }
+            case PR_UNMAP:
+            {
+                g_pr.rc = kos_frame_unmap(CH_PR_FRAME, CH_PR_SPACE, g_pr_va2);
+                pr_edited();
+                break;
+            }
+            case PR_CLOSE:
+            {
+                g_pr.rc = kos_handle_close(CH_PR_FRAME);
+                pr_edited();
+                break;
+            }
+            case PR_LATE_PARAMS:
+            {
+                g_pr.rc = kos_frame_map(CH_PR_FRAME, CH_PR_SPACE, g_pr_va, 0);
+                if (g_pr.rc == 0)
+                {
+                    memcpy(reinterpret_cast<void*>(g_pr_va), g_pl_src, g_pl_len);
+                }
+                break;
+            }
+            case PR_FLIP:
+            {
+                g_flip.task = KOS_TASK_NONE;
+                g_flip.mem_base = g_pr.blk;
+                g_flip.mem_size = g_pr.bytes;
+                g_pr.rc = 0;
+                break;
+            }
+            default:
+            {
+                g_pr.rc = 0;
+                break;
+            }
+        }
+    }
+    void pr_editor(void*) // caps: done@1, note@2, frame@3, space@4
+    {
+        uint32_t bits = 0;
+        g_pr.woke = -KOS_EINVAL;
+        if (kos_notify_bind(CH_PR_NOTE) == 0)
+        {
+            // Outranking main, this parks before main runs again.
+            kos_sem_post(CH_DONE);
+            g_pr.woke = kos_notify_wait(CH_PR_NOTE, 0xFFFFFFFFu, STALL_TOLERANT_US, &bits);
+        }
+        g_pr.in_call = g_pr_in_call;
+        g_pr.main_live = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_LIVE, g_pr_main);
+        pr_edit();
+        kos_sem_post(CH_DONE);
+    }
+    struct PrRun
+    {
+        int32_t rc;
+        uint64_t refusals;
+        PrEdit seen;
+    };
+    // Spawns the editor for `action`, arms the line at main's next window, and runs `call`.
+    template <typename Call>
+    PrRun pr_run(kos_cap_t note, kos_cap_t fcap, kos_cap_t acap, int action, void* blk,
+                 uint32_t bytes, Call call)
+    {
+        PrRun out = {-99, 0, {}};
+        g_pr = {action, blk, bytes, 99, 99, 99, 99, 99};
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}, {note, CH_FULL},
+                                      {fcap, KOS_CAP_TRANSFER}, {acap, KOS_CAP_TRANSFER}};
+        uint8_t ncaps = 4;
+        if (fcap == KOS_CAP_NONE)
+        {
+            ncaps = 2;
+        }
+        // Pinned with main to the core the line is claimed on, so the wake preempts main there.
+        auto const editor = irq_spawn(pr_editor, nullptr, "pred", PR_PRIO, caps, ncaps,
+                                      KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                      KOS_AUTH_MEMORY | KOS_AUTH_TASKS);
+        if (not editor.valid())
+        {
+            return out;
+        }
+        wait_n(1);
+        uint64_t const r0 = pr_refusals();
+        (void)kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_ARM, static_cast<uint64_t>(PR_LINE));
+        g_pr_in_call = 1;
+        out.rc = call();
+        g_pr_in_call = 0;
+        out.refusals = pr_refusals() - r0;
+        wait_n(1);
+        (void)editor.join(UA_US);
+        out.seen = g_pr;
+        return out;
+    }
+    // A line claimed and bound to a notification main's editors and slayers wait on.
+    struct PrLine
+    {
+        kos_cap_t irq = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        bool ok = false;
+        PrLine()
+        {
+            ok = kos_irq_claim(PR_LINE, KOS_IRQ_EDGE, &irq) == 0
+                 and kos_notify_create(&note) == 0 and kos_irq_bind_notify(irq, note) == 0
+                 and kos_irq_ack(irq) == 0;
+        }
+        ~PrLine()
+        {
+            (void)kos_handle_close(irq);
+            (void)kos_handle_close(note);
+        }
+    };
+    bool pr_syncs()
+    {
+        return kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE, 1) != 0 and UA_PER != 0;
+    }
+    void t_presync_race()
+    {
+        settle_exits();
+        if (not pr_syncs())
+        {
+            tap::skip("no cacheable kernel view of a non-cacheable frame here");
+            return;
+        }
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(PR_PAGES * g);
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, PR_PAGES);
+        g_pr_va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 2u * PR_PAGES);
+        g_pr_va2 = g_pr_va + PR_PAGES * g;
+        g_pr_main = kos_thread_self();
+        // One block for every round: the self-grant round leaves it non-cacheable, and a
+        // non-cacheable handoff or window syncs whatever non-cacheable mappings it has.
+        void* const blk = kos_ram_alloc(bytes);
+        PrLine line;
+        kos_task_t into = KOS_TASK_NONE;
+        if (seed == 0 or g_pr_va == 0 or not line.ok or blk == nullptr
+            or kos_task_create(nullptr, 0, 0, &into) != 0)
+        {
+            tap::skip("no frame run, reservation, task, line or notification left for the race");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        auto frame_map = [&] {
+            int32_t const rc = kos_frame_map(fcap, acap, g_pr_va, KOS_MEM_NOCACHE);
+            (void)kos_frame_unmap(fcap, acap, g_pr_va);
+            return rc;
+        };
+        kos_task_t t = KOS_TASK_NONE;
+        auto handoff = [&] {
+            int32_t const rc = kos_task_create(blk, bytes, KOS_MEM_NOCACHE, &t);
+            (void)kos_task_kill(t);
+            return rc;
+        };
+        PrRun run[PR_ACTIONS] = {};
+        run[PR_CAP_MAP] = pr_run(line.note, fcap, acap, PR_CAP_MAP, nullptr, 0, frame_map);
+        run[PR_SELF_GRANT] = pr_run(line.note, fcap, acap, PR_SELF_GRANT, blk, bytes, handoff);
+        run[PR_WINDOW] = pr_run(line.note, fcap, acap, PR_WINDOW, blk, bytes, handoff);
+        run[PR_HANDOFF] = pr_run(line.note, fcap, acap, PR_HANDOFF, blk, bytes, [&] {
+            kos_window const win = {reinterpret_cast<uintptr_t>(blk), bytes, KOS_WINDOW_MEMORY,
+                                    KOS_WINDOW_UNCACHED};
+            auto const c = kos::thread::create(ua_noop, nullptr, "prh", 10, KOS_POLICY_FIFO, 0,
+                                               false, nullptr, 0, nullptr, 0, &win, 1, nullptr,
+                                               0, 0, nullptr, into);
+            int32_t const rc = c.error();
+            if (c.valid())
+            {
+                (void)c.join(UA_US);
+            }
+            return rc;
+        });
+        run[PR_FAULTED_OUT] = pr_run(line.note, fcap, acap, PR_FAULTED_OUT, blk, bytes, handoff);
+        run[PR_FAILED_SPAWN] = pr_run(line.note, fcap, acap, PR_FAILED_SPAWN, blk, bytes, handoff);
+        // A mapping of the run's own type that stood before the call: removing it changes
+        // nothing the call synced.
+        int32_t const stood = kos_frame_map(fcap, acap, g_pr_va2, KOS_MEM_NOCACHE);
+        run[PR_UNMAP] = pr_run(line.note, fcap, acap, PR_UNMAP, nullptr, 0, frame_map);
+        run[PR_CLOSE] = pr_run(line.note, fcap, acap, PR_CLOSE, nullptr, 0, frame_map);
+        (void)kos_task_kill(into);
+        settle_exits();
+        (void)kos_handle_close(fcap);
+        (void)kos_handle_close(acap);
+        char const* const names[PR_FLIP] = {"cap map", "self-grant",   "window", "handoff",
+                                            "lost handle", "failed spawn", "unmap", "close"};
+        for (int i = 0; i < PR_FLIP; i++)
+        {
+            tap::diag("%s in the window: woke %ld, main's record live %lu then %lu, edit %ld;"
+                      " main's call %ld after %lu rounds sent back",
+                      names[i], static_cast<long>(run[i].seen.woke),
+                      static_cast<unsigned long>(run[i].seen.main_live),
+                      static_cast<unsigned long>(run[i].seen.main_live_after),
+                      static_cast<long>(run[i].seen.rc), static_cast<long>(run[i].rc),
+                      static_cast<unsigned long>(run[i].refusals));
+        }
+        for (int i = PR_CAP_MAP; i <= PR_HANDOFF; i++)
+        {
+            TAP_CHECK(run[i].seen.woke == 0 and run[i].seen.main_live == 1
+                      and run[i].seen.main_live_after == 0 and run[i].seen.rc == 0
+                      and run[i].rc == 0 and run[i].refusals == 1);
+        }
+        TAP_CHECK(run[PR_FAULTED_OUT].seen.woke == 0
+                  and run[PR_FAULTED_OUT].seen.rc == -KOS_EFAULT
+                  and run[PR_FAULTED_OUT].seen.main_live_after == 0
+                  and run[PR_FAULTED_OUT].rc == 0 and run[PR_FAULTED_OUT].refusals == 1);
+        TAP_CHECK(run[PR_FAILED_SPAWN].seen.woke == 0
+                  and run[PR_FAILED_SPAWN].seen.rc == -KOS_EINVAL
+                  and run[PR_FAILED_SPAWN].seen.main_live_after == 1
+                  and run[PR_FAILED_SPAWN].rc == 0 and run[PR_FAILED_SPAWN].refusals == 0);
+        TAP_CHECK(stood == 0);
+        for (int i = PR_UNMAP; i <= PR_CLOSE; i++)
+        {
+            TAP_CHECK(run[i].seen.woke == 0 and run[i].seen.rc == 0
+                      and run[i].seen.main_live_after == 1 and run[i].rc == 0
+                      and run[i].refusals == 0);
+        }
+    }
+
+    // A sibling rewriting a spawn's parameters while the spawn works outside the lock changes
+    // nothing it does: the kernel copied them at the call's entry.
+    void t_presync_flip()
+    {
+        settle_exits();
+        if (not pr_syncs())
+        {
+            tap::skip("no sync owed here, so a rewrite in the window cannot send a spawn round");
+            return;
+        }
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(PR_PAGES * g);
+        void* const blk = kos_ram_alloc(bytes);
+        void* const grant = kos_ram_alloc(static_cast<uint32_t>(g));
+        PrLine line;
+        kos_task_t t = KOS_TASK_NONE;
+        if (blk == nullptr or grant == nullptr or not line.ok
+            or kos_task_create(nullptr, 0, 0, &t) != 0)
+        {
+            tap::skip("no reservation, task, line or notification left");
+            return;
+        }
+        g_pr_main = kos_thread_self();
+        kos_window const win = {reinterpret_cast<uintptr_t>(blk), bytes, KOS_WINDOW_MEMORY,
+                                KOS_WINDOW_UNCACHED};
+        g_flip = {};
+        g_flip.entry = ua_noop;
+        g_flip.name = "prf";
+        g_flip.prio = 10;
+        g_flip.windows = &win;
+        g_flip.window_count = 1;
+        g_flip.task = t;
+        kos_thread_t child = KOS_THREAD_NONE;
+        PrRun const run = pr_run(line.note, KOS_CAP_NONE, KOS_CAP_NONE, PR_FLIP, grant,
+                                 static_cast<uint32_t>(g),
+                                 [&] { return kos_thread_create(&g_flip, &child); });
+        int32_t const joined = kos_thread_join(child, UA_US);
+        (void)kos_task_kill(t);
+        settle_exits();
+        tap::diag("parameters rewritten in the window: woke %ld, spawn %ld after %lu rounds sent"
+                  " back, joined %ld",
+                  static_cast<long>(run.seen.woke), static_cast<long>(run.rc),
+                  static_cast<unsigned long>(run.refusals), static_cast<long>(joined));
+        TAP_CHECK(run.seen.woke == 0 and run.seen.in_call == 1);
+        TAP_CHECK(run.rc == 0 and run.refusals == 0 and joined == 0);
+    }
+
+    // A thread slain inside its call's work outside the lock leaves no live record and no
+    // staged run: a sync of a frame capability's map, the clear of a new reservation, and the
+    // copy of a new space's static data.
+    enum PsCall
+    {
+        PS_MAP,
+        PS_CLEAR,
+        PS_COPY,
+        PS_CALLS
+    };
+    constexpr int CH_PS_FRAME = 1;
+    constexpr int CH_PS_SPACE = 2;
+    int g_ps_call = PS_MAP;
+    uint32_t g_ps_bytes = 0;
+    int32_t g_ps_woke = 99;
+    int32_t g_ps_slay = 99;
+    uint64_t g_ps_live = 99;
+    uint64_t g_ps_all = 99;
+    void ps_victim(void*) // caps: frame@1, space@2
+    {
+        (void)kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_ARM, static_cast<uint64_t>(PR_LINE));
+        if (g_ps_call == PS_MAP)
+        {
+            (void)kos_frame_map(CH_PS_FRAME, CH_PS_SPACE, g_pr_va, KOS_MEM_NOCACHE);
+        }
+        else if (g_ps_call == PS_CLEAR)
+        {
+            (void)kos_ram_alloc(g_ps_bytes);
+        }
+        else
+        {
+            kos_task_t t = KOS_TASK_NONE;
+            (void)kos_task_create(nullptr, 0, 0, &t);
+        }
+    }
+    void ps_slayer(void*) // caps: done@1, note@2, frame@3, space@4
+    {
+        uint32_t bits = 0;
+        g_ps_woke = -KOS_EINVAL;
+        if (kos_notify_bind(CH_PR_NOTE) != 0)
+        {
+            kos_sem_post(CH_DONE);
+            kos_sem_post(CH_DONE);
+            return;
+        }
+        kos_cap_grant const caps[] = {{CH_PR_FRAME, KOS_CAP_TRANSFER},
+                                      {CH_PR_SPACE, KOS_CAP_TRANSFER}};
+        uint8_t ncaps = 0;
+        if (g_ps_call == PS_MAP)
+        {
+            ncaps = 2;
+        }
+        // Below this thread, above main, on this thread's core.
+        auto const victim = kos::thread::create_caps(
+            ps_victim, nullptr, "psv", PR_PRIO - 1, caps, ncaps, KOS_POLICY_FIFO, 0, false,
+            nullptr, 0, KOS_AUTH_MEMORY | KOS_AUTH_TASKS, nullptr, KOS_TASK_NONE, nullptr, 0,
+            TAP_PIN_CORE);
+        kos_sem_post(CH_DONE);
+        if (victim.valid())
+        {
+            g_ps_woke = kos_notify_wait(CH_PR_NOTE, 0xFFFFFFFFu, UA_US, &bits);
+            g_ps_slay = kos_thread_slay(victim.id(), UA_US);
+            g_ps_live = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_LIVE, victim.id());
+            g_ps_all = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_LIVE, 0);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    struct PsSeen
+    {
+        int32_t woke;
+        int32_t slay;
+        uint64_t live;
+        uint64_t all;
+        uint64_t frames_before;
+        uint64_t frames_after;
+    };
+    // `fcap` and `acap` only for PS_MAP.
+    PsSeen ps_run(kos_cap_t note, int call, kos_cap_t fcap, kos_cap_t acap)
+    {
+        PsSeen out = {99, 99, 99, 99, 0, 0};
+        g_ps_call = call;
+        g_ps_woke = 99;
+        g_ps_slay = 99;
+        g_ps_live = 99;
+        g_ps_all = 99;
+        settle_exits();
+        out.frames_before = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}, {note, CH_FULL},
+                                      {fcap, KOS_CAP_TRANSFER}, {acap, KOS_CAP_TRANSFER}};
+        uint8_t ncaps = 2;
+        if (call == PS_MAP)
+        {
+            ncaps = 4;
+        }
+        auto const slayer = irq_spawn(ps_slayer, nullptr, "pss", PR_PRIO, caps, ncaps,
+                                      KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                      KOS_AUTH_MEMORY | KOS_AUTH_TASKS);
+        if (slayer.valid())
+        {
+            wait_n(2);
+            (void)slayer.join(UA_US);
+        }
+        settle_exits();
+        out.frames_after = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        out.woke = g_ps_woke;
+        out.slay = g_ps_slay;
+        out.live = g_ps_live;
+        out.all = g_ps_all;
+        return out;
+    }
+    void t_presync_slain()
+    {
+        settle_exits();
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        g_ps_bytes = static_cast<uint32_t>(PR_PAGES * g);
+        uint64_t seed = 0;
+        if (pr_syncs())
+        {
+            seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, PR_PAGES);
+            g_pr_va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, PR_PAGES);
+        }
+        PrLine line;
+        if (not line.ok)
+        {
+            tap::skip("no line or notification left");
+            return;
+        }
+        // The copy is staged only once the snapshot exists.
+        kos_task_t warm = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &warm) == 0)
+        {
+            (void)kos_task_kill(warm);
+        }
+        uint64_t const before = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_LIVE, 0);
+        PsSeen seen[PS_CALLS] = {};
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        if (seed != 0)
+        {
+            seen[PS_MAP] = ps_run(line.note, PS_MAP, fcap, acap);
+            (void)kos_handle_close(fcap);
+            (void)kos_handle_close(acap);
+        }
+        seen[PS_CLEAR] = ps_run(line.note, PS_CLEAR, KOS_CAP_NONE, KOS_CAP_NONE);
+        seen[PS_COPY] = ps_run(line.note, PS_COPY, KOS_CAP_NONE, KOS_CAP_NONE);
+        char const* const names[PS_CALLS] = {"sync", "clear", "copy"};
+        for (int i = 0; i < PS_CALLS; i++)
+        {
+            tap::diag("slain mid-%s: woke %ld, slay %ld, its record live %lu, live records %lu"
+                      " (%lu before), frames free %lu then %lu",
+                      names[i], static_cast<long>(seen[i].woke), static_cast<long>(seen[i].slay),
+                      static_cast<unsigned long>(seen[i].live),
+                      static_cast<unsigned long>(seen[i].all),
+                      static_cast<unsigned long>(before),
+                      static_cast<unsigned long>(seen[i].frames_before),
+                      static_cast<unsigned long>(seen[i].frames_after));
+        }
+        for (int i = 0; i < PS_CALLS; i++)
+        {
+            if (i == PS_MAP and seed == 0)
+            {
+                continue;
+            }
+            TAP_CHECK(seen[i].woke == 0 and seen[i].slay == 0);
+            TAP_CHECK(seen[i].live == 0 and seen[i].all == before);
+            TAP_CHECK(seen[i].frames_after == seen[i].frames_before);
+        }
+    }
+
+    // What a stage costs and gives back: nothing for a call refused its authority, its
+    // out-word or its arguments, a pool refusal failing the call rather than sending it round,
+    // and a stage the call never took freed when it ends.
+    enum PuMalformed
+    {
+        PU_WINDOWS,
+        PU_GRANT,
+        PU_AUTHORITY,
+        PU_STACK,
+        PU_HANDOFF,
+        PU_BOTH,
+        PU_MALFORMED
+    };
+    uint64_t g_pu_staged = 99;
+    int32_t g_pu_task = 99;
+    int32_t g_pu_spawn = 99;
+    void* g_pu_grant = nullptr;
+    // A data grant no spawn takes, shared: range slots cannot be freed through the user API.
+    void* pu_grant()
+    {
+        if (g_pu_grant == nullptr)
+        {
+            g_pu_grant = kos_ram_alloc(64);
+        }
+        return g_pu_grant;
+    }
+    void pu_worker(void*) // caps: done@1
+    {
+        uint64_t const s0 = pr_staged();
+        kos_task_t t = KOS_TASK_NONE;
+        g_pu_task = kos_task_create(nullptr, 0, 0, &t);
+        g_pu_spawn = kos::thread::create(ua_noop, nullptr, "pun", 10, KOS_POLICY_FIFO, 0, false,
+                                         g_pu_grant, 64)
+                         .error();
+        g_pu_staged = pr_staged() - s0;
+        kos_sem_post(CH_DONE);
+    }
+    void t_presync_staged()
+    {
+        settle_exits();
+        // The copy is staged only once the snapshot exists.
+        kos_task_t warm = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &warm) == 0)
+        {
+            (void)kos_task_kill(warm);
+        }
+        (void)pu_grant();
+        kos_cap_grant const caps[] = {{g_done, CH_FULL}};
+        auto const worker = kos::thread::create_caps(pu_worker, nullptr, "puw", 10, caps, 1,
+                                                     KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                                     KOS_AUTH_MEMORY);
+        TAP_CHECK(worker.valid());
+        if (worker.valid())
+        {
+            wait_n(1);
+            (void)worker.join(UA_US);
+        }
+        settle_exits();
+        // Nor does a call whose out-word the kernel refuses.
+        uint64_t const b0 = pr_staged();
+        int32_t const no_out_task = kos_task_create(nullptr, 0, 0, nullptr);
+        kos_thread_params np = {};
+        np.entry = ua_noop;
+        np.name = "puo";
+        np.prio = 10;
+        np.mem_base = g_pu_grant;
+        np.mem_size = 64;
+        int32_t const no_out_spawn = kos_thread_create(&np, nullptr);
+        uint64_t const b1 = pr_staged();
+        settle_exits();
+        uint64_t const f0 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        (void)kos_aspace_probe(KOS_ASPACE_OP_POOL_FAIL_IN, 1);
+        uint64_t const r0 = pr_refusals();
+        kos_task_t shorted = KOS_TASK_NONE;
+        int32_t const short_rc = kos_task_create(nullptr, 0, 0, &shorted);
+        uint64_t const r1 = pr_refusals();
+        (void)kos_aspace_probe(KOS_ASPACE_OP_POOL_FAIL_IN, 0);
+        settle_exits();
+        uint64_t const f1 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        // Nor does a spawn that would build a task and that its arguments alone refuse: a
+        // window list naming no memory this task can read, a data grant it does not own, an
+        // authority past the defined ones, a misaligned stack, a grant that is part of a
+        // reservation only. One with a bad window list too answers for its windows.
+        kos_thread_params bad[PU_MALFORMED];
+        for (kos_thread_params& b : bad)
+        {
+            b = {};
+            b.entry = ua_noop;
+            b.name = "pur";
+            b.prio = 10;
+            b.mem_base = g_pu_grant;
+            b.mem_size = 64;
+        }
+        bad[PU_WINDOWS].windows =
+            reinterpret_cast<kos_window const*>(static_cast<uintptr_t>(0x10u));
+        bad[PU_WINDOWS].window_count = 1;
+        bad[PU_GRANT].mem_base = reinterpret_cast<void*>(static_cast<uintptr_t>(0x10u));
+        bad[PU_AUTHORITY].authority = 0x80000000u;
+        bad[PU_STACK].stack_base = static_cast<unsigned char*>(g_pu_grant) + 8;
+        bad[PU_STACK].stack_size = 64u * 1024u;
+        bad[PU_HANDOFF].mem_base = static_cast<unsigned char*>(g_pu_grant) + 16;
+        bad[PU_HANDOFF].mem_size = 32;
+        bad[PU_BOTH] = bad[PU_HANDOFF];
+        bad[PU_BOTH].windows = bad[PU_WINDOWS].windows;
+        bad[PU_BOTH].window_count = 1;
+        int32_t bad_rc[PU_MALFORMED];
+        uint64_t bad_staged[PU_MALFORMED];
+        for (int i = 0; i < PU_MALFORMED; i++)
+        {
+            uint64_t const s0 = pr_staged();
+            kos_thread_t child = KOS_THREAD_NONE;
+            bad_rc[i] = kos_thread_create(&bad[i], &child);
+            bad_staged[i] = pr_staged() - s0;
+        }
+        // A stage the call never took, refused past its arguments for a grant naming no
+        // handle, is freed when it ends.
+        kos_cap_grant const no_cap[] = {{0x7FFEu, KOS_CAP_SIGNAL}};
+        kos_thread_params late = bad[PU_STACK];
+        late.stack_base = nullptr;
+        late.stack_size = 0;
+        late.caps = no_cap;
+        late.cap_count = 1;
+        uint64_t const l0 = pr_staged();
+        kos_thread_t late_child = KOS_THREAD_NONE;
+        int32_t const late_rc = kos_thread_create(&late, &late_child);
+        uint64_t const l1 = pr_staged();
+        settle_exits();
+        uint64_t const f2 = kos_aspace_probe(KOS_ASPACE_OP_FRAMES_FREE, 0);
+        tap::diag("unauthorised: task %ld, spawn %d, %lu granules staged; pool refusing the"
+                  " stage: %ld after %lu rounds, frames %lu then %lu, then %lu",
+                  static_cast<long>(g_pu_task), static_cast<int>(g_pu_spawn),
+                  static_cast<unsigned long>(g_pu_staged), static_cast<long>(short_rc),
+                  static_cast<unsigned long>(r1 - r0), static_cast<unsigned long>(f0),
+                  static_cast<unsigned long>(f1), static_cast<unsigned long>(f2));
+        char const* const bad_names[PU_MALFORMED] = {"windows", "grant", "authority", "stack",
+                                                     "part of a reservation", "both"};
+        for (int i = 0; i < PU_MALFORMED; i++)
+        {
+            tap::diag("malformed %s: spawn %ld staging %lu granules", bad_names[i],
+                      static_cast<long>(bad_rc[i]), static_cast<unsigned long>(bad_staged[i]));
+        }
+        tap::diag("no out-word: task %ld, spawn %ld, %lu granules staged",
+                  static_cast<long>(no_out_task), static_cast<long>(no_out_spawn),
+                  static_cast<unsigned long>(b1 - b0));
+        TAP_CHECK(g_pu_task == -KOS_EPERM and g_pu_spawn == -KOS_EPERM and g_pu_staged == 0);
+        TAP_CHECK(no_out_task == -KOS_EINVAL and no_out_spawn == -KOS_EINVAL and b1 == b0);
+        TAP_CHECK(short_rc == -KOS_ENOMEM and shorted == KOS_TASK_NONE and r1 == r0);
+        TAP_CHECK(f1 == f0);
+        TAP_CHECK(bad_rc[PU_WINDOWS] == -KOS_EFAULT and bad_rc[PU_GRANT] == -KOS_EPERM
+                  and bad_rc[PU_AUTHORITY] == -KOS_EINVAL and bad_rc[PU_STACK] == -KOS_EINVAL);
+        TAP_CHECK(bad_rc[PU_HANDOFF] == -KOS_EPERM and bad_rc[PU_BOTH] == -KOS_EFAULT);
+        for (uint64_t const staged : bad_staged)
+        {
+            TAP_CHECK(staged == 0);
+        }
+        tap::diag("refused past its arguments: spawn %ld staging %lu granules",
+                  static_cast<long>(late_rc), static_cast<unsigned long>(l1 - l0));
+        TAP_CHECK(late_rc == -KOS_EBADF and l1 > l0 and f2 == f0);
+    }
+
+    // kos_thread_kill ends a call that keeps going round, at its next round, and the next
+    // thread in the killed one's slot inherits nothing of its record.
+    constexpr int CH_PC_FRAME = 1;
+    constexpr int CH_PC_SPACE = 2;
+    constexpr uint64_t PC_STEP_NS = 1000000u;
+    enum PcMode
+    {
+        PC_CANCEL,
+        PC_REUSE,
+        PC_MODES
+    };
+    int g_pc_mode = PC_CANCEL;
+    int32_t g_pc_kill = 99;
+    int32_t g_pc_join = 99;
+    int32_t g_pc_rc = 99;
+    uint64_t g_pc_rounds = 99;
+    uint32_t g_pc_slot[PC_MODES] = {};
+    volatile int g_pc_returned = 0;
+    void pc_victim(void*) // caps: frame@1, space@2
+    {
+        uint64_t const r0 = pr_refusals();
+        if (g_pc_mode == PC_CANCEL)
+        {
+            pr_drop_next(PR_DROPS_FOREVER);
+        }
+        g_pc_rc = kos_frame_map(CH_PC_FRAME, CH_PC_SPACE, g_pr_va, KOS_MEM_NOCACHE);
+        g_pc_rounds = pr_refusals() - r0;
+        if (g_pc_rc == 0)
+        {
+            (void)kos_frame_unmap(CH_PC_FRAME, CH_PC_SPACE, g_pr_va);
+        }
+        g_pc_returned = 1;
+    }
+    void pc_killer(void*) // caps: done@1, frame@2, space@3
+    {
+        uint64_t const r0 = pr_refusals();
+        kos_cap_grant const caps[] = {{2, KOS_CAP_TRANSFER}, {3, KOS_CAP_TRANSFER}};
+        auto const victim = kos::thread::create_caps(
+            pc_victim, nullptr, "pcv", PR_PRIO - 1, caps, 2, KOS_POLICY_FIFO, 0, false, nullptr,
+            0, KOS_AUTH_MEMORY, nullptr, KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+        if (victim.valid())
+        {
+            g_pc_slot[g_pc_mode] = victim.id() & 0xFFFFu;
+            if (g_pc_mode == PC_CANCEL)
+            {
+                // Killed only once its call has gone round, wherever the host held this core.
+                uint64_t const give_up = kos_clock_now() + STALL_TOLERANT_US * 1000ull;
+                while (pr_refusals() == r0 and kos_clock_now() < give_up)
+                {
+                    kos_sleep_ns(PC_STEP_NS);
+                }
+                g_pc_kill = kos_thread_kill(victim.id());
+                g_pc_join = victim.join(STALL_TOLERANT_US);
+            }
+            else
+            {
+                g_pc_join = victim.join(STALL_TOLERANT_US);
+                if (g_pc_join != 0)
+                {
+                    g_pc_kill = kos_thread_kill(victim.id());
+                }
+            }
+            if (g_pc_join != 0 and victim.join(UA_US) != 0)
+            {
+                (void)kos_thread_slay(victim.id(), UA_US);
+            }
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void pc_round(int mode, kos_cap_t fcap, kos_cap_t acap)
+    {
+        g_pc_mode = mode;
+        g_pc_kill = 99;
+        g_pc_join = 99;
+        g_pc_rc = 99;
+        g_pc_rounds = 99;
+        g_pc_returned = 0;
+        kos_cap_grant const caps[] = {{g_done, CH_FULL},
+                                      {fcap, KOS_CAP_TRANSFER},
+                                      {acap, KOS_CAP_TRANSFER}};
+        auto const killer = kos::thread::create_caps(
+            pc_killer, nullptr, "pck", PR_PRIO, caps, 3, KOS_POLICY_FIFO, 0, false, nullptr, 0,
+            KOS_AUTH_MEMORY, nullptr, KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+        TAP_CHECK(killer.valid());
+        if (killer.valid())
+        {
+            wait_n(1);
+            (void)killer.join(UA_US);
+        }
+        settle_exits();
+    }
+    void t_presync_cancel()
+    {
+        settle_exits();
+        if (not pr_syncs())
+        {
+            tap::skip("no cacheable kernel view of a non-cacheable frame here");
+            return;
+        }
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, PR_PAGES);
+        g_pr_va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, PR_PAGES);
+        if (seed == 0 or g_pr_va == 0)
+        {
+            tap::skip("no frame run left");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        uint64_t const r0 = pr_refusals();
+        pc_round(PC_CANCEL, fcap, acap);
+        int32_t const kill = g_pc_kill;
+        int32_t const join = g_pc_join;
+        int const returned = g_pc_returned;
+        uint64_t const rounds = pr_refusals() - r0;
+        pc_round(PC_REUSE, fcap, acap);
+        (void)kos_handle_close(fcap);
+        (void)kos_handle_close(acap);
+        tap::diag("killed while going round: kill %ld, join %ld, returned %d, %lu rounds",
+                  static_cast<long>(kill), static_cast<long>(join), returned,
+                  static_cast<unsigned long>(rounds));
+        tap::diag("its slot %u reused by slot %u: map %ld after %lu rounds, returned %d",
+                  static_cast<unsigned>(g_pc_slot[PC_CANCEL]),
+                  static_cast<unsigned>(g_pc_slot[PC_REUSE]), static_cast<long>(g_pc_rc),
+                  static_cast<unsigned long>(g_pc_rounds), g_pc_returned);
+        TAP_CHECK(kill == 0 and join == 0 and returned == 0);
+        TAP_CHECK(rounds > 0);
+        TAP_CHECK(g_pc_slot[PC_REUSE] == g_pc_slot[PC_CANCEL]);
+        TAP_CHECK(g_pc_returned == 1 and g_pc_rc == 0 and g_pc_rounds == 0);
+    }
+
+    // A spawn whose parameters or window list were unreadable at its entry fails, and is not
+    // sent round by a sibling mapping them before its locked pass.
+    constexpr uint64_t PR_IDLE_WINDOW = 1ull << 25;
+    int32_t g_pl_rc = 99;
+    uint64_t g_pl_rounds = 99;
+    int32_t g_pl_kill = 99;
+    volatile int g_pl_returned = 0;
+    void pl_victim(void* arg)
+    {
+        uint64_t const r0 = pr_refusals();
+        (void)kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_ARM,
+                               static_cast<uint64_t>(PR_LINE) | PR_IDLE_WINDOW);
+        kos_thread_t child = KOS_THREAD_NONE;
+        g_pl_rc = kos_thread_create(static_cast<kos_thread_params const*>(arg), &child);
+        g_pl_rounds = pr_refusals() - r0;
+        g_pl_returned = 1;
+    }
+    void pl_watcher(void* arg) // caps: done@1
+    {
+        auto const victim = kos::thread::create_caps(
+            pl_victim, arg, "plv", PR_PRIO - 1, nullptr, 0, KOS_POLICY_FIFO, 0, false, nullptr,
+            0, KOS_AUTH_MEMORY | KOS_AUTH_TASKS, nullptr, KOS_TASK_NONE, nullptr, 0,
+            TAP_PIN_CORE);
+        if (victim.valid() and victim.join(STALL_TOLERANT_US) != 0)
+        {
+            g_pl_kill = kos_thread_kill(victim.id());
+            if (victim.join(UA_US) != 0)
+            {
+                (void)kos_thread_slay(victim.id(), UA_US);
+            }
+        }
+        kos_sem_post(CH_DONE);
+    }
+    struct PlRun
+    {
+        int32_t woke;
+        int32_t map;
+        int32_t rc;
+        uint64_t rounds;
+        int returned;
+        int32_t kill;
+    };
+    // The editor maps the frame capability at g_pr_va in the victim's window and copies `src`
+    // there.
+    PlRun pl_run(kos_cap_t note, kos_cap_t fcap, kos_cap_t acap, void const* src, size_t len,
+                 kos_thread_params const* params)
+    {
+        PlRun out = {99, 99, 99, 99, 0, 99};
+        g_pl_src = src;
+        g_pl_len = len;
+        g_pl_rc = 99;
+        g_pl_rounds = 99;
+        g_pl_kill = 99;
+        g_pl_returned = 0;
+        g_pr_main = kos_thread_self();
+        g_pr = {PR_LATE_PARAMS, nullptr, 0, 99, 99, 99, 99, 99};
+        kos_cap_grant const ecaps[] = {{g_done, CH_FULL},
+                                       {note, CH_FULL},
+                                       {fcap, KOS_CAP_TRANSFER},
+                                       {acap, KOS_CAP_TRANSFER}};
+        auto const editor =
+            irq_spawn(pr_editor, nullptr, "pled", PR_PRIO, ecaps, 4, KOS_POLICY_FIFO, 0, false,
+                      nullptr, 0, KOS_AUTH_MEMORY | KOS_AUTH_TASKS);
+        if (not editor.valid())
+        {
+            return out;
+        }
+        wait_n(1);
+        kos_cap_grant const wcaps[] = {{g_done, CH_FULL}};
+        auto const watcher =
+            irq_spawn(pl_watcher, const_cast<kos_thread_params*>(params), "plw", PR_PRIO, wcaps,
+                      1, KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_MEMORY | KOS_AUTH_TASKS);
+        if (watcher.valid())
+        {
+            wait_n(2);
+            (void)watcher.join(UA_US);
+        }
+        (void)editor.join(UA_US);
+        settle_exits();
+        (void)kos_frame_unmap(fcap, acap, g_pr_va);
+        out = {g_pr.woke, g_pr.rc, g_pl_rc, g_pl_rounds, g_pl_returned, g_pl_kill};
+        return out;
+    }
+    void t_presync_late_params()
+    {
+        settle_exits();
+        kos_task_t warm = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &warm) == 0)
+        {
+            (void)kos_task_kill(warm);
+        }
+        uint64_t const seed = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED, 1);
+        g_pr_va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, 1);
+        void* const grant = pu_grant();
+        void* const target = snp_block();
+        PrLine line;
+        if (seed == 0 or g_pr_va == 0 or grant == nullptr or target == nullptr or not line.ok)
+        {
+            tap::skip("no frame run, reservation, line or notification left");
+            return;
+        }
+        kos_cap_t const fcap = static_cast<kos_cap_t>(seed & 0xFFFFFFFFull);
+        kos_cap_t const acap = static_cast<kos_cap_t>(seed >> 32);
+        static kos_thread_params params = {};
+        params = {};
+        params.entry = ua_noop;
+        params.name = "pll";
+        params.prio = 10;
+        params.mem_base = grant;
+        params.mem_size = 64;
+        PlRun run[2] = {};
+        run[0] = pl_run(line.note, fcap, acap, &params, sizeof(params),
+                        reinterpret_cast<kos_thread_params const*>(g_pr_va));
+        kos_window const win = {reinterpret_cast<uintptr_t>(target), SNP_BLK, KOS_WINDOW_MEMORY,
+                                0};
+        static kos_thread_params windowed = {};
+        windowed = params;
+        windowed.windows = reinterpret_cast<kos_window const*>(g_pr_va);
+        windowed.window_count = 1;
+        run[1] = pl_run(line.note, fcap, acap, &win, sizeof(win), &windowed);
+        (void)kos_handle_close(fcap);
+        (void)kos_handle_close(acap);
+        char const* const names[2] = {"parameters", "window list"};
+        for (int i = 0; i < 2; i++)
+        {
+            tap::diag("%s mapped in the window: woke %ld, map %ld; spawn %ld after %lu rounds"
+                      " sent back, returned %d, kill %ld",
+                      names[i], static_cast<long>(run[i].woke), static_cast<long>(run[i].map),
+                      static_cast<long>(run[i].rc), static_cast<unsigned long>(run[i].rounds),
+                      run[i].returned, static_cast<long>(run[i].kill));
+            TAP_CHECK(run[i].woke == 0 and run[i].map == 0);
+            TAP_CHECK(run[i].returned == 1 and run[i].rc == -KOS_EFAULT and run[i].rounds == 0);
+        }
+    }
+
+    // A reservation's clear and a new space's copy of the image's static data run outside the
+    // lock with an interrupt window per granule: an interrupt pending at the start is taken
+    // while the call is still in its system call.
+    void t_out_of_lock_windows()
+    {
+        settle_exits();
+        uint64_t const g = static_cast<uint64_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        uint32_t const bytes = static_cast<uint32_t>(PR_PAGES * g);
+        PrLine line;
+        if (not line.ok)
+        {
+            tap::skip("no line or notification left");
+            return;
+        }
+        // The snapshot is taken once, under the lock, by the first explicit task.
+        kos_task_t warm = KOS_TASK_NONE;
+        if (kos_task_create(nullptr, 0, 0, &warm) == 0)
+        {
+            (void)kos_task_kill(warm);
+        }
+        g_pr_main = kos_thread_self();
+        void* got = nullptr;
+        uint64_t const l0 = kos_aspace_probe(KOS_ASPACE_OP_LOCKED_PAGES, 0);
+        uint64_t const w0 = pr_own_windows();
+        uint64_t const s0 = pr_granules();
+        uint64_t const g0 = pr_staged();
+        PrRun const clear = pr_run(line.note, KOS_CAP_NONE, KOS_CAP_NONE, PR_WATCH, nullptr, 0,
+                                   [&] {
+                                       got = kos_ram_alloc(bytes);
+                                       return 0;
+                                   });
+        uint64_t const g1 = pr_staged();
+        kos_task_t t = KOS_TASK_NONE;
+        PrRun const copy = pr_run(line.note, KOS_CAP_NONE, KOS_CAP_NONE, PR_WATCH, nullptr, 0,
+                                  [&] { return kos_task_create(nullptr, 0, 0, &t); });
+        uint64_t const g2 = pr_staged();
+        (void)kos_task_kill(t);
+        PrRun const spawn = pr_run(line.note, KOS_CAP_NONE, KOS_CAP_NONE, PR_WATCH, nullptr, 0,
+                                   [&] {
+                                       if (got == nullptr)
+                                       {
+                                           return static_cast<int>(-KOS_ENOMEM);
+                                       }
+                                       auto const c = kos::thread::create(
+                                           ua_noop, nullptr, "pri", 10, KOS_POLICY_FIFO, 0,
+                                           false, got, bytes);
+                                       int const rc = c.error();
+                                       if (c.valid())
+                                       {
+                                           (void)c.join(UA_US);
+                                       }
+                                       return rc;
+                                   });
+        uint64_t const g3 = pr_staged();
+        uint64_t const windows = pr_own_windows() - w0;
+        uint64_t const synced = pr_granules() - s0;
+        uint64_t const locked = kos_aspace_probe(KOS_ASPACE_OP_LOCKED_PAGES, 0) - l0;
+        uint64_t const masked = kos_aspace_probe(KOS_ASPACE_OP_PRESYNC_MASKED, 0);
+        settle_exits();
+        tap::diag("clear of %lu granules: woke %ld in the call %d; image copy at task create:"
+                  " woke %ld in the call %d, %lu granules; at a spawn: woke %ld in the call %d,"
+                  " %lu granules",
+                  static_cast<unsigned long>(g1 - g0), static_cast<long>(clear.seen.woke),
+                  clear.seen.in_call, static_cast<long>(copy.seen.woke), copy.seen.in_call,
+                  static_cast<unsigned long>(g2 - g1), static_cast<long>(spawn.seen.woke),
+                  spawn.seen.in_call, static_cast<unsigned long>(g3 - g2));
+        tap::diag("main's own windows %lu over %lu granules, %lu under the lock; at most %lu ns"
+                  " between two windows",
+                  static_cast<unsigned long>(windows),
+                  static_cast<unsigned long>((g3 - g0) + synced),
+                  static_cast<unsigned long>(locked), static_cast<unsigned long>(masked >> 32));
+        TAP_CHECK(got != nullptr and g1 - g0 == PR_PAGES);
+        TAP_CHECK(clear.seen.woke == 0 and clear.seen.in_call == 1);
+        TAP_CHECK(copy.rc == 0 and copy.seen.woke == 0 and copy.seen.in_call == 1 and g2 > g1);
+        TAP_CHECK(spawn.rc == 0 and spawn.seen.woke == 0 and spawn.seen.in_call == 1
+                  and g3 - g2 == g2 - g1);
+        TAP_CHECK(windows == (g3 - g0) + synced);
+        TAP_CHECK(locked == 0);
     }
 
     // New processes copy the saved startup globals, never a live process's mutable data.
@@ -3641,6 +5045,101 @@ namespace selftest
                   static_cast<unsigned>((post >> 32) - (pre >> 32)));
         TAP_CHECK((post >> 32) > (pre >> 32));
     }
+
+#if KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
+    // Translation rendezvous initiated by every core since boot, which on this backend are the
+    // shootdown round trips.
+    uint64_t rendezvous_total()
+    {
+        uint64_t const width = kos_doorbell_probe(KOS_DOORBELL_OP_WIDTH, 0);
+        uint64_t sum = 0;
+        for (uint64_t c = 0; c < width; c++)
+        {
+            sum += kos_doorbell_probe(KOS_DOORBELL_OP_COUNTS, static_cast<uint32_t>(c)) >> 32;
+        }
+        return sum;
+    }
+
+    void rendezvous_parker(void*) // caps: ready@1, park@2
+    {
+        kos_sem_post(KOS_SPAWN_DELEGATED_CAP0);
+        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0 + 1);
+        kos_exit(0);
+    }
+
+    // The round trips a mapping change makes to the other cores do not grow with its page count:
+    // a grant of many granules costs what a grant of one does, and a thread's exit, which
+    // unmaps its whole stack, costs fewer than that stack has granules. The counters sum every
+    // core, so no other thread may change a mapping inside a sample.
+    void t_shootdown_per_change()
+    {
+        uintptr_t const g = static_cast<uintptr_t>(kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0));
+        constexpr uint32_t MANY = 8;
+        void* const one = kos_ram_alloc(g);
+        void* const many = kos_ram_alloc(g * MANY);
+        if (one == nullptr or many == nullptr)
+        {
+            tap::skip("no reservation left for the two grants");
+            return;
+        }
+        settle_exits();
+        uint64_t const t0 = rendezvous_total();
+        TAP_CHECK(kos_mem_self_grant(one, g, 0) == 0);
+        uint64_t const t1 = rendezvous_total();
+        TAP_CHECK(kos_mem_self_grant(many, g * MANY, 0) == 0);
+        uint64_t const t2 = rendezvous_total();
+        uint32_t const for_one = static_cast<uint32_t>(t1 - t0);
+        uint32_t const for_many = static_cast<uint32_t>(t2 - t1);
+
+        kos_cap_t ready = KOS_CAP_NONE;
+        kos_cap_t park = KOS_CAP_NONE;
+        kos_task_t task = KOS_TASK_NONE;
+        if (kos_sem_create(0, &ready) != 0 or kos_sem_create(0, &park) != 0
+            or kos_task_create(nullptr, 0, 0, &task) != 0)
+        {
+            if (ready != KOS_CAP_NONE)
+            {
+                (void)kos_handle_close(ready);
+            }
+            if (park != KOS_CAP_NONE)
+            {
+                (void)kos_handle_close(park);
+            }
+            tap::partial("no semaphore or task for the exit half");
+            return;
+        }
+        kos_cap_grant const caps[2] = {{ready, KOS_CAP_SIGNAL}, {park, KOS_CAP_WAIT}};
+        auto const parker = kos::thread::create(rendezvous_parker, nullptr, "rvx", 10,
+                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                nullptr, 0, nullptr, 0, nullptr, 0, caps, 2,
+                                                /*authority=*/0, /*cap_dest=*/nullptr, task);
+        if (not parker.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)kos_handle_close(ready);
+            (void)kos_handle_close(park);
+            tap::partial("pool too small for the exiting thread");
+            return;
+        }
+        kos_sem_wait(ready);
+        uint64_t const e0 = rendezvous_total();
+        kos_sem_post(park);
+        int const joined = parker.join(STALL_TOLERANT_US);
+        settle_exits();
+        uint64_t const e1 = rendezvous_total();
+        TAP_CHECK(kos_task_kill(task) == 0);
+        TAP_CHECK(kos_handle_close(ready) == 0);
+        TAP_CHECK(kos_handle_close(park) == 0);
+        uint32_t const for_exit = static_cast<uint32_t>(e1 - e0);
+        uint32_t const stack_granules = static_cast<uint32_t>(KICKOS_SELFTEST_USER_STACK_SIZE / g);
+        tap::diag("round trips: grant of 1 granule %u, of %u granules %u, thread exit %u "
+                  "(stack of %u granules)",
+                  for_one, MANY, for_many, for_exit, stack_granules);
+        TAP_CHECK(joined == 0);
+        TAP_CHECK(for_one > 0 and for_many == for_one);
+        TAP_CHECK(for_exit > 0 and for_exit < stack_granules);
+    }
+#endif
 
     // Every installed root must be the boot root or belong to a live domain. A thread without a
     // space must restore the boot root before the old process tables can be freed.

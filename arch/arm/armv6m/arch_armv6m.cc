@@ -86,6 +86,11 @@ static_assert(KICKOS_ARMV6M_TRAP_NEST_SVCK
 // measured as SVCK and the SVC class declares no roots.
 static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC == 0,
               "a nonzero SVC descent needs roots in tests/static/trap_redzone_roots.txt");
+// The spawn stages its grant list on the kernel block, and _SVCK holds the list it was
+// measured at (armv6m_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+              "KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK was measured at a spawn staging 9 grants on "
+              "the kernel block: re-measure with tests/static/check_trap_redzone.sh first");
 // Handler mode rather than a measurement: ARMv6-M forces SP_main there, so everything
 // PendSV_Handler calls runs on the MSP.
 static_assert(KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV == 0,

@@ -149,6 +149,25 @@ namespace kickos
         return false;
     }
 
+    bool VirtualRanges::set_sync_owed(uintptr_t base, bool owed)
+    {
+        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        {
+            if (ranges_[i].state == VirtualState::Free or ranges_[i].base != base)
+            {
+                continue;
+            }
+            uint8_t f = static_cast<uint8_t>(ranges_[i].flags & ~VR_SYNC_OWED);
+            if (owed)
+            {
+                f = static_cast<uint8_t>(f | VR_SYNC_OWED);
+            }
+            ranges_[i].flags = f;
+            return true;
+        }
+        return false;
+    }
+
     bool VirtualRanges::release(uintptr_t base)
     {
         for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)

@@ -27,6 +27,9 @@ endif()
 set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
+if(NOT "@KICKOS_CHIP_ESPTOOL_IMAGE@" STREQUAL "")
+  set(KICKOS_CHIP_ESPTOOL_IMAGE "@KICKOS_CHIP_ESPTOOL_IMAGE@")
+endif()
 
 # The export manifest a composition is admitted against, with the descriptions it names under
 # platform/ beside it.

@@ -6,9 +6,10 @@
  *
  * A RING 3 ENTRY BUILDS ITS FRAME ON THE THREAD'S KERNEL BLOCK: the interrupt gate through the
  * task-state segment's rsp0, the syscall entry through the per-core block. The gate clears the
- * interrupt flag and IA32_FMASK clears it for SYSCALL, so nothing nests on a block under IRQK or
- * SYSK. A RING 0 INTERRUPT RUNS ITS WHOLE DISPATCH ON THE STACK IT INTERRUPTED: idle's, a
- * privileged thread's own, or a death-path stub's block. The double fault, the NMI and the
+ * interrupt flag and IA32_FMASK clears it for SYSCALL, so nothing nests on a block under IRQK,
+ * and under SYSK only below arch_irq_window (SYSWIN). A RING 0 INTERRUPT RUNS ITS WHOLE
+ * DISPATCH ON THE STACK IT INTERRUPTED: idle's, a privileged thread's own, or a death-path stub's
+ * block. The double fault, the NMI and the
  * machine check take interrupt-stack-table slots of their own (desc.h).
  *
  * A PRIVILEGED CALLER'S SYSCALL IS A CALL: karch_syscall jumps straight to the dispatch on the
@@ -21,9 +22,9 @@
  *
  * Each figure is the deepest reading over the x86_64 presets at its core count AND over the
  * compilers the tree builds with: CI's g++ 13 frames run deeper than g++ 16's on the syscall
- * and interrupt chains, and a reservation holds for both. Thread-stack figures are rounded
- * up to the next multiple of 64, kernel-block ones stay at the measurement, and the arrays
- * sized once per image take the next multiple of 64 strictly above. x86_64 gcc counts a
+ * and interrupt chains, and a reservation holds for both. Each class is reserved above that
+ * reading, at the next multiple of 64 or at a round figure, and the arrays sized once per image
+ * take the next multiple of 64 strictly above. x86_64 gcc counts a
  * function's own return-address slot in its frame, so the assembly bodies below do too.
  */
 
@@ -32,10 +33,9 @@
 
 /* The KickOS toolchain's x86_64-elf GCC 16.2 (docs/design-m10-toolchain.md) builds deeper
  * frames than the host compilers the figures below were first measured under. Where it did, the
- * class is reserved at a round figure above its measurement, frame size being no constraint on
- * x86 (maintainer, 2026-09-30). On qemu-x86_64-bench it measures IRQ, IRQK and IST 592, EXITK and
- * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1200, RET 1168, SYSK 2368
- * and PANIC 608. */
+ * class is reserved at a round figure above its measurement. On qemu-x86_64-bench it measures
+ * IRQ, IRQK and IST 592, EXITK and EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672,
+ * EXITK 1200, RET 1168, SYSK 2400 and PANIC 608. */
 
 /* struct trap_frame, the frame every entry builds from a 16-byte-aligned top: five hardware
  * words, the stub's error code and vector, fifteen registers. arch_x86_64.cc asserts it. */
@@ -61,18 +61,32 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 824
 
-/* The ring 3 syscall on the block. 1864 on qemu-x86_64, a spawn seeding the new task's space,
- * and 1880 on qemu-x86_64-bench, whose 32-slot root table widens spawn_masked to 528:
- *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
+/* The ring 3 syscall on the block. 1880 on qemu-x86_64, a spawn staging 9 grants and seeding
+ * the new task's space, and 1896 on qemu-x86_64-bench, whose 32-slot root table widens
+ * spawn_masked to 528; arch_x86_64.cc refuses more than 9 grants:
+ *   syscall_dispatch[144] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
  *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
  *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1880
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1920
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1864 on
+/* An interrupt nested below arch_irq_window, the one place a ring 3 syscall opens interrupts on
+ * the block: the syscall entry's frame and a ring 0 interrupt's whole extent, FRAME + NEST, which
+ * arch_x86_64.cc asserts. */
+#define KICKOS_X86_64_TRAP_WINDOW 1000
+
+/* The syscall's descent to arch_irq_window, above SYSWIN's frame. 376 on qemu-x86_64-bench and
+ * the multicore presets, 360 on qemu-x86_64:
+ *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[176]
+ *   -> GranuleWindows::granule[32] -> arch_irq_window[8]
+ * WINDOW + 512 = 1512 against 4092 above the canary, and 1128 + 512 = 1640 on the multicore
+ * presets. */
+#define KICKOS_X86_64_TRAP_DEPTH_SYSWIN 512
+
+/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1880 on
  * qemu-x86_64, down SYSK's chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1920
 
-/* The same dispatch through the switch: 1864 on qemu-x86_64, down SYSPRIV's chain. */
+/* The same dispatch through the switch: 1880 on qemu-x86_64, down SYSPRIV's chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1920
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
@@ -114,14 +128,16 @@
 #define KICKOS_X86_64_TRAP_DEPTH_IRQ 768
 #undef KICKOS_X86_64_TRAP_NEST
 #define KICKOS_X86_64_TRAP_NEST 952
+#undef KICKOS_X86_64_TRAP_WINDOW
+#define KICKOS_X86_64_TRAP_WINDOW 1128
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK, SYSPRIV and SYSPRIVSW measure 2384 on qemu-x86_64-smp12, a spawn seeding the new task's
+/* SYSK, SYSPRIV and SYSPRIVSW measure 2400 on qemu-x86_64-smp12, a spawn seeding the new task's
  * space from a 32-slot root table. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2384
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2432
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2384
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2432
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK

@@ -20,7 +20,7 @@ TASK_FIELDS = (
 )
 SHARED_FIELDS = ("name", "size", "cache", "partition")
 SHARED_REQUIRED = ("name", "size", "cache")
-AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks")
+AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master")
 NOT_NEEDED = {
     "no_protection": ("a build that enforces nothing or a unit `none`, and every unit here translates, "
                       "which no build turns off"),
@@ -243,7 +243,8 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     elif base is not None:
         heap = base.heap
     elif not board_less:
-        f.refuse(root, "form.missing", "the composition needs `heap`")
+        f.refuse(root, "form.missing", "the composition needs `heap`, the bytes of libc heap its image carves "
+                 "(0 for none); a composition naming no `board` inherits its build board's")
     stack = None
     if base is not None:
         stack = base.stack
@@ -364,7 +365,7 @@ def board_default(report, manifest):
     if root is None:
         return None
     top = g.fields(root, "the composition", COMPOSITION_FIELDS, ("heap", "tasks"))
-    if top is None:
+    if top is None or "tasks" not in top:
         return None
     base = BoardDefault()
     if "heap" in top:
@@ -634,10 +635,12 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
         task.ceiling = f.integer(values["ceiling"], "%s ceiling" % what, 8)
         if task.ceiling is not None and task.priority is not None and task.ceiling < task.priority:
             f.refuse(values["ceiling"], "scheduling.ceiling",
-                     "%s ceiling %d is below its priority %d, which its entry thread runs at"
+                     "%s ceiling %d, the highest priority its threads may take, is below its priority %d, which "
+                     "its entry thread runs at; the usual value is the kernel build's top priority"
                      % (what, task.ceiling, task.priority))
     elif "entry" in values and "driver" not in values:
-        f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `ceiling`" % what)
+        f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `ceiling`, the highest priority its threads "
+                 "may take; the usual value is the kernel build's top priority" % what)
     if "core" in values:
         core = f.integer(values["core"], "%s core" % what, 16)
         if core is not None and core >= CORES:
@@ -992,7 +995,7 @@ def check_ports(f, tasks, manifest):
             if port == AMP_PORT_REPLY:
                 reason = "port %d, which the window layer keeps for replies" % AMP_PORT_REPLY
             elif not nodes:
-                reason = "a port the kernel build's partition list does not name"
+                reason = "a port the kernel build's partition list does not name; it names %s" % port_ranges(servers)
             elif len(nodes) > 1:
                 reason = "a port the partition list names for nodes %s, so no one node serves it" % (
                     ", ".join(str(n) for n in nodes))
@@ -1001,6 +1004,28 @@ def check_ports(f, tasks, manifest):
                     nodes[0], manifest.amp_node)
             if reason is not None:
                 f.refuse(node, "partition.port", "%s %s `%s`, %s" % (task.label(), verb, path, reason))
+
+
+def port_ranges(servers):
+    """The ports of `servers` as `a..b` runs, or `no port`."""
+    ports = sorted(servers)
+    if not ports:
+        return "no port"
+    runs = []
+    first = ports[0]
+    last = ports[0]
+    for port in ports[1:] + [None]:
+        if port is not None and port == last + 1:
+            last = port
+            continue
+        if first == last:
+            runs.append("%d" % first)
+        else:
+            runs.append("%d..%d" % (first, last))
+        if port is not None:
+            first = port
+            last = port
+    return "port " + ", ".join(runs)
 
 
 def check_partitioned(f, tasks, shared, manifest, partition):
@@ -1014,7 +1039,8 @@ def check_partitioned(f, tasks, shared, manifest, partition):
         elif region.partition and manifest.amp_nodes is not None and not partition:
             f.refuse(region.node, "partition.lone",
                      "partition region `%s` is placed by the partition build, and this composition is admitted "
-                     "apart from its partition: name every node's with PARTITION" % region.path)
+                     "apart from its partition: admit every node's with `kickos_compose partition`, or "
+                     "kickos_compose(... PARTITION ...) in CMake" % region.path)
     if manifest.amp_nodes is None or partition or manifest.amp_image == "shared":
         return
     for task in tasks:
@@ -1025,7 +1051,8 @@ def check_partitioned(f, tasks, shared, manifest, partition):
             if amp_port(path) is not None:
                 f.refuse(node, "partition.lone",
                          "%s names crossing `%s`, which the partition build delegates, and this composition is "
-                         "admitted apart from its partition: name every node's with PARTITION" % (task.label(), path))
+                         "admitted apart from its partition: admit every node's with `kickos_compose partition`, or "
+                         "kickos_compose(... PARTITION ...) in CMake" % (task.label(), path))
 
 
 def check_restart(f, top, named):

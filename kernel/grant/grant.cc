@@ -87,7 +87,21 @@ namespace kickos
         }
         return false;
     }
+
 #endif
+
+    bool grant_window_bus_master(uintptr_t base, size_t size)
+    {
+        uintptr_t const last = base + size - 1u;
+        for (struct arch_reserved_block const& a : arch_bus_master_apertures())
+        {
+            if (grant_ranges_overlap(base, last, a.base, a.base + a.size - 1u))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized)

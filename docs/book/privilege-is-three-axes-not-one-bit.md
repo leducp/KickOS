@@ -154,6 +154,7 @@ of gates in the syscall surface, each guarding an act with fleet-wide consequenc
 | `AUTH_SYSTEM` | ending the system: shutdown and reboot |
 | `AUTH_CONSOLE` | taking over the console from the kernel |
 | `AUTH_TASKS` | creating a task, explicitly or by a spawn that builds one of its own |
+| `AUTH_BUS_MASTER` | granting a window over a device that reaches memory by physical address, past every unit |
 
 Where the cut falls between those rows is a design decision and not a listing
 order. Two of them look mergeable and are not. Retuning the clock and ending the

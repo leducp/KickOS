@@ -6,7 +6,8 @@
  * the gate reads each one as an immediate.
  *
  * A U-MODE TRAP BUILDS ITS FRAME ON THE THREAD'S KERNEL BLOCK and runs its dispatch there with
- * SIE clear, so nothing nests on a block under IRQK or SYSK. AN S-MODE INTERRUPT RUNS ITS WHOLE
+ * SIE clear, but for arch_irq_window, where a system call lets an interrupt nest on the block
+ * (SYSWIN); nothing nests under IRQK or SYSK otherwise. AN S-MODE INTERRUPT RUNS ITS WHOLE
  * DISPATCH ON THE STACK IT INTERRUPTED: idle's, a privileged thread's own, or a death-path
  * stub's kernel block. AN S-MODE EXCEPTION takes the per-hart trap stack.
  *
@@ -15,8 +16,9 @@
  * cut, and the switch with nothing below it.
  *
  * Each figure is the deepest reading over every rv64imac preset. Thread-stack figures are
- * rounded up to the next multiple of 64, kernel-block ones stay at the measurement, and the
- * two arrays sized once per hart or per image take the next multiple of 64 strictly above.
+ * rounded up to the next multiple of 64, kernel-block ones reserved at a round figure above the
+ * measurement, and the two arrays sized once per hart or per image take the next multiple of 64
+ * strictly above.
  * The page-table walks are charged four activations, sv48's, on the three-level presets too.
  */
 
@@ -42,15 +44,26 @@
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_RV64_TRAP_NEST 1152
 
-/* The U-mode ecall and the U-mode fault on the block. 1936 on qemu-riscv64-benchsmp and
- * -benchsmp2, a spawn seeding the child's tables:
- *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[144]
- *   -> task_for[32] -> domain_for[64] -> claim_slot[48] -> aspace_image_seed[176]
+/* The U-mode ecall and the U-mode fault on the block. 2000 on qemu-riscv64-benchsmp and
+ * -benchsmp2, a spawn staging 9 grants and seeding the child's tables:
+ *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[576] -> thread_create[144]
+ *   -> task_for[32] -> domain_for[64] -> claim_slot[64] -> aspace_image_seed[160]
  *   -> arch_aspace_map[80] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
- * 1712 on qemu-riscv64 and sv48. Reserved at 2048, above the measurement: frame size is no
- * constraint on rv64 (maintainer, 2026-09-30). */
+ * 1792 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2048,
+ * above the measurement. */
 #define KICKOS_RV64_TRAP_DEPTH_SYSK 2048
+
+/* An interrupt nested below arch_irq_window, the one place a system call opens interrupts on the
+ * block: the U-mode entry's frame and an interrupt's whole extent, FRAME + NEST, which
+ * arch_rv64imac.cc asserts. */
+#define KICKOS_RV64_TRAP_WINDOW 1408
+
+/* The system call's descent to arch_irq_window, above SYSWIN's frame. 352 on
+ * qemu-riscv64-bench, -benchsmp and -benchsmp2, 320 on qemu-riscv64, sv48 and smp:
+ *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[192] -> arch_irq_window[0]
+ * WINDOW + 1024 = 2432 against 4092 above the canary. */
+#define KICKOS_RV64_TRAP_DEPTH_SYSWIN 1024
 
 /* The per-hart trap stack: an S-mode exception's reporter, and the U-mode entry that found no
  * block. 896 on qemu-riscv64-benchsmp and -benchsmp2, down IRQ's console tail from

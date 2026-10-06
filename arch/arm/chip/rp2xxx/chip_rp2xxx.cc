@@ -104,7 +104,7 @@ namespace kickos::rp2xxx
             return false;
         }
         r32(reg::pll::PRIM) = reg::pll::PRIM_POSTDIV;
-        r32(reg::pll::PWR + ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD; // enable post-dividers
+        r32(reg::pll::PWR + ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
         return true;
     }
 }

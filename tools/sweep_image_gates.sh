@@ -59,7 +59,7 @@
 # THE EMULATOR IS NAMED. A missing qemu-system is SKIP_RETURN_CODE 77 at the test, so ctest
 # reports Skipped and exits 0: an emulator-less box would green this sweep while booting
 # nothing. Presets whose board needs an emulator are checked against the binary BEFORE the
-# build and skipped BY NAME. The board-to-emulator map is derived from kickos_qemu_machine
+# build and skipped BY NAME. The board-to-emulator map is each board file's `emulator`, read
 # through tests/static/board_emulators.cmake, so it cannot disagree with what a registration
 # spends. Any skip the
 # run reports anyway is counted and shown.
@@ -219,13 +219,12 @@ EMU_BOARDS="$(awk -F'\t' 'NF > 1 { print $2 }' "$PRESETS_TSV" | sort -u | paste 
 [ -n "$EMU_BOARDS" ] || die "the preset table named no board"
 cmake "-DSRC=$ROOT" "-DBOARDS=$EMU_BOARDS" "-DOUT=$EMU_TSV" \
     -P "$ROOT/tests/static/board_emulators.cmake" >/dev/null \
-    || die "could not derive the board-to-emulator map from kickos_qemu_machine"
+    || die "could not derive the board-to-emulator map from the board files"
 [ -s "$EMU_TSV" ] || die "the emulator map is empty; it would claim the fleet boots natively"
 
 # Echoes the emulator binary a board needs, or nothing when the board boots natively. The map
-# is DERIVED from kickos_qemu_machine, so this tool cannot disagree with what a registration
-# spends. Do not re-scrape it out of a CMakeLists: the app-side board lists it used to read
-# are gone, and a regex over a source file went stale silently.
+# is DERIVED from the board files, so this tool cannot disagree with what a registration
+# spends.
 emulator_for() {
     awk -F'\t' -v b="$1" '$1 == b { print $2; found = 1 } END { exit !found }' "$EMU_TSV"
     return 0

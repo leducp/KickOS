@@ -5,12 +5,14 @@
 //
 // Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
 // console for the unsent remainder when index 0 is empty (-KOS_EBADF) or the driver
-// has no receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). kos_print alone is not enough:
-// console_emit drops every byte
-// handed to the kernel console once the UART is USER_OWNED (kernel/init/console.cc).
+// has no receiver (-KOS_EAGAIN, -KOS_ECONNREFUSED). A receiver taking fewer bytes than a
+// chunk, none included, is offered the rest again on the endpoint. kos_print alone is not
+// enough: console_emit drops every byte handed to the kernel console once the UART is
+// USER_OWNED (kernel/init/console.cc). The kernel console answers -KOS_EBUSY where a publish
+// landed between the two and index 0 takes the line again, and the remainder is sent there.
 //
-// The same policy exists in tests/tap/tap.cc emit() and libc's _write
-// (user/src/newlib_stubs.cc); keep the three in step.
+// libc's _write (user/src/newlib_stubs.cc) and the TAP harness (tests/tap/tap.cc) write
+// through stdout_write below.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H
@@ -58,12 +60,19 @@ inline uint32_t g_dropped = 0;
 // one kconsole_write_all call, so a ring that never drains costs that call EMIT_DRAIN_NS
 // once rather than once per offer. Any byte accepted clears it again: that is the proof the
 // drain is alive. A real deadline never reads 0, kos_clock_now counting from boot.
-inline size_t offer(char const* s, size_t n, uint64_t& deadline)
+//
+// Stops at -KOS_EBUSY with `served` set: the rest belongs on this thread's stdout endpoint.
+inline size_t offer(char const* s, size_t n, uint64_t& deadline, bool& served)
 {
     size_t sent = 0;
     while (sent < n)
     {
         int32_t const w = kos_kconsole_write(s + sent, n - sent);
+        if (w == -KOS_EBUSY)
+        {
+            served = true;
+            break;
+        }
         if (w == -KOS_EAGAIN)
         {
             uint64_t const now = kos_clock_now();
@@ -138,7 +147,8 @@ inline void announce(uint64_t& deadline)
     }
     // SUBTRACT what was announced rather than clearing: a drop another thread recorded while
     // this marker was on the wire is still owed a marker of its own.
-    if (offer(line, k, deadline) == k)
+    bool served = false;
+    if (offer(line, k, deadline, served) == k)
     {
         g_dropped -= announced;
     }
@@ -146,21 +156,34 @@ inline void announce(uint64_t& deadline)
 
 }
 
-inline void kconsole_write_all(char const* s, size_t n)
+// The bytes of s the kernel console took. `served` is set where it refused the rest because
+// this thread's stdout endpoint takes it now, and those bytes are not counted as dropped.
+inline size_t kconsole_offer(char const* s, size_t n, bool& served)
 {
     uint64_t deadline = 0;
     emit_detail::announce(deadline);
-    size_t const sent = emit_detail::offer(s, n, deadline);
-    emit_detail::g_dropped += static_cast<uint32_t>(n - sent);
+    size_t const sent = emit_detail::offer(s, n, deadline, served);
+    if (not served)
+    {
+        emit_detail::g_dropped += static_cast<uint32_t>(n - sent);
+    }
+    return sent;
 }
 
-inline void emit(char const* s)
+inline void stdout_write(char const* s, size_t total);
+
+inline void kconsole_write_all(char const* s, size_t n)
 {
-    size_t total = 0;
-    while (s[total] != '\0')
+    bool served = false;
+    size_t const sent = kconsole_offer(s, n, served);
+    if (served)
     {
-        total++;
+        stdout_write(s + sent, n - sent);
     }
+}
+
+inline void stdout_write(char const* s, size_t total)
+{
     size_t sent = 0;
     while (sent < total)
     {
@@ -170,8 +193,10 @@ inline void emit(char const* s)
             chunk = KOS_EP_MSG_MAX;
         }
         long const r = kos_send(0, s + sent, chunk);
-        // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
-        if (r <= 0)
+        // A count short of the chunk, zero included, leaves the rest to be offered again. That
+        // is no spin: the rendezvous consumed the receive, so the next send parks until the
+        // driver receives again.
+        if (r < 0)
         {
             // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_ECONNREFUSED means the driver
             // died and nothing may restart it, and this cap is now the only thing pinning its
@@ -184,11 +209,28 @@ inline void emit(char const* s)
             }
             // Remainder only: resending from the start duplicates the chunks the driver
             // already took.
-            kconsole_write_all(s + sent, total - sent);
-            return;
+            bool served = false;
+            sent += kconsole_offer(s + sent, total - sent, served);
+            if (not served)
+            {
+                return;
+            }
+            // Never a spin on one state: each pass back needs the send to have found no
+            // receiver and the kernel console then to have found one.
+            continue;
         }
         sent += static_cast<size_t>(r);
     }
+}
+
+inline void emit(char const* s)
+{
+    size_t total = 0;
+    while (s[total] != '\0')
+    {
+        total++;
+    }
+    stdout_write(s, total);
 }
 
 }

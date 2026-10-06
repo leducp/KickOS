@@ -46,6 +46,12 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     parked_frame_hostile)
 endif()
 
+# The arms over the sync a system call makes outside the kernel lock, which rv64imac, having no
+# cacheable kernel view of a non-cacheable frame, never makes.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
+  list(APPEND KICKOS_EXPECT_SKIPS presync_retried presync_race presync_flip presync_cancel)
+endif()
+
 # The refusal arm caps its parked children at 24 (LR_PARK_CAP, selftest_aspace.cc), so a
 # thread pool wider than that can reach the cap before the refusal it measures. DERIVED and not
 # a posture list: qemu-arm64's benchsmp12 image and qemu-x86_64's bench and SMP images carry one.
@@ -96,6 +102,11 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1
    AND KICKOS_MAX_THREADS LESS ${_selftest_crowd})
   list(APPEND KICKOS_EXPECT_SKIPS slice_preempts_every_core threads_reach_every_core)
+endif()
+# task_dead_after_every_sweep and task_slay_after_every_sweep each hold a creator, an entry, a
+# sibling and a watcher beside main, and ask pool_can_host for the four before spawning.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_MAX_THREADS LESS 5)
+  list(APPEND KICKOS_EXPECT_SKIPS task_dead_after_every_sweep task_slay_after_every_sweep)
 endif()
 # reent_per_thread_cores holds one checker and two switchers at once.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_MAX_THREADS LESS 3)
@@ -214,6 +225,17 @@ math(EXPR _selftest_cap_seated "${_selftest_cap_seated} + ${_selftest_lifetime_c
 if(NOT _selftest_cap_seated LESS KICKOS_CAP_CHUNK_TARGET)
   list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
 endif()
+# amp_mint_reply_port holds the peer's echo port as a port the partition does not name. The
+# peer is amp_round_peer's: node 1 for node 0, node 0 for every other.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+  set(_selftest_amp_peer 0)
+  if(KICKOS_AMP_NODE_ID EQUAL 0)
+    set(_selftest_amp_peer 1)
+  endif()
+  if("${KICKOS_AMP_PORTS}" MATCHES "(^|,)${_selftest_amp_peer}:0(,|$)")
+    list(APPEND KICKOS_EXPECT_PARTIALS amp_mint_reply_port)
+  endif()
+endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs at least one arch_reserved_blocks entry, which the
   # qemu-riscv PMP port has and the host and mps2 parts do not.
@@ -318,12 +340,9 @@ endif()
 # Register each board's self-test image and expected arm count. A split board runs one image
 # per part; microbit is the only one of them with a QEMU machine, so it is the only one whose
 # later parts reach a gate here.
-# Keep TIMEOUT above check_qemu_selftest.sh's 180-second limit so the script
-# can report the failure before CTest stops it.
 if(NOT KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(TARGET selftest
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
-    TIMEOUT 240
     ARGS ${_selftest_arms})
   if(TEST ${_tag}_selftest)
     set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
@@ -336,7 +355,9 @@ if(_selftest_rebased AND TEST ${_tag}_selftest)
     COMMAND "${CMAKE_COMMAND}" -E env ${_rb_env} QEMU_MACHINE=${_rb_machine} ${_selftest_env}
             "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh"
             "${_selftest_rebased}" ${_selftest_arms})
-  set_tests_properties(${_tag}_selftest_rebased PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
+  set_tests_properties(${_tag}_selftest_rebased PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_qemu_timeout(${_tag}_selftest_rebased
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh")
 endif()
 
 # A split board's per-region sets, `<prefix>_skips_r<n>` and `<prefix>_partials_r<n>`, are
@@ -406,7 +427,6 @@ if(KICKOS_BOARD STREQUAL "microbit")
     list(JOIN _mb_partials "," _mb_partials)
     kickos_add_qemu_test(TARGET ${_img}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
-      TIMEOUT 240
       ARGS ${_mb_arms})
     set_property(TEST microbit_${_img} APPEND PROPERTY ENVIRONMENT
       "EXPECT_SKIPS=${_mb_skips}"
@@ -511,8 +531,10 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
         COMMAND "${CMAKE_COMMAND}" -E env ${_oot_qemu_env} QEMU_MACHINE=${_oot_qemu_machine}
                 "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh"
                 "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-      set_tests_properties(${_tag}_oot_mcu_app PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
+      set_tests_properties(${_tag}_oot_mcu_app PROPERTIES SKIP_RETURN_CODE 77
                                                           FIXTURES_REQUIRED kickos_build)
+      kickos_qemu_timeout(${_tag}_oot_mcu_app
+        "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh" WORK 300)
     endif()
   endif()
 endif()

@@ -22,5 +22,5 @@ endif()
 if(KICKOS_BOARD STREQUAL "qemu")
   kickos_add_qemu_test(NAME telemetry_qemu_structural TARGET tele_pingpong
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_qemu.py"
-    TIMEOUT 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
+    BOOTS 0 WORK 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
 endif()

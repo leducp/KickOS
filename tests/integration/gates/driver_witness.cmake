@@ -34,7 +34,9 @@ if(NOT KICKOS_DRIVER_WITNESS_SYSTEM STREQUAL "")
             "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_restart.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
             "${PROJECT_SOURCE_DIR}/${KICKOS_DRIVER_WITNESS_SYSTEM}" ${_dw_depth})
-  set_tests_properties(${_tag}_driver_restart PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  set_tests_properties(${_tag}_driver_restart PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_qemu_timeout(${_tag}_driver_restart
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_restart.sh" WORK 300)
 endif()
 if(NOT KICKOS_CONSOLE_WITNESS_SYSTEM STREQUAL "")
   add_test(NAME ${_tag}_console_restart
@@ -42,7 +44,9 @@ if(NOT KICKOS_CONSOLE_WITNESS_SYSTEM STREQUAL "")
             "${PROJECT_SOURCE_DIR}/tests/integration/check_console_restart.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
             "${PROJECT_SOURCE_DIR}/${KICKOS_CONSOLE_WITNESS_SYSTEM}")
-  set_tests_properties(${_tag}_console_restart PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  set_tests_properties(${_tag}_console_restart PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_qemu_timeout(${_tag}_console_restart
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_console_restart.sh" WORK 300)
 endif()
 if(NOT KICKOS_DRIVER_LINE_SYSTEM STREQUAL "")
   add_test(NAME ${_tag}_driver_line
@@ -50,5 +54,7 @@ if(NOT KICKOS_DRIVER_LINE_SYSTEM STREQUAL "")
             "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_line.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
             "${PROJECT_SOURCE_DIR}/${KICKOS_DRIVER_LINE_SYSTEM}")
-  set_tests_properties(${_tag}_driver_line PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+  set_tests_properties(${_tag}_driver_line PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_qemu_timeout(${_tag}_driver_line
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_line.sh" WORK 300)
 endif()

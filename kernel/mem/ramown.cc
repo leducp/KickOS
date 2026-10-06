@@ -21,6 +21,9 @@ namespace kickos
             // table stays in .bss, and a free slot spans nothing AND names no task.
             uint32_t size = 0;
             kos_task_t owner = KOS_TASK_NONE;
+#if KICKOS_ARCH_ARENA_DCACHE
+            bool sync_owed = false;
+#endif
         };
 
         constinit InstanceLocal<RamBlock[KICKOS_RAM_OWNER_SLOTS]> g_owners = {};
@@ -74,6 +77,9 @@ namespace kickos
         // block at the extent the descriptor covers.
         slot->size = static_cast<uint32_t>(rsz);
         slot->owner = tag;
+#if KICKOS_ARCH_ARENA_DCACHE
+        slot->sync_owed = false;
+#endif
         return p;
     }
 
@@ -108,6 +114,31 @@ namespace kickos
         return false;
     }
 
+#if KICKOS_ARCH_ARENA_DCACHE
+    bool ram_owner_sync_owed(uintptr_t base, size_t size)
+    {
+        for (RamBlock const& b : blocks())
+        {
+            if (b.size != 0 and b.sync_owed and base < b.base + b.size and b.base < base + size)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void ram_owner_set_sync_owed(uintptr_t base, size_t size, bool owed)
+    {
+        for (RamBlock& b : blocks())
+        {
+            if (b.size != 0 and base < b.base + b.size and b.base < base + size)
+            {
+                b.sync_owed = owed;
+            }
+        }
+    }
+#endif
+
 #if KICKOS_AMP_SHARE
     bool ram_owner_seat(Task const* owner, uintptr_t base, size_t size)
     {
@@ -125,6 +156,9 @@ namespace kickos
                 b.base = base;
                 b.size = static_cast<uint32_t>(size);
                 b.owner = tag;
+#if KICKOS_ARCH_ARENA_DCACHE
+                b.sync_owed = false;
+#endif
                 return true;
             }
         }

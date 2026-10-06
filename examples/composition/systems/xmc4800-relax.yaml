@@ -17,8 +17,7 @@
 #   * `restart` on the task `ends` names, whose one exit ends the system;
 #   * a grant the platform cannot enforce, unless the limitation the chip file names is listed
 #     under `accepts` (none is needed on the XMC4800);
-#   * a task writing stdout above the console's priority, the console rendezvous having no
-#     priority inheritance, or declared before the task `stdout` names;
+#   * a task writing stdout declared before the task `stdout` names;
 #   * a priority outside the kernel build's range, an `entry` task stating no `ceiling` or one
 #     below its `priority`, and counts and sizes past what the kernel build exports, a supply
 #     refusal naming the Kconfig knob that would have to grow.

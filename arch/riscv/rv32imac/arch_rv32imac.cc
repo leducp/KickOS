@@ -80,6 +80,14 @@ namespace kickos
 // RAISE it.
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV_PANIC_FRAME + KICKOS_RV_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
+#if not (KICKOS_BENCH or KICKOS_AMP_OWN_IMAGE)
+// The spawn stages its grant list on a privileged caller's stack, and _SYSPRIV holds the list
+// it was measured at (rv_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 11,
+              "KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV holds a spawn staging 11 grants on a "
+              "privileged caller's stack, and 12 measure past it: re-measure with "
+              "tests/static/check_trap_redzone.sh and raise the figure first");
+#endif
 // The link checks the same floor above idle's thread-local carve.
 static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
               "the switch frame does not fit this board's idle stack");

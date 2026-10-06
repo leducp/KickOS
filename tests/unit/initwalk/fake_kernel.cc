@@ -21,7 +21,8 @@ namespace fake
         constexpr size_t PAGE = 4096u;
         constexpr uint32_t ALL_RIGHTS = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
         constexpr uint32_t ALL_AUTHORITY = KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_PSTATE | KOS_AUTH_IRQ
-                                           | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS;
+                                           | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS
+                                           | KOS_AUTH_BUS_MASTER;
         // Past every walk's needs: a walk looping on an answer that never changes fails here
         // rather than hanging its test.
         constexpr size_t RUNAWAY = 100000u;

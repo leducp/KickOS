@@ -87,6 +87,11 @@ namespace kickos
         return 0;
     }
 
+    bool cap_console_serves(Thread const*)
+    {
+        return false;
+    }
+
     namespace sched
     {
         Thread* current()

@@ -10,6 +10,7 @@
 #include <kickos/arch/arch.h> // arch_syscall
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/sys/driver_service.h> // kickos::driver::trap
+#include <kickos/sys/emit.h> // kickos::kconsole_write_all, kickos::stdout_write
 
 #if KICKOS_LIBC_REENT
 #include <errno.h>
@@ -227,19 +228,69 @@ namespace
     }
 
 
+    // A short count, or -KOS_EAGAIN, leaves the rest of s to the caller, and -KOS_EBUSY all of
+    // it to this thread's stdout; any other refusal leaves nothing to send.
+    void write_rest(char const* s, size_t n, int32_t took)
+    {
+        size_t sent = 0;
+        if (took > 0)
+        {
+            sent = static_cast<size_t>(took);
+        }
+        else if (took == -KOS_EBUSY)
+        {
+            kickos::stdout_write(s, n);
+            return;
+        }
+        else if (took != -KOS_EAGAIN)
+        {
+            return;
+        }
+        if (sent < n)
+        {
+            kickos::kconsole_write_all(s + sent, n - sent);
+        }
+    }
+
+    // A count the console legally answers for a line of n bytes shorter than one syscall
+    // chunk: a published console hands a served thread's line back to its stdout, a
+    // partition's claim can end inside it, and anything else takes it whole. A hand-back is
+    // checked against the endpoint, whose zero-length send is taken only where it serves.
+    bool console_count_ok(int32_t took, size_t n)
+    {
+        if (took == -KOS_EBUSY)
+        {
+#if KICKOS_CONSOLE_CHIP
+            return kos_send(KOS_CAP_STDOUT, "", 0) >= 0;
+#else
+            return false;
+#endif
+        }
+#if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
+        return took == -KOS_EAGAIN or (took > 0 and static_cast<size_t>(took) <= n);
+#else
+        return took == static_cast<int32_t>(n);
+#endif
+    }
+
     // --- SVC argument/return roundtrip -----------------------------------------
-    // kos_kconsole_write returns `len` even when console_emit discards every byte
-    // (kernel/init/console.cc, USER_OWNED), so this proves nothing about delivery.
+    // kos_kconsole_write returns `len` even when console_emit discards every byte of a thread
+    // no published driver serves (kernel/init/console.cc, USER_OWNED), so this proves nothing
+    // about delivery.
     void t_svc()
     {
         char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
         size_t const n = strlen(s);
-        TAP_CHECK(kos_kconsole_write(s, n) == static_cast<int32_t>(n));
+        int32_t const took = kos_kconsole_write(s, n);
+        TAP_CHECK(console_count_ok(took, n));
+        write_rest(s, n, took);
         TAP_CHECK(kos_kconsole_write(s, 0) == 0); // a len-0 write is a legitimate 0 (sys.h)
         // The prefix must itself be a whole line or the TAP stream is malformed.
         char const* pfx = "# [svc] len-honoured prefix\nTRAILING-MUST-NOT-APPEAR";
-        int32_t const cut = static_cast<int32_t>(strlen("# [svc] len-honoured prefix\n"));
-        TAP_CHECK(kos_kconsole_write(pfx, static_cast<size_t>(cut)) == cut);
+        size_t const cut = strlen("# [svc] len-honoured prefix\n");
+        int32_t const cut_took = kos_kconsole_write(pfx, cut);
+        TAP_CHECK(console_count_ok(cut_took, cut));
+        write_rest(pfx, cut, cut_took);
     }
 
     // --- FIFO ordering ---------------------------------------------------------
@@ -3586,7 +3637,8 @@ namespace
     // region MUST be rejected, never read; both run from a spawned unprivileged worker. The
     // positive half is non-vacuous only when PAIRED with the guard-page negative below.
     char const CD_LIT[] = "# [confdep] unpriv rodata buffer accepted by the readable floor\n";
-    long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect >= 0 (accepted)
+    // worker: kconsole_write(rodata literal) -> a count, -KOS_EAGAIN or -KOS_EBUSY
+    long g_cd_lit_rc = -99;
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
     int g_cd_goodname_ran = 0; // that child ran (name-copy path did not break spawn)
     kos_cap_t g_cd_kidsem = KOS_CAP_NONE; // grandchild -> worker handoff
@@ -3604,7 +3656,10 @@ namespace
     }
     void cd_worker(void*) // UNPRIVILEGED; caps: g_cd_done@1 (CH_DONE), delegated by main
     {
-        g_cd_lit_rc = kos_kconsole_write(CD_LIT, strlen(CD_LIT));
+        size_t const lit_len = strlen(CD_LIT);
+        int32_t const lit_took = kos_kconsole_write(CD_LIT, lit_len);
+        g_cd_lit_rc = lit_took;
+        write_rest(CD_LIT, lit_len, lit_took);
 
         // cd_worker creates its OWN sem (unprivileged create is allowed) and RE-delegates
         // it to a grandchild: nested delegation requires the source cap carry TRANSFER,
@@ -4017,10 +4072,10 @@ namespace
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): the floor accepted an unprivileged caller's rodata
         // pointer. kos_kconsole_write answers a short count or -KOS_EAGAIN when the console
-        // cannot take the bytes and -KOS_EFAULT when it rejects the buffer, so only a
-        // rejection reports on the readable floor this arm is named for; the rest is ring
-        // pressure.
-        if (g_cd_lit_rc < 0 and g_cd_lit_rc != -KOS_EAGAIN)
+        // cannot take the bytes, -KOS_EBUSY when a published driver serves the caller, and
+        // -KOS_EFAULT when it rejects the buffer, so only a rejection reports on the readable
+        // floor this arm is named for.
+        if (g_cd_lit_rc < 0 and g_cd_lit_rc != -KOS_EAGAIN and g_cd_lit_rc != -KOS_EBUSY)
         {
             tap::fail("readable floor refused an unprivileged rodata buffer: rc %ld",
                       g_cd_lit_rc);
@@ -4374,14 +4429,179 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
+    // --- A receiver taking nothing, against a writer offering the rest again ---------------
+    // Both threads on one core. The writer starts below the receiver, so it first runs with
+    // the receiver parked, and then rises above it. A rendezvous consumes the receive it
+    // completes, a zero-byte one included, so every offer after the first waits for the
+    // receiver to run and receive again. A send answered before the receiver posted its next
+    // receive is a spin that would starve it.
+    constexpr int ZA_ZEROS = 64;
+    constexpr uint8_t ZA_RECEIVER_PRIO = 12;
+    constexpr uint8_t ZA_WRITER_START_PRIO = 11;
+    constexpr uint8_t ZA_WRITER_PRIO = 14;
+    char const ZA_MSG[] = "zero-accept line\n";
+    Atomic<int, Order::RELAXED> g_za_posted{0};
+    Atomic<int, Order::RELAXED> g_za_sends{0};
+    Atomic<int, Order::RELAXED> g_za_spun{0};
+    Atomic<int32_t, Order::RELAXED> g_za_send_rc{0};
+    Atomic<int32_t, Order::RELAXED> g_za_recv_rc{0};
+    Atomic<int, Order::RELAXED> g_za_got{0};
+    Atomic<int, Order::RELAXED> g_za_raised{-99};
+    char g_za_buf[sizeof(ZA_MSG)];
+
+    // The lowest core of this task's set, or no placement on one core.
+    uint32_t za_core_mask()
+    {
+#if KICKOS_KERNEL_CORES > 1
+        uintptr_t const cores = kos_sched_probe(KOS_SCHED_OP_TASK_CORES);
+        uint32_t const set = static_cast<uint32_t>(cores);
+        if (static_cast<intptr_t>(cores) <= 0 or set == 0)
+        {
+            return 1u;
+        }
+        return set & (0u - set);
+#else
+        return 0;
+#endif
+    }
+
+    void za_receiver(void*) // caps: done@1, E(WAIT)@2
+    {
+        size_t const n = strlen(ZA_MSG);
+        size_t got = 0;
+        int32_t rc = 0;
+        for (int i = 0; i <= ZA_ZEROS + 1 and got < n; i++)
+        {
+            size_t cap = 0;
+            if (i == ZA_ZEROS)
+            {
+                cap = 2;
+            }
+            else if (i > ZA_ZEROS)
+            {
+                cap = sizeof(g_za_buf) - got;
+            }
+            g_za_posted = g_za_posted.load() + 1;
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, 2, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            rc = kos_reply_recv(KOS_CAP_NONE, g_za_buf + got, kos_call_lens_pack(0, cap), &o);
+            if (rc < 0)
+            {
+                break;
+            }
+            got += static_cast<size_t>(rc);
+        }
+        g_za_recv_rc = rc;
+        g_za_got = static_cast<int>(got);
+        kos_sem_post(CH_DONE);
+    }
+
+    void za_writer(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        size_t const n = strlen(ZA_MSG);
+        size_t sent = 0;
+        int sends = 0;
+        g_za_raised = kos_thread_set_priority(ZA_WRITER_PRIO);
+        while (sent < n)
+        {
+            int32_t const rc = kos_send(2, ZA_MSG + sent, n - sent);
+            sends++;
+            if (rc < 0)
+            {
+                g_za_send_rc = rc;
+                break;
+            }
+            if (sends > g_za_posted.load())
+            {
+                g_za_spun = sends - g_za_posted.load();
+                break;
+            }
+            sent += static_cast<size_t>(rc);
+        }
+        g_za_sends = sends;
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_endpoint_zero_accept()
+    {
+        if (kos_endpoint_create(&g_ep) != 0)
+        {
+            tap::skip("endpoint pool too small");
+            return;
+        }
+        g_za_posted = 0;
+        g_za_sends = 0;
+        g_za_spun = 0;
+        g_za_send_rc = 0;
+        g_za_recv_rc = 0;
+        g_za_got = 0;
+        g_za_raised = -99;
+        memset(g_za_buf, 0, sizeof(g_za_buf));
+        uint32_t const core = za_core_mask();
+        kos_cap_grant const rcaps[] = {{g_done, CH_FULL}, {g_ep, KOS_CAP_WAIT}};
+        kos_cap_grant const wcaps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto r = kos::thread::create_caps(za_receiver, nullptr, "zaR", ZA_RECEIVER_PRIO, rcaps,
+                                          2, KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr,
+                                          0, 0, nullptr, KOS_TASK_NONE, nullptr, 0, core);
+        if (not r.valid())
+        {
+            TAP_CHECK(kos_handle_close(g_ep) == 0);
+            tap::skip("thread pool too small for the receiver");
+            return;
+        }
+        auto w = kos::thread::create_caps(za_writer, nullptr, "zaW", ZA_WRITER_START_PRIO,
+                                          wcaps, 2, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                          nullptr, 0, 0, nullptr, KOS_TASK_NONE, nullptr, 0, core);
+        int done = 2;
+        if (not w.valid())
+        {
+            done = 1;
+        }
+        wait_n(done);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        size_t const n = strlen(ZA_MSG);
+        int const sends = g_za_sends;
+        int const posted = g_za_posted;
+        int const spun = g_za_spun;
+        int const got = g_za_got;
+        int const raised = g_za_raised;
+        tap::diag("core mask 0x%x, raise %d: %d send(s) against %d receive(s), %d past them; "
+                  "send rc %d, recv rc %d, %d of %u byte(s) received",
+                  static_cast<unsigned>(core), raised, sends, posted, spun,
+                  static_cast<int>(g_za_send_rc.load()), static_cast<int>(g_za_recv_rc.load()),
+                  got, static_cast<unsigned>(n));
+        TAP_CHECK(w.valid() and raised == 0);
+        TAP_CHECK(spun == 0 and sends == ZA_ZEROS + 2 and posted == sends);
+        TAP_CHECK(got == static_cast<int>(n) and memcmp(g_za_buf, ZA_MSG, n) == 0);
+    }
+
     // --- Timed send: the deadline expires with a live endpoint and nobody in recv ------
     // Main keeps its WAIT cap for the whole arm, so recv_holders stays 1 and no EPIPE can
     // fire: the only thing missing is a parked receiver. The worker's report rides an
     // UNTIMED send on the SAME endpoint, so the report arriving proves that form still parks.
     constexpr uint32_t EP_SEND_TIMEOUT_US = 4000;
-    // 20x the deadline: this sleep must still be running when the deadline fires, so the
-    // margin has to absorb a timer that overruns.
-    constexpr uint64_t EP_SEND_TIMEOUT_WAIT_NS = 80000000ull;
+    // Set by the timed arms' workers once their timed call has returned. Main acts on the
+    // endpoint only after it, so the deadline has fired whatever the host did to either thread.
+    Atomic<int, Order::RELAXED> g_ep_timed_returned{0};
+
+    // Whether g_ep_timed_returned was set within STALL_TOLERANT_US.
+    bool ep_timed_awaited()
+    {
+        uint64_t const give_up = kos_clock_now() + STALL_TOLERANT_US * 1000ull;
+        while (g_ep_timed_returned.load() == 0 and kos_clock_now() < give_up)
+        {
+            kos_sleep_ns(1000000ull);
+        }
+        return g_ep_timed_returned.load() != 0;
+    }
+
+    // Closing main's WAIT refuses the worker's report, so its own wait ends as well.
+    void ep_timed_abandon()
+    {
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        wait_n(1);
+        tap::fail("the timed call never returned");
+    }
     // `entered` is the clock immediately before the timed syscall: a reading earlier than the
     // receiver's own pre-syscall reading means the caller was already parked (slow path), a
     // later one means the receiver parked first (fast path). Both stagings satisfy every rc
@@ -4400,17 +4620,23 @@ namespace
         r.rc = static_cast<int32_t>(
             kos_send_timed(2, EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        g_ep_timed_returned = 1;
         (void)kos_send(2, &r, sizeof(r)); // untimed: parks until main's recv, long after
         kos_sem_post(CH_DONE);
     }
     void t_endpoint_send_timeout()
     {
+        g_ep_timed_returned = 0;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
         auto w = kos::thread::create_caps(ep_timed_worker, nullptr, "eptm", 12, caps, 2,
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w.valid());
-        kos_sleep_ns(EP_SEND_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
+        if (not ep_timed_awaited())
+        {
+            ep_timed_abandon();
+            return;
+        }
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts o;
@@ -4426,11 +4652,11 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // The three timed-call arms share one deadline and one outlast-it sleep. Main keeps its
-    // WAIT cap for the whole of each, so recv_holders stays 1 and no EPIPE can be mistaken
-    // for an expiry.
+    // The three timed-call arms share one deadline, and each waits for its caller's call to
+    // return before it acts. Main keeps its WAIT cap for the whole of each, so recv_holders
+    // stays 1 and no EPIPE can be mistaken for an expiry.
     constexpr uint32_t EP_CALL_TIMEOUT_US = 4000;
-    // 20x, for the same reason as EP_SEND_TIMEOUT_WAIT_NS.
+    // 20x that deadline, for the one-core arm whose server cannot see the call return.
     constexpr uint64_t EP_CALL_TIMEOUT_WAIT_NS = 80000000ull;
     constexpr uint64_t EP_CALL_SETTLE_NS = 3000000ull; // long enough for the caller to park
     // The reply-wait arm needs the OPPOSITE ordering: the server must pop the caller BEFORE
@@ -4438,7 +4664,6 @@ namespace
     // margin the caller times out first, the server's recv returns the report instead of the
     // request, and the arm leaks its reply cap into the census cap_child_width reads.
     constexpr uint32_t EP_CALL_REPLY_TIMEOUT_US = 60000;
-    constexpr uint64_t EP_CALL_REPLY_WAIT_NS = 1200000000ull; // 20x the deadline above
     // A deadline no arm here can reach: it is on a recv that pops an ALREADY-parked peer,
     // so it never arms, and it doubles as the witness that the kernel leaves the input word
     // alone.
@@ -4458,11 +4683,13 @@ namespace
         r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        g_ep_timed_returned = 1;
         (void)kos_send(2, &r, sizeof(r)); // untimed: parks until main's recv, long after
         kos_sem_post(CH_DONE);
     }
     void t_call_timeout_pending()
     {
+        g_ep_timed_returned = 0;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
         auto w = kos::thread::create_caps(ep_call_pending_worker, nullptr, "cltp", 12, caps, 2,
@@ -4474,7 +4701,11 @@ namespace
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, warm, kos_call_lens_pack(0, sizeof(warm)),
                                  &warm_o)
                   == 1);
-        kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
+        if (not ep_timed_awaited())
+        {
+            ep_timed_abandon();
+            return;
+        }
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts o;
@@ -4505,11 +4736,13 @@ namespace
         r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        g_ep_timed_returned = 1;
         (void)kos_send(2, &r, sizeof(r));
         kos_sem_post(CH_DONE);
     }
     void t_call_timeout_reply()
     {
+        g_ep_timed_returned = 0;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
         auto w = kos::thread::create_caps(ep_call_reply_worker, nullptr, "cltr", 12, caps, 2,
@@ -4531,7 +4764,12 @@ namespace
         TAP_CHECK(opts.info.reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
         TAP_CHECK(opts.timeout_us == EP_RECV_GENEROUS_US);
         kos_cap_t const reply_cap = opts.info.reply_cap;
-        kos_sleep_ns(EP_CALL_REPLY_WAIT_NS); // outlast the deadline without replying
+        if (not ep_timed_awaited())
+        {
+            (void)kos_handle_close(reply_cap);
+            ep_timed_abandon();
+            return;
+        }
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts ro;
@@ -4568,11 +4806,13 @@ namespace
         r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        g_ep_timed_returned = 1;
         (void)kos_send(2, &r, sizeof(r));
         kos_sem_post(CH_DONE);
     }
     void t_reply_stale_caller()
     {
+        g_ep_timed_returned = 0;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
         auto w = kos::thread::create_caps(ep_reply_stale_worker, nullptr, "rpst", 12, caps, 2,
@@ -4585,7 +4825,12 @@ namespace
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts);
         TAP_CHECK(got == 4 and opts.info.reply_cap != KOS_CAP_NONE);
-        kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // the caller's deadline expires under us
+        if (not ep_timed_awaited())
+        {
+            (void)kos_handle_close(opts.info.reply_cap);
+            ep_timed_abandon();
+            return;
+        }
         char rep[4] = {0};
         // The cap still resolves, but the caller it names left CALL_REPLY_WAIT, so the
         // reply has nowhere to land. It is consumed anyway.
@@ -5321,10 +5566,10 @@ namespace
     constexpr size_t F4_REQ_LEN = 4;    // <= F4_SKEW, so the request does not overlap
     constexpr size_t F4_REPLY_LEN = 24; // > F4_SKEW, so the reply does
     constexpr size_t F4_CAP = 32;
-    constexpr uint32_t F4_IDLE_US = 150000; // ends the service once the client is done
+    constexpr int F4_CALLS = 2;
     // Bound calls with a deadline. main retains a WAIT cap, so a service exit
     // would not trigger the last-receiver wake.
-    constexpr uint32_t F4_CALL_US = 200000;
+    constexpr uint32_t F4_CALL_US = STALL_TOLERANT_US;
     alignas(8) uint8_t g_f4_aliased[F4_SKEW + F4_CAP]; // overlapping client/server buffers
     alignas(8) uint8_t g_f4_clean[F4_CAP]; // separate client buffer
     Atomic<int32_t, Order::RELAXED> g_f4_bad{-99};
@@ -5337,12 +5582,12 @@ namespace
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
         opts.ep = 2;
-        opts.timeout_us = F4_IDLE_US;
+        opts.timeout_us = STALL_TOLERANT_US;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
         int served = 0;
         int dropped = 0;
-        while (true)
+        while (served < F4_CALLS)
         {
             opts.info.reply_cap = KOS_CAP_NONE;
             int32_t const n = kos_reply_recv(reply_cap, g_f4_aliased + F4_SKEW,
@@ -5367,6 +5612,10 @@ namespace
             memcpy(g_f4_aliased + F4_SKEW, "pong!", 5);
             reply_len = F4_REPLY_LEN;
             reply_cap = opts.info.reply_cap;
+        }
+        if (reply_cap != KOS_CAP_NONE)
+        {
+            (void)kos_reply(reply_cap, g_f4_aliased + F4_SKEW, reply_len);
         }
         g_f4_served = served;
         g_f4_dropped = dropped;
@@ -5400,6 +5649,11 @@ namespace
         }
         if (not sv.valid() or not cl.valid())
         {
+            // Slain rather than awaited, so its done post cannot land in a later arm's count.
+            if (sv.valid())
+            {
+                (void)sv.slay(STALL_TOLERANT_US);
+            }
             kos_handle_close(g_ep);
             tap::skip("pool too small for 2 threads");
             return;
@@ -5413,7 +5667,7 @@ namespace
         TAP_CHECK(g_f4_bad.load() == -KOS_EFAULT);
         TAP_CHECK(g_f4_dropped.load() == 1);
         TAP_CHECK(g_f4_good.load() == static_cast<int32_t>(F4_REPLY_LEN));
-        TAP_CHECK(g_f4_served.load() == 2);
+        TAP_CHECK(g_f4_served.load() == F4_CALLS);
     }
 
     // No sender or accepted IRQ: only the receive deadline can end this wait.
@@ -7473,6 +7727,9 @@ namespace
                 seated = KOS_CAP_FIRST_DYNAMIC;
             }
             TableFill fill;
+            tap::diag("main's table: %u seated, 2 shared, %d filled to %d, of %u",
+                      static_cast<unsigned>(seated), fill.n, fill.stop,
+                      static_cast<unsigned>(KICKOS_CAP_CHILD_WIDTH));
             TAP_CHECK(fill.stop == -KOS_EMFILE);
             TAP_CHECK(seated + 2u + static_cast<uint32_t>(fill.n) == KICKOS_CAP_CHILD_WIDTH);
         }
@@ -7677,9 +7934,9 @@ namespace
         reply_bound_arm(4, 0);
     }
 
-    // Serves calls until main's plain send ends the run. arg != 0 consumes the FIRST reply
-    // capability with kos_handle_close rather than kos_reply: a release path kos_reply does
-    // not cover, and the caller sees -KOS_EPIPE.
+    // Serves calls until main's plain send ends the run, which main makes once every caller has
+    // finished. arg != 0 consumes the FIRST reply capability with kos_handle_close rather than
+    // kos_reply: a release path kos_reply does not cover, and the caller sees -KOS_EPIPE.
     void rp_server(void* arg) // caps: done@1, lock@2, E(WAIT)@3
     {
         char b[8];
@@ -7687,10 +7944,11 @@ namespace
         {
             struct kos_recv_info info = {0, KOS_CAP_NONE};
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, CH_AUX, 0, KOS_TIMEOUT_NONE);
-            kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
+            kos_reply_recv_opts_init(&opts, CH_AUX, 0, STALL_TOLERANT_US);
+            int32_t const n =
+                kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
             info = opts.info;
-            if (info.reply_cap == KOS_CAP_NONE)
+            if (n < 0 or info.reply_cap == KOS_CAP_NONE)
             {
                 break; // main's plain send: the run is over, refused callers and all
             }
@@ -7709,7 +7967,7 @@ namespace
     {
         char b[8] = {0};
         kos_sleep_ns(unit_delay(arg));
-        int32_t const rc = kos_call(CH_AUX, b, 4, sizeof(b));
+        int32_t const rc = kos_call_timed(CH_AUX, b, 4, sizeof(b), STALL_TOLERANT_US);
         if (rc == -KOS_EPIPE)
         {
             log_put('P');
@@ -7738,9 +7996,9 @@ namespace
         auto ca = kos::thread::create_caps(rp_caller, units(1), "rpA", 20, ccaps, 3);
         auto cb = kos::thread::create_caps(rp_caller, units(5), "rpB", 12, ccaps, 3);
         TAP_CHECK(sv.valid() and ca.valid() and cb.valid());
+        TAP_CHECK(ca.join(STALL_TOLERANT_US) == 0 and cb.join(STALL_TOLERANT_US) == 0);
         char plain[4] = {0};
-        kos_sleep_ns(g_call_unit * 9);
-        kos_send(g_ep, plain, 4); // ends the server's run whether or not B got in
+        (void)kos_send_timed(g_ep, plain, 4, STALL_TOLERANT_US);
         wait_n(3);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(count('c') == 1 and count('P') == 1); // A's cap closed, A woken -KOS_EPIPE
@@ -7754,7 +8012,7 @@ namespace
         char b[8];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, CH_AUX, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, CH_AUX, 0, STALL_TOLERANT_US);
         kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &opts);
         info = opts.info;
         log_put('d');
@@ -7784,9 +8042,9 @@ namespace
         auto s2 = kos::thread::create_caps(rp_server, nullptr, "rrS", 8, scaps, 3);
         auto c2 = kos::thread::create_caps(rp_caller, units(2), "rr2", 12, ccaps, 3);
         TAP_CHECK(s2.valid() and c2.valid());
+        TAP_CHECK(c2.join(STALL_TOLERANT_US) == 0);
         char plain[4] = {0};
-        kos_sleep_ns(g_call_unit * 6);
-        kos_send(g_ep, plain, 4);
+        (void)kos_send_timed(g_ep, plain, 4, STALL_TOLERANT_US);
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(count('K') == 1 and count('B') == 1); // the next occupant admitted its first
@@ -8064,12 +8322,12 @@ namespace
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_toomany = kos_thread_create(&kid, &kidh);
         // A bit no gate reads is refused, not masked off. It has to come from ABOVE the
-        // seven defined authorities: the authority word has its own numbering, separate
-        // from the shared rights byte, so bits 0..6 are all real authorities and an
+        // eight defined authorities: the authority word has its own numbering, separate
+        // from the shared rights byte, so bits 0..7 are all real authorities and an
         // object right like KOS_CAP_WAIT is not a distinguishable wrong value here. The
         // top bit too: a word truncated to a byte on the way in would read it as none.
         kid.cap_count = 1;
-        kid.authority = 1u << 7;
+        kid.authority = 1u << 8;
         g_auth_badbits = kos_thread_create(&kid, &kidh);
         kid.authority = 1u << 31;
         g_auth_highbit = kos_thread_create(&kid, &kidh);
@@ -9120,24 +9378,34 @@ namespace
     // the sibling; a sibling's fault ends the task with the fault's status. The task is dead
     // once every member's teardown is done. Every reading is taken before any check, so a
     // failing check leaves nothing behind for the arms that follow.
-    constexpr uint32_t TX_WAIT_US = 500000;
-    constexpr int TX_POLLS = 500;
+    constexpr uint32_t TX_WAIT_US = STALL_TOLERANT_US;
+    constexpr uint64_t TX_POLL_NS = 1000000ull;
+    // The instant a TX_WAIT_US wait begun now gives up at, which every polling loop below
+    // shares instead of counting passes.
+    uint64_t tx_give_up()
+    {
+        return kos_clock_now() + TX_WAIT_US * 1000ull;
+    }
     constexpr int TX_ENTRY_EXIT = -3;
     constexpr int TX_SIBLING_EXIT = 7;
     Atomic<int32_t, Order::RELAXED> g_tx_stranger{-99};
     // Bounded: true once kos_task_state(t) carries every bit of `bits`.
     bool tx_await(kos_task_t t, int bits)
     {
-        for (int i = 0; i < TX_POLLS; i++)
+        uint64_t const give_up = tx_give_up();
+        while (true)
         {
             int const state = kos_task_state(t);
             if (state >= 0 and (state & bits) == bits)
             {
                 return true;
             }
-            kos_sleep_ns(1000000ull);
+            if (kos_clock_now() >= give_up)
+            {
+                return false;
+            }
+            kos_sleep_ns(TX_POLL_NS);
         }
-        return false;
     }
     void tx_spins(void*)
     {
@@ -9388,6 +9656,7 @@ namespace
     struct TeRun
     {
         int setup, entry_call, probe_call, watcher_seq, dead_seq, status_rc, status;
+        int pre, entry_rc, sibling_rc, watcher_rc;
     };
     TeRun g_te;
     Atomic<int32_t, Order::RELAXED> g_te_seq{0};
@@ -9421,10 +9690,33 @@ namespace
         kos_cap_t probe = KOS_CAP_NONE;
         kos_cap_t n = KOS_CAP_NONE;
         kos_cap_t badged = KOS_CAP_NONE;
-        if (kos_task_create(nullptr, 0, 0, &t) == 0 and kos_endpoint_create(&ep) == 0
-            and kos_endpoint_create(&probe) == 0 and kos_notify_create(&n) == 0
-            and kos_notify_bind(n) == 0 and kos_notify_badge(n, TW_BIT, &badged) == 0
-            and kos_task_watch(t, badged, KOS_CAP_NONE) == 0)
+        int pre = kos_task_create(nullptr, 0, 0, &t);
+        if (pre == 0)
+        {
+            pre = kos_endpoint_create(&ep);
+        }
+        if (pre == 0)
+        {
+            pre = kos_endpoint_create(&probe);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_create(&n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_bind(n);
+        }
+        if (pre == 0)
+        {
+            pre = kos_notify_badge(n, TW_BIT, &badged);
+        }
+        if (pre == 0)
+        {
+            pre = kos_task_watch(t, badged, KOS_CAP_NONE);
+        }
+        g_te.pre = pre;
+        if (pre == 0)
         {
             kos_cap_grant const ecaps[] = {{ep, KOS_CAP_SIGNAL}};
             kos_cap_grant const scaps[] = {{ep, KOS_CAP_WAIT}, {probe, KOS_CAP_WAIT}};
@@ -9441,13 +9733,17 @@ namespace
                                                      KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                                      nullptr, 0, nullptr, 0, wcaps, 1, 0,
                                                      nullptr, KOS_TASK_NONE, 1u);
+            g_te.entry_rc = entry.error();
+            g_te.sibling_rc = sibling.error();
+            g_te.watcher_rc = watcher.error();
             g_te.setup = entry.error() | sibling.error() | watcher.error();
             if (g_te.setup == 0)
             {
                 g_te.setup = kos_cap_narrow(ep, KOS_CAP_SIGNAL)
                              | kos_cap_narrow(probe, KOS_CAP_SIGNAL);
             }
-            for (int i = 0; g_te.setup == 0 and i < TX_POLLS; i++)
+            uint64_t const give_up = tx_give_up();
+            while (g_te.setup == 0 and kos_clock_now() < give_up)
             {
                 uint32_t bits = 0;
                 (void)kos_notify_wait(n, 1u << TW_BIT, TX_WAIT_US, &bits);
@@ -9483,7 +9779,12 @@ namespace
     }
     void t_task_dead_after_every_sweep()
     {
-        g_te = {-99, -99, -99, 0, 0, -99, -99};
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (a creator, an entry, a sibling and a watcher at once)");
+            return;
+        }
+        g_te = {-99, -99, -99, 0, 0, -99, -99, -99, -99, -99, -99};
         g_te_seq = 0;
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
         auto const w = kos::thread::create(te_creator, nullptr, "tec", 14, KOS_POLICY_FIFO, 0,
@@ -9497,6 +9798,11 @@ namespace
         wait_n(1);
         (void)w.join();
         TeRun const r = g_te;
+        if (r.setup != 0)
+        {
+            tap::diag("setup: before the spawns %d, entry %d, sibling %d, watcher %d", r.pre,
+                      r.entry_rc, r.sibling_rc, r.watcher_rc);
+        }
         TAP_CHECK(r.setup == 0);
         TAP_CHECK(r.entry_call < 0 and r.probe_call == -KOS_ECONNREFUSED);
         TAP_CHECK(r.watcher_seq == 1 and r.dead_seq == 2);
@@ -9589,9 +9895,10 @@ namespace
     void tx_touches_once_spinning(void* arg)
     {
         TxReport volatile* const r = static_cast<TxReport volatile*>(arg);
-        for (int i = 0; i < TX_POLLS and r->spinning == 0; i++)
+        uint64_t const give_up = tx_give_up();
+        while (r->spinning == 0 and kos_clock_now() < give_up)
         {
-            kos_sleep_ns(1000000ull);
+            kos_sleep_ns(TX_POLL_NS);
         }
         *static_cast<volatile uint32_t*>(r->absent) = 1u;
         kos_exit(TX_SIBLING_EXIT); // unreachable: the store faults
@@ -9670,9 +9977,10 @@ namespace
                                                "txf", 10, KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                                nullptr, 0, nullptr, 0, caps, 1, 0, nullptr, t,
                                                TX_ONE_CORE);
-        for (int i = 0; i < TX_POLLS and rep->spinning == 0; i++)
+        uint64_t const give_up = tx_give_up();
+        while (rep->spinning == 0 and kos_clock_now() < give_up)
         {
-            kos_sleep_ns(1000000ull);
+            kos_sleep_ns(TX_POLL_NS);
         }
         int const parked = rep->spinning;
         int const killed = entry.kill();
@@ -9723,7 +10031,8 @@ namespace
                                                caps, 1);
         int const narrowed = kos_cap_narrow(ep, KOS_CAP_SIGNAL);
         int32_t sent = -99;
-        for (int i = 0; entry.valid() and i < TX_POLLS; i++)
+        uint64_t const give_up = tx_give_up();
+        while (entry.valid() and kos_clock_now() < give_up)
         {
             sent = kos_send_timed(ep, "x", 1, 1000u);
             if (sent != -KOS_ETIMEDOUT)
@@ -10154,12 +10463,13 @@ namespace
 
     // The kernel's maintenance of the cache over a block a region holds non-cacheable, counted
     // for each grant that seats one and for IPC into one; a cacheable block costs none.
-#if defined(KICKOS_SELFTEST_ARENA_DCACHE)
+#if KICKOS_ARCH_ARENA_DCACHE
     constexpr uint64_t UG_PER = 1;
 #else
     constexpr uint64_t UG_PER = 0;
 #endif
     constexpr uint32_t UG_BLK = 64;
+    constexpr uint32_t UG_STACK = 4096;
     constexpr size_t UG_LEN = 16;
     constexpr uint32_t UG_US = 500000;
     // [0] the non-cacheable self-grant, [1] the cacheable one, [2] and [3] the receives into
@@ -10208,6 +10518,23 @@ namespace
         kos_sem_post(CH_DONE);
     }
     void ug_noop(void*) {}
+#if KICKOS_MEMORY_ENFORCED
+    // A child's cacheable stack over a block a thread holds non-cacheable is refused; once that
+    // holder is gone the block is a stack again.
+    void* g_ug_stk = nullptr;
+    int32_t g_ug_stk_rc = 99;
+    void ug_stack_worker(void*) // caps: done@1
+    {
+        g_ug_stk_rc = -KOS_EINVAL;
+        if (kos_mem_self_grant(g_ug_stk, UG_STACK, KOS_MEM_NOCACHE) == 0)
+        {
+            g_ug_stk_rc = kos::thread::create(ug_noop, nullptr, "ugs", 10, KOS_POLICY_FIFO, 0,
+                                              false, nullptr, 0, g_ug_stk, UG_STACK)
+                              .error();
+        }
+        kos_sem_post(CH_DONE);
+    }
+#endif
     void t_uncached_grant_sync()
     {
         g_ug_blk[0] = static_cast<unsigned char*>(kos_ram_alloc(UG_BLK));
@@ -10292,6 +10619,74 @@ namespace
         TAP_CHECK(g_ug_syncs[2].load() == 2u * per);
         TAP_CHECK(g_ug_syncs[3].load() == 0);
         TAP_CHECK(g_ug_syncs[4].load() == per);
+#if KICKOS_MEMORY_ENFORCED
+        if (not g_ug_nocache)
+        {
+            return;
+        }
+        g_ug_stk = kos_ram_alloc(UG_STACK);
+        if (g_ug_stk == nullptr)
+        {
+            tap::partial("no %lu-byte block left in the arena for the stack refusals",
+                         static_cast<unsigned long>(UG_STACK));
+            return;
+        }
+        kos_cap_grant const scaps[] = {{g_done, CH_FULL}};
+        auto const worker =
+            kos::thread::create_caps(ug_stack_worker, nullptr, "ugk", TAP_PRIO_PARKS, scaps, 1,
+                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_MEMORY);
+        if (not worker.valid())
+        {
+            tap::partial("no thread left for the stack refusals (rc %d)", worker.error());
+            return;
+        }
+        wait_n(1);
+        int32_t again = -KOS_EINVAL;
+        uint64_t paid = ~0ull;
+        bool rejoined = false;
+        if (worker.join(UG_US) == 0)
+        {
+            uint64_t const p0 = ug_syncs();
+            auto const child = kos::thread::create(ug_noop, nullptr, "ugs", 10, KOS_POLICY_FIFO, 0,
+                                                   false, nullptr, 0, g_ug_stk, UG_STACK);
+            paid = ug_syncs() - p0;
+            again = child.error();
+            if (child.valid())
+            {
+                rejoined = child.join(UG_US) == 0;
+            }
+        }
+        tap::diag("a stack over a block held non-cacheable: %ld, once its holder is gone: %ld"
+                  " paying %lu",
+                  static_cast<long>(g_ug_stk_rc), static_cast<long>(again),
+                  static_cast<unsigned long>(paid));
+        TAP_CHECK(g_ug_stk_rc == -KOS_EBUSY);
+        TAP_CHECK(again == 0 and paid == UG_PER and rejoined);
+        // The same block again, for a stack inside the spawn's own uncached window and then one
+        // over the non-cacheable data of the task it joins: the arena never takes a block back.
+        kos_window const uw = {reinterpret_cast<uintptr_t>(g_ug_stk), UG_STACK, KOS_WINDOW_MEMORY,
+                               KOS_WINDOW_UNCACHED};
+        int32_t const over_window = kos::thread::create(ug_noop, nullptr, "ugv", 10,
+                                                        KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                                        g_ug_stk, UG_STACK, &uw, 1)
+                                        .error();
+        tap::diag("inside its own uncached window: %ld", static_cast<long>(over_window));
+        TAP_CHECK(over_window == -KOS_EBUSY);
+        kos_task_t nt = KOS_TASK_NONE;
+        int const task_rc = kos_task_create(g_ug_stk, UG_STACK, KOS_MEM_NOCACHE, &nt);
+        if (task_rc != 0)
+        {
+            tap::partial("no task to hold the block as its non-cacheable data (rc %d)", task_rc);
+            return;
+        }
+        int32_t const over_data = kos::thread::create(ug_noop, nullptr, "ugd", 10, KOS_POLICY_FIFO,
+                                                      0, false, nullptr, 0, g_ug_stk, UG_STACK,
+                                                      nullptr, 0, nullptr, 0, 0, nullptr, nt)
+                                      .error();
+        (void)kos_task_kill(nt);
+        tap::diag("over its task's non-cacheable data: %ld", static_cast<long>(over_data));
+        TAP_CHECK(over_data == -KOS_EBUSY);
+#endif
     }
 #endif
 
@@ -10674,6 +11069,7 @@ namespace
     struct TsRun
     {
         int setup, called, slain, watcher_seq, slay_seq, restarted, same_slot;
+        int pre, entry_rc, sibling_rc, watcher_rc;
     };
     TsRun g_ts;
     Atomic<int32_t, Order::RELAXED> g_ts_seq{0};
@@ -10696,8 +11092,17 @@ namespace
         kos_task_t t = KOS_TASK_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_cap_t probe = KOS_CAP_NONE;
-        if (kos_task_create(nullptr, 0, 0, &t) == 0 and kos_endpoint_create(&ep) == 0
-            and kos_endpoint_create(&probe) == 0)
+        int pre = kos_task_create(nullptr, 0, 0, &t);
+        if (pre == 0)
+        {
+            pre = kos_endpoint_create(&ep);
+        }
+        if (pre == 0)
+        {
+            pre = kos_endpoint_create(&probe);
+        }
+        g_ts.pre = pre;
+        if (pre == 0)
         {
             kos_cap_grant const scaps[] = {{ep, KOS_CAP_WAIT}, {probe, KOS_CAP_WAIT}};
             uint16_t const sdest[] = {0, KICKOS_CAP_CHILD_WIDTH - 1};
@@ -10713,6 +11118,9 @@ namespace
                                                      KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                                      nullptr, 0, nullptr, 0, wcaps, 1, 0,
                                                      nullptr, KOS_TASK_NONE, 1u);
+            g_ts.entry_rc = entry.error();
+            g_ts.sibling_rc = sibling.error();
+            g_ts.watcher_rc = watcher.error();
             g_ts.setup = entry.error() | sibling.error() | watcher.error();
             if (g_ts.setup == 0)
             {
@@ -10754,7 +11162,12 @@ namespace
     }
     void t_task_slay_after_every_sweep()
     {
-        g_ts = {-99, -99, -99, 0, 0, -99, 0};
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (a creator, an entry, a sibling and a watcher at once)");
+            return;
+        }
+        g_ts = {-99, -99, -99, 0, 0, -99, 0, -99, -99, -99, -99};
         g_ts_seq = 0;
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
         auto const w = kos::thread::create(ts_creator, nullptr, "tsc", 14, KOS_POLICY_FIFO, 0,
@@ -10768,6 +11181,11 @@ namespace
         wait_n(1);
         (void)w.join();
         TsRun const r = g_ts;
+        if (r.setup != 0)
+        {
+            tap::diag("setup: before the spawns %d, entry %d, sibling %d, watcher %d", r.pre,
+                      r.entry_rc, r.sibling_rc, r.watcher_rc);
+        }
         TAP_CHECK(r.setup == 0);
         TAP_CHECK(r.called == -KOS_ECONNREFUSED);
         TAP_CHECK(r.slain == 0);
@@ -11186,6 +11604,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
     TAP_ADD("endpoint_handout_parked", t_endpoint_handout_parked);
+    TAP_ADD("endpoint_zero_accept", t_endpoint_zero_accept);
     TAP_ADD("endpoint_send_timeout", t_endpoint_send_timeout);
     TAP_ADD("recv_timeout", t_recv_timeout);
     TAP_ADD("timed_arg_refusals", t_timed_arg_refusals);
@@ -11426,9 +11845,21 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("grant_kernel_word_refused", t_grant_kernel_word_refused);
     TAP_ADD("self_grant_retype", t_self_grant_retype);
     TAP_ADD("uncached_alias_sync", t_uncached_alias_sync);
+    TAP_ADD("uncached_teardown", t_uncached_teardown);
+    TAP_ADD("presync_retried", t_presync_retried);
+    TAP_ADD_IRQ("presync_race", t_presync_race);
+    TAP_ADD_IRQ("presync_flip", t_presync_flip);
+    TAP_ADD_IRQ("presync_slain", t_presync_slain);
+    TAP_ADD("presync_staged", t_presync_staged);
+    TAP_ADD("presync_cancel", t_presync_cancel);
+    TAP_ADD_IRQ("presync_late_params", t_presync_late_params);
+    TAP_ADD_IRQ("out_of_lock_windows", t_out_of_lock_windows);
     TAP_ADD("reent_seating", t_reent_seating);
     TAP_ADD("aspace_acquire_balance", t_aspace_acquire_balance);
     TAP_ADD("map_tlbi_elided", t_map_tlbi_elided);
+#if KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
+    TAP_ADD("shootdown_per_change", t_shootdown_per_change);
+#endif
     TAP_ADD("aspace_active_cores", t_aspace_active_cores);
     TAP_ADD("app_pointers_relocated", t_app_pointers_relocated);
     TAP_ADD("recv_buf_unmapped", t_recv_buf_unmapped);
@@ -11469,6 +11900,10 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("isolated_unpin_excludes", t_isolated_unpin_excludes);
     TAP_ADD("isolated_takes_pinned", t_isolated_takes_pinned);
     TAP_ADD("isolated_mixed_mask_ok", t_isolated_mixed_mask_ok);
+#if KICKOS_HAVE_ASPACE
+    // After every arm that reserves for life, so main's space is as full as the crowds meet it.
+    TAP_ADD("crowd_room_in_root_space", t_crowd_room_in_root_space);
+#endif
     TAP_ADD("slice_preempts_every_core", t_slice_preempts_every_core);
     TAP_ADD("threads_reach_every_core", t_threads_reach_every_core);
     TAP_ADD("reent_per_thread_cores", t_reent_per_thread_cores);

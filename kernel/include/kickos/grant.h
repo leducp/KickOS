@@ -76,6 +76,9 @@ namespace kickos
     bool grant_window_aperture_ok(uintptr_t base, size_t size);
 #endif
 
+    // True iff [base, base+size) touches a bus-master row (arch_bus_master_apertures).
+    bool grant_window_bus_master(uintptr_t base, size_t size);
+
     // Full admission policy for ONE prospective committed region (data or MMIO):
     //   size 0 / wrap                              -> refuse
     //   hits a reserved block (authorized too)     -> refuse   [Rule 7 core]
@@ -93,6 +96,7 @@ namespace kickos
     void grant_reserved_validate(void);
 #else
     inline bool grant_hits_reserved(uintptr_t, size_t) { return false; }
+    inline bool grant_window_bus_master(uintptr_t, size_t) { return false; }
     // The memory-type arm survives with enforcement off; this is NOT a `return true`.
     inline bool grant_region_admissible(uintptr_t, size_t, uint32_t attr, bool)
     {

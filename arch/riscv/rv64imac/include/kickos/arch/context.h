@@ -7,6 +7,7 @@
 // RISC-V TLS is variant 2: tp IS the block start and the first thread_local sits AT it, so
 // reserving bytes below the thread pointer would put every offset wrong.
 #define KICKOS_ARCH_TLS_TCB 0
+#define KICKOS_ARCH_IRQ_WINDOW 1
 
 #include <stdint.h>
 

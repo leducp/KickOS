@@ -7,5 +7,7 @@ version: 1
 board: qemu-x86_64
 chip: q35
 
+emulator: { qemu: qemu-system-x86_64, machine: q35 }
+
 console:
   device: /dev/com1

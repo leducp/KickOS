@@ -21,7 +21,7 @@ CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
-    "data_cache", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins",
+    "data_cache", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins", "esptool_image",
 )
 PROTECTION_FIELDS = (
     "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports", "driven",
@@ -45,7 +45,12 @@ ADDRESS_BITS = {
 }
 # Printable ASCII, and nothing that ends a C comment or continues a C++ one.
 TEXT = re.compile(r"[ -~]*")
-BOARD_FIELDS = ("version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins", "memory")
+BOARD_FIELDS = (
+    "version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins", "memory", "emulator",
+)
+EMULATOR_FIELDS = ("qemu", "machine", "gicv3_machine", "options", "ram_global")
+# One word of an emulator's command line, with nothing a shell or a CMake list would split or expand.
+WORD = re.compile(r"[A-Za-z0-9_.,=+:/-]+")
 BOARD_MEMORY_FIELDS = ("size", "base", "cluster", "link", "ref", "symbol")
 # A pin function stated as a mapping: the value its device's input-select register takes to pick
 # this pin, where the device has one.
@@ -178,6 +183,8 @@ class Board:
         self.wired = {}
         # [Bus], in the board file's order.
         self.buses = []
+        # {field: value} of `emulator`, or None where no emulator runs the board.
+        self.emulator = None
 
 
 class Bus:
@@ -242,6 +249,8 @@ class Chip:
         self.smp = {}
         # The PartitionGate, or None.
         self.partition_gate = None
+        # The esptool elf2image options of the image its ROM boots, or None where the ROM boots none.
+        self.esptool_image = None
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -270,6 +279,8 @@ def check_chip(path, text, report):
             setting = f.boolean(top[flag], "`%s`" % flag)
             if flag == "data_cache" and setting is False:
                 chip.data_cache = False
+    if "esptool_image" in top:
+        chip.esptool_image = words(f, top["esptool_image"], "`esptool_image`")
     if "arch" in top:
         chip.arch = f.name(top["arch"], "`arch`", IDENTIFIER)
     if "manual" in top:
@@ -1507,6 +1518,8 @@ def check_board(path, text, report, chips, boards):
     board.buses = wired_buses
     if "memory" in top:
         check_board_memory(f, top["memory"], chip, board)
+    if "emulator" in top:
+        board.emulator = check_emulator(f, top["emulator"])
     for pin, node, what in used:
         board.wired.setdefault(pin, what)
     if "reserved_pins" in top and reserved is not None:
@@ -1515,6 +1528,34 @@ def check_board(path, text, report, chips, boards):
             if chip is not None and chip.pins is not None and pin_name in chip.pins:
                 board.reserved.append(pin_name)
     return board
+
+
+def words(f, node, what):
+    """The words of the list at `node`, or None once refused."""
+    items = f.sequence(node, what)
+    if items is None:
+        return None
+    found = [f.name(item, "a word of %s" % what, WORD) for item in items]
+    if None in found:
+        return None
+    return found
+
+
+def check_emulator(f, node):
+    """{field: value} of an `emulator`: the QEMU binary and machine, the machine under the GICv3
+    posture, the options, and the QOM global set to the RAM link region's length; or None."""
+    values = f.fields(node, "`emulator`", EMULATOR_FIELDS, ("qemu", "machine"))
+    if values is None:
+        return None
+    emulator = {"options": []}
+    for field in ("qemu", "machine", "gicv3_machine", "ram_global"):
+        if field in values:
+            emulator[field] = f.name(values[field], "emulator `%s`" % field, WORD)
+    if "options" in values:
+        emulator["options"] = words(f, values["options"], "emulator `options`")
+    if None in emulator.values():
+        return None
+    return emulator
 
 
 def check_board_memory(f, node, chip, board):

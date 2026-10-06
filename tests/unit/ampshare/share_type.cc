@@ -55,10 +55,16 @@ namespace
 {
     constexpr size_t G = 4096u;
 
-#if KICKOS_HAVE_ASPACE
+#if KICKOS_HAVE_ASPACE and KICKOS_AMP_USER_SHARE_UNCACHED
     constexpr uint8_t SHARE_TYPE = ARCH_MAP_NOCACHE;
     constexpr uint8_t OTHER_TYPE = ARCH_MAP_NORMAL;
     static_assert(kickos::AMP_SHARE_UNCACHED, "this posture's share is uncached");
+#elif KICKOS_HAVE_ASPACE
+    constexpr uint8_t SHARE_TYPE = ARCH_MAP_NORMAL;
+    constexpr uint8_t OTHER_TYPE = ARCH_MAP_NOCACHE;
+    static_assert(not kickos::AMP_SHARE_UNCACHED, "this posture's share is cached");
+#endif
+#if KICKOS_HAVE_ASPACE
 
     bool admits(uintptr_t base, size_t size, uint8_t type)
     {

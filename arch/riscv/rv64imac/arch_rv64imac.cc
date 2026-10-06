@@ -412,13 +412,23 @@ static_assert(KICKOS_RV64_TRAP_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "the trap-stack top must land on the alignment the prologue requires");
 static_assert(KICKOS_RV64_TRAP_FRAME == KICKOS_RV64_FRAME,
               "rv64_trap_stack.h prices the frame every entry builds");
+// The spawn stages its grant list on the kernel block, and _SYSK holds the list it was measured
+// at (rv64_trap_stack.h).
+static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
+              "KICKOS_RV64_TRAP_DEPTH_SYSK was measured at a spawn staging 9 grants on the "
+              "kernel block: re-measure with tests/static/check_trap_redzone.sh first");
 // The gate reads KICKOS_RV64_TRAP_NEST as an immediate, so the sum is spelled out there.
 static_assert(KICKOS_RV64_TRAP_NEST == KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_TRAP_DEPTH_IRQ,
               "KICKOS_RV64_TRAP_NEST is an interrupt's frame plus its dispatch");
+static_assert(KICKOS_RV64_TRAP_WINDOW == KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_TRAP_NEST,
+              "KICKOS_RV64_TRAP_WINDOW is the U-mode entry's frame plus an interrupt's extent");
 // The lowest word of a block is the overflow canary (kernel/thread/thread.cc).
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RV64_TRAP_FRAME + KICKOS_RV64_TRAP_DEPTH_SYSK,
               "the kernel block cannot hold the U-mode entry plus its canary word");
+static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
+                  >= KICKOS_RV64_TRAP_WINDOW + KICKOS_RV64_TRAP_DEPTH_SYSWIN,
+              "the kernel block cannot hold an interrupt taken in a system call's window");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RV64_TRAP_NEST + KICKOS_RV64_TRAP_DEPTH_EXITK,
               "the kernel block cannot hold the relocated death path plus its canary word");
@@ -994,6 +1004,31 @@ void arch_fault_redirect_to_exit(void* frame)
     f[KICKOS_RV64_F_SEPC / 8] = reinterpret_cast<uint64_t>(&kickos_thread_fault_exit);
     f[KICKOS_RV64_F_SSTATUS / 8] = SSTATUS_SPP | SSTATUS_SPIE | SSTATUS_UXL_64;
     f[KICKOS_RV64_F_SP / 8] = kickos_fault_stack_top();
+}
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Per hart, each written by its own hart with interrupts masked.
+static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
+
+uint32_t arch_irq_windows(void)
+{
+    uint32_t sum = 0;
+    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
+    {
+        sum += n.load();
+    }
+    return sum;
+}
+#endif
+
+// A pending interrupt is taken here or at a later window.
+void arch_irq_window(void)
+{
+#if defined(KICKOS_ENABLE_SELFTEST)
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
+    mine.store(mine.load() + 1u);
+#endif
+    __asm volatile("csrsi sstatus, 2\n\tnop\n\tcsrci sstatus, 2" ::: "memory");
 }
 
 // --- Idle -------------------------------------------------------------------

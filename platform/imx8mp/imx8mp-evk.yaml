@@ -8,6 +8,9 @@ version: 1
 board: imx8mp-evk
 chip: imx8mp
 
+# -m bounds the EVK's 6 GiB DDR window, mapped lazily; the link carves 64 MiB of it.
+emulator: { qemu: qemu-system-aarch64, machine: imx8mp-evk, options: [-m, 512M] }
+
 console:
   device: /dev/uart1
 

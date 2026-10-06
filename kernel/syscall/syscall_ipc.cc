@@ -394,6 +394,8 @@ namespace kickos
             {
                 return endpoint_unserved(e, 0);
             }
+            // Consumed even when it takes no byte: a writer offering the rest again then parks
+            // until the receiver receives again, rather than spinning on it.
             Thread* w = wq_pop_highest(e->recv_waiters);
             if (w != nullptr)
             {
