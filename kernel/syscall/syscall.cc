@@ -120,12 +120,15 @@ namespace kickos
 
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
         // the bytes that went out, or with none, -KOS_EAGAIN where the console could take
-        // nothing now, -KOS_EBUSY where the caller's stdout is served again and -KOS_EFAULT
-        // where the buffer went away.
+        // nothing now, -KOS_EBUSY where the caller's stdout is served again, -KOS_EFAULT where
+        // the buffer went away and -KOS_ECANCELED where the writer was cancelled waiting. A
+        // non-blocking task is answered -KOS_ETIMEDOUT for the wait and the try-again alike.
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[CONSOLE_CHUNK];
-            UserOwner const space = user_space_of(sched::current());
+            Thread* const c = sched::current();
+            UserOwner const space = user_space_of(c);
+            bool const wait = not task_nonblocking(c->task);
             if (len == 0)
             {
                 return 0;
@@ -147,7 +150,7 @@ namespace kickos
                 // A line longer than this buffer is several inserts, and under pressure the
                 // console can refuse one and accept the next: carrying on would put a hole in
                 // the middle of a line whose tail arrived.
-                int const w = kconsole_write_user(chunk, n);
+                int const w = kconsole_write_user(chunk, n, wait);
                 if (w < 0)
                 {
                     none = w;
@@ -162,6 +165,10 @@ namespace kickos
             }
             if (done == 0)
             {
+                if (none == -KOS_EAGAIN and not wait)
+                {
+                    return -KOS_ETIMEDOUT;
+                }
                 return none;
             }
             return static_cast<int32_t>(done);
@@ -599,15 +606,23 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the
             // park, and a spanning caller lock would livelock ARM.
-            return static_cast<uint64_t>(
-                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
-                              KOS_TIMEOUT_NONE));
+            int32_t const sent = endpoint_send(static_cast<uint32_t>(a0), a1,
+                                               static_cast<size_t>(a2), KOS_TIMEOUT_NONE);
+            if (sent == SEND_WOULD_PARK)
+            {
+                return static_cast<uint64_t>(-KOS_ETIMEDOUT);
+            }
+            return static_cast<uint64_t>(sent);
         }
         case KOS_SYS_SEND_TIMED:
         {
-            return static_cast<uint64_t>(
-                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
-                              static_cast<uint32_t>(a3)));
+            int32_t const sent = endpoint_send(static_cast<uint32_t>(a0), a1,
+                                               static_cast<size_t>(a2), static_cast<uint32_t>(a3));
+            if (sent == SEND_WOULD_PARK)
+            {
+                return static_cast<uint64_t>(-KOS_ETIMEDOUT);
+            }
+            return static_cast<uint64_t>(sent);
         }
         case KOS_SYS_CALL:
         {
@@ -676,9 +691,26 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return static_cast<uint64_t>(-KOS_EBADF);
                 }
+                Task* served_by = c->task;
+                if (static_cast<kos_task_t>(a1) != KOS_TASK_NONE)
+                {
+                    served_by = task_resolve(static_cast<kos_task_t>(a1));
+                    if (served_by == nullptr)
+                    {
+                        return static_cast<uint64_t>(-KOS_EBADF);
+                    }
+                    if (not task_created_by(served_by, kernel().threads.kill_tag_of(c)))
+                    {
+                        return static_cast<uint64_t>(-KOS_EPERM);
+                    }
+                }
+                if (task_ended(served_by))
+                {
+                    return static_cast<uint64_t>(-KOS_EBUSY);
+                }
                 // Must precede the relinquish below: it is the last step that can fail, and a
                 // refusal has to leave a working console behind.
-                int const rc = cap_console_publish_through(c, e);
+                int const rc = cap_console_publish_through(c, e, served_by);
                 if (rc != 0)
                 {
                     return static_cast<uint64_t>(rc);
@@ -826,6 +858,10 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_THREAD_SET_PRIORITY:
         {
             return static_cast<uint64_t>(thread_set_priority(a0));
+        }
+        case KOS_SYS_TASK_NONBLOCK:
+        {
+            return static_cast<uint64_t>(task_nonblock_call(static_cast<int>(a0)));
         }
         case KOS_SYS_THREAD_SLAY:
         {

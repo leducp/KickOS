@@ -63,8 +63,13 @@ namespace kickos
         void (*g_redirect_entry)(void* arg) = nullptr;
         uintptr_t g_redirect_stack_top = 0;
         uint32_t g_redirects = 0;
+        char g_held[128] = {};
+        uint32_t g_held_len = 0;
+        uint32_t g_held_off = 0;
         uint32_t g_console_noted = 0;
         uint32_t g_console_reclaimed = 0;
+        bool g_console_dark = false;
+        bool g_console_window_held = false;
         uint32_t g_parked = 0;
         bool g_line_armed[KICKOS_MAX_IRQ] = {};
         int g_routed_armed = -1;
@@ -380,8 +385,12 @@ namespace kickos
             g_redirect_entry = nullptr;
             g_redirect_stack_top = 0;
             g_redirects = 0;
+            g_held_len = 0;
+            g_held_off = 0;
             g_console_noted = 0;
             g_console_reclaimed = 0;
+            g_console_dark = false;
+            g_console_window_held = false;
             g_parked = 0;
             for (int line = 0; line < KICKOS_MAX_IRQ; line++)
             {

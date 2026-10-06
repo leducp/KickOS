@@ -161,7 +161,7 @@
 
 /* The panic reporter's own array. Frame 0: the entry clears MIE before the move, and an
  * exception inside the reporter re-enters trap_entry, which builds its frame elsewhere.
- * 208 on qemu-riscv-bench, 160 on the other qemu-riscv presets, 112 to 176 on esp32c6; 448 is
+ * 192 on qemu-riscv-bench, 160 on the other qemu-riscv presets, 144 to 160 on esp32c6; 448 is
  * enforced above that, and arch_rv32imac.cc asserts KICKOS_PANIC_STACK_SIZE against the pair. */
 #define KICKOS_RV_PANIC_FRAME 0
 #define KICKOS_RV_PANIC_DEPTH 448

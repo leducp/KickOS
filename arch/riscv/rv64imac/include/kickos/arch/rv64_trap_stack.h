@@ -44,15 +44,15 @@
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
 #define KICKOS_RV64_TRAP_NEST 1152
 
-/* The U-mode ecall and the U-mode fault on the block. 2000 on qemu-riscv64-benchsmp and
+/* The U-mode ecall and the U-mode fault on the block. 2016 on qemu-riscv64-benchsmp and
  * -benchsmp2, a spawn staging 9 grants and seeding the child's tables:
  *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[576] -> thread_create[144]
  *   -> task_for[32] -> domain_for[64] -> claim_slot[64] -> aspace_image_seed[160]
  *   -> arch_aspace_map[80] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
- * 1792 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2048,
+ * 1792 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2304,
  * above the measurement. */
-#define KICKOS_RV64_TRAP_DEPTH_SYSK 2048
+#define KICKOS_RV64_TRAP_DEPTH_SYSK 2304
 
 /* An interrupt nested below arch_irq_window, the one place a system call opens interrupts on the
  * block: the U-mode entry's frame and an interrupt's whole extent, FRAME + NEST, which
@@ -94,7 +94,7 @@
 /* idle_entry's own frame, above the interrupt idle waits for: 16 on every preset. */
 #define KICKOS_RV64_TRAP_DEPTH_IDLE 64
 
-/* The panic reporter on its own array: 512 on qemu-riscv64-benchsmp and -benchsmp2, the
+/* The panic reporter on its own array: 480 on qemu-riscv64-benchsmp and -benchsmp2, the
  * console's kernel-lock tail under kickos_panic_report[16] -> kputs[16]. */
 #define KICKOS_RV64_PANIC_FRAME 0
 #define KICKOS_RV64_PANIC_DEPTH 576

@@ -78,9 +78,27 @@ namespace kickos
         return true;
     }
 
-    int32_t cap_console_deliver(char const*, size_t)
+    bool dev_window_held_outside(uintptr_t, size_t, Task const*)
+    {
+        return false;
+    }
+
+    bool task_serves_console(Task const*)
+    {
+        return false;
+    }
+
+    int console_dark_wait(void)
     {
         return 0;
+    }
+
+    void console_dark_wake(void)
+    {
+    }
+
+    void cap_console_deliver()
+    {
     }
 
     bool cap_console_serves(Thread const*)

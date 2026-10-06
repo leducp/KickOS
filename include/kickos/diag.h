@@ -105,6 +105,8 @@ namespace kickos
 // qemu-riscv by moving it: 96 -> 256 takes EXITK from 384 to 528. tests/unit/faultline proves
 // every record below fits at its worst case.
 #define KDIAG_FAULT_LINE_MAX 96
+// The room a held fault record reserves: its banner, a PC line and an ADDR line.
+#define KDIAG_FAULT_RECORD_MAX (3 * (KDIAG_FAULT_LINE_MAX - 1))
 #define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \
                                               "\n=== THREAD FAULT === thread '%s' killed\n")
 #define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")

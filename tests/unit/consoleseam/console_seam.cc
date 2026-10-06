@@ -27,7 +27,7 @@ namespace
     bool g_seat_fired = false;
     void (*g_seat_fn)(void) = nullptr;
     std::string g_wire;
-    char g_storage[4096];
+    char g_storage[consoleseam::STORAGE_SIZE];
 
     int mock_slot_free(void)
     {
@@ -145,6 +145,11 @@ namespace consoleseam
         g_seat_fn = nullptr;
         g_wire.clear();
         console_tx_init(&g_backend, g_storage, ring_size, 3);
+    }
+
+    char* storage()
+    {
+        return g_storage;
     }
 
     void set_slot_free(int free)

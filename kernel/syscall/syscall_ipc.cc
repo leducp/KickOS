@@ -7,6 +7,7 @@
 #include <kickos/ampwindow.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
+#include <kickos/console_tx.h>
 #include <kickos/diag.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -17,6 +18,7 @@
 #include <kickos/kruntime.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
+#include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/time.h>
 
@@ -351,7 +353,9 @@ namespace kickos
 #endif
     }
 
-    // Return bytes sent or -KOS_E*. timeout_us bounds only the parked wait.
+    // Return bytes sent or -KOS_E*. timeout_us bounds only the parked wait, and 0 never parks:
+    // it answers SEND_WOULD_PARK instead, as does the published console to a non-blocking
+    // task's send of no timeout.
     // Endpoint death, timeout and cancellation send no data.
     // Far endpoints never park; a full peer ring returns -KOS_EAGAIN.
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
@@ -390,7 +394,7 @@ namespace kickos
                 return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE);
             }
 #endif
-            if (not endpoint_receiving(e))
+            if (not endpoint_takes_sends(e))
             {
                 return endpoint_unserved(e, 0);
             }
@@ -417,6 +421,12 @@ namespace kickos
                 sched::wake(w);
                 return static_cast<int>(n); // did not block: no resume barrier
             }
+            if (timeout_us == 0
+                or (timeout_us == KOS_TIMEOUT_NONE and e->console != EP_CONSOLE_NONE
+                    and task_nonblocking(c->task)))
+            {
+                return SEND_WOULD_PARK;
+            }
             c->ipc.buf = buf;
             c->ipc.len = len;
             c->ipc.badge_out = 0;
@@ -432,43 +442,64 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-    // Send a kernel fault record without parking. Use the published endpoint reference
-    // and a kernel buffer; reject a busy or missing driver.
-    int32_t cap_console_deliver(char const* buf, size_t len)
+    namespace
     {
-        IrqLock lock;
-        int target = 0;
-        if (not cap_console_target(&target))
+        constexpr int32_t HELD_NONE = 0;
+
+        // The front of the held records, as much as `cap` takes, into a receiver's buffer and
+        // metadata. Taken on a refused copy too, or every receive into that buffer refuses it
+        // again. Caller holds IrqLock and has checked something is held.
+        int32_t held_copy(UserOwner buf_space, UserOwner info_space, uintptr_t buf, size_t cap,
+                          uintptr_t badge_out)
         {
-            return 0;
+            uint32_t n = console_held_ready();
+            if (cap < n)
+            {
+                n = static_cast<uint32_t>(cap);
+            }
+            int32_t result = static_cast<int32_t>(n);
+            if (not kaccess_to_user(buf_space, buf, console_held_data(), n)
+                or not write_recv_info(info_space, badge_out, KOS_BADGE_NONE, KCAP_INVALID))
+            {
+                result = -KOS_EFAULT;
+            }
+            console_held_take(n);
+            return result;
         }
-        Endpoint* e = kernel().endpoints.resolve(target);
-        if (e == nullptr or not endpoint_receiving(e))
+
+        // Kernel records held for a published console reach its driver ahead of every queued
+        // sender, which is what keeps a record out of the middle of a line one send carries.
+        // HELD_NONE where nothing is held. Runs as the receiver of the served console, the
+        // caller having checked that. noinline: its locals would widen the receive's frame on
+        // every syscall chain.
+        __attribute__((noinline)) int32_t held_serve(uintptr_t buf, size_t cap_len,
+                                                     uintptr_t badge_out)
         {
-            return 0;
+            if (console_held_ready() == 0 or cap_len == 0)
+            {
+                return HELD_NONE;
+            }
+            UserOwner const space = user_space_of(sched::current());
+            return held_copy(space, space, buf, cap_len, badge_out);
         }
-        Thread* w = wq_pop_highest(e->recv_waiters);
-        if (w == nullptr)
+    }
+
+    void cap_console_deliver()
+    {
+        Endpoint* const e = cap_console_endpoint();
+        if (e == nullptr or e->console != EP_CONSOLE_SERVED or console_held_ready() == 0)
         {
-            return 0;
+            return;
         }
-        size_t n = len;
-        if (w->ipc.len < n)
+        Thread* const w = wq_peek_highest(e->recv_waiters);
+        if (w == nullptr or w->ipc.len == 0)
         {
-            n = w->ipc.len; // datagram truncation, as for any sender
+            return;
         }
-        if (not kaccess_to_user(ipc_buf_space(w), w->ipc.buf, buf, n))
-        {
-            n = 0;
-        }
-        // Wake the removed waiter even on error; it is no longer on recv_waiters.
-        if (not write_recv_info(user_space_of(w), w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID))
-        {
-            n = 0;
-        }
-        w->wait_result = static_cast<intptr_t>(n);
+        (void)wq_pop_highest(e->recv_waiters);
+        w->wait_result = held_copy(ipc_buf_space(w), user_space_of(w), w->ipc.buf, w->ipc.len,
+                                   w->ipc.badge_out);
         sched::wake(w);
-        return static_cast<int32_t>(n);
     }
 
     // Receive with IrqLock held and cap_len clamped. badge_out is zero for a
@@ -507,6 +538,14 @@ namespace kickos
         // woken caller instead of this receiver.
         KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
         KICKOS_BENCH_MARK(bm_rscan);
+        if (e->console == EP_CONSOLE_SERVED)
+        {
+            int32_t const held = held_serve(buf, cap_len, badge_out);
+            if (held != HELD_NONE)
+            {
+                return held;
+            }
+        }
         while (true)
         {
             Thread* s = wq_pop_highest(e->send_waiters);
@@ -707,7 +746,7 @@ namespace kickos
             }
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             bool const far = endpoint_is_far(e);
-            if (not far and not endpoint_receiving(e))
+            if (not far and not endpoint_takes_sends(e))
             {
                 return endpoint_unserved(e, 0);
             }

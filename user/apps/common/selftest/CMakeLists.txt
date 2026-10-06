@@ -79,7 +79,7 @@ elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
   set(_selftest_firsts 1 3 5 7 10)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE))
   set(_selftest_firsts 1 5 7 10)
-elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_BENCH)
+elseif(KICKOS_CHIP STREQUAL "esp32" AND (KICKOS_BENCH OR KICKOS_KERNEL_CORES GREATER 1))
   set(_selftest_firsts 1 7)
 endif()
 set(_selftest_bound "")
@@ -408,7 +408,7 @@ endif()
 
 # The same count per REGION. The regions are separated by the `#undef TAP_ADD` lines in
 # main.cc: region 1 ends after sem_raii, region 2 after endpoint_handout, region 3 after
-# reply_abandoned_cap, region 4 after call_donation_hold, region 5 after cap_reply_slot_reuse,
+# reply_recv_timeout, region 4 after call_donation_hold, region 5 after cap_reply_slot_reuse,
 # region 6 after task_exit_member_exit, region 7 after task_slay_after_every_sweep, region 8
 # after the IRQ arms, region 9 after caller_stack, region 10 is the rest.
 #
@@ -419,9 +419,9 @@ set(_tap_arms_r1 16) # region 1, unconditional, svc_roundtrip through sem_raii: 
 
 set(_tap_arms_r2 18) # region 2, unconditional, mutex_basic through endpoint_handout: 10 x mutex_*, 2 x prio_self_*, 6 x endpoint_*
 
-set(_tap_arms_r3 11) # region 3, unconditional: endpoint_handout_parked, endpoint_zero_accept, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
+set(_tap_arms_r3 17) # region 3, unconditional: endpoint_handout_parked, endpoint_zero_accept, endpoint_send_timeout, recv_timeout, timed_arg_refusals, reply_recv_lens_clamp, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, call_infoless_revert, call_close_reply, call_happy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout
 
-set(_tap_arms_r4 15) # region 4, unconditional, call_infoless_revert through call_donation_hold, incl. call_infoless_revert, call_close_reply, call_happy, reply_recv_loop, reply_recv_no_reply, reply_recv_timeout, reply_recv_bad_ep_wakes_caller, service_survives_client_fault, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, call_donation, call_donation_hold
+set(_tap_arms_r4 9) # region 4, unconditional, reply_recv_bad_ep_wakes_caller through call_donation_hold, incl. reply_recv_bad_ep_wakes_caller, service_survives_client_fault, call_from_root, call_truncation, call_double_reply, call_server_death, call_prepop_death, call_donation, call_donation_hold
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_r4 "${_tap_arms_r4} + 4") # reply_recv_notify_park, reply_recv_notify, irq_wait_timeout, call_reg_fastpath
 endif()

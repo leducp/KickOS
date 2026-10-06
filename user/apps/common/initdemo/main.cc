@@ -87,7 +87,7 @@ int main(int, char**)
 
     // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
     // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which main's composition grants.
-    if (kos_console_publish(ep) != 0)
+    if (kos_console_publish(ep, KOS_TASK_NONE) != 0)
     {
         kos::print("[initdemo] ERROR: console_publish failed\n");
         return 2;

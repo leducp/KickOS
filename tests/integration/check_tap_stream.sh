@@ -194,41 +194,6 @@ if [ -n "$_rj_notes" ]; then
     out="$(printf '%s\n' "$out" | rejoin_fault_splits "$expect_faults")"
 fi
 
-# The producer says when it dropped output, and it is the only thing that can: every count
-# below reconciles against the lines that survived, so a capture missing whole lines can
-# satisfy all of them and still not be the run it claims to be. <kickos/sys/emit.h> gives the
-# kernel console ring one full ring of wire time to take a write and then drops the remainder,
-# counting the bytes; the count reaches the wire as this marker on the first write that fits
-# after the loss.
-#
-# Not anchored, and counted by occurrence rather than by line: the write that was cut can end
-# mid-line, and a second writer on a shared console prepends its bytes, so the marker is not
-# always the start of a capture line. It is checked first so a truncated capture is named as
-# one instead of being reported as a plan that does not add up.
-DROP_MARK="# console dropped"
-
-# Planted before it is trusted, as a minimal pair: a parse that matches nothing reports every
-# capture whole, which is the reading this clause exists to end.
-literal_count "ok 1 - a
-$DROP_MARK 48 byte(s)
-ok 2 - b" "$DROP_MARK"
-[ "$KOS_LITERAL_N" = 1 ] \
-    || fail "the drop-marker parse reads $KOS_LITERAL_N marker(s) out of a planted stream
-  carrying one, so a producer reporting lost output would be read as a clean capture"
-literal_count "ok 1 - a
-ok 2 - b" "$DROP_MARK"
-[ "$KOS_LITERAL_N" = 0 ] \
-    || fail "the drop-marker parse fires on a stream carrying no marker ($KOS_LITERAL_N)"
-
-literal_count "$out" "$DROP_MARK"
-if [ "$KOS_LITERAL_N" -gt 0 ]; then
-    printf '%s\n' "$out" | grep -F -- "$DROP_MARK"
-    fail "the producer reports console output it could not deliver ($KOS_LITERAL_N marker(s)):
-  this capture is MISSING LINES and is a witness for nothing, whatever the counts below
-  reconcile to. The ring refused a write for a whole ring's wire time, which is a console the
-  run outran or one that stopped draining, not a test result"
-fi
-
 # The verdict is the harness's own tally. Above one core arch_console_write is a byte-at-a-time
 # device loop under no lock, so a peer's status line lands inside another line character by
 # character and carries its own newline in with it: `not ok 7 - x` reaches the wire as `not `

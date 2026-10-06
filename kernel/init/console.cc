@@ -10,9 +10,12 @@
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h> // cap_console_deliver (the fault record's route to a published console)
 #include <kickos/console_tx.h>
+#include <kickos/grant.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
+#include <kickos/sync.h>
+#include <kickos/task.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/errno.h>
 
@@ -48,6 +51,10 @@ namespace
     using kickos::Atomic;
     using kickos::Order;
 
+    // console_emit's answer in the dark window. Never a -KOS_E*, and it never leaves
+    // kconsole_write_user.
+    constexpr int CONSOLE_DARK = -1000;
+
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
     // from that point on.
     constinit Atomic<bool, Order::RELAXED> g_console_panicking = false;
@@ -67,9 +74,9 @@ namespace
     };
     constinit Atomic<ConsoleState, Order::RELAXED> g_console_state = ConsoleState::KERNEL_OWNED;
 
-    // Set by the cap layer when the published console endpoint loses its last WAIT-bearing
-    // cap. Sticky across a refused reclaim (see console_tx.h). It names ONE published
-    // console, so a re-publish retires it (console_owner_set_user).
+    // Set by the cap layer when the published console's task ends, and sticky until the reclaim
+    // goes through: a refused one, and a hand-off still under way, both leave it for a later
+    // step to act on. Only a new publish retires it (console_handover_begin).
     constinit Atomic<bool, Order::RELAXED> g_console_driver_died = false;
 
     // In-flight kernel chip writers. kos_console_publish enters HANDING_OFF first and then
@@ -78,32 +85,66 @@ namespace
     // nothing increments after that flip, which is what chip_writer_enter enforces.
     constinit Atomic<int, Order::RELAXED> g_chip_writers = 0;
 
+    // The printing thread's TCB address, truncated: TCBs sit in one pool far narrower than
+    // 4 GiB, so two live threads never share a key.
+    uint32_t held_key(void)
+    {
+        return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(kickos::sched::current()));
+    }
+
+    // A line's flags on its way to the console.
+    constexpr uint8_t WRITE_RECORD = 1u;  // a line of a fault record
+    constexpr uint8_t WRITE_OFFERED = 2u; // offered again where the chip took part of it
+    constexpr uint8_t WRITE_USER = 4u;    // the current thread's own write
+
 #if KICKOS_CONSOLE_CHIP
+    enum class ChipEntry : uint8_t
+    {
+        KERNEL_OWNED,
+        RECLAIMED,
+        SERVED, // the writer's own stdout send would be taken now
+        OWED,   // the console is dark: the writer waits it out
+        DROPPED
+    };
+
     // The state read and the increment are ONE masked operation, or publish's drain is
     // blind to a writer that read a device-owning state just before the flip: the drain
     // sees 0, the driver starts, and the woken writer then bit-bangs a UART it no longer
     // owns. Refuses HANDING_OFF as well as USER_OWNED: a publish that admitted new writers
-    // would have nothing left to make its drain converge. `out_state` IS the decisive read:
-    // a caller must not re-read the state. On a refusal, `*served` answers under the same read
-    // whether `asker`'s own stdout send would be taken now, and `*owed` whether a dead driver's
-    // reclaim is waiting on a thread still holding the device.
-    bool chip_writer_enter(ConsoleState* out_state, kickos::Thread const* asker, bool* served,
-                           bool* owed)
+    // would have nothing left to make its drain converge. The answer IS the decisive read:
+    // a caller must not re-read the state. A record line is held under the same read, so the
+    // reclaim, which flips the state and writes the open records under this lock, sends each
+    // line to exactly one of the device and the driver.
+    ChipEntry chip_writer_enter(char const* buf, size_t n, uint8_t flags)
     {
         kickos::IrqLock lock;
         ConsoleState const state = g_console_state;
         if (state == ConsoleState::USER_OWNED or state == ConsoleState::HANDING_OFF)
         {
-            if (asker != nullptr)
+            if ((flags & WRITE_RECORD) != 0)
             {
-                *served = kickos::cap_console_serves(asker);
-                *owed = state == ConsoleState::USER_OWNED and g_console_driver_died;
+                (void)console_held_append(held_key(), buf, static_cast<uint32_t>(n),
+                                          KDIAG_FAULT_RECORD_MAX);
             }
-            return false;
+            if ((flags & WRITE_USER) != 0)
+            {
+                if (kickos::cap_console_serves(kickos::sched::current()))
+                {
+                    return ChipEntry::SERVED;
+                }
+                if (g_console_driver_died)
+                {
+                    return ChipEntry::OWED;
+                }
+            }
+            return ChipEntry::DROPPED;
         }
-        *out_state = state;
         g_chip_writers = g_chip_writers + 1;
-        return true;
+        if (state == ConsoleState::RECLAIMED)
+        {
+            return ChipEntry::RECLAIMED;
+        }
+        return ChipEntry::KERNEL_OWNED;
     }
 #endif
 }
@@ -123,28 +164,30 @@ extern "C" int console_chip_writable(void)
 // Publish's first half. Leaves the UART kernel-owned so a writer already inside the bracket
 // can finish on it. The caller MUST drain console_chip_writers to zero before
 // console_owner_set_user, else that writer lands on the driver's UART, and the drain
-// converges only because of the refusal installed here. Idempotent.
+// converges only because of the refusal installed here. A note standing here names the
+// console this publish replaces; one taken from here on names the task this publish serves.
 extern "C" void console_handover_begin(void)
 {
     kickos::IrqLock lock;
-    if (g_console_state == ConsoleState::USER_OWNED)
-    {
-        return;
-    }
+    g_console_driver_died = false;
     g_console_state = ConsoleState::HANDING_OFF;
     console_tx_deinit();
 }
 
 // Publish's LAST step. A writer still counted here is one the drain was meant to wait for,
-// and it would finish its message on the driver's UART.
+// and it would finish its message on the driver's UART. A death noted during the hand-off is
+// acted on here, as console_on_driver_death would have under USER_OWNED.
 extern "C" void console_owner_set_user(void)
 {
     KICKOS_ASSERT(console_chip_writers() == 0);
-    // Voids any pending death note: it belongs to the console being replaced, and
-    // USER_OWNED is the only thing console_on_driver_death checks, so a note left standing
-    // here reclaims the NEW driver's UART when the OLD driver's last thread exits.
-    g_console_driver_died = false;
+    kickos::IrqLock lock;
     g_console_state = ConsoleState::USER_OWNED;
+    if (g_console_driver_died)
+    {
+        console_on_driver_death();
+        return;
+    }
+    kickos::console_dark_wake();
 }
 
 // Every access to the chip-writer count, mutators and reader alike, MUST run under IrqLock:
@@ -169,32 +212,51 @@ extern "C" void console_note_driver_death(void)
     g_console_driver_died = true;
 }
 
+// The kernel has the device back: what no driver took goes out polled, the open records'
+// lines so far included, and those records' later lines then reach the device directly. The
+// lock keeps another core's change of the store out. always_inline: a frame of its own deepens
+// the exit chains the trap red-zone gate measures.
+__attribute__((always_inline)) static inline void console_held_flush_sync(void)
+{
+    kickos::IrqLock lock;
+    console_held_write_sync();
+    console_held_clear();
+}
+
 // A chip's reclaim silences and reprograms the device, destroying in-flight TX: a FIFO reset
 // on esp32, a transmitter held in reset on esp32c6, UARTEN/UE/TE cleared on the PL011, USART,
 // LPUART, SCI and USIC parts. arch_console_write_sync hands bytes to a FIFO and not to the
 // wire, so the flush has to come first. It stays OUT of the chip body: arch.h scopes
 // arch_console_reclaim to straight-line absolute stores, since it may run in a partial
-// nested-fault state.
+// nested-fault state. The held records go out after, on the device the reclaim reset. It
+// runs once per reclaim: a second run could truncate the byte in the shift register.
 static void console_flush_then_reclaim(void)
 {
     arch_console_flush_sync();
     arch_console_reclaim();
+    console_held_flush_sync();
+}
+
+extern "C" int console_dark(void)
+{
+    ConsoleState const state = g_console_state;
+    return static_cast<int>(g_console_driver_died
+                            and (state == ConsoleState::USER_OWNED
+                                 or state == ConsoleState::HANDING_OFF));
 }
 
 extern "C" void console_on_driver_death(void)
 {
-    if (not g_console_driver_died)
+    if (not g_console_driver_died or g_console_state == ConsoleState::HANDING_OFF)
     {
         return;
     }
-    // The note fires on the endpoint's last RECEIVER, the service thread, not necessarily
-    // the thread holding the registers: a driver is a THREAD GROUP. Reclaiming on the note
-    // alone would reprogram the UART under a live IRQ thread that owns those registers and
-    // silence its source (INT_ENA=0), parking it forever. So the precondition is asked of
-    // the DEVICE: nobody may still hold the window arch_console_reclaim is about to write.
-    // A cancelled peer is still a holder: thread_cancel marks it, and only its own exit
-    // releases its windows, so the note stays set across the refusal and the LAST holder's
-    // exit_current reclaims.
+    // The note fires when the task ENDS, and its members are only slain then: the thread
+    // holding the registers may still be running. Reclaiming on the note alone would
+    // reprogram the UART under it. So the precondition is asked of the DEVICE: nobody may
+    // still hold the window arch_console_reclaim is about to write. A slain member is still a
+    // holder until its own exit releases its windows, so the note stays set across the
+    // refusal and the LAST holder's exit_current reclaims.
     uintptr_t win_base = 0;
     size_t win_size = 0;
     arch_console_reclaim_window(&win_base, &win_size);
@@ -203,17 +265,15 @@ extern "C" void console_on_driver_death(void)
         return;
     }
     g_console_driver_died = false;
-    // Only a PUBLISHED console can lose its driver, so any other state means a panic
-    // already reclaimed. A re-publish cannot reach here with a stale note: it clears the
-    // note itself, because USER_OWNED alone does not say WHICH console it refers to.
-    // RECLAIMED is stored before the body so a fault inside that body cannot recurse, and
-    // so the body runs exactly once.
+    // RECLAIMED here means a panic reclaimed first. RECLAIMED is stored before the body so a
+    // fault inside that body cannot recurse.
     if (g_console_state != ConsoleState::USER_OWNED)
     {
         return;
     }
     g_console_state = ConsoleState::RECLAIMED;
     console_flush_then_reclaim();
+    kickos::console_dark_wake();
 }
 
 // A stale zero here makes kos_console_publish's handover drain give the UART to a
@@ -260,18 +320,15 @@ extern "C" void console_write_line_sync(char const* buf, size_t n)
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    static int console_emit(char const* buf, size_t n, bool force_sync, bool* cr_pending,
-                            Thread const* asker)
+    static int console_emit(char const* buf, size_t n, bool* cr_pending, uint8_t flags)
     {
         // The count is taken under the same masked read that selects the transport, so
         // publish either drains this writer or the writer never reaches the device. The
         // polled poke has no other serialisation, and RECLAIMED needs the bracket as much as
         // KERNEL_OWNED does: a console published again after a reclaim flips straight out
         // of it.
-        ConsoleState state = ConsoleState::KERNEL_OWNED;
-        bool served = false;
-        bool owed = false;
-        if (chip_writer_enter(&state, asker, &served, &owed))
+        ChipEntry const entry = chip_writer_enter(buf, n, flags);
+        if (entry == ChipEntry::KERNEL_OWNED or entry == ChipEntry::RECLAIMED)
         {
             // PANIC KEEPS THE SYNCHRONOUS PATH. The system stops after a panic, so a line
             // left queued is a line nobody reads.
@@ -279,7 +336,7 @@ namespace kickos
             // The chip seam is the only door into the ring: every arch_console_write inserts
             // the line, and a line the ring refuses does not go out.
             int took = static_cast<int>(n);
-            if (state == ConsoleState::KERNEL_OWNED and not g_console_panicking)
+            if (entry == ChipEntry::KERNEL_OWNED and not g_console_panicking)
             {
 #if KICKOS_AMP_OWN_IMAGE
                 if (cr_pending != nullptr)
@@ -303,7 +360,7 @@ namespace kickos
         }
         // A thread whose send failed before a publish lands here after it: its bytes now
         // belong on the endpoint, which takes them.
-        if (served)
+        if (entry == ChipEntry::SERVED)
         {
             if (cr_pending != nullptr)
             {
@@ -311,28 +368,20 @@ namespace kickos
             }
             return -KOS_EBUSY;
         }
-        // The device comes back to the kernel when that thread exits; until then the writer is
-        // told to retry rather than have its line dropped. The retry offers the same bytes here
-        // again, so a CR already on the wire stays owed.
-        if (owed)
+        // The dark window: the writer waits it out and offers the same bytes here again, so a
+        // CR already on the wire stays owed.
+        if (entry == ChipEntry::OWED)
         {
-            return -KOS_EAGAIN;
+            return CONSOLE_DARK;
         }
         if (cr_pending != nullptr)
         {
             *cr_pending = false;
         }
-        // USER_OWNED: DROP, the driver owns the UART (RTT still carries it, see
-        // kconsole_write). force_sync accepts interleaving with the driver's in-flight
-        // bytes, and is set only after the published route has already refused these ones.
-        if (force_sync)
-        {
-            console_write_line_sync(buf, n);
-        }
         // USER_OWNED: the driver owns the UART and a kernel chip write is dropped BY DESIGN,
         // not by pressure. Reported as taken, because the distinction the caller acts on is
         // "the ring is full, try again" and no retry can win this one: the route is simply
-        // not the chip any more. kvprintf_route reaches the published console separately.
+        // not the chip any more. A fault record's line was held for the driver instead.
         return static_cast<int>(n);
     }
 #endif
@@ -341,12 +390,13 @@ namespace kickos
     // context, so it takes the crit section for the few microseconds it needs. The chip
     // transport masks the ring COPY alone; only its refusal path masks a whole transmission,
     // which at 115200 is ~22 ms for a 256 B line.
-    static int kconsole_write_impl(char const* buf, size_t n, bool force_sync,
-                                   bool* cr_pending = nullptr, Thread const* asker = nullptr)
+    //
+    // An offered line goes to RTT only as far as the chip took it: offers repeat.
+    static int kconsole_write_impl(char const* buf, size_t n, bool* cr_pending = nullptr,
+                                   uint8_t flags = 0)
     {
-        (void)force_sync;
         (void)cr_pending;
-        (void)asker;
+        (void)flags;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
         // KICKOS_CONSOLE=none: the writer is a sink. Panic, fault and boot still run their
         // full paths and terminate the same way.
@@ -354,6 +404,7 @@ namespace kickos
         (void)n;
 #endif
 #if KICKOS_CONSOLE_RTT
+        if ((flags & WRITE_OFFERED) == 0)
         {
             IrqLock lock;
             kickos_rtt_write(buf, n);
@@ -361,11 +412,19 @@ namespace kickos
 #endif
 #if KICKOS_CONSOLE_CHIP
         // RAW: the '\n' lowering happens at the device end of the path, where one line stays
-        // one emit. RTT above stays raw either way, its viewer cooking.
-        return console_emit(buf, n, force_sync, cr_pending, asker);
+        // one emit. RTT stays raw either way, its viewer cooking.
+        int const took = console_emit(buf, n, cr_pending, flags);
 #else
-        return static_cast<int>(n);
+        int const took = static_cast<int>(n);
 #endif
+#if KICKOS_CONSOLE_RTT
+        if ((flags & WRITE_OFFERED) != 0 and took > 0)
+        {
+            IrqLock lock;
+            kickos_rtt_write(buf, static_cast<size_t>(took));
+        }
+#endif
+        return took;
     }
 
     // The bytes of buf that went out or were queued. A ring takes a line whole or refuses it,
@@ -375,20 +434,37 @@ namespace kickos
     // kprintf_paced is the one caller that can afford to wait, and it already does.
     int kconsole_write(char const* buf, size_t n)
     {
-        return kconsole_write_impl(buf, n, false);
+        return kconsole_write_impl(buf, n);
     }
 
-    int kconsole_write_user(char const* buf, size_t n)
+    int kconsole_write_user(char const* buf, size_t n, bool wait)
     {
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
         Thread* const t = sched::current();
-        bool pending = t->console_cr_pending != 0;
-        int const took = kconsole_write_impl(buf, n, false, &pending, t);
-        t->console_cr_pending = pending;
-        return took;
-#else
-        return kconsole_write_impl(buf, n, false, nullptr, sched::current());
 #endif
+        while (true)
+        {
+#if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
+            bool pending = t->console_cr_pending != 0;
+            int const took = kconsole_write_impl(buf, n, &pending, WRITE_USER | WRITE_OFFERED);
+            t->console_cr_pending = pending;
+#else
+            int const took = kconsole_write_impl(buf, n, nullptr, WRITE_USER | WRITE_OFFERED);
+#endif
+            if (took != CONSOLE_DARK)
+            {
+                return took;
+            }
+            if (not wait)
+            {
+                return -KOS_EAGAIN;
+            }
+            int const woke = console_dark_wait();
+            if (woke < 0)
+            {
+                return woke;
+            }
+        }
     }
 
     void kputs(char const* s)
@@ -401,22 +477,10 @@ namespace kickos
         // The buffer belongs to the CALLER, and that is the whole reason this is not one
         // function with one array: kprintf_fault descends under a trap red zone measured by
         // tests/static/check_trap_redzone.sh and cannot spend what kprintf spends.
-        void kvprintf_route(char* buf, size_t cap, char const* fmt, va_list ap, bool route)
+        void kvprintf_route(char* buf, size_t cap, char const* fmt, va_list ap, uint8_t flags)
         {
             kfmt_vsnprintf(buf, cap, fmt, ap);
-            size_t const n = kstrlen(buf);
-            kconsole_write(buf, n);
-            // USER_OWNED only. RECLAIMED means the kernel has the device back and the driver
-            // is gone, so routing there would send into an endpoint nobody serves.
-            if (route and g_console_state == ConsoleState::USER_OWNED)
-            {
-                // 0 means nothing was delivered, and the chip write above already dropped,
-                // so without this the record reaches nobody.
-                if (cap_console_deliver(buf, n) == 0)
-                {
-                    kconsole_write_impl(buf, n, true);
-                }
-            }
+            (void)kconsole_write_impl(buf, kstrlen(buf), nullptr, flags);
         }
     }
 
@@ -425,7 +489,7 @@ namespace kickos
         char buf[KICKOS_DIAG_LINE_MAX];
         va_list ap;
         va_start(ap, fmt);
-        kvprintf_route(buf, sizeof(buf), fmt, ap, false);
+        kvprintf_route(buf, sizeof(buf), fmt, ap, 0);
         va_end(ap);
     }
 
@@ -448,7 +512,7 @@ namespace kickos
         uint32_t queued = console_tx_used();
         for (uint32_t attempt = 0; attempt < KICKOS_CONSOLE_TX_SIZE; attempt++)
         {
-            if (kconsole_write_impl(buf, n, false) != 0)
+            if (kconsole_write_impl(buf, n, nullptr, WRITE_OFFERED) != 0)
             {
                 return;
             }
@@ -472,8 +536,47 @@ namespace kickos
         char buf[KDIAG_FAULT_LINE_MAX];
         va_list ap;
         va_start(ap, fmt);
-        kvprintf_route(buf, sizeof(buf), fmt, ap, true);
+        kvprintf_route(buf, sizeof(buf), fmt, ap, WRITE_RECORD);
         va_end(ap);
+    }
+
+    void krecord_end(void)
+    {
+        IrqLock lock;
+        if (console_held_commit(held_key()) != 0 and g_console_state != ConsoleState::RECLAIMED)
+        {
+            cap_console_deliver();
+        }
+    }
+
+    void krecord_abandon(void)
+    {
+        IrqLock lock;
+        console_held_abandon(held_key());
+    }
+
+    bool console_window_held_outside(Task const* t)
+    {
+        uintptr_t base = 0;
+        size_t size = 0;
+        arch_console_reclaim_window(&base, &size);
+        return size != 0 and dev_window_held_outside(base, size, t);
+    }
+
+    bool console_window_withheld(uintptr_t base, size_t size, Task const* t)
+    {
+        ConsoleState const state = g_console_state;
+        if ((state != ConsoleState::USER_OWNED and state != ConsoleState::HANDING_OFF)
+            or task_serves_console(t))
+        {
+            return false;
+        }
+        uintptr_t win_base = 0;
+        size_t win_size = 0;
+        arch_console_reclaim_window(&win_base, &win_size);
+        return win_size != 0
+               and grant_ranges_overlap(base, base + size - 1u, win_base,
+                                        win_base + win_size - 1u);
     }
 
 #if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT

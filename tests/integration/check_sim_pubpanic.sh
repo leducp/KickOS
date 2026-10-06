@@ -103,8 +103,8 @@ fi
 # reaches the wire over the DRIVER, and the end is the init's shutdown, never the panic path.
 #
 # The record arrives over the driver, not over the kernel chip path, which console_emit drops
-# while the console is USER_OWNED (kernel/init/console.cc). kprintf_fault hands it to the
-# published endpoint's parked receiver instead (cap_console_deliver), because the thread-kill
+# while the console is USER_OWNED (kernel/init/console.cc). The record is held whole for the
+# published endpoint's driver instead (krecord_end, cap_console_deliver), because the thread-kill
 # path may not call kpanic_enter. A status of 139 rather than 132 is what separates the init's
 # ending from kfault_terminate.
 set +e

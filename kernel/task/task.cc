@@ -15,6 +15,7 @@
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include <stdint.h> // UINT8_MAX
@@ -26,6 +27,8 @@ namespace kickos
         constexpr uint8_t TASK_MARK_READY = 1u << 0;
         constexpr uint8_t TASK_MARK_ENDED = 1u << 1;
         constexpr uint8_t TASK_MARK_DEAD = 1u << 2;
+        constexpr uint8_t TASK_MARK_CONSOLE = 1u << 3; // serves the published console
+        constexpr uint8_t TASK_MARK_NONBLOCK = 1u << 4; // O_NONBLOCK on the console's fds
 
         // A slot is free iff it holds no live thread, nobody reserved it, and no released
         // member still sweeps under its name: such a member's capabilities count in the budget
@@ -78,8 +81,21 @@ namespace kickos
             }
         }
 
+        // The task no longer serves the console: it ended, or its slot went back without it ever
+        // ending. Caller holds IrqLock.
+        void console_leave(Task* t)
+        {
+            if ((t->marks & TASK_MARK_CONSOLE) == 0)
+            {
+                return;
+            }
+            t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_CONSOLE);
+            cap_console_task_ended();
+        }
+
         void free_task(Task* t)
         {
+            console_leave(t);
             watch_clear(t);
             domain_release(t->domain);
             // Nulling makes the debris FAIL-CLOSED: task_domain answers null, which every
@@ -374,6 +390,7 @@ namespace kickos
             {
                 t->exit_status = code;
             }
+            console_leave(t);
             watch_raise(t);
         }
         // The ending thread is still a member, so a count of one leaves nobody to cancel.
@@ -381,6 +398,52 @@ namespace kickos
         {
             task_cancel_group(t);
         }
+    }
+
+    void task_console_serve(Task* t)
+    {
+        Kernel& k = kernel();
+        for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+        {
+            k.tasks[i].marks = static_cast<uint8_t>(k.tasks[i].marks & ~TASK_MARK_CONSOLE);
+        }
+        if (t != nullptr)
+        {
+            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_CONSOLE);
+        }
+    }
+
+    bool task_serves_console(Task const* t)
+    {
+        return t != nullptr and (t->marks & TASK_MARK_CONSOLE) != 0;
+    }
+
+    bool task_nonblocking(Task const* t)
+    {
+        return t != nullptr and (t->marks & TASK_MARK_NONBLOCK) != 0;
+    }
+
+    int task_nonblock_call(int op)
+    {
+        IrqLock lock;
+        Task* const t = sched::current()->task;
+        if (t == nullptr)
+        {
+            return -KOS_EINVAL;
+        }
+        if (op == KOS_NONBLOCK_SET)
+        {
+            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_NONBLOCK);
+        }
+        else if (op == KOS_NONBLOCK_CLEAR)
+        {
+            t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_NONBLOCK);
+        }
+        else if (op != KOS_NONBLOCK_GET)
+        {
+            return -KOS_EINVAL;
+        }
+        return static_cast<int>(task_nonblocking(t));
     }
 
     bool task_ended(Task const* t)

@@ -467,6 +467,11 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
                            -DKICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE}
                            -DKICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
     endif()
+    # Unset keeps the chip script's default code window, which a script reads only where it
+    # offers the knob.
+    if(DEFINED KICKOS_CODE_SIZE)
+      list(APPEND _ld_defs -DKICKOS_CODE_SIZE=${KICKOS_CODE_SIZE})
+    endif()
     # Unset keeps the chip script's freestanding default; a full-C++ build needs a larger
     # window for the heap and libstdc++/unwind state.
     if(DEFINED KICKOS_APPDATA_SIZE)

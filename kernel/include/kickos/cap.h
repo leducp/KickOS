@@ -37,8 +37,9 @@ static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
 
 namespace kickos
 {
-    struct Thread; // kickos/thread.h
-    struct Task;   // kickos/task.h
+    struct Thread;   // kickos/thread.h
+    struct Task;     // kickos/task.h
+    struct Endpoint; // kickos/endpoint.h
 
     // A cap handle is (gen << KCAP_INDEX_BITS) | index. The split is FIXED fleet-wide and
     // never derived from KICKOS_MAX_HANDLES, so a per-board RAM decision cannot renumber
@@ -677,33 +678,39 @@ namespace kickos
     // it. Caller holds IrqLock. Both refs are taken before either seat moves, and the new ones
     // before the old are dropped, so a re-publish of the same endpoint never transiently frees it
     // and a ceiling refusal leaves the prior arrangement intact. The kernel's own ref carries
-    // rights 0, the publisher's CAP_SIGNAL. False = nothing changed.
+    // rights 0, the publisher's CAP_SIGNAL. The endpoint takes no send until cap_console_serve
+    // names its task. False = nothing changed.
     bool cap_console_publish(Thread* publisher, int obj_handle);
 
     // kos_console_publish through the publisher's endpoint capability `e`, which must hold
-    // HANDOUT. One not holding WAIT gains it and counts as receiving, as an endpoint's creator
-    // does from the start, so every publish leaves `e` holding WAIT and HANDOUT and the
-    // publisher's narrow at the end of the handover is the last WAIT going whenever no driver
-    // thread holds one. Caller holds IrqLock. Returns 0, -KOS_EACCES (no HANDOUT) or
-    // -KOS_EOVERFLOW (a counter at its ceiling); a refusal changes nothing.
-    int cap_console_publish_through(Thread* publisher, CapEntry* e);
+    // HANDOUT, for `served_by`, the task whose end is the console's death. One not holding WAIT
+    // gains it and counts as receiving, as an endpoint's creator does from the start, so every
+    // publish leaves `e` holding WAIT and HANDOUT. Caller holds IrqLock. Returns 0, -KOS_EACCES
+    // (no HANDOUT) or -KOS_EOVERFLOW (a counter at its ceiling); a refusal changes nothing.
+    int cap_console_publish_through(Thread* publisher, CapEntry* e, Task* served_by);
 
-    // The published console endpoint's global handle. False = nothing has been published, and
-    // *out is untouched. The sentinel stays private to cap.cc: it is tested by EQUALITY, never
-    // by sign, because a live handle whose slot generation has reached 32768 is NEGATIVE.
-    bool cap_console_target(int* out);
+    // `t` serves the published console from here on (task_console_serve), and its endpoint takes
+    // sends until `t` ends; a null `t` leaves it taking none. Caller holds IrqLock.
+    void cap_console_serve(Task* t);
 
-    // Whether a send through `t`'s stdout slot reaches the published console endpoint and finds
-    // it receiving. Caller holds IrqLock.
+    // The task serving the published console ended: no send is taken there from here on, the
+    // death is noted, the reclaim tried, and every parked sender answered. Caller holds IrqLock.
+    void cap_console_task_ended();
+
+    // The published console endpoint, or null where nothing is published. The sentinel stays
+    // private to cap.cc: it is tested by EQUALITY, never by sign, because a live handle whose
+    // slot generation has reached 32768 is NEGATIVE. Caller holds IrqLock.
+    Endpoint* cap_console_endpoint();
+
+    // Whether a send through `t`'s stdout slot reaches the published console endpoint and is
+    // taken or parks there. Caller holds IrqLock.
     bool cap_console_serves(Thread const* t);
 
-    // Copy kernel text to an already-waiting console receiver; never park or retry.
-    // Returns bytes copied, or zero. The receiver is woken even if copying fails.
-    // Do not assert on copy failure: this path is used by the fault reporter.
-    // The receiver capacity bounds the copy to KOS_EP_MSG_MAX.
-    // Takes IrqLock and may switch to a higher-priority receiver. The caller must
-    // run in thread context without IrqLock and tolerate interruption mid-record.
-    int32_t cap_console_deliver(char const* buf, size_t len);
+    // Hand the kernel records held for the published console to a receiver already parked on
+    // it, as much as its buffer takes; with none parked they wait for its next receive. Never
+    // parks. Caller holds IrqLock, in thread context, and the woken receiver may preempt it at
+    // the lock's release. No assert: the fault reporter is the caller.
+    void cap_console_deliver();
 
     // Bump one reference to the object named by a global handle. The handle MUST resolve: the
     // caller validated it. Caller holds IrqLock. `rights` is the cap's rights bits: the endpoint

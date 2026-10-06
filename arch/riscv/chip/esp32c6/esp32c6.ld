@@ -52,7 +52,10 @@ _kernel_stack_size = 16K;
 /* 128K, not 64K: the full-C++ opt-in folds .eh_frame + .gcc_except_table INTO this
    region (retained, not discarded, see .text) and libstdc++/libsupc++ text pushes real
    code+rodata past 64K. */
-_code_size = 128K;
+#ifndef KICKOS_CODE_SIZE
+#define KICKOS_CODE_SIZE 128K
+#endif
+_code_size = KICKOS_CODE_SIZE;
 /* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
    the newlib heap. cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
    the ~14K pad a 32K window leaves. */

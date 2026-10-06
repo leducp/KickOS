@@ -61,6 +61,7 @@ int main()
     KOS_SYS_PORT_REG_WRITE,
     KOS_SYS_TASK_EXIT_STATUS,
     KOS_SYS_THREAD_SET_PRIORITY,
+    KOS_SYS_TASK_NONBLOCK,
     };
     for (kos_syscall_nr s : calls)
     {

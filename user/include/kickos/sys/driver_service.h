@@ -431,10 +431,10 @@ constexpr bool valid_l6(Descriptor const& d)
     return ep_holder_count(d) == 1u;
 }
 
-// L7. A console handover with no readiness latch has no reportable window, because L8 puts
-// the poll strictly BEFORE the endpoint's receiver exists. A one-thread driver has no such
-// window at all, its only thread being that receiver, so L7 and L8 would be jointly
-// unsatisfiable: there the handover probe is the witness instead.
+// L7. A multi-thread console handover needs a readiness latch, which L8 puts strictly BEFORE
+// the endpoint's receiver exists. A one-thread driver has no device half to wait for, its only
+// thread being that receiver, so L7 and L8 would be jointly unsatisfiable: there the handover
+// probe is the witness instead.
 constexpr bool valid_l7(Descriptor const& d)
 {
     return d.ep_posture != KOS_DRV_EP_HANDOVER or d.thread_count == 1u
@@ -447,11 +447,11 @@ constexpr bool valid_l7(Descriptor const& d)
 // barrier_after > thread_count names no barrier position at all. An unaligned 32-bit load is
 // tolerated on ARMv7-M and FAULTS on RX and Xtensa.
 //
-// HANDOVER-ONLY arms: the poll must sit STRICTLY between the spawns, because once the
-// endpoint's receiver exists recv_holders never reaches 0, nothing reclaims the console, and
-// the timeout diagnostic goes to an endpoint nobody drains. Under RETAIN recv_holders never
-// reaches 0 in the first place and there is no console to reclaim, so a one-thread RETAIN bus
-// may latch after its only spawn and its receiver may be thread 0.
+// HANDOVER-ONLY arms: the poll must sit STRICTLY between the spawns, because the receiver takes
+// the handover's probe, and a probe taken before the device half is ready would prove a console
+// that cannot write yet, with clients sending to it. Under RETAIN there is no handover and no
+// probe, so a one-thread RETAIN bus may latch after its only spawn and its receiver may be
+// thread 0.
 //
 // The ep_holder arm is the SOLE rejecter of a receiver spawned before the barrier.
 constexpr bool valid_l8(Descriptor const& d)
@@ -726,14 +726,20 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 // What the init keeps of a console's endpoint once its handover ends: SIGNAL, TRANSFER, HANDOUT.
 constexpr uint32_t KOS_DRV_HANDOVER_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
 
+// A console start that failed: NARROW the caller's capability on E as a handover's end does,
+// then end the driver's task, whose end is what gives the kernel its console back, so a failure
+// printed after it reaches the wire. `in.task` is cleared once the task is gone; one that
+// outlives the bound is left for the init to slay.
+void console_start_failed(struct kos_driver_instance& in);
+
 // The last two steps of a console handover: NARROW the caller's capability on E to SIGNAL,
 // TRANSFER and HANDOUT, dropping the WAIT it created the endpoint with, or the one a restart's
 // publish through HANDOUT seated, then probe with a zero-length rendezvous on cap 0. Returns 0,
-// or the probe's negative rc. The init keeps the endpoint across the driver's death, so a dead
-// receiver answers its writers -KOS_EAGAIN until the next start publishes it again, and
-// -KOS_ECONNREFUSED once the init, its restarts spent, closes it. A probe that fails is a failed
-// start, which the init slays.
-int console_handover_finish(kos_cap_t ep, char const* tag);
+// or the probe's negative rc. The init keeps the endpoint across the driver's death, so once the
+// driver's task has ended its writers are answered -KOS_EAGAIN until the next start publishes it
+// again, and -KOS_ECONNREFUSED once the init, its restarts spent, closes it. A probe that fails
+// is a failed start (console_start_failed).
+int console_handover_finish(struct kos_driver_instance& in, char const* tag);
 
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
 constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;   // ~1 s total

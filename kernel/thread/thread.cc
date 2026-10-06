@@ -120,14 +120,15 @@ namespace kickos
     // admissible. A holder counts until its exit drops its device regions, before the
     // teardown can wake a supervisor into a respawn. Check and commit both sit inside
     // thread_create_call's function-scope IrqLock.
-    bool dev_window_free(uintptr_t base, size_t size)
+    static bool dev_window_held(uintptr_t base, size_t size, Task const* outside, bool any)
     {
         uintptr_t const last = base + size - 1u;
         Kernel& k = kernel();
         for (int i = 0; i < k.threads.next; i++)
         {
             Thread const& t = k.threads.slots[i];
-            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE)
+            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
+                or (not any and t.task == outside))
             {
                 continue;
             }
@@ -136,11 +137,21 @@ namespace kickos
                 if ((r.attr & ARCH_MPU_DEV) != 0
                     and grant_ranges_overlap(base, last, r.base, r.base + r.size - 1u))
                 {
-                    return false;
+                    return true;
                 }
             }
         }
-        return true;
+        return false;
+    }
+
+    bool dev_window_free(uintptr_t base, size_t size)
+    {
+        return not dev_window_held(base, size, nullptr, true);
+    }
+
+    bool dev_window_held_outside(uintptr_t base, size_t size, Task const* t)
+    {
+        return dev_window_held(base, size, t, false);
     }
 
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except)

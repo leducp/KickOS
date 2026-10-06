@@ -197,10 +197,10 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
                                          static_cast<uintptr_t>(len), 0));
 }
 
-int kos_console_publish(kos_cap_t ep)
+int kos_console_publish(kos_cap_t ep, kos_task_t task)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_CONSOLE_PUBLISH,
-                                         static_cast<uintptr_t>(ep), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_CONSOLE_PUBLISH, static_cast<uintptr_t>(ep),
+                                         static_cast<uintptr_t>(task), 0, 0));
 }
 
 int kos_thread_kill(kos_thread_t thread)
@@ -232,6 +232,12 @@ kos_thread_t kos_thread_self(void)
         return KOS_THREAD_NONE;
     }
     return static_cast<kos_thread_t>(r);
+}
+
+int kos_task_nonblock(int op)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_NONBLOCK, static_cast<uintptr_t>(op), 0,
+                                         0, 0));
 }
 
 int kos_thread_set_priority(uint8_t priority)

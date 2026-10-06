@@ -146,6 +146,10 @@ namespace kickos
     // The same mint with the privilege gate left to the caller. Caller holds IrqLock.
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
 #endif
+    // endpoint_send's answer where the send would park and may not: a timeout of 0, or a
+    // non-blocking task on the published console. Never a -KOS_E*: the dispatch answers it
+    // -KOS_ETIMEDOUT.
+    constexpr int32_t SEND_WOULD_PARK = -1000;
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,

@@ -57,6 +57,14 @@ extern "C"
     int console_tx_armed(void) { return 0; }
     void console_tx_flush_sync(void) {}
     void console_tx_deinit(void) {}
+    int console_held_append(uint32_t, char const*, uint32_t, uint32_t) { return 0; }
+    int console_held_commit(uint32_t) { return 0; }
+    void console_held_abandon(uint32_t) {}
+    void console_held_write_sync(void) {}
+    void console_held_clear(void) {}
+    uint32_t console_held_ready(void) { return 0; }
+    char const* console_held_data(void) { return nullptr; }
+    void console_held_take(uint32_t) {}
 
     int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
     {
@@ -85,8 +93,13 @@ extern "C"
 namespace kickos
 {
     bool dev_window_free(uintptr_t, size_t) { return g_window_free; }
+    bool dev_window_held_outside(uintptr_t, size_t, Task const*) { return false; }
+    bool task_serves_console(Task const*) { return false; }
 
-    int32_t cap_console_deliver(char const*, size_t) { return 0; }
+    int console_dark_wait(void) { return -KOS_ECANCELED; }
+    void console_dark_wake(void) {}
+
+    void cap_console_deliver() {}
 
     bool cap_console_serves(Thread const*) { return g_serves; }
 
@@ -120,8 +133,8 @@ namespace
         ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
     }
 
-    // The retry offers the same newline to the kernel console again, so the CR already on the
-    // wire is still owed and the newline goes out alone.
+    // The dark window offers the same newline to the kernel console again, so the CR already on
+    // the wire is still owed and the newline goes out alone.
     TEST(ConsoleCrPending, ARetryKeepsAHalfSentCr)
     {
         run_isolated([]() {
@@ -131,7 +144,7 @@ namespace
             console_on_driver_death();
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no retry is asked";
             g_writer.console_cr_pending = 1;
-            EXPECT_EQ(kickos::kconsole_write_user("\n", 1), -KOS_EAGAIN);
+            EXPECT_EQ(kickos::kconsole_write_user("\n", 1, false), -KOS_EAGAIN);
             EXPECT_EQ(g_writer.console_cr_pending, 1u) << "the retry would send a second CR";
             EXPECT_EQ(g_pokes, 0);
         });
@@ -145,7 +158,7 @@ namespace
             console_owner_set_user();
             g_serves = true;
             g_writer.console_cr_pending = 1;
-            EXPECT_EQ(kickos::kconsole_write_user("\n", 1), -KOS_EBUSY);
+            EXPECT_EQ(kickos::kconsole_write_user("\n", 1, true), -KOS_EBUSY);
             EXPECT_EQ(g_writer.console_cr_pending, 0u);
             EXPECT_EQ(g_pokes, 0);
         });

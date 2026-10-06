@@ -128,6 +128,29 @@ struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_
 // console-handover design (D2).
 void console_tx_deinit(void);
 
+// Kernel records held for a published console's driver, in the disarmed ring's storage. Every
+// call runs under IrqLock. Records may be open at once, each under the key of the thread
+// writing it; a reader sees one only once committed, in the order of the commits.
+//
+// append: holds a line in `key`'s record, opening it on the first; 0 where nothing can be held,
+// the ring being armed, storageless or too full to open one. A line that does not fit, or would
+// take the record past `max` bytes, is dropped, and so is every later line of that record.
+// commit: nonzero where `key` had a record open. Its masked cost is at most L + 6 passes over the
+// ring's storage, L the lines of that record. abandon: drops it.
+// write_sync: writes what is held with console_write_line_sync and changes nothing: the committed
+// records, a record the reader took part of from its next line, then each open record's lines.
+// Nothing where this core was changing the store. clear: empties the store, unless this core was
+// changing it.
+// ready: the committed bytes not yet taken, contiguous from data(), never more than one record's.
+int console_held_append(uint32_t key, char const* buf, uint32_t n, uint32_t max);
+int console_held_commit(uint32_t key);
+void console_held_abandon(uint32_t key);
+void console_held_write_sync(void);
+void console_held_clear(void);
+uint32_t console_held_ready(void);
+char const* console_held_data(void);
+void console_held_take(uint32_t n);
+
 // Console device-ownership seam (state in console.cc). Every kernel-owned device poke
 // MUST be bracketed by enter/leave, else kos_console_publish cannot drain an in-flight
 // writer before handing the UART over. See the console-handover design (D1/D3).
@@ -143,8 +166,8 @@ int console_chip_writable(void);
 // The console handover, in the two halves the drain has to sit between.
 //
 // begin: refuse every NEW kernel chip writer and relinquish the ring, leaving the UART
-// kernel-owned. set_user: hand it to the driver, and retire any pending death note, which
-// named the OLD console.
+// kernel-owned, and retire any pending death note, which named the console being replaced.
+// set_user: hand it to the driver, or reclaim it where the task this publish named died since.
 //
 // Between them the caller MUST spin console_chip_writers() down to zero. A writer already
 // counted when begin ran can still be mid-message with no buffered path left; it finishes
@@ -156,22 +179,20 @@ void console_owner_set_user(void);
 
 // Driver-death reclaim, split in two so a REFUSAL survives the call that made it.
 //
-// Only RECORDS that the published console endpoint lost its last WAIT-bearing cap. Sticky
-// across a refused reclaim: cleared by a reclaim that goes through, and by a re-publish,
-// which retires a note naming the console it replaced.
+// Only RECORDS that the published console's task ended. Sticky across a refused reclaim:
+// cleared by a reclaim that goes through, and by a re-publish, which retires a note naming the
+// console it replaced.
 void console_note_driver_death(void);
 // The reclaim itself. Puts the UART back in a known polled state so panic and ordinary
-// kprintf still reach the wire. Idempotent, and a no-op if the console was never
-// published, if the dead thread was not its last receiver, or while ANY live thread still
-// holds arch_console_reclaim_window().
-//
-// MUST run BEFORE the EPIPE wake of the parked senders, not merely inside the same masked
-// window: sched::wake admits a switch when the closer is neither exited nor dying, and
-// arch_switch swaps INLINE on the sim and on xtensa LX6, so a woken peer would observe a
-// dark console. Safe ahead of the wake because cap_teardown releases every IRQ cap the
-// dying thread held first, so no line it owned is still armed into irq_event_isr. Only a
-// thread DEATH can free the register window, so a refusal is retried at the next death.
+// kprintf still reach the wire, and wakes every writer waiting out the dark window. Idempotent,
+// and a no-op if the console was never published, if no death is noted, while a publish is
+// handing over (its set_user acts on the note), or while ANY live thread still holds
+// arch_console_reclaim_window(). Only a thread DEATH can free that window, so a refusal is
+// retried at the next death. Caller holds IrqLock.
 void console_on_driver_death(void);
+// Nonzero in the DARK WINDOW: the published console's task has ended and the reclaim still
+// waits on a thread holding the device. Caller holds IrqLock.
+int console_dark(void);
 
 #ifdef __cplusplus
 }

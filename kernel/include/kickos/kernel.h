@@ -23,8 +23,10 @@ namespace kickos
     int kconsole_write(char const* buf, size_t n);
     // A syscall writer keeps a half-sent AMP CRLF across short writes in its own TCB.
     // -KOS_EBUSY where the console is published and the caller's own stdout send would be
-    // taken now: nothing was written.
-    int kconsole_write_user(char const* buf, size_t n);
+    // taken now: nothing was written. In the dark window (console_dark) it waits for the
+    // reclaim or a publish and writes then, or answers -KOS_EAGAIN at once where `wait` is
+    // false; -KOS_ECANCELED where the writer is cancelled.
+    int kconsole_write_user(char const* buf, size_t n, bool wait);
 
     // Debug console (in-kernel, write-only, unbuffered). Routes via kconsole_write.
     void kputs(char const* s);
@@ -40,10 +42,17 @@ namespace kickos
     void kprintf_paced(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 #endif
 
-    // kprintf for the thread-fault record ONLY: it additionally hands the line to the console
-    // driver when a userspace driver owns the device. Widening it to kprintf would relight the
-    // kernel debug console post-handover, which check_sim_published.sh asserts is dark.
+    // A thread-fault record: the kprintf_fault lines a thread prints before its krecord_end.
     void kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+    void krecord_end(void);
+    // A thread slain inside its record never reaches krecord_end; its open record is dropped.
+    void krecord_abandon(void);
+
+    // Whether a live thread outside `t` holds the console's registers. Caller holds IrqLock.
+    bool console_window_held_outside(Task const* t);
+    // Whether [base, base+size) overlaps the console's registers while the console is published
+    // for a task other than `t`. Caller holds IrqLock.
+    bool console_window_withheld(uintptr_t base, size_t size, Task const* t);
 
     // Unrecoverable error: report and halt the system.
     void kpanic(char const* msg) __attribute__((noreturn));
@@ -72,6 +81,9 @@ namespace kickos
     // dying thread holds its windows until its exit releases them. Callers pass a non-wrapping
     // window.
     bool dev_window_free(uintptr_t base, size_t size);
+    // True iff a live thread that is not a member of `t` holds a DEV region overlapping
+    // [base, base+size).
+    bool dev_window_held_outside(uintptr_t base, size_t size, Task const* t);
 
     // Whether no held task domain and no live thread but `except` holds a data region over
     // [base, base+size) whose memory type differs from `attr`'s: one block cacheable for one

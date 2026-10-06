@@ -5,9 +5,9 @@
 // backend definition keeps this archive member unextracted.
 //
 // No window: nothing to declare on a board that never hands the console to a userspace
-// driver, nor on one whose console is not a memory-mapped device. The reclaim then runs on
-// the last receiver's death, which is correct only while no OTHER thread can be holding
-// the console's registers.
+// driver, nor on one whose console is not a memory-mapped device. The reclaim then runs at
+// the driver's task's end, before its slain threads have exited, which is correct only while
+// none of them can be holding the console's registers.
 
 #include <kickos/arch/arch.h>
 

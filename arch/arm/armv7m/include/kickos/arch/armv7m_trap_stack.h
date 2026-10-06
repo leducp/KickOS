@@ -283,7 +283,7 @@
  * two agree.
  *
  * Telemetry is its own size class, as it is for the kernel block: arch_shutdown's ring drain
- * sits under kfault_terminate, inside the reporter. 168 is the deepest non-telemetry reading,
+ * sits under kfault_terminate, inside the reporter. 160 is the deepest non-telemetry reading,
  * at xmc4800-relax-bench, and 760 the telemetry one at qemu-telem, under an enforced 320 and
  * 832. */
 #define KICKOS_ARMV7M_PANIC_FRAME 100

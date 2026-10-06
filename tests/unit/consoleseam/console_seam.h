@@ -33,6 +33,10 @@ namespace consoleseam
     // Attach the mock to a ring of `ring_size` bytes and clear every counter.
     void reset(uint32_t ring_size);
 
+    // The block the ring sits at the start of, STORAGE_SIZE bytes.
+    constexpr uint32_t STORAGE_SIZE = 4096u;
+    char* storage();
+
     // Nonzero from the mock's slot_free(). Zero models a wedged TX channel.
     void set_slot_free(int free);
 

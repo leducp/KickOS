@@ -42,7 +42,6 @@ package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/integration/console_wi
 echo "== running the console witness =="
 run_image "$IMAGE"
 assert_no_panic "a panic in the console witness"
-require_console_whole
 if has '^=== THREAD FAULT ==='; then
     fail "a thread faulted"
 fi

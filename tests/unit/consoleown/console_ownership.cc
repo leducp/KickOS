@@ -32,6 +32,12 @@ namespace
     int g_serves_asked = 0;
     // Never dereferenced: it only names the writer to the predicate above.
     alignas(16) unsigned char g_writer[64];
+    // The dark-window wait: how often a writer entered it, and what it answers. Answering 0
+    // stands for the reclaim that ended it, so the wait frees the window and lands it first.
+    int g_dark_waits = 0;
+    int g_dark_wait_answer = 0;
+    int g_pokes_in_wait = -1;
+    int g_dark_wakes = 0;
 
     void note_poke()
     {
@@ -71,6 +77,14 @@ extern "C"
     int console_tx_armed(void) { return g_tx_armed; }
     void console_tx_flush_sync(void) {}
     void console_tx_deinit(void) { g_tx_armed = 0; }
+    int console_held_append(uint32_t, char const*, uint32_t, uint32_t) { return 0; }
+    int console_held_commit(uint32_t) { return 0; }
+    void console_held_abandon(uint32_t) {}
+    void console_held_write_sync(void) {}
+    void console_held_clear(void) {}
+    uint32_t console_held_ready(void) { return 0; }
+    char const* console_held_data(void) { return nullptr; }
+    void console_held_take(uint32_t) {}
 
     int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
     {
@@ -101,8 +115,27 @@ extern "C"
 namespace kickos
 {
     bool dev_window_free(uintptr_t, size_t) { return g_window_free; }
+    bool dev_window_held_outside(uintptr_t, size_t, Task const*) { return false; }
+    bool task_serves_console(Task const*) { return false; }
 
-    int32_t cap_console_deliver(char const*, size_t) { return 0; }
+    int console_dark_wait(void)
+    {
+        g_dark_waits = g_dark_waits + 1;
+        g_pokes_in_wait = g_pokes;
+        if (g_dark_wait_answer == 0)
+        {
+            g_window_free = true;
+            console_on_driver_death();
+        }
+        return g_dark_wait_answer;
+    }
+
+    void console_dark_wake(void)
+    {
+        g_dark_wakes = g_dark_wakes + 1;
+    }
+
+    void cap_console_deliver() {}
 
     bool cap_console_serves(Thread const* t)
     {
@@ -251,7 +284,8 @@ namespace
             console_on_driver_death();
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no stale note can exist";
 
-            console_owner_set_user(); // the supervisor publishes a NEW endpoint
+            console_handover_begin(); // the supervisor publishes a NEW endpoint
+            console_owner_set_user();
 
             g_window_free = true; // the OLD driver's IRQ thread finally exits
             console_on_driver_death();
@@ -279,7 +313,7 @@ namespace
             console_owner_set_user(); // the restart's publish
             g_pokes = 0;
             g_serves = true;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), -KOS_EBUSY);
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_EBUSY);
             EXPECT_EQ(g_serves_asked, 1);
             EXPECT_EQ(g_pokes, 0);
             EXPECT_EQ(console_chip_writers(), 0);
@@ -291,13 +325,13 @@ namespace
     TEST(ConsoleOwnership, OnlyAServedUserWriterIsRefused)
     {
         run_isolated([]() {
-            EXPECT_GT(kickos::kconsole_write_user("boot\n", 5), 0);
+            EXPECT_GT(kickos::kconsole_write_user("boot\n", 5, true), 0);
             EXPECT_EQ(g_pokes, 1);
             EXPECT_EQ(g_serves_asked, 0) << "a kernel-owned console asked about the endpoint";
             console_owner_set_user();
             g_pokes = 0;
             g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5), 5);
+            EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5, true), 5);
             EXPECT_EQ(g_serves_asked, 1);
             g_serves = true;
             kickos::kputs("kernel line");
@@ -306,11 +340,10 @@ namespace
         });
     }
 
-    // A driver dead while a thread of its group still holds the device leaves the console
-    // published and unserved until that thread exits. A writer is told to retry rather than
-    // have its line dropped, the device stays untouched, and the retry lands once the reclaim
-    // does.
-    TEST(ConsoleOwnership, ADeferredReclaimAsksAWriterToRetry)
+    // The dark window: the driver's task ended while a thread of it still holds the device, so
+    // the console stays published and unserved until that thread exits. A writer waits it out
+    // with the device untouched, and its line lands once, after the reclaim.
+    TEST(ConsoleOwnership, AWriterInTheDarkWindowWaitsAndWritesOnceTheReclaimLands)
     {
         run_isolated([]() {
             console_owner_set_user();
@@ -318,17 +351,64 @@ namespace
             g_window_free = false;
             console_on_driver_death();
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no window was opened";
+            ASSERT_NE(console_dark(), 0);
             g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), -KOS_EAGAIN)
-                << "the writer's line was dropped in the deferred window";
-            kickos::kputs("kernel line");
-            EXPECT_EQ(g_pokes, 0) << "the device was written while a live thread held it";
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), 7);
+            EXPECT_EQ(g_dark_waits, 1) << "the writer did not wait out the dark window";
+            EXPECT_EQ(g_pokes_in_wait, 0) << "the device was written while a live thread held it";
+            EXPECT_EQ(g_reclaims, 1);
+            EXPECT_GT(g_pokes, 0) << "the line did not land after the reclaim";
             EXPECT_EQ(console_chip_writers(), 0);
+        });
+    }
+
+    // The same window for a non-blocking writer: told to try again at once, nothing written.
+    TEST(ConsoleOwnership, ANonBlockingWriterInTheDarkWindowIsAnsweredAtOnce)
+    {
+        run_isolated([]() {
+            console_owner_set_user();
+            console_note_driver_death();
+            g_window_free = false;
+            console_on_driver_death();
+            g_serves = false;
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EAGAIN);
+            EXPECT_EQ(g_dark_waits, 0) << "a non-blocking writer waited";
+            EXPECT_EQ(g_pokes, 0);
+            EXPECT_EQ(console_chip_writers(), 0);
+        });
+    }
+
+    // A writer cancelled in the wait leaves it with nothing written.
+    TEST(ConsoleOwnership, ACancelledWaitEndsTheWrite)
+    {
+        run_isolated([]() {
+            console_owner_set_user();
+            console_note_driver_death();
+            g_window_free = false;
+            console_on_driver_death();
+            g_serves = false;
+            g_dark_wait_answer = -KOS_ECANCELED;
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_ECANCELED);
+            EXPECT_EQ(g_dark_waits, 1);
+            EXPECT_EQ(g_pokes, 0);
+        });
+    }
+
+    // What ends the wait: the reclaim landing, and a publish. A refused reclaim wakes nobody.
+    TEST(ConsoleOwnership, TheReclaimAndAPublishWakeTheDarkWindowsWriters)
+    {
+        run_isolated([]() {
+            console_owner_set_user();
+            int const after_publish = g_dark_wakes;
+            EXPECT_GE(after_publish, 1) << "a publish did not wake the dark window's writers";
+            console_note_driver_death();
+            g_window_free = false;
+            console_on_driver_death();
+            EXPECT_EQ(g_dark_wakes, after_publish) << "a refused reclaim woke the writers";
             g_window_free = true;
             console_on_driver_death();
-            EXPECT_EQ(g_reclaims, 1);
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7), 7);
-            EXPECT_GT(g_pokes, 0) << "the retry did not land after the reclaim";
+            EXPECT_EQ(g_dark_wakes, after_publish + 1) << "the reclaim did not wake the writers";
+            EXPECT_EQ(console_dark(), 0);
         });
     }
 }

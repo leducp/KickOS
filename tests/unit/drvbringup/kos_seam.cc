@@ -203,7 +203,7 @@ extern "C"
         return 0;
     }
 
-    int kos_console_publish(kos_cap_t ep)
+    int kos_console_publish(kos_cap_t ep, kos_task_t)
     {
         if (g_seam.console_publish_fails)
         {
@@ -359,6 +359,12 @@ extern "C"
             return -KOS_EPERM;
         }
         note_id("pin", core_mask);
+        return 0;
+    }
+
+    int kos_task_slay(kos_task_t task, uint32_t)
+    {
+        note_id("tslay", task);
         return 0;
     }
 

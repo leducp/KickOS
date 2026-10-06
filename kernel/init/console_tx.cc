@@ -63,6 +63,18 @@ namespace
         // drainer will carry it, because it re-reads head every pass.
         bool draining = false;
 
+        // Once disarmed, `buf` holds kernel records bound for the published console's driver,
+        // over indices of their own: a producer drain still unwinding reads [tail, head), which
+        // the disarm left empty. [held_tail, held_open) is the committed records, each a 16-bit
+        // length and its bytes, held_taken bytes of the first taken already. [held_open,
+        // held_head) is the open records' entries, interleaved: each record a marker, then its
+        // lines.
+        uint32_t held_head = 0;
+        uint32_t held_tail = 0;
+        uint32_t held_taken = 0;
+        uint32_t held_open = 0;
+        bool held_changing = false;
+
         // Indices stay in [0, size); power-of-two size makes (head - tail) & mask the
         // used count (unsigned wrap reduces mod size). One slot reserved so head==tail
         // is unambiguously empty.
@@ -578,6 +590,440 @@ void console_tx_deinit(void)
         kickos::irq_detach(r.irq_line);
     }
     r.armed = false;
+}
+
+static constexpr uint32_t HELD_HEADER = 2u;
+static constexpr uint32_t HELD_LINE = 2u;
+static constexpr uint32_t HELD_MARK = 6u;
+// In a marker's id byte: the record dropped a line, so it drops every later one.
+static constexpr uint8_t HELD_FULL = 0x80u;
+static constexpr uint32_t HELD_ID_COUNT = 128u;
+
+#ifdef KICKOS_HELD_STEP
+// A host test's hook, run at every store a change of the open area makes.
+extern "C" void kickos_held_step(void);
+#define HELD_STEP() kickos_held_step()
+#else
+#define HELD_STEP() \
+    do              \
+    {               \
+    } while (false)
+#endif
+
+// The store is being rearranged on this core: a panic landing inside the change leaves it unread.
+// Another core's change the panic excludes by taking the lock.
+static void held_change(ConsoleTxRing& r, bool changing)
+{
+    kickos::fence_release();
+    r.held_changing = changing;
+    kickos::fence_release();
+}
+
+static uint32_t held_len(ConsoleTxRing const& r, uint32_t at)
+{
+    return static_cast<uint32_t>(static_cast<uint8_t>(r.buf[at]))
+           | (static_cast<uint32_t>(static_cast<uint8_t>(r.buf[at + 1u])) << 8);
+}
+
+static bool held_is_mark(ConsoleTxRing const& r, uint32_t at)
+{
+    return r.buf[at + 1u] == 0;
+}
+
+// The size of the open entry at `at`, or 0 where it does not fit below `end`.
+static uint32_t held_fit(ConsoleTxRing const& r, uint32_t at, uint32_t end)
+{
+    if (at >= end or end - at < HELD_LINE)
+    {
+        return 0;
+    }
+    uint32_t size = HELD_LINE + static_cast<uint8_t>(r.buf[at + 1u]);
+    if (held_is_mark(r, at))
+    {
+        size = HELD_MARK;
+    }
+    if (size > end - at)
+    {
+        return 0;
+    }
+    return size;
+}
+
+static bool held_record_fits(ConsoleTxRing const& r, uint32_t at, uint32_t end)
+{
+    return at < end and end - at >= HELD_HEADER and held_len(r, at) <= end - at - HELD_HEADER;
+}
+
+static uint8_t held_id(ConsoleTxRing const& r, uint32_t at)
+{
+    return static_cast<uint8_t>(static_cast<uint8_t>(r.buf[at]) & ~HELD_FULL);
+}
+
+static uint32_t held_key_at(ConsoleTxRing const& r, uint32_t at)
+{
+    uint32_t key = 0;
+    for (uint32_t i = 0; i < 4u; i++)
+    {
+        key = key | (static_cast<uint32_t>(static_cast<uint8_t>(r.buf[at + 2u + i])) << (8u * i));
+    }
+    return key;
+}
+
+static uint32_t held_find(ConsoleTxRing const& r, uint32_t key)
+{
+    uint32_t at = r.held_open;
+    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
+         size = held_fit(r, at, r.held_head))
+    {
+        if (held_is_mark(r, at) and held_key_at(r, at) == key)
+        {
+            return at;
+        }
+        at = at + size;
+    }
+    return r.held_head;
+}
+
+static bool held_id_used(ConsoleTxRing const& r, uint8_t id)
+{
+    uint32_t at = r.held_open;
+    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
+         size = held_fit(r, at, r.held_head))
+    {
+        if (held_is_mark(r, at) and held_id(r, at) == id)
+        {
+            return true;
+        }
+        at = at + size;
+    }
+    return false;
+}
+
+static uint32_t held_record_bytes(ConsoleTxRing const& r, uint8_t id)
+{
+    uint32_t bytes = 0;
+    uint32_t at = r.held_open;
+    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
+         size = held_fit(r, at, r.held_head))
+    {
+        if (not held_is_mark(r, at) and held_id(r, at) == id)
+        {
+            bytes = bytes + size - HELD_LINE;
+        }
+        at = at + size;
+    }
+    return bytes;
+}
+
+static void held_move_down(char* b, uint32_t dst, uint32_t from, uint32_t to)
+{
+    while (from != to)
+    {
+        b[dst] = b[from];
+        HELD_STEP();
+        dst++;
+        from++;
+    }
+}
+
+static void held_reverse(char* b, uint32_t lo, uint32_t hi)
+{
+    while (lo + 1u < hi)
+    {
+        hi--;
+        char const c = b[lo];
+        b[lo] = b[hi];
+        HELD_STEP();
+        b[hi] = c;
+        HELD_STEP();
+        lo++;
+    }
+}
+
+// Steps past every record the reader has taken whole, and moves the open entries down to the
+// start once no committed record is left in front of them.
+static void held_settle(ConsoleTxRing& r)
+{
+    while (r.held_tail != r.held_open)
+    {
+        if (not held_record_fits(r, r.held_tail, r.held_open))
+        {
+            r.held_tail = r.held_open;
+            r.held_taken = 0;
+            HELD_STEP();
+            break;
+        }
+        uint32_t const len = held_len(r, r.held_tail);
+        if (r.held_taken != len)
+        {
+            break;
+        }
+        r.held_tail = r.held_tail + HELD_HEADER + len;
+        r.held_taken = 0;
+        HELD_STEP();
+    }
+    if (r.held_tail == r.held_open and r.held_tail != 0)
+    {
+        held_move_down(r.buf, 0, r.held_open, r.held_head);
+        r.held_head = r.held_head - r.held_open;
+        HELD_STEP();
+        r.held_open = 0;
+        HELD_STEP();
+        r.held_tail = 0;
+        HELD_STEP();
+    }
+}
+
+static void held_drop(ConsoleTxRing& r, uint8_t id)
+{
+    uint32_t dst = r.held_open;
+    uint32_t at = r.held_open;
+    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
+         size = held_fit(r, at, r.held_head))
+    {
+        if (held_id(r, at) != id)
+        {
+            held_move_down(r.buf, dst, at, at + size);
+            dst = dst + size;
+        }
+        at = at + size;
+    }
+    r.held_head = dst;
+    HELD_STEP();
+}
+
+// [from, from + n) to the device, the lock held.
+static void held_write(ConsoleTxRing const& r, uint32_t from, uint32_t n)
+{
+    if (n != 0)
+    {
+        console_write_line_sync(r.buf + from, n);
+    }
+}
+
+int console_held_append(uint32_t key, char const* buf, uint32_t n, uint32_t max)
+{
+    ConsoleTxRing& r = tx();
+    if (r.armed or r.buf == nullptr)
+    {
+        return 0;
+    }
+    uint32_t const mark = held_find(r, key);
+    if (mark == r.held_head)
+    {
+        uint8_t id = 0;
+        while (id != HELD_ID_COUNT and held_id_used(r, id))
+        {
+            id++;
+        }
+        if (id == HELD_ID_COUNT or r.size - r.held_head < HELD_MARK)
+        {
+            return 0;
+        }
+        r.buf[mark] = static_cast<char>(id);
+        r.buf[mark + 1u] = 0;
+        for (uint32_t i = 0; i < 4u; i++)
+        {
+            r.buf[mark + 2u + i] = static_cast<char>((key >> (8u * i)) & 0xFFu);
+        }
+        r.held_head = r.held_head + HELD_MARK;
+    }
+    if ((static_cast<uint8_t>(r.buf[mark]) & HELD_FULL) != 0 or n == 0)
+    {
+        return 1;
+    }
+    uint8_t const id = held_id(r, mark);
+    if (n > 0xFFu or held_record_bytes(r, id) + n > max or r.size - r.held_head < HELD_LINE + n)
+    {
+        r.buf[mark] = static_cast<char>(static_cast<uint8_t>(r.buf[mark]) | HELD_FULL);
+        return 1;
+    }
+    r.buf[r.held_head] = static_cast<char>(id);
+    r.buf[r.held_head + 1u] = static_cast<char>(n);
+    for (uint32_t i = 0; i < n; i++)
+    {
+        r.buf[r.held_head + HELD_LINE + i] = buf[i];
+    }
+    r.held_head = r.held_head + HELD_LINE + n;
+    return 1;
+}
+
+int console_held_commit(uint32_t key)
+{
+    ConsoleTxRing& r = tx();
+    uint32_t const mark = held_find(r, key);
+    if (mark == r.held_head)
+    {
+        return 0;
+    }
+    held_change(r, true);
+    uint8_t const id = held_id(r, mark);
+    // The record's entries gathered at the front of the open area, in their order, by rotating
+    // each one down over the entries of other records it passes.
+    uint32_t gathered = r.held_open;
+    uint32_t at = r.held_open;
+    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
+         size = held_fit(r, at, r.held_head))
+    {
+        uint32_t const end = at + size;
+        if (held_id(r, at) == id)
+        {
+            held_reverse(r.buf, gathered, at);
+            held_reverse(r.buf, at, end);
+            held_reverse(r.buf, gathered, end);
+            gathered = gathered + size;
+        }
+        at = end;
+    }
+    // Then their headers dropped behind one length. The marker comes first and is wider than
+    // that length, so every copy lands below the entry it reads.
+    uint32_t dst = r.held_open + HELD_HEADER;
+    at = r.held_open;
+    for (uint32_t size = held_fit(r, at, gathered); size != 0; size = held_fit(r, at, gathered))
+    {
+        if (not held_is_mark(r, at))
+        {
+            held_move_down(r.buf, dst, at + HELD_LINE, at + size);
+            dst = dst + size - HELD_LINE;
+        }
+        at = at + size;
+    }
+    uint32_t const len = dst - r.held_open - HELD_HEADER;
+    if (len == 0)
+    {
+        dst = r.held_open;
+    }
+    held_move_down(r.buf, dst, gathered, r.held_head);
+    r.held_head = r.held_head - (gathered - dst);
+    HELD_STEP();
+    if (len != 0)
+    {
+        r.buf[r.held_open] = static_cast<char>(len & 0xFFu);
+        r.buf[r.held_open + 1u] = static_cast<char>(len >> 8);
+        HELD_STEP();
+        r.held_open = dst;
+        HELD_STEP();
+    }
+    held_settle(r);
+    held_change(r, false);
+    return 1;
+}
+
+void console_held_abandon(uint32_t key)
+{
+    ConsoleTxRing& r = tx();
+    uint32_t const mark = held_find(r, key);
+    if (mark == r.held_head)
+    {
+        return;
+    }
+    held_change(r, true);
+    held_drop(r, held_id(r, mark));
+    held_settle(r);
+    held_change(r, false);
+}
+
+void console_held_write_sync(void)
+{
+    ConsoleTxRing const& r = tx();
+    if (r.buf == nullptr or r.held_changing)
+    {
+        return;
+    }
+    uint32_t const tail = r.held_tail;
+    uint32_t const open = r.held_open;
+    uint32_t const head = r.held_head;
+    if (head > r.size or open > head or tail > open)
+    {
+        return;
+    }
+    // Committed records, the first from the line after the one its reader was cut in.
+    uint32_t at = tail;
+    while (held_record_fits(r, at, open))
+    {
+        uint32_t const len = held_len(r, at);
+        uint32_t const end = at + HELD_HEADER + len;
+        uint32_t from = at + HELD_HEADER;
+        if (at == tail and r.held_taken != 0)
+        {
+            if (r.held_taken > len)
+            {
+                return;
+            }
+            from = from + r.held_taken;
+            if (r.buf[from - 1u] != '\n')
+            {
+                while (from != end and r.buf[from] != '\n')
+                {
+                    from++;
+                }
+                if (from != end)
+                {
+                    from++;
+                }
+            }
+        }
+        held_write(r, from, end - from);
+        at = end;
+    }
+    // Each open record's lines in their order, records in the order they opened.
+    uint32_t mark = open;
+    for (uint32_t size = held_fit(r, mark, head); size != 0; size = held_fit(r, mark, head))
+    {
+        if (held_is_mark(r, mark))
+        {
+            uint8_t const id = held_id(r, mark);
+            at = mark + size;
+            for (uint32_t line = held_fit(r, at, head); line != 0; line = held_fit(r, at, head))
+            {
+                if (not held_is_mark(r, at) and held_id(r, at) == id)
+                {
+                    held_write(r, at + HELD_LINE, line - HELD_LINE);
+                }
+                at = at + line;
+            }
+        }
+        mark = mark + size;
+    }
+}
+
+void console_held_clear(void)
+{
+    ConsoleTxRing& r = tx();
+    if (r.held_changing)
+    {
+        return;
+    }
+    r.held_head = 0;
+    r.held_open = 0;
+    r.held_tail = 0;
+    r.held_taken = 0;
+}
+
+uint32_t console_held_ready(void)
+{
+    ConsoleTxRing const& r = tx();
+    if (not held_record_fits(r, r.held_tail, r.held_open)
+        or r.held_taken >= held_len(r, r.held_tail))
+    {
+        return 0;
+    }
+    return held_len(r, r.held_tail) - r.held_taken;
+}
+
+char const* console_held_data(void)
+{
+    ConsoleTxRing const& r = tx();
+    return r.buf + r.held_tail + HELD_HEADER + r.held_taken;
+}
+
+void console_held_take(uint32_t n)
+{
+    ConsoleTxRing& r = tx();
+    r.held_taken = r.held_taken + n;
+    held_change(r, true);
+    held_settle(r);
+    held_change(r, false);
 }
 
 } // extern "C"

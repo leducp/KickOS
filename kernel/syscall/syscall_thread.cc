@@ -134,6 +134,14 @@ namespace kickos
         }
 #endif
 
+        bool spawn_builds_task(kos_thread_params const& p, Thread const* spawner)
+        {
+            return p.task == KOS_TASK_NONE
+                   and not(spawner->task != nullptr
+                           and (p.privileged != 0) == spawner->privileged
+                           and (p.mem_base == nullptr or p.mem_size == 0));
+        }
+
         // Admits entry i of a staged window list, the entries before it already admitted, or
         // answers why not. A privileged child carries the whole-arena region and the
         // background map, so its windows get no descriptor to admit. Caller holds IrqLock.
@@ -344,6 +352,19 @@ namespace kickos
             {
                 return -KOS_EBUSY; // already held: no stealing
             }
+            Task const* target = c->task;
+            if (p->task != KOS_TASK_NONE)
+            {
+                target = task_resolve(p->task);
+            }
+            else if (spawn_builds_task(*p, c))
+            {
+                target = nullptr;
+            }
+            if (console_window_withheld(w.base, w.size, target))
+            {
+                return -KOS_EBUSY;
+            }
             uintptr_t const last = w.base + w.size - 1u;
             for (uint16_t j = 0; j < i; j++)
             {
@@ -357,13 +378,6 @@ namespace kickos
             return 0;
         }
 
-        bool spawn_builds_task(kos_thread_params const& p, Thread const* spawner)
-        {
-            return p.task == KOS_TASK_NONE
-                   and not(spawner->task != nullptr
-                           and (p.privileged != 0) == spawner->privileged
-                           and (p.mem_base == nullptr or p.mem_size == 0));
-        }
 
         int task_create_admit(Thread* c, void* mem_base, size_t mem_size)
         {

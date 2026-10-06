@@ -60,7 +60,8 @@ namespace kickos
         uint8_t prio_ceiling = 0;
         // TASK_MARK_* bits (task.cc): the armed endpoint has been waited on since the task last
         // emptied, which is what "ready" means for the creator's watch (kos_task_watch); the
-        // task has ended and its status is set; it is dead, every member swept.
+        // task has ended and its status is set; it is dead, every member swept; it serves the
+        // published console.
         uint8_t marks = 0;
         // The bit to raise, the arming capability's badge, as an index: one bit is all a
         // capability ever raises.
@@ -177,6 +178,17 @@ namespace kickos
     void task_end(Task* t, int code, bool latch);
     // Whether `t` has ended, which refuses it a new member. Null-safe: false.
     bool task_ended(Task const* t);
+    // Whether `t` set O_NONBLOCK on the console's fds: its stdout sends and kernel console
+    // writes then never wait. Null-safe: false.
+    bool task_nonblocking(Task const* t);
+    // KOS_SYS_TASK_NONBLOCK on the caller's task: a kos_nonblock_op, answering the flag as the
+    // op leaves it, or -KOS_EINVAL.
+    int task_nonblock_call(int op);
+    // `t` serves the published console from here on, and no other task does: its end, or its
+    // slot going back, is the console's death (cap_console_task_ended). Caller holds IrqLock.
+    void task_console_serve(Task* t);
+    // Whether `t` serves the published console, its task not yet ended. Null-safe: false.
+    bool task_serves_console(Task const* t);
     // A member released from `t`, of generation `gen`, has swept its capabilities: true when
     // that leaves the task of generation `gen` empty with no member sweeping, which is its
     // death and what a WAIT_TASK_EMPTY waiter waits for. Caller holds IrqLock.

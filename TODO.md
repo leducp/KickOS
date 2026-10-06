@@ -5000,6 +5000,8 @@ outside the one the e2e gate was already hiding. What is left is below.
       its fast RC, so there it is short of its own wire; the sim's drain is a synthetic slot
       budget with no wire behind it; and an RTT-only console never returns 0, so the bound is
       inert and unmeasured there.
+      **SUPERSEDED BY RULING (M10.5): no bound and no marker.** The refused remainder is offered
+      until the ring takes it, and the dark window waits in the kernel, so nothing is given up.
 
 - [x] **THE NOTIFICATION MOVE LEFT A DELEGATED HANDLE NOTHING READS, AND IT BROKE A BOARD.**
       `f411spi` kept the handle it used for the ack after the ack was gone, which
@@ -14198,10 +14200,12 @@ which is the only reason they are filed rather than fixed:
 - [ ] **No reply-bearing flush op**, so the init cannot read the residual `flush()` returns.
 - [ ] **CDC console throughput is ~167 B/s** under many small writes (2008 bytes in 12 s). A console
       you cannot read a suite through is marginal.
-- [ ] **Blocking console mode makes the fault-record route LOSSY while the console is wedged**: a
+- [x] **Blocking console mode makes the fault-record route LOSSY while the console is wedged**: a
       driver sitting in an unbounded `push_all` is not in a receive, so `cap_console_deliver` finds
       no parked receiver and drops the record. Bounded on a UART (a guaranteed consumer), which is
       why USB REQUIRES non-blocking and refuses `-KOS_ENOTSUP` to clear it.
+      **CLOSED: the record is held for the driver's next receive** rather than dropped, and lost
+      only to a full held store or to the system ending first (`console.md`).
 - [ ] **`docs/design-m4.8.2-host-unit-tests.md:435` says the K-seam is sixteen symbols; it is
       eighteen**, ten of them `arch_*`.
 - [x] **`invariants.md`'s nine `file:line` citations are verified WRONG**, and each needs the fact

@@ -3,7 +3,8 @@
 //
 // The stdout policy against a scripted kernel. Each send and each kernel console write takes
 // the next answer of its own script; an answer that accepts bytes records them on that route.
-// The short-accept arms run the endpoint's rendezvous instead of a send script.
+// The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
+// task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait.
 
 #include <gtest/gtest.h>
 
@@ -38,6 +39,9 @@ namespace
     int g_sends = 0;
     int g_kconsole_writes = 0;
     int g_closes = 0;
+    int g_waiting_sends = 0;    // sends that could park
+    int g_waiting_kconsole = 0; // kernel console writes that could wait
+    int g_yields = 0;
 
     int32_t next(std::deque<int32_t>& script)
     {
@@ -76,7 +80,9 @@ namespace
         g_sends = 0;
         g_kconsole_writes = 0;
         g_closes = 0;
-        kickos::emit_detail::g_dropped = 0;
+        g_waiting_sends = 0;
+        g_waiting_kconsole = 0;
+        g_yields = 0;
         g_rendezvous = false;
     }
 
@@ -125,6 +131,7 @@ extern "C"
     {
         EXPECT_EQ(ep, KOS_CAP_STDOUT);
         g_sends = g_sends + 1;
+        g_waiting_sends = g_waiting_sends + 1;
         if (g_rendezvous)
         {
             return rendezvous(buf, len);
@@ -132,9 +139,21 @@ extern "C"
         return take(g_send_script, g_endpoint, buf, len);
     }
 
+    int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+    {
+        EXPECT_EQ(ep, KOS_CAP_STDOUT);
+        g_sends = g_sends + 1;
+        if (timeout_us != 0u)
+        {
+            g_waiting_sends = g_waiting_sends + 1;
+        }
+        return take(g_send_script, g_endpoint, buf, len);
+    }
+
     int32_t kos_kconsole_write(void const* buf, size_t len)
     {
         g_kconsole_writes = g_kconsole_writes + 1;
+        g_waiting_kconsole = g_waiting_kconsole + 1;
         return take(g_kconsole_script, g_kconsole, buf, len);
     }
 
@@ -151,6 +170,7 @@ extern "C"
 
     void kos_yield(void)
     {
+        g_yields = g_yields + 1;
     }
 }
 
@@ -166,7 +186,6 @@ namespace
         EXPECT_EQ(g_kconsole, "");
         EXPECT_EQ(g_sends, 2);
         EXPECT_EQ(g_kconsole_writes, 1);
-        EXPECT_EQ(kickos::emit_detail::g_dropped, 0u);
         EXPECT_TRUE(g_send_script.empty());
     }
 
@@ -212,7 +231,6 @@ namespace
         EXPECT_EQ(g_parks, g_sends - 1);
         EXPECT_TRUE(g_receives.empty());
         EXPECT_EQ(g_kconsole_writes, 0);
-        EXPECT_EQ(kickos::emit_detail::g_dropped, 0u);
     }
 
     // A driver that only ever accepts nothing keeps the writer parked on its endpoint, one send
@@ -255,13 +273,78 @@ namespace
         EXPECT_EQ(g_kconsole, "line\n");
     }
 
+    // A full kernel console is offered the line until it takes it, however long that is: no
+    // bound gives the line up.
+    TEST(StdoutWrite, AFullKernelConsoleIsOfferedTheLineUntilItTakesIt)
+    {
+        constexpr int REFUSALS = 100000;
+        std::deque<int32_t> kconsole(REFUSALS, -KOS_EAGAIN);
+        kconsole.push_back(TAKE_ALL);
+        reset({-KOS_EBADF}, kconsole);
+        kickos::emit("line\n");
+        EXPECT_EQ(g_kconsole, "line\n");
+        EXPECT_EQ(g_yields, REFUSALS);
+        EXPECT_TRUE(g_kconsole_script.empty());
+    }
+
     // A writer going straight to the kernel console is handed back to its endpoint too.
     TEST(StdoutWrite, KconsoleWriteAllSendsAServedRefusalToStdout)
     {
         reset({TAKE_ALL}, {-KOS_EBUSY});
         kickos::kconsole_write_all("init line\n", 10);
         EXPECT_EQ(g_endpoint, "init line\n");
-        EXPECT_EQ(kickos::emit_detail::g_dropped, 0u);
         EXPECT_EQ(g_kconsole_writes, 1);
+    }
+
+    // A non-blocking task. A published console with no receiver now answers its send at once:
+    // nothing taken, and the kernel console never asked.
+    TEST(StdoutNonblocking, AConsoleNobodyReceivesOnTakesNothing)
+    {
+        reset({-KOS_ETIMEDOUT}, {});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 0u);
+        EXPECT_EQ(g_endpoint, "");
+        EXPECT_EQ(g_kconsole_writes, 0);
+    }
+
+    // A receiver taking part of a message, then none being there for the rest: the short count.
+    TEST(StdoutNonblocking, APartialAcceptIsTheShortCount)
+    {
+        reset({2, -KOS_ETIMEDOUT}, {});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 2u);
+        EXPECT_EQ(g_endpoint, "li");
+        EXPECT_EQ(g_sends, 2);
+    }
+
+    // The dark window: the send finds the dead driver's endpoint unserved, and the kernel
+    // console answers that it would wait. Nothing is written and nothing retried.
+    TEST(StdoutNonblocking, TheDarkWindowTakesNothing)
+    {
+        reset({-KOS_EAGAIN}, {-KOS_ETIMEDOUT});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 0u);
+        EXPECT_EQ(g_kconsole_writes, 1);
+        EXPECT_EQ(g_yields, 0);
+    }
+
+    // A console nobody published takes what fits on the kernel console, and the rest would wait.
+    TEST(StdoutNonblocking, TheKernelConsoleTakesWhatFits)
+    {
+        reset({-KOS_EBADF}, {3, -KOS_ETIMEDOUT});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 3u);
+        EXPECT_EQ(g_kconsole, "lin");
+    }
+
+    // A publish landing between the two sends the line to the endpoint after all.
+    TEST(StdoutNonblocking, ARepublishSendsTheLineToTheEndpoint)
+    {
+        reset({-KOS_EAGAIN, TAKE_ALL}, {-KOS_EBUSY});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 5u);
+        EXPECT_EQ(g_endpoint, "line\n");
+    }
+
+    // The control: a blocking writer whose bytes its own cancellation lost still counts them.
+    TEST(StdoutNonblocking, ABlockingWriterCountsTheWholeLine)
+    {
+        reset({-KOS_EAGAIN}, {-KOS_ECANCELED});
+        EXPECT_EQ(kickos::stdout_write("line\n", 5), 5u);
     }
 }

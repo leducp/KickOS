@@ -217,10 +217,12 @@ namespace
     // 64 KiB: every host page size in practice (4/16/64 KiB) divides it, so the
     // "mprotect can describe this exactly" precondition below holds by construction.
     constexpr size_t SIM_PVREG_WINDOW = 0x10000u;
-    // Twice the window, so an allowlist entry can sit OUTSIDE the grantable window with
-    // host pages still behind it: a store there must be refused by the kernel's
-    // containment check, never faulted on.
-    constexpr size_t SIM_PVREG_SPAN = 2u * SIM_PVREG_WINDOW;
+    // An allowlist entry sits OUTSIDE the first window with host pages still behind it, so a
+    // store there is refused by the kernel's containment check, never faulted on. The third
+    // window is the console's registers: a published console's task alone may hold it, which
+    // leaves the first two to every other task.
+    constexpr size_t SIM_PVREG_CONSOLE = 2u * SIM_PVREG_WINDOW;
+    constexpr size_t SIM_PVREG_SPAN = 3u * SIM_PVREG_WINDOW;
 
     struct SimPrivWriteReg
     {
@@ -1341,11 +1343,11 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     {
         return false;
     }
-    // Either half of the span, exactly, never a sub-range nor both at once: the allowlist
-    // entry at SIM_PVREG_WINDOW is refused by containment only while no wider window is
-    // grantable. The second half is what a two-window list names.
+    // One window of the span, exactly, never a sub-range nor two at once: the allowlist entry
+    // at SIM_PVREG_WINDOW is refused by containment only while no wider window is grantable.
     uintptr_t const pv = reinterpret_cast<uintptr_t>(sim().pvreg);
-    if ((base != pv and base != pv + SIM_PVREG_WINDOW) or size != SIM_PVREG_WINDOW)
+    if ((base != pv and base != pv + SIM_PVREG_WINDOW and base != pv + SIM_PVREG_CONSOLE)
+        or size != SIM_PVREG_WINDOW)
     {
         return false;
     }
@@ -1354,9 +1356,8 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return SIM_PVREG_WINDOW % static_cast<size_t>(sim().pagesize) == 0;
 }
 
-// The sim console's device window (arch.h). The host models exactly one device register block,
-// so that block is the only thing a sim console driver can ever be granted. Zero before
-// arch_init has mapped a candidate, which reads as "no window".
+// The sim console's device window (arch.h): the third window of the host's one register block.
+// Zero before arch_init has mapped a candidate, which reads as "no window".
 //
 // MUST STAY IN THIS TU, like arch_periph_reg_write below: sim.cc is always extracted and is the
 // first member of kickos_arch_sim, so it resolves the symbol before
@@ -1364,10 +1365,11 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 // dropped from this archive (arch/CMakeLists.txt).
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 {
-    *base = reinterpret_cast<uintptr_t>(sim().pvreg);
+    *base = 0;
     *size = 0;
     if (sim().pvreg != nullptr)
     {
+        *base = reinterpret_cast<uintptr_t>(sim().pvreg) + SIM_PVREG_CONSOLE;
         *size = SIM_PVREG_WINDOW;
     }
 }

@@ -5,10 +5,10 @@
 # route starts at, WHAT it must still reach for the root set to mean anything, WHAT it must
 # never reach, and WHAT the graph is allowed not to know.
 #
-# The defect class: kvprintf_route hands a fault record to a published console driver through
-# cap_console_deliver, so any kpanic reachable from there closes a cycle -- kpanic prints, the
-# print re-enters kvprintf_route, the delivery runs again -- with no static bound, on the path
-# taken while the kernel is already reporting a fault.
+# The defect class: a fault record is held for a published console driver and handed to it
+# through cap_console_deliver, so any kpanic reachable from that route closes a cycle -- kpanic
+# prints, the print re-enters kvprintf_route, the record runs again -- with no static bound, on
+# the path taken while the kernel is already reporting a fault.
 #
 # File format, one record per line, '#' starts a comment, a trailing '\' continues:
 #   preset  <arch> <configure-preset>
@@ -104,14 +104,16 @@ floor   x86_64   qemu-x86_64-smp8 files=90 nodes=700 reason: measured directly o
 floor   x86_64   qemu-x86_64-smp12 files=90 nodes=700 reason: measured directly on this preset, 131 .ci files and 1352 nodes on 2026-09-28
 
 # --- the route -----------------------------------------------------------------
-root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record entry, the only caller that passes route=true, so the delivery half of kvprintf_route runs inside it
-root    * _ZN6kickos7kprintfEPKcz reason: the ordinary entry, the same body with route=false; gcc gives each caller its own copy of an inlined static, so both have to be roots or half the body goes unwalked
+root    * _ZN6kickos13kprintf_faultEPKcz reason: the fault-record line, the only caller that passes WRITE_RECORD, so the held half of console_emit runs inside it
+root    * _ZN6kickos11krecord_endEv reason: commits the record and hands it on through cap_console_deliver
+root    * _ZN6kickos7kprintfEPKcz reason: the ordinary entry, the same body with record=false; gcc gives each caller its own copy of an inlined static, so both have to be roots or half the body goes unwalked
 root    * ?console.cc:kvprintf_route reason: the function this clause is named for. OPTIONAL because a board that inlines it has no node; where it IS a node the clause additionally requires it reachable from the two callers above, so a root set that stopped covering it is refused rather than believed
 
 # A root set that has drifted off the code it names still walks a graph and still finds no
 # panic. These two are what a route that still routes must reach.
-witness * _ZN6kickos19cap_console_deliverEPKcm reason: the hand-off to a published console driver, the far end of the cycle this clause exists to keep open-loop
-witness * _ZN6kickos14kconsole_writeEPKcm reason: the kernel chip write every routed record makes first, reached through the non-routing half of the same body
+witness * _ZN6kickos19cap_console_deliverEv reason: the hand-off to a published console driver, the far end of the cycle this clause exists to keep open-loop
+witness * console_held_append reason: the hold a record line takes where a published console refuses the chip write, under the same masked read
+witness * console_chip_writer_leave reason: the end of the kernel chip write's bracket, reached where the console is the kernel's
 
 # --- what it must never reach --------------------------------------------------
 forbid  * _ZN6kickos6kpanicEPKc reason: the panic terminal. It prints through kprintf, so an edge into it from this route is the cycle, and KICKOS_ASSERT and KICKOS_UNREACHABLE both expand to it where KICKOS_DIAG_TERSE is 0

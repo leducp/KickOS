@@ -482,18 +482,14 @@ The whole point of this file. A green fleet pass says none of the following.
     what the banner, the status lines and the fault reporter use. `console_emit` brackets only
     the ownership-count read with `IrqLock` and leaves the device write outside it deliberately;
     on this board `arch_console_write` is an unlocked byte loop.
-  - **The PUBLISHED route does not interleave kernel records with each other**, and what makes
-    that true is the KERNEL LOCK rather than the driver: `cap_console_deliver` copies the whole
-    record into one parked receiver under `IrqLock`, so a record arrives as one datagram. **What
-    it does NOT guarantee is a single writer.** The kernel pops `wq_pop_highest(recv_waiters)`,
-    so a driver parking more than one thread gets its records spread across them with no
-    ordering enforced between their device writes. A future multi-writer console driver breaks
-    this property without touching the kernel.
-  - **AND THE PUBLISHED ROUTE IS STILL EXPOSED THROUGH THE KERNEL'S FALLBACK.** With no receiver
-    parked, `kvprintf_route` falls back to the chip route with `force_sync`, whose own comment
-    accepts "interleaving with the driver's in-flight bytes". So a published capture can carry
-    interleaved bytes: not two kernel records racing, but a kernel fallback racing the driver.
-    Deliberate and documented rather than a defect, and a gate reading that route inherits it.
+  - **The PUBLISHED route does not interleave kernel records with each other or with the
+    driver's output.** A fault record is held whole for the driver and handed over between two
+    of its receives, at once to a parked receiver or ahead of every queued sender at its next
+    receive, and the kernel writes none of it at the driver's device (`console.md`, "A fault
+    record while a driver owns the console"). **What it does NOT guarantee is a single writer.**
+    The kernel pops `wq_pop_highest(recv_waiters)`, so a driver parking more than one thread gets
+    its records spread across them with no ordering enforced between their device writes. A
+    future multi-writer console driver breaks this property without touching the kernel.
   - **RTT does not interleave**: the whole write runs under `IrqLock`.
 - **THE MECHANICAL COSTS, WHICH BOUND THE IMPLEMENTATION RATHER THAN DECIDE THE QUESTION.**
   `console.cc` carries the sharpest: the chip transport "must NEVER be held under IrqLock across
@@ -505,9 +501,13 @@ The whole point of this file. A green fleet pass says none of the following.
 - **WHAT A GATE READING EACH ROUTE MUST DO.** Reading the diagnostic route: tolerate a split and
   SAY when it did, which is what `check_qemu_panicgate.sh` now does, strict match first and a
   split recovered only by deleting the KNOWN kernel status lines. Reading a published console:
-  sound for whole records while the driver keeps one writer, and exposed to the fallback above.
-  Reproduced once by an external run and not by two authoritative ones, so it is infrequent
-  rather than rare.
+  sound for whole records while the driver keeps one writer.
+- **THE DARK WINDOW'S WAIT IS WITNESSED ON THE SIM AND THE HOST ONLY.** No emulated board declares
+  a console reclaim window, so there the reclaim lands at the driver's task's end and no writer
+  ever waits. `sim_driver_death` case 3 is the one image arm where a writer waits it out (a window
+  thread at the lowest priority, a writer above it), and the host arms carry the rest. On silicon
+  the window is real wherever a chip declares one, and nothing captured there yet shows a writer
+  inside it.
 - **THE RV64 DOORBELL'S INSTRUCTION-SIDE HALF HAS NO OPERATION AT THIS BOARD'S ISA BASELINE, so it
   is not witnessed and cannot be.** The service body carries the TRANSLATION-side fence, which is
   `SFENCE.VMA` and which the ISA gives no way for one hart to perform on behalf of another. The

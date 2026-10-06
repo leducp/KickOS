@@ -31,29 +31,33 @@
  * across the switch costs that frame 16 bytes, which is the bench's 16 over esp32-wroom-smp.
  * Enforced at 640, the next multiple of 64 above 592.
  *
- * At one core, 432 on the three one-core presets, at the figure: resched_after_wake
- * -> pick_and_seat -> arch_switch -> xtensa_switch[128].
+ * At one core, 432 on the three one-core presets: resched_after_wake -> pick_and_seat
+ * -> arch_switch -> xtensa_switch[128]. Enforced at 512.
  *
- * FRAME + 640 = 896 against a KICKOS_MIN_STACK_SIZE of 960 above one core, and FRAME + 432 = 688
+ * FRAME + 640 = 896 against a KICKOS_MIN_STACK_SIZE of 960 above one core, and FRAME + 512 = 768
  * against 896 at one. */
 #if KICKOS_KERNEL_CORES > 1
 #define KICKOS_LX6_TRAP_DEPTH 640
 #else
-#define KICKOS_LX6_TRAP_DEPTH 432
+#define KICKOS_LX6_TRAP_DEPTH 512
 #endif
 
 /* The panic reporter's own stack. Frame is one trap frame: the entry raises INTLEVEL to 15
  * before the move, but a window exception and an ISA exception are not maskable and both build
  * their frame on the stack in a1. arch_xtensa.cc asserts it against KICKOS_LX6_TRAP_FRAME.
  *
- * 528 on esp32-wroom-benchsmp, 512 on esp32-wroom-smp, 272 on the one-core presets.
+ * 512 on esp32-wroom-benchsmp and esp32-wroom-smp, 272 on the one-core presets.
  * kickos_panic_stack_enter spends 32 bytes on the stack it leaves, the windowed ABI giving it
  * no way to write a1 without opening a frame; trap_redzone_roots.txt declares that cost. */
 #define KICKOS_LX6_PANIC_FRAME 256
 #define KICKOS_LX6_PANIC_DEPTH 768
 
 /* idle_entry and arch_idle_wait, whose frames sit above the level-1 interrupt idle waits in:
- * 64 on every registered preset, left at the measurement as PREEMPT is. */
+ * 64 on every registered preset. Enforced at 128 at one core. */
+#if KICKOS_KERNEL_CORES > 1
 #define KICKOS_LX6_TRAP_DEPTH_IDLE 64
+#else
+#define KICKOS_LX6_TRAP_DEPTH_IDLE 128
+#endif
 
 #endif

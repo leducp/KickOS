@@ -32,6 +32,7 @@ elf="${1:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
 arm="${2:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
 
 KEY_LINE='[reclaimwit] HOW TO READ THIS CAPTURE:'
+KEY_END='[reclaimwit]     both absent == the reclaim did not fire, console still dark.'
 MUTE_LINE='[reclaimwit] MUTE kernel console while the driver holds it'
 LIVE_LINE='[reclaimwit] LIVE kernel console after the driver died'
 SINK_LINE='[reclaimwit] routed through the driver, which discards it'
@@ -69,6 +70,11 @@ assert_no_panic "the image panicked, so any reclaim cannot be credited to the dr
 # Premise, first: a capture that lost its head makes every absence assertion below vacuous.
 if [ "$(n_of "$KEY_LINE")" -eq 0 ]; then
     fail "the app's reading key never reached the wire, so this capture witnesses nothing"
+fi
+# Every key line was printed while the kernel owned the console, so one missing is a line the
+# kernel console lost before the publish, never the publish's doing.
+if [ "$(n_of "$KEY_END")" -eq 0 ]; then
+    fail "the app's reading key lost its tail: a key line never reached the wire before the publish"
 fi
 
 # The two arms are built from one source file and the wrong binary greps green on almost

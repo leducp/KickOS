@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// cap_console_publish_through: HANDOUT is required, a publisher not holding WAIT is seated as a
-// receiver and the endpoint's vacated mark cleared, and a refusal changes nothing.
+// cap_console_publish_through: HANDOUT is required, the console's registers may be held by no
+// thread outside the task named, a publisher not holding WAIT is seated as a receiver and the
+// endpoint's vacated mark cleared, and a refusal changes nothing.
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sync.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
 
@@ -54,18 +56,17 @@ namespace kickos
             int publish(Published const& p)
             {
                 IrqLock lock;
-                return cap_console_publish_through(p.publisher, p.e);
+                return cap_console_publish_through(p.publisher, p.e, p.publisher->task);
             }
 
             // Everything a refusal must leave as it found it.
             void expect_unchanged(Published const& p, uint8_t rights, uint8_t holders,
                                   uint8_t vacated)
             {
-                int target = -1;
                 EXPECT_EQ(p.e->rights, rights) << "the publisher's rights moved";
                 EXPECT_EQ(p.ep->recv_holders, holders) << "the receiver count moved";
                 EXPECT_EQ(p.ep->vacated, vacated) << "the vacated mark moved";
-                EXPECT_FALSE(cap_console_target(&target)) << "a console was published";
+                EXPECT_EQ(cap_console_endpoint(), nullptr) << "a console was published";
                 EXPECT_EQ(cap_slot(p.publisher->caps, 0)->type, static_cast<uint8_t>(CapType::CAP_EMPTY))
                     << "the publisher's stdout was seated";
             }
@@ -102,6 +103,19 @@ namespace kickos
             expect_unchanged(p, rights, UINT8_MAX, 1);
         }
 
+        // The console's registers held by a thread outside the task named: that task's end would
+        // not free them, so no reclaim would follow its death.
+        TEST_F(ConsolePublish, a_task_not_holding_the_console_window_is_refused)
+        {
+            uint8_t const rights = CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT;
+            Published const p = hold(rights);
+            p.ep->vacated = 1;
+            g_console_window_held = true;
+
+            EXPECT_EQ(publish(p), -KOS_EBUSY);
+            expect_unchanged(p, rights, 0, 1);
+        }
+
         TEST_F(ConsolePublish, a_handout_only_publisher_is_seated_as_a_receiver)
         {
             Published const p = hold(CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT);
@@ -109,13 +123,11 @@ namespace kickos
 
             ASSERT_EQ(publish(p), 0);
 
-            int target = -1;
             EXPECT_EQ(p.e->rights, CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT)
                 << "the publisher holds WAIT and HANDOUT";
             EXPECT_EQ(p.ep->recv_holders, 1u) << "and counts as receiving";
             EXPECT_EQ(p.ep->vacated, 0u) << "so the endpoint is no longer vacated";
-            EXPECT_TRUE(cap_console_target(&target));
-            EXPECT_EQ(target, p.handle) << "the endpoint is the console";
+            EXPECT_EQ(cap_console_endpoint(), p.ep) << "the endpoint is the console";
             EXPECT_EQ(cap_slot(p.publisher->caps, 0)->type, static_cast<uint8_t>(CapType::CAP_ENDPOINT))
                 << "and the publisher's stdout names it";
         }
@@ -127,11 +139,9 @@ namespace kickos
 
             ASSERT_EQ(publish(p), 0);
 
-            int target = -1;
             EXPECT_EQ(p.e->rights, CAP_RIGHTS_ALL);
             EXPECT_EQ(p.ep->recv_holders, 1u) << "a WAIT already held is not seated again";
-            EXPECT_TRUE(cap_console_target(&target));
-            EXPECT_EQ(target, p.handle);
+            EXPECT_EQ(cap_console_endpoint(), p.ep);
         }
 
         bool serves(Thread const* t)
@@ -140,13 +150,17 @@ namespace kickos
             return cap_console_serves(t);
         }
 
-        // cap_console_serves answers for the thread's own stdout slot and the published
-        // endpoint's state, and for nothing else.
-        TEST_F(ConsolePublish, only_a_receiving_published_stdout_serves)
+        // cap_console_serves answers for the thread's own stdout slot and whether the task the
+        // console was published for lives, and for nothing else: a vacated endpoint still serves.
+        TEST_F(ConsolePublish, only_the_published_stdout_of_a_live_task_serves)
         {
             Published const p = hold(CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT);
+            Task* const served = task(0);
             EXPECT_FALSE(serves(p.publisher)) << "nothing is published yet";
-            ASSERT_EQ(publish(p), 0);
+            {
+                IrqLock lock;
+                ASSERT_EQ(cap_console_publish_through(p.publisher, p.e, served), 0);
+            }
             EXPECT_TRUE(serves(p.publisher));
 
             Thread* const runless = spawn(1, PRIO_PUBLISHER);
@@ -168,9 +182,14 @@ namespace kickos
             out.obj = obj;
 
             p.ep->vacated = 1;
-            EXPECT_FALSE(serves(p.publisher)) << "a vacated endpoint";
+            EXPECT_TRUE(serves(p.publisher)) << "a vacated endpoint of a live task";
+            {
+                IrqLock lock;
+                task_end(served, 0, true);
+            }
+            EXPECT_FALSE(serves(p.publisher)) << "the task ended";
             p.ep->vacated = 0;
-            EXPECT_TRUE(serves(p.publisher)) << "restored, the slot serves again";
+            EXPECT_FALSE(serves(p.publisher)) << "the task's receivers are dying";
         }
     }
 }

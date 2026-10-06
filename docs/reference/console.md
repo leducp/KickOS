@@ -31,7 +31,9 @@ kconsole_write                 -- frontend, fans out to compile-time backends
         v
 console_emit                   -- THE ownership guard
    |   g_console_state ?                            (ownership axis, checked FIRST)
-   +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it)
+   +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it; a
+   |                         fault record goes to the driver, see "A fault record while a
+   |                         driver owns the console")
    +- RECLAIMED   -> console_write_line_sync        (panic OR a driver death took it back)
    \- KERNEL_OWNED:
         |   panicking ?
@@ -95,10 +97,18 @@ waits under its lock.
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
 so the sub-decision is the whole story for them); `kos_console_publish` moves it to
-`HANDING_OFF`, drains the in-flight chip writers, and only then flips `USER_OWNED`; and a
+`HANDING_OFF` from any state, drains the in-flight chip writers, and only then flips `USER_OWNED`; and a
 panic flips it to `RECLAIMED` **from any prior state, `KERNEL_OWNED` included** -- the axis records a publish, never whether the device is garbled, and a
 thread granted the console window can wreck the channel without ever publishing. See
 [architecture.md](architecture.md), "Console device handover".
+
+**Every line the ring accepted before a publish goes out before the driver has the UART.** The
+move to `HANDING_OFF` gives up the ring under the same `IrqLock`, and giving it up flushes it
+(`console_tx_deinit`): its bytes are in the device's transmitter before `USER_OWNED` is stored. A
+line the ring refused was never accepted, so it is not among them: `kos_print` discards a refused
+line by contract, and a writer that cannot afford to lose one offers it again
+(`kickos::kconsole_write_all`, `<kickos/sys/emit.h>`). A burst written faster than the wire fills
+the ring, and every line past the fill is refused, publish or not.
 
 `HANDING_OFF` exists because the two halves of a publish cannot be one instant. It refuses
 NEW chip writers while leaving the UART the kernel's, so a writer already counted in the
@@ -218,22 +228,34 @@ rendezvous consumed the receive, so the next send parks until the driver receive
 retry never spins. With no receiver it hands the remainder to the kernel console, and
 `kconsole_write_all`, the entry for a writer that starts at the kernel console, hands it back to
 `stdout_write` on `-KOS_EBUSY`. The kernel console's short count is offered again, yielding between
-attempts, until a byte is accepted or ONE FULL RING'S WIRE TIME has passed with none. That bound is
-`KICKOS_CONSOLE_TX_SIZE` byte times at 115200 8N1, 44.4 ms at the 512-byte default: past it every
-byte that was queued when the stall began has had time to leave, so a ring still refusing is not
-draining, and no one chunk ever needs more than a ring to fit. It is `kprintf_paced`'s reasoning
-above in the only currency userspace has. A COUNT OF YIELDS IS NOT ONE, an idle single-core board
-spending 256 of them in far less than a single byte time, and that is what made the give-up silent
-and routine: a selftest capture on any board whose TAP routes through this console lost whole lines,
-and neither end said so.
+attempts, until it is taken: the ring drains and a peer node's claim on a shared UART ends, so no
+bound gives a line up. Output is not lost. A writer the console cannot serve at all waits in the
+kernel instead, in the dark window below, and the only way out of either wait is the writer's own
+kill or slay.
 
-**A give-up is now ANNOUNCED.** The bytes dropped are counted and reach the wire as
-`# console dropped N byte(s)` on the first write that fits afterwards; the console being the
-only way to say anything, and the thing that was full, the marker cannot go out where the
-loss happened. It opens with a newline of its own because the write that was cut may have
-ended mid-line. `tests/integration/check_tap_stream.sh` refuses any capture carrying it:
-every other count in that gate reconciles against the lines that SURVIVED, so without the
-marker a capture missing whole lines satisfies all of them and reads clean.
+### Non-blocking stdout
+
+A client sets stdout or stderr non-blocking with `fcntl(fd, F_SETFL, O_NONBLOCK)`, and `F_GETFL`
+reads the flag back (`user/src/newlib_fcntl.cc`); either answers -1 with `errno` where the kernel
+refuses, `EINVAL` for a thread in no task. Blocking is the default. Fds 0 to 2 share one
+description, the console, and its O_NONBLOCK is ONE flag per task, shared by all the task's
+threads as a process's threads share an open file description, and no other task's: the kernel
+keeps it in the task (`kos_task_nonblock`, `KOS_SYS_TASK_NONBLOCK`), so `fcntl` is a syscall and a
+write is not. A thread spawned naming no task and no memory of its own joins its spawner's task,
+so threads never placed in tasks share their spawner's flag. The kernel reads the flag on the
+paths that would wait:
+
+- A send of no timeout on the published console that would park, `kos_send` or `kos_send_timed`
+  with `KOS_TIMEOUT_NONE`, is answered `-KOS_ETIMEDOUT` at once: a console whose task lives with no
+  receiver taking a message now. A send with a finite timeout keeps it, `kos_console_flush`'s
+  included, and a send on any other endpoint parks as before.
+- A kernel console write that would wait or have to try again is answered `-KOS_ETIMEDOUT`: the
+  dark window, a full ring, a peer node's claim on a shared UART.
+- `kickos::stdout_write` stops at that answer, so a write that would block writes nothing and
+  returns -1 with `errno` `EAGAIN`, and the task carries on. A partial accept returns the short
+  count: a receiver taking part of a message, or a kernel console taking part of a write.
+- It never answers `EPIPE`. A console whose endpoint is gone for good falls back to the kernel
+  console, which then owns the device, so nothing is ever unwritable for good.
 
 RTT drops on a full ring for its own reason: its host may be detached, so a blocking
 writer would hang forever. A channel that never frees a slot makes the producer drain
@@ -368,6 +390,10 @@ Details specific to the sim:
    owns the UART -- must *reclaim + reinit* the peripheral and polled-print,
    because RTT needs a J-Link and the userspace driver may be the thing that
    crashed. The diag LED is the always-present 1-bit last resort.
+5. **While a driver owns the UART the kernel writes nothing at it**, a fault record included: the
+   record goes to the driver, held whole and handed over between two of its receives. A kernel
+   write at the device beside the driver's drain interleaves with it byte by byte, tearing the
+   record into the driver's lines.
 
 ## Capability handover
 
@@ -384,12 +410,14 @@ can finish -- the scheduler is strict-priority). The panic path funnels through
 **Who may publish, and what HANDOUT allows.** The caller holds `AUTH_CONSOLE` (`-KOS_EPERM`
 otherwise) and names an endpoint through a capability holding HANDOUT: `-KOS_EBADF` for a bad,
 stale or non-endpoint capability, `-KOS_EACCES` for one without HANDOUT, a WAIT-only capability
-included. The publish seats WAIT on that capability when it does not hold it already, counted
-in `recv_holders`, and the endpoint receives as a fresh one does for its creator: a send parks
-until a receiver takes it rather than being answered `-KOS_EAGAIN`. Every publish therefore
-leaves the publisher holding WAIT and HANDOUT, and a WAIT it drops at the end of the handover.
-The console's return is keyed on the published endpoint's last WAIT going, so a handover that
-fails before any driver thread holds WAIT gives the console back at that drop. An endpoint's
+included. It also names the TASK the driver runs in, whose end is the driver's death:
+`KOS_TASK_NONE` for the caller's own, or a task the caller created (`-KOS_EBADF` for a handle naming
+nothing, `-KOS_EPERM` for another creator's, `-KOS_EBUSY` for one already ended). The init publishes
+for the task it has just created for the driver. `-KOS_EBUSY` also answers a task a thread outside
+of which holds the console's registers (below). The publish seats WAIT on that capability when it
+does not hold it already, counted in `recv_holders`, and the endpoint receives as a fresh one does
+for its creator. Every publish therefore leaves the publisher holding WAIT and HANDOUT, and a WAIT
+it drops at the end of the handover. An endpoint's
 creator holds all four rights, so a first publish goes through the creator's capability. HANDOUT
 is also what lets the init, which keeps a console driver's endpoint narrowed to SIGNAL, TRANSFER
 and HANDOUT between its instances, publish it again at every start: a restart repeats the first
@@ -397,15 +425,42 @@ handover step for step. `-KOS_EOVERFLOW` answers a reference or receiver count a
 refusal changes nothing: no right seated, no reference taken, the console untouched.
 `cap_console_publish_through` in `kernel/syscall/cap.cc` is the rule.
 
-**A DRIVER DEATH is the second route to `RECLAIMED`.** `cap_teardown` only NOTES it, when the
-published endpoint's `recv_holders` reaches 0, and `console_on_driver_death` then asks the DEVICE:
-it defers while any live domain still holds `arch_console_reclaim_window()`. A driver is a THREAD
-GROUP, so the endpoint's last RECEIVER is the service thread rather than the thread holding the
-registers -- reclaiming on the note alone reprogrammed the UART under a live IRQ thread and silenced
-its own source. The note stays SET across a refusal and every `exit_current` and voluntary close
-re-runs the check, so the LAST holder's own exit reclaims.
+**A DRIVER DEATH is the second route to `RECLAIMED`, and a driver is dead only when its task
+dies.** The task the console was published for ending, or its slot going back before it ever ran,
+NOTES the death (`task_end`, `cap_console_task_ended`), and `console_on_driver_death` then asks the
+DEVICE: it defers while any live thread still holds `arch_console_reclaim_window()`. The task's end
+slays every member, so a holder of that task is gone in finite time: the note stays SET across a
+refusal and every `exit_current` re-runs the check, so the LAST holder's own exit reclaims. A
+death noted while a publish is still handing the device over is acted on when the hand-off
+completes (`console_owner_set_user`), so no path erases it; only the next publish retires it.
 
-**The reclaim is unconditional-once, not handover-conditional.** `kpanic_enter` reclaims
+**The console's registers stay inside the task the console is published for.** A publish is
+refused `-KOS_EBUSY` while a thread outside the task it names holds a device window over
+`arch_console_reclaim_window()`, and from the publish to the reclaim a spawn giving such a window
+to a thread of any other task is refused `-KOS_EBUSY`; a window is taken only at a spawn, so no
+other path moves one. Every holder the reclaim waits for is therefore a member of the task whose
+end it follows, which that end slays, so the reclaim always comes.
+
+**A publish onto another endpoint moves stdout with it.** Every thread's capability 0 naming the
+console it replaces is seated on the new endpoint, and a sender parked on the replaced one is
+answered `-KOS_EAGAIN`: `kickos::stdout_write` offers the line to the kernel console, which hands
+it to the new endpoint with `-KOS_EBUSY` once that one is served.
+
+**From the task's end on, the console endpoint takes no send** (`EP_CONSOLE_ENDED`,
+`endpoint_takes_sends` in `kernel/include/kickos/endpoint.h`), though a receiver of it may still
+wait: its receivers are that task's members, slain but not yet gone, and a line handed to one dies
+with it. Every sender parked there is answered at the end, as on an endpoint with no receiver, and
+a new one at once, so its line goes to the kernel console's dark window instead. A held fault
+record is handed to no receiver either. The next publish lifts it.
+
+**The published endpoint losing its last receiver is no death.** A driver whose service thread exits
+while its task lives is a live endpoint with no receiver: a send parks there, receiver or not, as a
+write to a pipe does, and a receiver coming back takes it. Only the task's end answers the senders
+parked on an endpoint nobody receives on, as any such endpoint answers them.
+
+**The reclaim runs once.** A driver-death reclaim stores `RECLAIMED` before its body, and nothing
+after it reprograms the device again: a fault record still open across it is written by it, never
+by the record's own end. **The panic reclaim is unconditional-once, not handover-conditional.** `kpanic_enter` reclaims
 whenever the state is not already `RECLAIMED`, and it stores `RECLAIMED` *before* calling
 the body. Two properties follow. It runs exactly once, so a body that truncates the byte
 in the shift register cannot cut the banner it just printed; and a synchronous fault
@@ -438,6 +493,58 @@ are silicon-only -- no emulated board carries one -- and the `xmc4800` one is wi
 [architecture.md](architecture.md), "Object model, capabilities & IPC" ->
 "Console device handover".
 
+## A fault record while a driver owns the console
+
+A thread-fault record (`kickos_thread_fault_exit`, and the selftest trap witness) is the one
+kernel print that still reaches the wire while a userspace driver owns the UART, and it reaches
+it THROUGH THAT DRIVER: the kernel writes none of it at a device it handed away. Each
+`kprintf_fault` line the reporter prints goes to the kernel console as before; from `HANDING_OFF`
+on, the chip path refuses it and the same masked read holds it in the record of the thread
+printing it instead, opening that record on its first such line. `krecord_end` ends the record.
+
+- **Whole.** A record is held in the disarmed ring's storage, idle from the publish on, and a
+  reader sees it only once `krecord_end` commits it, at most `KDIAG_FAULT_RECORD_MAX` bytes. A line
+  the room left cannot take ends the record there, so it never carries a cut line. Records of
+  several threads written at once are each held, keyed by the thread, and read in the order they
+  were committed. A record begun while the kernel still owned the console, with a publish landing
+  inside it, keeps its tail: the lines before the publish went to the wire, the rest are held. A
+  record with no room left at all is not held, and neither is any record on a console with no
+  ring, an own-image AMP node or a chip that supplies no buffered backend; such a record reaches
+  RTT where the build carries RTT, and otherwise nothing. A thread slain inside its record never
+  ends it, and the slay drops it; one faulting again inside its own record adds to it.
+- **Between two receives, never inside one send.** `krecord_end` commits the record and hands it
+  to a receiver already parked on the published endpoint (`cap_console_deliver`). A driver that
+  is not parked, mid-write in its own drain, takes it at its next receive, ahead of every queued
+  sender, and a record wider than its buffer arrives over consecutive receives with nothing in
+  between. The record therefore lands between two messages of the driver's input, and a line one
+  send carries is never split by it. A line a writer splits across sends can be; the banner opens
+  with a newline of its own, so a record never shares a line with user bytes.
+- **The faulting thread never parks**, and nothing waits on time.
+- **Each line reaches the wire once.** The reclaim flips the state, writes every held record and
+  empties the store under the lock the hold takes, so a line printed before it is held and
+  written by it, and a line printed after it reaches the device directly: a record the console's
+  death lands inside is written in two parts, with other lines possibly between them, and never
+  twice. The write moves nothing in the store: the committed records, the first from the line
+  after the one its reader was cut in, then each open record's lines, records in the order they
+  opened.
+- **What still loses it.** A held record a driver never received is lost when the system ends,
+  since `kickos_terminate` may not write a device the driver owns, and one the driver received is
+  lost with the rest of its ring. A driver death that reclaims the device writes what the driver
+  never took, polled (`console_on_driver_death`), and so does a panic (`kpanic_enter`); where the
+  driver had taken part of a record, that write starts at the next line of it, so the line the
+  driver was cut in is lost. The panic's write takes the lock the store is changed under, so
+  another core's change finishes first; a panic raised on the core changing the store, by a fault
+  inside the change, writes nothing held. Every walk of the store stops at an entry that does not
+  fit below its end, so a torn one is never followed off the ring, and the panic's own output is
+  never cut.
+- **Bounded by the ring.** Every step on the store runs under the lock, over the ring's storage,
+  `KICKOS_CONSOLE_TX_SIZE` bytes, which the board sets through `KICKOS_DIAG_LINE_MAX` and no task
+  can grow. A held line walks the open area at most once per open record, plus three; a commit
+  makes at most L + 6 passes over it, L the lines of that record; the reclaim's write walks it
+  once per open record and then transmits what is held, polled.
+- **A driver whose buffer refuses the copy is answered `-KOS_EFAULT`**, and the record is taken
+  all the same, or every receive into that buffer would refuse it again.
+
 ## The publisher's obligations
 
 `kos_console_publish` hands the device away but cannot police what the publishing task does
@@ -453,26 +560,25 @@ rather than a driver.
 **Publish and driver-spawn are ONE atomic act.** Nothing may be spawned that depends on the
 console between the two. `kos_console_publish` returning has already flipped the state to
 `USER_OWNED` and pointed `g_stdout_target` at the endpoint, so a driver spawn that FAILS after
-it leaves the target naming an endpoint with no receiver. Every task spawned afterwards then
-parks on its first `printf` probe forever: the `kos_send` blocks with no receiver to rendezvous
-with, and no refusal fires while the publisher's own reference still holds, so the `_write`
-fallback never gets the `-1` it needs to route around the dead console. The kernel cannot
-cheaply tell "published" from "published and served", so the publisher must not spawn
-console-dependent tasks when the driver spawn did not succeed.
+it leaves the target naming an endpoint with no receiver while the task it was published for
+lives. Every task spawned afterwards then parks on its first `printf` forever, as on any live
+console with no receiver, and the `_write` fallback never gets the `-1` it needs to route around
+it. The kernel cannot tell "published" from "published and served", so the publisher must not
+spawn console-dependent tasks when the driver spawn did not succeed, and a failed start ends the
+driver's task before it says why (`console_start_failed`), that end being the console's death.
 
-**The publisher MUST drop its own WAIT right when the handover ends.** The no-receiver answer is
-keyed on `recv_holders` falling to **0**, and nothing else fires it. The publish takes a
-capability holding HANDOUT and leaves it holding WAIT too, so the drop is owed after every
-publish. `kos_endpoint_create` sets `recv_holders = 1` for the creator, a publish through a
-capability without WAIT seats the same one, and delegating a `CAP_WAIT` copy to the driver at
-spawn bumps it to **2**, so at that instant the endpoint has two receiver holders. If the
-publisher keeps its WAIT, the driver's death drops the count to 1, not 0: no answer is
-delivered, parked senders are never woken, and every client hangs for the life of the system.
-That is strictly WORSE than a dark console, which is why the drop is a hard rule and not a
-tidiness convention.
+**The publisher MUST drop its own WAIT right when the handover ends.** Once the driver's task has
+ended, a sender is answered only by an endpoint nobody holds WAIT on, `recv_holders` at **0**. The
+publish takes a capability holding HANDOUT and leaves it holding WAIT too, so the drop is owed
+after every publish. `kos_endpoint_create` sets `recv_holders = 1` for the creator, a publish
+through a capability without WAIT seats the same one, and delegating a `CAP_WAIT` copy to the
+driver at spawn bumps it to **2**. If the publisher keeps its WAIT, the endpoint still receives
+after the driver's task ends: no answer is delivered, parked senders are never woken, and every
+client hangs for the life of the system. That is strictly WORSE than a dark console, which is why
+the drop is a hard rule and not a tidiness convention.
 `console_handover_finish` narrows it to SIGNAL, TRANSFER and HANDOUT (`HANDOVER_KEPT`), the rights
 the init's walk (`system/init/compose/walk.cc`) keeps of every endpoint it creates for a server.
-Its death then vacates the endpoint and gives the kernel its console back: a send answers
+Its task's end then gives the kernel its console back, and with no receiver left a send answers
 `-KOS_EAGAIN` while the init's HANDOUT remains, until the endpoint next receives
 (`endpoint_unserved` in `kernel/include/kickos/endpoint.h`). The endpoint outlives the instances
 of its driver: a restart publishes the SAME endpoint again through that HANDOUT, which seats the
@@ -481,22 +587,26 @@ first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the
 driver out of restarts. Neither drop tears the endpoint down, because the kernel holds its own
 `g_stdout_target` reference.
 
-**There is a DARK WINDOW between the publish flip and the driver actually serving capability 0.**
-`console_emit`'s chip path is already dropping (RTT still carries it) while no userspace receiver
-exists yet. Output is not lost in it: the publisher holds WAIT and the endpoint receives, so a
-client `send` before the driver's first wait parks on `send_waiters` (bounded when timed) and the
-rendezvous absorbs the gap, which is why there is no "handover in progress" state to size. A
-restart's window is the same, its publish making the vacated endpoint receive again. Between a
-driver's death and its restart's publish the endpoint is vacated: a send answers `-KOS_EAGAIN` and
-`_write` emits that chunk through the kernel console, which the death gave back. While the reclaim
-still waits on a thread of the dead driver holding the device, the kernel may not touch the device
-either, so the kernel console takes nothing and answers `-KOS_EAGAIN`, and the writer retries until
-that thread's exit reclaims the device. That retry is bounded like any other
-(`<kickos/sys/emit.h>`), so a holder that never exits costs announced lines, never silent ones. A
-publish landing between that send and that emit makes the endpoint take the chunk again, and
-`kickos::stdout_write` (`<kickos/sys/emit.h>`) sends it there on the `-KOS_EBUSY` above. What the
-window does mean is that the console is dark on the wire for its duration, and that a failure inside
-it is the case the atomicity rule above exists to forbid.
+**Two windows are dark on the wire, and output is lost in neither.** The first runs from the
+publish flip to the driver serving capability 0: `console_emit`'s chip path already drops (RTT
+still carries it) while no receiver exists yet, and a client `send` parks on `send_waiters`
+(bounded when timed), the console being live, so the rendezvous absorbs the gap and there is no
+"handover in progress" state to size. A restart's window is the same.
+
+The second, THE DARK WINDOW, runs from the driver's task ending to the reclaim, which waits for
+the thread still holding the device, or to a restart's publish. The kernel may not touch the
+device in it either. A send there is answered, `-KOS_EAGAIN` while the init's HANDOUT remains, and
+the writer offers the chunk to the kernel console, which WAITS, with no bound, on a console-state
+wait that the reclaim and a publish both wake (`console_dark_wait`, `console_dark_wake`), then
+writes it: polled after the reclaim, or handed back on `-KOS_EBUSY` after a publish, which
+`kickos::stdout_write` (`<kickos/sys/emit.h>`) then sends to the endpoint. The wait ends otherwise
+only on the writer's own kill or slay. A task that set O_NONBLOCK is answered `-KOS_ETIMEDOUT`
+there instead. The line lands exactly once: on the wire, and on RTT where the build also carries
+it, a writer offering a line again putting on RTT only the bytes the chip took. So RTT shows a
+line waiting in the window only once the reclaim writes it, and never one that leaves through
+`-KOS_EBUSY` for the endpoint. What the window
+does mean is that the console is dark on the wire for its duration, and that a failure inside it
+is the case the atomicity rule above exists to forbid.
 
 ## The two protocols a published console endpoint carries
 

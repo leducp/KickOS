@@ -12,7 +12,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
       deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
       ktime mapexec mapfence mpuskip mtimeconv placeadmit presync probecatch ramowner regionsync
       reschedowed rp2350gate slotpool
-      stdoutwrite taskbudget uartclass vrange)
+      stdoutwrite taskbudget uartclass vrange windowholder)
     add_subdirectory(${_unit})
   endforeach()
 
@@ -26,8 +26,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   endforeach()
 
   add_subdirectory(exitquiesce)
-  foreach(_unit IN ITEMS heldassert irqlinecore migrateask parkdeath placement schedring slaypeer
-      tlscarve)
+  foreach(_unit IN ITEMS consolehold heldassert irqlinecore migrateask parkdeath placement schedring
+      slaypeer tlscarve)
     add_subdirectory(${_unit})
   endforeach()
 endif()

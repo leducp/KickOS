@@ -962,17 +962,11 @@ walks a shorter chain and never a torn one.
   timed call would bound that wedge, not detect it: the cycle stays invisible, the caller
   learns only that time ran out, and the service stays blocked until the caller releases the
   mutex of its own accord.
-- **`cap_console_deliver` is the one route left answering a lost buffer with `0`.** Every IPC
-  path answers `-KOS_EFAULT`, the far arms included: see "A copy the boundary check cannot
-  promise" for the local rendezvous and the far-window section above for the two far
-  landings. The console route keeps `n = 0`
-  for both of its refusals. Half of that is structural: its producer is the fault reporter
-  descending through `kconsole_write`, so there is no caller to answer and the byte count is
-  the whole of what it returns. The other half is not -- its parked receiver is woken through
-  the same `Thread::wait_result` the far arms carry a code on, so nothing stops a code
-  reaching it. What is missing is a ruling on what a console consumer should be told about a
-  record it holds a prefix of, which is that route's contract and not this one's. Until then
-  `0` cannot be told from a zero-length line on that route, and on no other.
+- **The console's held records answer a lost buffer with `-KOS_EFAULT` too.** A kernel fault
+  record held for a published console reaches its driver through `cap_console_deliver`, to a
+  receiver already parked, or through the held arm of the driver's own receive. Either one that
+  cannot copy into the driver's buffer answers it `-KOS_EFAULT`, and the record is taken all the
+  same: left held, every receive into that buffer would refuse it again.
 - **No cross-call state hold.** A reply cap lives across exactly one transaction; there is
   no bus-claim/session that spans multiple calls (a coherent multi-phase transaction is
   expressed as one call with multiple segments -- see `bus-service.md`).

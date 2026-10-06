@@ -4,6 +4,7 @@
 // One runnable thread pinned to each kernel core. Each yield enters the shared
 // scheduler lock, so the aggregate rate measures a genuinely parallel lock user.
 
+#include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/emit.h>
