@@ -439,12 +439,12 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `esp32c6-wroom/c6txidle` | 1 | the default composition in the flat build, reading what a kernel-side probe recorded in M-mode: a U-mode thread's ungranted UART0 access passes no APM |
 | `esp32-wroom/lx6smp` | 3 | deleted: it starts the APP CPU by writing kernel-owned registers. Owed: esp32-wroom-smp silicon selftest (5.14), the shared kernel on both LX6 cores taking the compare-and-swap from both and reading each core's processor identity; `docs/reference/boards.md` names its capture |
 | `f411disco/f411spi` | 2 | the worked example of hand-rolled bring-up, rewritten as one: SPI1's window and line, `pinmux` for its pins; no claim by number, no task created by hand |
-| `frdmk64f/k64console` | 2 | `stdout` names the packaged `k64uart` |
+| `frdmk64f/k64console` | 2 | `stdout` names the packaged `k64uartirq` |
 | `frdmk64f/k64drv` | 2 | retargeted from PIT channel 2 to LPTMR0, since PIT's AIPS slot 55 also holds the channels the kernel's time base chains and is never opened: LPTMR0 sits alone in AIPS0 slot 64 at 0x4004_0000, raises line 58, and is clocked by SCGC5 bit 0 (K64 RM 4.5.2 Table 4-2, 3.2.2.3 Table 3-5, 12.2.12). Its window and line, `device_not_isolated`, `coarse_gate` for its slot; the chip file gains the device, and `arch_periph_enable` the base, gating its clock and clearing its slot's SP bit as it does for UART0 and DSPI0. The driver counts the 1 kHz LPO (PSR PCS=01, PBYP=1; RM 42.3.2) and a thread of its task holding no window reads the counter, which succeeds, the slot being the gate: the window, 32 bytes by the SYSMPU's granule, already holds every register LPTMR0 implements, and the slot answers any other address with a transfer error (RM 4.5) |
 | `frdmk64f/k64dspi` | 2 | two compositions, chosen by `KICKOS_SPI_LOCAL_ENGINE`: the packaged `k64dspi`, whose start muxes the pins the board file wires to DSPI0, and a client using its endpoint `/svc/spi0`; and a task holding DSPI0 and `pinmux` that links the local SPI engine and muxes those pins through `k64dspi_bus_mux` |
 | `rx72m/rxdrv` | 2 | the port window, `pinmux`; the ungranted poke is a child thread's fault. The chip file's port window holds `PMR`, so it takes `coarse_gate` beside the console's pins and the kernel's LED, and the poke writes the console pin's `PB1PFS` in the MPC, which the chip file gives the kernel, instead |
-| `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled like `xmcuart`, a zero-length one as a flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
-| `xmc4800-relax/consoledemo` | 2 | `stdout` names the packaged `xmcuart` |
+| `xmc4800-relax/conreclaim` | 3 | retargeted: `testusic`, a test-owned console driver over USIC0 CH0 in `tests/drivers`, is named `stdout` and holds the console device alone, so no plain task may hold it. It serves plain sends polled, a zero-length one as a flush, and a zero-length call by scrambling the channel it holds, its clock gated last, before it answers; `main` prints through it, asks for the scramble and panics, and the verdict reaches the wire only through the kernel reclaiming the published console. Built only where `KICKOS_TEST_DRIVERS` is on, which the board preset leaves off, so an operator configures it in (`EXTRA_CMAKE=-DKICKOS_TEST_DRIVERS=ON`); `tests/integration/check_conreclaim.sh` judges the capture |
+| `xmc4800-relax/consoledemo` | 2 | `stdout` names the packaged `xmcuartirq` |
 | `inprstorm`, `pvprobe`, `xmccshold`, `xmcspi` | 2 | USIC0 CH1, and for `xmcspi` the line `/dev/usic0/sr1`; `inprstorm`'s entry holds the window and re-delegates it to a storm thread below itself, so it takes `memory` and runs on `ends: never`; `pvprobe` and `xmcspi` fault their own entry on the closing ungranted read, which ends the system, while `xmccshold` returns. Their compositions do not name `xmcssc`, so nothing else holds the window. The refusal of the old conflict is already armed: `tools/compose/tests/test_arms.py` grants each beside the golden system's `xmcssc` and reddens `ownership.device`, and `ownership.line` for `xmcspi` |
 | `xmc4800-relax/xmcssc` | 2 | two images in every configure: `xmcssc`, the packaged `xmcssc` and a client using its endpoint `/svc/spi0`, and `xmcssc_local`, a task holding CH1 and its line that links the local SPI engine |
 
@@ -457,7 +457,7 @@ heap, and the 64 KiB parts carve none. Its entry, `selftest_main`, keeps its own
 whose priority, ceiling, authority and delegations the arms read. A second composition per
 console driver a board has, `consoles/<board>/<driver>.yaml` with `stdout` naming that driver,
 replaces the service lists the bench fleet ran it under (4.5), its images named
-`selftest_<driver>`; `k64uart`, `k64uartirq`, `xmcuart`, `xmcuartirq`, `f4uartirq`, `lx6uart`,
+`selftest_<driver>`; `k64uartirq`, `xmcuartirq`, `f4uartirq`, `lx6uart`,
 `c6uart`, `rxsci`, the USB device consoles `rpusb` and `rt1062usb`, and `simcon`.
 
 **On an AMP node** the composition names the node's crossings. On an own-image node it is
@@ -509,7 +509,7 @@ as ruled. `main.cc` cuts ten regions, and each board states the first region of 
 images: ten on the two STM32 parts, one region each; five on `microbit`, whose binding resource is
 the arena after `.bss`; one on an enforcing XMC4800, whose arena spans DSRAM2; five on an
 enforcing ESP32-C6 bench build and four on the other enforcing or AMP builds of that chip; two on
-an ESP32 bench or multi-core build. Its bloat audit stays
+every ESP32 build. Its bloat audit stays
 in M10's tail.
 
 ### 4.5 Every service list becomes a composition
@@ -517,15 +517,14 @@ in M10's tail.
 | list | becomes |
 | --- | --- |
 | `kickos_services_none` | the default composition |
-| `kickos_services_frdmk64f` (`k64uart`, `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
-| `kickos_services_xmc4800relax` (`xmcuart`, `xmcssc`), `_xmc4800relax_console` | `consoledemo`'s and `xmcssc`'s |
+| `kickos_services_frdmk64f` (a polled console driver, since removed, and `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
+| `kickos_services_xmc4800relax` (a polled console driver, since removed, and `xmcssc`), `_xmc4800relax_console` | `consoledemo`'s and `xmcssc`'s |
 | each `_uartirq` list (`k64uartirq`, `xmcuartirq`, `c6uart`, `lx6uart`, `rxsci`, `f4uartirq`) | the selftest's composition naming that console driver on its board |
 | the `_usbcdc` lists (`rpusb`, `rt1062usb`) | `usbcdcwit`'s compositions and the selftest's composition naming that console driver on its board |
 | `kickos_services_sim` (`simcon`), `kickos_services_simuart` | the compositions of `drvdeath`, `pubpanic`, `simconabi`, `faultsurvive_published`, the published selftest, and `uartloop` |
 
-The catalogue gains every driver a list carried that it lacks: `k64uart`, `k64dspi`, `xmcuart`,
-`simcon`, `simuart`, `rpusb` and `rt1062usb`, each declared on `kickos_add_driver` with its roles,
-threads and `START`. The local SPI engines and `i2c_rxriic` stay libraries a task links.
+The catalogue gains every driver a list carried that it lacks: `k64dspi`, `simcon`, `simuart`,
+`rpusb` and `rt1062usb`, each declared on `kickos_add_driver` with its roles, threads and `START`. The local SPI engines and `i2c_rxriic` stay libraries a task links.
 
 ### 4.6 Images under `tests/`
 
@@ -560,7 +559,7 @@ line's index within its device.
 | `rpusb` | 5 on the RP2040, 14 on the RP2350 | the USB controller's line in each chip file |
 | `rt1062usb` | 113, `USB_OTG1_IRQ` | the USB OTG1 controller's line in the i.MX RT's chip file |
 | `simuart` | 29 | the sim chip file's UART line |
-| `k64uart`, `k64dspi`, `xmcuart`, `simcon` | none | none: lineless |
+| `k64dspi`, `simcon` | none | none: lineless |
 
 **In two steps.** M10.5.7 lands the catalogue, the instance carrying each line's number and index,
 and `bring_up` given an instance claiming the instance's lines, so every composed driver already
@@ -843,8 +842,8 @@ the fleet reads it, and a judge per board app that prints.
 
 | board | the chain has | runs |
 | --- | --- | --- |
-| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and each of `xmcuart` and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
-| `frdmk64f` | probe, console, fleet | default system; selftest, kernel, `k64uart` and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi`'s LAN9252 `BYTE_TEST` |
+| `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
+| `frdmk64f` | probe, console, fleet | default system; selftest, kernel and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi`'s LAN9252 `BYTE_TEST` |
 | `rx72m` | probe, console, fleet | default system; selftest, kernel and `rxsci`; `rxdrv` |
 | `f302nucleo` | probe, console, fleet | default system; selftest |
 | `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`; from the flat build, `c6lpprobe` and `c6txidle`; the `amp2` partition with its gate witness |

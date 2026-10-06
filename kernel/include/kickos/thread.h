@@ -80,7 +80,7 @@ namespace kickos
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
         WAIT_TASK_EMPTY, // wait_obj: the TASK; queue-less on no list at all
-        WAIT_CONSOLE,    // wait_obj: none; queue-less, a kernel console write in the dark window
+        WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
     };
 
     // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create

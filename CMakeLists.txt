@@ -1041,6 +1041,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(capture_matchers PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME poll_stop_lines
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_poll_stop_lines.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(poll_stop_lines PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   _add_test(NAME tap_stream_sets
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_tap_stream_sets.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1073,6 +1078,28 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/gates/selftest.cmake"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(seat_arms PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME selftest_demands_controls
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/selftest_demands.py" --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(selftest_demands_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  file(GLOB _kos_gate_fragments "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/gates/*.cmake")
+  _add_test(NAME skip_lists_derived
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_skip_lists_derived.py"
+                    ${_kos_gate_fragments}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(skip_lists_derived PROPERTIES TIMEOUT 60 LABELS "host;tree")
+  _add_test(NAME qemu_gates_derived
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_qemu_gates_derived.py"
+                    ${_kos_gate_fragments}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(qemu_gates_derived PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME boot_tp_controls
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_boot_tp.py" --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(boot_tp_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   _add_test(NAME kconsole_emit
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconsole_emit.sh"
@@ -1300,6 +1327,9 @@ if(TARGET kickos_kernel)
   # The app writes `int main`, renamed to the kernel-called symbol; app.h is force-included
   # below so the renamed C++ main gets C linkage (unmangled).
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
+  # Evaluated for the consuming target, so each image's TUs name that image (app.h's stamp).
+  target_compile_definitions(kickos_core INTERFACE
+    "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:KICKOS_APP_IMAGE=\"$<TARGET_PROPERTY:NAME>\">")
   # Export every macro affecting shipped layouts or inline definitions to avoid ODR mismatch.
   set(_kos_iface_sim 0)
   if(KICKOS_ARCH STREQUAL "sim")

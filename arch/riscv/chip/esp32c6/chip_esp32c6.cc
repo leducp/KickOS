@@ -81,14 +81,6 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // DWARF EH frame table (esp32c6.ld) + the libgcc registrar. The -nostartfiles link
-    // drops crtbegin, so its frame_dummy never registers .eh_frame and a full-C++ app
-    // must register it by hand at boot. WEAK ref: a freestanding image references no
-    // _Unwind_*, the registrar object is never pulled, and the call is skipped.
-    extern uint32_t __eh_frame_start;
-    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
-    // and optional by libgcc's own contract, so no linker script can state it.
-    void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and
     // the gp small-data window. No AT clause on any loadable section of this chip (the ROM
@@ -1033,10 +1025,6 @@ void Reset_Handler(void)
     }
     c6_early_mark('C'); // .appdata copied + .appbss zeroed (enforcement symbols sane)
 #endif
-    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
-    {
-        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
-    }
     mtime_rate_init(); // a constructor may read SystemCoreClock
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

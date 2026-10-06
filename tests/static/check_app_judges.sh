@@ -11,7 +11,9 @@
 # where op `drop` removes every line carrying the literal, `swap` replaces its first occurrence
 # on each line, `after` adds the replacement as a line after each line carrying it, `order`
 # exchanges the first line carrying the literal with the first line carrying the replacement,
-# and `cache` judges the fixture whole with the replacement as the cache line instead. An edit
+# `cache` judges the fixture whole with the replacement as the cache line instead, and
+# `source:<path>` judges it whole over a source tree holding only <path>, the replacement added
+# as a line after each line of it carrying the literal. An edit
 # applies to the fixture and its arrival stamps alike; `log-<op>` edits the fixture alone and
 # `times-<op>` the stamps alone. A second edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
@@ -67,6 +69,7 @@ tests/integration/check_wallclock.sh|wallclock.capture||declared|swap|mark 0, sl
 tests/integration/check_wallclock.sh|wallclock.capture||sleep-short|swap|advanced 5000025108 ns|advanced 4999025108 ns
 tests/integration/check_wallclock.sh|wallclock.capture||kernel-long|swap|advanced 5000025108 ns|advanced 5060000000 ns|swap|11.222058|11.264733
 tests/integration/check_wallclock.sh|wallclock.capture||kernel-host|swap|advanced 5000025108 ns|advanced 5040000000 ns|swap|11.222058|11.179733
+tests/integration/check_wallclock.sh|wallclock.capture||interval|source:user/apps/common/wallclock/main.cc|uint64_t const from = kos::clock_now();|        kos::print(planted);
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|26.222058
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|8.722058
 tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|11.222058|11.272058
@@ -87,7 +90,7 @@ tests/integration/check_k64drv.sh|k64drv.capture||fault|after|[k64drv] tick 10|=
 tests/integration/check_k64drv.sh|k64drv.capture||error|after|[k64drv] tick 3|[k64drv] ERROR: planted rc -1
 tests/integration/check_k64drv.sh|k64drv.capture||panic|after|[k64drv] done|KERNEL PANIC: planted
 tests/integration/check_k64console.sh|k64console.capture||ctor-line|drop|pre-publish ctor line|
-tests/integration/check_k64console.sh|k64console.capture||driver-up|drop|[k64uart] driver up|
+tests/integration/check_k64console.sh|k64console.capture||driver-up|drop|[k64uartirq] device up|
 tests/integration/check_k64console.sh|k64console.capture||main-line|drop|post-publish line|
 tests/integration/check_k64console.sh|k64console.capture||worker-line|drop|[worker] line 3|
 tests/integration/check_k64console.sh|k64console.capture||worker-line|order|[worker] line 1|[worker] line 2
@@ -96,7 +99,7 @@ tests/integration/check_k64console.sh|k64console.capture||error|after|[worker] l
 tests/integration/check_k64console.sh|k64console.capture||panic|after|[worker] done|KERNEL PANIC: planted
 tests/integration/check_k64console.sh|k64console.capture||verdict|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=ON
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|verdict|drop|KERNEL PANIC|
-tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|driver-up|drop|[k64uart] driver up|
+tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|driver-up|drop|[k64uartirq] device up|
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|panic|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=OFF
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: PASS|
@@ -229,9 +232,9 @@ tests/integration/check_pvprobe.sh|pvprobe.capture||kill-address|swap|ADDR=0x500
 tests/integration/check_pvprobe.sh|pvprobe.capture||panic|after|ADDR=0x50004648|KERNEL PANIC: planted
 tests/integration/check_consoledemo.sh|consoledemo.capture||error|after|[worker] line 2|[consoledemo] ERROR: planted
 tests/integration/check_consoledemo.sh|consoledemo.capture||ctor-line|drop|pre-publish ctor line|
-tests/integration/check_consoledemo.sh|consoledemo.capture||driver-up|drop|[xmcuart] driver up|
+tests/integration/check_consoledemo.sh|consoledemo.capture||driver-up|drop|[xmcuartirq] device up|
 tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|drop|post-publish line|
-tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|[xmcuart] driver up|post-publish line
+tests/integration/check_consoledemo.sh|consoledemo.capture||main-line|order|[xmcuartirq] device up|post-publish line
 tests/integration/check_consoledemo.sh|consoledemo.capture||worker-line|drop|[worker] line 3|
 tests/integration/check_consoledemo.sh|consoledemo.capture||worker-done|drop|[worker] done|
 tests/integration/check_consoledemo.sh|consoledemo.capture||panic|after|[worker] done|KERNEL PANIC: planted
@@ -321,6 +324,11 @@ tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||main-exit|drop|
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||atexit|drop|main: atexit handler|
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||atexit|order|main: exit()|main: atexit handler
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||panic|after|main: atexit handler|KERNEL PANIC: planted
+tests/integration/check_slaypeer.sh|slaypeer.capture||setup|after|slay rc: 0|[slaypeer] ERROR: planted
+tests/integration/check_slaypeer.sh|slaypeer.capture||kept|after|slay rc: 0|[slaypeer] SLAYPEER FAIL: planted
+tests/integration/check_slaypeer.sh|slaypeer.capture||rc|swap|slay rc: 0|slay rc: -110
+tests/integration/check_slaypeer.sh|slaypeer.capture||pass|drop|SLAYPEER PASS|
+tests/integration/check_slaypeer.sh|slaypeer.capture||panic|after|SLAYPEER PASS|KERNEL PANIC: planted
 tests/integration/check_sched_exit.sh|sched_exit.capture||worker|drop|worker: running|
 tests/integration/check_sched_exit.sh|sched_exit.capture||worker-exit|drop|worker: exiting|
 tests/integration/check_sched_exit.sh|sched_exit.capture||survived|drop|main: survived|
@@ -549,6 +557,7 @@ tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
 tests/integration/check_sched_exit.sh|main's exit with a child alive ended the system with status 7
+tests/integration/check_slaypeer.sh|the system exited 0 once main returned past PASS
 tests/integration/check_system_default.sh;sysdefault: main faults;139;main|main's task ending ended the system with status 139
 tests/integration/check_system_default.sh;sysdefault: main returns 3;3|main's task ending ended the system with status 3
 tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|main's task ending ended the system with status 3"
@@ -655,7 +664,8 @@ judged() {
     IFS="$_jd_ifs"
     _jd_script="$1"
     shift
-    KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" > "$TMP/judge.out" 2>&1
+    KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "${JUDGE_SOURCE:-$PWD}" cmake "$@" \
+        > "$TMP/judge.out" 2>&1
 }
 
 # <judge> <output>: the NOT EVALUATED clauses in <output> are not exactly those OWED declares.
@@ -692,6 +702,21 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
     if [ "$op" = cache ]; then
         what="'$rep' for its cache"
         judged "$judge" "$rep" "$TMP/good.log"
+        jrc=$?
+    elif [ "${op#source:}" != "$op" ]; then
+        src="${op#source:}"
+        what="'$rep' after '$lit' in $src"
+        rm -rf "$TMP/source"
+        mkdir -p "$TMP/source/$(dirname "$src")"
+        KOS_PLANT_LIT="$lit" KOS_PLANT_NEW="$rep" awk '
+            { print }
+            index($0, ENVIRON["KOS_PLANT_LIT"]) > 0 { print ENVIRON["KOS_PLANT_NEW"] }' "$src" \
+            > "$TMP/source/$src"
+        if cmp -s "$src" "$TMP/source/$src"; then
+            bad "$what leaves $src unchanged"
+            continue
+        fi
+        JUDGE_SOURCE="$TMP/source" judged "$judge" "$cache" "$TMP/good.log"
         jrc=$?
     else
         plant_pair "$TMP/good.log" "$op" "$lit" "$rep" "$TMP/bad.log"

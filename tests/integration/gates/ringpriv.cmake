@@ -63,17 +63,11 @@ if(TARGET ringppb)
   kickos_emulator_judged(ringppb)
 endif()
 
-if(KICKOS_QEMU_MPS2)
-  kickos_add_qemu_test(TARGET ringpriv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
-    ARGS ringpriv ${_arms})
+kickos_add_qemu_test(TARGET ringpriv
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
+  ARGS ringpriv ${_arms})
+if(TARGET ringppb)
   kickos_add_qemu_test(TARGET ringppb
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_ringppb.sh"
     ARGS ${KICKOS_FAULT_OUTCOME})
-elseif(KICKOS_BOARD STREQUAL "microbit")
-  # The prober arm alone on this board. ringppb is registered on the MPS2 boards only, and
-  # that absence is deliberate rather than an oversight.
-  kickos_add_qemu_test(TARGET ringpriv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
-    ARGS ringpriv ${_arms})
 endif()

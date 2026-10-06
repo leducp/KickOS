@@ -157,6 +157,25 @@ extern "C"
         append(g_msg, KOS_SEAM_MSG_MAX, &g_msg_len, s);
     }
 
+    int32_t kos_kconsole_write(void const* buf, size_t len)
+    {
+        note("kprint");
+        if (g_seam.kconsole_dark)
+        {
+            note("dark");
+        }
+        char line[KOS_SEAM_MSG_MAX];
+        size_t n = len;
+        if (n > sizeof(line) - 1u)
+        {
+            n = sizeof(line) - 1u;
+        }
+        memcpy(line, buf, n);
+        line[n] = '\0';
+        append(g_msg, KOS_SEAM_MSG_MAX, &g_msg_len, line);
+        return static_cast<int32_t>(len);
+    }
+
     void kos_sleep_ns(uint64_t)
     {
         g_pending_sleeps++;
@@ -365,7 +384,7 @@ extern "C"
     int kos_task_slay(kos_task_t task, uint32_t)
     {
         note_id("tslay", task);
-        return 0;
+        return g_seam.slay_rc;
     }
 
     int kos_task_kill(kos_task_t task)

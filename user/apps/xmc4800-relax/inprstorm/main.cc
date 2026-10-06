@@ -47,9 +47,9 @@
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
 // (kickos_add_diagnostic_apps): never a production image.
 //
-// The kernel console_tx path is the target, so its composition's stdout is the kernel's: an
-// xmcuart handover would deinit it. The heartbeat is a raw kernel console write, which drops
-// what a full ring cannot take.
+// The kernel console_tx path is the target, so its composition's stdout is the kernel's: a
+// console driver's handover would deinit it. The heartbeat is a raw kernel console write, which waits for
+// ring room, so no beat is lost and a slowed drain stretches the beat's dt instead.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -307,9 +307,9 @@ namespace
 #endif
     }
 
-    // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up as dt
-    // drifting above the 300 ms nominal, which a bare beat counter cannot show. t is uptime and dt
-    // the interval since the previous beat, both ms from the monotonic clock.
+    // Heartbeat. A DoS stops the log outright; a storm the console merely SURVIVES shows up as dt
+    // above the 300 ms nominal, the beat having waited for the drain to free its room. t is uptime
+    // and dt the interval since the previous beat, both ms from the monotonic clock.
     void heartbeat(void*)
     {
         uint64_t const t0 = kos_clock_now();
@@ -323,7 +323,7 @@ namespace
                       static_cast<unsigned>(beat),
                       static_cast<unsigned>((now - t0) / 1000000ull),
                       static_cast<unsigned>((now - prev) / 1000000ull));
-            (void)kos_kconsole_write(s, strlen(s)); // a dropped beat is the measurement
+            (void)kos_kconsole_write(s, strlen(s)); // its wait is the measurement
             prev = now;
             beat++;
             kos_sleep_ns(300000000ull);

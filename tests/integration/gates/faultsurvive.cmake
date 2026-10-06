@@ -83,13 +83,6 @@ if(_fs_judged)
   endforeach()
 endif()
 
-# The board set these arms cover. microbit has an emulator and is deliberately not in it.
-if(NOT (KICKOS_QEMU_MPS2 OR KICKOS_ARCH STREQUAL "armv8a"
-        OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_BOARD STREQUAL "qemu-riscv64"
-        OR KICKOS_BOARD STREQUAL "qemu-x86_64" OR KICKOS_ARCH STREQUAL "sim"))
-  return()
-endif()
-
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME ${_tag}_faultsurvive
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"

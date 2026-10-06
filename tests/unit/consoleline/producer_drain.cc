@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The drain a producer runs in its own context on a backend with no TX interrupt. It samples
-// tail, pushes with interrupts OPEN, and commits the advance only against the tail that pass
-// sampled. The open push is a preemption point: another thread's console_tx_flush_sync or a
-// console_tx_deinit lands there and moves tail itself, and a blind advance then walks past
-// head and transmits the ring's stale contents.
+// The drain a producer runs in its own context on a backend with no TX interrupt. It takes a
+// byte and pushes it under the lock, so the push is reached only by a context the mask does not
+// stop, such as a synchronous fault's handler: a console_tx_flush_sync or a console_tx_deinit
+// landing there moves tail itself, and a line inserted there is left to the drain it interrupted.
 //
 // EACH ARM SEATS ITS OWN INTERLEAVING in that push and reads the wire afterwards, so the
 // posture is the same on every run. A seated call runs on the producer's own stack, which is
-// where a preempting thread's work would be observed from.
+// where the nested context's work would be observed from.
 
 #include <gtest/gtest.h>
 
@@ -101,11 +100,10 @@ TEST_F(ConsoleTxProducerDrain, ADeinitInTheDrainsPushDoesNotWalkTailPastHead)
     EXPECT_EQ(consoleline::wire(), kWireWithNoByteSentTwice);
 }
 
-// THE RING READS EMPTY WHILE A TAKEN BYTE IS STILL GOING TO THE DEVICE. The drain takes its
-// byte under the lock and pushes it with the lock open, so an insert landing between the two
-// sees used() == 0. Priming on that reading would push its own first byte straight at the
-// device while the drain's byte is in flight: two writers, and the line already on the wire is
-// split. The insert primes only when no drain owns a byte.
+// THE RING READS EMPTY WHILE A TAKEN BYTE IS STILL GOING TO THE DEVICE. The drain takes its byte
+// before it pushes it, so an insert nested in the push sees used() == 0. Priming on that reading
+// would push its own first byte straight at the device while the drain's byte is in flight: two
+// writers, and the line already on the wire is split. The insert primes only outside a push.
 TEST_F(ConsoleTxProducerDrain, AnInsertDoesNotPrimeWhileADrainOwnsAByteInFlight)
 {
     consoleline::run_in_push(kDrainsLastPush, insert_from_inside_the_push);
@@ -124,10 +122,9 @@ TEST_F(ConsoleTxProducerDrain, AnInsertDoesNotPrimeWhileADrainOwnsAByteInFlight)
 
 // SUSTAINED HEALTHY PRESSURE, which every other arm in this file stages a fault into. A small
 // ring is filled and drained repeatedly across several line lengths: the wire has to carry
-// every byte in order, no line may be refused while the ring is being emptied each time, the
-// drain must not recurse, and the single-drainer flag must be clear at the end of each line
-// rather than left standing by a path that returned early.
-TEST_F(ConsoleTxProducerDrain, SustainedPressureLosesNoLineAndLeavesNoDrainStanding)
+// every byte in order, no line may be refused while the ring is being emptied each time, and
+// the drain must not recurse.
+TEST_F(ConsoleTxProducerDrain, SustainedPressureLosesNoLineAndNeverRecurses)
 {
     std::string expected;
     for (uint32_t round = 0; round < 24u; round++)
@@ -147,8 +144,8 @@ TEST_F(ConsoleTxProducerDrain, SustainedPressureLosesNoLineAndLeavesNoDrainStand
     EXPECT_EQ(consoleline::max_push_depth(), 1u) << "the drain recursed under pressure";
 }
 
-// A line inserted while a drain is running is queued and left to that drain, which re-reads
-// head every pass and carries it out in order.
+// A line inserted inside a drain's push is queued and left to that drain, which carries it out
+// in order after its own.
 TEST_F(ConsoleTxProducerDrain, ALineInsertedInsideADrainIsCarriedByTheRunningDrain)
 {
     consoleline::run_in_push(kDrainsFirstPush, insert_from_inside_the_push);

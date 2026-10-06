@@ -18,8 +18,8 @@ endif()
 
 # RV64 has a script of its own: the write bit lives in the CAUSE here, so there is no constant
 # to substitute.
-if(KICKOS_BOARD STREQUAL "qemu-riscv64")
-  kickos_add_qemu_test(NAME qemu_riscv64_stack_guard TARGET stackguard
+if(KICKOS_ARCH STREQUAL "rv64imac")
+  kickos_add_qemu_test(NAME ${_tag}_stack_guard TARGET stackguard
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard_rv64.sh"
     ARGS "THREAD FAULT" 139)
 endif()

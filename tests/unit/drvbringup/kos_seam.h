@@ -45,6 +45,11 @@ struct kos_seam_control
 
     // What the handover probe returns. 0 = the rendezvous completed.
     int32_t send_timed_rc;
+    // What a task slay returns. 0 = the task is gone.
+    int slay_rc;
+    // The console's task ended and a slain member still holds its window: a kernel console write
+    // waits in the dark window until that member exits and the reclaim lands it.
+    bool kconsole_dark;
 
     // Refusals of the calls a bring-up given an instance makes.
     bool sched_grant_fails;
@@ -71,7 +76,7 @@ void kos_seam_reset();
 // uncollapsed trace overruns the buffer, turning that arm into a truncation.
 char const* kos_seam_trace();
 
-// Everything kos_print was handed, concatenated.
+// Everything kos_print and the kernel console took, concatenated.
 char const* kos_seam_msg();
 
 // The line the `i`-th claim taken or refused since the reset named, or -1 past the claims recorded.

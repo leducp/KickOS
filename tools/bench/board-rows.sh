@@ -23,6 +23,10 @@
 # onboard probes do, so a wildcard row for one of those boards reports the other board's
 # probe as its own.
 
+# The preset variant a board's capture builds where the caller names none, bench.sh's and the
+# fleet pass's first.
+BENCH_DEFAULT_VARIANT=st
+
 # board_probe_rows <board>
 #
 # Prints one row per USB device the board must present, as

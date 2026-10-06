@@ -866,7 +866,7 @@ namespace
             buf[2u + i] = digits[(v >> (28u - 4u * i)) & 0xFu];
         }
         buf[10] = '\0';
-        kos::print(buf);
+        drv::report(buf);
     }
 
     // Indexed by stall_slot, so the enum is the only list; the assert below is what keeps the
@@ -957,32 +957,31 @@ int rtusb_console_start(struct kos_driver_instance* instance)
     {
         return 0;
     }
-    // The bring-up narrowed the console's endpoint, so a print reaches the wire again. How far
-    // the IRQ thread got is only in the block; what it printed had no receiver.
+    // How far the IRQ thread got is only in the block: what it printed went nowhere.
     if (g_blk != nullptr)
     {
         uint32_t const stage = g_blk->stage;
         uint32_t const stalls = g_blk->stalls;
-        kos::print(k_desc.tag);
-        kos::print("  irq thread: ");
-        kos::print(stage_reason(stage));
+        drv::report(k_desc.tag);
+        drv::report("  irq thread: ");
+        drv::report(stage_reason(stage));
         // Before STAGE_RST_WRITE the field is still zero, and printing it would invent a
         // clock verdict out of an unread register.
         if (stage >= STAGE_RST_WRITE)
         {
             uint32_t const id = g_blk->probe_id;
-            kos::print(k_desc.tag);
-            kos::print(probe_reason(id));
-            kos::print(k_desc.tag);
-            kos::print("  id=");
+            drv::report(k_desc.tag);
+            drv::report(probe_reason(id));
+            drv::report(k_desc.tag);
+            drv::report("  id=");
             print_hex(id);
-            kos::print("\n");
+            drv::report("\n");
         }
         char const* stall = stall_reason(stalls);
         if (stall != nullptr)
         {
-            kos::print(k_desc.tag);
-            kos::print(stall);
+            drv::report(k_desc.tag);
+            drv::report(stall);
         }
     }
     return rc;

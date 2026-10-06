@@ -20,6 +20,9 @@
 #
 # Above one core user lines can reach the wire shuffled, so a positive is matched whole first and
 # then through wire_has across two adjacent lines (after, tests/lib/gate.sh).
+#
+# With KOS_POLL_REPLAY=<log>, <log> is judged as the console the poll stopped at, and the witness
+# exits 3 where the poll would not stop (poll_image, tests/lib/gate.sh).
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -31,7 +34,9 @@ KICKOS_SRC="${2:?$USAGE}"
 CMAKE="${3:?$USAGE}"
 SYSTEM="${4:?$USAGE}"
 DEPTH="${5:-}"
-need_qemu_machine
+if [ -z "${KOS_POLL_REPLAY:-}" ]; then
+    need_qemu_machine
+fi
 [ -f "$SYSTEM" ] || fail "no composition at $SYSTEM"
 
 BOARD_CFG="$KICKOS_BUILD/generated/include/kickos/board_config.h"
@@ -45,11 +50,14 @@ if [ "$DEPTH" = depth ]; then
 elif [ -n "$DEPTH" ]; then
     fail "$USAGE"
 fi
-echo "== building the driver witness against the installed package =="
-package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/integration/driver_witness" driver_witness "$@"
-# Its composition names packaged drivers, so its system links the init's driver path.
-"$(dirname "$0")/check_no_driver_path.sh" --control "$IMAGE.map" \
-    || fail "the driver witness's system does not link the init's driver path alone"
+IMAGE=""
+if [ -z "${KOS_POLL_REPLAY:-}" ]; then
+    echo "== building the driver witness against the installed package =="
+    package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/integration/driver_witness" driver_witness "$@"
+    # Its composition names packaged drivers, so its system links the init's driver path.
+    "$(dirname "$0")/check_no_driver_path.sh" --control "$IMAGE.map" \
+        || fail "the driver witness's system does not link the init's driver path alone"
+fi
 
 # A driver's second-death line may follow its client's refusal.
 all_ended() { # <log>

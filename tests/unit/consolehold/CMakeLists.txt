@@ -72,3 +72,11 @@ kickos_add_kernel_host_lib(kickos_kseam_console
 
 kickos_add_unit_test(NAME console_dark SOURCES dark_e2e.cc
   LIBRARIES kickos_kseam_console)
+
+# console_own_task: a thread of the console's own task holds no stdout, over the same seam.
+kickos_add_unit_test(NAME console_own_task SOURCES own_console.cc
+  LIBRARIES kickos_kseam_console)
+
+# console_room: a writer the ring refuses, drained by the producer or woken by the TX drain.
+kickos_add_unit_test(NAME console_room SOURCES room_wait.cc
+  LIBRARIES kickos_kseam_console)

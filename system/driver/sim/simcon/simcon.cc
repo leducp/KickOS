@@ -315,8 +315,8 @@ namespace
 
 extern "C"
 {
-    // Unprivileged console driver: drain the published endpoint to the "wire". The kernel
-    // console diagnostic is DROPPED on a published board; the banner written straight to the
+    // Unprivileged console driver: drain the published endpoint to the "wire". Its stdout is the
+    // kernel console, whose line the published board drops; the banner written straight to the
     // wire survives.
     //
     // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver parked in
@@ -325,8 +325,7 @@ extern "C"
     void simconsole_driver(void* arg)
     {
         (void)arg; // records the posture; the thread takes no arg
-        char const diag[] = "[simcon] kernel console diagnostic (dropped post-publish)\n";
-        (void)kos_kconsole_write(diag, sizeof(diag) - 1u); // a dropped line is the measurement
+        kos::print("[simcon] kernel console diagnostic (dropped post-publish)\n");
         wire_puts("[simcon] driver up (host fd 1)\n");
 
 #if defined(KICKOS_SIMCON_DIE_AT_BRINGUP) && KICKOS_SIMCON_DIE_AT_BRINGUP

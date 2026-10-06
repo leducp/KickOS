@@ -32,8 +32,10 @@
 #            preempted it to report it; the latter's end ends the system with status 0.
 #
 # With KOS_CAPTURE=<log>, the restart witness's last boot in a silicon capture of it is judged
-# instead of a build and a run under QEMU. With WITNESS_LINK_ONLY=1, on a board no emulator runs,
-# the restart witness stops once it has linked.
+# instead of a build and a run under QEMU. With KOS_POLL_REPLAY=<log>, <log> is judged as the
+# console the poll stopped at, and the witness exits 3 where the poll would not stop (poll_image,
+# tests/lib/gate.sh). With WITNESS_LINK_ONLY=1, on a board no emulator runs, the restart witness
+# stops once it has linked.
 #
 # Above one core user lines can reach the wire shuffled, so a positive is matched whole first
 # and then through wire_has across two adjacent lines (after, tests/lib/gate.sh). Every absence
@@ -54,7 +56,8 @@ WITNESS="${4:?$USAGE}"
 SYSTEM="${5:?$USAGE}"
 DEPTH="${6:-}"
 : "${WITNESS_LINK_ONLY:=0}"
-if [ "$WITNESS" != restart ] || { [ -z "${KOS_CAPTURE:-}" ] && [ "$WITNESS_LINK_ONLY" -ne 1 ]; }; then
+if [ "$WITNESS" != restart ] || { [ -z "${KOS_CAPTURE:-}" ] && [ -z "${KOS_POLL_REPLAY:-}" ] \
+    && [ "$WITNESS_LINK_ONLY" -ne 1 ]; }; then
     need_qemu_machine
 fi
 [ -f "$SYSTEM" ] || fail "no composition at $SYSTEM"
@@ -110,6 +113,10 @@ if [ "$WITNESS" = priority ]; then
 fi
 [ "$WITNESS" = restart ] || fail "$USAGE"
 
+# The judge's last required lines, which above one core reach the wire in either order.
+END_HEALTH='health: sensor is down for good, running degraded'
+END_APP='sensor: gone for good'
+
 set -- -DKICKOS_WITNESS=restart -DKICKOS_WITNESS_SYSTEM="$SYSTEM"
 if [ "$DEPTH" = depth ]; then
     set -- "$@" -DKICKOS_WITNESS_ROOT_DEPTH=ON
@@ -121,18 +128,21 @@ if [ -n "${KOS_CAPTURE:-}" ]; then
     capture_out "$KOS_CAPTURE"
     printf '%s\n' "$OUT"
 else
-    echo "== building the restart witness against the installed package =="
-    package_image "$KICKOS_BUILD" "$CMAKE" "$PROJECT" witness "$@"
-    if [ "$WITNESS_LINK_ONLY" -eq 1 ]; then
-        echo "PASS: the restart witness links against the package"
-        exit 0
+    IMAGE=""
+    if [ -z "${KOS_POLL_REPLAY:-}" ]; then
+        echo "== building the restart witness against the installed package =="
+        package_image "$KICKOS_BUILD" "$CMAKE" "$PROJECT" witness "$@"
+        if [ "$WITNESS_LINK_ONLY" -eq 1 ]; then
+            echo "PASS: the restart witness links against the package"
+            exit 0
+        fi
     fi
 
     echo "== running the restart witness =="
-    gone_for_good() { # <log>
-        log_holds "$1" 'sensor: gone for good'
+    restart_ended() { # <log>
+        log_holds "$1" "$END_HEALTH" "$END_APP"
     }
-    KOS_POLL_UNTIL=gone_for_good
+    KOS_POLL_UNTIL=restart_ended
     poll_image "$IMAGE"
 fi
 after 1 'sensor: a thread above its priority was refused' "refusal of a thread above the sensor's priority"
@@ -174,8 +184,8 @@ restart 1 1 6
 instance "$NEXT" 6
 restart 2 0 11
 instance "$NEXT" 11
-after "$DIED" 'health: sensor is down for good, running degraded' "end for good"
-after "$LAST" 'sensor: gone for good' "'sensor: gone for good' from the app"
+after "$DIED" "$END_HEALTH" "end for good"
+after "$LAST" "$END_APP" "'$END_APP' from the app"
 
 # The readings the app prints, each once: the chain above finds every one in order.
 numbered_matcher_control

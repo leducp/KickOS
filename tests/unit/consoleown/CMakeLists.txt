@@ -43,3 +43,9 @@ kickos_add_unit_test(NAME console_cr_pending
   SOURCES console_cr_pending.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   POSTURE KICKOS_AMP_OWN_IMAGE=1)
+
+# kernel/init/console.cc's polled line writer at a CRLF console's posture.
+kickos_add_unit_test(NAME console_line_sync
+  SOURCES line_sync.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+          "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
+  POSTURE KICKOS_CONSOLE_CRLF=1)

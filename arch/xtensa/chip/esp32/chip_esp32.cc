@@ -55,11 +55,6 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // esp32.ld's DWARF EH table and libgcc's registrar, weak: an image that never unwinds does
-    // not pull the registrar, and the call is skipped.
-    extern uint32_t __eh_frame_start;
-    void __register_frame(void*) __attribute__((weak));
-
     // The ROM first-stage loader leaves the CPU on the 40 MHz crystal (no PLL,
     // since KickOS boots without the IDF second-stage bootloader). This is the
     // reset value; clock_init_240mhz() (arch_init) raises the PLL and rewrites
@@ -901,10 +896,6 @@ void Reset_Handler(void)
     for (uint32_t* b = &_sbss; b < &_ebss; b++)
     {
         *b = 0;
-    }
-    if (__register_frame != nullptr)
-    {
-        __register_frame(&__eh_frame_start);
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

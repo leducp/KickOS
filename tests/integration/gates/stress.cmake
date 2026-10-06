@@ -52,7 +52,7 @@ endif()
 # cores that is only twelve live workers, many of them asleep, so it cannot
 # require an unpinned worker to visit every core. The twelve-core ARM64
 # selftest's threads_reach_every_core arm supplies that placement check.
-if((KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
+if(KICKOS_ARCH MATCHES "^(armv8a|rv64imac)$"
    AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_KERNEL_CORES LESS 12)
   kickos_add_qemu_test(NAME ${_tag}_smp_threads TARGET stress
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_threads.sh"

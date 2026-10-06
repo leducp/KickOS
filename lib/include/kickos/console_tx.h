@@ -84,22 +84,37 @@ int console_tx_armed(void);
 void console_tx_write(char const* buf, size_t n);
 
 // One line, indivisibly, or nothing: returns n or 0. NEVER WAITS UNDER THE MASK, so it is safe
-// from ISR and fault context. crlf nonzero expands '\n' to CR+LF during the copy.
+// from ISR and fault context. On a backend with no TX interrupt it returns once every byte queued
+// up to its line has left, whatever context sent them, which a wedged device bounds.
+// crlf nonzero expands '\n' to CR+LF during the copy.
 //
 // A LINE THAT DOES NOT FIT IS REFUSED WHOLE AND DOES NOT GO OUT. The caller owes it NO
 // fallback and must not write it at the device: the drain is already a writer there, and the
-// two interleave mid-line. The kernel console is a debug facility, so a line lost to pressure
-// is lost; a caller that needs to know reads the return, which is what the console syscall
-// reports as a short write.
+// two interleave mid-line. The kernel console is a debug facility, so a kernel line lost to
+// pressure is lost; the console syscall waits for room instead (console_room_wait).
 int console_tx_insert_line(char const* buf, size_t n, int crlf);
 
 // One line of a fault record: what console_tx_insert_line answers, except that a full ring does
 // not refuse it. The oldest queued bytes go out through arch_console_write_sync under the mask
 // until the line fits, so the ring's order and its one writer stand. Under the mask it sends at
 // most the line's own expanded length of queued bytes, and at most one stall of the polled
-// writer; a backend with no TX interrupt drains the rest after the mask is dropped. Still 0 for an unarmed ring, a line wider than the ring, an
-// insert or a record line it interrupted, and a producer drain holding a byte.
+// writer; a backend with no TX interrupt drains the rest after the mask is dropped. Still 0 for
+// an unarmed ring, a line wider than the ring, and an insert or a record line it interrupted.
 int console_tx_insert_record_line(char const* buf, size_t n, int crlf);
+
+// A writer the ring refused, making room for its line. On a backend with no TX interrupt it
+// sends queued bytes itself, unmasked, until the line fits, never more than the line needs, and
+// answers 0; so does a ring with room or none armed. 1 on a backend whose TX interrupt drains it:
+// the writer waits for that drain (console_tx_room_want). Caller holds no lock.
+int console_tx_make_room(char const* buf, size_t n, int crlf);
+
+// Nonzero where the ring lacks room for the line now, a writer then waiting until the drain
+// frees it (console_tx_room_freed). Caller holds IrqLock.
+int console_tx_room_want(char const* buf, size_t n, int crlf);
+
+// The drain freed the room a waiting writer asked for, in console.cc: wakes every writer waiting
+// on the console.
+void console_tx_room_freed(void);
 
 #if KICKOS_BENCH
 // Bytes queued in the ring, 0 while it is not armed.
@@ -118,8 +133,8 @@ void console_tx_wait_progress(void);
 void console_write_line_sync(char const* buf, size_t n);
 
 // Consumer (ISR context). Push ring bytes while a slot is free; disable the TX
-// IRQ once the ring empties. Bound to the TX line via irq_attach; MUST NOT
-// sem_post / switch / block.
+// IRQ once the ring empties, and wake the writers waiting for room once it has it. Bound to
+// the TX line via irq_attach; MUST NOT block.
 void console_tx_isr(void);
 
 // Poll-drain whatever is queued (TX IRQ disabled first so the ISR cannot race the

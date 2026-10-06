@@ -236,7 +236,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     // park, so a send of no deadline and a non-blocking write take nothing, at once.
     int32_t const nowait_rc = kos_send_timed(KOS_CAP_STDOUT, "x", 1, 0);
     int const nonblock_on = kos_task_nonblock(KOS_NONBLOCK_SET);
-    size_t const tried = kickos::stdout_write("x", 1);
+    kickos::WriteResult const tried = kickos::stdout_write("x", 1);
     int const nonblock_off = kos_task_nonblock(KOS_NONBLOCK_CLEAR);
     // A blocking writer parks: it outranks main, so it is in its send when this returns.
     kos::thread::Handle const writer =
@@ -278,7 +278,8 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     }
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
-    if (nowait_rc != -KOS_ETIMEDOUT or nonblock_on != 1 or tried != 0u or nonblock_off != 0)
+    if (nowait_rc != -KOS_ETIMEDOUT or nonblock_on != 1 or tried.sent != 0u
+        or tried.error != -KOS_ETIMEDOUT or nonblock_off != 0)
     {
         kos_print("[drvdeath] ERROR: a write of no wait was not refused at once by a live "
                   "driver with no receiver\n");

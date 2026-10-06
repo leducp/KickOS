@@ -20,10 +20,9 @@
 #   the two emulatable arm64 boards (qemu-arm64, imx8mp-evk) are exactly the armv8a fleet,
 #     KICKOS_ARCH STREQUAL "armv8a".
 #
-# NO board predicate belongs to a gate merely because a board has no emulator:
-# kickos_add_qemu_test is total and registers nothing there. A predicate here states which
-# boards make the CLAIM, and where the claim is every emulated board but a few, it is spelled
-# as the EXCLUSION: a list of the covered boards leaves a new board out and says nothing.
+# NO board name conditions an emulator gate: kickos_add_qemu_test is total and registers nothing
+# where there is no emulator, and a predicate states the fact the CLAIM rests on (an arch, a
+# Kconfig symbol, the machine, an image). tests/static/check_qemu_gates_derived.py refuses one.
 
 # kickos_emulator_judged(<image>...)
 #   States that an emulator gate holds <image>'s verdict and no capture can: an exit status, a

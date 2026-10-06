@@ -22,11 +22,8 @@ if(KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # Every board with an emulator boots this image through the same script and reports under the
-# derived <board tag>_hello name. The one exclusion is a posture and not a board: the
-# enforcing rv32imac build registers no hello arm.
-if(NOT (KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_HAVE_MPU))
-  kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
-endif()
+# derived <board tag>_hello name.
+kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
 
 # The secondary-arrival gate, on the smallest image that boots the chip: every core comes up
 # in arch_init, so the app itself is only what carries the release there. The expected count is
@@ -35,8 +32,7 @@ endif()
 # Both backends bind the short-machine arm to the count, by different mechanisms: arm64 has
 # firmware that refuses a start, and rv64 has none, so there the missing hart never publishes
 # arrival and the bounded wait names it.
-if(KICKOS_NUM_CORES GREATER 1
-   AND (KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64"))
+if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_ARCH MATCHES "^(armv8a|rv64imac)$")
   kickos_add_qemu_test(NAME ${_tag}_smp_arrival TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
     ARGS ${KICKOS_NUM_CORES} "pong 3" ${KICKOS_ARCH}
@@ -52,9 +48,9 @@ endif()
 # does carry is the hart and the cause, which is what the per-peer and initiator arms read.
 # It is keyed on the kernel-core count where arm64 is keyed on the machine's.
 set(_hello_doorbell FALSE)
-if(KICKOS_BOARD STREQUAL "qemu-arm64" AND KICKOS_NUM_CORES GREATER 1)
+if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GREATER 1)
   set(_hello_doorbell TRUE)
-elseif(KICKOS_BOARD STREQUAL "qemu-riscv64" AND KICKOS_KERNEL_CORES GREATER 1)
+elseif(KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_KERNEL_CORES GREATER 1)
   set(_hello_doorbell TRUE)
 endif()
 if(_hello_doorbell)
@@ -261,12 +257,17 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
   kickos_host_gate(rp_node_vectors)
 endif()
 
-# The ESP32-C6's CPU clock, read ahead of the constructors in Reset_Handler, out of the linked
-# image. Structural because no emulator runs a C6 image. It runs no image, so it carries the
-# host label.
+# The ESP32-C6's CPU clock, held before the constructors run, out of the linked image.
+# Structural because no emulator runs a C6 image. It runs no image, so it carries the host
+# label.
 if(KICKOS_CHIP STREQUAL "esp32c6")
+  get_property(_c6_lp GLOBAL PROPERTY KICKOS_RV32_LP)
+  set(_c6_core hp)
+  if(_c6_lp)
+    set(_c6_core lp)
+  endif()
   add_test(NAME c6_clock_first
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_c6_clock_first.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_OBJDUMP}")
+            "$<TARGET_FILE:hello>" "${CMAKE_OBJDUMP}" ${_c6_core})
   kickos_host_gate(c6_clock_first)
 endif()

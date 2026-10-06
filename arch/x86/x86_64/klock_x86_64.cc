@@ -177,7 +177,8 @@ uint32_t arch_ipi_deferred(uint32_t)
 }
 
 static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
-              "this doorbell keeps no seat, which the chip file must state by leaving doorbell_seat out");
+              "this doorbell keeps no seat, which the chip file must state by leaving "
+              "doorbell_seat out");
 uint32_t arch_ipi_seat_set(uint32_t, uint32_t)
 {
     return ARCH_IPI_SEAT_NONE;

@@ -83,11 +83,9 @@ if(KICKOS_HAVE_ASPACE)
     COMPILE_OPTIONS "-fno-tree-loop-distribute-patterns")
 endif()
 
-# Build-time stamp (kickos_build_time[]/kickos_build_commit[], read by the kmain banner, and
-# kickos_identity_commit[], the user side's copy of the commit, which kickos_user links).
-# Regenerated on EVERY build: __DATE__/__TIME__ bakes per-TU and goes stale on incremental
-# builds (cmake/build_stamp.cmake). The custom target has no OUTPUT, so it is always out of
-# date.
+# Build stamp (cmake/build_stamp.cmake): kickos_build_time[] and kickos_build_commit[] for the
+# kmain banner, and kickos_identity_build_time[] and kickos_identity_commit[], the user side's copy
+# of both, which kickos_user links. The custom target has no OUTPUT, so it runs on every build.
 set(_kos_build_stamp "${CMAKE_BINARY_DIR}/kickos_build_stamp.cc")
 set(_kos_identity_stamp "${CMAKE_BINARY_DIR}/kickos_identity_stamp.cc")
 set(KICKOS_IDENTITY_STAMP "${_kos_identity_stamp}" PARENT_SCOPE)

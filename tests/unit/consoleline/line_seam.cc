@@ -198,6 +198,8 @@ namespace consoleline
 
 extern "C"
 {
+    void console_tx_room_freed(void) {}
+
 
 // Disarmed before the seated call so a line inserted from inside the copy reaches the barrier
 // without seating itself again.

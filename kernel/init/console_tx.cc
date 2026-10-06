@@ -55,12 +55,17 @@ namespace
         // nested insert would build its line at a head this one has not published yet, or send
         // bytes this one is sending. It is refused instead.
         bool inserting = false;
-        // Set by whichever producer is draining in its own context, on a backend with no TX
-        // interrupt. The INSERT is serialised by IrqLock; the DRAIN must not be, or the
-        // masked window would be a transmission again, so it needs an exclusion of its own.
-        // A producer that finds a drainer running queues its line and returns: the running
-        // drainer will carry it, because it re-reads head every pass.
-        bool draining = false;
+        // Bytes ever queued, modulo 2^32: `queued - used()` counts the bytes that have left, so a
+        // producer drain knows when its own line has gone whoever sent it.
+        uint32_t queued = 0;
+        // The largest room a writer parked for (console_tx_room_want), 0 with none parked.
+        uint32_t room_wanted = 0;
+        // Set across a producer drain's push, under the lock, so only a context the mask does
+        // not stop sees it: a line it inserts must not prime the device under that push, and its
+        // own drain leaves it to the drain it interrupted, which carries the ring up to `carry`.
+        bool pushing = false;
+        bool carried = false;
+        uint32_t carry = 0;
 
         // Once disarmed, `buf` holds kernel records bound for the published console's driver,
         // over indices of their own: a producer drain still unwinding reads [tail, head), which
@@ -169,6 +174,7 @@ namespace
         }
         KICKOS_CONSOLE_TX_BARRIER();
         r.head = idx;
+        r.queued = r.queued + chunk;
         r.backend->irq_enable();
         // With a transition-triggered TX interrupt, enabling the IRQ on an idle channel
         // raises nothing: only this byte's completion event starts the drain ISR.
@@ -221,13 +227,17 @@ void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size,
     r.mask = size - 1u;
     r.head = 0;
     r.tail = 0;
+    r.queued = 0;
+    r.room_wanted = 0;
+    r.pushing = false;
+    r.carried = false;
     r.irq_line = irq_line; // set BEFORE armed: deinit must never see armed with a stale line
     r.armed = true;
 }
 
 int console_tx_armed(void) { return static_cast<int>(tx().armed); }
 
-static __attribute__((noinline)) void drain_in_producer(void);
+static __attribute__((noinline)) void drain_in_producer(uint32_t until);
 
 static uint32_t line_needed(char const* buf, size_t n, int crlf)
 {
@@ -275,18 +285,15 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
         idx = (idx + 1u) & r.mask;
     }
     KICKOS_CONSOLE_TX_BARRIER();
+    r.queued = r.queued + ((idx - r.head) & r.mask);
     r.head = idx;
     r.inserting = false;
     r.backend->irq_enable();
 
     // A transition-triggered TX interrupt raises nothing on an idle channel, so the first
     // byte is pushed here. Citations in enqueue_locked.
-    //
-    // NOT WHILE A PRODUCER DRAIN OWNS A BYTE. That drain takes its byte under this same
-    // lock and pushes it with the lock open, so between the two the ring reads EMPTY while
-    // a byte is still going to the device, and priming then splits the line in flight.
     uint32_t const tail = r.tail;
-    if (was_empty and not r.draining and idx != tail and r.backend->slot_free() != 0)
+    if (was_empty and not r.pushing and idx != tail and r.backend->slot_free() != 0)
     {
         r.backend->push(static_cast<uint8_t>(r.buf[tail]));
         r.tail = (tail + 1u) & r.mask;
@@ -313,6 +320,7 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
     }
 
     bool unbuffered = false;
+    uint32_t until = 0;
     {
         kickos::IrqLock lock;
         if (not r.armed)
@@ -323,6 +331,7 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
         {
             return 0;
         }
+        until = r.queued;
     }
 
     if (unbuffered)
@@ -330,13 +339,12 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
         console_write_line_sync(buf, n);
         return static_cast<int>(n);
     }
-    drain_in_producer();
+    drain_in_producer(until);
     return static_cast<int>(n);
 }
 
 // Under the mask, the oldest queued bytes go out through the polled writer, in ring order, until
-// the line fits: never more than the line needs. A producer drain holding a byte it took is the
-// one writer the mask does not stop, so that ring is not touched.
+// the line fits: never more than the line needs.
 //
 // `inserting` is held across the polled loop and each run is TAKEN before it is written: a
 // synchronous fault in the UART poke can nest a record or a panic flush here, and either must
@@ -349,9 +357,10 @@ int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
     {
         return 0;
     }
+    uint32_t until = 0;
     {
         kickos::IrqLock lock;
-        if (not r.armed or r.inserting or r.draining)
+        if (not r.armed or r.inserting or r.pushing)
         {
             return 0;
         }
@@ -381,40 +390,51 @@ int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
         {
             return 0;
         }
+        until = r.queued;
     }
-    drain_in_producer();
+    drain_in_producer(until);
     return static_cast<int>(n);
 }
 
-static __attribute__((noinline)) void drain_in_producer(void)
+// On a backend with no TX interrupt, until the bytes queued up to `until` have left, whoever sent
+// them. Each byte is pushed under the lock into a slot found free there, so any number of
+// producers drain one ring in order and none holds a byte across a preemption; only the wait for
+// a slot runs unmasked.
+//
+// THE BYTE IS TAKEN BEFORE IT IS PUSHED: a synchronous fault in the push whose handler flushes
+// must find it gone, or it is sent twice.
+static __attribute__((noinline)) void drain_in_producer(uint32_t until)
 {
     ConsoleTxRing& r = tx();
-    {
-        kickos::IrqLock lock;
-        if (not r.armed or r.irq_line >= 0 or r.draining)
-        {
-            return;
-        }
-        r.draining = true;
-    }
     while (true)
     {
-        uint8_t b = 0;
         {
-            // THE BYTE IS TAKEN, NOT BORROWED. tail advances here, under the lock, BEFORE the
-            // device write, so this byte belongs to this drain alone. Advancing after the
-            // push instead lets a flush landing in the open window send the same byte and
-            // this path send it again: an external audit reproduced the duplicate as
-            // ABCDEFGHB. Validating the sampled tail after the write cannot fix that, because
-            // the second send has already happened by the time the check runs.
             kickos::IrqLock lock;
-            if (r.tail == r.head)
+            if (r.pushing)
             {
-                r.draining = false;
+                r.carried = true;
+                r.carry = r.queued;
                 return;
             }
-            b = static_cast<uint8_t>(r.buf[r.tail]);
-            r.tail = (r.tail + 1u) & r.mask;
+            if (not r.armed or r.irq_line >= 0
+                or static_cast<int32_t>(r.queued - r.used() - until) >= 0)
+            {
+                return;
+            }
+            if (r.backend->slot_free() != 0)
+            {
+                uint8_t const b = static_cast<uint8_t>(r.buf[r.tail]);
+                r.tail = (r.tail + 1u) & r.mask;
+                r.pushing = true;
+                r.backend->push(b);
+                r.pushing = false;
+                if (r.carried)
+                {
+                    r.carried = false;
+                    until = r.carry;
+                }
+                continue;
+            }
         }
         // Bounded, like every other poll on this path: a wedged device must not hang a
         // producer that was only trying to print.
@@ -423,11 +443,54 @@ static __attribute__((noinline)) void drain_in_producer(void)
             kickos::IrqLock lock;
             uint32_t const h = r.head;
             r.tail = h; // discard rather than spin forever; the bytes are already lost
-            r.draining = false;
             return;
         }
-        r.backend->push(b);
     }
+}
+
+int console_tx_make_room(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    uint32_t until = 0;
+    {
+        kickos::IrqLock lock;
+        if (not r.armed)
+        {
+            return 0;
+        }
+        uint32_t const needed = line_needed(buf, n, crlf);
+        uint32_t const space = r.space();
+        if (needed <= space)
+        {
+            return 0;
+        }
+        if (r.irq_line >= 0)
+        {
+            return 1;
+        }
+        until = r.queued - r.used() + (needed - space);
+    }
+    drain_in_producer(until);
+    return 0;
+}
+
+int console_tx_room_want(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
+    {
+        return 0;
+    }
+    uint32_t const needed = line_needed(buf, n, crlf);
+    if (needed <= r.space())
+    {
+        return 0;
+    }
+    if (needed > r.room_wanted)
+    {
+        r.room_wanted = needed;
+    }
+    return 1;
 }
 
 void console_tx_write(char const* buf, size_t n)
@@ -577,6 +640,11 @@ void console_tx_isr(void)
     if (tail == head)
     {
         r.backend->irq_disable();
+    }
+    if (r.room_wanted != 0 and r.space() >= r.room_wanted)
+    {
+        r.room_wanted = 0;
+        console_tx_room_freed();
     }
 }
 

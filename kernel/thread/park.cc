@@ -14,6 +14,7 @@
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/time.h>
 
 #include <kickos/sys/errno.h>
 
@@ -219,6 +220,56 @@ namespace kickos
         }
         wq_confirm_resume(c, epoch);
         return static_cast<int>(c->wait_result);
+    }
+
+    int console_room_wait(char const* buf, size_t n, int crlf)
+    {
+        if (console_tx_make_room(buf, n, crlf) == 0)
+        {
+            return 0;
+        }
+        Thread* const c = sched::current();
+        uint32_t epoch = 0;
+        {
+            IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                return -KOS_ECANCELED;
+            }
+            if (console_tx_room_want(buf, n, crlf) == 0)
+            {
+                return 0;
+            }
+            park_queueless(c, WAIT_CONSOLE, nullptr);
+            epoch = c->switch_count;
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch);
+        return static_cast<int>(c->wait_result);
+    }
+
+    int console_claim_wait(uint32_t timeout_us)
+    {
+        Thread* const c = sched::current();
+        uint32_t epoch = 0;
+        {
+            IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                return -KOS_ECANCELED;
+            }
+            park_queueless(c, WAIT_CONSOLE, nullptr);
+            ktime_deadline_arm(c, timeout_us);
+            epoch = c->switch_count;
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch);
+        int const rc = static_cast<int>(c->wait_result);
+        if (rc == -KOS_ETIMEDOUT)
+        {
+            return 0;
+        }
+        return rc;
     }
 
     void console_dark_wake(void)

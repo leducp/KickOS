@@ -22,12 +22,14 @@ namespace darkseam
     std::string g_wire;
     uint32_t g_reclaims = 0;
     bool g_window_free = true;
+    bool g_ring_backed = false;
 
     void reset()
     {
         g_wire.clear();
         g_reclaims = 0;
         g_window_free = true;
+        g_ring_backed = false;
     }
 }
 
@@ -35,6 +37,10 @@ extern "C"
 {
     int arch_console_write(char const* buf, size_t n)
     {
+        if (darkseam::g_ring_backed)
+        {
+            return console_tx_insert_line(buf, n, 0);
+        }
         darkseam::g_wire.append(buf, n);
         return static_cast<int>(n);
     }

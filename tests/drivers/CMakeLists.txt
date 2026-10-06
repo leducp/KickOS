@@ -32,8 +32,7 @@ if(KICKOS_CHIP STREQUAL "virt_arm64")
                     BLOCK none POSTURE retain BARRIER none START testline_start)
 endif()
 
-# The USIC backend uart_usic.cc is the one xmcuart and xmcuartirq compile, so an image links one
-# of the three.
+# The USIC backend uart_usic.cc is the one xmcuartirq compiles, so an image links one of the two.
 if(KICKOS_CHIP STREQUAL "xmc4800")
   kickos_add_driver(testusic SOURCES testusic.cc "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/uart_usic.cc"
                     CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800

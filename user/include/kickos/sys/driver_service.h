@@ -716,6 +716,15 @@ constexpr bool declared_as(Descriptor const& d, Declared const& m)
 // Print `tag` then `msg` and return -1, the bring-up failure code.
 int fail(char const* tag, char const* msg);
 
+// Print `s`, a report about a console whose task this init has ended, on the kernel console alone:
+// it never waits on that console's endpoint. Where a slain member of that task still holds the
+// console's window, the reclaim waits for that member, and the report waits in the dark window
+// until the member exits, then lands.
+void report(char const* s);
+
+// report() `tag` then `msg` and return -1.
+int fail_console(char const* tag, char const* msg);
+
 // Ends the calling thread's task by a synchronous fault, which a driver thread whose call failed
 // takes so that its task's death reaches the init. The kernel's fault path cancels the group,
 // whichever member traps.

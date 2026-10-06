@@ -23,9 +23,10 @@ namespace kickos
     int kconsole_write(char const* buf, size_t n);
     // A syscall writer keeps a half-sent AMP CRLF across short writes in its own TCB.
     // -KOS_EBUSY where the console is published and the caller's own stdout send would be
-    // taken now: nothing was written. In the dark window (console_dark) it waits for the
-    // reclaim or a publish and writes then, or answers -KOS_EAGAIN at once where `wait` is
-    // false; -KOS_ECANCELED where the writer is cancelled.
+    // taken now: nothing was written. Where `wait` holds it waits for room in a full ring, for a
+    // peer node's claim on a shared UART, and in the dark window (console_dark) for the reclaim
+    // or a publish, and writes then; where it does not, it answers 0 at a full ring or a claim
+    // and -KOS_EAGAIN in the dark window. -KOS_ECANCELED where the writer is cancelled.
     int kconsole_write_user(char const* buf, size_t n, bool wait);
 
     // Debug console (in-kernel, write-only, unbuffered). Routes via kconsole_write.

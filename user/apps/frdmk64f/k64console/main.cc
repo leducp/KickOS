@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F console demo. The composition names the packaged k64uart as stdout, so the init hands
+// K64F console demo. The composition names the packaged k64uartirq as stdout, so the init hands
 // UART0 to that unprivileged driver before main runs, and main and a worker print through it.
 // A constructor runs before the handover and prints through the
 // kernel console, so the wire shows both paths in order.

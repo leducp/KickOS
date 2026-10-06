@@ -3,12 +3,13 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # No app, whatever console its compositions name, writes through a raw kernel console write
-# (kos_kconsole_write, or its syscall number), which takes what the ring can and leaves the rest to
-# the caller, unless the line ends in a comment that says its drop, or the write's answer, is the
-# measurement. Every other line goes through kos_print or stdio, which wait out a full ring. An
+# (kos_kconsole_write, or its syscall number), which no published console driver carries and which
+# leaves a short count's rest to the caller, unless the line ends in a comment that says its drop,
+# its answer or its wait is the measurement. Every other line goes through kos_print or stdio. An
 # app is a directory under user/apps/<group>/ holding a CMakeLists.txt. Planted copies are
-# refused: a raw write with no mark, one in an app whose console is a published driver, an empty
-# tree, and an app with no source.
+# refused: a raw write with no mark, one marked with a dropped beat, which a write that waits for
+# ring room never drops, one in an app whose console is a published driver, an empty tree, and an
+# app with no source.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -17,7 +18,7 @@ require_repo_root
 scratch_dir
 rc=0
 DROP_RE='(^|[^A-Za-z0-9_])(kos_kconsole_write[[:space:]]*\(|KOS_SYS_KCONSOLE_WRITE)'
-EXEMPT_RE='// (a dropped (beat|line)|its answer) is the measurement$'
+EXEMPT_RE='// (a dropped line|its (answer|wait)) is the measurement$'
 
 # <apps dir>: each app under <apps dir>/<group>/, one per line, into $TMP/apps. Returns 1, saying
 # why, for a tree with no app.
@@ -53,7 +54,7 @@ check_app() {
     # shellcheck disable=SC2046
     if dropping $(cat "$TMP/app.srcs") > "$TMP/hits"; then
         while read -r hit; do
-            bad "$hit writes the kernel console raw, dropping what a full ring cannot take, with no mark saying the drop is the measurement"
+            bad "$hit writes the kernel console raw, which no published driver carries, with no mark saying what of it is the measurement"
         done < "$TMP/hits"
     fi
 }
@@ -94,11 +95,18 @@ printf 'int f() { printf("x"); puts("x"); return snprintf(b, 4, "x") + ksnprintf
 if dropping "$TMP/stdio.cc" > /dev/null; then
     bad "a stdio write, which waits out the ring, is taken for a dropping one"
 fi
-printf 'void f() { kos_kconsole_write(s, n); // a dropped line is the measurement\n}\n' \
-    > "$TMP/exempt.cc"
-if dropping "$TMP/exempt.cc" > /dev/null; then
-    bad "a line marked as its drop being the measurement is refused"
-fi
+for mark in 'a dropped line' 'its answer' 'its wait'; do
+    printf 'void f() { kos_kconsole_write(s, n); // %s is the measurement\n}\n' "$mark" \
+        > "$TMP/exempt.cc"
+    if dropping "$TMP/exempt.cc" > /dev/null; then
+        bad "a line marked as $mark being the measurement is refused"
+    fi
+done
+sed 's|// its wait is the measurement$|// a dropped beat is the measurement|' \
+    user/apps/xmc4800-relax/inprstorm/main.cc > "$TMP/beat.cc"
+cmp -s user/apps/xmc4800-relax/inprstorm/main.cc "$TMP/beat.cc" \
+    && fail "the planted dropped-beat mark was not written"
+dropping "$TMP/beat.cc" > /dev/null || bad "a heartbeat marked as a dropped beat, which its waiting write never drops, is not refused"
 printf 'void f() { kos_kconsole_write(s, n); // a dropped line is the measurement, maybe\n}\n' \
     > "$TMP/notexempt.cc"
 dropping "$TMP/notexempt.cc" > /dev/null || bad "a mark not ending its line exempts the write"

@@ -366,9 +366,9 @@ KickOS/
     init/                           # the composed init (compose/) + root's authority lowering
     cxx/                            # verbose-terminate handler
     driver/<chip>/<driver>/         # the driver LIBS, per chip: esp32/lx6uart, esp32c6/c6uart,
-                                    #   imxrt1062/rt1062usb, mk64f/{k64dspi,k64uart,k64uartirq},
+                                    #   imxrt1062/rt1062usb, mk64f/{k64dspi,k64uartirq},
                                     #   rp2xxx/rpusb, rx72m/rxsci, stm32f411/f4uartirq,
-                                    #   xmc4800/{xmcssc,xmcuart,xmcuartirq}.
+                                    #   xmc4800/{xmcssc,xmcuartirq}.
                                     #   Unprivileged, linked by an app.
   user/
     include/                        # userspace API (kos.h, sys.h, app.h) + driver/ client headers
@@ -1008,8 +1008,8 @@ feeds the slave app.
   (`init.h`); and the home of the
   class/service driver layer plus the composed init, both **populated**.
   `system/driver/<chip>/<name>/` carries the driver libs -- `esp32/lx6uart`, `esp32c6/c6uart`,
-  `imxrt1062/rt1062usb`, `mk64f/{k64dspi,k64uart,k64uartirq}`, `rp2xxx/rpusb`, `rx72m/rxsci`,
-  `stm32f411/f4uartirq`, `xmc4800/{xmcssc,xmcuart,xmcuartirq}` -- and `system/init/compose/`
+  `imxrt1062/rt1062usb`, `mk64f/{k64dspi,k64uartirq}`, `rp2xxx/rpusb`, `rx72m/rxsci`,
+  `stm32f411/f4uartirq`, `xmc4800/{xmcssc,xmcuartirq}` -- and `system/init/compose/`
   carries the init, which walks the composition table.
   `kickos_system` carries no archive, so it links separately (never in a RESCAN
   group) and is propagated to every app via `kickos_core`.

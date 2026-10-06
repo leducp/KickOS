@@ -14,10 +14,6 @@ foreach(_pg_image pspguard pspguard_svc pspguard_svcdepth pspguard_block pspguar
   endif()
 endforeach()
 
-if(NOT (KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"))
-  return()
-endif()
-
 # The byte count the refusal must report, carried by the caller and not sniffed by the
 # script: only this expectation separates "some leg refused the PSP" from "the leg that
 # measured the FP block refused it". Mode 5 expects no refusal at all and takes the same
@@ -69,7 +65,7 @@ else()
   math(EXPR _pg_svc_need "${_pg_NEST_SVC_DISPATCH} + ${_pg_KERNEL_DEPTH_SVC}")
 endif()
 
-if(KICKOS_BOARD STREQUAL "microbit")
+if(KICKOS_ARCH STREQUAL "armv6m")
   # The armv6m pair, and they are opposite claims now: mode 2 is refused at the SVC class's
   # whole extent, mode 5 is ACCEPTED at the low edge of that same extent and answers with the
   # band verdict instead of a refusal. Both declare `contained`, the refusal costing this
@@ -80,7 +76,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(TARGET pspguard_svcdepth
     SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner}
                          contained)
-  # The block leg's room bound. THE BOARD THE HAZARD IS REAL ON: it carves blocks and has no
+  # The block leg's room bound. THE POSTURE THE HAZARD IS REAL ON: it carves blocks and has no
   # MPU, so a thread can aim its own PSP into kernel .bss and nothing refuses the entry. 32 is
   # KICKOS_ARMV6M_TRAP_FRAME, this arch's whole PendSV push, written out the way the MPS2 arms
   # write theirs. The refusal classifies as `under stack_lo`, the blocks sitting below every
@@ -89,7 +85,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(TARGET pspguard_block
       SCRIPT "${_pg_gate}" ARGS 6 32 PendSV "under stack_lo" ${_pg_banner} contained)
   endif()
-  # This board's arm set ends here; everything below is the MPS2 set.
+  # The armv6m arm set ends here; everything below is the armv7m set.
   return()
 endif()
 
@@ -100,7 +96,7 @@ kickos_add_qemu_test(TARGET pspguard_svc
 
 kickos_add_qemu_test(TARGET pspguard_svcdepth
   SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
-# The block leg's room bound, on the MPS2 presets that carve blocks and do NOT enforce. Built
+# The block leg's room bound, on the armv7m presets that carve blocks and do NOT enforce. Built
 # only there, hence the TARGET guard: with enforcement the app is not compiled at all. 36 is
 # KICKOS_ARMV7M_TRAP_FRAME, this arch's PendSV push, written out the way the arms above write
 # theirs. The refusal classifies as `under stack_lo`, the blocks sitting below every arena
@@ -123,7 +119,7 @@ if(TARGET pspguard_fp)
   # emitted nothing breaks the NEXT record rather than its own. telemetry_qemu_structural
   # covers the ordinary PendSV tail on tele_pingpong and never refuses a PSP, so only this
   # arm reaches the containment emit. Registered where telemetry is actually compiled.
-  if(KICKOS_BOARD STREQUAL "qemu" AND KICKOS_TELEMETRY)
+  if(KICKOS_TELEMETRY)
     kickos_add_qemu_test(NAME telemetry_qemu_contained TARGET pspguard_fp
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_qemu.py"
       BOOTS 0 WORK 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")

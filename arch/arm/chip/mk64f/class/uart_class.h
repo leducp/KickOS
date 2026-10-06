@@ -10,7 +10,7 @@
 //
 // The kernel console (chip_mk64f.cc arch_console_write_sync / k64_tx_slot_free)
 // reads the same S1.TDRE bit but does not consume this leaf; today it serves only
-// the userspace k64uart driver.
+// the userspace k64uartirq driver.
 //
 // The register map it reads (S1, RM 52.3.5) comes from the chip's shared
 // regs/uart.h, not a local copy.

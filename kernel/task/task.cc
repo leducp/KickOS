@@ -93,6 +93,22 @@ namespace kickos
             cap_console_task_ended();
         }
 
+        // Caller holds IrqLock.
+        void mark_ended(Task* t, int code, bool latch)
+        {
+            if ((t->marks & TASK_MARK_ENDED) != 0)
+            {
+                return;
+            }
+            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_ENDED);
+            if (latch)
+            {
+                t->exit_status = code;
+            }
+            console_leave(t);
+            watch_raise(t);
+        }
+
         void free_task(Task* t)
         {
             console_leave(t);
@@ -383,21 +399,22 @@ namespace kickos
         {
             return;
         }
-        if ((t->marks & TASK_MARK_ENDED) == 0)
-        {
-            t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_ENDED);
-            if (latch)
-            {
-                t->exit_status = code;
-            }
-            console_leave(t);
-            watch_raise(t);
-        }
+        mark_ended(t, code, latch);
         // The ending thread is still a member, so a count of one leaves nobody to cancel.
         if (t->refcount > 1)
         {
             task_cancel_group(t);
         }
+    }
+
+    void task_stop(Task* t)
+    {
+        if (t == nullptr)
+        {
+            return;
+        }
+        mark_ended(t, 0, /*latch=*/false);
+        task_cancel_group(t);
     }
 
     void task_console_serve(Task* t)

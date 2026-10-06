@@ -7,8 +7,10 @@
 #include <kickos/sys/driver_service.h>
 
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/emit.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 namespace kickos::driver
 {
@@ -17,6 +19,18 @@ int fail(char const* tag, char const* msg)
 {
     kos::print(tag);
     kos::print(msg);
+    return -1;
+}
+
+void report(char const* s)
+{
+    (void)kickos::kconsole_offer(s, strlen(s));
+}
+
+int fail_console(char const* tag, char const* msg)
+{
+    report(tag);
+    report(msg);
     return -1;
 }
 
@@ -68,7 +82,7 @@ int console_handover_finish(struct kos_driver_instance& in, char const* tag)
         return 0;
     }
     end_failed_task(in);
-    (void)fail(tag, "ERROR: the console handover probe was not taken\n");
+    (void)fail_console(tag, "ERROR: the console handover probe was not taken\n");
     return probe;
 }
 
@@ -202,6 +216,7 @@ int instance_failed(Descriptor const& d, struct kos_driver_instance& in, kos_cap
     if (d.ep_posture == KOS_DRV_EP_HANDOVER)
     {
         console_start_failed(in);
+        return fail_console(d.tag, msg);
     }
     return fail(d.tag, msg);
 }

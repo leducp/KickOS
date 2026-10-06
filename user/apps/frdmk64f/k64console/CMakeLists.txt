@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# K64F console demo: its composition names the packaged k64uart as stdout, and main and a worker
+# K64F console demo: its composition names the packaged k64uartirq as stdout, and main and a worker
 # print through it. Judged from a silicon capture.
 add_executable(k64console main.cc)
 kickos_app_system(k64console COMPOSITION system.yaml)

@@ -8,9 +8,10 @@ stdout: /svc/console
 ends: main
 
 tasks:
-  - name: xmcuart
-    driver: xmcuart
+  - name: xmcuartirq
+    driver: xmcuartirq
     devices: [/dev/usic0/ch0]
+    lines: { irq: /dev/usic0/sr0 }
     serves: /svc/console
     priority: 12
 

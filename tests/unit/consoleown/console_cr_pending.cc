@@ -101,6 +101,10 @@ namespace kickos
     bool dev_window_held_outside(uintptr_t, size_t, Task const*) { return false; }
     bool task_serves_console(Task const*) { return false; }
 
+    // No ring or peer to wait on: the write ends.
+    int console_room_wait(char const*, size_t, int) { return -KOS_ECANCELED; }
+    int console_claim_wait(uint32_t) { return -KOS_ECANCELED; }
+
     int console_dark_wait(void) { return -KOS_ECANCELED; }
     void console_dark_wake(void) {}
 

@@ -26,10 +26,12 @@
 
 namespace
 {
-    // The child's only cap (delegated cap 0 lands at child table index 1). It posts,
-    // then waits again and parks: nobody posts twice, so its domain is still
-    // referenced when main makes the write below.
+    // Delegated cap i lands at child table index i+1. The child parks on CH_HOLD, which
+    // nobody posts, so its domain is still referenced when main makes the write below. It
+    // must not park on CH_DONE: until main is parked there, that wait takes back the child's
+    // own post and main waits forever.
     constexpr int CH_DONE = 1;
+    constexpr int CH_HOLD = 2;
 
     void confined_child(void* arg)
     {
@@ -45,7 +47,7 @@ namespace
         }
         kos::print("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
-        kos_sem_wait(CH_DONE); // park: keep A's domain alive under main's write
+        kos_sem_wait(CH_HOLD);
         kos::print("[rootfault] ERROR: child unparked\n");
     }
 }
@@ -56,8 +58,10 @@ int main(int, char**)
     // is reported distinctly.
     void* rA = kos_ram_alloc(4096);
     kos_cap_t done = KOS_CAP_NONE;
+    kos_cap_t hold = KOS_CAP_NONE;
     int const done_rc = kos_sem_create(0, &done);
-    if (rA == nullptr or done_rc != 0)
+    int const hold_rc = kos_sem_create(0, &hold);
+    if (rA == nullptr or done_rc != 0 or hold_rc != 0)
     {
         kos::print("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
         return 1;
@@ -66,17 +70,32 @@ int main(int, char**)
     // Hand A to an UNPRIVILEGED child in a task of its own: A becomes a live foreign domain's
     // region, not a stray arena page. Main has not touched A at this point.
     kos_cap_grant caps[] = {
-        { done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
+        { done, KOS_CAP_SIGNAL },
+        { hold, KOS_CAP_WAIT },
     };
+    // The child outranks main on main's own core, so the yield below runs it until it blocks
+    // before main waits: the order in which a child parked on CH_DONE would take back its own
+    // post, so that mistake hangs every run instead of some.
+    uint32_t core_mask = 0;
+#if KICKOS_KERNEL_CORES > 1
+    if (kos::thread::pin(kos_thread_self(), 0) != 0)
+    {
+        kos::print("[rootfault] ERROR: main could not pin itself\n");
+        return 1;
+    }
+    core_mask = 1u;
+#endif
     auto const child = kos::thread::create_caps(confined_child, rA, "confined", 10,
-                                             caps, 1, KOS_POLICY_FIFO, 0,
-                                             /*privileged=*/false, rA, 4096);
+                                             caps, 2, KOS_POLICY_FIFO, 0,
+                                             /*privileged=*/false, rA, 4096, 0, nullptr,
+                                             KOS_TASK_NONE, nullptr, 0, core_mask);
     if (not child.valid())
     {
         kos::print("[rootfault] ERROR: child spawn refused\n");
         return 1;
     }
-    kos_sem_wait(done); // the child wrote A and parked: the control half passed
+    kos_yield();
+    kos_sem_wait(done); // the child wrote A: the control half passed
 
     // Announce BEFORE the poke, with the address: the armv7m dump reports MMFAR but
     // no thread name (kickos_armv7m_fault_report), so a capture cross-checks this line

@@ -8,7 +8,5 @@ if(NOT TARGET taskleave)
   return()
 endif()
 
-if(KICKOS_BOARD STREQUAL "qemu-arm64" OR KICKOS_BOARD STREQUAL "qemu-riscv64")
-  kickos_add_qemu_test(TARGET taskleave
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_taskleave.sh")
-endif()
+kickos_add_qemu_test(TARGET taskleave
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_taskleave.sh")

@@ -95,7 +95,7 @@ head is **writable** and lives with the rest of the runtime's writable state in 
 data region. There is **no `__register_frame`** -- SjLj has no `.eh_frame` and no FDE
 registry to register. This is the model on **RX72M**.
 
-### DWARF (RISC-V, Xtensa) -- .eh_frame plus a boot-time registration hook
+### DWARF (RISC-V, Xtensa) -- .eh_frame plus a registration on the root thread
 
 The RISC-V and Xtensa toolchains use table-driven DWARF unwinding: `.eh_frame` holds
 frame-description entries (FDEs) that the unwinder walks, `.gcc_except_table` holds the
@@ -103,22 +103,24 @@ LSDA. Unlike EHABI, DWARF `.eh_frame` is **not** found by a magic linker symbol 
 must be **registered at runtime** by calling `__register_frame(&__eh_frame_start)`, which
 mallocs a `struct object` node and links it onto the FDE registry. On a hosted system the
 C runtime's `crtbegin`/`frame_dummy` does this before `main`; a freestanding KickOS image
-linked `-nostartfiles` has no `frame_dummy`, so **KickOS registers the frame itself, at
-boot, in the privileged reset path** (a weak `__register_frame` resolved only in an
-image that carries the unwinder; see
-[`arch/riscv/chip/esp32c6/chip_esp32c6.cc`](../../arch/riscv/chip/esp32c6/chip_esp32c6.cc)
-and the `.eh_frame` homing in
+linked `-nostartfiles` has no `frame_dummy`, so **KickOS registers the frame itself, first
+thing on the root thread, ahead of the app's constructors** (a weak `__register_frame`
+resolved only in an image that carries the unwinder; see
+[`user/src/root_entry.cc`](../../user/src/root_entry.cc) and the `.eh_frame` homing in
 [`arch/riscv/chip/esp32c6/esp32c6.ld`](../../arch/riscv/chip/esp32c6/esp32c6.ld), which
 `KEEP`s the table in the code region and appends a `LONG(0)` CIE terminator to stand in
 for the `crtend` `__FRAME_END__` that is not linked). The registry's list heads
 (`seen_objects`/`unseen_objects`) and the malloc'd node are **writable**; the `.eh_frame`
-table itself is **read-only**. This is the model on **ESP32-C6** (and any future Xtensa).
+table itself is **read-only**. This is the model on **ESP32-C6**, **ESP32** and the RISC-V
+and AArch64 machines.
 
-The registration *timing* is the subtle part, and it is why the boot hook must run
-privileged: because `__register_frame` mallocs, and the arena it mallocs from is the app
-window, the node lands in the granted region **only if** it is allocated while the FDE
-registry code has reach -- doing it once at boot, before any drop to unprivileged, puts
-the node where the unprivileged unwinder will later look for it.
+The registration *placement* is the subtle part. `__register_frame` mallocs, and malloc
+finds its libc state through the running thread: where that state hangs off the thread
+pointer, the pointer names nothing until a thread has been switched in, and a call from the
+reset path dereferences whatever the register held at reset. The root thread is the first
+code that both has a thread pointer and runs app-side, where the heap and the registry's
+list heads already live, so the node it allocates is where the unprivileged unwinder will
+look for it.
 
 ## Why a protection unit makes this hard
 
@@ -213,7 +215,7 @@ the same in all three:
   (XMC, RP2040).
 - **GNURX SjLj** (RX72M) -- `.gcc_except_table` (LSDA) in ROM under the code grant, a
   writable setjmp context chain in the data grant, no `__register_frame`. Under the RX MPU.
-- **DWARF** (ESP32-C6 / RISC-V, and any future Xtensa) -- the boot `__register_frame` hook
+- **DWARF** (ESP32-C6 / RISC-V, ESP32 / Xtensa) -- the root thread's `__register_frame`
   homes the FDE registry node in the granted heap, `.eh_frame` folds into the code grant,
   and the `gp` anchor sits in the app data region. Under PMP.
 

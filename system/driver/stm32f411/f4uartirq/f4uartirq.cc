@@ -3,9 +3,8 @@
 //
 // STM32F411/USART2 buffered IRQ-driven userspace UART driver (see f4uartirq.h).
 //
-// HARD RULE (design D7): NO libc stdio anywhere in this file. printf/puts route through
-// _write -> kos_send(cap 0) -> this driver's own endpoint, and the service thread holds the
-// only WAIT cap on it, so a self-send never returns.
+// This task's stdout is the kernel console, which the wire does not carry while this driver
+// owns the UART.
 
 #include "f4uartirq.h"
 

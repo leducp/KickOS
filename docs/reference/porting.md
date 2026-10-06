@@ -1470,13 +1470,13 @@ validated here with none" are three different claims about one board.
 A **named** reduced suite is a supported posture, not a degraded one. `microbit` (nRF51,
 **32 KiB** SRAM -- the board deliberately takes the 32 KiB nRF51822 variant rather than the
 BBC micro:bit v1's 16, `arch/arm/chip/nrf51/nrf51.ld`) declares the cases it cannot host as
-an expected-skip list checked by name in CI (`EXPECT_SKIPS` in
-`../../user/apps/common/selftest/CMakeLists.txt`, rationale in `boards.md` under
-*Per-board caveats*): a skip not on that list fails the gate. That list is down to ONE name,
-`uart_service` on the `p2` image, and even that one is a PIN rather than an arena outcome --
-`KICKOS_SELFTEST_NO_UART_SERVICE` holds it out because its 1 KiB ring and the arena probes
-want the same region. The `p1` image expects no skip at all.
-`f302nucleo` has no gate of any kind, so its 5 skips are enumerated below instead.
+an expected-skip set checked by name in CI (`EXPECT_SKIPS`, derived in
+`tests/integration/gates/selftest.cmake` from each arm's own demand against the board's
+provisioning; rationale in `boards.md` under *Per-board caveats*): a skip not in that set fails
+the gate, and so does a named arm that ran. `uart_service` is in it as a PIN rather than an
+arena outcome -- `KICKOS_SELFTEST_NO_UART_SERVICE` holds it out because its 1 KiB ring and the
+arena probes want the same region. `f302nucleo` has no emulator, so its sets are judged against
+its silicon captures.
 
 **One kind of skip takes no list, on any board.** An arm whose pass rests on a timing window
 checks that the window held and, when it did not, reports `ok N - <name> # SKIP VACUOUS
@@ -2117,8 +2117,8 @@ Given a new part's flash and SRAM, in order:
    the kernel plus a minimal app does not fit -- and the same image is 1.9x larger at
    `-O0`, so budget roughly double if the consumer does not set `CMAKE_BUILD_TYPE`.
    Below 64 KiB the part runs KickOS but cannot host the validation suite -- plan to
-   witness it with `apps/blink` and `hello`, or with a named expected-skip list as
-   `microbit` does.
+   witness it with `apps/blink` and `hello`, or with the derived expected-skip sets
+   `microbit` runs under.
 2. **Write the board's stack and pool knobs explicitly** in its defconfig. There is
    no useful default on a small part: the `config/system.h` fallbacks are 64 KiB stacks
    and 16 threads, sized for the host sim. If the board ships its own header it must

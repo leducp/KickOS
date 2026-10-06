@@ -27,7 +27,7 @@ jobs:
   #
   # Build or restore arm-none-eabi, the family every Cortex-M board builds with.
   toolchain-arm-none-eabi:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
 
   # Build or restore aarch64-none-elf, the family the QEMU virt and i.MX 8M Plus boards build with.
   toolchain-aarch64-none-elf:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +55,7 @@ jobs:
 
   # Build or restore riscv64-none-elf, whose multilibs every RV32 and RV64 board builds with.
   toolchain-riscv64-none-elf:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
 
   # Build or restore x86_64-elf, the family the q35 board builds with.
   toolchain-x86_64-elf:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
   # Build or restore xtensa-esp32-elf, the family the ESP32 builds with. Espressif's sources are
   # git snapshots, without the parsers a release tarball ships generated.
   toolchain-xtensa-esp32-elf:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +99,7 @@ jobs:
   # Build or restore rx-elf, the family the RX72M builds with. The RX patches, in
   # conan/toolchain/patches, carry the parsers they change generated.
   toolchain-rx-elf:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -113,7 +113,7 @@ jobs:
 
   # Run source-only checks once. Other jobs exclude the tree label.
   code-quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +130,7 @@ jobs:
 
   # Run the host suite, excluding the source-only checks above.
   sim:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -160,7 +160,7 @@ jobs:
   # ASan needs fiber-switch annotations for the sim's ucontext stacks.
   # Set flags in the environment so oot_export's child CMake also links UBSan.
   sim-ubsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       CFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
@@ -181,7 +181,7 @@ jobs:
   # and the micro:bit.
   qemu-arm:
     needs: toolchain-arm-none-eabi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
     # semihosting clock; arch_idle_wait spins to keep it advancing.
@@ -286,7 +286,7 @@ jobs:
   # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
     needs: toolchain-aarch64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -336,7 +336,7 @@ jobs:
   # restart witness and the console restart witness.
   qemu-arm64-smp:
     needs: toolchain-aarch64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -389,7 +389,7 @@ jobs:
   # AMP builds use one kernel core and cannot cover this path.
   qemu-arm64-gicv3:
     needs: toolchain-aarch64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -432,7 +432,7 @@ jobs:
   # Do not retry: console interleaving and publication races must remain visible.
   qemu-arm64-amp:
     needs: toolchain-aarch64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -511,7 +511,7 @@ jobs:
   # boards built only.
   qemu-riscv:
     needs: toolchain-riscv64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -521,7 +521,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-misc curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv curl xz-utils
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -616,7 +616,7 @@ jobs:
   # stack there. Its one core runs the init's priority witness.
   qemu-riscv-mpu:
     needs: toolchain-riscv64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -626,7 +626,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-misc curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv curl xz-utils
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -648,11 +648,11 @@ jobs:
           esac
 
   # RV64 base, Sv48, and four-core shared-kernel tests, on qemu-system-riscv64 from
-  # qemu-system-misc. The SMP variant exercises address-space teardown while peers may still
+  # qemu-system-riscv. The SMP variant exercises address-space teardown while peers may still
   # hold a root page containing kernel mappings.
   qemu-riscv64:
     needs: toolchain-riscv64-none-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -662,7 +662,7 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-misc curl xz-utils
+          packages: cmake ninja-build qemu-system-riscv curl xz-utils
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: riscv64-none-elf
@@ -710,7 +710,7 @@ jobs:
   # Require firmware and mtools so image tests cannot silently skip.
   qemu-x86_64:
     needs: toolchain-x86_64-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       # Match the selftest timeout and provide a default for other scripts.
@@ -779,19 +779,21 @@ jobs:
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-      # Host gates only: a two-core image does not boot on this runner's QEMU, see qemu-x86_64-ap.
-      - name: x86_64 (q35) two-core host gates
+      - name: x86_64 (q35) two cores
         run: |
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
-          ctest --test-dir build/qemu-x86_64-smp2 -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'x86_64_link_order|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
-            --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure
+          ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure
+          # Require the golden system, the default system's and the out-of-tree app's gates.
+          out=$(tests/ci/ctest_named.sh 'x86_64_link_order|qemu_x86_64_golden_system|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
+            --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a required two-core gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
 
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
-  # arm F reads libc there before any switch. Then the q35 golden system and its restart witness
-  # at two cores. q35 SMP refuses to start without x2APIC, which the QEMU 8.2 of Ubuntu 24.04
-  # does not emulate under TCG, so this job runs on 26.04.
+  # arm F reads libc there before any switch.
   qemu-x86_64-ap:
     needs: toolchain-x86_64-elf
     runs-on: ubuntu-26.04
@@ -820,22 +822,12 @@ jobs:
           case "$out" in
             *Skipped*) echo "the AP first-thread gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-      - name: x86_64 (q35) golden system and its restart witness at two cores
-        run: |
-          cmake --preset qemu-x86_64-smp2
-          cmake --build --preset qemu-x86_64-smp2
-          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault' \
-            --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
-          printf '%s\n' "$out"
-          case "$out" in
-            *Skipped*) echo "a golden system gate SKIPPED, which ctest reports as success"; exit 1 ;;
-          esac
 
   # Build LX6 application and selftest images. Run host checks for the
   # configuration, linker script and windowed ABI.
   xtensa:
     needs: toolchain-xtensa-esp32-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -874,7 +866,7 @@ jobs:
   # Build RX72M images and run host checks for each configuration. No emulator models the part.
   rx:
     needs: toolchain-rx-elf
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -906,7 +898,7 @@ jobs:
   # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
     needs: toolchain-arm-none-eabi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -986,7 +978,7 @@ jobs:
   # that the section symbols exist, but not placement of actual constructors.
   build-boards-mpu:
     needs: toolchain-arm-none-eabi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -1039,7 +1031,7 @@ jobs:
   # a production build without selftests.
   pizero2350-amp:
     needs: toolchain-arm-none-eabi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -1091,14 +1083,14 @@ jobs:
   # Adjust a gate's limit if needed rather than overriding all limits here.
   bench:
     needs: [toolchain-arm-none-eabi, toolchain-aarch64-none-elf, toolchain-riscv64-none-elf]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
       - uses: ./.github/actions/build-tools
         with:
-          packages: cmake ninja-build qemu-system-arm qemu-system-misc curl xz-utils
+          packages: cmake ninja-build qemu-system-arm qemu-system-riscv curl xz-utils
       - uses: ./.github/actions/kickos-toolchain
         with:
           family: aarch64-none-elf

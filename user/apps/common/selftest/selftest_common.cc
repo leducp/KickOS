@@ -117,6 +117,97 @@ namespace selftest
         return got == n;
     }
 
+    namespace
+    {
+        enum class ObjectKind
+        {
+            SEM,
+            MUTEX,
+            ENDPOINT,
+            NOTIFY,
+        };
+
+        // Direct calls only: the trap red-zone gate refuses an indirect edge it cannot name.
+        int make(ObjectKind kind, kos_cap_t* out)
+        {
+            switch (kind)
+            {
+            case ObjectKind::SEM:
+            {
+                return kos_sem_create(0, out);
+            }
+            case ObjectKind::MUTEX:
+            {
+                return kos_mutex_create(out);
+            }
+            case ObjectKind::ENDPOINT:
+            {
+                return kos_endpoint_create(out);
+            }
+            case ObjectKind::NOTIFY:
+            {
+                return kos_notify_create(out);
+            }
+            }
+            return -KOS_EINVAL;
+        }
+
+        // Creates `count` objects of `kind` into held[*n], answering the first refusal.
+        int hold(int count, ObjectKind kind, kos_cap_t* held, int* n)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                kos_cap_t h = KOS_CAP_NONE;
+                int const rc = make(kind, &h);
+                if (rc != 0)
+                {
+                    return rc;
+                }
+                held[*n] = h;
+                *n = *n + 1;
+            }
+            return 0;
+        }
+    }
+
+    // Can main's task hold all of `want` at once, right now? 0 if it can, else the first
+    // refusal, and every object is closed again before it returns. A refusal that is not a
+    // supply running out fails the arm asking. Call immediately before the arm's own creates.
+    int objects_can_host(ObjectDemand want)
+    {
+        constexpr int MAX = 16;
+        int const total = want.sems + want.mutexes + want.endpoints + want.notifies;
+        if (total > MAX)
+        {
+            tap::fail("objects_can_host(%d objects) is wider than its %d handles", total, MAX);
+            return -KOS_EINVAL;
+        }
+        kos_cap_t held[MAX];
+        int n = 0;
+        int rc = hold(want.sems, ObjectKind::SEM, held, &n);
+        if (rc == 0)
+        {
+            rc = hold(want.mutexes, ObjectKind::MUTEX, held, &n);
+        }
+        if (rc == 0)
+        {
+            rc = hold(want.endpoints, ObjectKind::ENDPOINT, held, &n);
+        }
+        if (rc == 0)
+        {
+            rc = hold(want.notifies, ObjectKind::NOTIFY, held, &n);
+        }
+        for (int i = 0; i < n; i++)
+        {
+            (void)kos_handle_close(held[i]);
+        }
+        if (rc != 0 and rc != -KOS_EMFILE and rc != -KOS_EAGAIN and rc != -KOS_ENOMEM)
+        {
+            tap::fail("objects_can_host: a create answered %d", rc);
+        }
+        return rc;
+    }
+
     bool g_ram_starved = false;
 
     void* st_ram_alloc_as(bool starved, size_t size)

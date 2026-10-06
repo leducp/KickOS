@@ -75,12 +75,9 @@ SECTIONS
         KICKOS_CODE_DEBRIS_SECTIONS
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
-        /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in; a plain
-           freestanding app is built -fno-exceptions, which leaves the section holding just
-           the terminator. Under -nostartfiles the boot-time registration is
-           Reset_Handler's, through a WEAK __register_frame (chip_virt_rv32.cc), standing in for
-           crtbegin's frame_dummy. KEEP so --gc-sections cannot drop it, contiguous, with
-           the LONG(0) terminator standing in for crtend's __FRAME_END__. */
+        /* DWARF EH, registered by the root thread (user/src/root_entry.cc): -nostartfiles
+           drops crtbegin's frame_dummy and crtend's __FRAME_END__, so the table is kept whole
+           and ends in a zero-length CIE. */
         *(.gcc_except_table .gcc_except_table.*)
         . = ALIGN(4);
         __eh_frame_start = .;

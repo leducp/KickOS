@@ -68,7 +68,7 @@ endforeach()
 # ONLY where the knob resolves off: this tree's own case 2 then asserts the prose while the arm
 # asserts the short code, so ONE preset witnesses both columns, and the tree the arm configures
 # cannot register the arm a second time.
-if(KICKOS_BOARD STREQUAL "qemu-m3" AND NOT KICKOS_DIAG_TERSE)
+if(KICKOS_QEMU_MACHINE STREQUAL "mps2-an385" AND NOT KICKOS_DIAG_TERSE)
   kickos_add_qemu_test(NAME "${_tag}_diag_terse" TARGET panicgate2
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_diag_terse.sh"
     BOOTS 2 WORK 900

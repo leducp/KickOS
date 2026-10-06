@@ -29,7 +29,7 @@ runs:
     - name: Cache kconfiglib venv
       uses: actions/cache@v4
       with:
-        # Absolute, and the same absolute path on every ubuntu-latest runner
+        # Absolute, and the same absolute path on every Ubuntu runner
         # ($HOME=/home/runner): a venv is not relocatable, so that is what makes
         # caching one safe here.
         path: ~/kconfig-venv

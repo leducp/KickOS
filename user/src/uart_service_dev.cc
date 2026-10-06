@@ -75,32 +75,4 @@ void win_puts(struct kos_uart* dev, char const* s)
     }
 }
 
-void polled_console_loop(struct kos_uart* dev)
-{
-    uint8_t buf[KOS_EP_MSG_MAX];
-    struct kos_reply_recv_opts opts;
-    while (true)
-    {
-        // Info-less: a client kos_call bounces -KOS_ENOTSUP instead of minting a reply cap here.
-        kos_reply_recv_opts_init(&opts, console::KOS_CONSOLE_CAP_EP, KOS_RECV_NO_INFO,
-                                 KOS_TIMEOUT_NONE);
-        int const n =
-            kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
-        if (n < 0)
-        {
-            break;
-        }
-        if (n == 0)
-        {
-            (void)kos_uart_flush(dev);
-            continue;
-        }
-        for (int i = 0; i < n; i++)
-        {
-            put_polled(dev, buf[i]);
-        }
-    }
-    dev_shutdown(dev);
-}
-
 }

@@ -35,7 +35,7 @@ namespace
 {
     using kickos::console_retry::Put;
 
-    // One writer state serves: this node drives one core.
+    static_assert(KICKOS_KERNEL_CORES == 1, "one polled writer state serves every caller");
     kickos::console_retry::PolledLine g_polled;
 
     // One byte under the partition claim, checked after the FIFO wait: the grant can end

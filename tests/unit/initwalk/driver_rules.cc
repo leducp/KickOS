@@ -365,7 +365,7 @@ namespace
         ASSERT_EQ(starts.size(), 2u);
         std::vector<std::string> const& second = starts[1];
         auto const narrow = std::find(second.begin(), second.end(), "kos_cap_narrow");
-        auto const print = std::find(second.begin(), second.end(), "kos_print");
+        auto const print = std::find(second.begin(), second.end(), "kos_kconsole_write");
         ASSERT_NE(narrow, second.end()) << "the failure narrows the init's capability";
         ASSERT_NE(print, second.end());
         EXPECT_LT(narrow - second.begin(), print - second.begin());

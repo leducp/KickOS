@@ -178,8 +178,8 @@ namespace
         .block_init = block_init
     };
 
-    // No block at all: the polled shape (k64uart, xmcuart, xmcssc, k64dspi, simcon). The
-    // only way a driver's threads share no memory.
+    // No block at all: the polled shape (xmcssc, k64dspi, simcon). The only way a driver's
+    // threads share no memory.
     constexpr drv::Descriptor k_blockless = {
         .tag = "[drvbare] ",
         .expected_base = 0,
@@ -421,7 +421,7 @@ TEST_F(DrvInstance, a_foreign_window_is_refused_before_anything_is_made)
     struct kos_driver_instance in = instance_of(k_two);
     in.mmio_base = K_BASE + 0x1000u;
     EXPECT_EQ(drv::bring_up(k_two, &in), -1) << "a foreign window is refused";
-    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print") << "a foreign window makes nothing";
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " kprint kprint") << "a foreign window makes nothing";
     EXPECT_PRED2(says, kos_seam_msg(), "window is not this driver's block");
 }
 
@@ -431,7 +431,7 @@ TEST_F(DrvInstance, a_refused_task_takes_nothing_else)
     g_seam.task_create_fails = true;
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -1) << "a refused task fails bring-up";
-    EXPECT_EQ(kos_seam_trace(), std::string{"task! "} + NARROW + " print print")
+    EXPECT_EQ(kos_seam_trace(), std::string{"task! "} + NARROW + " kprint kprint")
         << "a refused task claims no line and spawns nobody";
     EXPECT_PRED2(says, kos_seam_msg(), "task_create failed") << "the diagnostic names the task";
 }
@@ -518,7 +518,7 @@ TEST_F(DrvInstance, a_failed_console_start_before_the_first_spawn_ends_its_task_
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim! close10 "}
-                                    + NARROW + " tslay90 print print")
+                                    + NARROW + " tslay90 kprint kprint")
         << "the claimed line closed, the console narrowed and its task ended BEFORE the print, no close of 7";
     EXPECT_EQ(in.task, KOS_TASK_NONE) << "the task is gone, so the init has nothing to slay";
 }
@@ -564,7 +564,7 @@ TEST_F(DrvInstance, a_failed_console_start_ends_its_task_before_it_prints_at_eve
 
     for (Arm const& arm : arms)
     {
-        std::string const tail = std::string{NARROW} + " tslay90 print print";
+        std::string const tail = std::string{NARROW} + " tslay90 kprint kprint";
         ASSERT_GE(arm.trace.size(), tail.size()) << arm.what;
         EXPECT_EQ(arm.trace.substr(arm.trace.size() - tail.size()), tail) << arm.what << ": " << arm.trace;
         EXPECT_EQ(arm.trace.find("tkill"), std::string::npos) << arm.what;
@@ -594,7 +594,7 @@ TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_ends_its_
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
                                             " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn!"
-                                            " close10 close11 close12 "} + NARROW + " tslay90 print print")
+                                            " close10 close11 close12 "} + NARROW + " tslay90 kprint kprint")
         << "no close of 7: the endpoint stays the init's";
 }
 
@@ -605,9 +605,26 @@ TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
     EXPECT_EQ(drv::bring_up(k_two, &in), -KOS_EAGAIN);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
                                             " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
-                                            " close10 close11 close12 "} + NARROW + " probe tslay90 print print")
+                                            " close10 close11 close12 "} + NARROW + " probe tslay90 kprint kprint")
         << "narrowed, probed, the task ended, reported";
     EXPECT_PRED2(says, kos_seam_msg(), "probe was not taken");
+}
+
+// The probe was not taken and the slay outlived its bound: the task has ended, and a slain member
+// still holding the console's window holds its reclaim back. The report waits in the dark window
+// until that member exits, then lands.
+TEST_F(DrvInstance, a_report_after_a_slay_that_timed_out_waits_for_the_member_then_lands)
+{
+    g_seam.send_timed_rc = -KOS_ETIMEDOUT;
+    g_seam.slay_rc = -KOS_ETIMEDOUT;
+    g_seam.kconsole_dark = true;
+    struct kos_driver_instance in = instance_of(k_two);
+    EXPECT_EQ(drv::bring_up(k_two, &in), -KOS_ETIMEDOUT);
+    EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
+                                            " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
+                                            " close10 close11 close12 "} + NARROW + " probe tslay90 kprint dark kprint dark")
+        << "reported on the kernel console alone, through the dark window";
+    EXPECT_PRED2(says, kos_seam_msg(), "probe was not taken") << "the report landed";
 }
 
 TEST_F(DrvInstance, a_line_retiring_from_the_last_instance_is_claimed_again_within_the_bound)
@@ -629,7 +646,7 @@ TEST_F(DrvInstance, an_instance_that_is_not_this_driver_s_is_refused_before_the_
 
     in.line_count = 1u;
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
-    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print") << "a line fewer than its roles";
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " kprint kprint") << "a line fewer than its roles";
     EXPECT_PRED2(says, kos_seam_msg(), "lines are not as many as");
 
     kos_seam_reset();
@@ -686,7 +703,7 @@ TEST_F(DrvInstance, a_block_the_descriptor_refuses_to_lay_out_is_a_failed_start_
     g_block_init_rc = -KOS_EINVAL;
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
-    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print");
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " kprint kprint");
     EXPECT_EQ(in.task, KOS_TASK_NONE);
 }
 
@@ -722,7 +739,7 @@ TEST_F(DrvInstance, a_failed_console_start_ends_its_task_before_it_prints_at_eve
         struct kos_driver_instance in = instance_of(k_two);
         EXPECT_EQ(drv::bring_up(k_two, &in), -1) << a.what;
         std::string const trace = kos_seam_trace();
-        std::string const tail = std::string{NARROW} + " tslay90 print print";
+        std::string const tail = std::string{NARROW} + " tslay90 kprint kprint";
         ASSERT_GE(trace.size(), tail.size()) << a.what;
         EXPECT_EQ(trace.substr(trace.size() - tail.size()), tail) << a.what << ": " << trace;
         EXPECT_EQ(trace.find("tkill"), std::string::npos) << a.what;

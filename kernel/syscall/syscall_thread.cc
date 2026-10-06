@@ -1550,7 +1550,7 @@ namespace kickos
         }
         // The group cancel runs before the hold is dropped: dropping it first can free the
         // slot outright when the group is already empty, and `t` would then be a dangling name.
-        task_cancel_group(t);
+        task_stop(t);
         task_drop_hold(t);
         return 0;
     }
@@ -1602,7 +1602,7 @@ namespace kickos
                 ktime_deadline_arm(c, timeout_us);
             }
             epoch = c->switch_count;
-            task_cancel_group(t);
+            task_stop(t);
             sched::reschedule();
         }
         wq_confirm_resume(c, epoch);

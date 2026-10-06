@@ -228,6 +228,17 @@ extern "C"
         return static_cast<int>(kickos::testfix::g_console_dark);
     }
 
+    // No ring: a refused writer offers its line again at once.
+    int console_tx_make_room(char const*, size_t, int)
+    {
+        return 0;
+    }
+
+    int console_tx_room_want(char const*, size_t, int)
+    {
+        return 0;
+    }
+
     uint32_t console_held_ready(void)
     {
         return kickos::testfix::g_held_len - kickos::testfix::g_held_off;

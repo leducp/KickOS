@@ -9,14 +9,8 @@ if(NOT TARGET tlsprobe)
 endif()
 kickos_app_judge(tlsprobe tests/integration/check_qemu_tlsprobe.sh)
 
-# One arm per mechanism an emulator can run: mps2 masks SP on armv7m, microbit on armv6m;
-# qemu-riscv and armv8a seat the register from the context, and there the image also runs a
-# thread on a caller-supplied stack the mask would refuse.
-if(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"
-   OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_ARCH STREQUAL "armv8a")
-  kickos_add_qemu_test(TARGET tlsprobe
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
-endif()
+kickos_add_qemu_test(TARGET tlsprobe
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 
 # The RX emutls block is proved offline, rxv3 having no QEMU machine: every input the bump
 # allocator uses is a link-time constant, so the allocation is replayed against the linked

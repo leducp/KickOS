@@ -5,7 +5,7 @@
 # and kernel/thread/thread.cc on the K-seam, spawn_unwind.cc answering the arena, the domain
 # regions and the user copy. Linked with --gc-sections: only the spawn's own callees need a seam.
 kickos_add_unit_test(NAME spawn_unwind
-  SOURCES spawn_unwind.cc
+  SOURCES spawn_unwind.cc task_stop.cc
           "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_thread.cc"
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"

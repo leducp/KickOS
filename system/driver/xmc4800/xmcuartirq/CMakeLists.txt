@@ -10,7 +10,7 @@
 #
 # TWO SOURCES, and the split is the driver-model ruling: ../uart_usic.cc is the USIC backend
 # of the raw UART class <kickos/driver/uart.h> and owns every register; xmcuartirq.cc is the
-# service composed on it. It sits at chip level because kickos_xmcuart compiles the SAME
+# service composed on it. It sits at chip level beside the other drivers over that USIC
 # backend. An image gets exactly one definition of that class, so a second xmc4800 UART
 # driver may not be linked beside this one.
 kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc

@@ -515,7 +515,7 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       **THE THREAT THE RESERVE ANSWERS IS ACCIDENT, AND AGAINST THAT IT WORKS AS ADVERTISED.**
       Driver task D serves and holds endpoints; D hits an unrecoverable error and exits, both
       UART drivers ending on "Endpoint dead / EPIPE or a bad cap: unrecoverable. Exit and let
-      root respawn" (`k64uart.cc:134`, `xmcuart.cc:150`). `sched.cc:595` states the ordering
+      root respawn" (the two polled console drivers, since removed). `sched.cc:595` states the ordering
       intent outright: the sweep's endpoint arm EPIPE-wakes a supervisor that may respawn
       IMMEDIATELY, and `dying` exists so the corpse does not refuse that respawn through the
       DEV-window scan (`thread.cc:118` from the other side). Root spawns D', which needs a NEW
@@ -2601,12 +2601,12 @@ reason, 310 lines out of the root and 319 into a module. Measured totals so far:
       SPI pair differs in `expected_base`, `line_count`, `cap_count` and the caps array, four of
       the fields that DECIDE the driver, so two members behind four parameters removes about 20
       lines and adds a header of about 30.
-      **AND THE LOUDEST PAIR IN THE CORPUS IS NOT IN THIS ITEM AT ALL.** `k64uart.cc` and
-      `xmcuart.cc`, the polled TX consoles at 157 and 172 lines, sit at **0.86** -- 64 of 74 and
+      **AND THE LOUDEST PAIR IN THE CORPUS IS NOT IN THIS ITEM AT ALL.** The two polled TX
+      console drivers, at 157 and 172 lines, sit at **0.86** -- 64 of 74 and
       88 normalised code lines identical, including private copies of `poll_put` and `win_puts`
       where the library already declares `kickos::uart::win_puts`, the whole recv loop, and a
-      descriptor differing only in tag and entry. **The body is shared since M10.5.11:** both
-      run `kickos::uart::polled_console_loop` and `win_puts` (`user/src/uart_service_dev.cc`).
+      descriptor differing only in tag and entry. **Both drivers and their shared loop are
+      removed in M10.5**, the IRQ-driven consoles serving their boards.
       Two traps the macro cost, worth carrying: its parameter is `svc_name` and not `name`,
       because `name` substitutes inside `.name = irq_thread_name`; and the invocation needs a
       trailing semicolon or `check_syscall_return_codes.sh` reads the file as one unfinished
@@ -5901,6 +5901,31 @@ milestone does not close while any of them still composes a system.
       taken by `AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh pizero2350`;
       until then the judge holds only its planted capture.
 
+- [ ] **APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
+      M10.5 for scope).** The emulator gates are keyed on facts and `qemu_gates_derived` refuses a
+      board name around one; two neighbouring gaps were found and left open.
+      - `user/apps/common/CMakeLists.txt` still selects apps by board name: `fpclass` (rxv3 or
+        `qemu`), the `cxxtest`/`cxxterm` list, `tele_pingpong`, `fp_switch` (the FPU boards),
+        `gpioblink`, `blink`, `usbcdcwit` and `clockretune`. Each has a fact to key on: the newlib
+        profile (nano prints no double), the board's heap (microbit's 1 KiB runs out under
+        `cxxtest`'s vector arm, and its RAM fits no larger heap), `KICKOS_TELEMETRY_ON`,
+        `KICKOS_MFLOAT_ABI`, a `systems/<board>.yaml` the app ships, and whether the chip's own
+        sources define `arch_diag_led_set` / `arch_cpu_clock_set`. `qemu_gates_derived` should then
+        read this file too.
+      - Apps that build on an emulated preset and that no test boots: `stackguard` on x86_64 (its
+        probe line prints the address with `%x`, which truncates an x86_64 user address),
+        `aspacefault` on rv64imac, `aspaceufault` on armv8a, and the SMP arrival, doorbell and
+        every-core-thread gates on x86_64 SMP (q35 prints no `# smp:` banner, and QEMU's x86 model
+        names no core in an interrupt event, so the second channel would read the execution log).
+        A per-build gate should refuse an image no test boots unless it states why. Running every
+        capture-judged image under its emulator on the way also found premises that do not hold:
+        `initdemo` spawns its sink on a stack main allocated (one shared address space only),
+        `mpu_fault` grants memory to one thread of a task (no translating backend can),
+        `objbudget` assumes the endpoint pool holds more than one task's budget (false on the
+        arm64 AMP and `benchsmp12` postures, where the init holds endpoints first), the sim links
+        the host's terminate handler (`cxxterm`), `specfault`'s judge reads captures only, and the
+        sim maps no guard under a thread's stack (`faultsurvive_ovf` overruns `main`).
+
 - [ ] **M10.6: THE SELFTEST ORDERED BY EVENTS.** Arms still order threads by sleeping
       (`EP_CALL_SETTLE_NS` and the like) and fail under a loaded host: a sleep is not an order. Each
       such arm orders by priority, a semaphore or a mark instead, and releases what it created on
@@ -5981,6 +6006,81 @@ by ruling and sits in `roadmap.md`'s `Later`.
       memory, which the linker map does not use and part of which the ROM loader uses during boot.
       Found when the selftest outgrew one image's IRAM.
 
+- [ ] **RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-07).** `bench-fleet.sh`
+      builds, flashes and captures one image at a time across every board, so a full pass takes
+      the sum of every board's captures (about three hours in M10.5's final pass). Each board has
+      its own probe and console, so run one worker per board and keep each board's captures in
+      order: the wall time becomes the longest board's. Build every image first, so flashing never
+      waits on the compiler. Boards that share a probe or a console cable (bluepill-c8 and
+      blackpill on one ST-Link; picopi, pizero2350 and teensy41 on one FTDI cable) stay in one
+      worker, and bench-present.sh already knows which ones those are. Each board's log tags
+      stay separate, and the summary is merged at the end.
+
+- [x] **BOOT THE TWO-CORE X86 OUT-OF-TREE APP IN CI (found closing M10.5, 2026-10-07).** The
+      out-of-tree MCU app's boot is an image gate now, so the 24.04 two-core host step no longer
+      runs it; the `qemu-x86_64-ap` job on 26.04 runs a fixed list of named tests that does not name
+      `qemu_x86_64_oot_mcu_app`, so no CI job boots it at two cores. Add it to that list, or move
+      the jobs to 26.04 together.
+      **DONE:** every CI job runs on `ubuntu-26.04`, and the two-core x86 step runs the image gates
+      of `qemu-x86_64-smp2` and requires `qemu_x86_64_oot_mcu_app`.
+
+- [ ] **BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M AND RX (found closing M10.5).** The trap
+      depth gate roots device ISRs only where they run on a thread's or a kernel stack it sizes; on
+      these three the ISRs run on the main/interrupt stack, which the roots file declares unbounded,
+      so no ISR chain is measured there (M10.5 added a wake to the console TX ISR's tail).
+
+- [ ] **`board_refusals` COPIES THE TREE WHILE CONFIGURES REWRITE COMPOSITION FILES IN IT (found
+      closing M10.5).** Under a parallel `-L tree` run it failed once in 0.5 s and then passed: a
+      configure writes composition yaml into the source tree while the gate copies it. A build must
+      not write into its sources.
+
+- [ ] **THE SELFTEST APP DOES NOT BUILD WITH THE SELF-TEST OFF ON ADDRESS-SPACE BOARDS (found closing
+      M10.5, older than it).** On qemu-arm64-amp2-n0 and amp3-n0 configured with
+      `KICKOS_ENABLE_SELFTEST=OFF`, `selftest/main.cc` and `selftest_common.cc` call
+      `kos_aspace_probe` with no guard. No CI or local configuration builds that posture, so
+      `amp_prod_build` skips address-space boards; either guard those calls or stop building the
+      selftest app without the self-test, then register the gate there.
+
+- [ ] **NAME THE PORT BY ITS NUMBER IN THE GENERATED PIN LISTS (maintainer, 2026-10-07).**
+      `KICKOS_BOARD_RESERVED_RUNS` and `KICKOS_BOARD_KERNEL_PINS` carry each pin's port as a base
+      address, so `chip_imxrt1062.cc` maps it back to a GPIO bank through a hand-written `bank_of`
+      that knows banks 1 and 2 only, a second truth beside the port number the generator already
+      emits for named pins. Emit the port number in `RUN` and `PIN` as well, use it in every chip
+      that reads those lists, and delete `bank_of`.
+
+- [ ] **WAKE AN OWN-IMAGE AMP CONSOLE WRITER BY DOORBELL (maintainer, 2026-10-06; deferred out of
+      M10.5).** A writer waiting for a peer node's console claim parks for `CONSOLE_CLAIM_POLL_NS`
+      (1 ms) between offers, because a peer's release sends no wake. The proper form rings the
+      waiting node's doorbell on release, so the writer parks until woken, with no poll.
+
+
+## Selftest expectations still approximate (cut from M10.5)
+
+- [ ] **THREE PIECES OF THE DERIVED SKIP SETS WERE CUT FROM M10.5 AND ARE OPEN.**
+      `tests/integration/gates/selftest.cmake` derives each arm's thread, capability and task-budget
+      skips from the ask the arm makes (`pool_can_host`, `objects_can_host`). What it does not yet
+      derive:
+      - **The arena arms.** `irq_as_event` and `caller_stack` are still expected on any part with
+        32 KiB of RAM or less. One free-arena figure cannot decide them: the arena never frees,
+        and what an arm finds depends on the order in which earlier arms seat thread stacks and
+        reserve blocks. Measured on microbit's fourth image: the arena is exhausted by
+        `caller_stack`, and five earlier arena arms still run, although seating every free slot
+        would leave 0 bytes. The proposed design:
+        - a starvable arm seats every free thread slot before it reserves;
+        - its block size and alignment go into the image as a symbol the compiler computes;
+        - the composition states its thread count and the cursor once the pool is seated in the
+          image;
+        - the expectation is derived after the link from those symbols, and the manifest rows
+          become post-link;
+        - `bench.sh` reads its row after the build, which is owed on silicon.
+      - **The create-then-skip sites.** About 200 arms still create an object or spawn first and
+        report a "pool too small"-class skip when refused. None fires on any fleet posture, so no
+        expectation reads them. The proposal: convert them to ask first through one helper, and
+        add a static gate that refuses such a skip reason not preceded by its ask.
+      - **The IRQ handle budget.** `KICKOS_TASK_IRQ_HANDLE_BUDGET` is not modelled as a pool. The
+        IRQ arms that claim a line before asking for their objects make the claim part of the ask
+        instead.
+
 
 ## The toolchain release (maintainer, 2026-10-04)
 
@@ -6054,9 +6154,9 @@ by ruling and sits in `roadmap.md`'s `Later`.
 
 ## Two polled console drivers discard a refused byte, and nothing anywhere counts it
 
-- [ ] **ORDINARY CONSOLE OUTPUT VANISHES A BYTE AT A TIME AND NO COUNTER MOVES.**
+- [x] **ORDINARY CONSOLE OUTPUT VANISHES A BYTE AT A TIME AND NO COUNTER MOVES.**
       `kickos::uart::polled_console_loop` (`user/src/uart_service_dev.cc`) is the client-data
-      serve loop both polled console drivers (`k64uart`, `xmcuart`) run since M10.5.11, and its
+      serve loop both polled console drivers ran since M10.5.11, and its
       `put_polled` spins the transmitter for a bounded budget and drops the byte when the budget
       expires with it still unsent. The bound is deliberate and right (without it a mis-configured
       baud wedges the driver thread and every stdout client parked on a send behind it), so the
@@ -6069,6 +6169,8 @@ by ruling and sits in `roadmap.md`'s `Later`.
       **THE OPEN QUESTION IS WHICH ANSWER, AND IT IS NOT A DETAIL.** A dropped-byte counter in
       the shared loop is small; porting the two drivers onto the console service framework
       brings the accounting with it, and is the larger change.
+      **Closed in M10.5, as removed**: both polled console drivers and their shared loop are
+      deleted, and their boards' consoles are the IRQ-driven `xmcuartirq` and `k64uartirq`.
 
 ## `ampping`'s serve loop reads the first payload byte without checking a byte arrived
 
@@ -6902,14 +7004,14 @@ Every symbol, ctest case name, doc path and preset name it references resolves.
       **does this spawn's grantee call a `kos_periph_*` syscall**, because `kernel/syscall/syscall_mem.cc`
       makes MMIO possession *the sole authorisation* for `arch_periph_enable`. By that test only
       `user/apps/common/gpioblink`, `user/apps/frdmk64f/k64console` and `user/apps/frdmk64f/k64drv`
-      hold a genuinely inert window; `system/driver/mk64f/{k64dspi,k64uart,k64uartirq}` and
+      hold a genuinely inert window; `system/driver/mk64f/{k64dspi,k64uartirq}`, the polled UART0 console driver since removed, and
       `user/apps/rx72m/rxdrv` all call `kos_periph_enable`, so their grants are load-bearing and must
-      NOT be swept. `k64uart.cc` had already drifted into calling its own live grant inert -- deleting
+      NOT be swept. The polled UART0 console driver had already drifted into calling its own live grant inert -- deleting
       it on that comment's word would have killed the K64F console. Corrected in M4.7.3.
       **DONE:** collapsed to one canonical statement, `docs/reference/boards.md` -> "When an MMIO
       grant is INERT, and the one test that decides it", carrying the register-level argument and a
       table of all nine grants by verdict. The seven longhand copies became back-references, and each
-      LOAD-BEARING site now says so in its own first line, so the k64uart drift cannot recur silently.
+      LOAD-BEARING site now says so in its own first line, so that drift cannot recur silently.
       Two sites that looked like part of this duplication were left alone deliberately: `xmcspi` and
       `f411spi` make a DIFFERENT claim (a vacuous isolation test when enforcement is off), and
       `rxdrv`'s reference to `k64drv` was already correct.
@@ -7528,11 +7630,11 @@ posture that is still selectable.
       witnessed). It is a diagnostic app and not on the gate, so it is stage-3 follow-up
       (`arch_periph_enable`), the same treatment `c6blink` and `rxdrv` needed.
 - [x] **`frdmk64f` FLIPPED and witnessed on silicon at `127efb5`, on stage 3 rather than stage 2.**
-      Its `k64uart` and `k64dspi` PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at
+      Its polled UART0 console driver's and `k64dspi`'s PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at
       `0x4000_0044`) both fall inside `arch_reserved_blocks`'s AIPS0 entry
       `[0x4000_0000, 0x4000_1000)`, so no grant can ever reach them and `arch_periph_enable` was the
-      only way in. **The first board to run its FULL service list under the flip** (console
-      `k64uart` + SPI `k64dspi`), where every other flipped board is console-only or serviceless:
+      only way in. **The first board to run its FULL service list under the flip** (the polled UART0
+      console + SPI `k64dspi`), where every other flipped board is console-only or serviceless:
       `selftest` `1..65` `# all tests passed (2 skipped)`, and `rootfault` denies root's cross-domain
       write (`SYSMPU ISOLATION FAULT: port=3 addr=0x2001a000 master=0 W EDR=0x80000003`,
       `CFSR=0x400`, `HFSR=0x40000000`). Skips were `mpu_privileged_guard` (posture) and
@@ -7583,7 +7685,7 @@ posture that is still selectable.
       deliberately have none: their windows need nothing from the seam, the C6's APM open being a
       boot-time act in `arch_init`. Each backend is a hand-curated table keyed on the **exact** block
       base, never a range, and both writes are DERIVED from `base`, so no caller can name a shared
-      block's register or the bit inside it. Retires `k64uart` and `k64dspi`'s root MMIO entirely, so
+      block's register or the bit inside it. Retires the polled UART0 console driver's and `k64dspi`'s root MMIO entirely, so
       `kickos_services_frdmk64f` came off the root-MMIO refusal list.
 - [x] **NOT gated on a device authority bit, which is what this checklist previously said. The
       gate is possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`)
@@ -7752,7 +7854,7 @@ Blockers and limits:
   because it is what the seam had to satisfy.
   `system/driver/xmc4800/xmcssc/spi_usic.cc` (USIC kernel clock, baud, protocol) -- on
   `xmc4800-relax`, the enforcement flagship. The two K64F bodies were **retired by stage 3**:
-  `system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR) and
+  the polled UART0 console driver, since removed (AIPS PACR), and
   `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config) each call
   `arch_periph_enable` from the driver thread that holds the window. Stage 3 does **not** cover the
   XMC, which needs USIC-specific FDR/BRG/CCR programming rather than
@@ -7797,7 +7899,7 @@ Blockers and limits:
   check it against, and `mpu_fault`'s captures had been marker-only on every service-list board, both
   fixed via `kickos::emit`. The open question of which other worker-printing diagnostics share it is
   **answered: `pvprobe` and `inprstorm` do** -- filed below. And there is a genuine DARK WINDOW between
-  the publish and the driver actually serving cap 0 (`k64uart.cc:209`, `xmcuart.cc:179`), which is
+  the publish and the driver actually serving cap 0 (in the polled console drivers, since removed), which is
   ordering rather than a writer choice and is owned by M4.6.1.
 - **The panic-path UART reclaim clips bytes in flight.** `kpanic_enter` takes the UART back from the
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
@@ -8050,7 +8152,7 @@ one, so those captures cannot be re-derived from history.
       is unreachable as well: the test needs a PRIVILEGED thread to run it, and the only privileged
       thread left is `idle`, which runs no tests. `rootfault` makes the stronger claim on the same
       subject and runs for real. **Confirmed on silicon rather than only by reading**: `frdmk64f` on
-      its full service list (`k64uart` + `k64dspi`) went `# skipped: 2` (`mutex_deadlock` +
+      its full service list (the polled UART0 console + `k64dspi`) went `# skipped: 2` (`mutex_deadlock` +
       `mpu_privileged_guard`) to `# skipped: 1`, 66 cases and 65 ok, the surviving skip being
       `ok 18 - mutex_deadlock # SKIP pool too small` -- the pre-existing `KICKOS_MAX_THREADS`
       constraint already recorded in `docs/reference/boards.md`. **What carries that inference is
@@ -8094,8 +8196,8 @@ one, so those captures cannot be re-derived from history.
       registered only when the service-list selection is `kickos_services_none`. THAT OPTION NO LONGER
       EXISTS** -- any doc still naming it is stale. The split was forced by a premise conflict
       rather than chosen: U0C0 admits exactly ONE holder, the scrambler has to be
-      it, and `consoledemo` exists to demonstrate the `xmcuart` handover, which needs `xmcuart` to
-      be that holder. Two mutually exclusive premises behind one option in one ELF. Separating them
+      it, and `consoledemo` exists to demonstrate the console driver's handover, which needs that driver
+      to be that holder. Two mutually exclusive premises behind one option in one ELF. Separating them
       costs nothing, because the property under test -- `arch_console_reclaim` repairs a garbled
       UART from the panic path -- does not depend on WHO garbled the UART. The remedy this replaces
       is corrected in place under the five-apps DEV-window item below. It carries **no CTest gate**,
@@ -8183,7 +8285,7 @@ one, so those captures cannot be re-derived from history.
       2026-08-05 -- and
       `xmc4800-relax` defaults to its FULL service list under enforcement. The wire at
       `commit 270b6fa` (`.session/m456-silicon/b2-xmcssc-vcom.log`) is
-      `[xmcuart] driver up (polled TX)` followed by
+      the polled USIC console driver's up line followed by
       `[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)`: the board did NOT go
       dark, which is precisely what the refusal guarded against.
 - [x] **`pizero2350` `rootfault` and `rootauth` are TAKEN.** Both at `c5d9b0d`: `rootfault` a PRECISE
@@ -8702,7 +8804,7 @@ vendor reset interface.
       are unverified here** and the datasheets are in the local reference set; confirm the RP
       pair really is one block before planning on it.
 - [ ] **It is a service, not a port.** A console service kind entry that publishes an endpoint,
-      exactly like `k64uart`. The handover machinery is transport-agnostic and already carries
+      exactly like `k64uartirq`. The handover machinery is transport-agnostic and already carries
       the choreography (create endpoint, publish, grant the window, spawn the unprivileged
       driver, drop root's cap), so nothing in `system/init/` should need to learn about USB.
 - [ ] **The panic path reclaims and polls, and this is the part to design rather than discover.**
@@ -9470,8 +9572,8 @@ result by the table above; kept for the two findings under it that are still ope
       driver -- but decide deliberately which side owns the cook, because "the driver is
       transparent and the console abstraction cooks" is a defensible answer too. What is NOT
       defensible is the two paths disagreeing.
-- [x] **All five IRQ drivers now emit a first-light marker, witnessed on silicon at `c82cc63`.** The polled siblings write
-      `[xmcuart] driver up (polled TX)` / `[k64uart] driver up (polled TX)` DIRECTLY to the TX
+- [x] **All five IRQ drivers now emit a first-light marker, witnessed on silicon at `c82cc63`.** The polled siblings, since
+      removed, wrote their `driver up (polled TX)` lines DIRECTLY to the TX
       register, which proves the window grant, the channel and the TX path before any
       ring/IRQ/doorbell machinery is involved. **`k64uartirq` gained the equivalent at `372e7b4`**
       (`Uart::win_puts`, a bounded TDRE poll with `TIE` still clear so it cannot assert the line,
@@ -11046,7 +11148,7 @@ here because they are pre-existing isolation facts, not things that pass created
       every silicon capture, so the case totals stamped in `docs/reference/boards.md` are right for
       their commits and neither new case has ever run on a chip.
       Verified statically on `xmc4800-relax-st -DKICKOS_HAVE_MPU=1`, whose service list resolves to
-      `kickos_services_xmc4800relax` (`xmcuart` U0C0 + `xmcssc` U0C1) -- the `xmcspi` and
+      `kickos_services_xmc4800relax` (the polled USIC console on U0C0 + `xmcssc` U0C1) -- the `xmcspi` and
       `consoledemo` ELFs both carry `kickos_board_services`, so both drivers are up before `main`.
         - `xmcspi`, `xmccshold`, `pvprobe`, `inprstorm` each grant `U0C1_BASE`/`0x200` =
           `[0x40030200,0x400303FF]`, the exact window the `xmcssc` bus service holds. This is a REAL
@@ -11058,7 +11160,7 @@ here because they are pre-existing isolation facts, not things that pass created
           they now reach FDR/BRG/CCR through `arch_periph_reg_write` instead of writing them directly,
           but they still grant the same U0C1 window, and the one-holder check is about the window.
         - `consoledemo`'s scrambler grants `0x40030000`/`0x200` = the exact window the unprivileged
-          `xmcuart` driver holds. Here the double grant is the POINT (garble a live console, prove
+          console driver holds. Here the double grant is the POINT (garble a live console, prove
           `arch_console_reclaim` recovers it), so the check structurally obsoleted the way it was
           staged. **RESOLVED in M4.5.6, and not the way this entry first proposed**: the scrambler is
           now its own app, `conreclaim`, REGISTERED only when the service-list selection knob already resolves
@@ -11090,8 +11192,8 @@ here because they are pre-existing isolation facts, not things that pass created
       silently dropped on any board whose console has been published to a userspace driver.
       `pvprobe` and `xmcspi` print through `kickos::emit` now: on the kernel console a burst filled
       the ring and `kos_print` dropped the lines their judges read. `inprstorm` prints the same
-      way, its heartbeat aside: a dropped beat is what it measures, and its stdout is the kernel's
-      by design, the console path being what it attacks.
+      way, its heartbeat aside: a raw write whose wait for ring room is what it measures, and its
+      stdout is the kernel's by design, the console path being what it attacks.
 - [~] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. ADDRESSED by
       stage 3, silicon-unwitnessed.** The `stm32f411` `arch_periph_enable` backend covers the SPI1
       clock gate and the pinmux encoding covers `PE3`, but `frdmk64f` was the only board on the bench
@@ -11211,7 +11313,7 @@ here because they are pre-existing isolation facts, not things that pass created
 ## Found during the M4.5.3 stage-3 work (2026-07-29)
 
 - [x] **The console driver cannot report its own bring-up failure, by any available means.**
-      `k64uart_console_start` publishes the console before spawning the driver, so the driver runs
+      The polled UART0 console driver's start publishes the console before spawning the driver, so the driver runs
       with `ConsoleState::USER_OWNED`, where `console_emit` is `return; // DROP`
       (`kernel/init/console.cc:133`) and RTT is compiled out on this board. `kickos::emit` is worse
       than dropped: the driver's stdout cap index 0 IS the endpoint it was spawned to serve, and
@@ -11226,8 +11328,8 @@ here because they are pre-existing isolation facts, not things that pass created
       **owned by M4.6.1**. Note the same drop applies to that driver's success line and to root's own
       `k64dspi_spi_start` error prints.
       **This is the DARK WINDOW, and it is narrower than "a published console hides diagnostics".**
-      The window is between the publish and the driver actually serving cap 0 (`k64uart.cc:209`,
-      `xmcuart.cc:179`); it is a property of the ordering and of this driver's own cap 0, not of the
+      The window is between the publish and the driver actually serving cap 0 (in the polled
+      console drivers, since removed); it is a property of the ordering and of this driver's own cap 0, not of the
       published state as such. An ordinary app on `printf` / `std::cout` reaches a published driver
       fine (see the Blockers list above), so nothing here is an argument against publishing a console.
       **This item is what the standing "SPI-service silicon halt" blocker actually was, and the halt
@@ -11392,7 +11494,7 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 - [x] **Console device handover** -- `ConsoleState{KERNEL_OWNED,USER_OWNED,RECLAIMED}` drop-routing,
       `console_tx_deinit` (USER_OWNED set last) + the B1 in-flight-writer drain, `kos_console_publish`
       (#29, privileged), stdout cap seated at index 0, `_write` probes `kos_send(0)` then falls back.
-      Userspace polled XMC UART driver (`system/driver/xmc4800/xmcuart` + `consoledemo`). SILICON PASS on XMC:
+      Userspace polled XMC UART driver (since removed) + `consoledemo`. SILICON PASS on XMC:
       end-to-end app printf -> IPC -> userspace driver -> wire, under enforcement.
 - [x] **Panic-path console reclaim** -- `arch_console_reclaim` per chip (XMC full in-window rewrite,
       KSCFG.MODEN-first; K64F uart0 + zero MODEM/C3/S2/IR/C7816), `kickos_isr_fault`->`kpanic_enter`
@@ -11500,7 +11602,12 @@ update `SystemCoreClock` in the same step so the ns<->tick math stays coherent.
       all: the USB PLL is separate/untouched and WS=4 already covers 144.
 - [ ] *(optional perf)* STM32F411 84 -> 96/100 -- deliberate sweet-spot today; only if we
       want the true ceiling. F302 is HW-capped (Nucleo has no HSE crystal);
-      C6/K64F/RX72M/F103 already at max; ESP32/RP2040/XMC now at max (silicon-validated).
+      K64F/RX72M/F103 already at max; ESP32/RP2040/XMC now at max (silicon-validated).
+- [ ] **ESP32-C6: PLL bring-up 40 -> 160 MHz** (deferred out of M10.5 by the maintainer).
+      KickOS sets no C6 clock tree, so every EN reset leaves the CPU on the 40 MHz crystal;
+      the kernel reads the rate from PCR at boot, so the bring-up only has to switch the
+      source. The C6 AMP judge accepts the crystal rate only and moves with it; the
+      wallclock capture is the witness.
 
 ## M1 -- ESP32-C6
 
@@ -13545,7 +13652,7 @@ absent from the bench at the time, so SYSMPU and PMP NAPOT had no witness of thi
 one now, and so does `rpusb`, which has since run on `picopi` as well as `pizero2350`. The paragraph
 is kept for what it says about the RISK of shipping a converted driver unwitnessed, not as a
 statement of coverage. Both are converted drivers
-(`k64uartirq`, `k64uart`, `k64dspi`, `c6uart`) and one of them carries a deliberate behaviour
+(`k64uartirq`, the polled UART0 console since removed, `k64dspi`, `c6uart`) and one of them carries a deliberate behaviour
 change: `k64dspi` now panics where it used to `exit(-1)`. That change is build-only. `rpusb` is also
 unwitnessed -- it builds and links for both `pizero2350` and `picopi` but has never run since the
 conversion, and its own console-reclaim premise is a named open gap.
@@ -13782,7 +13889,7 @@ Found by applying the `rr_interleave` lesson one board over -- measure a RATE be
 | `esp32c6-wroom` + `..._esp32c6_uartirq` | 1 | 0 |
 
 **80% is not marginality, it is a defect**, and it is K64F-specific and IRQ-service-specific: the same
-board on its DEFAULT list (`k64uart` + `k64dspi`, polled) is 95 ok clean, and every other board is
+board on its DEFAULT list (the polled UART0 console + `k64dspi`) is 95 ok clean, and every other board is
 clean under its own IRQ list.
 
 **It is NOT the PendSV pair race.** That fix is in this tree and cured `rr_interleave`; this survives

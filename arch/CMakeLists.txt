@@ -8,8 +8,10 @@ endif()
 
 if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
   add_compile_definitions(KICKOS_RV32_LP=1)
+  set_property(GLOBAL PROPERTY KICKOS_RV32_LP 1)
 else()
   add_compile_definitions(KICKOS_RV32_LP=0)
+  set_property(GLOBAL PROPERTY KICKOS_RV32_LP 0)
 endif()
 
 # --- Seam fallbacks: the lone-TU rule ----------------------------------------
@@ -198,7 +200,7 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
 endif()
 
 # No archive holding kernel text may name the app's runtime; the kernel's own copies go by the
-# kickos/kruntime.h names. kickos_lib is left out: it defines the app's copies.
+# kickos/kruntime.h names. kickos_lib is left out: on these boards it is user code.
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
   add_test(
     NAME    kernel_runtime
@@ -319,8 +321,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
   if(KICKOS_HAVE_ASPACE)
     kickos_privatise_runtime(kickos_chip_${KICKOS_CHIP})
-    # Reset_Handler references app-half symbols (__kickos_appbss_start/_end, __eh_frame_start)
-    # and a weak __register_frame. The path is absolute to match the glob.
+    # Reset_Handler references the app-half bounds __kickos_appbss_start/_end. The path is
+    # absolute to match the glob.
     kickos_split_image_tu(kickos_chip_${KICKOS_CHIP}
       "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/chip_${KICKOS_CHIP}.cc")
   endif()

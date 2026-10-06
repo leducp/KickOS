@@ -4010,7 +4010,97 @@ timeouts while two sweeps shared the box, and passed alone.
 
 ## M10.5: the fleet, and what these green runs do NOT say
 
+**SWEEP 4, THE FULL FLEET ON A QUIET BOX, RAN ONCE ON THE TREE BEFORE THE LAST FIXES.** It was red
+on four presets no agent had verified: the plain bluepill-c8 and f302nucleo selftest manifests,
+the C6 LP node's clock-order gate, and the LX6 SMP bench build's interrupt depth. Each was fixed and
+its preset re-run alone; the CI fixes that followed (the NVIC probe that never quit, QEMU gate
+timeouts derived from the boot bound, the out-of-tree app boot moved out of the host step) were
+checked by the CI steps they fix, not by another sweep. The maintainer ruled no second sweep.
+
+**M10.5 LANDS AS A STACK OF SQUASHED PRS ON MASTER, IN ORDER.** The first three are merged. A CI
+fix found after the stack was cut was carried into every later PR so each one is green on its own;
+the top PR holds everything after the last cut. Pushing is the maintainer's.
+
+**WHERE IT RAN ON SILICON.** The final pass ran on the tree just before that last merge, on
+xmc4800-relax, esp32c6-wroom (one-core, flat, and the AMP node 0 alone), esp32-wroom one-core and
+SMP, f302nucleo, f411disco and rx72m. Every capture passed its judge, rx72m's cxxtest only on a
+re-flash (below). Fault records came out whole, writers on a full ring lost no line on the
+TX-interrupt boards, and the wallclock image held a 5 s kernel sleep to within 40 us of the host's
+arrival stamps on every board it reached (2026-10-07, measured). The C6 AMP node-0 selftest images
+were captured by hand: the fleet pass takes only the partition's own image on that variant.
+
+**THE ESP32-C6 KERNEL CLOCK RAN FOUR TIMES SLOW SINCE ITS BRING-UP, AND NO GATE SAW IT.** MTIME
+counts the CPU clock, and the board boots from its EN reset on the 40 MHz crystal. The 160 MHz the
+conversion assumed came from a July bring-up that found the PLL left on. It was found by timing the
+tick against the UART's baud; its witness now is the host's arrival stamps against a kernel sleep,
+red at 19.99 s for 5 s on the old conversion. The rate is now read from the clock tree at boot, and
+a rate with no exact conversion stops the boot. **A clock error has no witness but an outside
+clock**, which is why every capture route stamps its lines and every captured board ships wallclock.
+The C6 AMP judge accepts the 40 MHz crystal alone: a PLL bring-up, recorded as open, changes the
+judge with it.
+
+**THE FLEET HAD NO SMP VARIANT, SO THE ESP32 SMP C++ IMAGES REBOOT-LOOPED UNSEEN.** Reset called
+`__register_frame`, which reached malloc and newlib's reentrancy lookup with no thread pointer set.
+The frames are now registered on the root thread before the app constructors, a gate walks the boot
+path for thread-pointer reads (it does not follow every indirect call), and the fleet captures every
+variant a board declares except the bench builds.
+
+**SWEEPS 1 TO 3 NEVER RAN THE HOST UNIT TESTS.** The sweep script configured the sim without the
+GTest prefix, so those sweeps ran only the tree tests. Sweep 4 is the first to run them. A sweep's
+preset count says nothing about whether its host tests ran.
+
+**THE RX72M'S STDOUT VANISHED ON ITS FIRST SILICON RUN OF THE DEFAULT SYSTEM, AND ONLY A
+PRINTED-LINE CAPTURE COULD SAY SO.** RX newlib calls the plain `write`/`isatty` names, which KickOS
+aliased on x86_64 alone, so libnosys answered and the bytes went nowhere. That is why images that
+print a verdict carry a capture judge, and why the images an emulator judges are marked owed on
+boards that have none, rather than passed.
+
+**A CONSOLE DRIVER'S OWN TASK HAS NO STDOUT.** Once `kos_print` became the one blocking stdout
+writer, a console driver's thread printing on cap 0 sent to the endpoint it serves and parked there.
+The task that serves the console gets no cap 0; its prints take the kernel route and drop at once
+while the UART is its own. A print from a console driver that never shows is this rule, not a lost
+line.
+
+**VIRT_RV64, THE I.MX 8M PLUS AND Q35 NOW DROP A KERNEL LINE ON A FULL FIFO.** Their sync writers
+stop at the first stall and drop the rest of the line, like every other chip's. A kernel line
+missing from one of those QEMU captures under load is this, not a flake to re-run away.
+
 **WHAT IT DOES NOT SAY.**
+- No silicon has run the last merge: stdout's byte count on a refused or cancelled write,
+  `consoledemo` and `k64console` on their IRQ console drivers, and the XMC4800 and K64F with their
+  polled console drivers gone. Sweep 4 and the host tests are its only witnesses.
+- picopi, pizero2350 and teensy41 were not reached, because their USB console cable is not on the
+  bench host. Owed there: both USB console selftests, `usbcdcwit` (the only witness of the short
+  accept under a full TX ring), `wallclock_usb` and the USB identity rows, the RP2350 ACCESSCTRL
+  denial (its judge has held only a planted capture), the Teensy LPUART6 RX daisy fix, and the i.MX
+  RT1062 with its D-cache on in every image.
+- bluepill-c8 and blackpill share one probe and were not reached; their task-budget skips and
+  rebalanced selftest regions are derived, not captured. microbit has no bench row.
+- The K64F ran on a local rig only, on an earlier tree: blink by eye, k64dspi against the LAN9252
+  shield, k64drv, both reclaim witnesses, the selftest three times and mpu_fault. Owed, behind the
+  J-Link's daily notice: rootfault, a full fleet pass, the SYSMPU user rights narrowed to the core
+  alone with no chip address for a fetch fault, and k64console on k64uartirq.
+- An emulator-judged image (stackdepth, rebootdemo, ringppb, the pspguard family, the ESP32's fault)
+  is owed on every board with no emulator, and blink is read by eye only. A capture carries no exit
+  status, so every "ended the system with status N" clause rests on the emulator gates.
+- f411spi's loopback is not wired (no PA7 to PA6 jumper), so its loopback clause is owed and the
+  capture judges only the rest.
+- rx72m's flasher timed out with E4000003 twice, once per pass on different images, and each passed
+  on a re-run. Not root-caused; a pass that hits it ends incomplete.
+- The console ISR now wakes a parked writer. The trap red-zone gate bounds that tail where it roots
+  interrupts; armv7m, armv6m and rxv3 take interrupts on MSP/ISP stacks no gate bounds, by design
+  and older than M10.5, so there the tail has no measured bound.
+- `board_refusals` copies the source tree while configures rewrite composition YAML in it; under
+  `-j` that is a race, older than M10.5 and not fixed. A one-off tree-gate failure seen during M10.5
+  did not reproduce in 86 runs.
+- The console's dark-window wait is unwitnessed on silicon, and no emulated board declares a reclaim
+  window. Host tests and the sim script it.
+- The ARMv6-M fault reporter's frame check is held by a host gate only: a wild PSP locks a v6-M part
+  up at HardFault entry, so no target arm can reach it.
+- The kernel's cache maintenance for uncached frames, and the out-of-lock mapping sync, run on QEMU
+  only, which models no cache hazard; no translating silicon is on the bench. The masked spans the
+  per-granule window does not cover are listed in `docs/reference/porting.md`. The activation-lock
+  assert is debug-only, and no SMP preset builds debug.
 - The ESP32-C6 UART flush waits for `ST_UTX_OUT` 0, the ESP32's TX_IDLE encoding, because the C6
   manual prints no encoding for the field. A `c6txidle` capture witnesses it at one baud, 115200,
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last

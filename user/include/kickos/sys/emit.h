@@ -6,14 +6,15 @@
 // kos_print; the names here are its implementation.
 //
 // Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
-// console for the unsent remainder when index 0 is empty (-KOS_EBADF), or nothing serves the
-// published console (-KOS_EAGAIN, -KOS_ECONNREFUSED): a driver's task that ended, or its
-// endpoint gone. A receiver taking fewer bytes than a chunk, none included, is offered the rest
-// again on the endpoint. The kernel console alone is not enough: console_emit drops every byte
-// handed to it once the UART is USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where
-// a publish landed between the two and index 0 takes the line again, and the remainder is sent
-// there. A task that set O_NONBLOCK is answered -KOS_ETIMEDOUT by either where it would wait,
-// and the write stops there.
+// console for the unsent remainder only where no route serves the send: index 0 empty
+// (-KOS_EBADF), or nothing serving the published console (-KOS_EAGAIN, -KOS_ECONNREFUSED), a
+// driver's task that ended or its endpoint gone. Any other refusal ends the write. A receiver
+// taking fewer bytes than a chunk, none included, is offered the rest again on the endpoint.
+// The kernel console alone is not enough: console_emit drops every byte handed to it once the
+// UART is USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where a publish landed
+// between the two and index 0 takes the line again, and the remainder is sent there. A task
+// that set O_NONBLOCK is answered -KOS_ETIMEDOUT by either where it would wait, and the write
+// stops there.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H
@@ -26,57 +27,55 @@
 namespace kickos
 {
 
-// The bytes of s the kernel console took. A refusal with nothing taken is offered again: the ring
-// drains and a peer's claim on a shared UART ends. `served` is set where it refused the rest
-// because this thread's stdout endpoint takes it now, `would_block` where this task is
-// non-blocking and the console would make it wait. It also stops at a buffer the kernel refuses,
-// and at a wait the writer's own cancellation ended.
-inline size_t kconsole_offer(char const* s, size_t n, bool& served, bool& would_block)
+// The bytes a write took, and where that is short of them all, the kernel's answer that stopped
+// it; error is 0 once every byte went.
+struct WriteResult
 {
-    size_t sent = 0;
-    while (sent < n)
+    size_t sent;
+    int32_t error;
+};
+
+// The bytes of s the kernel console took, which waits in the kernel for room where this task
+// blocks. Where it stopped short, error is -KOS_EBUSY where this thread's stdout endpoint takes the
+// rest now, -KOS_ETIMEDOUT where this task is non-blocking and the console would make it wait, and
+// otherwise the refusal: a buffer the kernel refuses, a wait the writer's own cancellation ended.
+inline WriteResult kconsole_offer(char const* s, size_t n)
+{
+    WriteResult r = {0, 0};
+    while (r.sent < n)
     {
-        int32_t const w = kos_kconsole_write(s + sent, n - sent);
-        if (w == -KOS_EBUSY)
+        int32_t const w = kos_kconsole_write(s + r.sent, n - r.sent);
+        if (w < 0)
         {
-            served = true;
+            r.error = w;
             break;
         }
-        if (w == -KOS_ETIMEDOUT)
+        // The kernel never answers 0 for bytes it was offered; a stop still carries an error.
+        if (w == 0)
         {
-            would_block = true;
+            r.error = -KOS_EIO;
             break;
         }
-        if (w == -KOS_EAGAIN)
-        {
-            kos_yield();
-            continue;
-        }
-        if (w <= 0)
-        {
-            break;
-        }
-        sent += static_cast<size_t>(w);
+        r.sent += static_cast<size_t>(w);
     }
-    return sent;
+    return r;
 }
 
-inline size_t stdout_write(char const* s, size_t total);
+inline WriteResult stdout_write(char const* s, size_t total);
 
 inline void kconsole_write_all(char const* s, size_t n)
 {
-    bool served = false;
-    bool would_block = false;
-    size_t const sent = kconsole_offer(s, n, served, would_block);
-    if (served)
+    WriteResult const r = kconsole_offer(s, n);
+    if (r.error == -KOS_EBUSY)
     {
-        (void)stdout_write(s + sent, n - sent);
+        (void)stdout_write(s + r.sent, n - r.sent);
     }
 }
 
-// The bytes of s taken: all of them, short only where this task is non-blocking and the console
-// would make it wait. Bytes a cancelled writer or a refused buffer loses count as taken.
-inline size_t stdout_write(char const* s, size_t total)
+// The bytes of s taken, all of them where error is 0. Short with -KOS_ETIMEDOUT where this task
+// is non-blocking and the console would make it wait, else with the error that refused the rest:
+// bytes a refused buffer or a cancelled writer loses are not counted.
+inline WriteResult stdout_write(char const* s, size_t total)
 {
     size_t sent = 0;
     while (sent < total)
@@ -86,46 +85,40 @@ inline size_t stdout_write(char const* s, size_t total)
         {
             chunk = KOS_EP_MSG_MAX;
         }
-        long const r = kos_send(0, s + sent, chunk);
-        if (r == -KOS_ETIMEDOUT)
-        {
-            return sent;
-        }
+        int32_t const r = kos_send(0, s + sent, chunk);
         // A count short of the chunk, zero included, leaves the rest to be offered again. That
         // is no spin: the rendezvous consumed the receive, so the next send parks until the
         // driver receives again, or for a non-blocking task answers at once.
-        if (r < 0)
+        if (r >= 0)
         {
-            // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_ECONNREFUSED means the driver
-            // died and nothing may restart it, and this cap is now the only thing pinning its
-            // endpoint slot, so close it or the slot is stranded for this task's whole life.
-            // -KOS_EAGAIN keeps the cap: a restarted driver serves it again. -KOS_EBADF is
-            // pre-publish: index 0 is empty and there is nothing to close.
-            if (r == -KOS_ECONNREFUSED)
-            {
-                (void)kos_handle_close(KOS_CAP_STDOUT);
-            }
-            // Remainder only: resending from the start duplicates the chunks the driver
-            // already took.
-            bool served = false;
-            bool would_block = false;
-            size_t const took = kconsole_offer(s + sent, total - sent, served, would_block);
-            sent += took;
-            if (would_block)
-            {
-                return sent;
-            }
-            if (not served)
-            {
-                return total;
-            }
-            // Never a spin on one state: each pass back needs the send to have found no
-            // receiver and the kernel console then to have found one.
+            sent += static_cast<size_t>(r);
             continue;
         }
-        sent += static_cast<size_t>(r);
+        if (r != -KOS_EBADF and r != -KOS_EAGAIN and r != -KOS_ECONNREFUSED)
+        {
+            return {sent, r};
+        }
+        // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_ECONNREFUSED means the driver died and
+        // nothing may restart it, and this cap is now the only thing pinning its endpoint slot,
+        // so close it or the slot is stranded for this task's whole life. -KOS_EAGAIN keeps the
+        // cap: a restarted driver serves it again. -KOS_EBADF is pre-publish: index 0 is empty
+        // and there is nothing to close.
+        if (r == -KOS_ECONNREFUSED)
+        {
+            (void)kos_handle_close(KOS_CAP_STDOUT);
+        }
+        // Remainder only: resending from the start duplicates the chunks the driver already
+        // took.
+        WriteResult const k = kconsole_offer(s + sent, total - sent);
+        sent += k.sent;
+        // Never a spin on one state: each pass back needs the send to have found no receiver
+        // and the kernel console then to have found one.
+        if (k.error != -KOS_EBUSY)
+        {
+            return {sent, k.error};
+        }
     }
-    return sent;
+    return {sent, 0};
 }
 
 inline void emit(char const* s)

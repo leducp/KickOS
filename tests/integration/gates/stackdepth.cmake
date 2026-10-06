@@ -15,9 +15,7 @@ kickos_emulator_judged(stackdepth0 stackdepth1)
 set(_sd_floor 256)
 
 # The NAME is spelled out: the derived default names the TARGET image alone, stackdepth0.
-if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT
-   AND (KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_QEMU_MPS2
-        OR KICKOS_BOARD STREQUAL "microbit"))
+if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
   kickos_add_qemu_test(NAME ${_tag}_stackdepth TARGET stackdepth0 BOOTS 2
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stackdepth.sh"
     ARGS "$<TARGET_FILE:stackdepth1>" ${_sd_floor})

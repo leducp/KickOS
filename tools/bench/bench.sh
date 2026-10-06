@@ -141,7 +141,7 @@ fi
 # The preset variant. `st` states the enforcing posture and the selftest syscalls; `bench`
 # states the same posture plus the microbench. The variant is part of the BUILD DIR so a
 # bench capture and a selftest capture at one TAG cannot share a tree.
-VARIANT="${VARIANT-st}"
+VARIANT="${VARIANT-$BENCH_DEFAULT_VARIANT}"
 PRESET="$BOARD"
 BUILD="build/$TAG-$BOARD"
 if [ -n "$VARIANT" ]; then
@@ -412,7 +412,7 @@ KICKOS_DIAG_TERSE, so the identity rows cannot be rendered" >&2; return 1; }
   built=$(image_string "$IMG" kickos_build_time)
   [ -n "$built" ] || { echo "REFUSING: $IMG holds no kickos_build_time, so the identity rows \
 cannot be held to it" >&2; return 1; }
-  app=$(image_string "$IMG" kickos_app_build_time)
+  app=$(image_string "$IMG" kickos_app_stamp)
   if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$terse" "$version" "$BOARD" \
                "$EXPECT_COMMIT" "$built" "$app"); then
     echo "REFUSING: $LOG is not a capture of the flashed image: $why" >&2

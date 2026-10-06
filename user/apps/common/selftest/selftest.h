@@ -238,6 +238,17 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL size_t discover_granule();
     KICKOS_SELFTEST_LOCAL void pool_probe_worker(void*);
     KICKOS_SELFTEST_LOCAL bool pool_can_host(int n);
+    // The objects an arm holds at once out of main's task budgets, beside the two semaphores
+    // main holds for the run. tests/static/selftest_demands.py reads each field off the call,
+    // so every field is a literal or a named constant.
+    struct ObjectDemand
+    {
+        int sems = 0;
+        int mutexes = 0;
+        int endpoints = 0;
+        int notifies = 0;
+    };
+    KICKOS_SELFTEST_LOCAL int objects_can_host(ObjectDemand want);
     // kos_ram_alloc, refused while g_ram_starved is set: the refusal paths of the arms that
     // reserve through it are otherwise reached only once a board's arena has run out. A
     // member of another task reads its own copy of the flag, so it is told through

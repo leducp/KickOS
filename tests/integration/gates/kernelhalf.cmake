@@ -26,8 +26,8 @@ endif()
 
 # RV64 has a script of its own: `scause` carries no fault-status field, so a permission fault and
 # a translation fault are the same number and the assertion that separates them cannot be ported.
-if(KICKOS_BOARD STREQUAL "qemu-riscv64")
-  kickos_add_qemu_test(NAME qemu_riscv64_kernel_half TARGET kernelhalf
+if(KICKOS_ARCH STREQUAL "rv64imac")
+  kickos_add_qemu_test(NAME ${_tag}_kernel_half TARGET kernelhalf
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_kernel_half_rv64.sh"
     ARGS "THREAD FAULT" 139)
 endif()

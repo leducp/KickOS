@@ -854,9 +854,10 @@ bool arch_irq_line_kernel_owned(int line);
 // covers, so its count can be short. A CR may already have gone out for an uncounted newline;
 // the retry seam below remembers it until LF lands.
 // write_sync is bounded, polled output for panic, faults and startup, safe
-// without scheduling or IRQs. It answers false once the channel stalled, having
-// dropped what it could not send. Each chip must define it; the fallback forwards
-// to write and cannot provide those guarantees.
+// without scheduling or IRQs. It answers false once the channel stalled, so more bytes
+// would stall too, having dropped what it could not send. A line an own-image AMP node
+// lost to a peer's claim is dropped and answers true. Each chip must define it; the
+// fallback forwards to write and cannot provide those guarantees.
 int arch_console_write(char const* buf, size_t n);
 #if KICKOS_AMP_OWN_IMAGE
 // A syscall writer's arch_console_write: carries its half-sent CR across short writes, and

@@ -34,10 +34,10 @@ extern "C"
     // Generated per build by cmake/build_stamp.cmake.
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
-    // NOT a linker bound: kickos/app.h emits this definition in every app TU that defines
-    // main, so weak is the vague linkage that merges the duplicates, and an app defining no
-    // main supplies none. Null then, which kbanner tests for.
-    extern char const kickos_app_build_time[] KICKOS_LINK_OPTIONAL;
+    // NOT a linker bound: kickos/app.h emits this definition in every TU of the image's
+    // executable, so weak is the vague linkage that merges the duplicates, and an image whose
+    // executable compiled no TU supplies none. Null then, which kbanner tests for.
+    extern char const kickos_app_stamp[] KICKOS_LINK_OPTIONAL;
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit), equal
     // where no window is carved, and the banner then reports "none". RX prepends one
@@ -93,7 +93,7 @@ namespace kickos
         // register anchoring the app's small data, which an unprivileged thread writes
         // (tests/static/check_riscv_kernel_gp.sh). A local volatile stops the value folding
         // but not the address being materialised inline.
-        char const* const volatile g_app_build_time = kickos_app_build_time;
+        char const* const volatile g_app_stamp = kickos_app_stamp;
         struct kos_init_args* const volatile g_init_args_home = &kickos_init_args;
 
         void kbanner()
@@ -120,7 +120,7 @@ namespace kickos
             // Read through the link-time word above and, where the image is split, through
             // the kernel's own alias of those bytes: this runs before any address space is
             // activated, so the app's half may have no mapping yet.
-            char const* app_stamp = g_app_build_time;
+            char const* app_stamp = g_app_stamp;
             if (app_stamp != nullptr)
             {
                 char const* const alias
