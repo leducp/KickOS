@@ -33,7 +33,9 @@ enum kos_table_task_flags
 {
     // A packaged driver that takes the console: the init narrows its endpoint at the end of its
     // handover rather than at boot, and drains it before the system ends.
-    KOS_TABLE_TASK_CONSOLE = 1 << 0
+    KOS_TABLE_TASK_CONSOLE = 1 << 0,
+    // A packaged driver whose ring block is uncached: the init self-grants it KOS_MEM_NOCACHE.
+    KOS_TABLE_TASK_BLOCK_UNCACHED = 1 << 1
 };
 
 // kos_table_grant.kind

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `k64dspi` serving a service.
+
+version: 1
+board: frdmk64f
+stdout: kernel
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: main
+    entry: kickos_main
+    stack: 8192
+    priority: 2
+    authority: [memory, system, tasks]
+
+  - name: k64dspi
+    driver: k64dspi
+    devices: [/dev/dspi0]
+    accepts: [coarse_gate, device_not_isolated]
+    serves: /svc/k64dspi
+    priority: 12

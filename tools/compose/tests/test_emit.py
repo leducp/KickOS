@@ -172,7 +172,7 @@ class Emitted(unittest.TestCase):
         self.assertEqual(text, None)
 
     def test_a_table_layout_the_tool_does_not_emit_is_refused(self):
-        edits = [("  table: 3\n", "  table: 2\n")]
+        edits = [("  table: 4\n", "  table: 3\n")]
         refusals, table, path, manifest = self.table("qemu-arm64.yaml", manifest_edits=edits)
         self.assertEqual(table, None)
         self.assertEqual([r.split(": ")[1] for r in refusals], ["form.version"])

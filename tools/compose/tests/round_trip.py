@@ -217,7 +217,10 @@ class RoundTrip(unittest.TestCase):
             sensor.block = 64
             cases = [("control", rendered, 0),
                      ("a user task's ring block", emit.render(table, "xmc4800-relax.yaml"), 1),
-                     ("an unknown task flag", rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = 2,"), 1)]
+                     ("an unknown task flag", rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = 4,"), 1),
+                     ("an uncached block of no block",
+                      rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = KOS_TABLE_TASK_BLOCK_UNCACHED,")
+                      .replace(".block = 1024,", ".block = 0,"), 1)]
             stubs = os.path.join(scratch, "stubs.c")
             write(stubs, stub_source(table))
             for what, source, faults in cases:

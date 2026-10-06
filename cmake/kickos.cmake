@@ -4,8 +4,8 @@
 # KickOS build helpers: per-component flag posture, the driver-class backends an app links
 # (kickos_link_class_backends) and the image emitter kickos_emit_image().
 #
-# The application owns the final link: the link recipe lives on the exported KickOS::kickos /
-# KickOS::kickos_cxx usage targets, never in these helpers. An app is three lines,
+# The application owns the final link: the link recipe lives on the exported KickOS::kernel and
+# system targets, never in these helpers. An app is three lines,
 # examples/oot-mcu-app being the reference shape.
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ endfunction()
 #   x86_64 it marks the image's map for cleaning.
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
-#   after target_link_libraries(app PRIVATE KickOS::kickos).
+#   after target_link_libraries(app PRIVATE KickOS::kernel KickOS::system_default).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   if(KICKOS_ARCH STREQUAL "sim")
@@ -373,7 +373,7 @@ endfunction()
 # kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>]
 #                   [THREADS <role>:<priority offset>:<stack>:<capabilities>:<badged>...] [RECEIVER <role>]
 #                   [WINDOWS <role>...] [LINES <role>...] [NOTIFY]
-#                   [BLOCK <bytes>|none] [POSTURE handover|retain]
+#                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [POSTURE handover|retain]
 #                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE]
 #                   [CLIENT <target>...])
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
@@ -389,7 +389,9 @@ endfunction()
 #   its service-list entry's name; a stack is `default` only, bring_up spawning every thread on
 #   the kernel's default stack; a thread's capabilities are what its spawn delegates, and badged the
 #   copies of the driver's notification among them, which the bring-up mints for the spawn. NOTIFY
-#   says it uses the notification the shared bring-up creates. CLIENT names the libraries a task
+#   says it uses the notification the shared bring-up creates. BLOCK_CACHE uncached types the ring
+#   block KOS_MEM_NOCACHE, the init self-granting it so and its descriptor's block_flags stating
+#   it; cached is the default. CLIENT names the libraries a task
 #   using the driver links, which kickos_compose links in a system naming it. Its catalogue entry joins the
 #   KICKOS_DRIVER_CATALOGUE global property for the manifest, and its descriptor reads the
 #   generated <kickos/driver/declared/<name>.h>, whose k_declared it static_asserts declared_as.

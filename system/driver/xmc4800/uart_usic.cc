@@ -97,8 +97,19 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
         return -KOS_ENOTSUP;
     }
 
+    if (cfg->line_index > ru::INPR_SR_LAST)
+    {
+        return -KOS_EINVAL;
+    }
+
     u->base = cfg->base;
     u->stats = cfg->stats;
+
+    // The transmit-buffer event to the service request the line index names.
+    uint32_t inpr = r32(u->base + ru::off::INPR);
+    inpr &= ~ru::INPR_TBINP_MASK;
+    inpr |= (static_cast<uint32_t>(cfg->line_index) << ru::INPR_TBINP_SHIFT) & ru::INPR_TBINP_MASK;
+    r32(u->base + ru::off::INPR) = inpr;
 
     // CCR is Write = PV: an unprivileged store is discarded by the bus with NO fault, so the
     // read-back is the only evidence either way.

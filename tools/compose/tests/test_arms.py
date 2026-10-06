@@ -559,7 +559,7 @@ COMPOSITION_ARMS = [
 # A manifest as tools/manifest/genmanifest.py writes it, beside a copy of platform/.
 MANIFEST = """version: 1
 abi:
-  table: 3
+  table: 4
   cap_reserved: 2
   symbol_prefix: ""
 target:
@@ -610,6 +610,7 @@ drivers:
     endpoints: 1
     notifications: 1
     block: none
+    block_cache: cached
     posture: retain
     barrier: none
     console: false
@@ -625,6 +626,7 @@ drivers:
     endpoints: 1
     notifications: 1
     block: 1024
+    block_cache: cached
     posture: handover
     barrier: 1
     console: true
@@ -714,7 +716,7 @@ SENSOR_LINES = ("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: r
 # A packaged driver of one window role, and a task running it on q35 over `device`.
 PORT_DRIVER = [("drivers:\n", "drivers:\n  portdrv:\n    windows: [regs]\n    lines: []\n    threads:\n"
                 "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
-                "    notifications: 0\n    block: none\n    posture: retain\n    barrier: none\n"
+                "    notifications: 0\n    block: none\n    block_cache: cached\n    posture: retain\n    barrier: none\n"
                 "    console: false\n    start: portdrv_start\n    receiver: io\n    client: []\n")]
 def com2_driver(device):
     return ("    maps: { /shm/history: ro }\n",
@@ -927,7 +929,7 @@ ADMISSION_ARMS = [
 # Minimal pairs on MANIFEST.
 MANIFEST_ARMS = [
     ("form.unknown-field", [("version: 1\n", "version: 1\nkernel: 0.5.1\n")], False),
-    ("form.unknown-field", [("  table: 3\n", "  table: 3\n  lookups: 1\n")], False),
+    ("form.unknown-field", [("  table: 4\n", "  table: 4\n  lookups: 1\n")], False),
     ("form.unknown-field", [("  arch: armv7m\n", "  arch: armv7m\n  fpu: true\n")], False),
     ("form.unknown-field", [("    nodes: 2\n", "    nodes: 2\n    peers: [1]\n")], False),
     ("form.unknown-field", [("  enforced: true\n", "  enforced: true\n  unit: pmsav7\n")], False),
@@ -974,7 +976,11 @@ MANIFEST_ARMS = [
     ("form.enum", [("window_rule: pow2", "window_rule: napot")], False),
     ("form.enum", [("posture: retain", "posture: publish")], False),
     ("form.version", [("version: 1\n", "version: 2\n")], False),
-    ("form.version", [("  table: 3\n", "  table: 2\n")], False),
+    ("form.version", [("  table: 4\n", "  table: 3\n")], False),
+    ("manifest.block-cache", [("    block: none\n    block_cache: cached\n", "    block: none\n    block_cache: uncached\n")],
+     False),
+    (None, [("    block: 1024\n    block_cache: cached\n", "    block: 1024\n    block_cache: uncached\n")], False),
+    ("form.enum", [("    block: 1024\n    block_cache: cached\n", "    block: 1024\n    block_cache: nocache\n")], False),
     ("form.missing", [("    start: xmc_spi0_start\n", "")], True),
     ("form.name", [("start: xmc_spi0_start", "start: xmc-spi0-start")], False),
     ("form.boolean", [("  enforced: true\n", "  enforced: yes\n")], False),
@@ -990,7 +996,7 @@ MANIFEST_ARMS = [
     ("form.integer", [("    endpoints: 1\n    notifications: 1\n    block: 1024\n",
                        "    endpoints: 1\n    notifications: 1\n    block: 1_024\n")], False),
     ("form.integer", [("{ name: uartirq, priority: 1,", "{ name: uartirq, priority: -1,")], False),
-    ("form.range", [("  table: 3\n", "  table: 0x10000\n")], False),
+    ("form.range", [("  table: 4\n", "  table: 0x10000\n")], False),
     ("form.range", [("  thread_windows: 4\n", "  thread_windows: 256\n")], False),
     ("form.range", [("  isolated_cores: 0x0\n", "  isolated_cores: 0x100000000\n")], False),
     ("form.name", [("  board: xmc4800-relax\n", "  board: XMC4800\n")], False),
@@ -1473,6 +1479,12 @@ K64F_BESIDE_PIT = [("  dspi0: { window: [0x4002C000, 0x40],",
 K64F_UNRANGED = [("    ranges: [[0x40000000, 0x80000], [0x40080000, 0x7F000]]\n", "")]
 K64F_LEDS = "# leds\n    accepts: [device_not_isolated, coarse_gate]\n"
 K64F_LEDS_ISOLATED = (K64F_LEDS, "# leds\n    accepts: [device_not_isolated]\n")
+# A packaged driver with an uncached ring block and nothing else, and a K64F task running it.
+BLOCK_DRIVER = ("drivers:\n", "drivers:\n  blkdrv:\n    windows: []\n    lines: []\n    threads:\n"
+                "      - { name: io, priority: 0, stack: default, caps: 1, badged: 0 }\n    endpoints: 1\n"
+                "    notifications: 0\n    block: 1024\n    block_cache: uncached\n    posture: retain\n"
+                "    barrier: 1\n    console: false\n    start: blkdrv_start\n    receiver: io\n    client: []\n")
+K64F_BLOCK_TASK = ("tasks:\n", "tasks:\n  - name: blk\n    driver: blkdrv\n    serves: /svc/blk\n    priority: 9\n")
 K64F_SHARED = ("stdout: kernel\n", "stdout: kernel\nshared:\n  - name: /shm/state\n    size: 16\n    cache: uncached\n")
 K64F_CACHED = [("\ndata_cache: false\n", "\n")]
 ARM64_SCRATCH = [("  gpio: { window", "  scratch: { window: [0x09020000, 0x100] }\n  gpio: { window")]
@@ -1663,6 +1675,9 @@ SCENARIOS = [
                                 manifest=K64F_MANIFEST.replace("granule", "pow2"))),
     (None, on_k64f([], [], [("[0x4002C000, 0x40]", "[0x4002C000, 0x20]")], manifest=K64F_MANIFEST.replace("granule", "pow2"))),
     ("memory.uncached", on_k64f([K64F_SHARED], [("    cache: uncached", "memory.uncached")], K64F_CACHED, manifest=K64F_MANIFEST)),
+    ("memory.uncached", on_k64f([K64F_BLOCK_TASK], [("    driver: blkdrv", "memory.uncached")], K64F_CACHED,
+                                manifest=mutate(K64F_MANIFEST, [BLOCK_DRIVER])[0])),
+    (None, on_k64f([K64F_BLOCK_TASK], [], manifest=mutate(K64F_MANIFEST, [BLOCK_DRIVER])[0])),
     (None, on_k64f([K64F_SHARED], [], manifest=K64F_MANIFEST)),
     (None, on_k64f([K64F_SHARED, ("ends: never\n", "ends: never\naccepts: [no_protection]\n"),
                     ("[/dev/dspi0]\n    accepts: [device_not_isolated, coarse_gate]", "[/dev/dspi0]"),

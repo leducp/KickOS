@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The driver restart witness's system (tests/integration/check_driver_restart.sh), from the
-# composition KICKOS_WITNESS_SYSTEM against an installed KickOS package whose catalogue carries
-# tests/drivers. KICKOS_WITNESS_ROOT_DEPTH adds composition_witness/root_depth.cc.
+# The driver witnesses' system (tests/integration/check_driver_restart.sh and
+# check_driver_line.sh), from the composition KICKOS_WITNESS_SYSTEM against an installed KickOS
+# package whose catalogue carries tests/drivers. KICKOS_WITNESS_ROOT_DEPTH adds
+# composition_witness/root_depth.cc.
 
 cmake_minimum_required(VERSION 3.24)
 project(kickos_driver_witness LANGUAGES C CXX ASM)

@@ -12,10 +12,12 @@
 namespace drivers
 {
     // What a spawned driver thread does that the init sees: the console's IRQ thread sets its
-    // ring block's readiness latch unless `latch` is false.
+    // ring block's readiness latch unless `latch` is false. With `uncached_console` the console's
+    // descriptor types its ring block KOS_MEM_NOCACHE.
     struct Behaviour
     {
         bool latch = true;
+        bool uncached_console = false;
     };
 
     // Reset with each run of the walk.

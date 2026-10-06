@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged-driver line witness on QEMU `virt` with four A53 cores: testline's role bound to
+# the PL061's line, which its descriptor numbers as no line at all. The client's end ends the
+# system.
+
+version: 1
+board: qemu-arm64
+stdout: kernel
+ends: client
+heap: 65536
+
+tasks:
+  - name: line
+    driver: testline
+    lines: { irq: /dev/gpio/global }
+    serves: /svc/line
+    priority: 10
+    core: 1
+
+  - name: client
+    entry: line_client_main
+    stack: 12288
+    priority: 8
+    uses: [/svc/line]

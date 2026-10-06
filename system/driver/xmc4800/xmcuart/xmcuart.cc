@@ -16,6 +16,7 @@
 
 #include <kickos/driver/xmcuart.h>
 
+#include <kickos/driver/declared/xmcuart.h>
 #include <kickos/driver/uart.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/service.h> // kos_service_cfg
@@ -24,6 +25,7 @@
 #include <stdlib.h>
 
 namespace drv = kickos::driver;
+namespace declared = kickos::driver::declared::xmcuart;
 
 namespace
 {
@@ -76,14 +78,14 @@ namespace
         // base-parameterised across the USIC channels, so there is nothing to pin the cfg
         // against.
         .expected_base = 0,
-        .block_size = 0, // polled and TX-only: no ring, no doorbell, no readiness latch
+        .block_size = declared::k_declared.block_size, // polled and TX-only: no ring, doorbell or latch
         .block_flags = 0,
         .ready_offset = drv::KOS_DRV_READY_NONE,
-        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .ep_posture = declared::k_declared.ep_posture,
         .svc_kind = KOS_SVC_CONSOLE,
-        .line_count = 0,
-        .thread_count = 1,
-        .barrier_after = 1,
+        .line_count = declared::k_declared.line_count,
+        .thread_count = declared::k_declared.thread_count,
+        .barrier_after = declared::k_declared.barrier_after,
         .lines = {},
         // ONE thread, so no readiness latch: it is itself the endpoint's receiver, and no
         // point exists before it at which a timeout would be reportable. It also releases
@@ -93,8 +95,8 @@ namespace
         // one exact-cover descriptor, leaving the sibling channel U0C1 (base + 0x200) and
         // the SCU/IOCR peripherals outside it.
         .threads = {{.entry = xmcuart_console_driver,
-                     .name = nullptr,
-                     .prio_delta = 0,
+                     .name = declared::k_declared.thread_name[0],
+                     .prio_delta = declared::k_declared.prio_delta[0],
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
                      .cap_count = 1,
@@ -106,6 +108,8 @@ namespace
 
     static_assert(drv::valid(k_desc),
                   "the xmcuart descriptor is not a well-formed driver shape");
+    static_assert(drv::declared_as(k_desc, declared::k_declared),
+                  "the xmcuart descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

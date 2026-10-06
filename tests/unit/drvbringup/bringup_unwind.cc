@@ -267,6 +267,57 @@ namespace
         .block_init = nullptr
     };
 
+    // One window thread taking line 0's index, as a USIC channel routing its events does.
+    constexpr drv::Descriptor k_routed = {
+        .tag = "[drvroute] ",
+        .expected_base = K_BASE,
+        .block_size = 0,
+        .block_flags = 0,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_RETAIN,
+        .svc_kind = KOS_SVC_SPI,
+        .line_count = 1,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {{21, KOS_IRQ_EDGE, 2}},
+        .threads = {{.entry = t_irq,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
+                     .window_grant = true,
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}}},
+        .block_init = nullptr
+    };
+
+    // k_routed's thread on a descriptor that claims no line.
+    constexpr drv::Descriptor k_routed_lineless = {
+        .tag = "[drvroute0] ",
+        .expected_base = 0,
+        .block_size = 0,
+        .block_flags = 0,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_RETAIN,
+        .svc_kind = KOS_SVC_SPI,
+        .line_count = 0,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {},
+        .threads = {{.entry = t_irq,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
+                     .window_grant = false,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
+        .block_init = nullptr
+    };
+
+    static_assert(drv::valid(k_routed), "the routed gate descriptor is not a driver shape");
+    static_assert(not drv::valid_l2(k_routed_lineless), "L2 must refuse a line index of no line");
+
     struct kos_service_cfg cfg_of(uint8_t kind, uintptr_t base)
     {
         struct kos_service_cfg cfg = {};
@@ -630,12 +681,13 @@ namespace
         {
             in.block = g_ring;
             in.block_size = d.block_size;
+            in.block_flags = d.block_flags;
         }
         in.line_count = d.line_count;
         in.console = d.ep_posture == drv::KOS_DRV_EP_HANDOVER;
         for (uint8_t i = 0; i < d.line_count; i++)
         {
-            in.lines[i] = static_cast<uint16_t>(d.lines[i].number);
+            in.lines[i] = {static_cast<uint16_t>(d.lines[i].number), d.lines[i].index};
         }
         return in;
     }
@@ -828,10 +880,10 @@ TEST_F(DrvInstance, an_instance_that_is_not_this_driver_s_is_refused_before_the_
     struct kos_driver_instance in = instance_of(k_two);
     struct kos_service_cfg const cfg = cfg_with(&in);
 
-    in.lines[1] = 18u;
+    in.line_count = 1u;
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
-    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print") << "a line numbered differently";
-    EXPECT_PRED2(says, kos_seam_msg(), "lines are not the ones");
+    EXPECT_EQ(kos_seam_trace(), std::string{NARROW} + " print print") << "a line fewer than its roles";
+    EXPECT_PRED2(says, kos_seam_msg(), "lines are not as many as");
 
     kos_seam_reset();
     in = instance_of(k_two);
@@ -841,10 +893,56 @@ TEST_F(DrvInstance, an_instance_that_is_not_this_driver_s_is_refused_before_the_
 
     kos_seam_reset();
     in = instance_of(k_two_nocache);
+    in.block_flags = 0u;
     EXPECT_EQ(drv::bring_up(k_two_nocache, &cfg, nullptr), -1);
     EXPECT_PRED2(says, kos_seam_msg(), "ring block is not this driver's")
         << "a typed block the init's self-grant did not type";
+
+    kos_seam_reset();
+    in = instance_of(k_two);
+    in.block_flags = KOS_MEM_NOCACHE;
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_msg(), "ring block is not this driver's")
+        << "an ordinary block the init's self-grant typed";
     EXPECT_EQ(in.task, KOS_TASK_NONE);
+}
+
+TEST_F(DrvInstance, a_typed_block_matching_its_descriptor_is_the_task_s)
+{
+    struct kos_driver_instance in = instance_of(k_two_nocache);
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two_nocache, &cfg, nullptr), 0) << kos_seam_msg();
+    EXPECT_PRED2(says, kos_seam_trace(), "taskmemnc90 ") << kos_seam_trace();
+}
+
+TEST_F(DrvInstance, the_composition_s_lines_are_claimed_whatever_the_descriptor_numbers)
+{
+    struct kos_driver_instance in = instance_of(k_two);
+    in.lines[0] = {40u, 3u};
+    in.lines[1] = {41u, 4u};
+    struct kos_service_cfg const cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0) << kos_seam_msg();
+    EXPECT_EQ(kos_seam_claimed_line(0), 40);
+    EXPECT_EQ(kos_seam_claimed_line(1), 41);
+    EXPECT_EQ(kos_seam_claimed_line(2), -1);
+}
+
+TEST_F(DrvInstance, line_0_s_index_reaches_the_thread_that_routes_its_device_onto_it)
+{
+    struct kos_driver_instance in = instance_of(k_routed);
+    in.lines[0] = {40u, 5u};
+    struct kos_service_cfg cfg = cfg_with(&in);
+    EXPECT_EQ(drv::bring_up(k_routed, &cfg, nullptr), 0) << kos_seam_msg();
+    EXPECT_EQ(kos_seam_claimed_line(0), 40);
+    EXPECT_EQ(drv::line_index_of(drv::thread_start(kos_seam_spawn_arg(0))), 5u);
+
+    kos_seam_reset();
+    cfg = cfg_of(KOS_SVC_SPI, K_BASE);
+    kos_cap_t out = KOS_CAP_NONE;
+    EXPECT_EQ(drv::bring_up(k_routed, &cfg, &out), 0) << kos_seam_msg();
+    EXPECT_EQ(kos_seam_claimed_line(0), 21);
+    EXPECT_EQ(drv::line_index_of(drv::thread_start(kos_seam_spawn_arg(0))), 2u)
+        << "on a service list, the descriptor's own index";
 }
 
 TEST_F(DrvInstance, a_block_the_descriptor_refuses_to_lay_out_is_a_failed_start_before_the_task)

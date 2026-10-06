@@ -191,6 +191,9 @@ namespace kickos::xmc::reg::usic
     // SRx for the receive / alternative-receive interrupts (SR1 here).
     constexpr uint32_t INPR_RINP_SR1 = 1u << 8;
     constexpr uint32_t INPR_AINP_SR1 = 1u << 12;
+    constexpr uint32_t INPR_RINP_SHIFT = 8;
+    constexpr uint32_t INPR_AINP_SHIFT = 12;
+    constexpr uint32_t INPR_SR_LAST = 5; // a module has SR0 to SR5
 
     // CCR (RM p.18-160): MODE[3:0]=0001B selects the SSC protocol (written last to
     // enable the channel); RIEN(14)/AIEN(15) are the receive interrupt enables.

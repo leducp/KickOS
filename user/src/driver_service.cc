@@ -153,8 +153,8 @@ void drop_minted(kos_cap_t* minted)
 }
 
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
-                              kos_task_t task, uint32_t core_mask, bool under_init)
+                              kos_cap_t ep, kos_cap_t const* line, uint16_t line0_index,
+                              kos_cap_t note, kos_task_t task, uint32_t core_mask, bool under_init)
 {
     kos_cap_grant grants[KOS_DRV_CAPS_MAX] = {};
     // A BADGED notification copy exists only as long as this spawn needs a source for it.
@@ -200,6 +200,10 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg
     else if (t.arg == KOS_DRV_ARG_WINDOW)
     {
         arg = reinterpret_cast<void*>(cfg->mmio_base);
+    }
+    else if (t.arg == KOS_DRV_ARG_LINE0_INDEX)
+    {
+        arg = reinterpret_cast<void*>(line_index_arg(line0_index));
     }
     if (under_init)
     {
@@ -272,12 +276,12 @@ int instance_failed(Descriptor const& d, struct kos_driver_instance const& in, k
 }
 
 // A line retiring from the instance before answers -KOS_EAGAIN until it is free.
-int claim(Line const& l, kos_cap_t* out)
+int claim(uint16_t number, uint8_t trigger, kos_cap_t* out)
 {
     uint32_t retries = 0;
     while (true)
     {
-        int const rc = kos_irq_claim(l.number, l.trigger, out);
+        int const rc = kos_irq_claim(number, trigger, out);
         if (rc != -KOS_EAGAIN or retries == KOS_DRV_CLAIM_RETRIES)
         {
             return rc;
@@ -297,8 +301,9 @@ int instance_admits(Descriptor const& d, struct kos_service_cfg const* cfg, stru
     {
         return instance_failed(d, in, line, 0, note, "ERROR: cfg mmio_base is not this driver's block\n");
     }
-    // The init self-granted the block with no memory type, so a typed one has no grant to match.
-    if (in.block_size != d.block_size or (d.block_size != 0u and in.block == nullptr) or d.block_flags != 0u)
+    // A block self-granted under another memory type than the descriptor's has no grant to match.
+    if (in.block_size != d.block_size or (d.block_size != 0u and in.block == nullptr)
+        or in.block_flags != d.block_flags)
     {
         return instance_failed(d, in, line, 0, note, "ERROR: the instance's ring block is not this driver's\n");
     }
@@ -311,14 +316,9 @@ int instance_admits(Descriptor const& d, struct kos_service_cfg const* cfg, stru
     {
         return instance_failed(d, in, line, 0, note, "ERROR: the table and the descriptor disagree on the console\n");
     }
-    bool lines_match = in.line_count == d.line_count;
-    for (uint8_t i = 0; lines_match and i < d.line_count; i++)
+    if (in.line_count != d.line_count)
     {
-        lines_match = in.lines[i] == d.lines[i].number;
-    }
-    if (not lines_match)
-    {
-        return instance_failed(d, in, line, 0, note, "ERROR: the table's lines are not the ones this driver claims\n");
+        return instance_failed(d, in, line, 0, note, "ERROR: the table's lines are not as many as this driver's roles\n");
     }
     return 0;
 }
@@ -367,7 +367,7 @@ int instance_bring_up(Descriptor const& d, struct kos_service_cfg const* cfg,
 #endif
     for (uint8_t i = 0; i < d.line_count; i++)
     {
-        if (claim(d.lines[i], &line[i]) != 0)
+        if (claim(in.lines[i].number, d.lines[i].trigger, &line[i]) != 0)
         {
             break;
         }
@@ -417,7 +417,9 @@ int instance_bring_up(Descriptor const& d, struct kos_service_cfg const* cfg,
         {
             break;
         }
-        if (not spawn_one(d.threads[i], cfg, in.block, in.endpoint, line, note, task, in.core_mask, true).valid())
+        kos::thread::Handle const h = spawn_one(d.threads[i], cfg, in.block, in.endpoint, line, in.lines[0].index,
+                                                note, task, in.core_mask, true);
+        if (not h.valid())
         {
             return instance_failed(d, in, line, claimed, note, "ERROR: driver thread spawn failed\n");
         }
@@ -640,7 +642,7 @@ int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* 
         {
             break;
         }
-        if (not spawn_one(d.threads[i], cfg, blk, ep, line, note, task, 0u, false).valid())
+        if (not spawn_one(d.threads[i], cfg, blk, ep, line, d.lines[0].index, note, task, 0u, false).valid())
         {
             unwind(line, claimed, ep, note, task);
             return fail(d.tag, "ERROR: driver thread spawn failed\n");

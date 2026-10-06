@@ -481,8 +481,8 @@ each system target its objects, archives, heap and script, as usage requirements
 `install(EXPORT KickOSTargets NAMESPACE KickOS::)`. The targets take `EXPORT_NAME` `kernel`,
 `system_default`, `init` and `main`; every exported target gets an in-tree `ALIAS` of its exported
 name, and the package's functions name targets that way: the arch check and the class-backend lines
-`KickOSConfig.cmake` writes. `examples/oot-app/` and `examples/oot-mcu-app/` link `KickOS::kickos`
-until M10.5 moves them to `KickOS::system_default`, and their gates follow.
+`KickOSConfig.cmake` writes. `examples/oot-app/` and `examples/oot-mcu-app/` link `KickOS::kernel`
+and `KickOS::system_default`.
 
 ## 6. The link-time asserts
 
@@ -631,10 +631,8 @@ arrive, the init preempting it to report it. Stating no `init` turns the second 
 that never lowers itself the first.
 
 **The default system.** A board builds `KickOS::system_default` when it has a libc and a
-`boards/<board>/composition.yaml` (`user/apps/common/CMakeLists.txt`): `esp32c6-wroom`,
-`f411disco`, `frdmk64f`, `qemu-arm64`, `qemu-riscv`, `qemu-riscv64`, `qemu-x86_64` and
-`xmc4800-relax` (`sim` has no descriptions, so none). On the presets of those an emulator runs,
-`qemu-arm64`, `qemu-riscv`, `qemu-riscv64` and `qemu-x86_64`, a plain C `main` printing a line and
+`boards/<board>/composition.yaml` (`user/apps/common/CMakeLists.txt`), which every board has, the
+sim included. On the sim and on every preset an emulator runs, a plain C `main` printing a line and
 returning 3, linked against `KickOS::kernel` and `KickOS::system_default`, prints the line and
 ends with status 3, as does one whose `main` returns 3 while a thread it created spins at
 `KICKOS_PRIO_MIN`, below the init's priority, which no default composition states and so is

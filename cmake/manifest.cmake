@@ -8,7 +8,7 @@
 # The layout version of the table a composition is emitted as. Declared on this side, which
 # exports it; the table's C header takes it from here, through the generated
 # <kickos/sys/table_version.h>.
-set(KICKOS_TABLE_VERSION 3)
+set(KICKOS_TABLE_VERSION 4)
 
 # Writes <export_dir>/manifest.yaml, and copies the board's chip and board files to
 # <export_dir>/platform/<chip>/ and its default composition to <export_dir>/boards/<board>/, so

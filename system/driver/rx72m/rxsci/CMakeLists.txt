@@ -13,7 +13,7 @@
 # that class.
 kickos_add_driver(rxsci SOURCES rxsci.cc ../uart_sci.cc REGDIR arch/rx/chip/rx72m
                   THREADS rxsciirq:1:default:3:0 service:0:default:2:1 RECEIVER service
-                  WINDOWS regs LINES tx rx NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  WINDOWS regs LINES txi rxi NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START rxsci_console_start CONSOLE)
 
 # A service-list provider needs the bring-up declaration, and it lives beside the

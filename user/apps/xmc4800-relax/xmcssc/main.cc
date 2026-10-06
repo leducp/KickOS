@@ -94,6 +94,7 @@ namespace
         bcfg.irq = CLIENT_CAP0;
         bcfg.notify = CLIENT_CAP1;
         bcfg.notify_bit = 0;
+        bcfg.irq_index = 1u; // SR1
 #else
         (void)arg;
         bcfg.base = 0u;
@@ -101,6 +102,7 @@ namespace
         bcfg.irq = KOS_CAP_NONE;
         bcfg.notify = KOS_CAP_NONE;
         bcfg.notify_bit = 0;
+        bcfg.irq_index = 0u;
 #endif
         struct kos_spi_bus bus;
         int32_t const brc = kos_spi_bus_open(&bus, &bcfg);

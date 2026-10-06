@@ -3,7 +3,7 @@
 //
 // The XMC4800 USIC0-CH1 SSC backend of the SPI class <kickos/driver/spi.h>: the whole channel
 // bring-up plus the IRQ-paced transaction engine, for a thread that ALREADY HOLDS the U0C1
-// register window and the USIC0 SR1 line cap.
+// register window and a USIC0 service-request line cap.
 //
 // THE DATA PATH IS INTERNAL LOOP-BACK (DX0 = own transmitter, input "G", RM 18.2.3.5), so
 // rx == tx on-chip and SELO0 is armed but never routed to a pin. A board that wires this
@@ -132,6 +132,10 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     {
         return -KOS_EINVAL; // a line with nowhere to raise is a line nothing can arm
     }
+    if (cfg->irq_index > ru::INPR_SR_LAST)
+    {
+        return -KOS_EINVAL;
+    }
     // Bind the object the line signals to the thread that opens and uses the bus.
     if (kos_notify_bind(cfg->notify) != 0)
     {
@@ -174,8 +178,8 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     // config must be done while CCR.MODE=0 (RM p.18-57).
     r32(win + ru::off::DX0CR) = ru::DX0CR_INSW | ru::DX0CR_DSEL_G;
 
-    // Receive / alternative-receive interrupts to service-request SR1.
-    r32(win + ru::off::INPR) = ru::INPR_RINP_SR1 | ru::INPR_AINP_SR1;
+    // Receive / alternative-receive interrupts to the service request `irq` is.
+    r32(win + ru::off::INPR) = (cfg->irq_index << ru::INPR_RINP_SHIFT) | (cfg->irq_index << ru::INPR_AINP_SHIFT);
 
     if (not priv_write_verify(win, ru::off::CCR, CCR_WORD, 0xFFFFFFFFu))
     {
@@ -338,13 +342,13 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
         *tbuf0 = static_cast<uint32_t>(buf[i]) & 0xFFu; // TDV=1 -> clock one frame
 
-        // Block until AIF/RIF raises SR1. The wait rearms the line itself, so the ack below
+        // Block until AIF/RIF raises the line. The wait rearms the line itself, so the ack below
         // is the EARLY rearm and not the only one.
         (void)kos_notify_wait(note, note_bit, KOS_TIMEOUT_NONE, nullptr);
         buf[i] = static_cast<unsigned char>(*rbuf & 0xFFu); // read releases RBUF
 
         *pscr = PSCR_CLEAR_RX; // W1C AIF/RIF BEFORE re-arm: an un-cleared level re-asserts
-                               // SR1 on unmask and storms it.
+                               // the line on unmask and storms it.
         kos_irq_ack(irq);      // unmask the line (flag already clear -> no storm)
     }
 

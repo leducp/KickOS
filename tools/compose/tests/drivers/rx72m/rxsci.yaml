@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `rxsci` serving the console.
+
+version: 1
+board: rx72m
+stdout: /svc/console
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: rxsci
+    driver: rxsci
+    devices: [/dev/sci6]
+    lines: { txi: /dev/sci6/txi, rxi: /dev/sci6/rxi }
+    core: 0
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 8192
+    priority: 2
+    authority: [memory, system, tasks]

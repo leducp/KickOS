@@ -418,10 +418,11 @@ are silicon-only -- no emulated board carries one -- and the `xmc4800` one is wi
 
 `kos_console_publish` hands the device away but cannot police what the publishing task does
 next. Three properties of the published console are therefore contracts on the PUBLISHER, not
-things the kernel enforces. No driver honours them in its own `*_console_start`: nine of the ten
-are a one-line delegation to `drv::bring_up`, and the tenth, `rtusb_console_start`
-(`system/driver/imxrt1062/rt1062usb`), wraps that same call in a failure-path print of the IRQ
-thread's stage. All three obligations live in `drv::bring_up`, in `user/src/driver_service.cc`.
+things the kernel enforces. No driver honours them in its own `*_console_start`: nine of the
+eleven are a one-line delegation to `drv::bring_up`, `simcon_console_start`
+(`system/driver/sim/simcon`) is one too but under its two window-thread knobs, and the eleventh,
+`rtusb_console_start` (`system/driver/imxrt1062/rt1062usb`), wraps that same call in a
+failure-path print of the IRQ thread's stage. All three obligations live in `drv::bring_up`, in `user/src/driver_service.cc`.
 `user/apps/common/initdemo` open-codes the same sequence instead, being the handover demo
 rather than a driver.
 

@@ -8,6 +8,7 @@
 #   tests/static/check_platform.sh <build-dir> descriptions|compositions|arms|coverage
 #   tests/static/check_platform.sh <build-dir> manifest <manifest>
 #   tests/static/check_platform.sh <build-dir> golden <manifest> <composition>
+#   tests/static/check_platform.sh <build-dir> drivers <manifest> <board>
 #   tests/static/check_platform.sh <build-dir> installed <tool-dir> <manifest> [<composition>]
 #   tests/static/check_platform.sh <build-dir> tables <host-c-compiler> <generated-include-dir>
 #   tests/static/check_platform.sh <build-dir> table <manifest> <composition> <c-compiler> <generated-include-dir>
@@ -23,6 +24,9 @@
 #                 one file or one board's chip changed, and must refuse it
 #   manifest      one export manifest, and the chip and board files it names
 #   golden        one composition, admitted against a build's manifest and the descriptions it names
+#   drivers       every tracked composition under tools/compose/tests/drivers/<board>/, each the
+#                 board's default with one packaged driver of its catalogue added, admitted
+#                 against that board's build's manifest
 #   installed     the tool an installed package carries, run from <tool-dir> on the manifest the
 #                 package installs and, when given, the default composition installed beside it
 #   tables        tools/compose/tests/round_trip.py: each golden's table emitted twice, compiled
@@ -38,7 +42,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: check_platform.sh <build-dir> descriptions|compositions|arms|coverage|manifest|golden|installed|tables|table [<arguments>]"
+USAGE="usage: check_platform.sh <build-dir> descriptions|compositions|arms|coverage|manifest|golden|drivers|installed|tables|table [<arguments>]"
 [ "$#" -ge 2 ] || fail "$USAGE"
 BUILD="$1"
 MODE="$2"
@@ -49,11 +53,11 @@ esac
 case "$MODE" in
     descriptions|compositions|arms|coverage) [ "$#" -eq 2 ] || fail "$USAGE" ;;
     manifest) [ "$#" -eq 3 ] || fail "$USAGE" ;;
-    golden) [ "$#" -eq 4 ] || fail "$USAGE" ;;
+    golden|drivers) [ "$#" -eq 4 ] || fail "$USAGE" ;;
     installed) [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || fail "$USAGE" ;;
     tables) [ "$#" -eq 4 ] || fail "$USAGE" ;;
     table) [ "$#" -eq 6 ] || fail "$USAGE" ;;
-    *) fail "unknown mode $MODE, expected descriptions, compositions, arms, coverage, manifest, golden, installed, tables or table" ;;
+    *) fail "unknown mode $MODE, expected descriptions, compositions, arms, coverage, manifest, golden, drivers, installed, tables or table" ;;
 esac
 
 require_repo_root
@@ -161,6 +165,11 @@ if [ "$MODE" = manifest ]; then
     # Its own environment per manifest, so two manifests checked at once share no venv.
     STATE="$BUILD/compose/manifest-$(printf '%s' "$MANIFEST" | cksum | cut -d ' ' -f 1)"
 fi
+if [ "$MODE" = drivers ]; then
+    MANIFEST="$3"
+    [ -f "$MANIFEST" ] || fail "no manifest at $MANIFEST"
+    corpus "$TMP/files" "driver composition of board $4" "tools/compose/tests/drivers/$4/*.yaml"
+fi
 if [ "$MODE" = golden ] || [ "$MODE" = installed ] || [ "$MODE" = table ]; then
     MANIFEST="$3"
     COMPOSITION="${4:-}"
@@ -217,6 +226,14 @@ elif [ "$MODE" = manifest ]; then
 elif [ "$MODE" = golden ]; then
     uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$COMPOSITION" --manifest "$MANIFEST"
     rc=$?
+elif [ "$MODE" = drivers ]; then
+    set --
+    while IFS= read -r f; do
+        set -- "$@" "$ROOT/$f"
+    done < "$TMP/files"
+    uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$@" --manifest "$MANIFEST"
+    rc=$?
+    [ "$rc" -ne 0 ] || echo "   $# driver composition(s) admitted"
 elif [ "$MODE" = installed ]; then
     uv run --project "$TOOL" --locked --quiet python -m kickos_compose manifest "$MANIFEST"
     rc=$?

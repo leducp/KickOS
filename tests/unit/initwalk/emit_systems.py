@@ -98,6 +98,7 @@ TESTDRV = """  testdrv:
     endpoints: 1
     notifications: 0
     block: none
+    block_cache: cached
     posture: retain
     barrier: none
     console: false

@@ -48,6 +48,8 @@ extern "C"
         // meaningless when `irq` is KOS_CAP_NONE: the engine then never blocks.
         kos_cap_t notify;
         uint32_t notify_bit;
+        // Which of its device's lines `irq` is, for an engine that routes its events onto one.
+        uint32_t irq_index;
     };
 
     struct kos_spi_bus

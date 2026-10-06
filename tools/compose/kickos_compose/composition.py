@@ -1129,6 +1129,17 @@ def check_memory_type(f, tasks, shared, chip, cluster, manifest, accepts, needed
             if grant.device.bus_master and master is None:
                 master = grant
     accepted = [name for name, node in accepts]
+    for task in tasks:
+        driver = manifest.drivers.get(task.driver)
+        if driver is None or driver.block_cache != "uncached":
+            continue
+        for view, unit in unit_views(chip, cluster):
+            if nocache_support(chip, unit, manifest) == NOCACHE_REFUSED:
+                f.refuse(task.nodes["driver"], "memory.uncached",
+                         "%s runs driver `%s`, whose ring block is `uncached`, which the unit of %s cannot "
+                         "program over the part's data cache, its descriptor carrying no memory type"
+                         % (task.label(), task.driver, view_name(chip, view)))
+                break
     for region in shared.values():
         if region.cache == "uncached":
             for view, unit in unit_views(chip, cluster):

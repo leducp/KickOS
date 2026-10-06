@@ -483,6 +483,16 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
               "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
     kickos_host_gate(oot_export_mcu TIMEOUT 300)
     set_tests_properties(oot_export_mcu PROPERTIES FIXTURES_REQUIRED kickos_build)
+    kickos_qemu_machine("${KICKOS_BOARD}" _oot_qemu_env _oot_qemu_machine)
+    if(NOT _oot_qemu_machine STREQUAL "")
+      add_test(
+        NAME    ${_tag}_oot_mcu_app
+        COMMAND "${CMAKE_COMMAND}" -E env ${_oot_qemu_env} QEMU_MACHINE=${_oot_qemu_machine}
+                "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh"
+                "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+      set_tests_properties(${_tag}_oot_mcu_app PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
+                                                          FIXTURES_REQUIRED kickos_build)
+    endif()
   endif()
 endif()
 

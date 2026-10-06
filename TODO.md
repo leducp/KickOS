@@ -5886,7 +5886,8 @@ milestone does not close while any of them still composes a system.
       gate's assignment derived, a device two nodes grant refused, a region cached across nodes
       unless accepted), and link
       `KickOS::system_default` in the out-of-tree examples CI builds (`examples/oot-app`,
-      `examples/oot-mcu-app`), which link only `kickos` today. Move every board and
+      `examples/oot-mcu-app`; **DONE AT M10.5.6**, their gates running them where an emulator
+      runs). Move every board and
       app onto compositions, packaged drivers taking
       their lines from the composition rather than by number, and delete the mechanisms listed
       above. The four apps whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`,

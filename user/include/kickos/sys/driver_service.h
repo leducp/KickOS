@@ -26,17 +26,26 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// A line of an instance: its number at the interrupt controller, and its index among its
+// device's lines, which a device routing its events onto one of them is programmed with.
+struct kos_driver_line
+{
+    uint16_t number;
+    uint16_t index;
+};
+
 // What the init keeps of a packaged driver task across its restarts, filled at each start from
 // its record and its table entry and passed in kos_service_cfg::instance.
 struct kos_driver_instance
 {
     void* block;          // the ring block the init reserved and self-granted at boot, or null
     uint32_t block_size;  // its bytes, 0 for none
+    uint32_t block_flags; // its self-grant's kos_mem_flags, KOS_MEM_NOCACHE for an uncached one
     uint32_t core_mask;   // the declared core's bit, 0 for none
     kos_cap_t endpoint;   // the endpoint the init created at boot and keeps with HANDOUT
     kos_cap_t watch;      // this start's badged copy of the init's notification
     kos_task_t task;      // the task the bring-up created, written back; KOS_TASK_NONE before it
-    uint16_t lines[2];    // the table's line numbers by role, KOS_DRV_LINES_MAX of them
+    struct kos_driver_line lines[2]; // the table's lines by role, KOS_DRV_LINES_MAX of them
     uint8_t line_count;
     bool console;         // the table names it the console driver, which the init narrows at handover
 };
@@ -65,8 +74,8 @@ enum
     KOS_DRV_RES_LINE1 = 3
 };
 
-static_assert(sizeof(kos_driver_instance::lines) / sizeof(uint16_t) == KOS_DRV_LINES_MAX,
-              "an instance carries a line number per line a descriptor claims");
+static_assert(sizeof(kos_driver_instance::lines) / sizeof(kos_driver_line) == KOS_DRV_LINES_MAX,
+              "an instance carries a line per line a descriptor claims");
 
 struct Cap
 {
@@ -80,8 +89,9 @@ struct Cap
 
 struct Line
 {
-    int32_t number;  // the chip vector; REGDIR-private
+    int32_t number;  // the chip vector, claimed on a service list only; REGDIR-private
     uint8_t trigger; // KOS_IRQ_EDGE or KOS_IRQ_LEVEL
+    uint16_t index = 0; // its index among its device's lines, on a service list only
 };
 
 // Which pointer the entry receives, and nothing about reach: the block is the group's
@@ -90,8 +100,21 @@ enum kos_drv_arg
 {
     KOS_DRV_ARG_NONE = 0,
     KOS_DRV_ARG_BLOCK = 1, // the granted ring block pointer
-    KOS_DRV_ARG_WINDOW = 2 // cfg->mmio_base as a VALUE, never dereferenced as memory
+    KOS_DRV_ARG_WINDOW = 2, // cfg->mmio_base as a VALUE, never dereferenced as memory
+    KOS_DRV_ARG_LINE0_INDEX = 3 // line 0's index among its device's lines, read by line_index_of
 };
+
+// Shifted past bit 0, which carries the posture under an instance (thread_start).
+constexpr uintptr_t line_index_arg(uint16_t index)
+{
+    return static_cast<uintptr_t>(index) << 1u;
+}
+
+// What an ARG_LINE0_INDEX thread reads from the arg thread_start returns.
+inline uint16_t line_index_of(void const* arg)
+{
+    return static_cast<uint16_t>(reinterpret_cast<uintptr_t>(arg) >> 1u);
+}
 
 struct Thread
 {
@@ -280,12 +303,17 @@ constexpr bool valid_l1(Descriptor const& d)
     return d.thread_count <= KOS_DRV_THREADS_MAX and d.line_count <= KOS_DRV_LINES_MAX;
 }
 
-// L2. A cap naming a line the descriptor does not claim, or granting no right at all.
+// L2. A cap or an arg naming a line the descriptor does not claim, or a cap granting no right
+// at all.
 constexpr bool valid_l2(Descriptor const& d)
 {
     for (uint8_t i = 0; i < d.thread_count; i++)
     {
         if (d.threads[i].cap_count > KOS_DRV_CAPS_MAX)
+        {
+            return false;
+        }
+        if (d.threads[i].arg == KOS_DRV_ARG_LINE0_INDEX and d.line_count == 0u)
         {
             return false;
         }
@@ -644,6 +672,7 @@ struct Declared
     uint8_t receiver; // the thread that waits on the endpoint
     bool notify;
     uint32_t block_size;
+    uint32_t block_flags; // KOS_MEM_NOCACHE for an uncached block
     uint8_t ep_posture; // enum kos_drv_ep
     bool barrier;
     uint8_t barrier_after; // thread_count where there is no barrier
@@ -687,6 +716,10 @@ constexpr bool declared_as(Descriptor const& d, Declared const& m)
     {
         return false;
     }
+    if (d.block_flags != m.block_flags)
+    {
+        return false;
+    }
     return (d.svc_kind == KOS_SVC_CONSOLE) == m.console;
 }
 
@@ -700,9 +733,9 @@ int fail(char const* tag, char const* msg);
 
 // Every descriptor thread's entry calls this first, with the arg it was spawned with, and uses
 // what it returns as the arg its descriptor declares. Given an instance, bring_up spawns each
-// thread with bit 0 of its arg set, every declared arg being null, a ring block or a window
-// base, none of them odd; this records that posture in the calling thread's own space, where
-// trap_under_init reads it, and clears the bit. On a service list no arg carries it.
+// thread with bit 0 of its arg set, every declared arg being null, a ring block, a window base
+// or a line_index_arg, none of them odd; this records that posture in the calling thread's own
+// space, where trap_under_init reads it, and clears the bit. On a service list no arg carries it.
 void* thread_start(void* arg);
 
 // Given an instance, a driver thread whose call failed traps, so its task's death reaches the
@@ -750,11 +783,12 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note
 // Spawn one descriptor thread into `task` with its per-thread grants and cap roles. A
 // KOS_DRV_RES_NOTIFY cap with a badge is MINTED from `note` for the spawn and closed after
 // it; an unbadged one takes `note` itself. KOS_CAP_NONE where the descriptor names none.
-// `core_mask` places the thread, 0 for its task's default set. `under_init` sets bit 0 of the
-// thread's arg, the posture thread_start records.
+// `line0_index` is what an ARG_LINE0_INDEX thread receives. `core_mask` places the thread, 0
+// for its task's default set. `under_init` sets bit 0 of the thread's arg, the posture
+// thread_start records.
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
-                              kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
-                              kos_task_t task, uint32_t core_mask, bool under_init);
+                              kos_cap_t ep, kos_cap_t const* line, uint16_t line0_index,
+                              kos_cap_t note, kos_task_t task, uint32_t core_mask, bool under_init);
 
 // The catalogue states what bring_up creates from the build's declaration of it.
 static_assert(KICKOS_DRIVER_ENDPOINTS == 1 and KICKOS_DRIVER_NOTIFICATIONS == 1,
@@ -764,13 +798,12 @@ static_assert(KICKOS_DRIVER_ENDPOINTS == 1 and KICKOS_DRIVER_NOTIFICATIONS == 1,
 // step prints its own diagnostic; a handover probe refusal is returned unchanged. A cfg whose
 // reserved bytes are not zero is refused.
 //
-// Given an instance (cfg->instance), the ring block and the endpoint are the instance's and the
-// kind is the descriptor's; every thread runs on the declared core, where the lines are claimed
-// at the descriptor's trigger once their numbers match the table's, and the task's priority
-// ceiling and core grant are narrowed to the declaration. The task is written back as soon as it
-// exists; a step that fails closes what this call made, narrows a console endpoint before it
-// prints, leaves the task and the endpoint to the init, and returns its code. `out_ep` is
-// neither read nor written.
+// Given an instance (cfg->instance), the ring block, the endpoint and the lines are the
+// instance's and the kind is the descriptor's; every thread runs on the declared core, where the
+// lines are claimed at the descriptor's trigger, and the task's priority ceiling and core grant
+// are narrowed to the declaration. The task is written back as soon as it exists; a step that
+// fails closes what this call made, narrows a console endpoint before it prints, leaves the task
+// and the endpoint to the init, and returns its code. `out_ep` is neither read nor written.
 //
 // On a service list, `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must
 // be null under HANDOVER; valid() cannot check that pairing, out_ep being a runtime pointer.

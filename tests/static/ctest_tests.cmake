@@ -6,7 +6,12 @@
 #
 #   <name> <TAB> <,label,label,> <TAB> <0|1 DISABLED> <TAB> <program>
 #
-# Run as: cmake -DJSON=<file> -DOUT=<file> -P tests/static/ctest_tests.cmake
+# With -DHOST_BOOTS=<file>, for tests/static/check_host_gate_boots.sh, the name of each test
+# labelled host that is not disabled and whose command or ENVIRONMENT sets QEMU_MACHINE or names
+# a qemu-system program, one per line.
+#
+# Run as: cmake -DJSON=<file> -DOUT=<file> [-DHOST_BOOTS=<file>]
+#             -P tests/static/ctest_tests.cmake
 #
 # The command arguments here carry `;`, `"` and regex backslashes, and a property VALUE in
 # this corpus spells "name" as a key, so a line-shaped parse of the pretty-printed JSON
@@ -39,6 +44,8 @@ if(_count EQUAL 0)
 endif()
 
 set(_table "")
+set(_host_boots "")
+set(_boot_re "(^|/)qemu-system-|^QEMU_MACHINE=")
 math(EXPR _last "${_count} - 1")
 foreach(_i RANGE 0 ${_last})
   string(JSON _test GET "${_json}" tests ${_i})
@@ -46,6 +53,7 @@ foreach(_i RANGE 0 ${_last})
 
   set(_labels ",")
   set(_disabled 0)
+  set(_boots 0)
   string(JSON _nprops ERROR_VARIABLE _ignored LENGTH "${_test}" properties)
   if(_nprops)
     math(EXPR _plast "${_nprops} - 1")
@@ -58,6 +66,17 @@ foreach(_i RANGE 0 ${_last})
           string(JSON _lab GET "${_test}" properties ${_p} value ${_l})
           string(APPEND _labels "${_lab},")
         endforeach()
+      elseif(_pname STREQUAL "ENVIRONMENT")
+        string(JSON _nenv LENGTH "${_test}" properties ${_p} value)
+        if(_nenv GREATER 0)
+          math(EXPR _elast "${_nenv} - 1")
+          foreach(_e RANGE 0 ${_elast})
+            string(JSON _env GET "${_test}" properties ${_p} value ${_e})
+            if(_env MATCHES "${_boot_re}")
+              set(_boots 1)
+            endif()
+          endforeach()
+        endif()
       elseif(_pname STREQUAL "DISABLED")
         string(JSON _dis GET "${_test}" properties ${_p} value)
         if(_dis)
@@ -70,6 +89,13 @@ foreach(_i RANGE 0 ${_last})
   set(_prog "@none")
   string(JSON _nargs ERROR_VARIABLE _ignored LENGTH "${_test}" command)
   if(_nargs)
+    math(EXPR _blast "${_nargs} - 1")
+    foreach(_b RANGE 0 ${_blast})
+      string(JSON _arg GET "${_test}" command ${_b})
+      if(_arg MATCHES "${_boot_re}")
+        set(_boots 1)
+      endif()
+    endforeach()
     set(_a 0)
     string(JSON _argv0 GET "${_test}" command 0)
     get_filename_component(_argv0_name "${_argv0}" NAME_WE)
@@ -99,6 +125,12 @@ foreach(_i RANGE 0 ${_last})
   endif()
 
   string(APPEND _table "${_name}\t${_labels}\t${_disabled}\t${_prog}\n")
+  if(_boots AND _disabled EQUAL 0 AND _labels MATCHES ",host,")
+    string(APPEND _host_boots "${_name}\n")
+  endif()
 endforeach()
 
 file(WRITE "${OUT}" "${_table}")
+if(DEFINED HOST_BOOTS)
+  file(WRITE "${HOST_BOOTS}" "${_host_boots}")
+endif()

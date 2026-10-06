@@ -6809,7 +6809,7 @@ namespace
 
         struct kos_spi_bus bus;
         // No line, so no notification and no bit: a polled engine never blocks.
-        struct kos_spi_bus_config bcfg = {0u, KOS_CAP_NONE, KOS_CAP_NONE, KOS_CAP_NONE, 0u};
+        struct kos_spi_bus_config bcfg = {0u, KOS_CAP_NONE, KOS_CAP_NONE, KOS_CAP_NONE, 0u, 0u};
         TAP_CHECK(kos_spi_bus_open(&bus, &bcfg) == 0);
         kickos::spi::SlotTable slots;
         unsigned char msg[64]; // the six requests below are 24 bytes at most

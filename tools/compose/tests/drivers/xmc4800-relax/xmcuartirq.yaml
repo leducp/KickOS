@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `xmcuartirq` serving the console.
+
+version: 1
+board: xmc4800-relax
+stdout: /svc/console
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: xmcuartirq
+    driver: xmcuartirq
+    devices: [/dev/usic0/ch0]
+    lines: { irq: /dev/usic0/sr0 }
+    core: 0
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 4096
+    priority: 2
+    authority: [memory, system, tasks]

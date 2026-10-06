@@ -196,56 +196,20 @@ elseif(KICKOS_CHIP STREQUAL "stm32f411")
     "${PROJECT_SOURCE_DIR}/user/include")
 endif()
 # Not the sim default: the ordinary sim gate must keep covering the pre-publish route.
-# Unlike the pure-data providers above it calls kos_*, so it needs user/include.
 if(KICKOS_ARCH STREQUAL "sim")
-  # RETAINED_ENDPOINTS 1: the console handover. Every one of this provider's three start
-  # paths publishes exactly one endpoint, the two KICKOS_SIMCON_* variants included.
+  # RETAINED_ENDPOINTS 1: the console handover. Every one of kickos_simcon's three start paths
+  # publishes exactly one endpoint, the two KICKOS_SIMCON_* variants included.
   kickos_add_board_provider(services_sim SOURCE init/sim/service_list.cc
-    RETAINED_ENDPOINTS 1)
-  target_include_directories(kickos_services_sim PRIVATE
-    "${PROJECT_SOURCE_DIR}/user/include")
-  # Make the console driver DIE after N served messages, so driver-death reclaim has a
-  # witness that needs no board (tests/integration/check_sim_drvdeath.sh). 0 = serve forever, which
-  # is every other posture. A knob on the ONE sim console driver rather than a second
-  # provider: a divergent copy would stop being the reference the silicon services mirror.
-  if(KICKOS_SIMCON_EXIT_AFTER)
-    target_compile_definitions(kickos_services_sim PRIVATE
-      KICKOS_SIMCON_EXIT_AFTER=${KICKOS_SIMCON_EXIT_AFTER})
-  endif()
-  # The other death shape: the driver dies BEFORE it ever receives, so the handover probe
-  # is what has to notice. Same gate, second case.
-  if(KICKOS_SIMCON_DIE_AT_BRINGUP)
-    target_compile_definitions(kickos_services_sim PRIVATE
-      KICKOS_SIMCON_DIE_AT_BRINGUP=1)
-  endif()
-  # The two-thread shape: a SECOND driver thread holds the console's register window and
-  # parks in kos_irq_wait, so the endpoint's last receiver dying no longer means the
-  # device is free. The gate app carries the same knob (it holds the extra assertions and
-  # the cancel); per-target is safe here because the guard never reaches a shared header.
-  if(KICKOS_SIMCON_WINDOW_THREAD)
-    target_compile_definitions(kickos_services_sim PRIVATE
-      KICKOS_SIMCON_WINDOW_THREAD=1)
-  endif()
-  # The READY-TIMEOUT shape: the IRQ thread takes the register window and never sets the
-  # ready flag, so root's bounded wait expires. Selects a bring-up ordered like the silicon
-  # drivers (publish, claim, IRQ thread, wait, service thread), which is what makes the
-  # timeout diagnostic reportable at all. No app knob: init fails, so no app runs.
-  if(KICKOS_SIMCON_IRQ_WEDGE)
-    target_compile_definitions(kickos_services_sim PRIVATE
-      KICKOS_SIMCON_IRQ_WEDGE=1)
-  endif()
+    LINK kickos_simcon RETAINED_ENDPOINTS 1)
 
-  # The buffered-UART substrate made runnable with no board: a two-thread driver over a
-  # loopback "device" (init/sim/service_list_uart.cc). Its own provider rather than a second
-  # entry in the list above, because one service list links per image and the existing sim
-  # gates must keep testing the console posture unchanged.
+  # The buffered-UART substrate made runnable with no board. Its own provider rather than a
+  # second entry in the list above, because one service list links per image and the existing
+  # sim gates must keep testing the console posture unchanged.
   # RETAINED_CAPS 1 and RETAINED_ENDPOINTS 1: g_uart_ep stays in root's table until the app
   # takes it, and the app runs on that same table, so both the index and the pool slot are
   # spoken for either way.
   kickos_add_board_provider(services_simuart SOURCE init/sim/service_list_uart.cc
-    RETAINED_CAPS 1 RETAINED_ENDPOINTS 1)
-  target_include_directories(kickos_services_simuart PRIVATE
-    "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_BINARY_DIR}/generated/chip")
+    LINK kickos_simuart RETAINED_CAPS 1 RETAINED_ENDPOINTS 1)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -106,6 +106,41 @@ namespace
         return nullptr;
     }
 
+    TEST_F(Driver, an_uncached_ring_block_is_self_granted_and_given_to_the_task_uncached)
+    {
+        harness::Patched patched(systems::find("golden_xmc"));
+        patched.task("console").flags |= KOS_TABLE_TASK_BLOCK_UNCACHED;
+        use(patched);
+        drivers::behaviour.uncached_console = true;
+        fake::script({step::ready_all(), step::ready_all(), step::ready_all()});
+        Outcome const outcome = run();
+        ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
+        EXPECT_EQ(status("console").deaths, 0u) << "the descriptor's typed block admitted";
+
+        std::vector<fake::Block> const& r = fake::reservations();
+        ASSERT_EQ(r.size(), 4u);
+        std::vector<fake::Call> const grants = fake::calls_of("kos_mem_self_grant");
+        ASSERT_EQ(grants.size(), 3u);
+        EXPECT_EQ(grants[2].args[0], reinterpret_cast<uintptr_t>(r[3].base));
+        EXPECT_EQ(grants[2].args[2], static_cast<uint64_t>(KOS_MEM_NOCACHE));
+        EXPECT_EQ(fake::calls_of("kos_task_create").at(0).args[2], static_cast<uint64_t>(KOS_MEM_NOCACHE));
+    }
+
+    TEST_F(Driver, a_ring_block_typed_apart_from_its_descriptor_is_a_failed_start)
+    {
+        use("golden_xmc");
+        drivers::behaviour.uncached_console = true;
+        fake::script({step::ready_all(), step::ready_all(), step::ready_all()});
+        (void)run();
+        EXPECT_GE(status("console").deaths, 1u) << "a cached reservation under an uncached descriptor";
+        std::vector<fake::Block> const& r = fake::reservations();
+        ASSERT_EQ(r.size(), 4u);
+        for (fake::Call const& c : fake::calls_of("kos_task_create"))
+        {
+            EXPECT_NE(c.args[0], reinterpret_cast<uintptr_t>(r[3].base)) << "no task made over the console's block";
+        }
+    }
+
     TEST_F(Driver, a_console_driver_starts_on_the_init_s_block_and_endpoint_in_the_design_s_order)
     {
         use("golden_xmc");

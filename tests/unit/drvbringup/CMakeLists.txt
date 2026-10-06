@@ -30,6 +30,17 @@ kickos_add_unit_test(NAME drv_thread_trap
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
+# The USIC SSC engine's and UART backend's routing of their events onto their line's index, over
+# a host buffer for a window. HOST-ONLY: usic_route.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_usic_route
+  SOURCES usic_route.cc
+          "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/xmcssc/spi_usic.cc"
+          "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/uart_usic.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800" "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800/class"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+target_compile_options(drv_usic_route PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/usic_mmap.h")
+
 # The driver witness's serve loop over its own two fakes: a reply to a caller whose timed call
 # expired is not the driver's failure. HOST-ONLY: serve_reply.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_witness_serve

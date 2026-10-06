@@ -44,6 +44,7 @@
 #include <kickos/sys/bytes.h> // mem_copy, mem_zero
 #include <kickos/sys/console_ring.h>
 #include <kickos/sys/console_service.h>
+#include <kickos/sys/driver_geometry.h> // KICKOS_USB_BLOCK_SIZE (generated)
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
@@ -87,7 +88,7 @@ enum
 {
     KOS_USB_TX_SIZE = 1024,
     KOS_USB_RX_SIZE = 512,
-    KOS_USB_BLOCK_SIZE = 2048
+    KOS_USB_BLOCK_SIZE = KICKOS_USB_BLOCK_SIZE
 };
 
 struct Shared

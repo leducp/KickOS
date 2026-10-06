@@ -54,7 +54,7 @@ RULES = (
     "supply.size", "supply.init-windows", "supply.reservations", "supply.ranges",
     "manifest.cores", "manifest.amp", "manifest.window", "manifest.priority", "manifest.barrier",
     "manifest.description-path", "manifest.description-unknown", "manifest.default-path", "manifest.default-unknown",
-    "manifest.bound", "manifest.console",
+    "manifest.bound", "manifest.console", "manifest.block-cache",
     "manifest.target", "manifest.receiver",
 )
 
