@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the tree's chip_stm32f302.cc and family_map.h, and docs/reference/boards.md.
+
+version: 1
+board: f302nucleo
+chip: stm32f302
+
+console:
+  device: /dev/usart2
+  pins: { tx: PA2, rx: PA3 } # the ST-LINK virtual COM port
+
+# LD2 is PB13 on the F302R8, not the PA5 of other Nucleo-64 boards.
+leds:
+  ld2: { pin: PB13, active: high, owner: kernel } # green, the kernel's diagnostic LED

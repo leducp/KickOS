@@ -7,6 +7,7 @@
  *   SRAM  :  32 KiB @ 0x2000_0000   (the QFAC variant; see the MEMORY block below)
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 
 ENTRY(Reset_Handler)
@@ -17,16 +18,14 @@ ENTRY(Reset_Handler)
    ships in a 32 KiB variant (QFAC), so this is a real part, just not the one on a micro:bit.
 
    QEMU HAS TO BE TOLD. Its microbit machine defaults to 16 KiB and ignores -m; the size is a
-   QOM property, so every invocation passes -global nrf51-soc.sram-size=<the RAM LENGTH below>,
-   which cmake/kickos.cmake's kickos_qemu_machine scrapes out of the MEMORY block. Without it
-   an image linked here locks up on its first push, before any vector table is live, as "can't
-   escalate 3 to HardFault". */
+   QOM property, so every invocation passes -global nrf51-soc.sram-size=<the RAM length>, which
+   cmake/kickos.cmake's kickos_qemu_machine reads from the chip file's RAM link region. Without
+   it an image linked here locks up on its first push, before any vector table is live, as
+   "can't escalate 3 to HardFault". */
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
-    /* Plain decimal bytes, not a K suffix: kickos_qemu_machine regex-scrapes this LENGTH
-       verbatim for the QEMU sram-size QOM property. */
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 32768
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

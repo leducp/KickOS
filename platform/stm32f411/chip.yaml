@@ -11,7 +11,7 @@ arch: armv7m
 protection: { unit: pmsav7, covers_devices: true, memory_type: true }
 data_cache: false
 
-interrupts: { count: 86, ref: "Table 37 Vector table, p.205" }
+interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }
 
 devices:
   # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
@@ -22,7 +22,6 @@ devices:
     lines: { global: { number: 38, symbol: USART2_IRQ, ref: "Table 37 Vector table, p.204" } }
   spi1: { window: [0x40013000, 0x20], lines: { global: 35 }, ref: "Table 1, p.39" }
 
-  # The monotonic time base.
   tim2:
     window: [0x40000000, 0x400]
     owner: kernel
@@ -47,5 +46,6 @@ pins:
   PA5: { af5: spi1.sck, gpio: gpio.0.5 }
   PA6: { af5: spi1.miso, gpio: gpio.0.6 }
   PA7: { af5: spi1.mosi, gpio: gpio.0.7 }
+  PC13: { gpio: gpio.2.13 }
   PD12: { gpio: gpio.3.12 }
   PE3: { gpio: gpio.4.3 }

@@ -9,7 +9,7 @@ endif()
 
 set(_errnoprobe_script "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_errnoprobe.sh")
 
-if(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "microbit"
+if(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"
    OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_BOARD STREQUAL "qemu-riscv64"
    OR KICKOS_ARCH STREQUAL "armv8a")
   kickos_add_qemu_test(TARGET errnoprobe SCRIPT "${_errnoprobe_script}")

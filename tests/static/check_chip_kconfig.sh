@@ -3,8 +3,10 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Kconfig's chip selection against every chip file under platform/: a chip that selects HAS_MPU
-# states a region unit, and a chip states `mmu` exactly when it selects HAS_ASPACE, so a chip whose
-# file states only `none` selects neither. Each chip file names a chip Kconfig declares.
+# states a region unit a build drives, a chip states a region unit no build drives exactly when it
+# does not select HAS_MPU, saying so with `driven: false`, and a chip states `mmu` exactly when it
+# selects HAS_ASPACE, so a chip whose file states only `none` selects neither. Each chip file names
+# a chip Kconfig declares.
 #
 # Run from the repo root:
 #   tests/static/check_chip_kconfig.sh <kconfig-python> <build-dir>
@@ -80,10 +82,11 @@ import sys
 from kickos_compose.descriptions import check_chip
 from kickos_compose.subset import Report
 
-REGION_UNITS = ("pmsav6", "pmsav7", "pmsav8", "pmp", "rxmpu", "sysmpu")
+REGION_UNITS = ("pmsav6", "pmsav7", "pmsav8", "pmp", "rxmpu", "sysmpu", "mprotect")
 
 
 def units(path):
+    """{(unit, whether a build drives it)} the chip file states."""
     report = Report()
     with open(path, encoding="utf-8") as stream:
         chip = check_chip(path, stream.read(), report)
@@ -91,7 +94,19 @@ def units(path):
         for refusal in report.refusals:
             print(refusal, file=sys.stderr)
         raise SystemExit(2)
-    return set(protection.unit for protection in chip.protection.values())
+    return set((protection.unit, protection.driven is not False) for protection in chip.protection.values())
+
+
+def driven_regions(stated):
+    return set(unit for unit, driven in stated if driven and unit in REGION_UNITS)
+
+
+def undriven_regions(stated):
+    return set(unit for unit, driven in stated if not driven and unit in REGION_UNITS)
+
+
+def names(stated):
+    return set(unit for unit, driven in stated)
 
 
 def findings(selects, files):
@@ -103,12 +118,22 @@ def findings(selects, files):
             continue
         mpu, aspace = selects[chip]
         stated = units(path)
-        if mpu and not stated & set(REGION_UNITS):
-            found.append("%s: CHIP_%s selects HAS_MPU and the file states no region unit" % (path, chip.upper()))
+        if mpu and not driven_regions(stated):
+            found.append("%s: CHIP_%s selects HAS_MPU and the file states no region unit a build drives"
+                         % (path, chip.upper()))
+        if mpu and undriven_regions(stated) and not driven_regions(stated):
+            found.append("%s: CHIP_%s selects HAS_MPU and the file says `driven: false`, so the port carves "
+                         "no window for its unit" % (path, chip.upper()))
+        if not mpu and driven_regions(stated):
+            found.append("%s: CHIP_%s does not select HAS_MPU and the file states a region unit without "
+                         "`driven: false`" % (path, chip.upper()))
+        stated = names(stated)
         if aspace and "mmu" not in stated:
-            found.append("%s: CHIP_%s selects HAS_ASPACE and the file does not state `mmu`" % (path, chip.upper()))
+            found.append("%s: CHIP_%s selects HAS_ASPACE and the file does not state `mmu`"
+                         % (path, chip.upper()))
         if "mmu" in stated and not aspace:
-            found.append("%s: CHIP_%s does not select HAS_ASPACE and the file states `mmu`" % (path, chip.upper()))
+            found.append("%s: CHIP_%s does not select HAS_ASPACE and the file states `mmu`"
+                         % (path, chip.upper()))
     return found
 
 
@@ -127,9 +152,14 @@ if found:
     raise SystemExit(1)
 
 ARMS = (
-    ("HAS_MPU over no region unit", lambda stated: not stated & set(REGION_UNITS), lambda mpu, aspace: (True, aspace)),
-    ("mmu without HAS_ASPACE", lambda stated: "mmu" in stated, lambda mpu, aspace: (mpu, False)),
-    ("HAS_ASPACE without mmu", lambda stated: "mmu" not in stated, lambda mpu, aspace: (mpu, True)),
+    ("HAS_MPU over no region unit", lambda stated: not names(stated) & set(REGION_UNITS),
+     lambda mpu, aspace: (True, aspace)),
+    ("HAS_MPU over a unit no build drives", lambda stated: undriven_regions(stated) and not driven_regions(stated),
+     lambda mpu, aspace: (True, aspace)),
+    ("a driven region unit without HAS_MPU", lambda stated: driven_regions(stated) and "mmu" not in names(stated),
+     lambda mpu, aspace: (False, aspace)),
+    ("mmu without HAS_ASPACE", lambda stated: "mmu" in names(stated), lambda mpu, aspace: (mpu, False)),
+    ("HAS_ASPACE without mmu", lambda stated: "mmu" not in names(stated), lambda mpu, aspace: (mpu, True)),
 )
 for label, applies, flip in ARMS:
     path = next((path for path in files if applies(units(path))), None)

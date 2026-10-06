@@ -15,6 +15,7 @@
 #define SH_INNER        (3 << 8)        /* inner shareable, for Normal memory */
 #define ATTR_NORMAL     (0 << 2)        /* MAIR_EL1 Attr0 */
 #define ATTR_DEVICE     (1 << 2)        /* MAIR_EL1 Attr1 */
+#define ATTR_NOCACHE    (2 << 2)        /* MAIR_EL1 Attr2 */
 #define TABLE           (3 << 0)        /* valid, and a table rather than a block */
 #define UXN             (1 << 54)       /* never executable at EL0 */
 #define PXN             (1 << 53)       /* never executable at EL1 */

@@ -55,6 +55,8 @@
                         "       (a dynamic install into root ran before the partition's)", "P20")  \
     X(kBootRootCoreMask, "kmain: KICKOS_ROOT_CORE_MASK names a core this kernel does not run", \
                         "P21")                                                                     \
+    X(kBootAmpShare,    "kmain: the partition's user share could not be seated into root \n"    \
+                        "       (KICKOS_AMP_USER_SHARE_SIZE not whole granules?)",       "P22")    \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header

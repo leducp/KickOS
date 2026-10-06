@@ -60,7 +60,7 @@ if [ "${1:-}" = "--list" ]; then
     for d in "$FL_ROOT"/boards/*/; do
         b=$(basename "$d"); c=$(_bf "$b" KICKOS_CHIP); cand=$(candidates_for "$c")
         if [ -n "$cand" ]; then disp="${cand// / | }"     # join real backend keys
-        else case "$c" in mps2|virt) disp="(QEMU, not flashed)" ;; *) disp="(sim/host, not flashed)" ;; esac; fi
+        else case "$c" in mps2|an505|virt_*|q35) disp="(QEMU, not flashed)" ;; sim) disp="(host, not flashed)" ;; *) disp="(no flash backend)" ;; esac; fi
         printf '%-16s %-10s %-9s %s\n' "$b" "$c" "$(_bf "$b" KICKOS_ARCH)" "$disp"
     done
     exit 0

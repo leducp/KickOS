@@ -36,6 +36,10 @@ endif()
 if(DEFINED _selftest_spare_dev)
   list(APPEND _selftest_defs KICKOS_SELFTEST_SPARE_DEV=${_selftest_spare_dev})
 endif()
+# A board service list runs a console driver, which holds the console device.
+if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
+  list(APPEND _selftest_defs KICKOS_SELFTEST_CONSOLE_DRIVER=1)
+endif()
 
 # main.cc cuts the registration list into contiguous REGIONS. An image carries a contiguous
 # RUN of them and elides the rest, so the arms are partitioned between the images and still
@@ -294,6 +298,13 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   # where no peer answers rather than being compiled out.
   math(EXPR _tap_arms "${_tap_arms} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
 endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # amp_share_crossing
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE AND KICKOS_MEMORY_ENFORCED
+   AND NOT KICKOS_AMP_USER_SHARE_SIZE EQUAL 0)
+  math(EXPR _tap_arms "${_tap_arms} + 2") # amp_share_seated, amp_share_window
+endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms "${_tap_arms} + 26") # resched_reaches_pinned_caller, prio_self_lower_moves_waiter, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, irq_cross_core_wake, irq_reclaim_stale_raise, reent_per_thread_cores
 endif()
@@ -388,6 +399,13 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 24") # amp_far_deliver_fault, amp_window, amp_reset_record, amp_port_seating, amp_port_unnamed, amp_far_call, amp_far_reply_guard, amp_far_reply_empty, amp_far_service, amp_far_refusal_answered, amp_deferred_doorbell, amp_app_alive, amp_inbound_reply, amp_far_undisclosed, amp_far_infoless, amp_reply_band, amp_mint_reply_port, amp_reply_reserve, amp_probe_root_only, amp_local_port_slot_held, amp_far_slot_reuse, amp_far_reset_answers, amp_far_answer_deferred, amp_far_tail_recovery
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 1") # amp_share_crossing
+endif()
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE AND KICKOS_MEMORY_ENFORCED
+   AND NOT KICKOS_AMP_USER_SHARE_SIZE EQUAL 0)
+  math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 2") # amp_share_seated, amp_share_window
 endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
   math(EXPR _tap_arms_r6 "${_tap_arms_r6} + 24") # resched_reaches_pinned_caller, prio_self_lower_moves_waiter, pin_places, pin_wrong_core_never, unpin_restores, affinity_zero_defaults, affinity_undriven_refused, affinity_dead_handle_refused, migrate_running, pin_same_task_ok, pin_cross_task_refused, grant_narrows, grant_wider_refused, grant_after_member_refused, isolated_single_grant_ok, isolated_unpinned_never, isolated_unpin_excludes, isolated_takes_pinned, isolated_mixed_mask_ok, grant_second_narrow_only, grant_inherited_by_child_task, slice_preempts_every_core, threads_reach_every_core, reent_per_thread_cores

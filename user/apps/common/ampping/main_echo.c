@@ -5,12 +5,18 @@
 // ports unanswered for reply-guard tests. Never return from root: that would
 // shut down the machine shared by the partition.
 
+#include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
 
+// Written before the first receive, so a caller this node has answered reads it. The selftest's
+// amp_share_crossing states the same line and word.
+#define AMP_SHARE_LINE 64u
+#define AMP_SHARE_MARK(node) (0x53480000u | (uint32_t)(node))
 
 int main(int argc, char** argv)
 {
@@ -33,6 +39,14 @@ int main(int argc, char** argv)
         return 1;
     }
     kos_cap_t const ep = kos_amp_port(KOS_AMP_SELF_NODE, port);
+    if (KOS_AMP_SHARE_SIZE != 0
+        and kos_mem_self_grant((void*)KOS_AMP_SHARE_BASE, KOS_AMP_SHARE_SIZE,
+                              KOS_AMP_SHARE_MEM_FLAGS)
+               == 0)
+    {
+        __atomic_store_n((uint32_t*)(KOS_AMP_SHARE_BASE + KOS_AMP_SELF_NODE * AMP_SHARE_LINE),
+                         AMP_SHARE_MARK(KOS_AMP_SELF_NODE), __ATOMIC_RELAXED);
+    }
     printf("ampecho: node %u echoing on port %u\n", (unsigned)KOS_AMP_SELF_NODE,
            (unsigned)port);
 

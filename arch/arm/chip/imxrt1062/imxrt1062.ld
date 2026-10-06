@@ -10,7 +10,7 @@
  * 0x1000), and jumps to IVT.entry. Code executes in place from FlexSPI at
  * 0x6000_0000; writable state lives in on-chip RAM.
  *
- *   FLASH : FlexSPI serial NOR @ 0x6000_0000 (Teensy 4.1: 8 MiB W25Q64)  (RM 3.2)
+ *   FLASH : FlexSPI serial NOR @ 0x6000_0000, its size the board file's  (RM 3.2)
  *   RAM   : OCRAM2 512 KiB @ 0x2020_0000                                  (RM 3.2)
  *
  * OCRAM2 is a dedicated 512 KiB bank, independent of the configurable FlexRAM
@@ -19,6 +19,7 @@
  * DTCM/ITCM is a performance follow-up.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -27,8 +28,8 @@ ENTRY(_boot_entry)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x60000000, LENGTH = 8M
-    RAM   (rwx) : ORIGIN = 0x20200000, LENGTH = 512K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of OCRAM2 */

@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * Linker script for the Raspberry Pi RP2350 (Cortex-M33) executing in place (XIP)
- * from external QSPI flash at 0x1000_0000. This board carries 16 MiB QSPI.
+ * from external QSPI flash at 0x1000_0000, whose size is the board file's.
  *
  * BOOT (datasheet 5.9.5): the RP2350 bootrom sets up QSPI XIP itself, then scans the
  * first 4 KiB of the image for an IMAGE_DEF block-loop; absent an
@@ -24,6 +24,7 @@
  * A non-enforcement build (KICKOS_HAVE_MPU=0) reserves no window.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 
@@ -45,20 +46,18 @@ ENTRY(Reset_Handler)
 #define KICKOS_RP2350_RAM_BASE \
     KICKOS_AMP_SLICE_BASE(KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
 #define KICKOS_RP2350_RAM_SIZE   KICKOS_AMP_NODE_SHARE
-#else
-#define KICKOS_RP2350_FLASH_BASE 0x10000000
-#define KICKOS_RP2350_FLASH_SIZE 16M
-#define KICKOS_RP2350_RAM_BASE   0x20000000
-#define KICKOS_RP2350_RAM_SIZE   512K
 #endif
 
 MEMORY
 {
+#if KICKOS_AMP_OWN_IMAGE
     FLASH (rx)  : ORIGIN = KICKOS_RP2350_FLASH_BASE, LENGTH = KICKOS_RP2350_FLASH_SIZE
     RAM   (rwx) : ORIGIN = KICKOS_RP2350_RAM_BASE,   LENGTH = KICKOS_RP2350_RAM_SIZE
-#if KICKOS_AMP_OWN_IMAGE
     /* Above every node's SRAM slice, so no image's own allocations can reach it. */
     SHARED (rw) : ORIGIN = KICKOS_AMP_SHARED_BASE, LENGTH = KICKOS_AMP_SHARED_SIZE
+#else
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 #endif
 }
 
@@ -380,8 +379,8 @@ ASSERT(ADDR(.text) == ORIGIN(FLASH),
 ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
        "KickOS: the AMP shared region is not at the address the partition derives. Every node's script computes KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE, so a region elsewhere means this image was built against a different geometry than its peers")
 
-ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
-       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE. Raise it in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_KERNEL_SHARED_SIZE,
+       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE less the tasks' KICKOS_AMP_USER_SHARE_SIZE at its top. Raise the first or lower the second in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
 
 /* Two spans, and neither implies the other: a node's text and its data are sliced out of
    different apertures with different strides. */
@@ -397,10 +396,11 @@ ASSERT(ORIGIN(FLASH) >= KICKOS_AMP_TEXT_BASE
    non-striped, in a different power domain and left unclaimed for per-core stacks. And every
    node's text must lie in the first 16 MiB: bootable content must (datasheet 5.1.2.1) and XIP
    window 0 is 16 MiB per chip select (12.14). */
-ASSERT(KICKOS_AMP_PARTITION_END <= 0x20080000,
+ASSERT(KICKOS_AMP_PARTITION_END <= KICKOS_LAYOUT_SRAM_BASE + KICKOS_LAYOUT_SRAM_SIZE,
        "KickOS: the AMP partition runs past the RP2350's striped SRAM end at 0x20080000. The two 4 KiB banks above it are non-striped, sit in the SRAM1 power domain, and are reserved for per-core stacks. Narrow KICKOS_AMP_NODE_SHARE or KICKOS_AMP_SHARED_SIZE")
 
-ASSERT(KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE <= 0x11000000,
+ASSERT(KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE
+           <= KICKOS_LAYOUT_XIP_FLASH_BASE + KICKOS_LAYOUT_XIP_FLASH_SIZE,
        "KickOS: the AMP partition's text runs past the RP2350's first 16 MiB flash window. Bootable content must lie wholly inside it and XIP window 0 ends at 0x11000000. Narrow KICKOS_AMP_TEXT_SHARE")
 
 ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start,

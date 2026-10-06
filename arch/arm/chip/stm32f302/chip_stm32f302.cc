@@ -44,27 +44,26 @@ namespace
     // APB1 clock feeding USART2. Reset HSI => PCLK1 = 8 MHz; clock_init sets 32 MHz.
     uint32_t pclk1_hz = 8000000u;
 
-    constexpr uintptr_t RCC_AHBENR = RCC_BASE + 0x14;
+    constexpr uintptr_t RCC_AHBENR = mmap::RCC_BASE + 0x14;
     constexpr uint32_t AHBENR_IOPAEN = 1u << 17; // GPIOA (ports are on AHB)
     constexpr uint32_t APB1ENR_USART2EN = 1u << 17;
     constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
 
-    // GPIOA on AHB at 0x48000000 (sec.11). MODER 2b/pin, AFRL 4b/pin.
-    constexpr uintptr_t GPIOA_BASE = 0x48000000;
-    constexpr uintptr_t GPIOA_MODER = GPIOA_BASE + 0x00;
-    constexpr uintptr_t GPIOA_AFRL = GPIOA_BASE + 0x20;
+    // GPIOA on AHB (sec.11). MODER 2b/pin, AFRL 4b/pin.
+    constexpr uintptr_t GPIOA_MODER = mmap::GPIOA_BASE + 0x00;
+    constexpr uintptr_t GPIOA_AFRL = mmap::GPIOA_BASE + 0x20;
 
     // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
     // GPIO ports are on AHB: GPIOA + port*0x400 (A=0..F=5). RCC_AHBENR IOPxEN =
     // bit (17+port). func: bits[1:0] = MODER field written verbatim (00 in, 01 out,
     // 10 AF, 11 analog); bits[7:4] = AF number, into AFRL (pin<8) / AFRH (pin>=8).
     // OTYPER/OSPEEDR/PUPDR stay at their reset values.
-    constexpr uintptr_t GPIO_STRIDE = 0x400;
     constexpr uintptr_t GPIO_MODER_OFF = 0x00;
     constexpr uintptr_t GPIO_AFRL_OFF = 0x20;
     constexpr uintptr_t GPIO_AFRH_OFF = 0x24;
     constexpr uint32_t AHBENR_IOP_SHIFT = 17u;
     constexpr uint32_t PINMUX_PORT_MAX = 5u; // GPIOA..GPIOF
+    constexpr uintptr_t GPIOB_BASE = mmap::GPIOA_BASE + mmap::GPIO_STRIDE;
 
     // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
     // console or steal the diag LED. PA2/PA3 = USART2 console; PB13 = LD2.
@@ -80,13 +79,13 @@ namespace
         // the ungated APB1 access.
         // The F3 has no APB1LPENR: TIM2 keeps counting in WFI by default.
         reg32(RCC_APB1ENR) |= APB1ENR_TIM2EN;
-        reg32(chip::TIM2_BASE + TIM_CR1) = 0;           // stop; upcount, defaults
-        reg32(chip::TIM2_BASE + TIM_PSC) = 0;           // no prescale: the timer kernel clock
-        reg32(chip::TIM2_BASE + TIM_ARR) = 0xFFFFFFFFu; // full 32-bit free-run
-        reg32(chip::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;  // latch PSC/ARR into the shadows (sets UIF)
+        reg32(mmap::TIM2_BASE + TIM_CR1) = 0;           // stop; upcount, defaults
+        reg32(mmap::TIM2_BASE + TIM_PSC) = 0;           // no prescale: the timer kernel clock
+        reg32(mmap::TIM2_BASE + TIM_ARR) = 0xFFFFFFFFu; // full 32-bit free-run
+        reg32(mmap::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;  // latch PSC/ARR into the shadows (sets UIF)
         reg32(chip::CLK_TIMER_SR) = ~TIM_SR_UIF;        // drop that UIF before arming the IRQ
-        reg32(chip::TIM2_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed idle case
-        reg32(chip::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;   // enable
+        reg32(mmap::TIM2_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed idle case
+        reg32(mmap::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;   // enable
         // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
         // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
         arch_irq_unmask(chip::CLK_TIMER_IRQ); // NVIC enable in the maskable device band
@@ -165,7 +164,7 @@ void arch_console_flush_sync(void)
 // 0x4800_0400 (GPIOA + 0x400); its clock enable is RCC_AHBENR.IOPBEN (bit 18).
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t GPIOB_MODER = 0x48000400 + 0x00;
+    constexpr uintptr_t GPIOB_MODER = GPIOB_BASE + 0x00;
     reg32(RCC_AHBENR) |= (1u << 18); // IOPBEN (GPIOB)
     uint32_t m = reg32(GPIOB_MODER);
     m &= ~(0x3u << 26);            // clear MODER13
@@ -175,7 +174,7 @@ void arch_diag_led_init(void)
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t GPIOB_BSRR = 0x48000400 + 0x18;
+    constexpr uintptr_t GPIOB_BSRR = GPIOB_BASE + 0x18;
     if (on)
     {
         reg32(GPIOB_BSRR) = 1u << 13;
@@ -200,7 +199,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         return -KOS_EBUSY;
     }
     reg32(RCC_AHBENR) |= (1u << (AHBENR_IOP_SHIFT + port)); // gate this port's clock (idempotent)
-    uintptr_t const base = GPIOA_BASE + port * GPIO_STRIDE;
+    uintptr_t const base = mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE;
     uint32_t const mode_shift = pin * 2u;
     uint32_t moder = reg32(base + GPIO_MODER_OFF);
     moder &= ~(0x3u << mode_shift);

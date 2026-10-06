@@ -5,7 +5,7 @@
 // region-encoding functions. PMSAv8 uses RBAR/RLAR with 32-byte-aligned
 // base/limit ranges; PMSAv7 RASR encoding is incompatible.
 // arch_mpu_apply stores the incoming set. PendSV commits it after switching.
-// Selected through KICKOS_ARM_PMSAV8_SOURCE in the chip's mpu.cmake.
+// Selected through KICKOS_ARM_PMSAV8_SOURCE, from the chip file's pmsav8 unit.
 
 #include <kickos/arch/arch.h>
 

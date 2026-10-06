@@ -5,7 +5,7 @@
 // backend definition keeps this archive member unextracted.
 //
 // CMSIS convention: the core clock in Hz, defined and maintained by the chip backend at
-// PLL bring-up. The sim has no chip, so it needs this 0; a board that forgets it must
+// PLL bring-up. The sim has no chip backend, so it needs this 0; a board that forgets it must
 // fail the LINK, which is why this member is in the sim arch library only. The rule reaches
 // only the arches whose arch_cpu_clock_hz reads the symbol: armv6m/armv7m, rv32imac, rxv3
 // and lx6. On armv8a, rv64imac and x86_64 nothing references it, so an omission there links.

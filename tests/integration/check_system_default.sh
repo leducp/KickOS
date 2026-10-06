@@ -17,7 +17,6 @@ set -u
 : "${QEMU_TIMEOUT:=20}"
 
 USAGE="usage: check_system_default.sh <image> <line> <status> [<faulting thread>]"
-need_qemu_machine
 image="${1:?$USAGE}"
 line="${2:?$USAGE}"
 status="${3:?$USAGE}"

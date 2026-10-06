@@ -7,8 +7,7 @@
 #   two       KickOS::system_default and a second system target of KICKOS_PROBE_COMPOSITION;
 #   composed  one system target of KICKOS_PROBE_COMPOSITION;
 #   tls       the same, the image declaring a thread-local object;
-#   noheap    the same, its link options, which define the heap, taken away;
-#   stub      KickOS::system_default on a board with no default composition.
+#   noheap    the same, its link options, which define the heap, taken away.
 
 cmake_minimum_required(VERSION 3.24)
 # KICKOS_PROBE_ARM nocc leaves C out, which kickos_compose refuses.
@@ -33,8 +32,6 @@ endif()
 
 if(KICKOS_PROBE_ARM STREQUAL "none")
   target_link_libraries(probe PRIVATE KickOS::kernel)
-elseif(KICKOS_PROBE_ARM STREQUAL "stub")
-  target_link_libraries(probe PRIVATE KickOS::kernel KickOS::system_default)
 elseif(KICKOS_PROBE_ARM STREQUAL "two")
   kickos_compose(second_system "${KICKOS_PROBE_COMPOSITION}")
   target_link_libraries(probe PRIVATE KickOS::kernel KickOS::system_default second_system)
@@ -45,7 +42,7 @@ elseif(KICKOS_PROBE_ARM MATCHES "^(composed|tls|noheap)$")
     set_property(TARGET probe_system PROPERTY INTERFACE_LINK_OPTIONS "")
   endif()
 else()
-  message(FATAL_ERROR "KICKOS_PROBE_ARM is '${KICKOS_PROBE_ARM}', not none, stub, two, composed, "
+  message(FATAL_ERROR "KICKOS_PROBE_ARM is '${KICKOS_PROBE_ARM}', not none, two, composed, "
                       "tls or noheap")
 endif()
 kickos_emit_image(probe)

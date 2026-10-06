@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 
-#include <kickos/chip_mmap.h>
+#include "family_map.h"
 #include "regs/clocks.h"
 #include "regs/pll.h"
 #include "regs/resets.h"
@@ -25,7 +25,6 @@
 #include "regs/uart.h"
 #include "rp2xxx.h"
 
-namespace mmap = kickos::rp2xxx::mmap;
 namespace reg = kickos::rp2xxx::reg;
 
 using kickos::rp2xxx::POLL_TIMEOUT;
@@ -80,7 +79,7 @@ namespace kickos::rp2xxx
 
     void unreset(uint32_t mask)
     {
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = mask;
+        r32(reg::resets::RESET + ATOMIC_CLR) = mask;
         wait_mask(reg::resets::RESET_DONE, mask); // bounded; best-effort
     }
 
@@ -90,8 +89,8 @@ namespace kickos::rp2xxx
     bool pll_sys_lock()
     {
         // Reset the block first so a warm reboot can't run this off stale dividers.
-        r32(reg::resets::RESET + mmap::ATOMIC_SET) = reg::resets::PLL_SYS;
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = reg::resets::PLL_SYS;
+        r32(reg::resets::RESET + ATOMIC_SET) = reg::resets::PLL_SYS;
+        r32(reg::resets::RESET + ATOMIC_CLR) = reg::resets::PLL_SYS;
         wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_SYS);
 
         // Load REFDIV + FBDIV BEFORE powering the VCO.
@@ -99,13 +98,13 @@ namespace kickos::rp2xxx
         r32(reg::pll::FBDIV_INT) = reg::pll::FBDIV_125;
         // Power up main regulator + VCO (clear PD, VCOPD). DSMPD stays set (integer FBDIV, no
         // delta-sigma); POSTDIVPD stays set until after lock.
-        r32(reg::pll::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
+        r32(reg::pll::PWR + ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
         if (not wait_mask(reg::pll::CS, reg::pll::CS_LOCK))
         {
             return false;
         }
         r32(reg::pll::PRIM) = reg::pll::PRIM_POSTDIV;
-        r32(reg::pll::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD; // enable post-dividers
+        r32(reg::pll::PWR + ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD; // enable post-dividers
         return true;
     }
 }
@@ -116,7 +115,7 @@ namespace
     // the register block plus the XOR/SET/CLR aliases at +0x1000/+0x2000/+0x3000. The aliases
     // must be inside it: a holder granted only an alias writes the very same registers.
     constexpr uintptr_t CONSOLE_WIN_BASE = reg::uart::BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = mmap::APB_ATOMIC_WINDOW;
+    constexpr size_t CONSOLE_WIN_SIZE = kickos::rp2xxx::APB_ATOMIC_WINDOW;
 
     static_assert(reg::uart::IBRD >= CONSOLE_WIN_BASE
                       and reg::uart::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE

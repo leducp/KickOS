@@ -122,8 +122,9 @@
  *                    -> arch_clock_now[32] -> __divdi3[32].
  *                    ONE FIGURE COVERS EVERY POSTURE, as rv32imac's _SYS does.
  *
- * ENFORCED figures are those measurements rounded up to 64. _SYSK is NOT rounded, a kernel
- * block being sized to it directly, so a byte of slack there costs KICKOS_THREAD_SLOTS bytes.
+ * ENFORCED figures are those measurements rounded up to 64, or above them as headroom where a
+ * figure says so. _SYSK is NOT rounded, a kernel block being sized to it directly, so a byte of
+ * slack there costs KICKOS_THREAD_SLOTS bytes.
  *
  * rx72m is the only chip that selects ARCH_RXV3 and trap_redzone_roots.txt declares four of
  * its presets, so a figure here is the worst of four readings. No telemetry build is among

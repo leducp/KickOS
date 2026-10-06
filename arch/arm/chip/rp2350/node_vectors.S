@@ -14,6 +14,7 @@
  * own g_isr_vector instead (chip_rp2350.cc).
  */
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>
 
 #if KICKOS_NUM_CORES > 1
@@ -32,11 +33,11 @@ g_node_isr_vector:
     /* Slots 0 and 1 are the reset SP and PC, which the exception mechanism never fetches from
        a relocated table: the RP2350 launch hands core 1 its stack and entry point over the
        inter-processor FIFO (datasheet RP-008373-DS-2, 5.3). */
-    .rept 16 + KICKOS_RP2350_SIO_IRQ_BELL
+    .rept 16 + KICKOS_LAYOUT_LINE_SIO_IRQ_BELL
     .word kickos_rp2350_node_park
     .endr
     .word kickos_rp2350_doorbell_service
-    .rept KICKOS_MAX_IRQ - KICKOS_RP2350_SIO_IRQ_BELL - 1
+    .rept KICKOS_MAX_IRQ - KICKOS_LAYOUT_LINE_SIO_IRQ_BELL - 1
     .word kickos_rp2350_node_park
     .endr
     .size g_node_isr_vector, . - g_node_isr_vector

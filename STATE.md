@@ -1274,7 +1274,7 @@ failure list in its recap, so a `grep -c 'not ok'` over the output returns DOUBL
 **Read the suite's own `# N test(s) failed` tally, never a grep over the runner's output.**
 
 **A NODE THAT ANSWERS NOTHING IS A DOORBELL QUESTION BEFORE IT IS A WINDOW QUESTION.**
-`KICKOS_RP2350_SIO_IRQ_BELL` is CORE-LOCAL, so every node opens its own line in `arch_init`. An
+The RP2350's `SIO_IRQ_BELL` is CORE-LOCAL, so every node opens its own line in `arch_init`. An
 image that leaves it masked still reaches `kickos_rp2350_doorbell_service`, but only through the
 `doorbell_poll()` inside its OWN `arch_ipi_wait`, which is to say only while it is itself initiating
 a rendezvous: a peer parked in `kos_recv` is never woken, every far call waits out its deadline, and

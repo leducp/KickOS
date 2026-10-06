@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from IMXRT1060RM, the memory type and the data cache from arch_mpu_nocache_support in
+# chip_imxrt1062.cc.
+
+version: 1
+chip: imxrt1062
+manual: "IMXRT1060RM, i.MX RT1060 Processor Reference Manual, Rev. 3 (07/2021)"
+arch: armv7m
+# The unit sits on the CPU's access path, so a device window is enforced per task. Behind it
+# each AIPS bridge gates a whole 16 KiB slot for every unprivileged thread at once, and a
+# denial is a bus error.
+protection:
+  unit: pmsav7
+  covers_devices: true
+  memory_type: true
+  bus_gate: { kind: aips_opacr, per_thread: false, traps: true }
+data_cache: true
+
+interrupts: { count: { value: 160, ref: "Table 4-2 CM7 domain interrupt summary, p.52" } }
+
+devices:
+  # A device on an AIPS bridge is its whole 16 KiB slot.
+  lpuart6:
+    window: [0x40198000, 0x4000]
+    ref: "Table 3-3 AIPS-2 memory map, p.38"
+    lines: { irq: { number: 25, ref: "Table 4-2 CM7 domain interrupt summary, p.45" } }
+  # The OTG1 core. OTG2 and the non-core block share its slot and stay the kernel's.
+  usb1:
+    window: [0x402E0000, 0x200]
+    ref: "42.7 USB Core Memory Map/Register Definition, p.2433"
+    lines: { irq: { number: 113, symbol: USB_OTG1_IRQ, ref: "Table 4-2 CM7 domain interrupt summary, p.48" } }
+  # Disabled at boot, then grantable.
+  wdog1: { window: [0x400B8000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  wdog2: { window: [0x400D0000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  rtwdog: { window: [0x400BC000, 0x4000], ref: "Table 3-2 AIPS-1 memory map, p.37" }
+
+  gpt1: { window: [0x401EC000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  ccm: { window: [0x400FC000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.36" }
+  # The PLLs, PLL_USB1 among them.
+  ccm_analog: { window: [0x400D8000, 0x1000], owner: kernel, ref: "14.8 CCM Analog Memory Map/Register Definition, p.1089" }
+  usbphy1: { window: [0x400D9000, 0x1000], owner: kernel, ref: "43.4 USB PHY Memory Map/Register Definition, p.2522" }
+  # The rest of the USB slot: OTG2's core and the unused space up to the non-core block, then
+  # that block and the unused space to the slot's end. Opening the slot for OTG1 opens these
+  # at the bridge too.
+  usb2: { window: [0x402E0200, 0x600], owner: kernel, ref: "42.7 USB Core Memory Map/Register Definition, p.2433" }
+  usbnc: { window: [0x402E0800, 0x3800], owner: kernel, ref: "42.6 USB Non-Core Memory Map/Register Definition, p.2424" }
+  # Every pin's mux and pad, and the GPR that picks GPIO2 or GPIO7 per pad. A pin is muxed
+  # through kos_pinmux_set, never through a granted window.
+  iomuxc: { window: [0x401F8000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  iomuxc_gpr: { window: [0x400AC000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  # The diagnostic LED's port.
+  gpio2: { window: [0x401BC000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  # The bridges' own configuration: which masters are trusted and each slot's protection.
+  aipstz1: { window: [0x4007C000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.37" }
+  aipstz2: { window: [0x4017C000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  aipstz3: { window: [0x4027C000, 0x4000], owner: kernel, ref: "Table 3-4 AIPS-3 memory map, p.39" }
+  aipstz4: { window: [0x4037C000, 0x4000], owner: kernel, ref: "Table 3-5 AIPS-4 memory map, p.40" }
+
+memory:
+  # A bank of its own, apart from the FlexRAM partition, and available at reset.
+  ocram2:
+    base: 0x20200000
+    size: 0x80000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "Table 3-1 System memory map (CM7), p.36"
+
+# Pins are the RM's pad names. A selector other than `gpio` is the ALT mode the pad's
+# SW_MUX_CTL_PAD selects. GPIO_B0_03's `gpio` is GPIO2 while GPR27 leaves the pad to it.
+pins:
+  GPIO_AD_B0_02: { alt2: lpuart6.tx }
+  GPIO_AD_B0_03: { alt2: lpuart6.rx }
+  GPIO_B0_03: { gpio: gpio2.3 }

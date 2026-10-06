@@ -8,6 +8,7 @@
 import os
 
 from .composition import AUTHORITIES, Cache, admit_composition, read_composition, region_size
+from .descriptions import host_runs
 from .manifest import read_manifest
 from .subset import File, Report, line_of
 from .supply import arena_blocks, ram_align, ram_size, ring_block, status_block
@@ -504,9 +505,11 @@ def render_asserts(admitted, composition):
         " */",
         "",
     ]
-    out.extend(stack_asserts(admitted, name))
-    out.extend(arena_asserts(admitted))
-    out.extend(heap_asserts(admitted, name))
+    hosted = host_runs(admitted.chip)
+    if not hosted:
+        out.extend(stack_asserts(admitted, name))
+        out.extend(arena_asserts(admitted))
+    out.extend(heap_asserts(admitted, name, hosted))
     return "\n".join(out) + "\n"
 
 
@@ -555,14 +558,15 @@ def arena_asserts(admitted):
     return out
 
 
-def heap_asserts(admitted, name):
-    """KICKOS_USER_HEAP_SIZE is this system's heap, and the image carves at least that much."""
+def heap_asserts(admitted, name, hosted):
+    """KICKOS_USER_HEAP_SIZE is this system's heap, and the image carves at least that much where
+    its link carves one."""
     manifest = admitted.manifest
     out = ["ASSERT(KICKOS_USER_HEAP_SIZE == %d," % admitted.heap,
            "       \"KickOS: KICKOS_USER_HEAP_SIZE is not the %d-byte heap of %s, which its system target "
            "defines at the link: link exactly one system target, and define no KICKOS_USER_HEAP_SIZE of the "
            "app's own\")" % (admitted.heap, name)]
-    if admitted.heap:
+    if admitted.heap and not hosted:
         out.append("ASSERT(%s - %s >= %d," % (c_symbol(manifest, "_kickos_heap_limit"),
                                               c_symbol(manifest, "_kickos_heap_start"), admitted.heap))
         out.append("       \"KickOS: the %d-byte heap of %s, its `heap`, is more than the image carves from "

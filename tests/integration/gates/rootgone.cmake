@@ -17,7 +17,7 @@ if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_OUTCOME STREQUAL "thread-kill")
     set_tests_properties(rootgone PROPERTIES TIMEOUT 30)
   # qemu-arm64 is ALSO the SM-6 posture: KICKOS_HAVE_ASPACE makes root's stack a mapped run the
   # kernel frees at its death, where every other board here keeps it an arena block.
-  elseif(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "qemu-riscv"
+  elseif(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "qemu-riscv"
          OR KICKOS_BOARD STREQUAL "qemu-riscv64" OR KICKOS_BOARD STREQUAL "qemu-arm64")
     kickos_add_qemu_test(TARGET rootgone
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootgone.sh")

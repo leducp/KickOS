@@ -5,8 +5,9 @@
  * Plain integer constants only: read by a chip linker script and by C++.
  *
  * KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE, KICKOS_AMP_SHARED_SIZE,
- * KICKOS_AMP_NODES and KICKOS_AMP_NODE_ID arrive as -D from the resolved configuration;
- * CMakeLists.txt refuses a partition that leaves any of the first three at zero.
+ * KICKOS_AMP_USER_SHARE_SIZE, KICKOS_AMP_NODES and KICKOS_AMP_NODE_ID arrive as -D from the
+ * resolved configuration; CMakeLists.txt refuses a partition that leaves any of the first three
+ * at zero.
  *
  * The slice arithmetic takes its base and share as parameters: a part that executes from a
  * separate aperture divides two spans, its text in one and its data in the other, with
@@ -29,5 +30,9 @@
     KICKOS_AMP_SLICE_ABOVE(KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
 
 #define KICKOS_AMP_PARTITION_END (KICKOS_AMP_SHARED_BASE + KICKOS_AMP_SHARED_SIZE)
+
+/* The tasks' share is the region's top; the kernel's own objects must end at or below it. */
+#define KICKOS_AMP_USER_SHARE_BASE (KICKOS_AMP_PARTITION_END - KICKOS_AMP_USER_SHARE_SIZE)
+#define KICKOS_AMP_KERNEL_SHARED_SIZE (KICKOS_AMP_SHARED_SIZE - KICKOS_AMP_USER_SHARE_SIZE)
 
 #endif

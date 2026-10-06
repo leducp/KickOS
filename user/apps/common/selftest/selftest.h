@@ -22,11 +22,7 @@
 
 #include "tap.h"
 
-// The chip's own constants. A sim build ships none (same guard as config/board.h), so
-// anything read from here needs a fallback.
-#if defined(__has_include) and __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
-#endif
 
 // The registration list in main.cc is cut into KICKOS_SELFTEST_REGIONS contiguous regions,
 // and this image carries the run [KICKOS_SELFTEST_FIRST_REGION, KICKOS_SELFTEST_LAST_REGION].
@@ -247,6 +243,13 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_amp_probe_root_only();
     KICKOS_SELFTEST_LOCAL void t_amp_local_port_slot_held();
     KICKOS_SELFTEST_LOCAL void t_amp_far_slot_reuse();
+#if KICKOS_AMP_OWN_IMAGE
+    KICKOS_SELFTEST_LOCAL void t_amp_share_crossing();
+#if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
+    KICKOS_SELFTEST_LOCAL void t_amp_share_seated();
+    KICKOS_SELFTEST_LOCAL void t_amp_share_window();
+#endif
+#endif
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1

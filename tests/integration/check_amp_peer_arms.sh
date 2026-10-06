@@ -3,9 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Runs the arms that need a peer that is running against one: amp_far_call,
-# amp_far_reply_guard, amp_far_reply_empty, the ring half of amp_window, and
-# amp_far_deliver_fault. Each decides at RUNTIME off the peer's own serviced count, or off
-# whether the ring toward that peer has room.
+# amp_far_reply_guard, amp_far_reply_empty, the ring half of amp_window,
+# amp_far_deliver_fault, and amp_share_crossing. Each decides at RUNTIME off the peer's own
+# serviced count, or off whether the ring toward that peer has room.
 #
 # THIS NAMED SET IS THE WHOLE ENFORCEMENT, and that is a residue rather than a design: the gate
 # does not read the run's own final verdict, so an arm failing OUTSIDE this list leaves the gate
@@ -14,9 +14,10 @@
 #
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
 #
-# The own-image posture is ALLOWED to skip THREE arms, amp_far_call, amp_far_reply_guard and
-# amp_far_reply_empty (KICKOS_EXPECT_SKIPS in tests/integration/gates/selftest.cmake), because
-# the same image runs standalone and inside a merged partition and only the second has a peer.
+# The own-image posture is ALLOWED to skip FOUR arms, amp_far_call, amp_far_reply_guard,
+# amp_far_reply_empty and amp_share_crossing (KICKOS_EXPECT_SKIPS in
+# tests/integration/gates/selftest.cmake), because the same image runs standalone and inside
+# a merged partition and only the second has a peer.
 # This gate is what bounds that permission: here the arms must report `ok` and must NOT be
 # skipped, since a runtime skip that never stops skipping is a lapsed arm wearing a permission.
 # Every name that permission grants is therefore in the enforced set below.
@@ -92,7 +93,7 @@ skipped() { # <arm>
 # below would report a set narrower than the one enforced.
 n_arms=0
 for arm in amp_far_call amp_far_reply_guard amp_far_reply_empty amp_window \
-           amp_far_deliver_fault; do
+           amp_far_deliver_fault amp_share_crossing; do
     n_arms=$((n_arms + 1))
     if skipped "$arm"; then
         fail "$arm SKIPPED against a live peer.

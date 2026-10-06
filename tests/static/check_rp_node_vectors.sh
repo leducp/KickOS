@@ -17,29 +17,30 @@
 #   alignment  the table sits where VTOR can point at it: its own byte length rounded up to a
 #              power of two, at least 128.
 #
-# The slot count and the doorbell line are read out of the chip's chip_limits.h rather than
-# restated here, so a renumbered part breaks the assertion instead of drifting past it. A chip
-# this gate does not know is REFUSED, never skipped: an unlisted one would read as a pass.
+# The slot count and the doorbell line are read out of the chip's generated chip_limits.h and
+# chip_layout.h rather than restated here, so a renumbered part breaks the assertion instead of
+# drifting past it. A chip this gate does not know is REFUSED, never skipped: an unlisted one
+# would read as a pass.
 #
-# usage: check_rp_node_vectors.sh <elf> <nm> <objdump> <chip> <src-dir>
+# usage: check_rp_node_vectors.sh <elf> <nm> <objdump> <chip> <chip-limits-h> <chip-layout-h>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_rp_node_vectors.sh <elf> <nm> <objdump> <chip> <src-dir>"
+_usage="usage: check_rp_node_vectors.sh <elf> <nm> <objdump> <chip> <chip-limits-h> <chip-layout-h>"
 elf="${1:?$_usage}"
 nm="${2:?$_usage}"
 objdump="${3:?$_usage}"
 chip="${4:?$_usage}"
-src="${5:?$_usage}"
+LIMITS="${5:?$_usage}"
+LAYOUT="${6:?$_usage}"
 
 case "$chip" in
     rp2350)
         TABLE=g_node_isr_vector
         PARK=kickos_rp2350_node_park
         SERVICE=kickos_rp2350_doorbell_service
-        LIMITS="$src/arch/arm/chip/$chip/include/kickos/chip_limits.h"
-        BELL_MACRO=KICKOS_RP2350_SIO_IRQ_BELL
+        BELL_MACRO=KICKOS_LAYOUT_LINE_SIO_IRQ_BELL
         # Cortex-M: slots 0..15 are the architecturally fixed core exceptions, and external
         # line n is slot 16 + n.
         CORE_SLOTS=16
@@ -56,21 +57,24 @@ esac
 [ -x "$nm" ] || fail "no nm at $nm; the table's address cannot be read out of the image and
   every assertion below would rest on a hard-coded layout"
 [ -x "$objdump" ] || fail "no objdump at $objdump; there are no table bytes to read"
-[ -r "$LIMITS" ] || fail "cannot read $LIMITS, which is where the slot count and the doorbell
-  line come from. Restating them here instead is what this gate is written not to do"
+[ -r "$LIMITS" ] || fail "cannot read $LIMITS, which is where the slot count comes from.
+  Restating it here instead is what this gate is written not to do"
+[ -r "$LAYOUT" ] || fail "cannot read $LAYOUT, which is where the doorbell line comes from.
+  Restating it here instead is what this gate is written not to do"
 
 scratch_dir
 
 # --- the numbers, out of the chip's own header --------------------------------
-limit_value() { # <macro>
-    sed -n "s/^[[:space:]]*#[[:space:]]*define[[:space:]][[:space:]]*$1[[:space:]][[:space:]]*\([0-9][0-9]*\)[[:space:]]*\$/\1/p" \
-        "$LIMITS" | tail -n 1
+# A generated definition may carry its reference as a trailing C comment.
+define_value() { # <macro> <header>
+    sed -n "s|^[[:space:]]*#[[:space:]]*define[[:space:]][[:space:]]*$1[[:space:]][[:space:]]*\([0-9][0-9]*\)[[:space:]]*\(/\*.*\*/[[:space:]]*\)\{0,1\}\$|\1|p" \
+        "$2" | tail -n 1
 }
 
-MAX_IRQ="$(limit_value KICKOS_MAX_IRQ)"
-BELL="$(limit_value "$BELL_MACRO")"
+MAX_IRQ="$(define_value KICKOS_MAX_IRQ "$LIMITS")"
+BELL="$(define_value "$BELL_MACRO" "$LAYOUT")"
 require_number "$MAX_IRQ" "KICKOS_MAX_IRQ in $LIMITS"
-require_number "$BELL" "$BELL_MACRO in $LIMITS"
+require_number "$BELL" "$BELL_MACRO in $LAYOUT"
 if [ "$BELL" -ge "$MAX_IRQ" ]; then
     fail "$BELL_MACRO is $BELL, at or past the $MAX_IRQ line(s) KICKOS_MAX_IRQ declares: the
   doorbell slot would fall outside the table and this gate would assert over the wrong words"

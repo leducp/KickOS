@@ -116,6 +116,17 @@ extern "C"
         return g_tcr;
     }
 
+    // A fault: no gate here asks the hardware's own walk.
+    uint64_t kickos_armv8a_at_read(uint64_t, bool)
+    {
+        return 1u;
+    }
+
+    uint64_t kickos_armv8a_read_mair_el1(void)
+    {
+        return 0u;
+    }
+
     uint64_t kickos_armv8a_read_mmfr0_el1(void)
     {
         return g_mmfr0;

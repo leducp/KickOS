@@ -10,7 +10,7 @@ if(NOT TARGET faultsurvive)
 endif()
 
 # The board set these arms cover. microbit has an emulator and is deliberately not in it.
-if(NOT (KICKOS_CHIP STREQUAL "mps2" OR KICKOS_ARCH STREQUAL "armv8a"
+if(NOT (KICKOS_QEMU_MPS2 OR KICKOS_ARCH STREQUAL "armv8a"
         OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_BOARD STREQUAL "qemu-riscv64"
         OR KICKOS_BOARD STREQUAL "qemu-x86_64" OR KICKOS_ARCH STREQUAL "sim"))
   return()

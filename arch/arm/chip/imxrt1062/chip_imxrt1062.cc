@@ -20,6 +20,7 @@
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
+#include "chip_layout.h"
 #include "irq.h"
 #include "regs/ccm.h"
 #include "regs/gpt.h"
@@ -179,7 +180,7 @@ namespace
             1,             // serialClkFreq = 30 MHz
             0,             // lutCustomSeqEnable
             {0, 0},
-            0x00800000u,   // sflashA1Size = 8 MiB (Teensy 4.1 W25Q64)
+            KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE, // sflashA1Size, the board file's flash
             0, 0, 0,       // A2/B1/B2 size
             0, 0, 0, 0,    // pad-setting overrides
             0, 0, 0,       // timeoutInMs, commandInterval, dataValidTime
@@ -785,30 +786,6 @@ int arch_reboot(void)
                             sizeof(kickos::diag::kRebootImxrt) - 1);
     arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
     arch_shutdown(KICKOS_FATAL_STATUS);
-}
-#endif
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and
-// the CCM (CCGR clock-gate roots). Bases are the constants above; sizes are the 4 KB
-// register block of each peripheral (an AIPS slot itself is 16 KiB). M7 has NO
-// bit-band, so arch_bitband_present keeps the fallback 0.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::GPT1_BASE, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
-        {mmap::CCM_BASE, 0x1000u},  // CCM: CCGR clock-gate roots (RM ch.14)
-        // One cleared Supervisor-Protect nibble opens a whole 16 KiB peripheral slot to every
-        // unprivileged thread, and these config blocks are not themselves OPAC-gated.
-        {mmap::AIPSTZ1_BASE, 0x1000u}, // AIPS-1: MPR + OPACR0..4 (RM ch.32)
-        {mmap::AIPSTZ2_BASE, 0x1000u}, // AIPS-2
-        {mmap::AIPSTZ3_BASE, 0x1000u}, // AIPS-3, the bridge USB1 sits behind
-        {mmap::AIPSTZ4_BASE, 0x1000u}, // AIPS-4
-        // The rest of USB1's AIPS slot: the bridge's unit is 16 KiB and holds OTG2 at +0x200
-        // and USBNC at +0x800, so arch_periph_enable necessarily opens those too.
-        {mmap::USB1_BASE + 0x200u, 0x3E00u},
-    };
-    return blocks;
 }
 #endif
 

@@ -18,6 +18,8 @@
 #include <kickos/sys/service.h>
 #include <kickos/chip_mmap.h>
 
+#include <stdint.h>
+
 extern "C"
 {
     // Declared here: kickos_rpusb exports no header.
@@ -35,7 +37,7 @@ extern "C"
     static struct kos_service_cfg const rpusb_cfg = {
         .name = "rpusb",
         .mmio_base = kickos::rp2350::mmap::USBCTRL_DPRAM_BASE,
-        .mmio_window = kickos::rp2350::mmap::USBCTRL_WINDOW,
+        .mmio_window = kickos::rp2350::mmap::USBCTRL_SIZE,
         .hz = 0u,
         .addr = 0,
         .prio = 12,

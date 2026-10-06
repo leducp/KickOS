@@ -27,7 +27,7 @@ privileged-only permissions and nonsense limits pointing into an unprogrammed MA
 closed on the first unprivileged access: a thread is denied its own stack. That is a semantically
 different unit, not a trivial-tweak case. The encoding evidence is in `reference/porting.md`.
 
-The `KICKOS_CHIP_ENFORCES_MPU` fail-loud floor in the top `CMakeLists.txt` is what protected the
+The fail-loud floor in the top `CMakeLists.txt` on an enforcing chip with no backend is what protected the
 tree in the meantime: with no `mpu.cmake`, `KICKOS_HAVE_MPU=1` on `pizero2350` was REJECTED at
 configure time rather than silently linking the wrong backend. The port claimed no enforcement and
 was honest about it; this document is what lifted that.

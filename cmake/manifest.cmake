@@ -11,9 +11,9 @@
 set(KICKOS_TABLE_VERSION 3)
 
 # Writes <export_dir>/manifest.yaml, and copies the board's chip and board files to
-# <export_dir>/platform/<chip>/ when platform/<chip>/<board>.yaml exists, and its default
-# composition to <export_dir>/boards/<board>/ when boards/<board>/composition.yaml does, so the
-# manifest names them by the same relative path in the build tree and in the installed package.
+# <export_dir>/platform/<chip>/ and its default composition to <export_dir>/boards/<board>/, so
+# the manifest names them by the same relative path in the build tree and in the installed
+# package.
 function(kickos_export_manifest export_dir)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   _kickos_json_quote("${PROJECT_BINARY_DIR}/generated/.config" _config)
@@ -48,29 +48,19 @@ function(kickos_export_manifest export_dir)
     set(_amp "{\"node\": ${_node}, \"ports\": ${_jports}}")
   endif()
 
-  set(_descriptions "null")
   file(REMOVE_RECURSE "${export_dir}/platform")
   set(_platform "${PROJECT_SOURCE_DIR}/platform/${KICKOS_CHIP}")
-  if(NOT KICKOS_CHIP STREQUAL "" AND EXISTS "${_platform}/${KICKOS_BOARD}.yaml")
-    foreach(_file chip.yaml "${KICKOS_BOARD}.yaml")
-      configure_file("${_platform}/${_file}" "${export_dir}/platform/${KICKOS_CHIP}/${_file}" COPYONLY)
-    endforeach()
-    _kickos_json_quote("platform/${KICKOS_CHIP}/chip.yaml" _qchip)
-    _kickos_json_quote("platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml" _qboard)
-    set(_descriptions "{\"chip\": ${_qchip}, \"board\": ${_qboard}}")
-  endif()
+  foreach(_file chip.yaml "${KICKOS_BOARD}.yaml")
+    configure_file("${_platform}/${_file}" "${export_dir}/platform/${KICKOS_CHIP}/${_file}" COPYONLY)
+  endforeach()
+  _kickos_json_quote("platform/${KICKOS_CHIP}/chip.yaml" _qchip)
+  _kickos_json_quote("platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml" _qboard)
+  set(_descriptions "{\"chip\": ${_qchip}, \"board\": ${_qboard}}")
 
-  set(_default "null")
   file(REMOVE_RECURSE "${export_dir}/boards")
   set(_composition "boards/${KICKOS_BOARD}/composition.yaml")
-  if(EXISTS "${PROJECT_SOURCE_DIR}/${_composition}")
-    if(_descriptions STREQUAL "null")
-      message(FATAL_ERROR "KickOS: ${_composition} has no chip and board files to be admitted against: "
-                          "there is no platform/<chip>/${KICKOS_BOARD}.yaml for chip '${KICKOS_CHIP}'")
-    endif()
-    configure_file("${PROJECT_SOURCE_DIR}/${_composition}" "${export_dir}/${_composition}" COPYONLY)
-    _kickos_json_quote("${_composition}" _default)
-  endif()
+  configure_file("${PROJECT_SOURCE_DIR}/${_composition}" "${export_dir}/${_composition}" COPYONLY)
+  _kickos_json_quote("${_composition}" _default)
 
   set(_drivers "")
   get_property(_catalogue GLOBAL PROPERTY KICKOS_DRIVER_CATALOGUE)

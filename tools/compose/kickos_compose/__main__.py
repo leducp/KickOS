@@ -8,7 +8,8 @@
 #                               [--fragment <file.cmake>]
 # python -m kickos_compose cost <composition> --manifest <manifest>
 # python -m kickos_compose chip <chip or board file> --arch <arch> --include-dir <dir> --chip-dir <dir>
-# python -m kickos_compose chip <chip or board file> --arch <arch> --compare <header> --cxx "<compiler> [<flag>...]"
+# python -m kickos_compose chip <chip or board file> --arch <arch> --compare <header>
+#                               --cxx "<compiler> [<flag>...]"
 #
 # Against a manifest, the chip and board files are the ones its `descriptions` names. A run that
 # refuses exits REFUSED; any other failure exits otherwise.
@@ -28,6 +29,9 @@ from .supply import init_figures
 # The exit status of a run that refused what it read, which kickos_compose tells apart from a tool
 # that did not run: Python's own failures exit 1 and argparse's 2.
 REFUSED = 3
+# The exit status of a request the files admit and the tool cannot serve, as an arch the chip
+# lacks.
+UNSERVED = 4
 
 
 def finish(report, count, what, scope=""):
@@ -63,14 +67,17 @@ def main(argv):
                                             "per line")
     cost.add_argument("composition", help="the composition file")
     cost.add_argument("--manifest", required=True, help="the export manifest of the kernel build it runs on")
-    headers = commands.add_parser("chip", help="write the chip headers a build includes, or compare one with a "
-                                               "hand-written header")
+    headers = commands.add_parser("chip", help="write the chip headers a build includes, or compare one "
+                                               "with a hand-written header")
     headers.add_argument("description", help="the chip file, or a board file naming it")
-    headers.add_argument("--arch", required=True, help="the kernel architecture of the build, which picks its cluster")
+    headers.add_argument("--arch", required=True,
+                         help="the kernel architecture of the build, which picks its cluster")
     headers.add_argument("--include-dir", help="where kickos/chip_mmap.h and kickos/chip_limits.h go")
     headers.add_argument("--chip-dir", help="where irq.h, chip_layout.h, chip_tables.h and chip.cmake go")
-    headers.add_argument("--compare", help="a hand-written chip_mmap.h, irq.h or chip_limits.h to assert against")
-    headers.add_argument("--cxx", help="the C++ compiler and flags the compare compiles with, as one shell word list")
+    headers.add_argument("--compare",
+                         help="a hand-written chip_mmap.h, irq.h or chip_limits.h to assert against")
+    headers.add_argument("--cxx",
+                         help="the C++ compiler and flags the compare compiles with, as one shell word list")
     arguments = parser.parse_args(argv)
 
     if arguments.command == "chip":
@@ -149,7 +156,7 @@ def run_chip(arguments):
                                                 shlex.split(arguments.cxx or ""))
     except chip_headers.Failure as failure:
         print("kickos_compose: %s" % failure, file=sys.stderr)
-        return 1
+        return UNSERVED
     if status is None:
         return finish(report, 1, "description file")
     for line in said:

@@ -691,9 +691,11 @@ enum kos_window_kind
     // KOS_AUTH_MEMORY, takes no flag, and is what kos_periph_enable and
     // kos_periph_reg_write accept.
     KOS_WINDOW_DEVICE = 0,
-    // A block the spawner's task reserved with kos_ram_alloc, at the address kos_window_get
-    // answers; a list names a block in one window at most (-KOS_EINVAL). The block keeps one
-    // memory type wherever it is mapped: a window asking another is -KOS_EBUSY.
+    // A block the spawner's task reserved with kos_ram_alloc, or any part on whole granules of
+    // an AMP partition's user share where the spawner is in root's task (<kickos/amp.h>), at
+    // the address kos_window_get answers; a list names a block in one window at most
+    // (-KOS_EINVAL). The block keeps one memory type wherever it is mapped: a window asking
+    // another is -KOS_EBUSY.
     KOS_WINDOW_MEMORY = 1,
     // An I/O port range, base the first port and size the count, on an arch with ports
     // (-KOS_ENOTSUP elsewhere): inside an aperture the chip states (-KOS_EINVAL), one holder as

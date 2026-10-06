@@ -5,10 +5,9 @@
 # capabilities the silicon has, and decides no knob's value, so a new chip adds a
 # stanza and edits no ladder.
 #
-# Everything here is unprompted. A chip CONSTANT belongs in
-# arch/<arch>/chip/<chip>/include/kickos/chip_limits.h, defined unconditionally on the
-# model of config/limits.h: an option whose availability and default depend on no
-# hardware fact is not configuration.
+# Everything here is unprompted. A chip CONSTANT belongs in platform/<chip>/chip.yaml, from
+# which configure generates kickos/chip_limits.h: an option whose availability and default
+# depend on no hardware fact is not configuration.
 
 config ARCH_HAS_KERNEL_STACKS
 	bool
@@ -133,7 +132,6 @@ config ARCH_X86_64
 
 config ARCH_SIM
 	bool
-	select HAS_MPU
 
 config KICKOS_ARCH
 	string
@@ -156,6 +154,11 @@ config KICKOS_ARCH_FAMILY
 	default "xtensa" if ARCH_LX6
 	default "x86" if ARCH_X86_64
 	default "sim" if ARCH_SIM
+
+config CHIP_AN505
+	bool
+	select ARCH_ARMV7M
+	select HAS_MPU
 
 config CHIP_IMXRT1062
 	bool
@@ -253,10 +256,14 @@ config CHIP_RX72M
 	select ARCH_RXV3
 	select HAS_MPU
 
-# Empty on the sim, which then leaves config/board.h and config/system.h on their own
-# defaults.
+config CHIP_SIM
+	bool
+	select ARCH_SIM
+	select HAS_MPU
+
 config KICKOS_CHIP
 	string
+	default "an505" if CHIP_AN505
 	default "imxrt1062" if CHIP_IMXRT1062
 	default "mk64f" if CHIP_MK64F
 	default "mps2" if CHIP_MPS2
@@ -276,4 +283,5 @@ config KICKOS_CHIP
 	default "virt_rv64" if CHIP_VIRT_RV64
 	default "q35" if CHIP_Q35
 	default "rx72m" if CHIP_RX72M
+	default "sim" if CHIP_SIM
 	default ""

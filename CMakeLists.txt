@@ -35,33 +35,21 @@ include_directories("${PROJECT_SOURCE_DIR}/include")
 include_directories("${PROJECT_BINARY_DIR}/generated/include")
 
 # --- Board provisioning -----------------------------------------------------
-set(KICKOS_CHIP_GENERATED OFF)
-set(KICKOS_CHIP_LIMITS_H "")
-if(KICKOS_CHIP)
-  set(KICKOS_CHIP_INCLUDE_DIR
-      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/include")
-  set(KICKOS_CHIP_LIMITS_H "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h")
-  if(NOT EXISTS "${KICKOS_CHIP_LIMITS_H}")
-    set(_chip_description "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/chip.yaml")
-    if(NOT EXISTS "${_chip_description}")
-      message(FATAL_ERROR
-        "Chip '${KICKOS_CHIP}' ships neither ${KICKOS_CHIP_LIMITS_H} nor ${_chip_description}. "
-        "Every chip states its own interrupt-line count, unconditionally; without it "
-        "config/board.h has no KICKOS_MAX_IRQ and refuses rather than guessing 32.")
-    endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml")
-      set(_chip_description "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml")
-    endif()
-    include(chip_generate)
-    kickos_chip_generate("${_chip_description}" "${KICKOS_ARCH}")
-    set(KICKOS_CHIP_GENERATED ON)
-    set(KICKOS_CHIP_LIMITS_H "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h")
-  endif()
-  if(EXISTS "${KICKOS_CHIP_INCLUDE_DIR}")
-    include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
-  else()
-    set(KICKOS_CHIP_INCLUDE_DIR "")
-  endif()
+include(chip_generate)
+kickos_board_undescribed(_board_lacks "${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_BOARD}"
+                         "${KICKOS_CHIP}")
+if(NOT _board_lacks STREQUAL "")
+  message(FATAL_ERROR "KickOS: board '${KICKOS_BOARD}' ${_board_lacks}.")
+endif()
+kickos_chip_generate("${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml"
+                     "${KICKOS_ARCH}")
+set(KICKOS_CHIP_LIMITS_H "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h")
+set(KICKOS_CHIP_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/include")
+if(EXISTS "${KICKOS_CHIP_INCLUDE_DIR}")
+  include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
+else()
+  set(KICKOS_CHIP_INCLUDE_DIR "")
 endif()
 
 set(KICKOS_BOARD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/include")
@@ -506,75 +494,28 @@ if(NOT KICKOS_HAVE_TRACE_CLOCK EQUAL KICKOS_TRACE_CLOCK_DECLARED)
     "above. A chip that gained or lost arch_trace_now has to be stated in both.")
 endif()
 
-# A generated chip.cmake states the chip's region unit and whether it translates; Kconfig's
-# HAS_MPU and HAS_ASPACE are checked against every chip file by tests/static/check_chip_kconfig.sh.
-# Any other chip declares an enforcing MPU by shipping arch/<family>/chip/<chip>/mpu.cmake, which
-# also picks the PMSAv8 backend source; the sim enforces via host mprotect.
-set(KICKOS_CHIP_ENFORCES_MPU OFF)
-set(KICKOS_CHIP_TRANSLATES OFF)
-if(KICKOS_CHIP_GENERATED)
-  include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
-  set(KICKOS_CHIP_ENFORCES_MPU ${KICKOS_HAVE_MPU})
-  if(KICKOS_HAVE_MPU AND KICKOS_ARCH_FAMILY STREQUAL "arm")
-    if(KICKOS_CHIP_REGION_UNIT STREQUAL "sysmpu")
-      set(KICKOS_ARM_MPU_BACKEND SYSMPU)
-    elseif(KICKOS_CHIP_REGION_UNIT STREQUAL "pmsav8")
-      set(KICKOS_ARM_MPU_BACKEND PMSAV8)
-    endif()
-  endif()
-elseif(KICKOS_ARCH STREQUAL "sim")
-  set(KICKOS_CHIP_ENFORCES_MPU ON)
-elseif(KICKOS_CHIP)
-  set(_mpu_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/mpu.cmake")
-  if(EXISTS "${_mpu_optin}")
-    include("${_mpu_optin}")
-  endif()
+# The chip file states the protection unit; Kconfig's selection is held to it.
+include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
+kickos_chip_protection_disagreement(_chip_disagrees "${KICKOS_HAVE_MPU}" "${KICKOS_HAVE_ASPACE}"
+  "${KICKOS_CHIP_REGION_UNIT}" "${KICKOS_CHIP_TRANSLATES}" "platform/${KICKOS_CHIP}/chip.yaml")
+if(NOT _chip_disagrees STREQUAL "")
+  message(FATAL_ERROR "KickOS: board '${KICKOS_BOARD}' (chip ${KICKOS_CHIP}): ${_chip_disagrees}")
 endif()
-if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
-  kickos_enforcing_mpu_boards(_kickos_mpu_boards)
-  message(FATAL_ERROR
-    "The configuration resolved the enforcing posture on board '${KICKOS_BOARD}' "
-    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}), which ships no mpu.cmake, so the two "
-    "declarations of one fact disagree: arch/Kconfig selects HAS_MPU for this chip and "
-    "arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/mpu.cmake does not exist. "
-    "Enforcement would be a silent no-op (arch_domain_static_regions grants zero "
-    "regions because the linker script carves no KICKOS_HAVE_MPU .appdata window). "
-    "Enforcement-capable boards today: ${_kickos_mpu_boards}. Either drop the select, "
-    "or bring the port up: add a KICKOS_HAVE_MPU .appdata window to its linker script "
-    "and drop a mpu.cmake (KICKOS_CHIP_ENFORCES_MPU ON) beside it once enforcement is "
-    "validated on hardware.")
+if(KICKOS_HAVE_MPU AND KICKOS_ARCH_FAMILY STREQUAL "arm")
+  kickos_chip_arm_backend(KICKOS_ARM_MPU_BACKEND KICKOS_ARM_PMSAV8_SOURCE
+                          "${KICKOS_CHIP_REGION_UNIT}")
 endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
-# A chip declares a translating backend by shipping arch/<family>/chip/<chip>/aspace.cmake.
-# No chip ships both that and mpu.cmake.
-if(KICKOS_CHIP AND NOT KICKOS_CHIP_GENERATED)
-  set(_aspace_optin
-      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake")
-  if(EXISTS "${_aspace_optin}")
-    include("${_aspace_optin}")
-  endif()
+# Whether QEMU runs this board as one of its MPS2 machines, which the gates and apps that need its
+# semihosting exit and its emulated MPU key on.
+kickos_qemu_machine("${KICKOS_BOARD}" _kickos_qemu_env _kickos_qemu_machine)
+set(KICKOS_QEMU_MPS2 OFF)
+if(_kickos_qemu_machine MATCHES "^mps2-")
+  set(KICKOS_QEMU_MPS2 ON)
 endif()
-if(KICKOS_HAVE_ASPACE AND NOT KICKOS_CHIP_TRANSLATES)
-  message(FATAL_ERROR
-    "The configuration resolved a translating backend on board '${KICKOS_BOARD}' "
-    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}), which ships no aspace.cmake, so the two "
-    "declarations of one fact disagree: arch/Kconfig selects HAS_ASPACE for this chip and "
-    "arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake does not exist. The kernel "
-    "would build the frame allocator over a pool the linker script never carved. Either "
-    "drop the select, or carve __kickos_frame_pool_start/_end and drop an aspace.cmake "
-    "(KICKOS_CHIP_TRANSLATES ON) beside it.")
-endif()
-if(KICKOS_CHIP_TRANSLATES AND KICKOS_HAVE_MPU)
-  message(FATAL_ERROR
-    "Board '${KICKOS_BOARD}' resolved BOTH the enforcing region posture and a translating "
-    "backend. A chip opts into exactly one memory family: the flat non-translating region set "
-    "(arch_mpu_*, declared by mpu.cmake) or translation (arch_aspace_*, declared by "
-    "aspace.cmake). Under translation the descriptors that map already carry AP, UXN and PXN, "
-    "so no region set is left to gate and no backend implements both call families. Drop one "
-    "of the two opt-ins in arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/.")
-endif()
+
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
 
 # terminate.cmake selects process-exit fault termination instead of the LED fallback.
@@ -1116,6 +1057,12 @@ if(KICKOS_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(isolated_cores PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  # Test the AMP user share's refusal past its window using synthetic values.
+  _add_test(NAME amp_share
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_share.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(amp_share PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # Compile the optional SMP trace path using this build's recorded flags.
   _add_test(NAME smp_trace_builds
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_trace_builds.sh"
@@ -1139,19 +1086,32 @@ if(KICKOS_BUILD_TESTS)
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_driver_metadata.cmake")
   set_tests_properties(driver_metadata PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME chip_protection
+            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    "-DKICKOS_SCRATCH=${PROJECT_BINARY_DIR}/chip_protection"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_protection.cmake")
+  set_tests_properties(chip_protection PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME heap_symbol
             COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
                     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_heap_symbol.cmake")
   set_tests_properties(heap_symbol PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   # A first run fetches the tool's locked dependencies into the build directory.
-  foreach(_compose_mode descriptions compositions arms)
+  foreach(_compose_mode descriptions compositions arms coverage)
     _add_test(NAME platform_${_compose_mode}
               COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
                       "${PROJECT_BINARY_DIR}" "${_compose_mode}"
               WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(platform_${_compose_mode} PROPERTIES TIMEOUT 300 LABELS "host;tree")
   endforeach()
+  # A configure of the sim, from a copy of the tracked tree, on the host toolchain.
+  if(KICKOS_ARCH STREQUAL "sim")
+    _add_test(NAME board_refusals
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_board_refusals.sh" "${CMAKE_COMMAND}"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(board_refusals PROPERTIES TIMEOUT 300 LABELS "host;tree")
+  endif()
   # The walker runs, so the compiler must be the host's, which only the sim builds with.
   if(KICKOS_ARCH STREQUAL "sim")
     _add_test(NAME platform_tables
@@ -1555,21 +1515,12 @@ kickos_export_manifest("${PROJECT_BINARY_DIR}/export")
 # The same name the installed package sets, for a consumer built beside this tree.
 set(KICKOS_MANIFEST "${PROJECT_BINARY_DIR}/export/manifest.yaml" CACHE INTERNAL
     "The export manifest a composition is admitted against")
-# KickOS::system_default: the export's default composition as a system target, on a board that
-# has one, so a build whose default no longer fits fails its configure.
-if(TARGET kickos_kernel_leaf AND EXISTS "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml")
+# KickOS::system_default: the export's default composition as a system target, so a build whose
+# default no longer fits fails its configure.
+if(TARGET kickos_kernel_leaf)
   kickos_compose(kickos_system_default
                  "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml"
                  EXPORT_NAME system_default)
-elseif(TARGET kickos_kernel_leaf)
-  # A board with no default composition still exports KickOS::system_default, whose link fails on
-  # a required symbol that names the remedy, rather than on an unknown target at configure.
-  add_library(kickos_system_default INTERFACE)
-  set_target_properties(kickos_system_default PROPERTIES EXPORT_NAME system_default)
-  target_link_libraries(kickos_system_default INTERFACE KickOS::kernel)
-  target_link_options(kickos_system_default INTERFACE
-    "LINKER:--require-defined=${KICKOS_C_SYMBOL_PREFIX}kickos_no_default_composition_write_one_and_call_kickos_compose")
-  kickos_export_targets(kickos_system_default)
 endif()
 if(KICKOS_BUILD_TESTS)
   _add_test(NAME platform_manifest
@@ -1650,11 +1601,9 @@ if(KICKOS_CHIP_INCLUDE_DIR)
   install(DIRECTORY "${KICKOS_CHIP_INCLUDE_DIR}/"
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
-if(KICKOS_CHIP_GENERATED)
-  install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_mmap.h"
-                "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h"
-          DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
-endif()
+install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_mmap.h"
+              "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
 
 if(KICKOS_BOARD_INCLUDE_DIR)
   install(DIRECTORY "${KICKOS_BOARD_INCLUDE_DIR}/"

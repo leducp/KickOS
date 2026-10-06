@@ -9,8 +9,8 @@
 #
 # Two board groupings recur, and both are arch/chip facts rather than lists to maintain:
 #   the four QEMU MPS2 FPGA images (an386/M4F, an505/M33, an500/M7, an385/M3) are exactly the
-#     boards on the `mps2` chip backend, KICKOS_CHIP STREQUAL "mps2". qemu-m33 has its own
-#     memory map (boards/qemu-m33/mps2.ld); the other three take the chip's.
+#     boards QEMU runs as an MPS2 machine, KICKOS_QEMU_MPS2, which the root derives from
+#     kickos_qemu_machine.
 #   the two emulatable arm64 boards (qemu-arm64, imx8mp-evk) are exactly the armv8a fleet,
 #     KICKOS_ARCH STREQUAL "armv8a".
 
@@ -28,10 +28,7 @@ kickos_add_diagnostic_apps(fault panicgate specfault)
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(gpioblink)
   add_subdirectory(libc_exit)
-  # A board with a default composition builds KickOS::system_default.
-  if(EXISTS "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml")
-    add_subdirectory(sysdefault)
-  endif()
+  add_subdirectory(sysdefault)
   kickos_add_diagnostic_apps(mpu_fault rootfault rootgone rootauth rebootdemo reclaimwit
                              objbudget)
 endif()
@@ -84,7 +81,7 @@ endif()
 # the automatable armv7m gates: they run and exit, and arch_shutdown forwards the exit status
 # over semihosting. All threads share one address space there, so the app's globals are a valid
 # cross-thread channel.
-if(KICKOS_CHIP STREQUAL "mps2")
+if(KICKOS_QEMU_MPS2)
   add_subdirectory(initdemo)
 endif()
 
@@ -115,7 +112,7 @@ endif()
 # .gcc_except_table) plus the runtime writable state inside the app grants.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_CHIP STREQUAL "mps2"
+   OR KICKOS_QEMU_MPS2
    OR ((KICKOS_BOARD STREQUAL "picopi"
         OR KICKOS_BOARD STREQUAL "rx72m"
         OR KICKOS_BOARD STREQUAL "esp32c6-wroom"

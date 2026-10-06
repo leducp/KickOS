@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the tree's chip_rp2350.cc and docs/reference/boards.md.
+
+version: 1
+board: pizero2350
+chip: rp2350
+
+# UART1, since the Pi-Zero header does not bring out UART0's pins. The board has no
+# diagnostic LED.
+console:
+  device: /dev/uart1
+  pins: { tx: GPIO4, rx: GPIO5 }
+
+# The board's QSPI flash, a W25Q128JVSI.
+memory:
+  xip_flash:
+    base: 0x10000000
+    size: 0x1000000
+    link: { region: FLASH, access: rx }
+    ref: "RP2350-PiZero schematic; XIP base: RP2350 Datasheet Table 10 Address map, p.30"

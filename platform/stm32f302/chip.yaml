@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from RM0365, for the STM32F302x8.
+
+version: 1
+chip: stm32f302
+manual: "RM0365 STM32F302xB/C/D/E and STM32F302x6/8 Reference Manual, Rev 8 (December 2020)"
+arch: armv7m
+# The x8's Cortex-M4 is built without its MPU.
+protection: { unit: none }
+data_cache: false
+c: { namespace: kickos::stm32 }
+
+interrupts: { count: { value: 82, ref: "Table 41 STM32F302x6/8 vector table, p.217" } }
+
+devices:
+  usart2:
+    window: [0x40004400, 0x400]
+    ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.59"
+    lines: { global: { number: 38, ref: "Table 41 STM32F302x6/8 vector table, p.216" } }
+
+  tim2:
+    window: [0x40000000, 0x400]
+    owner: kernel
+    ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.59"
+    lines: { global: { number: 28, ref: "Table 41 STM32F302x6/8 vector table, p.216" } }
+  rcc: { window: [0x40021000, 0x400], owner: kernel, ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.58" }
+  # Ports A to F. A pin is muxed through kos_pinmux_set, never through a granted window.
+  gpio:
+    window: [0x48000000, 0x400]
+    count: 6
+    stride: 0x400
+    owner: kernel
+    symbol: GPIOA_BASE
+    ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.58"
+  # The flash interface: the wait states the kernel sets with the clock.
+  flash:
+    window: [0x40022000, 0x400]
+    owner: kernel
+    ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.58"
+
+memory:
+  main_flash:
+    base: 0x08000000
+    size: 0x10000
+    link: { region: FLASH, access: rx }
+    ref: "Table 4 STM32F302x6/x8 peripheral register boundary addresses, p.59"
+  sram:
+    base: 0x20000000
+    size: 0x4000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "3.3 Embedded SRAM, p.60"
+
+# Pins are PORT PIN. A selector other than `gpio` is the alternate-function number the pin's AFR
+# selects.
+pins:
+  PA2: { af7: usart2.tx, gpio: gpio.0.2 }
+  PA3: { af7: usart2.rx, gpio: gpio.0.3 }
+  PB13: { gpio: gpio.1.13 }

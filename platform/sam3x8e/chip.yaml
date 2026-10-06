@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the SAM3X/SAM3A datasheet.
+
+version: 1
+chip: sam3x8e
+manual: "Atmel SAM3X / SAM3A Datasheet, Atmel-11057C-ATARM (23-Mar-15)"
+arch: armv7m
+# The Cortex-M3 carries an MPU, which no build drives.
+protection: { unit: pmsav7, covers_devices: true, memory_type: true, driven: false }
+data_cache: false
+
+# A line is its peripheral's identifier.
+interrupts: { count: { value: 45, ref: "Table 9-1 Peripheral Identifiers, p.39" } }
+
+devices:
+  uart:
+    window: [0x400E0800, 0x140]
+    ref: "Figure 7-1 SAM3X/A Product Mapping, p.31"
+    lines: { irq: { number: 8, ref: "Table 9-1 Peripheral Identifiers, p.38" } }
+  # Disabled at boot through its write-once mode register, then grantable.
+  wdt: { window: [0x400E1A50, 0x10], ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+
+  # The monotonic time base is channel 0 of the first timer counter block.
+  tc0:
+    window: [0x40080000, 0x4000]
+    owner: kernel
+    ref: "Figure 7-1 SAM3X/A Product Mapping, p.31"
+    lines: { ch0: { number: 27, symbol: TC0_IRQ, ref: "Table 9-1 Peripheral Identifiers, p.38" } }
+  pmc: { window: [0x400E0600, 0x200], owner: kernel, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+  # The two flash banks' controllers: the wait states the kernel sets with the clock.
+  eefc0: { window: [0x400E0A00, 0x200], owner: kernel, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+  eefc1: { window: [0x400E0C00, 0x200], owner: kernel, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+  # PIOA to PIOD. A pin is muxed through kos_pinmux_set, never through a granted window.
+  pio:
+    window: [0x400E0E00, 0x200]
+    count: 4
+    stride: 0x200
+    owner: kernel
+    symbol: PIOA_BASE
+    ref: "Figure 7-1 SAM3X/A Product Mapping, p.31"
+
+memory:
+  flash:
+    base: 0x00080000
+    size: 0x80000
+    link: { region: FLASH, access: rx }
+    ref: "Figure 7-1 SAM3X/A Product Mapping, p.31"
+  # SRAM0's mirror below SRAM1, which makes the two one contiguous run.
+  sram:
+    base: 0x20070000
+    size: 0x18000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "7.2.1 Internal SRAM, p.32"
+
+# Pins are PxN. A selector other than `gpio` is the peripheral, A or B, the pin's PIO_ABSR
+# selects.
+pins:
+  PA8: { a: uart.rx, gpio: pio.0.8 }
+  PA9: { a: uart.tx, gpio: pio.0.9 }
+  PB27: { gpio: pio.1.27 }

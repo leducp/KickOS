@@ -18,7 +18,7 @@ set(_sd_floor 256)
 # default would name the booted target, stackdepth0. The board predicate stays: the other
 # emulatable boards registered no arm here and must keep registering none.
 if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT
-   AND (KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_CHIP STREQUAL "mps2"
+   AND (KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_QEMU_MPS2
         OR KICKOS_BOARD STREQUAL "microbit"))
   kickos_add_qemu_test(NAME ${_tag}_stackdepth TARGET stackdepth0
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stackdepth.sh"

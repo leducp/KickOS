@@ -26,7 +26,7 @@ protection:
 
 data_cache: false
 
-interrupts: { count: 86, ref: "Table 3-5 Interrupt vector assignments, p.76" }
+interrupts: { count: { value: 86, ref: "Table 3-5 Interrupt vector assignments, p.76" } }
 
 devices:
   # Windows are what a driver uses; the gate the kernel opens is the whole slot around it.

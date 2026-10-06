@@ -21,14 +21,15 @@
  * OWN stack, so no dedicated exception stack is reserved here.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 
 ENTRY(_start)
 
 MEMORY
 {
-    IRAM (rx)  : ORIGIN = 0x40080000, LENGTH = 128K
-    DRAM (rw)  : ORIGIN = 0x3FFB0000, LENGTH = 192K
+    KICKOS_LINK_IRAM
+    KICKOS_LINK_DRAM
 }
 
 _estack = ORIGIN(DRAM) + LENGTH(DRAM); /* core 0's boot stack top: top of DRAM */

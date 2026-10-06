@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The host simulator: values from arch/sim/sim.cc, the part being the host process.
+
+version: 1
+chip: sim
+manual: "KickOS host simulator, arch/sim/sim.cc"
+arch: sim
+# mprotect over the arena, at the generating host's page. Nothing but the host CPU reads the
+# arena, so no cache stands between a task and another observer.
+protection: { unit: mprotect, covers_devices: true, memory_type: false }
+data_cache: false
+reserved: none
+
+interrupts: { count: 32 }
+
+devices:
+  # The kernel console's buffered drain runs on a signal raised as this line, which stays clear
+  # of the block an app may inject into, from KICKOS_IRQ_FREE_BASE.
+  console:
+    host: true
+    lines: { tx: 30 }
+  # The loopback UART: host fd 1, every byte transmitted arriving back on receive.
+  uart:
+    host: true
+    lines: { irq: 29 }
+
+memory:
+  arena: { size: 0x200000, arena: true }

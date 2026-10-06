@@ -93,6 +93,20 @@ level-2 table and level-1 entry a wider partition needs."
 #define OWN_L2_HI       (OWN_L2_LO + KICKOS_AMP_NODE_SHARE / L2_BLOCK_SIZE)
 #define SHARED_L2_LO    ((KICKOS_AMP_SHARED_BASE - KICKOS_AMP_PARTITION_BASE) / L2_BLOCK_SIZE)
 #define SHARED_L2_HI    (SHARED_L2_LO + KICKOS_AMP_SHARED_SIZE / L2_BLOCK_SIZE)
+
+/* An uncached user share is mapped non-cacheable here too, a block at a time, so no cacheable
+   alias of it exists in either root. */
+#if KICKOS_AMP_USER_SHARE_UNCACHED
+#if ((KICKOS_AMP_USER_SHARE_SIZE) % L2_BLOCK_SIZE) != 0 || (KICKOS_AMP_USER_SHARE_SIZE) == 0
+#error "an uncached KICKOS_AMP_USER_SHARE_SIZE is not a whole number of L2_BLOCK_SIZE blocks. \
+This table maps 2 MiB blocks and nothing finer, so the kernel's own view of the share could only \
+be non-cacheable together with the kernel objects below it in the same block. Make the share a \
+multiple of 2 MiB, and KICKOS_AMP_SHARED_SIZE wide enough to hold it above those objects."
+#endif
+#define SHARE_NC_L2_LO  (SHARED_L2_HI - KICKOS_AMP_USER_SHARE_SIZE / L2_BLOCK_SIZE)
+#else
+#define SHARE_NC_L2_LO  SHARED_L2_HI
+#endif
 #else
 #define MAP_BASE        __kickos_dram_base
 #define MAP_L2_BLOCKS   RAM_L2_BLOCKS
@@ -100,6 +114,7 @@ level-2 table and level-1 entry a wider partition needs."
 #define OWN_L2_HI       RAM_L2_BLOCKS
 #define SHARED_L2_LO    0
 #define SHARED_L2_HI    0
+#define SHARE_NC_L2_LO  0
 #endif
 
 /* The one block the kernel is fetched from, read-only and executable at EL1. */
@@ -113,6 +128,9 @@ level-2 table and level-1 entry a wider partition needs."
     .if     _blk == CODE_L2_BLOCK
     .quad   MAP_BASE + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + SH_INNER + \
             AP_RO_EL1 + UXN
+    .elseif _blk >= SHARE_NC_L2_LO && _blk < SHARED_L2_HI
+    .quad   MAP_BASE + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NOCACHE + \
+            AP_RW_EL1 + UXN + PXN
     .elseif (_blk >= OWN_L2_LO && _blk < OWN_L2_HI) || \
             (_blk >= SHARED_L2_LO && _blk < SHARED_L2_HI)
     .quad   MAP_BASE + (_blk * L2_BLOCK_SIZE) + BLOCK + AF + ATTR_NORMAL + SH_INNER + \

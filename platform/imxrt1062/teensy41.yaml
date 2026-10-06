@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from IMXRT1060RM Table 10-1 and the tree's chip_imxrt1062.cc and
+# docs/reference/boards.md.
+
+version: 1
+board: teensy41
+chip: imxrt1062
+
+# Teensy "Serial1", pins 1 and 0.
+console:
+  device: /dev/lpuart6
+  pins: { tx: GPIO_AD_B0_02, rx: GPIO_AD_B0_03 }
+
+leds:
+  led: { pin: GPIO_B0_03, active: high, owner: kernel } # Teensy pin 13, the kernel's diagnostic LED
+
+# The Teensy 4.1's FlexSPI flash, a W25Q64.
+memory:
+  flexspi_flash:
+    base: 0x60000000
+    size: 0x800000
+    link: { region: FLASH, access: rx }
+    ref: "IMXRT1060RM Table 3-1 System memory map (CM7), p.35"

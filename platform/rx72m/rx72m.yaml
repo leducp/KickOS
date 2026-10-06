@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The RX72M CPU Card (RTK0EMXDE0C00000BJ). Values from its user's manual r12uz0098ej0110, as the
+# tree's chip_rx72m.cc cites it, and docs/reference/boards.md.
+
+version: 1
+board: rx72m
+chip: rx72m
+
+# SCI6 on the Renesas Motor Workbench serial header (board Table 5-4).
+console:
+  device: /dev/sci6
+  pins: { txd: PB1, rxd: PB0 }
+
+leds:
+  led6: { pin: P80, active: low, owner: kernel } # the kernel's diagnostic LED (board Table 5-9)

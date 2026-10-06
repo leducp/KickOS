@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * mps2-an386 (QEMU Cortex-M4F) startup: the reset vector table. vector[0] = the
+ * The QEMU MPS2 machines' startup: the reset vector table. vector[0] = the
  * initial MSP (_estack), vector[1] = Reset_Handler. The kernel exception
  * handlers (SVC/PendSV/SysTick) come from the armv7m arch layer; every external
  * NVIC line routes to the generic kickos_arm_default_irq (line = IPSR-16).

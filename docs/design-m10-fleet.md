@@ -81,11 +81,11 @@ descriptions' rules refuse, and writes, for the built chip and cluster:
 | output | form | from | replaces |
 | --- | --- | --- | --- |
 | `chip_mmap.h` | `constexpr uintptr_t` in the chip's namespace, guard unchanged | devices, channels, blocks, repeated devices, memory entries | the hand-written header, and the literals inline in `chip_*.cc` on the chips that have none |
-| `irq.h` | the line enum, form and namespace unchanged | every line, kernel-owned ones included | the hand-written `irq.h` |
+| `irq.h` | the line enum, form and namespace unchanged | every line, kernel-owned ones included | the hand-written `irq.h`; the ESP32-C6's CPU interrupt enum, which nothing referenced, is dropped rather than moved |
 | `chip_limits.h` | pure `#define`, as `startup.S` includes it | `interrupts`, `cycle_counter` | the hand-written header |
-| `chip_layout.h` | pure `#define`, for linker scripts and assembly | each memory entry's base and size, each device base | the `MEMORY{}` literals and `boot_layout.ld.h`'s device addresses |
+| `chip_layout.h` | pure `#define`, for linker scripts and assembly | each memory entry's base and size, each device base, each line | the `MEMORY{}` literals, `boot_layout.ld.h`'s device addresses and the RP2350's doorbell line |
 | `chip_tables.h` | `constexpr` arrays of `arch_reserved_block` | reserved rows: every `owner: kernel` window and port range; window apertures: every other device window, on a translating chip; port apertures: every other port range | each chip's static arrays |
-| `chip.cmake` | CMake facts | `protection.unit` | `mpu.cmake` and `aspace.cmake` |
+| `chip.cmake` | CMake facts | `protection.unit`, each link region's origin and length | `mpu.cmake`, `aspace.cmake` and the microbit's scrape of its script's RAM length |
 
 ```text
 <build>/generated/include/kickos/chip_mmap.h    on every include path, installed
@@ -93,7 +93,7 @@ descriptions' rules refuse, and writes, for the built chip and cluster:
 <build>/generated/chip/irq.h                    the chip archive's and REGDIR's include path
 <build>/generated/chip/chip_layout.h            the linker script's preprocessor path too
 <build>/generated/chip/chip_tables.h
-<build>/generated/chip/chip.cmake               included where mpu.cmake and aspace.cmake are
+<build>/generated/chip/chip.cmake               included by the root CMakeLists.txt
 ```
 
 **The link values belong in the chip file** because the arena admission carves from and the RAM
@@ -104,8 +104,8 @@ partition's, which Kconfig states.
 **The tables are read in place.** `arch_reserved_blocks`, `arch_window_apertures` and
 `arch_port_apertures` stop copying into a caller's array: each answers a span over its generated
 array, one definition in `arch/common/` serving every chip, and the kernel's stack copies in the
-grant and system-call paths go, with the fixed bound of 8 rows they were sized by. The ESP32-C6's
-file marks eleven devices `owner: kernel`, past that bound, which no longer exists to pass. The
+grant and system-call paths go, with the fixed bound of 8 rows they were sized by, which the
+ESP32-C6's kernel-owned devices are past and no longer have to pass. The
 span is `struct arch_reserved_span`, a pointer and a count, rather than `std::span`: `<span>`
 pulls `<limits>`, whose float members a translation unit built with `-mgeneral-regs-only` for a
 hard-float ABI refuses, and such units include `arch.h`.
@@ -149,8 +149,9 @@ the enforcing flag following `HAS_MPU` rather than being stated a second time pe
 configure-time pair checks become one static gate over every chip: a chip selecting `HAS_MPU` has
 a region unit in its file, a chip has `mmu` exactly when it selects `HAS_ASPACE`, and a chip whose
 file states `none` selects neither. A part whose unit the kernel does not drive still states it,
-and its builds need `no_protection`, which admission already derives from a build that enforces
-nothing.
+with `driven: false`, exactly when its chip selects no `HAS_MPU`, so enabling the unit is a change
+to both; its builds need `no_protection`, which admission already derives from a build that
+enforces nothing.
 
 **The build regenerates on an edit.** The generator runs at configure, before `arch/`, with the
 chip file, the board file and the tool's sources in `CMAKE_CONFIGURE_DEPENDS`, and writes each
@@ -169,7 +170,8 @@ What the chip code decides rather than what the part is:
   register. Each moves into the one chip source that uses it, written over the generated names;
 - interrupt routing: the ESP32's matrix sources and CPU interrupts, and the RX72M's group lines,
   whose enum `irq.h` computes today. Each moves into a routing header beside the chip sources, and
-  its includers include that header: the one place a switch edits includers;
+  its includers include that header: the one place a switch edits includers. The ESP32-C6's CPU
+  interrupt enum had no includer, so it was dropped;
 - clock trees, init sequences, pin mux code and the privileged-register write allowlist;
 - the board wiring headers (`board_wiring.h` on the F411 pair), which hold the crystal and the
   diagnostic LED's register facts;
@@ -255,13 +257,14 @@ a `base` defconfig is, and the `KickOS::system_default` stub and its `system_lin
 Classified by the rule that Kconfig configures the kernel and the composition configures
 userspace, as the composition design leaves for when each board moves:
 
-| board | its own options | verdict |
-| --- | --- | --- |
-| `xmc4800-relax`, `frdmk64f` | the service list and the pin map, defaulted on the enforcing posture | deleted (section 6) |
-| `picopi`, `f302nucleo` | the pin map | deleted |
-| `imx8mp-evk`, `qemu-arm64`, `qemu-riscv64` | the heap, 65536 | deleted; that figure becomes their default composition's `heap` |
-| `microbit` | `KICKOS_MICROBIT_FULL_NEWLIB`, which C library the package links | stays: it is what the kernel package is built with, a fact of the export every image links |
-| `picopi`, `pizero2350`, `teensy41` | the USB console's clock tree, derived today from a list's name | `KICKOS_USB_CONSOLE` becomes their Kconfig option, set by a `usbcdc` defconfig variant: it is chip init the kernel runs |
+| board | its own option | side | verdict |
+| --- | --- | --- | --- |
+| `xmc4800-relax`, `frdmk64f` | `KICKOS_SERVICE_LIST`, defaulted on the enforcing posture | userspace | deleted with the service lists (section 6): a service is a task of a composition |
+| `xmc4800-relax`, `frdmk64f`, `picopi`, `f302nucleo` | `KICKOS_BOARD_PINMAP` | userspace | deleted with the pin maps (section 6): a task muxes its own pins and the board file states the wiring |
+| `imx8mp-evk`, `qemu-arm64`, `qemu-riscv64` | `KICKOS_USER_HEAP_SIZE`, 65536 | userspace | stays until the heap knob is deleted (section 6); the figure is already their default composition's `heap` |
+| `microbit` | `KICKOS_MICROBIT_FULL_NEWLIB`, which C library the package links | kernel | stays: it is what the kernel package is built with, a fact of the export every image links |
+| `picopi`, `pizero2350`, `teensy41` | none yet; the USB console's clock tree is derived from a list's name | kernel | `KICKOS_USB_CONSOLE` becomes their Kconfig option, set by a `usbcdc` defconfig variant: it is chip init the kernel runs |
+| `blackpill`, `bluepill-c8`, `due`, `esp32-wroom`, `esp32c6-wroom`, `f411disco`, `qemu`, `qemu-m3`, `qemu-m7`, `qemu-m33`, `qemu-riscv`, `qemu-x86_64`, `rx72m`, `sim` | none | | nothing to classify |
 
 ## 3. The smallest boards, measured first
 
@@ -599,10 +602,10 @@ partition build:
 | change | arm |
 | --- | --- |
 | Kconfig gives the partition a user share, carved from the AMP shared window after the kernel's own use, its size exported in the manifest's `target` | a configure refusing a share past the window |
-| the kernel seats the share in root as a reservation at boot on every node, as it seats the ports, so the init can map from it | the selftest reads the reservation's base and size on each node of `qemu-arm64-amp2` |
+| the kernel seats the share in root as a reservation at boot on every node, as it seats the ports, so the init can map from it | the selftest reads the reservation's base and size on node 0 of `qemu-arm64-amp2`, and on node 1 booted alone; inside the partition node 1's seat is witnessed through the crossing, its echo writing through a self-grant of the share |
 | the grant path's confinement of memory to the arena admits a window inside the share for the holder of its reservation, and nothing else outside the arena | a window one byte past the share refused; one inside it from a task holding no reservation refused |
 | on a translating node the share maps into a task's space as any window does | a write through one node's mapping read back through the other's |
-| the share's cache attribute is the window's: the kernel maps it with the attribute the region's `cache` states, uncached where the unit can express it | the uncached mapping's attribute read back on `qemu-arm64-amp2` |
+| the share has ONE memory type, a fact of the whole partition, stated in Kconfig and exported in the manifest beside its size: the kernel maps the share with it in its own view too, and a window or grant over the share asking the other type is refused, so no two mappings of it disagree; a partition region's `cache` must be the share's (the compose rule is the partition build's) | the uncached share's type read back by the hardware's walk in the kernel's view and a task's on `qemu-arm64-amp2`, the cached share's on `qemu-arm64-amp3`; a window of the other type refused on each |
 
 ### 9.4 The rules, each with its arm
 

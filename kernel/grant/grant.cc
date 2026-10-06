@@ -5,6 +5,7 @@
 
 #if KICKOS_MEMORY_ENFORCED
 
+#include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
 #include <kickos/domain.h> // arch_domain_static_regions
 #include <kickos/kernel.h> // KICKOS_ASSERT
@@ -159,6 +160,14 @@ namespace kickos
         }
         uintptr_t const ram_base = arch_ram_base();
         uintptr_t const ram_last = ram_base + ram_size - 1u;
+#if KICKOS_AMP_SHARE
+        // Outside the arena, the partition's user share alone: its holder is the reservation's
+        // question, asked beside this one.
+        if (amp_share_holds(base, size))
+        {
+            return true;
+        }
+#endif
         return base >= ram_base and (base + size - 1u) <= ram_last;
     }
 

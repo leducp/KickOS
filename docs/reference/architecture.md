@@ -67,9 +67,8 @@ isolates on an MPU (PMSA, no address translation), and the **Domain / address-sp
 backend-agnostic** so that a **VMSA (page-table / MMU)** backend slots in behind the same
 abstraction. **Two such backends now ship**: `armv8a` on `virt_arm64` (VMSAv8, EL0/EL1, a fixed
 granule and level count) and `rv64imac` on `virt_rv64` (Sv39 or Sv48, selected per config variant).
-A chip declares which family it is by its chip file's protection unit, a region unit or `mmu`, or,
-where it has no chip file, by shipping `arch/<family>/chip/<chip>/mpu.cmake` for region descriptors
-or `aspace.cmake` for translation, never both, and the two are mutually exclusive at configure time. What has NOT been built is a translating backend on real application-class silicon:
+A chip declares which family it is by its chip file's protection unit, a region unit or `mmu`,
+never both, and the configure holds Kconfig's selection to it. What has NOT been built is a translating backend on real application-class silicon:
 both translating boards are emulated, so the discipline the seam was designed for is proven under
 QEMU and not on a part. The design claim the seam makes is unchanged and now measured rather than
 promised -- keep MPU/PMSA and VMSA specifics in the **arch/chip layer**, never leaked into the core
@@ -184,11 +183,12 @@ Every backend but the PMP writes only the descriptors whose words changed, again
 of what the hardware holds (`reference/invariants.md`, `mpu-commit-writes-what-changed`).
 (See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
 maintain by hand: the chips select `HAS_MPU` in `arch/Kconfig`, which is what makes the
-enforcing posture selectable at all, and a chip opts in by a region unit in its chip file, which
-`tests/static/check_chip_kconfig.sh` holds against that select, or by shipping
-`arch/<family>/chip/<chip>/mpu.cmake` where it has no chip file. A configuration asking for it on
-a chip that declares neither is refused -- by Kconfig on the unmet dependency, or by the gate or a
-configure error if the two declarations ever disagree -- rather than becoming a silent no-op.
+enforcing posture selectable at all, and a chip states its region unit in its chip file. The two
+declarations are held together twice: `tests/static/check_chip_kconfig.sh` reads every chip file
+against the selects, and the configure refuses an enforcing configuration on a chip whose file
+states no region unit. A configuration asking for enforcement on a chip that declares neither is refused -- by Kconfig on
+the unmet dependency, or by the gate or the configure if the two ever disagree -- rather than
+becoming a silent no-op.
 
 ---
 
@@ -338,9 +338,10 @@ KickOS/
                                     #   fixed-region seam (kickos_arm_mpu_fixed)
       armv6m/                       # M0+: PRIMASK crit, ctx-switch asm
       armv7m/                       # M3/M4/M4F/M7/M33: BASEPRI crit, CLZ, ctx-switch asm, cache
-      chip/{mps2,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
+      chip/{mps2,an505,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
       chip/stm32f1f3/               # chip-FAMILY unit shared by stm32f103 + stm32f302,
-                                    #   compiled into each of their archives (family.cmake)
+                                    #   compiled into each of their archives (family.cmake);
+                                    #   chip/mps2/ is an505's family the same way
     arm64/
       common/                       # shared A53 glue: the GICv2 and GICv3 backends, the
                                     #   architected-timer + semihosting seams (arch_arm64_a53.cc),
@@ -787,13 +788,17 @@ AUTH_MEMORY on the caller's authority cap and never `Thread::privileged`: refuse
 refuse ANY reserved-block overlap, then for a **device** grant require that authority + exactly
 one MPU descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require
 `arch_ram_region_admissible` AND confinement to the user arena **for every caller** (no
-privileged waiver) -- power-of-two size plus natural alignment on a pow2-mode backend
+privileged waiver), an own-image AMP partition's user share being the one range outside it
+admitted, its holder root's reservation (`invariants.md`,
+`amp-user-share-is-roots-reservation`) -- power-of-two size plus natural alignment on a pow2-mode backend
 (PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
 prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
 `thread_create_call` runs the same predicate on the stack region, and `thread_create` carries a backstop
-assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
-there is **no fallback TU on purpose**, so an enforcing port that forgets one fails to *link* (affirmative
-fail-closed); the set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless
+assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) and
+the set is fail-closed both ways it can be stated: a chip with a chip file has it generated from the
+devices the file marks `owner: kernel`, and the host tool refuses a file whose protecting unit has
+none unless it says `reserved: none` (`chip.reserved`); a chip without one defines the function
+itself, with **no fallback TU on purpose**, so an enforcing port that forgets it fails to *link*. The set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless
 its tick feeds the timebase) and includes every access-permission controller, bus-side ones
 included -- the K64F AIPS bridge PACR pages, the ESP32-C6 HP_APM/HP_TEE. On a **bit-band core** (`arch_bitband_present()` != 0) the overlap
 test also covers each reserved block's word-per-bit alias image, and a device grant reaching
@@ -1258,8 +1263,8 @@ restarted console driver's endpoint again and repeats the first handover (see
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
 force-retakes the peripheral and rewrites every in-window register to a known baud/state, since
-userspace config is untrusted; every chip has one except `mps2`, `nrf51`, `sam3x8e`,
-`stm32f103`, `stm32f302` and `virt` (the live set is
+userspace config is untrusted; every chip has one except `an505`, `imx8mp`, `mps2`, `nrf51`,
+`q35`, `sam3x8e`, `stm32f103`, `stm32f302` and the three `virt_*` machines (the live set is
 `grep -rn "^void arch_console_reclaim(void)" arch/` minus the declaration in
 `arch/include/kickos/arch/arch.h`; the `arch/arm/chip/xmc4800/usic_uart.cc` one is
 silicon-witnessed), and those six keep the no-op fallback TU, so on them the reclaim is wiring

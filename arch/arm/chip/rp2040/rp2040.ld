@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the Raspberry Pi RP2040 (Pico), Cortex-M0+. Code executes in
- * place (XIP) from external QSPI flash at 0x1000_0000; the first 256 bytes are
- * the second-stage bootloader (boot2, .boot2 section, CRC-checked by the ROM),
- * and the vector table follows at 0x1000_0100. SRAM is 264 KiB @ 0x2000_0000.
+ * Linker script for the Raspberry Pi RP2040, Cortex-M0+. Code executes in place (XIP) from
+ * external QSPI flash at 0x1000_0000, whose size is the board file's; the first 256 bytes are the
+ * second-stage bootloader (boot2, .boot2 section, CRC-checked by the ROM), and the vector table
+ * follows at 0x1000_0100. SRAM is 264 KiB @ 0x2000_0000.
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -15,8 +16,8 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x10000000, LENGTH = 2048K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 264K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
@@ -258,7 +259,7 @@ SECTIONS
     __kickos_sram_start = ORIGIN(RAM);
 
     /* App code region for unprivileged threads (RX): the whole flash, a pow2 PMSA
-       region (2 MiB @ 0x1000_0000, base aligned to its size). Lets an unprivileged
+       region at 0x1000_0000, base aligned to its size. Lets an unprivileged
        thread fetch its code + read flash rodata (XIP). Kernel code is also
        unprivileged-readable (confidentiality, not escalation). */
     __kickos_code_start = ORIGIN(FLASH);

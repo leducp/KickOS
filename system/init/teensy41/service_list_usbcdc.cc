@@ -25,7 +25,7 @@ extern "C"
     static struct kos_service_cfg const rtusb_cfg = {
         .name = "rtusb",
         .mmio_base = kickos::imxrt1062::mmap::USB1_BASE,
-        .mmio_window = 0x200u,
+        .mmio_window = kickos::imxrt1062::mmap::USB1_SIZE,
         .hz = 0u,
         .addr = 0,
         .prio = 12,

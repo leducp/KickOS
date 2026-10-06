@@ -3,9 +3,9 @@
 
 # kickos_lx6uart: the ESP32 (Xtensa LX6) UART0 buffered userspace UART driver - a
 # privileged one-shot bring-up plus two unprivileged threads on the
-# <kickos/sys/uart_service.h> substrate. REGDIR carries regs/uart.h + regs/system.h + irq.h
-# + mmap.h, register facts only, no code. No class leaf: nothing here is shared with the
-# kernel side.
+# <kickos/sys/uart_service.h> substrate. REGDIR carries regs/uart.h + regs/system.h, register
+# facts only, no code, and the chip file's generated irq.h and chip_mmap.h the rest. No class
+# leaf: nothing here is shared with the kernel side.
 #
 # TWO SOURCES, and the split is the driver-model ruling: uart_lx6.cc is the LX6 backend of
 # the raw UART class <kickos/driver/uart.h> and owns every register; lx6uart.cc is the

@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the RP2040 datasheet.
+
+version: 1
+chip: rp2040
+manual: "RP2040 Datasheet, RP-008371-DS-1, build-version 3184e62"
+arch: armv6m
+# The unit sits on the CPU's access path, so a device window is enforced per task.
+protection: { unit: pmsav6, covers_devices: true, memory_type: true }
+data_cache: false
+
+# Lines 26 to 31 are tied to zero, so only software ever pends them.
+interrupts:
+  count: { value: 32, ref: "2.3.2 Interrupts, p.60" }
+  soft_only_from: { value: 26, ref: "2.3.2 Interrupts, p.60" }
+
+devices:
+  # An APB window is the device's whole 16 KiB slot: its registers and the XOR, SET and CLR
+  # aliases above them.
+  uart0:
+    window: [0x40034000, 0x4000]
+    ref: "2.2.2 Detail, p.25"
+    lines: { irq: { number: 20, ref: "Table 80 Interrupts, p.60" } }
+  # The DPRAM and, 64 KiB above it, the register block.
+  usbctrl:
+    window: [0x50100000, 0x20000]
+    symbol: USBCTRL_DPRAM_BASE
+    ref: "2.2.2 Detail, p.26"
+    lines: { irq: { number: 5, ref: "Table 80 Interrupts, p.60" } }
+    blocks: { regs: { offset: 0x10000, symbol: USBCTRL_REGS_BASE, ref: "2.2.2 Detail, p.26" } }
+
+  clocks: { window: [0x40008000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  resets: { window: [0x4000C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  # Every pin's function select and pad. A pin is muxed through kos_pinmux_set, never through a
+  # granted window.
+  io_bank0: { window: [0x40014000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  pads_bank0: { window: [0x4001C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  xosc: { window: [0x40024000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  pll_sys: { window: [0x40028000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  pll_usb: { window: [0x4002C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  # The monotonic time base, and the watchdog whose tick generator clocks it.
+  timer: { window: [0x40054000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  watchdog: { window: [0x40058000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  # GPIO output, the inter-core FIFOs and the spinlocks.
+  sio: { window: [0xD0000000, 0x180], owner: kernel, ref: "2.3.1.7 List of Registers, p.42" }
+  # The SSI that fronts execute-in-place from the QSPI flash.
+  xip_ssi: { window: [0x18000000, 0x100], owner: kernel, ref: "4.10.13 List of Registers, p.598" }
+
+memory:
+  sram:
+    base: 0x20000000
+    size: 0x42000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "2.2.2 Detail, p.24"
+
+# Pins are GPIOn. A selector other than `gpio` is the function its CTRL.FUNCSEL selects.
+pins:
+  GPIO0: { f2: uart0.tx, gpio: sio.0 }
+  GPIO1: { f2: uart0.rx, gpio: sio.1 }
+  GPIO25: { gpio: sio.25 }

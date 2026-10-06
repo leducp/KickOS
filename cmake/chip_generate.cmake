@@ -67,10 +67,76 @@ function(kickos_chip_generate description arch)
   string(REPLACE "\n" "\n  " _said "${_said}")
   if(_rc STREQUAL "3")
     message(FATAL_ERROR "KickOS: the host tool refused ${description}:\n  ${_said}")
+  elseif(_rc STREQUAL "4")
+    message(FATAL_ERROR "KickOS: the host tool cannot write the chip headers from ${description} for "
+      "arch ${arch}:\n  ${_said}")
   elseif(NOT _rc STREQUAL "0")
     message(FATAL_ERROR "KickOS: could not write the chip headers from ${description} (uv and Python >= 3.12 "
       "required, with the ruamel.yaml its uv.lock pins) (${_rc}):\n  ${_said}")
   endif()
   file(WRITE "${_state}/inputs.sha256" "${_hash}")
   message(STATUS "KickOS: chip headers written from ${description}")
+endfunction()
+
+# kickos_board_undescribed(<out> <source_dir> <board> <chip>)
+#   Empty when <board> has its board file beside <chip>'s chip file and a default composition
+#   under <source_dir>, else what it lacks.
+function(kickos_board_undescribed out source_dir board chip)
+  set(_said "")
+  if(chip STREQUAL "")
+    set(_said "names no chip")
+  elseif(NOT EXISTS "${source_dir}/platform/${chip}/chip.yaml")
+    set(_said "names chip '${chip}', which has no chip file platform/${chip}/chip.yaml")
+  elseif(NOT EXISTS "${source_dir}/platform/${chip}/${board}.yaml")
+    set(_said "has no board file platform/${chip}/${board}.yaml")
+  elseif(NOT EXISTS "${source_dir}/boards/${board}/composition.yaml")
+    set(_said "has no default composition boards/${board}/composition.yaml, which "
+              "KickOS::system_default is built from")
+  endif()
+  string(JOIN "" _said ${_said})
+  set(${out} "${_said}" PARENT_SCOPE)
+endfunction()
+
+# kickos_chip_arm_backend(<out_backend> <out_source> <region_unit>)
+#   The armv6m/armv7m MPU backend a chip file's region unit names, and the source it adds to the
+#   chip archive, empty where it adds none.
+function(kickos_chip_arm_backend out_backend out_source unit)
+  set(_source "")
+  if(unit STREQUAL "pmsav6" OR unit STREQUAL "pmsav7")
+    set(_backend PMSAV7)
+  elseif(unit STREQUAL "pmsav8")
+    set(_backend PMSAV8)
+    get_filename_component(_source "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../arch/arm/common/arch_arm_pmsav8.cc"
+                           ABSOLUTE)
+  elseif(unit STREQUAL "sysmpu")
+    set(_backend SYSMPU)
+  else()
+    message(FATAL_ERROR "KickOS: the region unit `${unit}` has no Arm MPU backend")
+  endif()
+  set(${out_backend} "${_backend}" PARENT_SCOPE)
+  set(${out_source} "${_source}" PARENT_SCOPE)
+endfunction()
+
+# kickos_chip_protection_disagreement(<out> <have_mpu> <have_aspace> <region_unit> <translates>
+#                                     <chip_file>)
+#   Empty when the configuration's enforcing posture and translating backend agree with the chip
+#   file's protection unit, else why they do not.
+function(kickos_chip_protection_disagreement out have_mpu have_aspace region_unit translates chip_file)
+  set(_said "")
+  if(have_mpu AND region_unit STREQUAL "")
+    set(_said "the configuration resolved the enforcing region posture, and ${chip_file} states no "
+              "region unit a build drives, so enforcement would be a silent no-op. Either drop the "
+              "chip's `select HAS_MPU`, or carve the port's window for its unit and drop "
+              "`driven: false`.")
+  elseif(have_aspace AND NOT translates)
+    set(_said "arch/Kconfig selects HAS_ASPACE for this chip, and ${chip_file} states no `mmu`, so "
+              "the frame allocator would run over a pool no script carved.")
+  elseif(translates AND NOT have_aspace)
+    set(_said "${chip_file} states `mmu`, and arch/Kconfig does not select HAS_ASPACE for this chip.")
+  elseif(translates AND have_mpu)
+    set(_said "the configuration resolved both the enforcing region posture and translation, which "
+              "no backend implements together.")
+  endif()
+  string(JOIN "" _said ${_said})
+  set(${out} "${_said}" PARENT_SCOPE)
 endfunction()

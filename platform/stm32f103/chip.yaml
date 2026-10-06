@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from RM0008, and the C8's flash and SRAM sizes from its datasheet, DS5319.
+
+version: 1
+chip: stm32f103
+manual: "RM0008 STM32F101xx, STM32F102xx, STM32F103xx, STM32F105xx and STM32F107xx Reference Manual, Rev 21 (February 2021)"
+arch: armv7m
+# ST builds the F1's Cortex-M3 without its MPU.
+protection: { unit: none }
+data_cache: false
+c: { namespace: kickos::stm32 }
+
+# Lines 43 to 59 of Table 63 serve TIM8, ADC3, FSMC, SDIO, TIM5 to TIM7, SPI3, UART4, UART5 and
+# DMA2, none of which a medium-density part carries.
+interrupts: { count: { value: 43, ref: "Table 63 Vector table for other STM32F10xxx devices, p.206" } }
+
+devices:
+  usart1:
+    window: [0x40013800, 0x400]
+    ref: "Table 3 Register boundary addresses, p.51"
+    lines: { global: { number: 37, ref: "Table 63 Vector table for other STM32F10xxx devices, p.205" } }
+
+  tim2: { window: [0x40000000, 0x400], owner: kernel, ref: "Table 3 Register boundary addresses, p.52" }
+  tim3:
+    window: [0x40000400, 0x400]
+    owner: kernel
+    ref: "Table 3 Register boundary addresses, p.52"
+    lines: { global: { number: 29, ref: "Table 63 Vector table for other STM32F10xxx devices, p.205" } }
+  rcc: { window: [0x40021000, 0x400], owner: kernel, ref: "Table 3 Register boundary addresses, p.50" }
+  # Ports A to E. A pin is muxed through kos_pinmux_set, never through a granted window.
+  gpio:
+    window: [0x40010800, 0x400]
+    count: 5
+    stride: 0x400
+    owner: kernel
+    symbol: GPIOA_BASE
+    ref: "Table 3 Register boundary addresses, p.51"
+  # The flash interface: the wait states the kernel sets with the clock.
+  flash: { window: [0x40022000, 0x400], owner: kernel, ref: "Table 3 Register boundary addresses, p.50" }
+
+memory:
+  main_flash:
+    base: 0x08000000
+    size: 0x10000
+    link: { region: FLASH, access: rx }
+    ref: "STM32F103x8/xB datasheet DS5319, the C8's flash"
+  sram:
+    base: 0x20000000
+    size: 0x5000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "STM32F103x8/xB datasheet DS5319, the C8's SRAM"
+
+# Pins are PORT PIN. A selector other than `gpio` is the AFIO remap value that routes the
+# function to the pin.
+pins:
+  PA9: { remap0: usart1.tx, gpio: gpio.0.9 }
+  PA10: { remap0: usart1.rx, gpio: gpio.0.10 }
+  PC13: { gpio: gpio.2.13 }

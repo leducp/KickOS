@@ -133,7 +133,7 @@ power-manager service (G7, sections 3 and 6).
   replaced by `kickos_rx_dev_dispatch` (`arch/rx/rxv3/arch_rxv3.cc`,
   `arch/rx/chip/rx72m/chip_rx72m.cc`), which is what the shipping `rxsci` driver dispatches
   through, and the GROUPBL0 group table it needed is in the chip
-  (`arch/rx/chip/rx72m/irq.h`, `arch/rx/chip/rx72m/regs/icu.h`).
+  (`arch/rx/chip/rx72m/routing.h`, `arch/rx/chip/rx72m/regs/icu.h`).
   `archive/M4_IRQ_driver_record.md` already recorded the replacement; this page did not.
   The reason the doc gate did not catch the dead name is worth keeping: its identifier oracle
   matches UPPERCASE-prefixed names only, so a lowercase function or seam name cited in prose is

@@ -5,6 +5,7 @@
 # platform/<chip>/<board>.yaml.
 
 import os
+import re
 
 from ruamel.yaml.nodes import MappingNode
 
@@ -13,27 +14,35 @@ from .subset import (
     SELECTOR, File, Report, index_below, line_of,
 )
 
-UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mmu", "none")
+UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mmu", "none")
 
 # The versions of the chip and board file formats this tool reads.
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
-    "data_cache", "interrupts", "cycle_counter", "c", "devices", "memory", "pins",
+    "data_cache", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins",
 )
 PROTECTION_FIELDS = (
-    "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports",
+    "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports", "driven",
 )
 CLUSTER_FIELDS = ("arch", "count", "smp", "protection", "line_offset")
 DEVICE_FIELDS = (
-    "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg",
+    "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg", "host",
     "privileged_registers", "cluster", "ref", "symbol",
 )
 MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
-INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors", "ref")
-CYCLE_COUNTER_FIELDS = ("hz", "glitches", "ref")
-BOARD_FIELDS = ("version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins")
+INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors")
+CYCLE_COUNTER_FIELDS = ("hz", "glitches")
+# The width of each architecture's addresses, which a window the generated headers name must fit.
+ADDRESS_BITS = {
+    "armv6m": 32, "armv7m": 32, "rv32imac": 32, "rxv3": 32, "lx6": 32, "armv8a": 64, "rv64imac": 64,
+    "x86_64": 64, "sim": 64,
+}
+# Printable ASCII, and nothing that ends a C comment or continues a C++ one.
+TEXT = re.compile(r"[ -~]*")
+BOARD_FIELDS = ("version", "board", "chip", "console", "leds", "parts", "buses", "reserved_pins", "memory")
+BOARD_MEMORY_FIELDS = ("size", "base", "cluster", "link", "ref", "symbol")
 
 
 class Window:
@@ -72,6 +81,7 @@ class Device:
         self.sources = {}
         self.owner = None
         self.sysreg = False
+        self.host = False
         self.bus_master = False
         self.cluster = None
         # The offset of each privileged register, in the chip file's order.
@@ -105,6 +115,7 @@ class Memory:
     def __init__(self, name, size, bases, named):
         self.name = name
         self.size = size
+        self.host_placed = False
         # {cluster or PART: base}
         self.bases = bases
         self.ref = named.ref
@@ -117,6 +128,8 @@ class Board:
     def __init__(self, chip, console):
         self.chip = chip
         self.console = console
+        # [Memory] soldered on the board, in the board file's order.
+        self.memory = []
         # {pin: what the board spends it on}
         self.wired = {}
 
@@ -129,6 +142,7 @@ class Protection:
         self.page = None
         self.privilege = True
         self.io_ports = None
+        self.driven = True
 
 
 class Chip:
@@ -154,15 +168,17 @@ class Chip:
         self.cluster_arch = {}
         # {cluster: line_offset}
         self.line_offsets = {}
-        # {field: value} and the `ref` of `interrupts` and `cycle_counter`
+        # {field: value} and {field: ref} of `interrupts` and `cycle_counter`
         self.interrupts = {}
-        self.interrupts_ref = None
         self.cycle_counter = {}
-        self.cycle_counter_ref = None
+        self.refs = {}
         self.namespace = None
         self.line_enum = None
         # [Memory], in the chip file's order.
         self.memory = []
+        # [Window] of every device and memory entry, and {(view, region): node} of each link region.
+        self.windows = []
+        self.links = {}
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -194,17 +210,18 @@ def check_chip(path, text, report):
     if "arch" in top:
         chip.arch = f.name(top["arch"], "`arch`", IDENTIFIER)
     if "manual" in top:
-        chip.manual = f.string(top["manual"], "`manual`")
+        chip.manual = check_text(f, top["manual"], "`manual`")
     if "c" in top:
         check_c(f, top["c"], chip)
     if "cycle_counter" in top:
         counter = f.fields(top["cycle_counter"], "`cycle_counter`", CYCLE_COUNTER_FIELDS, ())
         if counter is not None:
             if "hz" in counter:
-                chip.cycle_counter["hz"] = f.integer(counter["hz"], "`cycle_counter` hz", 32)
+                chip.cycle_counter["hz"], chip.refs["hz"] = check_valued(
+                    f, counter["hz"], "`cycle_counter` hz", lambda node, what: f.integer(node, what, 32))
             if "glitches" in counter:
-                chip.cycle_counter["glitches"] = f.boolean(counter["glitches"], "`cycle_counter` glitches")
-            chip.cycle_counter_ref = check_ref(f, counter)
+                chip.cycle_counter["glitches"], chip.refs["glitches"] = check_valued(
+                    f, counter["glitches"], "`cycle_counter` glitches", f.boolean)
 
     translates = check_cores(f, top, root, chip)
     if "clusters_coherent" in top and not chip.multi_arch:
@@ -236,28 +253,107 @@ def check_chip(path, text, report):
         check_chip_pins(f, top["pins"], chip, devices)
     check_overlaps(f, chip, windows)
     check_gate_edges(f, chip, windows)
+    chip.windows = windows
     if "interrupts" in top:
         check_interrupts(f, top["interrupts"], chip)
     check_symbols(f, chip)
+    check_reserved(f, top, root, chip)
+    check_address_width(f, chip, windows)
     return chip
 
 
+def check_valued(f, node, what, read):
+    """(value, ref): `node` read as a value, or a mapping of its `value` and the `ref` beside it."""
+    if isinstance(node, MappingNode):
+        values = f.fields(node, what, ("value", "ref"), ("value",))
+        if values is None or "value" not in values:
+            return None, None
+        return read(values["value"], what), check_ref(f, values)
+    return read(node, what), None
+
+
+def host_runs(chip):
+    """Whether the host runs the part, which its `mprotect` unit says."""
+    return any(protection.unit == "mprotect" for protection in chip.protection.values())
+
+
+def protecting_views(chip):
+    """The views whose unit is a region unit or `mmu`."""
+    return [view for view, protection in chip.protection.items() if protection.unit not in (None, "none")]
+
+
+def check_reserved(f, top, root, chip):
+    """A protecting part holds a window for life, or says `reserved: none`."""
+    stated_none = False
+    if "reserved" in top:
+        stated_none = f.enum(top["reserved"], "`reserved`", ("none",)) == "none"
+    for view in protecting_views(chip):
+        held = [device.name for device in chip.devices.values()
+                if device.owner == "kernel" and (device.window is not None or device.channel_windows)
+                and view in device_reach(chip, device.cluster)]
+        where = "the part"
+        if view is not PART:
+            where = "cluster `%s`" % view
+        if held and stated_none:
+            f.refuse(top["reserved"], "chip.reserved",
+                     "`reserved: none`, and %s holds /dev/%s for life" % (where, held[0]))
+            return
+        if not held and not stated_none:
+            f.refuse(root, "chip.reserved",
+                     "%s protects memory and the kernel holds no window of it; mark the devices the kernel "
+                     "holds `owner: kernel`, or state `reserved: none`" % where)
+            return
+
+
+def check_address_width(f, chip, windows):
+    """A window past the addresses its view's architecture reaches."""
+    for w in windows:
+        if w.space != "mem":
+            continue
+        for view in w.reach:
+            arch = chip.cluster_arch.get(view, chip.arch)
+            bits = ADDRESS_BITS.get(arch)
+            end = w.start(w.count - 1) + w.size
+            if bits is not None and end > 1 << bits:
+                f.refuse(w.node, "chip.address-width", "%s ends at 0x%X, past the %d-bit addresses of `%s`"
+                         % (w.name(w.count - 1), end, bits, arch))
+                break
+
+
+def check_text(f, node, what):
+    """A string the generated headers carry in a comment."""
+    text = f.string(node, what)
+    if text is None:
+        return None
+    if not TEXT.fullmatch(text) or "*/" in text or "\\" in text:
+        f.refuse(node, "form.text",
+                 "%s `%s` is not printable ASCII free of `*/` and backslashes, which a C comment carries"
+                 % (what, text.encode("ascii", "backslashreplace").decode("ascii")))
+        return None
+    return text
+
+
 def device_symbols(device):
-    """[(symbol, value, ref)] of the device's windows, blocks and stride, in the chip file's order."""
+    """[(symbol, value, ref)] of the device's windows, their sizes, blocks and stride, in the chip
+    file's order."""
     up = device.name.upper()
     symbols = []
     if device.window is not None and device.count is not None:
         symbols.append((device.symbol or up + "0_BASE", device.window[0], device.ref))
         symbols.append((up + "_STRIDE", device.stride, device.ref))
+        symbols.append((up + "_SIZE", device.window[1], device.ref))
     elif device.window is not None or device.ports is not None:
         window = device.window or device.ports
         symbols.append((device.symbol or up + "_BASE", window[0], device.ref))
+        symbols.append((up + "_SIZE", window[1], device.ref))
     for channel, window in device.channel_windows.items():
         named = device.channel_names[channel]
-        symbols.append((named.symbol or "%s_%s_BASE" % (up, channel.upper()), window[0], named.ref or device.ref))
+        symbol = named.symbol or "%s_%s_BASE" % (up, channel.upper())
+        symbols.append((symbol, window[0], named.ref or device.ref))
+        symbols.append(("%s_%s_SIZE" % (up, channel.upper()), window[1], named.ref or device.ref))
     for block in device.blocks:
-        symbols.append((block.symbol or "%s_%s_BASE" % (up, block.name.upper()), device.window[0] + block.offset,
-                        block.ref))
+        symbol = block.symbol or "%s_%s_BASE" % (up, block.name.upper())
+        symbols.append((symbol, device.window[0] + block.offset, block.ref))
     return symbols
 
 
@@ -281,7 +377,13 @@ def device_layout(device):
 def memory_layout(entry, base):
     """[(macro, value, ref)] of the memory entry's chip_layout.h definitions."""
     name = entry.name.upper()
-    return [("KICKOS_LAYOUT_%s_BASE" % name, base, entry.ref), ("KICKOS_LAYOUT_%s_SIZE" % name, entry.size, None)]
+    return [("KICKOS_LAYOUT_%s_BASE" % name, base, entry.ref),
+            ("KICKOS_LAYOUT_%s_SIZE" % name, entry.size, None)]
+
+
+def line_macro(symbol):
+    """The chip_layout.h definition of the line whose C name is `symbol`."""
+    return "KICKOS_LAYOUT_LINE_" + symbol
 
 
 def memory_symbol(entry):
@@ -306,7 +408,10 @@ def check_symbols(f, chip):
         for symbol, value, ref in device_symbols(device):
             refuse_collision(f, names, symbol, device.node, "/dev/%s" % device.name)
         for symbol, value, ref in line_symbols(device):
+            fresh = symbol not in lines
             refuse_collision(f, lines, symbol, device.node, "/dev/%s" % device.name)
+            if fresh:
+                refuse_collision(f, layout, line_macro(symbol), device.node, "/dev/%s" % device.name)
         for symbol, value, ref in device_layout(device):
             refuse_collision(f, layout, symbol, device.node, "/dev/%s" % device.name)
     for entry in chip.memory:
@@ -318,7 +423,8 @@ def check_symbols(f, chip):
 def refuse_collision(f, seen, symbol, node, what):
     if symbol in seen:
         f.refuse(node, "chip.symbol-collision",
-                 "%s is named `%s` in C, as %s on line %d is" % (what, symbol, seen[symbol][1], line_of(seen[symbol][0])))
+                 "%s is named `%s` in C, as %s on line %d is"
+                 % (what, symbol, seen[symbol][1], line_of(seen[symbol][0])))
         return
     seen[symbol] = (node, what)
 
@@ -327,7 +433,7 @@ def check_ref(f, values):
     """The `ref` among `values`, or None."""
     if "ref" not in values:
         return None
-    return f.string(values["ref"], "`ref`")
+    return check_text(f, values["ref"], "`ref`")
 
 
 def check_named(f, values, what):
@@ -353,10 +459,10 @@ def check_interrupts(f, node, chip):
     values = f.fields(node, "`interrupts`", INTERRUPT_FIELDS, ("count",))
     if values is None:
         return
-    for field in INTERRUPT_FIELDS[:-1]:
+    for field in INTERRUPT_FIELDS:
         if field in values:
-            chip.interrupts[field] = f.integer(values[field], "`interrupts` %s" % field, 16)
-    chip.interrupts_ref = check_ref(f, values)
+            chip.interrupts[field], chip.refs[field] = check_valued(
+                f, values[field], "`interrupts` %s" % field, lambda n, what: f.integer(n, what, 16))
     count = chip.interrupts.get("count")
     if count is None:
         return
@@ -383,9 +489,12 @@ def check_protection(f, node, what, chip, view):
     for field in ("covers_devices", "memory_type"):
         if unit is not None and unit != "none" and field not in values:
             f.refuse(node, "form.missing", "%s needs `%s`" % (what, field))
-    for flag in ("covers_devices", "memory_type", "privilege", "io_ports"):
+    for flag in ("covers_devices", "memory_type", "privilege", "io_ports", "driven"):
         if flag in values:
             setattr(protection, flag, f.boolean(values[flag], "%s `%s`" % (what, flag)))
+    if "driven" in values and unit in ("mmu", "none"):
+        f.refuse(values["driven"], "form.inapplicable",
+                 "%s says whether a build drives its unit, which only a region unit leaves to the port" % what)
     if unit == "mmu" and "page" not in values:
         f.refuse(node, "form.missing", "%s needs `page`, the unit translating" % what)
     if "page" in values:
@@ -660,13 +769,20 @@ def check_device(f, chip, key, value, windows):
             f.refuse(lkey, "chip.name-collision",
                      "`/dev/%s/%s` names both a channel and a line of %s" % (name, line, what))
 
-    for flag in ("bus_master", "sysreg"):
+    for flag in ("bus_master", "sysreg", "host"):
         if flag in values:
             if f.boolean(values[flag], "%s `%s`" % (what, flag)):
                 setattr(device, flag, True)
     if device.sysreg and shapes:
         f.refuse(values["sysreg"], "form.exclusive",
                  "%s is reached through system registers alone, so it has no `%s`" % (what, shapes[0]))
+    if device.host and (shapes or device.sysreg):
+        f.refuse(values["host"], "form.exclusive",
+                 "%s is reached through the host, so it has no `%s`" % (what, (shapes + ["sysreg"])[0]))
+    if device.host and not host_runs(chip):
+        f.refuse(values["host"], "form.inapplicable",
+                 "%s is reached through the host, and only a part the host runs, whose unit is `mprotect`, "
+                 "has such a device" % what)
     if "owner" in values:
         device.owner = f.enum(values["owner"], "%s owner" % what, ("kernel",))
     if device.owner == "kernel" and "window" not in values and "ports" not in values and not device.sysreg:
@@ -763,7 +879,7 @@ def check_memory(f, top, root, chip, translates, windows):
     for view in carving:
         arenas[view] = []
     # {(view, region): the node that named it first}
-    links = {}
+    links = chip.links
     for entry_name, (key, value) in entries.items():
         name = f.name(key, "memory entry", IDENTIFIER)
         what = "memory `%s`" % entry_name
@@ -777,7 +893,20 @@ def check_memory(f, top, root, chip, translates, windows):
             f.refuse(values["at"], "form.exclusive", "%s has both `base` and `at`" % what)
             continue
         if "base" not in values and "at" not in values:
-            f.refuse(value, "form.missing", "%s needs `base`, or `at` with one base per cluster" % what)
+            if not host_placed(f, values, chip):
+                f.refuse(value, "form.missing", "%s needs `base`, or `at` with one base per cluster, unless it "
+                         "is the arena of a part the host runs, which the host places" % what)
+                continue
+            if "link" in values:
+                f.refuse(values["link"], "form.inapplicable",
+                         "%s has no `base`, the host placing it, so the link has no region to place there" % what)
+            if size is not None:
+                entry = Memory(name, size, {PART: None}, check_named(f, values, what))
+                entry.node = key
+                entry.host_placed = True
+                chip.memory.append(entry)
+                if PART in arenas:
+                    arenas[PART].append((values["arena"], (None, size)))
             continue
         if "at" in values and "cluster" in values:
             f.refuse(values["cluster"], "form.exclusive",
@@ -844,6 +973,13 @@ def check_memory(f, top, root, chip, translates, windows):
         for mark in marks[1:]:
             f.refuse(mark, "chip.arena",
                      "a second `arena` for %s, which carves its arena from exactly one" % where)
+
+
+def host_placed(f, values, chip):
+    """Whether a memory entry with no base is the arena a host places."""
+    if not host_runs(chip) or chip.clusters or "arena" not in values:
+        return False
+    return getattr(values["arena"], "value", None) == "true"
 
 
 def check_link(f, node, what, links, bases):
@@ -1037,6 +1173,8 @@ def check_board(path, text, report, chips, boards):
     if "chip" in top:
         chip = resolve_chip(f, top["chip"], path, chips)
     used = []
+    # {id(node): bus device} of each part's bus pin, which every part on that bus shares.
+    bus_lines = {}
     console_path = None
 
     if "console" in top:
@@ -1063,7 +1201,7 @@ def check_board(path, text, report, chips, boards):
                 if pins is not None:
                     for role, (rkey, rvalue) in pins.items():
                         f.name(rkey, "console pin role", IDENTIFIER)
-                        check_board_pin(f, chip, rvalue, "console pin `%s`" % role, device, used)
+                        check_board_pin(f, chip, rvalue, "console pin `%s`" % role, device, used, role)
 
     if "leds" in top:
         leds = f.mapping(top["leds"], "`leds`")
@@ -1096,7 +1234,10 @@ def check_board(path, text, report, chips, boards):
                 if "chip_select" in values:
                     check_gpio_pin(f, chip, values["chip_select"], "%s chip select" % what, used)
                 if "pins" in values:
+                    first = len(used)
                     check_pin_list(f, chip, values["pins"], "%s pin" % what, bus, used)
+                    for pin, node, pin_what in used[first:]:
+                        bus_lines[id(node)] = bus
 
     if "buses" in top:
         buses = f.mapping(top["buses"], "`buses`")
@@ -1131,13 +1272,103 @@ def check_board(path, text, report, chips, boards):
                     f.refuse(node, "board.reserved-pin-used",
                              "%s is `%s`, which the board reserves on line %d"
                              % (what, pin, line_of(reserved[pin][0])))
+    seen = {}
+    for pin, node, what in used:
+        shared = bus_lines.get(id(node))
+        if pin in seen and shared is not None and bus_lines.get(id(seen[pin][0])) == shared:
+            continue
+        if pin in seen:
+            f.refuse(node, "board.pin-reused",
+                     "%s is `%s`, which %s on line %d already spends" % (what, pin, seen[pin][1], line_of(seen[pin][0])))
+        else:
+            seen[pin] = (node, what)
     board = Board(chip, console_path)
+    if "memory" in top:
+        check_board_memory(f, top["memory"], chip, board)
     for pin, node, what in used:
         board.wired.setdefault(pin, what)
     if "reserved_pins" in top and reserved is not None:
         for pin_name, (key, value) in reserved.items():
             board.wired.setdefault(pin_name, "reserved pin")
     return board
+
+
+def check_board_memory(f, node, chip, board):
+    """The memory soldered on the board, each entry a window of the chip's map the chip leaves free."""
+    entries = f.mapping(node, "`memory`")
+    if entries is None:
+        return
+    names = set()
+    layout = set()
+    if chip is not None:
+        for device in chip.devices.values():
+            names.update(symbol for symbol, value, ref in device_symbols(device))
+            layout.update(symbol for symbol, value, ref in device_layout(device))
+        for entry in chip.memory:
+            names.add(memory_symbol(entry))
+            layout.update(symbol for symbol, value, ref in memory_layout(entry, 0))
+    links = {}
+    windows = []
+    for entry_name, (key, value) in entries.items():
+        name = f.name(key, "memory entry", IDENTIFIER)
+        what = "memory `%s`" % entry_name
+        values = f.fields(value, what, BOARD_MEMORY_FIELDS, ("size", "base"))
+        if name is None or values is None or "size" not in values or "base" not in values:
+            continue
+        size = check_size(f, values["size"], "%s size" % what, 64)
+        base = f.integer(values["base"], "%s base" % what, 64)
+        cluster = None
+        if "cluster" in values and chip is not None:
+            cluster = check_cluster_ref(f, chip, values["cluster"], "%s cluster" % what)
+            if cluster is None:
+                continue
+        if size is None or base is None or not check_end(f, values["base"], what, base + size):
+            continue
+        entry = Memory(name, size, {}, check_named(f, values, what))
+        entry.node = key
+        if chip is None:
+            continue
+        reach = device_reach(chip, cluster)
+        entry.bases = {view: base for view in reach}
+        symbol = memory_symbol(entry)
+        if symbol in names or any(macro in layout for macro, v, r in memory_layout(entry, 0)):
+            f.refuse(key, "board.symbol-collision",
+                     "%s is named `%s` in C, which chip `%s` already names" % (what, symbol, chip.name))
+            continue
+        names.add(symbol)
+        layout.update(macro for macro, v, r in memory_layout(entry, 0))
+        here = Window("mem", "board %s" % what, base, size, reach, values["base"])
+        hits = [(w, overlap(w, here)) for w in chip.windows + windows
+                if w.space == "mem" and set(w.reach) & set(reach)]
+        hits = [(w, pair) for w, pair in hits if pair is not None]
+        if hits:
+            w, pair = hits[0]
+            f.refuse(values["base"], "board.memory-overlap",
+                     "%s at 0x%X overlaps %s at 0x%X" % (what, base, w.name(pair[0]), w.start(pair[0])))
+            continue
+        windows.append(here)
+        if "link" in values:
+            entry.link = check_board_link(f, values["link"], what, chip, links, reach)
+        board.memory.append(entry)
+
+
+def check_board_link(f, node, what, chip, links, reach):
+    """The (region, access) a board's memory links as, refused where the chip or the board has the region."""
+    values = f.fields(node, "%s link" % what, ("region", "access"), ("region", "access"))
+    if values is None or "region" not in values or "access" not in values:
+        return None
+    region = f.name(values["region"], "%s link region" % what, REGION)
+    access = f.name(values["access"], "%s link access" % what, ACCESS)
+    if region is None or access is None:
+        return None
+    for view in reach:
+        if (view, region) in chip.links or (view, region) in links:
+            f.refuse(values["region"], "board.link-duplicate",
+                     "%s links as `%s`, which chip `%s` or this board already links" % (what, region, chip.name))
+            return None
+    for view in reach:
+        links[(view, region)] = values["region"]
+    return (region, access)
 
 
 def resolve_chip(f, node, path, chips):
@@ -1178,7 +1409,7 @@ def resolve_device(f, chip, node, what):
     if len(parts) == 3:
         if device.window is not None and device.count is None:
             return device.name
-        if device.ports is not None:
+        if device.ports is not None or device.host:
             return device.name
         f.refuse(node, "board.device-unknown",
                  "%s `%s` names a device with no window of its own; name one of its %s"
@@ -1217,7 +1448,8 @@ def chip_pin(f, chip, node, what, pin):
     return chip.pins[pin]
 
 
-def check_board_pin(f, chip, node, what, device, used):
+def check_board_pin(f, chip, node, what, device, used, signal=None):
+    """A pin wired to `device`, carrying `signal` of it where the role names one."""
     pin = f.name(node, what, PIN)
     if pin is None:
         return
@@ -1225,11 +1457,16 @@ def check_board_pin(f, chip, node, what, device, used):
     functions = chip_pin(f, chip, node, what, pin)
     if functions is None or device is None:
         return
-    for selector, function in functions.items():
-        if selector != "gpio" and function.startswith(device + "."):
-            return
-    f.refuse(node, "board.pin-function",
-             "%s `%s` has no function of `%s` on chip `%s`" % (what, pin, device.replace(".", "/"), chip.name))
+    carried = [function for selector, function in functions.items()
+               if selector != "gpio" and function.startswith(device + ".")]
+    if not carried:
+        f.refuse(node, "board.pin-function",
+                 "%s `%s` has no function of `%s` on chip `%s`" % (what, pin, device.replace(".", "/"), chip.name))
+        return
+    if signal is not None and "%s.%s" % (device, signal) not in carried:
+        f.refuse(node, "board.pin-signal",
+                 "%s `%s` carries %s, not `%s.%s`: a console pin's role names the signal it carries"
+                 % (what, pin, ", ".join("`%s`" % c for c in carried), device, signal))
 
 
 def check_gpio_pin(f, chip, node, what, used):

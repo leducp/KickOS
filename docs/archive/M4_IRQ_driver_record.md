@@ -1000,8 +1000,8 @@ SCI6's four sources span **two routing classes at once**:
 | `TEI6` | transmission-end | GROUPBL0 | `GRPBL0.IS12` / `GENBL0.EN12` | **level** |
 | `ERI6` | receive error (ORER/FER/PER) | GROUPBL0 | `GRPBL0.IS13` / `GENBL0.EN13` | **level** |
 
-`arch/rx/chip/rx72m/irq.h` (`enum vector`) currently has `SCI6_TEI = -1, SCI6_ERI = -1` and
-states plainly they are "NOT implemented or referenced anywhere in the tree yet". M4.6
+The RX72M's `irq.h` (its group lines now in `arch/rx/chip/rx72m/routing.h`) had
+`SCI6_TEI = -1, SCI6_ERI = -1` in `enum vector` and stated plainly they were "NOT implemented or referenced anywhere in the tree yet". M4.6
 implements them.
 
 **Line-number allocation.** RX's `arch_irq_*` splits at `SOFT_IRQ_LINES = 32`
@@ -1451,7 +1451,7 @@ Two hard numeric ceilings to design against, both confirmed:
   `SIM_IRQ_LINES = 32`), and the C6 / esp32 / sim boards set `KICKOS_MAX_IRQ = 32`. A UART
   needing RX + TX + error lines must fit inside `0..31` alongside the bench and selftest
   lines (esp32 already reserves 5/6/7/9/11 and 20,
-  `arch/xtensa/chip/esp32/irq.h` (`enum kernel_line`, and the reserved-line note above it)).
+  `platform/esp32/chip.yaml`, the uart0 line, then `irq.h`'s `enum kernel_line`).
   This is a second, independent argument for the C6/LX6 UART being **one grouped line** rather
   than three.
 - **`arch_console_reclaim` exists on only four chips** (mk64f, xmc4800, esp32c6, esp32) while eleven

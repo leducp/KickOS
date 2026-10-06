@@ -12,8 +12,8 @@
 set(KICKOS_BOARD_ID "qemu-m3")
 set(KICKOS_ARCH "armv7m")
 set(KICKOS_CHIP "mps2")
-# The one chip in the tree whose CORE is not a chip fact: arch/arm/chip/mps2 serves four
-# QEMU FPGA images that declare four different cores, so it ships no cpu.cmake and each
+# The one chip in the tree whose CORE is not a chip fact: arch/arm/chip/mps2 serves three
+# QEMU FPGA images that declare three different cores, so it ships no cpu.cmake and each
 # board states its own.
 set(KICKOS_MCPU -mcpu=cortex-m3)
 set(KICKOS_MFLOAT_ABI soft)

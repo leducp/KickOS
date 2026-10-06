@@ -1,30 +1,41 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The default system's witnesses (user/apps/common/sysdefault), on every board whose default
-# composition builds KickOS::system_default and that has an emulator.
-
-# On a board with no default composition, KickOS::system_default is a stub whose link names the
-# remedy (tests/integration/check_system_link.sh), wherever a package installs a cross toolchain.
-if(TARGET kickos_kernel_leaf AND NOT KICKOS_ARCH STREQUAL "sim"
-   AND NOT EXISTS "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml")
-  add_test(NAME ${_tag}_system_link_stub
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_system_link.sh"
-            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" stub)
-  kickos_host_gate(${_tag}_system_link_stub TIMEOUT 300)
-endif()
+# The default system's witnesses (user/apps/common/sysdefault), on every board that has an
+# emulator.
 
 if(NOT TARGET sysdefault)
   return()
 endif()
 
+# No emulator runs the RX image, so its faulting instruction is read from the image.
+if(KICKOS_ARCH STREQUAL "rxv3")
+  add_test(NAME ${_tag}_sysdefault_fault_instruction
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_instruction.sh"
+            "${CMAKE_OBJDUMP}" "$<TARGET_FILE:sysdefault_fault>" wait)
+  kickos_host_gate(${_tag}_sysdefault_fault_instruction TIMEOUT 60)
+endif()
+
 set(_sysdefault_script "${PROJECT_SOURCE_DIR}/tests/integration/check_system_default.sh")
-kickos_add_qemu_test(TARGET sysdefault SCRIPT "${_sysdefault_script}"
-                     ARGS "sysdefault: main returns 3" 3)
-kickos_add_qemu_test(TARGET sysdefault_spin SCRIPT "${_sysdefault_script}"
-                     ARGS "sysdefault: main returns 3 while a thread spins" 3)
-kickos_add_qemu_test(TARGET sysdefault_fault SCRIPT "${_sysdefault_script}"
-                     ARGS "sysdefault: main faults" ${KOS_EXIT_FAULT} main)
+set(_sysdefault_runs
+  "sysdefault|sysdefault: main returns 3|3"
+  "sysdefault_spin|sysdefault: main returns 3 while a thread spins|3")
+# A fault ends main's task, rather than the system, only where faults are isolated. The RX's
+# faulting instruction is privileged, so it faults only where tasks run in user mode.
+if(KICKOS_FAULT_ISOLATION AND (KICKOS_MEMORY_ENFORCED OR NOT KICKOS_ARCH STREQUAL "rxv3"))
+  list(APPEND _sysdefault_runs "sysdefault_fault|sysdefault: main faults|${KOS_EXIT_FAULT}|main")
+endif()
+foreach(_run IN LISTS _sysdefault_runs)
+  string(REPLACE "|" ";" _run "${_run}")
+  list(POP_FRONT _run _target)
+  if(KICKOS_ARCH STREQUAL "sim")
+    add_test(NAME ${_tag}_${_target}
+      COMMAND "${_sysdefault_script}" "$<TARGET_FILE:${_target}>" ${_run})
+    set_tests_properties(${_tag}_${_target} PROPERTIES TIMEOUT 60)
+  else()
+    kickos_add_qemu_test(TARGET ${_target} SCRIPT "${_sysdefault_script}" ARGS ${_run})
+  endif()
+endforeach()
 
 # The refusals of a system target, each linked out of tree against the installed package
 # (tests/integration/check_system_link.sh). The thread-local share of a stack is checked where SP
@@ -36,11 +47,17 @@ if(KICKOS_TLS AND NOT KICKOS_TLS_FROM_SP)
   list(APPEND _system_link_arms stack)
 endif()
 get_property(_system_link_pow2 GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG)
-if(NOT KICKOS_HAVE_ASPACE AND NOT KICKOS_TLS_FROM_SP AND _system_link_pow2)
+get_property(_system_link_min GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG)
+if(NOT KICKOS_HAVE_ASPACE AND NOT KICKOS_TLS_FROM_SP AND _system_link_pow2 AND _system_link_min)
   list(APPEND _system_link_arms arena)
 endif()
 if(KICKOS_HAVE_MPU AND NOT KICKOS_HAVE_ASPACE)
   list(APPEND _system_link_arms heap)
+endif()
+# Linked out of tree with the cross toolchain file the package ships, which a sim package has
+# none of.
+if(KICKOS_ARCH STREQUAL "sim")
+  set(_system_link_arms "")
 endif()
 foreach(_arm IN LISTS _system_link_arms)
   add_test(NAME ${_tag}_system_link_${_arm}

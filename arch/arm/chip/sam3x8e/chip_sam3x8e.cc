@@ -14,6 +14,8 @@
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
+#include <kickos/chip_mmap.h>
+#include "irq.h"
 
 #include <stdint.h>
 
@@ -46,28 +48,28 @@ extern "C"
 
 namespace
 {
+    namespace mmap = kickos::sam3x8e::mmap;
+    namespace irq = kickos::sam3x8e::irq;
 
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
-    constexpr uintptr_t WDT_MR = 0x400E1A54;    // write-once; WDDIS = bit 15
+    constexpr uintptr_t WDT_MR = mmap::WDT_BASE + 0x04; // write-once; WDDIS = bit 15
     constexpr uint32_t WDT_MR_WDDIS = 1u << 15;
     constexpr uintptr_t SCB_VTOR = 0xE000ED08;
-    constexpr uintptr_t FLASH_BASE = 0x00080000; // real flash (aliased at 0x0)
 
     // EEFC (sec.18): the two flash banks. FWS (EEFC_FMR bits 11:8) sets the flash
     // read/write wait states; per sec.45 the AC-flash table, FWS=4 (5 read cycles)
     // covers up to 90 MHz at VDDCORE 1.8V, required for 84 MHz. Set BEFORE the
-    // clock is raised. EEFC_FMR at 0x400E0A00 (bank 0) / 0x400E0C00 (bank 1).
-    constexpr uintptr_t EEFC0_FMR = 0x400E0A00;
-    constexpr uintptr_t EEFC1_FMR = 0x400E0C00;
+    // clock is raised.
+    constexpr uintptr_t EEFC0_FMR = mmap::EEFC0_BASE + 0x00;
+    constexpr uintptr_t EEFC1_FMR = mmap::EEFC1_BASE + 0x00;
     constexpr uint32_t FMR_FWS_4 = 4u << 8;
 
-    // PMC (sec.28): clock generator + status. Base 0x400E0600.
-    constexpr uintptr_t PMC_BASE = 0x400E0600;
-    constexpr uintptr_t CKGR_MOR = PMC_BASE + 0x20;   // Main Oscillator Register
-    constexpr uintptr_t CKGR_PLLAR = PMC_BASE + 0x28; // PLLA Register
-    constexpr uintptr_t PMC_MCKR = PMC_BASE + 0x30;   // Master Clock Register
-    constexpr uintptr_t PMC_SR = PMC_BASE + 0x68;     // Status Register
+    // PMC (sec.28): clock generator + status.
+    constexpr uintptr_t CKGR_MOR = mmap::PMC_BASE + 0x20;   // Main Oscillator Register
+    constexpr uintptr_t CKGR_PLLAR = mmap::PMC_BASE + 0x28; // PLLA Register
+    constexpr uintptr_t PMC_MCKR = mmap::PMC_BASE + 0x30;   // Master Clock Register
+    constexpr uintptr_t PMC_SR = mmap::PMC_BASE + 0x68;     // Status Register
 
     // CKGR_MOR (sec.28): crystal oscillator. KEY 0x37 (bits 23:16) gates the write;
     // MOSCXTST (15:8) is the crystal startup counter (in SLCK/8); keep the fast RC
@@ -249,17 +251,16 @@ namespace
     }
 
     // PMC (sec.28): per-peripheral clock enable by peripheral ID.
-    constexpr uintptr_t PMC_PCER0 = 0x400E0610;
+    constexpr uintptr_t PMC_PCER0 = mmap::PMC_BASE + 0x10;
     constexpr uint32_t PID_UART = 1u << 8;
     constexpr uint32_t PID_PIOA = 1u << 11;
 
     // PIOA (sec.31): route PA8/PA9 to the UART (peripheral A).
-    constexpr uintptr_t PIOA_BASE = 0x400E0E00;
-    constexpr uintptr_t PIOA_PDR = PIOA_BASE + 0x04; // give pins to the peripheral
+    constexpr uintptr_t PIOA_PDR = mmap::PIOA_BASE + 0x04; // give pins to the peripheral
     constexpr uint32_t PA8_PA9 = (1u << 8) | (1u << 9);
 
     // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
-    // One PIO controller per port: PIOA + port*0x200 (A=0..D=3). PMC_PCER0 clock
+    // One PIO controller per port: PIOA + port * PIO_STRIDE (A=0..D=3). PMC_PCER0 clock
     // bit = (11+port) (PIOA is peripheral ID 11). func selects the routing:
     //   0x00 = GPIO output (PIO_PER + PIO_OER), 0x01 = GPIO input (PIO_PER + PIO_ODR),
     //   0x10 = peripheral A (ABSR bit CLEAR, then PIO_PDR),
@@ -268,7 +269,6 @@ namespace
     // ABSR currently selects). The OER/ODR write is MANDATORY: PER alone leaves the
     // output driver at its reset state, giving a dead output. PIO pull-ups are
     // enabled at reset (datasheet reset state); this backend does not touch PUER/PUDR.
-    constexpr uintptr_t PIO_STRIDE = 0x200;
     constexpr uintptr_t PIO_PER_OFF = 0x00;
     constexpr uintptr_t PIO_PDR_OFF = 0x04;
     constexpr uintptr_t PIO_OER_OFF = 0x10;
@@ -276,6 +276,7 @@ namespace
     constexpr uintptr_t PIO_ABSR_OFF = 0x70;
     constexpr uint32_t PMC_PID_PIO_SHIFT = 11u;
     constexpr uint32_t PINMUX_PORT_MAX = 3u; // PIOA..PIOD
+    constexpr uintptr_t PIOB_BASE = mmap::PIOA_BASE + mmap::PIO_STRIDE;
     constexpr uint32_t PINMUX_FUNC_GPIO_OUT = 0x00u;
     constexpr uint32_t PINMUX_FUNC_GPIO_IN = 0x01u;
     constexpr uint32_t PINMUX_FUNC_PERIPH_A = 0x10u;
@@ -289,14 +290,13 @@ namespace
     }
 
     // UART (sec.34), dedicated simple UART.
-    constexpr uintptr_t UART_BASE = 0x400E0800;
-    constexpr uintptr_t UART_CR = UART_BASE + 0x00;
-    constexpr uintptr_t UART_MR = UART_BASE + 0x04;
-    constexpr uintptr_t UART_IER = UART_BASE + 0x08; // interrupt enable (write 1 to set)
-    constexpr uintptr_t UART_IDR = UART_BASE + 0x0C; // interrupt disable (write 1 to clear)
-    constexpr uintptr_t UART_SR = UART_BASE + 0x14;
-    constexpr uintptr_t UART_THR = UART_BASE + 0x1C;
-    constexpr uintptr_t UART_BRGR = UART_BASE + 0x20;
+    constexpr uintptr_t UART_CR = mmap::UART_BASE + 0x00;
+    constexpr uintptr_t UART_MR = mmap::UART_BASE + 0x04;
+    constexpr uintptr_t UART_IER = mmap::UART_BASE + 0x08; // interrupt enable (write 1 to set)
+    constexpr uintptr_t UART_IDR = mmap::UART_BASE + 0x0C; // interrupt disable (write 1 to clear)
+    constexpr uintptr_t UART_SR = mmap::UART_BASE + 0x14;
+    constexpr uintptr_t UART_THR = mmap::UART_BASE + 0x1C;
+    constexpr uintptr_t UART_BRGR = mmap::UART_BASE + 0x20;
     constexpr uint32_t CR_RSTRX_RSTTX = (1u << 2) | (1u << 3);
     constexpr uint32_t CR_RXEN_TXEN = (1u << 4) | (1u << 6);
     constexpr uint32_t MR_NO_PARITY = 4u << 9; // PAR=100 (none), CHMODE=normal
@@ -332,18 +332,16 @@ namespace
     // it) off TIMER_CLOCK1 = MCK/2, and use it as arch_clock_now. TC0 ch0 does not
     // collide with the one-shot tickless timer (SysTick, core-generic) nor any driver
     // (none on this port). arch_trace_now stays on raw DWT_CYCCNT.
-    constexpr uintptr_t TC0_BASE = 0x40080000;
-    constexpr uintptr_t TC0_CCR0 = TC0_BASE + 0x00; // channel control
-    constexpr uintptr_t TC0_CMR0 = TC0_BASE + 0x04; // channel mode
-    constexpr uintptr_t TC0_CV0 = TC0_BASE + 0x10;  // counter value (read-only)
-    constexpr uintptr_t TC0_SR0 = TC0_BASE + 0x20;  // status (read clears flags)
-    constexpr uintptr_t TC0_IER0 = TC0_BASE + 0x24; // interrupt enable (write-1-set)
+    constexpr uintptr_t TC0_CCR0 = mmap::TC0_BASE + 0x00; // channel control
+    constexpr uintptr_t TC0_CMR0 = mmap::TC0_BASE + 0x04; // channel mode
+    constexpr uintptr_t TC0_CV0 = mmap::TC0_BASE + 0x10;  // counter value (read-only)
+    constexpr uintptr_t TC0_SR0 = mmap::TC0_BASE + 0x20;  // status (read clears flags)
+    constexpr uintptr_t TC0_IER0 = mmap::TC0_BASE + 0x24; // interrupt enable (write-1-set)
     constexpr uint32_t TC_CMR_TCCLKS_MCK2 = 0x0u << 0; // TIMER_CLOCK1 = MCK/2
     constexpr uint32_t TC_CCR_CLKEN = 1u << 0;
     constexpr uint32_t TC_CCR_SWTRG = 1u << 2;
     constexpr uint32_t TC_SR_COVFS = 1u << 0; // counter overflow status
     constexpr uint32_t PID_TC0 = 1u << 27;    // TC0 channel 0 = peripheral ID 27
-    constexpr int TC0_IRQ = 27;               // NVIC line == peripheral ID 27
 
     // Software 64-bit extension of the 32-bit TC_CV0. Reads are RELIABLE (unlike
     // DWT): the counter wraps every 2^32/42e6 ~= 102 s. The wrap is folded either
@@ -377,7 +375,7 @@ namespace
         r32(TC0_IER0) = TC_SR_COVFS;              // wrap observer for the idle case
         // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
         // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
-        arch_irq_unmask(TC0_IRQ);                 // NVIC enable in the maskable band
+        arch_irq_unmask(irq::TC0_IRQ);            // NVIC enable in the maskable band
     }
 
     // Wrap-catch must be atomic against a concurrent reader (thread + ISR), so the
@@ -419,9 +417,6 @@ namespace
     console_tx_backend const sam_console_backend = {
         sam_tx_slot_free, sam_tx_push, sam_tx_irq_enable, sam_tx_irq_disable};
 
-    // NVIC: the dedicated UART is peripheral ID 8, and on the SAM3X the NVIC line
-    // equals the peripheral ID -> line 8 (matches PID_UART = 1u << 8 above).
-    constexpr int UART_IRQ = 8;
 }
 
 extern "C"
@@ -482,15 +477,15 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = UART_IRQ;
+    *irq_line = irq::UART_IRQ;
     return &sam_console_backend;
 }
 
 // Kernel diagnostic LED: "L" LED = PB27 via PIO controller B, active-high.
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t PIOB_PER = 0x400E1000 + 0x00;
-    constexpr uintptr_t PIOB_OER = 0x400E1000 + 0x10;
+    constexpr uintptr_t PIOB_PER = PIOB_BASE + 0x00;
+    constexpr uintptr_t PIOB_OER = PIOB_BASE + 0x10;
     r32(PMC_PCER0) = 1u << 12; // clock PIOB (peripheral ID 12)
     r32(PIOB_PER) = 1u << 27;  // pin controlled by the PIO
     r32(PIOB_OER) = 1u << 27;  // output enabled
@@ -498,8 +493,8 @@ void arch_diag_led_init(void)
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t PIOB_SODR = 0x400E1000 + 0x30;
-    constexpr uintptr_t PIOB_CODR = 0x400E1000 + 0x34;
+    constexpr uintptr_t PIOB_SODR = PIOB_BASE + 0x30;
+    constexpr uintptr_t PIOB_CODR = PIOB_BASE + 0x34;
     if (on)
     {
         r32(PIOB_SODR) = 1u << 27;
@@ -530,7 +525,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         return -KOS_EBUSY;
     }
     r32(PMC_PCER0) = 1u << (PMC_PID_PIO_SHIFT + port); // clock this PIO (write-1-to-set)
-    uintptr_t const base = PIOA_BASE + port * PIO_STRIDE;
+    uintptr_t const base = mmap::PIOA_BASE + port * mmap::PIO_STRIDE;
     uint32_t const mask = 1u << pin;
     if (func == PINMUX_FUNC_GPIO_OUT)
     {
@@ -566,7 +561,7 @@ void Reset_Handler(void)
     r32(WDT_MR) = WDT_MR_WDDIS;
     // Flash (hence the vector table) lives at 0x0008_0000; point VTOR there (the
     // reset SP/PC were fetched via the 0x0 boot alias, which mirrors it).
-    r32(SCB_VTOR) = FLASH_BASE;
+    r32(SCB_VTOR) = mmap::FLASH_BASE;
 
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's MPS2 FPGA images that share one memory map: the AN385, AN386 and AN500.
+
+version: 1
+chip: mps2
+manual: "QEMU 11.1 `mps2-an385`, `mps2-an386` and `mps2-an500` machines (hw/arm/mps2.c)"
+arch: armv7m
+protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+data_cache: false
+reserved: none
+
+interrupts: { count: { value: 48, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
+
+devices: {}
+
+memory:
+  code: { base: 0x00000000, size: 0x400000, link: { region: FLASH, access: rx } }
+  sram: { base: 0x20000000, size: 0x400000, arena: true, link: { region: RAM, access: rwx } }

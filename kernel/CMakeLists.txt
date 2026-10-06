@@ -30,6 +30,7 @@ set(KICKOS_KERNEL_SOURCES
   amp/ampwindow.cc
   amp/ampmap.cc
   amp/ampdiag.cc
+  amp/ampshare.cc
   sync/smptrace.cc
   time/time.cc
   time/clock_select.cc
@@ -125,7 +126,9 @@ target_include_directories(kickos_kernel PUBLIC
 # headers (errno.h via sync.h, cap_index.h via cap.h) live in kickos_system.
 target_include_directories(kickos_kernel PRIVATE
   "${PROJECT_SOURCE_DIR}/user/include"
-  "${PROJECT_SOURCE_DIR}/system/include")
+  "${PROJECT_SOURCE_DIR}/system/include"
+  # amp_partition.ld.h: the partition geometry the user share is derived from.
+  "${PROJECT_SOURCE_DIR}/arch/common")
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 
 # Identity baked into the boot banner (kmain kbanner()).
@@ -138,7 +141,7 @@ elseif(KICKOS_MCPU_FLAGS MATCHES "-march=([^ ;]+)")
   set(_kickos_cpu "${CMAKE_MATCH_1}")
 elseif(KICKOS_MCPU_FLAGS MATCHES "-misa=([^ ;]+)")
   set(_kickos_cpu "rx${CMAKE_MATCH_1}")
-elseif(KICKOS_CHIP)
+elseif(IS_DIRECTORY "${PROJECT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
   # No flag names the core on this family, so the chip states it: the compiler driver serves
   # more than one core and cannot answer which one a part has.
   include("${PROJECT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake"
@@ -151,8 +154,8 @@ elseif(KICKOS_CHIP)
       "${KICKOS_CHIP}/cpu.cmake must set KICKOS_CPU (declaration read: ${_kickos_cpu_decl})")
   endif()
 else()
-  # No chip and no CPU flag: the host build, where the platform's own declaration is the only
-  # authority there is.
+  # No chip backend and no CPU flag: the host build, where the platform's own declaration is the
+  # only authority there is.
   set(_kickos_cpu "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 target_compile_definitions(kickos_kernel PRIVATE

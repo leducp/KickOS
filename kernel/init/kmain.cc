@@ -18,6 +18,7 @@
 #include <kickos/irq.h>
 #include <kickos/app.h>
 #include <kickos/ampdiag.h>
+#include <kickos/ampshare.h>
 #include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
 #include <kickos/sys/init.h>
@@ -268,6 +269,9 @@ namespace kickos
         // Before the window, so a peer reports even where the window layer refuses.
         amp::diag_peer_publish();
         amp::window_init();
+#if KICKOS_AMP_SHARE
+        amp_share_clear();
+#endif
         // AFTER the window is seated and before anything can be published at a peer: a node
         // released earlier would publish into bytes this node is about to clear.
         arch_amp_release_peers();
@@ -423,6 +427,9 @@ namespace kickos
         // per listed crossing from that. An install added above this line shifts every one of
         // them positionally, and the seating panics rather than boot past a shifted slot.
         amp_ports_seat(root_tcb);
+#endif
+#if KICKOS_AMP_SHARE
+        amp_share_seat(root_tcb);
 #endif
         {
             IrqLock lock;

@@ -26,6 +26,7 @@
 // Bases in mmap.h, IRQ vectors in irq.h, per-peripheral offsets/fields in regs/.
 #include <kickos/chip_mmap.h>
 #include "irq.h"
+#include "routing.h"
 #include "regs/cgc.h"
 #include "regs/flash.h"
 #include "regs/icu.h"
@@ -704,27 +705,6 @@ void arch_shutdown(int status)
         __asm volatile("wait");
     }
 }
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (RX72M UM). Owns-for-life: the CMTW time base (CMTW0 @0x94200
-// timebase and CMTW1 @0x94280 bench/trace clock fit one 0x100 block), the ICU (on RX the
-// IRQ controller is MPU-GOVERNED memory, so it must be reserved), the bus-side MPU
-// register file, and the SYSTEM clock/reset gate block.
-//
-// The ICU window must reach past GENAL1 @0x87874, not stop at IR/IER/IPR: short of that,
-// an AUTH_MEMORY holder could be granted GENBL0 and arm or disarm any group source behind
-// the kernel's back.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::CMTW0, 0x100u}, // CMTW0 + CMTW1: time base + bench clock (UM sec.32)
-        {mmap::ICU, icu::SPAN}, // ICU: IR + IER + IPR + the group registers (UM sec.15)
-        {mmap::MPU, 0x140u},   // MPU: RSPAGE/REPAGE + MPEN/MPBAC/MPOPI register file (UM sec.17)
-        {mmap::SYSTEM, 0x100u}, // SYSTEM: MSTPCR / SCKCR / PLLCR clock+reset gates (UM sec.9/11)
-    };
-    return blocks;
-}
-#endif
 
 // C runtime init, the reset entry. Never returns.
 void rx_reset_handler(void)

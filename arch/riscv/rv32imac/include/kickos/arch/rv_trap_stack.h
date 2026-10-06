@@ -45,8 +45,9 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 
 /* _SYS's dispatch on a PRIVILEGED thread's own stack. A separate macro for the rounding, a
- * thread-stack figure being rounded up to the next multiple of 64, and for the posture:
- * KICKOS_BENCH adds a syscall arm nothing else compiles.
+ * thread-stack figure being a multiple of 64, and for the posture: KICKOS_BENCH adds a syscall arm
+ * nothing else compiles. Both figures are reserves above the measurements below, kept as headroom;
+ * the red-zone gate fails a measurement past them.
  *
  *   KICKOS_BENCH 0, 576 on qemu-riscv and the two non-flat esp32c6-wroom presets:
  *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[80] -> seat_windows[64]

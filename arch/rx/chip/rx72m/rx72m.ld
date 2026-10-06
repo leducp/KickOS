@@ -27,6 +27,7 @@
 /* sections.ld.h's window macros spell their C names through this. */
 #define KICKOS_LD_C_SYM(name) _##name
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -35,10 +36,10 @@ ENTRY(_start)
 
 MEMORY
 {
-    RAM   (rwx) : ORIGIN = 0x00000000, LENGTH = 512K
-    OFSM  (r)   : ORIGIN = 0xFE7F5D00, LENGTH = 0x10
-    ROM   (rx)  : ORIGIN = 0xFFC00000, LENGTH = 0x003FFF80  /* up to 0xFFFFFF80 */
-    FVECT (rx)  : ORIGIN = 0xFFFFFF80, LENGTH = 0x80        /* fixed vectors + reset */
+    KICKOS_LINK_RAM
+    KICKOS_LINK_OFSM
+    KICKOS_LINK_ROM
+    KICKOS_LINK_FVECT
 }
 
 _istack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/interrupt stack (ISP): top of SRAM */

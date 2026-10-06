@@ -234,7 +234,8 @@ enter it. The image to hand it is
 `teensy_loader_cli` build names for the 4.1 (it lists them with `--list-mcus`).
 
 Console is **LPUART6** -- Teensy pin 1 (TX) / pin 0 (RX), "Serial1" in Teensyduino terms --
-at 115200 on a 3.3 V adapter. No diagnostic LED is wired.
+at 115200 on a 3.3 V adapter. The diagnostic LED is the on-board LED on pin 13 (GPIO_B0_03,
+GPIO2.IO03), active-high.
 
 ### `rx72m` (RX72M) -- rfp-cli over an E2 Lite
 

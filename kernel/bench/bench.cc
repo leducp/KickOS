@@ -23,10 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The sim has no chip, so this header need not exist.
-#if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
-#endif
 
 // Keep statistic labels in format literals: an extra argument increases the
 // stack depth on the SYSPRIV path. Below the sample floor, report max instead of p99.

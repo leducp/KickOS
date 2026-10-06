@@ -7,7 +7,7 @@ add_subdirectory(telemetry)
 if(KICKOS_BUILD_UNIT_TESTS)
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      amphold ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
+      amphold ampshare ampwindow benchdist capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp
       deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
       ktime mapexec mapfence mpuskip mtimeconv placeadmit ramowner reschedowed slotpool taskbudget

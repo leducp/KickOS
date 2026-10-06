@@ -396,8 +396,8 @@ ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
 ASSERT(ADDR(.amp_shared) - KICKOS_ARM64_VA_BASE == KICKOS_AMP_SHARED_BASE,
        "KickOS: the AMP shared region is not at the address the partition derives. Every node's script computes KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE, so a region elsewhere means this image was built against a different geometry than its peers")
 
-ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
-       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE. Raise it in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_KERNEL_SHARED_SIZE,
+       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE less the tasks' KICKOS_AMP_USER_SHARE_SIZE at its top. Raise the first or lower the second in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
 
 /* One arm and not two: the DRAM size is derived from KICKOS_AMP_NODE_SHARE, so a separate
    assert on the top of RAM could never redden without this one. */

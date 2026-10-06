@@ -19,6 +19,7 @@
 #include <kickos/chip_cpuid.h>
 #include <kickos/chip_mmap.h>
 #include "irq.h"
+#include "routing.h"
 #include "regs/uart.h"
 #include "regs/timg.h"
 #include "regs/rtc_cntl.h"
@@ -144,7 +145,7 @@ namespace
     //     The classic ESP32 makes 240 MHz from the 480 MHz BBPLL divided by 2. The
     //     BBPLL analog register file is NOT memory-mapped: it is reached over the
     //     chip's internal "reg-I2C" bus, whose bit-level transaction lives in the ESP32
-    //     ROM, so the ROM routine is called at its fixed entry (mmap::ROM_REGI2C_WRITE,
+    //     ROM, so the ROM routine is called at its fixed entry (ROM_REGI2C_WRITE,
     //     the symbol the IDF links as _regi2c_impl_write). Register addresses/bitfields
     //     and the 480 MHz / 40 MHz-XTAL analog values are clean-room facts from the
     //     ESP32 TRM (RTC_CNTL + DPORT clock chapters, analog-PLL description).
@@ -175,12 +176,15 @@ namespace
         }
     }
 
+    // _regi2c_impl_write(block, host_id, reg_add, data), a windowed-ABI ROM routine.
+    constexpr uintptr_t ROM_REGI2C_WRITE = 0x400041A4u;
+
     void bbpll_write(uint8_t reg_add, uint8_t data)
     {
         // ROM _regi2c_impl_write(block, host_id, reg_add, data): windowed ABI at a fixed
         // ROM address, doing the whole analog reg-I2C transaction internally.
         auto rom_regi2c_write =
-            reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(mmap::ROM_REGI2C_WRITE);
+            reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(ROM_REGI2C_WRITE);
         rom_regi2c_write(reg::system::I2C_BBPLL, reg::system::I2C_BBPLL_HOSTID, reg_add, data);
     }
 

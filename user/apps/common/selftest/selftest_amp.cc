@@ -2050,5 +2050,261 @@ namespace selftest
         TAP_CHECK(sent1 >= 0);
         TAP_CHECK(sent1 == sent0);
     }
+
+#if KICKOS_AMP_OWN_IMAGE
+    // --- The partition's user share ---------------------------------------------------------
+    constexpr uint32_t AMP_SHARE_JOIN_US = 500000;
+    // The bit amp_share_child's argument carries beside a word-aligned offset into its window.
+    constexpr uintptr_t AMP_SHARE_WRITE = 1u;
+    constexpr uint32_t AMP_SHARE_WORD = 0x53574F52u;
+    // An echo peer's line and word (user/apps/common/ampping/main_echo.c).
+    constexpr uintptr_t AMP_SHARE_LINE = 64u;
+    // 1 + the share's enum arch_map_memtype, as KOS_ASPACE_OP_MEMTYPE_AT and the walks answer.
+    constexpr uint64_t AMP_SHARE_TYPE_AT = 1u + KOS_AMP_SHARE_UNCACHED;
+    constexpr uint8_t AMP_SHARE_OTHER_WINDOW = KOS_AMP_SHARE_WINDOW_FLAGS ^ KOS_WINDOW_UNCACHED;
+    constexpr uint32_t AMP_SHARE_OTHER_MEM = KOS_AMP_SHARE_MEM_FLAGS ^ KOS_MEM_NOCACHE;
+    constexpr uint32_t amp_share_mark(uint32_t node)
+    {
+        return 0x53480000u | node;
+    }
+
+    // Every node's line, on whole granules: what the crossing maps and the rest keep clear of.
+    size_t amp_share_lines(size_t g)
+    {
+        return (KICKOS_AMP_NODES * AMP_SHARE_LINE + g - 1u) / g * g;
+    }
+
+    struct AmpShareSeen
+    {
+        int32_t got;      // kos_window_get's answer for the child's one window
+        uint32_t word;    // the word at the offset, after the child's own write if it made one
+        uint64_t memtype; // KOS_ASPACE_OP_MEMTYPE_AT at the window; 0 where nothing translates
+        uint64_t walk;    // KOS_AMP_OP_WALK at the window; 0 where nothing translates
+    };
+
+    // Reads, and with AMP_SHARE_WRITE first writes, the word at an offset into its one window,
+    // where kos_window_get says it sits, and reports on `ep`.
+    void amp_share_child(void* arg) // caps: E(SIGNAL)@1
+    {
+        uintptr_t const a = reinterpret_cast<uintptr_t>(arg);
+        uintptr_t const off = a & ~AMP_SHARE_WRITE;
+        AmpShareSeen seen = {-1, 0u, 0u, 0u};
+        kos_window w = {};
+        seen.got = kos_window_get(0, &w);
+        if (seen.got == 0)
+        {
+            auto* const at = reinterpret_cast<Atomic<uint32_t, Order::RELAXED>*>(w.base + off);
+            if ((a & AMP_SHARE_WRITE) != 0)
+            {
+                *at = AMP_SHARE_WORD;
+            }
+            seen.word = *at;
+#if KICKOS_HAVE_ASPACE
+            seen.memtype = kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, w.base);
+            seen.walk = kos_amp_probe(KOS_AMP_OP_WALK, w.base);
+#endif
+        }
+        (void)kos_send(1, &seen, sizeof(seen));
+        kos_exit(0);
+    }
+
+    // One child holding `w` in `task`, its report on `ep`. The spawn's answer, or the join's.
+    int amp_share_run(kos_window const& w, uintptr_t arg, kos_task_t task, kos_cap_t ep,
+                      AmpShareSeen* seen)
+    {
+        *seen = {-1, 0u, 0u, 0u};
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto const c = kos::thread::create(amp_share_child, reinterpret_cast<void*>(arg), "shr",
+                                           10, KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
+                                           &w, 1, caps, 1, 0, nullptr, task);
+        int const rc = c.error();
+        if (rc != 0)
+        {
+            return rc;
+        }
+        struct kos_reply_recv_opts o;
+        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, AMP_SHARE_JOIN_US);
+        (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
+        return c.join(AMP_SHARE_JOIN_US);
+    }
+
+    int amp_share_spawn(kos_window const& w)
+    {
+        auto const c = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO,
+                                           0, false, nullptr, 0, nullptr, 0, &w, 1);
+        if (c.valid())
+        {
+            (void)c.join(AMP_SHARE_JOIN_US);
+        }
+        return c.error();
+    }
+
+    enum
+    {
+        AMP_SH_OWN = 0,    // the worker's own reservation, self-granted: the authority control
+        AMP_SH_GRANT = 1,  // a part of the share, self-granted: refused
+        AMP_SH_WINDOW = 2, // the same part as a window of a child it spawns: refused
+        AMP_SH_WORDS = 3
+    };
+    // `arg` is the part of the share root's arm handed out, carried as a number.
+    void amp_share_stranger(void* arg) // caps: E(SIGNAL)@1
+    {
+        uintptr_t const at = reinterpret_cast<uintptr_t>(arg);
+        size_t const g = discover_granule();
+        int32_t rep[AMP_SH_WORDS] = {1, 1, 1};
+        void* const mine = kos_ram_alloc(g);
+        if (mine != nullptr)
+        {
+            rep[AMP_SH_OWN] = kos_mem_self_grant(mine, g, 0);
+        }
+        rep[AMP_SH_GRANT] = kos_mem_self_grant(arg, g, KOS_AMP_SHARE_MEM_FLAGS);
+        kos_window const w = {at, static_cast<uint32_t>(g), KOS_WINDOW_MEMORY,
+                              KOS_AMP_SHARE_WINDOW_FLAGS};
+        rep[AMP_SH_WINDOW] = amp_share_spawn(w);
+        (void)kos_send(1, rep, sizeof(rep));
+        kos_exit(0);
+    }
+
+#if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
+    // Root's reservation over the share, read back from the record the kernel seated it in.
+    void t_amp_share_seated()
+    {
+        uintptr_t const base = kos_amp_probe(KOS_AMP_OP_SHARE, 0u);
+        uintptr_t const size = kos_amp_probe(KOS_AMP_OP_SHARE, 1u);
+        tap::diag("share: root holds 0x%lx bytes at 0x%lx, the partition states 0x%lx at 0x%lx",
+                  static_cast<unsigned long>(size), static_cast<unsigned long>(base),
+                  static_cast<unsigned long>(KOS_AMP_SHARE_SIZE),
+                  static_cast<unsigned long>(KOS_AMP_SHARE_BASE));
+        TAP_CHECK(base == KOS_AMP_SHARE_BASE);
+        TAP_CHECK(size == KOS_AMP_SHARE_SIZE);
+    }
+
+    // A window anywhere inside the share is root's to hand out, in the share's one memory type,
+    // and nothing past it, from another task, or of the other type is admitted.
+    void t_amp_share_window()
+    {
+        size_t const g = discover_granule();
+        if (g == 0 or KOS_AMP_SHARE_SIZE < amp_share_lines(g) + 2u * g)
+        {
+            tap::skip("the partition's user share holds no two granules past the nodes' lines");
+            return;
+        }
+        kos_cap_t ep = KOS_CAP_NONE;
+        kos_task_t t = KOS_TASK_NONE;
+        kos_task_t stranger = KOS_TASK_NONE;
+        if (kos_endpoint_create(&ep) != 0 or kos_task_create(nullptr, 0, 0, &t) != 0
+            or kos_task_create(nullptr, 0, 0, &stranger) != 0)
+        {
+            (void)kos_task_kill(t);
+            (void)kos_handle_close(ep);
+            tap::skip("endpoint or task pool too small");
+            return;
+        }
+        uintptr_t const base = KOS_AMP_SHARE_BASE;
+        uintptr_t const at = base + amp_share_lines(g);
+        uint32_t const gw = static_cast<uint32_t>(g);
+        AmpShareSeen seen = {-1, 0u, 0u, 0u};
+
+        // A part of the share, away from its base: one task's write through its window is what
+        // a task of its own reads through another.
+        kos_window const part = {at, gw, KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
+        TAP_CHECK(amp_share_run(part, AMP_SHARE_WRITE, KOS_TASK_NONE, ep, &seen) == 0);
+        TAP_CHECK(seen.got == 0 and seen.word == AMP_SHARE_WORD);
+        TAP_CHECK(amp_share_run(part, 0u, t, ep, &seen) == 0);
+        TAP_CHECK(seen.got == 0 and seen.word == AMP_SHARE_WORD);
+#if KICKOS_HAVE_ASPACE
+        // The share's type, read back from the task's mapping and from the kernel's, the second
+        // read by the hardware's own walk in both views.
+        uint64_t const kernel_walk = kos_amp_probe(KOS_AMP_OP_SHARE, 2u);
+        tap::diag("share type: task record %lu, task walk %lu, kernel walk %lu, stated %lu",
+                  static_cast<unsigned long>(seen.memtype), static_cast<unsigned long>(seen.walk),
+                  static_cast<unsigned long>(kernel_walk),
+                  static_cast<unsigned long>(AMP_SHARE_TYPE_AT));
+        TAP_CHECK(seen.memtype == AMP_SHARE_TYPE_AT);
+        TAP_CHECK(seen.walk == AMP_SHARE_TYPE_AT);
+        TAP_CHECK(kernel_walk == AMP_SHARE_TYPE_AT);
+#endif
+
+        // The other memory type, as a window and as root's own grant: refused, so no two
+        // mappings of the share disagree.
+        kos_window const other = {at + g, gw, KOS_WINDOW_MEMORY, AMP_SHARE_OTHER_WINDOW};
+        TAP_CHECK(amp_share_spawn(other) == -KOS_EBUSY);
+        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(at + g), g, AMP_SHARE_OTHER_MEM)
+                  == -KOS_EBUSY);
+
+        // Whole granules, the last of them past the share's end.
+        kos_window const past = {base + g, static_cast<uint32_t>(KOS_AMP_SHARE_SIZE),
+                                 KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
+        TAP_CHECK(amp_share_spawn(past) == -KOS_EPERM);
+#if KICKOS_HAVE_ASPACE
+        kos_window const part_granule = {at, gw - 1u, KOS_WINDOW_MEMORY,
+                                         KOS_AMP_SHARE_WINDOW_FLAGS};
+        TAP_CHECK(amp_share_spawn(part_granule) == -KOS_EINVAL);
+#endif
+
+        int32_t rep[AMP_SH_WORDS] = {1, 1, 1};
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
+        auto const w = kos::thread::create(amp_share_stranger, reinterpret_cast<void*>(at), "shs",
+                                           10, KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
+                                           nullptr, 0, caps, 1, KOS_AUTH_MEMORY, nullptr,
+                                           stranger);
+        bool heard = false;
+        if (w.valid())
+        {
+            struct kos_reply_recv_opts o;
+            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, AMP_SHARE_JOIN_US);
+            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &o)
+                    == static_cast<int32_t>(sizeof(rep));
+            (void)w.join(AMP_SHARE_JOIN_US);
+        }
+        tap::diag("share from a task holding none: own %ld, grant %ld, window %ld",
+                  static_cast<long>(rep[AMP_SH_OWN]), static_cast<long>(rep[AMP_SH_GRANT]),
+                  static_cast<long>(rep[AMP_SH_WINDOW]));
+        TAP_CHECK(heard);
+        TAP_CHECK(rep[AMP_SH_OWN] == 0);
+        TAP_CHECK(rep[AMP_SH_GRANT] == -KOS_EPERM);
+        TAP_CHECK(rep[AMP_SH_WINDOW] == -KOS_EPERM);
+        (void)kos_task_kill(stranger);
+        (void)kos_task_kill(t);
+        (void)kos_handle_close(ep);
+    }
+#endif
+
+    // One node's write through its mapping of the share, read back through this node's: the
+    // echo peer marks its line before it first receives, so a peer that answered has.
+    void t_amp_share_crossing()
+    {
+        uint32_t far_node = 0;
+        kos_cap_t const far = amp_far_answered(&far_node);
+        if (far == KOS_CAP_NONE)
+        {
+            tap::skip("no peer answers a far call on this partition");
+            return;
+        }
+        size_t const g = discover_granule();
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (g == 0 or KOS_AMP_SHARE_SIZE < amp_share_lines(g) or kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("no share for the nodes' lines, or the endpoint pool is too small");
+            return;
+        }
+        char buf[AMP_FAR_LEN];
+        for (size_t i = 0; i < sizeof(buf); i++)
+        {
+            buf[i] = static_cast<char>(0x70u + i);
+        }
+        TAP_CHECK(kos_call_timed(far, buf, sizeof(buf), sizeof(buf), KOS_TIMEOUT_NONE)
+                  == static_cast<int32_t>(sizeof(buf)));
+        kos_window const line = {KOS_AMP_SHARE_BASE, static_cast<uint32_t>(amp_share_lines(g)),
+                                 KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
+        AmpShareSeen seen = {-1, 0u, 0u, 0u};
+        TAP_CHECK(amp_share_run(line, far_node * AMP_SHARE_LINE, KOS_TASK_NONE, ep, &seen) == 0);
+        (void)kos_handle_close(ep);
+        tap::diag("share: node %u's word through this node's window: 0x%lx",
+                  static_cast<unsigned>(far_node), static_cast<unsigned long>(seen.word));
+        TAP_CHECK(seen.got == 0);
+        TAP_CHECK(seen.word == amp_share_mark(far_node));
+    }
+#endif
 #endif
 }

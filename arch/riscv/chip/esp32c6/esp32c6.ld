@@ -307,8 +307,8 @@ KICKOS_STATIC_RELOC_ASSERT()
 #if KICKOS_AMP_OWN_IMAGE
 ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
        "KickOS: ESP32-C6 AMP shared region moved from the common partition address")
-ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_SHARED_SIZE,
-       "KickOS: ESP32-C6 AMP shared objects overflow the reserved window")
+ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_KERNEL_SHARED_SIZE,
+       "KickOS: ESP32-C6 AMP shared objects overflow the reserved window below the tasks' share")
 ASSERT(KICKOS_AMP_PARTITION_BASE == 0x40800000 && KICKOS_AMP_PARTITION_END <= 0x40880000,
        "KickOS: ESP32-C6 AMP partition must fit its 512 KiB HP SRAM")
 ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start

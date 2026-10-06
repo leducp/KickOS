@@ -5,7 +5,7 @@
 // are clean-room from the RP2040 datasheet (RP-008371-DS); hand-rolled, no vendor
 // SDK sources, consistent with the arch layer's regs.h.
 //
-// Privilege + SVC, and the PMSAv6 MPU is enforced (mpu.cmake). clk_sys is raised to
+// Privilege + SVC, and the PMSAv6 MPU is enforced (its chip file's unit). clk_sys is raised to
 // 125 MHz off PLL_SYS (12 MHz XOSC x125 /6 /2); SystemCoreClock tracks it so the SysTick
 // ns<->cycle math (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz
 // XOSC and the WATCHDOG /12 tick is untouched, so the 1 MHz system TIMER
@@ -31,7 +31,6 @@
 
 #include <fatal_status.ld.h>
 
-#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/clocks.h"
 #include "regs/io_bank0.h"
@@ -45,10 +44,11 @@
 #include "regs/xosc.h"
 #include "../rp2xxx/rp2xxx.h"
 
-namespace mmap = kickos::rp2040::mmap;
 namespace reg = kickos::rp2040::reg;
 namespace irq = kickos::rp2040::irq;
 
+using kickos::rp2xxx::ATOMIC_CLR;
+using kickos::rp2xxx::ATOMIC_SET;
 using kickos::rp2xxx::pll_sys_lock;
 using kickos::rp2xxx::r32;
 using kickos::rp2xxx::unreset;
@@ -106,20 +106,20 @@ namespace
         {
             return;
         }
-        r32(reg::resets::RESET + mmap::ATOMIC_SET) = reg::resets::PLL_USB;
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = reg::resets::PLL_USB;
+        r32(reg::resets::RESET + ATOMIC_SET) = reg::resets::PLL_USB;
+        r32(reg::resets::RESET + ATOMIC_CLR) = reg::resets::PLL_USB;
         wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_USB);
 
         r32(reg::pll_usb::CS) = reg::pll::CS_REFDIV_1;
         r32(reg::pll_usb::FBDIV_INT) = reg::pll_usb::FBDIV_100;
-        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) =
+        r32(reg::pll_usb::PWR + ATOMIC_CLR) =
             reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
         if (not wait_mask(reg::pll_usb::CS, reg::pll::CS_LOCK))
         {
             return; // the block stays in reset: an un-clocked controller never enumerates
         }
         r32(reg::pll_usb::PRIM) = reg::pll_usb::PRIM_POSTDIV;
-        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
+        r32(reg::pll_usb::PWR + ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
 
         // clk_usb has no glitchless mux, so the source may only be changed with the
         // generator stopped (datasheet 2.15.3.2). This part has no CTRL.ENABLED status
@@ -149,7 +149,7 @@ namespace
         // sequence): a combined write is avoided so ENABLE never latches before
         // FREQ_RANGE is in place.
         r32(reg::xosc::CTRL) = reg::xosc::FREQ_1_15MHZ;
-        r32(reg::xosc::CTRL + mmap::ATOMIC_SET) = reg::xosc::ENABLE;
+        r32(reg::xosc::CTRL + ATOMIC_SET) = reg::xosc::ENABLE;
 
         bool xosc_ok = wait_mask(reg::xosc::STATUS, reg::xosc::STATUS_STABLE);
         if (xosc_ok)
@@ -201,8 +201,8 @@ namespace
         // Route GP0/GP1 to UART0 and make the pads usable (TX drives out, RX in).
         r32(reg::io_bank0::GPIO0_CTRL) = reg::io_bank0::FUNCSEL_UART;
         r32(reg::io_bank0::GPIO1_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::pads::GPIO0 + mmap::ATOMIC_CLR) = reg::pads::OD;
-        r32(reg::pads::GPIO1 + mmap::ATOMIC_SET) = reg::pads::IE;
+        r32(reg::pads::GPIO0 + ATOMIC_CLR) = reg::pads::OD;
+        r32(reg::pads::GPIO1 + ATOMIC_SET) = reg::pads::IE;
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
         r32(reg::uart::IBRD) = g_uart_ibrd;
@@ -220,8 +220,8 @@ namespace
     // write on IMSC is needed. ---
     int rp_tx_slot_free(void) { return (r32(reg::uart::FR) & reg::uart::FR_TXFF) == 0; }
     void rp_tx_push(uint8_t b) { r32(reg::uart::DR) = b; }
-    void rp_tx_irq_enable(void) { r32(reg::uart::IMSC + mmap::ATOMIC_SET) = reg::uart::IMSC_TXIM; }
-    void rp_tx_irq_disable(void) { r32(reg::uart::IMSC + mmap::ATOMIC_CLR) = reg::uart::IMSC_TXIM; }
+    void rp_tx_irq_enable(void) { r32(reg::uart::IMSC + ATOMIC_SET) = reg::uart::IMSC_TXIM; }
+    void rp_tx_irq_disable(void) { r32(reg::uart::IMSC + ATOMIC_CLR) = reg::uart::IMSC_TXIM; }
     char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
@@ -259,7 +259,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 void arch_diag_led_init(void)
 {
     r32(reg::io_bank0::GPIO25_CTRL) = reg::io_bank0::FUNCSEL_SIO;   // funcsel = SIO
-    r32(reg::pads::GPIO25 + mmap::ATOMIC_CLR) = reg::pads::OD; // clear output-disable
+    r32(reg::pads::GPIO25 + ATOMIC_CLR) = reg::pads::OD; // clear output-disable
     r32(reg::sio::GPIO_OE_SET) = 1u << 25;                     // output enable
 }
 
@@ -300,11 +300,11 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     r32(reg::io_bank0::gpio_ctrl(pin)) = func & 0x1fu;
     if ((func & (1u << 8)) != 0u)
     {
-        r32(reg::pads::gpio(pin) + mmap::ATOMIC_SET) = reg::pads::IE;
+        r32(reg::pads::gpio(pin) + ATOMIC_SET) = reg::pads::IE;
     }
     if ((func & (1u << 9)) != 0u)
     {
-        r32(reg::pads::gpio(pin) + mmap::ATOMIC_CLR) = reg::pads::OD;
+        r32(reg::pads::gpio(pin) + ATOMIC_CLR) = reg::pads::OD;
     }
     if ((func & (1u << 16)) != 0u)
     {
@@ -352,24 +352,6 @@ int arch_reboot(void)
                             sizeof(kickos::diag::kRebootRp2040) - 1);
     arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
     arch_shutdown(KICKOS_FATAL_STATUS);
-}
-#endif
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic
-// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER, so it is reserved despite the
-// general watchdog exclusion), and the RESETS + CLOCKS blocks. Each is a full 16 KB window
-// so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are covered too. M0+ has no
-// bit-band -> the arch_bitband_present fallback 0 stands.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::TIMER_BASE, 0x4000u},    // TIMER: 64-bit us monotonic (DS 4.6)
-        {mmap::WATCHDOG_BASE, 0x4000u}, // WATCHDOG: TICK generator for the TIMER (DS 4.7)
-        {mmap::RESETS_BASE, 0x4000u},   // RESETS: peripheral reset control (DS 2.14)
-        {mmap::CLOCKS_BASE, 0x4000u},   // CLOCKS: clock generators (DS 2.15)
-    };
-    return blocks;
 }
 #endif
 

@@ -78,8 +78,8 @@ BOOTSEL-recoverable, so a wrong clock or boot config cannot brick it.
 
 ## DEFERRED (a): armv8-m / PMSAv8 MPU backend -- LANDED
 
-Built as `arch/arm/common/arch_arm_pmsav8.cc`, opted into by
-`arch/arm/chip/rp2350/mpu.cmake`. The decision and the register encoding are
+Built as `arch/arm/common/arch_arm_pmsav8.cc`, opted into by the `pmsav8` unit
+`platform/rp2350/chip.yaml` states. The decision and the register encoding are
 `design-rp2350-mpu-armv8m.md`; the contract is `reference/porting.md` (*MPU descriptor
 encodings*). The payoff this document predicted did land: because RLAR takes an arbitrary limit,
 the pow2 `.appdata` window machinery `rp2040.ld` needs is not required, and the region-set contract

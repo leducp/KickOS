@@ -19,6 +19,7 @@ CONFIG_KICKOS_AMP_NODES=3
 CONFIG_KICKOS_AMP_PARTITION_BASE=0x40000000
 CONFIG_KICKOS_AMP_NODE_SHARE=0x4000000
 CONFIG_KICKOS_AMP_SHARED_SIZE=0x200000
+CONFIG_KICKOS_AMP_USER_SHARE_SIZE=0x100000
 
 # The node-to-core map, in node order. A node index is not a core index. Node 0 takes core 0:
 # it is the partition primary and runs on the core the machine resets into.

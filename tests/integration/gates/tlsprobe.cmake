@@ -11,7 +11,7 @@ endif()
 # One arm per mechanism an emulator can run: mps2 masks SP on armv7m, microbit on armv6m;
 # qemu-riscv and armv8a seat the register from the context, and there the image also runs a
 # thread on a caller-supplied stack the mask would refuse.
-if(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "microbit"
+if(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"
    OR KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_ARCH STREQUAL "armv8a")
   kickos_add_qemu_test(TARGET tlsprobe
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")

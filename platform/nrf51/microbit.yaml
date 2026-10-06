@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU `microbit`. The kernel console is Arm semihosting (chip_nrf51.cc).
+
+version: 1
+board: microbit
+chip: nrf51
+
+console:
+  semihosting: true

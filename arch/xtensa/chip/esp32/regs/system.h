@@ -5,7 +5,7 @@
 // peripheral: the BBPLL analog register file (reached over the internal reg-I2C
 // bus, not memory-mapped), the ANA_CONFIG analog gate, and the fixed SoC clock
 // rates. Register/analog facts are clean-room from the ESP32 TRM (RTC_CNTL + DPORT
-// clock chapters, analog-PLL description). See mmap.h for ROM_REGI2C_WRITE.
+// clock chapters, analog-PLL description). chip_esp32.cc holds ROM_REGI2C_WRITE.
 
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_SYSTEM_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_SYSTEM_H

@@ -886,7 +886,7 @@ Both were found during M8.3 and are recorded here rather than closed, which is w
       closed silent loss. On `esp32c6`, `virt_rv32`, `mps2` (both scripts), `stm32f411`,
       `rp2040` and `rx72m` the loss fits inside the pool headroom and the link stays green,
       which is the silent case the item opened on.
-      The alternative for `boards/qemu-m33/mps2.ld` stays recorded and not taken: PMSAv8 is
+      The alternative for `arch/arm/chip/an505/an505.ld` stays recorded and not taken: PMSAv8 is
       32-byte granular, so `ALIGN(32)` would remove the cliff there with no constant at all,
       but the board would stop verifying the chip default's window shape.
       The mechanism is ONE shared header, `arch/common/kernel_data_reserve.ld.h`, beside
@@ -1928,7 +1928,7 @@ inside the tree.
       SCOPE, where the same `ALIGN` is absolute, so it compares the address the body produced
       against the one the body claims. It runs on every app image of every board in the class,
       which no ctest registration reaches.
-      **Both ways.** With the ASSERT added to `boards/qemu-m33/mps2.ld` and the `ALIGN(8)` not
+      **Both ways.** With the ASSERT added to `arch/arm/chip/an505/an505.ld` and the `ALIGN(8)` not
       yet applied, `gpioblink` and `selftest` FAILED THE LINK naming it while the other images
       linked, so it is not tautological; with the `ALIGN(8)` applied every one links. Reverting
       just that one line afterwards reddens `selftest` again. Across twenty presets built with
@@ -8247,7 +8247,7 @@ duplicated.
       Post-change worst-image headroom: `frdmk64f{,-st} +MPU` **+7,072 B**, `frdmk64f-flat`
       **+83,328 B**, `bluepill-c8-st` **+4,096 B**, `bluepill-c8` **+2,560 B**. Sign flip proven
       both ways on both shapes (`-DKICKOS_MAX_THREADS=13` and `-DKICKOS_USER_HEAP_SIZE=8192` each
-      fail the link). **`boards/qemu-m33/mps2.ld` is a BOARD-LOCAL linker script**, which the new
+      fail the link). **The AN505's script, then under `boards/qemu-m33/` and now `arch/arm/chip/an505/an505.ld`, was a BOARD-LOCAL linker script**, which the new
       mandatory check caught on its first run; a chip-directory sweep alone would have missed it.
       **NOT witnessed on silicon:** `bluepill-c8` is build-only and `frdmk64f` needs an operator.
 - [x] **`f302nucleo`'s fault reporter produces NO dump. CLOSED 2026-08-13: THE FLASH COMMAND, not
@@ -10549,7 +10549,7 @@ against the TRMs in the local reference set, not against HAL headers or the web.
       session that applied THESE offsets to the INTPRI base, which masks the line -- a complete
       alternative explanation of the failure that was read as evidence. It was never established.
       **CLOSED ON SILICON 2026-08-01: `VERDICT DISTINCT`.** The `c6intpri` probe
-      (`user/apps/esp32c6-wroom/c6intpri`, capture `.session/logs/m461-c6-intpri.log`) read INTPRI
+      (an esp32c6-wroom app since deleted, capture `.session/logs/m461-c6-intpri.log`) read INTPRI
       directly from an app holding a 256 B PMP NAPOT window at `0x600C_5000`, and **every INTPRI
       register reads `0x00000000`** -- ENABLE, TYPE, EIP_STATUS, PRI_29..31, THRESH, FROM_CPU_0/1,
       the documented reset state -- while the inject doorbell **demonstrably delivers**
@@ -10957,7 +10957,7 @@ here because they are pre-existing isolation facts, not things that pass created
       the group registers.** A live grant-admissibility hole, recorded only in
       `docs/design-m4.6-irq-driver.md` section 6.4 and orthogonal to the IRQ work that found it.
       `arch_reserved_blocks` (`arch/rx/chip/rx72m/chip_rx72m.cc:353-371`) reserves
-      `{mmap::ICU, 0x400}` with `mmap::ICU = 0x0008_7000` (`arch/rx/chip/rx72m/include/kickos/chip_mmap.h`), so the
+      `{mmap::ICU, 0x400}` with `mmap::ICU = 0x0008_7000` (`platform/rx72m/chip.yaml`), so the
       window is `0x87000..0x873FF`. That covers `IR`/`IER`/`IPR` but **not** `GRPBL0 0x87630`,
       `GENBL0 0x87670`, `GRPAL0 0x87830` or `GENAL0 0x87870`. A privileged over-broad grant
       covering `0x8763x` therefore succeeds today and the Rule-7 predicate has no basis to refuse

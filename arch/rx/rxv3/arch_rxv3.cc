@@ -5,6 +5,7 @@
 #include <kickos/arch/rx_trap_stack.h> // the USP guards' derived figures + ctx offsets
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
+#include "chip_layout.h"
 #include "regs.h"
 #include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
 #include <kickos/sys/atomic.h>
@@ -276,6 +277,7 @@ namespace
         {SWINT_VECTOR, 3},
         {CMWI0_VECTOR, 6},  // CMTW0 CMWI0(30) -> ICU.IPR[6]
     };
+    static_assert(CMWI0_VECTOR == KICKOS_LAYOUT_LINE_CMTW_CMWI0, "CMWI0's vector is the chip file's");
 
     inline unsigned vector_to_ipr(int vector)
     {

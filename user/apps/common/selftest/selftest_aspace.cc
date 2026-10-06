@@ -2440,8 +2440,8 @@ namespace selftest
     // --- The x86 port grant --------------------------------------------------------------
     // A holder of the CMOS pair has the kernel write the index, which the chip keeps closed to
     // it, and reads the data port itself; a value with the NMI-mask bit is refused, and so is a
-    // port it does not hold. A second holder and the PIC are refused, and COM1 is refused only
-    // as held, its console driver holding it where one runs. A COM2 holder
+    // port it does not hold. A second holder and the PIC are refused, and COM1 is granted, or
+    // refused as held where a console driver holds it. A COM2 holder
     // alternates with it on one core, each reading its own port, then reaches for the CMOS
     // data port and faults; the CMOS holder moves to another core where there is one and reads
     // again. A holder writing the CMOS index itself faults. Reports travel over an endpoint.
@@ -2590,15 +2590,20 @@ namespace selftest
             TAP_CHECK(pw_recv(ep, &x, 1, 20000) == -KOS_ETIMEDOUT);
             TAP_CHECK(writer.join(PW_JOIN_US) == 0);
         }
+        // A task of its own: an ended task takes no member, and ti's last one has exited.
+        kos_task_t tk = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &tk) == 0);
         kos_window const com1 = {0x3f8u, 8u, KOS_WINDOW_PORTS, 0};
         auto const console = kos::thread::create(pw_noop, nullptr, "pwk", 10, KOS_POLICY_FIFO, 0,
                                                  false, nullptr, 0, nullptr, 0, &com1, 1, nullptr,
-                                                 0, 0, nullptr, ti);
-        TAP_CHECK(console.error() != -KOS_EINVAL);
-        if (console.valid())
-        {
-            TAP_CHECK(console.join(PW_JOIN_US) == 0);
-        }
+                                                 0, 0, nullptr, tk);
+#if defined(KICKOS_SELFTEST_CONSOLE_DRIVER)
+        TAP_CHECK(console.error() == -KOS_EBUSY);
+#else
+        TAP_CHECK(console.error() == 0);
+        TAP_CHECK(console.join(PW_JOIN_US) == 0);
+#endif
+        (void)kos_task_kill(tk);
         (void)kos_task_kill(tc);
         (void)kos_task_kill(tb);
         (void)kos_task_kill(ti);

@@ -6,13 +6,14 @@
  * 0x00000000 (vectors read at reset, VTOR=0) and SRAM at 0x20000000.
  *
  * The same map serves `qemu-m7` (mps2-an500) and `qemu-m3` (mps2-an385): those
- * images differ in core, not memory map. `qemu-m33` (mps2-an505) needs the
- * override in boards/qemu-m33/mps2.ld.
+ * images differ in core, not memory map. `qemu-m33` (mps2-an505) has a map of its
+ * own and is the `an505` chip.
  *
  * Chip<->arch contract: define __kickos_ram_start/__kickos_ram_end (the
  * arch_ram_alloc pool) and _estack (initial MSP = vector[0]).
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -21,8 +22,8 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 4M
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 4M
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of RAM */

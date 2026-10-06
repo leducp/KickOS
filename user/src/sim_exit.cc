@@ -11,12 +11,15 @@
 
 #include <kickos/sys.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 
 // Pulled from the archive by the app's own reference to exit(). Not force-linked: an
 // image that never calls exit() has nothing to route.
 extern "C" void exit(int code) noexcept
 {
+    // glibc's exit() flushes stdio before the process ends; kos_exit ends the task without it.
+    fflush(nullptr);
     kos_exit(code);
     while (true)
     {

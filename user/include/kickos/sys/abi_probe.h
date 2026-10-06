@@ -238,6 +238,16 @@ enum kos_amp_op
      * reads 1 finds no receiver and is refused on the spot.
      */
     KOS_AMP_OP_PORT_PARKED = 31,
+    /* (0) -> the base of the reservation root holds over the partition's user share, read back
+     * from its record; (1) -> its size in bytes; (2) -> 1 + the enum arch_map_memtype the
+     * hardware's walk answers for the kernel's own view of its base. Zero where root holds none,
+     * the build stating no share or keeping no reservation record, or no walk answering.
+     */
+    KOS_AMP_OP_SHARE = 32,
+    /* (va) -> 1 + the enum arch_map_memtype the hardware's walk answers for the caller's own
+     * mapping at va, or zero where nothing maps it or no walk answers.
+     */
+    KOS_AMP_OP_WALK = 33,
     /* Invalid-op test selector, never dispatched. Keep last so new ops cannot
      * turn the rejection test into a valid request.
      */

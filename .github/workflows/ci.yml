@@ -196,8 +196,7 @@ jobs:
           # Require both tests, which are registered only when MPU enforcement is enabled.
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
-          # A board with no default composition links the stub's message.
-          tests/ci/ctest_named.sh 'qemu_system_link_stub' --preset qemu --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^qemu_sysdefault$|qemu_sysdefault_spin|qemu_sysdefault_fault' --preset qemu --no-tests=error --output-on-failure
       # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
@@ -208,7 +207,7 @@ jobs:
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
-          tests/ci/ctest_named.sh 'qemu_m33_system_link_stub' --preset qemu-m33 --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^qemu_m33_sysdefault$|qemu_m33_sysdefault_spin|qemu_m33_sysdefault_fault' --preset qemu-m33 --no-tests=error --output-on-failure
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7
@@ -218,7 +217,7 @@ jobs:
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
-          tests/ci/ctest_named.sh 'qemu_m7_system_link_stub' --preset qemu-m7 --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^qemu_m7_sysdefault$|qemu_m7_sysdefault_spin|qemu_m7_sysdefault_fault' --preset qemu-m7 --no-tests=error --output-on-failure
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
           cmake --preset qemu-m3
@@ -230,7 +229,7 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
           # Require the board-specific diagnostic-format test to remain registered.
-          tests/ci/ctest_named.sh '^qemu_m3_diag_terse$|qemu_m3_system_link_stub' --preset qemu-m3 --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^qemu_m3_diag_terse$|^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_fault' --preset qemu-m3 --no-tests=error --output-on-failure
       # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
@@ -246,7 +245,8 @@ jobs:
             ctest --preset "$b-flat" -E "$POLLED" -LE tree --no-tests=error --output-on-failure
             tests/ci/ctest_named.sh "$flat_polled" \
               --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:2
-            tests/ci/ctest_named.sh "$(printf '%s' "$b" | tr - _)_system_link_stub" \
+            t=$(printf '%s' "$b" | tr - _)
+            tests/ci/ctest_named.sh "^${t}_sysdefault\$|${t}_sysdefault_spin|${t}_sysdefault_fault" \
               --preset "$b-flat" --no-tests=error --output-on-failure
             # The flat M3 build also registers the diagnostic-format test.
             if [ "$b" = qemu-m3 ]; then
@@ -262,7 +262,7 @@ jobs:
           tests/ci/ctest_named.sh 'hello|reclaimwit_park' \
             --preset microbit --no-tests=error --output-on-failure --repeat until-pass:2
           # Require the stack-block test for this non-enforcing board.
-          tests/ci/ctest_named.sh '^microbit_pspguard_block$|microbit_system_link_stub' --preset microbit --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^microbit_pspguard_block$|^microbit_sysdefault$|microbit_sysdefault_spin' --preset microbit --no-tests=error --output-on-failure
 
   # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
@@ -303,11 +303,11 @@ jobs:
           cmake --preset imx8mp-evk
           cmake --build --preset imx8mp-evk
           ctest --preset imx8mp-evk -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'imx8mp_evk_system_link_stub' \
+          out=$(tests/ci/ctest_named.sh 'imx8mp_evk_system_link_none|imx8mp_evk_system_link_two' \
             --preset imx8mp-evk --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
-            *Skipped*) echo "the stub link gate SKIPPED, which ctest reports as success"; exit 1 ;;
+            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
 
   # Four-core AArch64 with and without core isolation. Check the configured
@@ -825,25 +825,25 @@ jobs:
           cmake --preset esp32-wroom
           cmake --build --preset esp32-wroom
           ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_stub' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
           cmake --preset esp32-wroom-st
           cmake --build --preset esp32-wroom-st
           ctest --test-dir build/esp32-wroom-st -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_stub' --test-dir build/esp32-wroom-st --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-st --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
           cmake --preset esp32-wroom-smp
           cmake --build --preset esp32-wroom-smp
           ctest --test-dir build/esp32-wroom-smp -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_stub' --test-dir build/esp32-wroom-smp --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-smp --no-tests=error --output-on-failure
       - name: xtensa lx6 + bench config
         run: |
           cmake --preset esp32-wroom-bench
           cmake --build --preset esp32-wroom-bench
           ctest --test-dir build/esp32-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_stub' --test-dir build/esp32-wroom-bench --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-bench --no-tests=error --output-on-failure
 
   # Build RX72M images and run host checks for each configuration. No emulator models the part.
   rx:
@@ -870,7 +870,7 @@ jobs:
           cmake --preset "$PRESET"
           cmake --build --preset "$PRESET"
           ctest --test-dir "build/$PRESET" -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'rx72m_system_link_stub' --test-dir "build/$PRESET" --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh 'rx72m_system_link_none|rx72m_system_link_two|rx72m_system_link_entry|rx72m_system_link_refused|rx72m_system_link_notool|rx72m_system_link_nocc|rx72m_system_link_rerun|rx72m_system_link_noheap' --test-dir "build/$PRESET" --no-tests=error --output-on-failure
 
   # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
@@ -908,21 +908,20 @@ jobs:
       # system link gates of each preset built.
       - name: host checks
         run: |
-          # The system link gates <preset> registers: a default composition's refusals, or the
-          # stub's message on a board with none.
+          # The system link gates <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
               frdmk64f-flat) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap' ;;
               f411disco-flat) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap' ;;
               xmc4800-relax-flat) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap' ;;
-              qemu-telem) printf '%s' 'qemu_system_link_stub' ;;
-              blackpill-flat) printf '%s' 'blackpill_system_link_stub' ;;
-              bluepill-c8|bluepill-c8-st) printf '%s' 'bluepill_c8_system_link_stub' ;;
-              picopi-flat) printf '%s' 'picopi_system_link_stub' ;;
-              f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_stub' ;;
-              due|due-st) printf '%s' 'due_system_link_stub' ;;
-              teensy41-flat) printf '%s' 'teensy41_system_link_stub' ;;
-              pizero2350-flat) printf '%s' 'pizero2350_system_link_stub' ;;
+              qemu-telem) printf '%s' 'qemu_system_link_none|qemu_system_link_two|qemu_system_link_entry|qemu_system_link_refused|qemu_system_link_notool|qemu_system_link_nocc|qemu_system_link_rerun|qemu_system_link_noheap' ;;
+              blackpill-flat) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap' ;;
+              bluepill-c8|bluepill-c8-st) printf '%s' 'bluepill_c8_system_link_none|bluepill_c8_system_link_two|bluepill_c8_system_link_entry|bluepill_c8_system_link_refused|bluepill_c8_system_link_notool|bluepill_c8_system_link_nocc|bluepill_c8_system_link_rerun|bluepill_c8_system_link_noheap' ;;
+              picopi-flat) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
+              f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_none|f302nucleo_system_link_two|f302nucleo_system_link_entry|f302nucleo_system_link_refused|f302nucleo_system_link_notool|f302nucleo_system_link_nocc|f302nucleo_system_link_rerun|f302nucleo_system_link_noheap' ;;
+              due|due-st) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_entry|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
+              teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
+              pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
             esac
           }
@@ -980,17 +979,16 @@ jobs:
       # built with the same memory protection layout.
       - name: checks
         run: |
-          # The system link gates <preset> registers: a default composition's refusals, or the
-          # stub's message on a board with none.
+          # The system link gates <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
               frdmk64f|frdmk64f-st) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_heap' ;;
               f411disco|f411disco-st) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' ;;
               xmc4800-relax|xmc4800-relax-st) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' ;;
-              blackpill|blackpill-st) printf '%s' 'blackpill_system_link_stub' ;;
-              pizero2350|pizero2350-st) printf '%s' 'pizero2350_system_link_stub' ;;
-              teensy41|teensy41-st) printf '%s' 'teensy41_system_link_stub' ;;
-              picopi|picopi-st) printf '%s' 'picopi_system_link_stub' ;;
+              blackpill|blackpill-st) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap' ;;
+              pizero2350|pizero2350-st) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
+              teensy41|teensy41-st) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
+              picopi|picopi-st) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
             esac
           }
@@ -1029,7 +1027,7 @@ jobs:
           cmake --build --preset pizero2350-amp
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
           # Require the vector test, which depends on the two-core configuration.
-          tests/ci/ctest_named.sh '^rp_node_vectors$|pizero2350_system_link_stub' \
+          tests/ci/ctest_named.sh '^rp_node_vectors$|pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' \
             --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes, self-test on
         run: |
@@ -1037,7 +1035,7 @@ jobs:
             cmake --preset pizero2350-amp2-n$node
             cmake --build --preset pizero2350-amp2-n$node
             ctest --test-dir build/pizero2350-amp2-n$node -L host -LE tree --no-tests=error --output-on-failure
-            tests/ci/ctest_named.sh 'pizero2350_system_link_stub' \
+            tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' \
               --test-dir build/pizero2350-amp2-n$node --no-tests=error --output-on-failure
           done
       - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)

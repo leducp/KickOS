@@ -21,6 +21,7 @@
  * (IRQ0..51; 46..51 are spare/never-fire), matching KICKOS_MAX_IRQ.
  */
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
@@ -39,11 +40,11 @@ g_isr_vector:
     /* SIO_IRQ_BELL is dispatched here and never through kickos_isr_irq, so it occupies no
        kernel irq_table slot. arch_irq_line_kernel_owned (chip_rp2350.cc) is what states that
        to irq_claim, which refuses a capability over the line. */
-    .rept KICKOS_RP2350_SIO_IRQ_BELL
+    .rept KICKOS_LAYOUT_LINE_SIO_IRQ_BELL
     .word kickos_arm_default_irq
     .endr
     .word kickos_rp2350_doorbell_service
-    .rept KICKOS_MAX_IRQ - KICKOS_RP2350_SIO_IRQ_BELL - 1
+    .rept KICKOS_MAX_IRQ - KICKOS_LAYOUT_LINE_SIO_IRQ_BELL - 1
     .word kickos_arm_default_irq
     .endr
 #else

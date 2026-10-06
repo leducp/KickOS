@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the RX72M Group User's Manual: Hardware, Rev.1.20.
+
+version: 1
+chip: rx72m
+manual: "RX72M Group User's Manual: Hardware, R01UH0804EJ0120 Rev.1.20 (November 15, 2023)"
+arch: rxv3
+# The unit checks every user-mode access, the I/O registers included, so a device window is
+# enforced per task.
+protection: { unit: rxmpu, covers_devices: true, memory_type: false }
+# The ROM cache fronts the code flash only; nothing caches the RAM.
+data_cache: false
+c: { namespace: kickos::rx, line_enum: vector }
+
+interrupts:
+  # The 256 vectors, then 32 lines for each of the five level groups BL0, BL1, BL2, AL0 and
+  # AL1. The edge groups IE0 and BE0 carry none.
+  count: { value: 416, ref: "15.3.1 Interrupt Vector Table, p.520; Table 15.6 Types of Group Interrupts, p.529" }
+  vectors: { value: 256, ref: "15.3.1 Interrupt Vector Table, p.520" }
+
+devices:
+  sci6:
+    window: [0x0008A0C0, 0x20]
+    symbol: SCI6
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.238"
+    lines:
+      rxi: { number: 86, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      txi: { number: 87, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+  riic0: { window: [0x00088300, 0x20], symbol: RIIC0, ref: "Table 5.1 List of I/O Registers (Address Order), p.227" }
+  riic1: { window: [0x00088320, 0x20], symbol: RIIC1, ref: "Table 5.1 List of I/O Registers (Address Order), p.227" }
+  riic2: { window: [0x00088340, 0x20], symbol: RIIC2, ref: "Table 5.1 List of I/O Registers (Address Order), p.228" }
+  # One byte per port in each register row, PMR beside PDR and PODR, so a grant of the window
+  # reaches every pin's general-I/O switch, the console's included. Each port's DSCR2 sits in
+  # /dev/mpc.
+  port: { window: [0x0008C000, 0x100], symbol: PORT, ref: "Table 5.1 List of I/O Registers (Address Order), p.243" }
+  mpc: { window: [0x0008C100, 0x100], symbol: MPC, ref: "Table 5.1 List of I/O Registers (Address Order), p.246" }
+
+  # CMTW0, the next-event timer, and CMTW1, the free-running clock.
+  cmtw:
+    window: [0x00094200, 0x100]
+    owner: kernel
+    symbol: CMTW0
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.255"
+    lines: { cmwi0: { number: 30, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" } }
+  # Reaches SLIARn and SLIPRCR past the group registers: they route a source onto vectors 208
+  # to 255.
+  icu:
+    window: [0x00087000, 0xA10]
+    owner: kernel
+    symbol: ICU
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.218"
+  mpu: { window: [0x00086400, 0x140], owner: kernel, symbol: MPU, ref: "Table 5.1 List of I/O Registers (Address Order), p.218" }
+  # Reaches PRCR at +0x3FE, the key to every clock and module-stop register.
+  system:
+    window: [0x00080000, 0x400]
+    owner: kernel
+    symbol: SYSTEM
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.212"
+  # The deep-standby, reset-status, oscillator and voltage-monitor registers outside the main
+  # block: MOFCR at +0x13, which the kernel sets with the clock, and FWEPROR at +0x16.
+  system_lp:
+    window: [0x0008C280, 0x40]
+    owner: kernel
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.251"
+  # Holds MEMWAIT at +0x1C, a SYSTEM register: the code flash wait state the kernel sets with
+  # the clock.
+  flash:
+    window: [0x00081000, 0x50]
+    owner: kernel
+    symbol: FLASH
+    ref: "Table 5.1 List of I/O Registers (Address Order), p.213"
+
+memory:
+  ram:
+    base: 0x00000000
+    size: 0x80000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208"
+  expansion_ram: { base: 0x00800000, size: 0x80000, ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208" }
+  ofsm:
+    base: 0xFE7F5D00
+    size: 0x10
+    link: { region: OFSM, access: r }
+    ref: "Figure 7.1 Option-Setting Memory, p.307"
+  # The code flash but its last 0x80 bytes, which are the fixed vectors.
+  code_flash:
+    base: 0xFFC00000
+    size: 0x3FFF80
+    link: { region: ROM, access: rx }
+    ref: "Figure 4.1 Memory Map in Each Operating Mode, p.208"
+  fixed_vectors:
+    base: 0xFFFFFF80
+    size: 0x80
+    link: { region: FVECT, access: rx }
+    ref: "2.6.1 Exception Vector Table, Figure 2.8, p.178"
+
+# Pins are Pmn. A selector is the PSEL value, in decimal, that PmnPFS takes. A port register
+# is one byte per port in a row, so a pin's `gpio` bit is its bit along the row: port index
+# times 8 plus n, the index running 0 to 9, A to H, J to N, then Q, with no gaps (PB is 11).
+pins:
+  P80: { gpio: port.64 }
+  PB0: { psel11: sci6.rxd, gpio: port.88 }
+  PB1: { psel11: sci6.txd, gpio: port.89 }

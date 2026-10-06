@@ -90,7 +90,7 @@ Two chips of one vendor family may share a translation unit. It sits in a family
 beside the chip directories, named for exactly the parts it covers
 (`arch/arm/chip/stm32f1f3/`, shared by `stm32f103` and `stm32f302`), and each chip opts in
 by shipping a `family.cmake` that sets `KICKOS_CHIP_FAMILY_DIR` and
-`KICKOS_CHIP_FAMILY_SOURCES`, the same shape as `caps.cmake` and `mpu.cmake`.
+`KICKOS_CHIP_FAMILY_SOURCES`, the same shape as `caps.cmake`.
 
 Three rules make it safe:
 
@@ -129,8 +129,9 @@ in the system. All six current fault reporters satisfy this; a new arch port mus
 too. Additionally, before a board turns on handover it must supply a real
 `arch_console_reclaim` body (the generic fallback,
 `arch/common/arch_console_reclaim_default.cc`, is a no-op -- a silent
-reclaim failure otherwise). Every chip in the tree has one except `mps2`, `nrf51`,
-`sam3x8e`, `stm32f103`, `stm32f302` and `virt`; the current set is whatever
+reclaim failure otherwise). Every chip in the tree has one except `an505`, `imx8mp`, `mps2`,
+`nrf51`, `q35`, `sam3x8e`, `stm32f103`, `stm32f302`, `virt_arm64`, `virt_rv32` and `virt_rv64`;
+the current set is whatever
 `grep -rn "^void arch_console_reclaim(void)" arch/` reports, minus the declaration in
 `arch/include/kickos/arch/arch.h`.
 
@@ -378,10 +379,10 @@ so an arch taking it seats its thread pointer from the context, as armv8a and lx
 binds every caller-supplied stack), and the thread pointer itself where it does not (rv64imac, `arch_context_seat_reent`). **A new arch running one kernel on several
 cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is its witness.
 
-### Adding a board/chip (the five edit points)
+### Adding a board/chip (the seven edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
-   `KICKOS_ARCH` and `KICKOS_CHIP` (empty for the sim), plus a CPU flag
+   `KICKOS_ARCH` and `KICKOS_CHIP`, plus a CPU flag
    (`KICKOS_MCPU` / `KICKOS_MFLOAT_ABI`) only where the board genuinely differs
    from its chip's baseline (a float ABI, or an emulated core on the mps2 QEMU
    boards). The build's board resolver (`cmake/kickos.cmake`,
@@ -405,17 +406,23 @@ cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is i
    section no rule names is a LINK failure printing a section name and no hint of
    what is owed, and configure refuses a script missing any of the four by name
    instead (`arch/CMakeLists.txt`),
-   and the chip's constants and peripheral base addresses: either its chip file
+   and the chip's constants and peripheral base addresses in its chip file
    `platform/<chip>/chip.yaml`, from which configure writes `kickos/chip_limits.h`,
    `kickos/chip_mmap.h`, `irq.h`, `chip_layout.h`, `chip_tables.h` and `chip.cmake`
-   into the build tree (`docs/design-m10-fleet.md` section 1.2), or a hand-written
-   `arch/arm/chip/<chip>/include/kickos/chip_limits.h` and `chip_mmap.h` beside it.
-   Configure REFUSES a chip that ships neither. CMake derives every path from the chip
+   into the build tree (`docs/design-m10-fleet.md` section 1.2). Configure REFUSES a
+   chip with no chip file. CMake derives every path from the chip
    name, puts it on the include path, and installs it, so **no root-CMake edit is
    needed**.
 5. `boards/<board>/configs/<variant>/defconfig` -- the board's configuration, one
    complete statement per variant. At least a `base`; configure REFUSES a board that
    ships none, and names the variants it does ship.
+6. `platform/<chip>/<board>.yaml` -- the board file: its console, LEDs, buses, parts, spent
+   pins and soldered memory (`docs/design-m10-composition.md`, *The board file*). The
+   headers are generated from it and the chip file it names; configure REFUSES a board with
+   none.
+7. `boards/<board>/composition.yaml` -- the default composition `KickOS::system_default` is
+   built from: the kernel console, one task `main` with `entry: kickos_main`, `ends: main` and
+   the board's heap, fitting every preset of the board. Configure REFUSES a board with none.
 
 `boards/<board>/` is also where a `<chip>.ld` linker override lives for a shared chip,
 and `boards/<board>/Kconfig` where its own options go -- proven on the `stm32f411` pair
@@ -432,9 +439,8 @@ the kernel IRQ table are **one fact** rather than the same number in two files) 
 the RX, `KICKOS_RX_INTB_ENTRIES`. Nothing configures these and no option's availability
 depends on them, which is exactly why they are not knobs: a smaller value would shrink
 the kernel table and the vector table together and strand the lines above it, with
-nothing to catch it. A configuration cannot set them, and a chip that states no
-`chip_limits.h`, written or generated, is refused at configure rather than falling back on
-the sim's 32.
+nothing to catch it. A configuration cannot set them, and a chip with no chip file is
+refused at configure.
 
 `board_config.h` holds the provisioning KNOBS: `KICKOS_MAX_THREADS`, the idle/root/user
 stack sizes sized to the chip's SRAM (too big and the link fails on the linker-script
@@ -652,15 +658,16 @@ Status: eight arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cort
 The count is the directory set under `arch/` that carries a backend: `arch/arm/armv6m`,
 `arch/arm/armv7m`, `arch/arm64/armv8a`, `arch/riscv/rv32imac`, `arch/riscv/rv64imac`,
 `arch/rx/rxv3`, `arch/xtensa/lx6` and `arch/x86/x86_64`.
-"MPU" is whether the chip ships an enforcement backend: a region unit or `mmu` in its chip file, or
-`arch/<family>/chip/<chip>/mpu.cmake` on a region chip and `aspace.cmake` on a translating one. Where it does, cross-domain trapping is
+"MPU" is whether the chip ships an enforcement backend: a region unit or `mmu` in its chip file.
+Where it does, cross-domain trapping is
 silicon-proven unless the row says otherwise:
 
 | Chip | Board | Core | MPU | Validation |
 |------|-------|------|-----|------------|
-| `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (eight runnable CI gates, the four machines each in both postures, **plus runtime enforcement gates** on both PMSA revisions) |
+| `mps2` | qemu / qemu-m7 / qemu-m3 | M4F / M7 / M3 | PMSAv7 | QEMU (six runnable CI gates, the three machines each in both postures, **plus runtime enforcement gates**) |
+| `an505` | qemu-m33 | M33 | PMSAv8 | QEMU (two runnable CI gates, the machine in both postures, **plus runtime enforcement gates**); the `mps2` backend over its own memory map, through `family.cmake` |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
-| `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
+| `virt_rv32` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
 | `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of an unmapped page (`qemu_riscv64_aspace_ufault`, which replaced a kernel-side `aspace_fault` arm on 2026-08-29 that faulted before it reached the unmap), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
 | `virt_arm64` | qemu-arm64 (+ `-smp`, `-smpiso`, `-gicv3`, the `-amp` family) | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gates at one kernel core -- the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N` -- at four cores, at four cores with one isolated, at four cores under a GICv3, and as an AMP partition of one, two and three images, **plus runtime translation-enforcement gates**) |
 | `imx8mp` | imx8mp-evk | quad Cortex-A53 (one brought up) | **VMSAv8 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no job for it, so the board is LOCAL `ctest` only (`--preset imx8mp-evk`), 48 arms (`ctest -N` 2026-09-02), **plus runtime translation-enforcement gates**. The second armv8a chip, and what moved the shared-kernel predicate's per-part half out of the arch. Hands over at EL3 with no firmware, wires a GIC-500, and brings up ONE core because the machine models no secondary release (`../reference/boards.md`, *Per-board caveats*) |
@@ -683,13 +690,15 @@ inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
 test available on every board with a known LED.
 
 **What CI does and does not re-check.** Not every row above is defended by a green CI run, and a
-porter needs to know which. Enforcement is gated at RUNTIME on the sim (`mprotect`), `virt` (PMP)
-and the four `mps2` images (full TAP suite as unprivileged threads plus a real MemManage denial;
+porter needs to know which. Enforcement is gated at RUNTIME on the sim (`mprotect`), `virt_rv32`
+(PMP) and the four MPS2 images (full TAP suite as unprivileged threads plus a real MemManage denial;
 PMSAv7 on the M4/M7/M3, PMSAv8 on the M33). Translation enforcement is gated at RUNTIME too, on
 `virt_arm64` and on both `virt_rv64` paging postures. The silicon boards get an enforcement
 **build** sweep instead, and it is worth having on its own -- it compiles their enforcement-only link surface,
-including `arch_reserved_blocks`, which has **no fallback TU on purpose**, so an enforcing port
-that forgets to declare its reserved set fails to LINK rather than leaving a silent open hole --
+including `arch_reserved_blocks`, which a chip file generates (the host tool refusing a protecting
+file that marks no kernel-owned window and does not say `reserved: none`) and which has **no
+fallback TU on purpose** on a chip without one, so an enforcing port that forgets to declare its
+reserved set is refused or fails to LINK rather than leaving a silent open hole --
 but their chip-specific trapping (SYSMPU, the M7 anti-speculation wrap, PMSAv6) stays
 silicon-proven. Xtensa and Renesas RX are build-only (no upstream emulator models the ESP32
 or the RX72M), so a change to the arch seam is unverified there until it runs on the bench.
@@ -721,9 +730,9 @@ a non-empty board pin-map fails LOUD on a chip with no backend rather than silen
 mis-muxing.
 
 Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `rx72m`,
-`stm32f411`, `stm32f103`, `stm32f302`, `sam3x8e`, `imxrt1062`, `esp32`. `nrf51`,
-`mps2`, and `virt` keep the declining fallback (no central mux block -- per-peripheral
-PSEL, emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
+`stm32f411`, `stm32f103`, `stm32f302`, `sam3x8e`, `imxrt1062`, `esp32`. `nrf51`, `mps2`,
+`an505`, `imx8mp`, `q35` and the three `virt_*` machines keep the declining fallback (no central
+mux block -- per-peripheral PSEL, emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
 peripherals only (AFIO_MAPR remap out of scope); `imxrt1062` keys `port`=GPIO-bank /
 `pin`=bit against a PARTIAL pad table (a hole returns `-KOS_EINVAL`); `esp32c6` packs
 BOTH of that family's mux stages into `func` -- the IO_MUX pad word in bits `[15:0]`,
@@ -1549,8 +1558,8 @@ board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
 `KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay one step further, over
 `KICKOS_MAX_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)`. Neither may be opted out
 of by omission: a linker script carrying no invocation is a configure `FATAL_ERROR`, and
-that check reads the script this board actually links, so a BOARD-LOCAL override
-(`boards/qemu-m33/mps2.ld` is the one in tree) is covered like any chip script.
+that check reads the script this board actually links, so a BOARD-LOCAL override is covered
+like any chip script.
 Configure prints the demand terms the asserts replay, and only the demand side:
 
 ```
@@ -1868,20 +1877,20 @@ the arithmetic and not the N. This arithmetic is exactly what
 against the real arena base instead of a quoted one.
 
 A **zero-skip** run is what needs a bigger part. On top of the 16,384 above it wants a 4th
-user stack (1,024) and the permanent arena allocations the remaining skips decline -- the
-4 KiB MMIO page and the `kos_ram_alloc(1)` ladder -- plus, at the earlier provisioning, the
+user stack (1,024) and the permanent arena allocations the remaining skips decline (the
+4 KiB MMIO page and the `kos_ram_alloc(1)` ladder), plus, at the earlier provisioning, the
 shared domain region and the two cross-domain buffers those four un-skipped cases now do
 take. That is **a 32 KiB part**, and an enforcing chip pays an `.appdata` window
 besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
 the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
 capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the full summed
-demand of 10 -- 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
+demand of 10: 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
 optional. Only `bluepill-c8` and `f302nucleo` still supply 7
 (`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
 so on that part the cap table is no longer what binds.
 `f411disco` is the zero-skip
-witness -- 128 KiB SRAM, 0 skips -- and it provisions `KICKOS_MAX_THREADS 8`
+witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
 peak, so 4 is a floor and not a fitted value.
 
@@ -2212,10 +2221,12 @@ abandoned (the system never returns to boot).
   commit that is NOT a switch's, `kos_mem_self_grant`: it programs the set at once and leaves
   the stash to the switch that booked it (`invariants.md`, `mpu-apply-on-every-switch-in`).
   `arch_mpu_region_encodable` bounds a grant to what the backend can describe.
-- **Rule 7 reserved blocks (M4)** -- an enforcing chip MUST define `arch_reserved_blocks`
+- **Rule 7 reserved blocks (M4)** -- an enforcing chip MUST state `arch_reserved_blocks`, through
+  its chip file's `owner: kernel` devices (or `reserved: none`, which the host tool otherwise
+  refuses) or, without a chip file, by defining it
   (its owns-for-life peripherals: timebase, IRQ controller, every access-permission controller
   -- the MPU/PMP twin AND any bus-side gate, e.g. the K64F AIPS PACR pages or the ESP32-C6
-  HP_APM/HP_TEE -- and the clock/reset gates); there
+  HP_APM/HP_TEE -- and the clock/reset gates); without a chip file there
   is no fallback TU, so a missing one is a link error. A new **ARMv7-M chip with the
   Cortex-M bit-band alias (any M3/M4)** must also define `arch_bitband_present()` to return
   **1** -- the fallback answers 0, which is fail-OPEN for the bit-band alias refusal (a device
@@ -2281,8 +2292,8 @@ Encoding actually used (`arch/arm/common/arch_arm_pmsav8.cc`, field defs in
 ARMv8-M part: Mainline is a superset of v7-M for everything the arch layer touches -- BASEPRI
 critical section, DWT, SysTick, NVIC, PendSV/SVCall -- so a new arch would duplicate a large,
 identical backend to swap one file. The chip reuses `armv7m` verbatim and opts into PMSAv8
-through its own `mpu.cmake` (`KICKOS_ARM_PMSAV8_SOURCE`), which pulls the PMSAv8 TU into the chip
-library so the v7-M fallback TUs are never extracted. A v7-M chip's `mpu.cmake` never adds it and
+through its chip file's `pmsav8` unit (`KICKOS_ARM_PMSAV8_SOURCE`), which pulls the PMSAv8 TU into
+the chip library so the v7-M fallback TUs are never extracted. A v7-M chip's unit never adds it and
 its fallback stands. Selection is by presence-in-link, not by an `#ifdef` fork inside one
 function -- and the overridden symbol is `kickos_arch_mpu_commit` (the deferred-commit seam),
 never `arch_mpu_apply`, which stays the shared stash. The posture matters: the PMSAv8 TU enters
@@ -2454,7 +2465,7 @@ build-verified (boot2 CRC recomputed, `.boot2` at 0x1000_0000, vectors at
 The board is always BOOTSEL-recoverable, so a wrong boot2/clock config cannot
 permanently brick it.
 
-## The RISC-V RV32IMAC arch (boards `qemu-riscv`->chip `virt`, `esp32c6-wroom`->chip `esp32c6`)
+## The RISC-V RV32IMAC arch (boards `qemu-riscv`->chip `virt_rv32`, `esp32c6-wroom`->chip `esp32c6`)
 
 The first RISC-V ISA (ESP32-C6 + the QEMU `virt` run target), sharing one arch
 (`arch/riscv/rv32imac/`) across two chips. Closest to the RX72M model: a single
@@ -2571,6 +2582,8 @@ PMSAv6-M/v7/v8, RISC-V PMP and the RX MPU. For a new port that means enforcement
 seam you implement, not a later milestone -- `arch_mpu_apply` (stash at the switch decision),
 `kickos_arch_mpu_commit` (program from the switch epilogue, after the physical swap),
 `arch_mpu_apply_now` (program a set at once WITHOUT becoming the stash, for the self-grant),
-`arch_mpu_region_encodable`, and `arch_reserved_blocks`, which has no fallback TU so omitting it
-is a link error. See `architecture.md` (Memory domains) and `invariants.md`
+`arch_mpu_region_encodable`, and `arch_reserved_blocks`, which a chip file generates from its
+`owner: kernel` devices, the host tool refusing a protecting file that marks none and does not say
+`reserved: none`, and which a chip without one defines, with no fallback TU, so omitting it is a link
+error. See `architecture.md` (Memory domains) and `invariants.md`
 (`mpu-apply-on-every-switch-in`, `grant-refuses-kernel-reserved-blocks`).
