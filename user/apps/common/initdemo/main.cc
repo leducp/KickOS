@@ -7,12 +7,19 @@
 // it received the expected payload. QEMU reads the semihosting exit code.
 // This test uses shared globals on the non-enforcing mps2 variant.
 
+#include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
 #include <kickos/sys/atomic.h>
 
 #include <stdio.h>
+
+#if KICKOS_USER_STACK_SIZE > 2048
+#define SINK_STACK KICKOS_USER_STACK_SIZE
+#else
+#define SINK_STACK 2048
+#endif
 
 namespace
 {
@@ -36,9 +43,8 @@ namespace
     Atomic<int, Order::RELAXED> g_worker_done{0};
 
     // A no-hardware sink: counts the bytes it receives on the delegated endpoint cap
-    // (B1: first delegated cap lands at child table index 1). It never prints, because a
-    // printf would self-send to the very endpoint it serves and deadlock. A negative recv
-    // (dead endpoint) ends it; otherwise it parks in recv until shutdown.
+    // (B1: first delegated cap lands at child table index 1). A negative recv (dead endpoint)
+    // ends it; otherwise it parks in recv until shutdown.
     void console_sink(void*)
     {
         int const ep = KOS_SPAWN_DELEGATED_CAP0;
@@ -60,8 +66,8 @@ namespace
     }
 
     // Post-publish worker: an ordinary app that just prints. Its cap 0 was seated to
-    // the published endpoint by cap_install_defaults at spawn, so _write self-sends
-    // there and the sink counts the bytes.
+    // the published endpoint by cap_install_defaults at spawn, so _write sends there and the
+    // sink counts the bytes.
     void worker(void*)
     {
         fwrite(WORKER_PAYLOAD, 1, PAYLOAD_LEN, stdout);
@@ -85,11 +91,13 @@ int main(int, char**)
         return 2;
     }
 
-    // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
-    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which main's composition grants.
-    if (kos_console_publish(ep, KOS_TASK_NONE) != 0)
+    // The sink serves the console from a task of its own: a thread of the serving task gets no
+    // stdout, so the worker below must live outside it.
+    void* const sink_stack = kos_ram_alloc(SINK_STACK);
+    kos_task_t sink_task = KOS_TASK_NONE;
+    if (sink_stack == nullptr or kos_task_create(nullptr, 0, 0, &sink_task) != 0)
     {
-        kos::print("[initdemo] ERROR: console_publish failed\n");
+        kos::print("[initdemo] ERROR: no task for the sink\n");
         return 2;
     }
 
@@ -99,10 +107,20 @@ int main(int, char**)
         { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
     };
     auto const drv = kos::thread::create_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
-                                              caps, /*cap_count=*/1);
+                                              caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
+                                              /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                              sink_task, sink_stack, SINK_STACK);
     if (not drv.valid())
     {
         kos::print("[initdemo] ERROR: sink spawn failed\n");
+        return 2;
+    }
+
+    // Route stdout to the endpoint (kernel chip path drops; children spawned AFTER
+    // this get cap 0 seated to it). Gated on AUTH_CONSOLE, which main's composition grants.
+    if (kos_console_publish(ep, sink_task) != 0)
+    {
+        kos::print("[initdemo] ERROR: console_publish failed\n");
         return 2;
     }
 

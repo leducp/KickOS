@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The gate riding `aspaceufault`: a process read of an unmapped address, rv64 only.
+# The gate riding `aspaceufault`: a process read of an unmapped address.
 
 if(NOT TARGET aspaceufault)
   return()
@@ -16,8 +16,8 @@ if(KICKOS_ARCH STREQUAL "x86_64")
     ARGS "THREAD FAULT" 139)
 endif()
 
-if(KICKOS_BOARD STREQUAL "qemu-riscv64")
-  kickos_add_qemu_test(NAME qemu_riscv64_aspace_ufault TARGET aspaceufault
+if(KICKOS_ARCH STREQUAL "rv64imac")
+  kickos_add_qemu_test(NAME ${_tag}_aspace_ufault TARGET aspaceufault
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_ufault_rv64.sh"
     ARGS "THREAD FAULT" 139)
 endif()

@@ -19,5 +19,5 @@ __kickos_app_rom_end      the same bounds
 __kickos_app_sram_start   the same bounds
 __kickos_app_sram_end     the same bounds
 kickos_init_args          kmain writes root's arguments through the kernel's view of the image's own data pages, which root's space maps
-kickos_app_build_time     kmain prints the app's build stamp through the kernel's view
+kickos_app_stamp          kmain prints the app's stamp through the kernel's view
 kickos_reent_seam         reent_seam_read copies the descriptor once at boot through the kernel's view; the pointers in it are app words app_relocate already moved to the task's view

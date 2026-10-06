@@ -913,8 +913,7 @@ hidden header's removal included.
   idle, and the gate requires core 1. As built, `KOS_SYS_SCHED_PROBE` answers `KOS_SCHED_OP_CORE`
   and `KOS_SCHED_OP_SWITCHES` at one kernel core as well, its placement ops staying above one;
   the build of decision 17 is the `qemu-x86_64-smp2root1` preset, `KICKOS_ROOT_CORE_MASK` 0x2,
-  which CI's `qemu-x86_64-ap` job runs for this arm on `ubuntu-26.04`: q35 SMP needs x2APIC, and
-  the QEMU of Ubuntu 24.04 does not emulate it under TCG.
+  which CI's `qemu-x86_64-ap` job runs for this arm.
 - **Root's core mask is validated twice.** At configure, beside the isolated-core check of
   `cmake/isolated_cores.cmake`, the value must be 0, the default, or a mask whose every bit names
   a core below `KICKOS_KERNEL_CORES`, and a non-zero value is refused outside the shared

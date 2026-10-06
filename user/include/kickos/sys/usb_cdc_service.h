@@ -692,7 +692,7 @@ private:
     bool addr_pending_ = false;
     bool zlp_inflight_ = false;
     // The identity rows, rendered once; id_left_ of them are still to go to the host.
-    char id_[192] = {};
+    char id_[BANNER_IDENTITY_MAX] = {};
     uint32_t id_len_ = 0;
     uint32_t id_left_ = 0;
     bool id_inflight_ = false;

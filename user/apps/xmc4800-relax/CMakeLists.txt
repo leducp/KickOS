@@ -11,7 +11,7 @@ if(KICKOS_HAVE_MPU)
 endif()
 
 # Console bring-up demo: a real user-facing app, not a diagnostic. Its composition names the
-# packaged xmcuart as stdout; enforcement builds only.
+# packaged xmcuartirq as stdout; enforcement builds only.
 if(KICKOS_HAVE_MPU)
   add_subdirectory(consoledemo)
 endif()

@@ -37,7 +37,7 @@ if [ "${LIST_IMAGES:-0}" = 1 ]; then
     fi
     exit 0
 fi
-echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0}" >> "$FLEET_FIXTURE/flashed"
+echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0} $TAG" >> "$FLEET_FIXTURE/flashed"
 if [ -f "$FLEET_FIXTURE/$APP.capture" ]; then
     . "$(dirname "$0")/rig.sh"
     rig_load "$TREE"
@@ -58,11 +58,17 @@ cat > "$TMP/tree/CMakePresets.json" <<'EOF'
   "version": 3,
   "configurePresets": [
     { "name": "rx72m-flat", "generator": "Ninja", "binaryDir": "b1" },
-    { "name": "esp32c6-wroom-amp2-n0", "generator": "Ninja", "binaryDir": "b2" }
+    { "name": "esp32c6-wroom-amp2-n0", "generator": "Ninja", "binaryDir": "b2" },
+    { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryDir": "b3" },
+    { "name": "esp32-wroom-st", "generator": "Ninja", "binaryDir": "b4" },
+    { "name": "esp32-wroom-smp", "generator": "Ninja", "binaryDir": "b5" },
+    { "name": "esp32-wroom-bench", "generator": "Ninja", "binaryDir": "b6" }
   ]
 }
 EOF
 printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
+mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench"
+printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/defconfig"
 
 F="$TMP/fixture"
 {
@@ -91,9 +97,9 @@ C6_BUS='1a86:55d3 C6'
 fleet "$RX_BUS" rx72m
 got=$?
 [ "$got" -eq 0 ] || bad "a pass capturing every rx72m image exits $got, not 0"
-grep -qxF 'rx72m flat fpclass 0' "$F/flashed" \
+grep -qxF 'rx72m flat fpclass 0 plantedflat' "$F/flashed" \
     || bad "the rx72m pass did not capture fpclass from its flat build"
-if grep -qxF 'rx72m flat hello 0' "$F/flashed"; then
+if grep -q '^rx72m flat hello ' "$F/flashed"; then
     bad "the rx72m pass captured hello from its flat build, which only the enforcing build owes"
 fi
 grep -qE '^  rx72m +fpclass \(flat\) +captured$' "$TMP/fleet.out" \
@@ -121,6 +127,94 @@ got=$?
 [ "$got" -eq 3 ] || bad "a pass owing an AMP partition's clause exits $got, not 3"
 grep -qE '^  esp32c6-wroom +amp_partition +captured, partly owed: the planted clause$' \
     "$TMP/fleet.out" || bad "the AMP partition's NOT EVALUATED clause is not owed in the table"
+grep -qxF 'esp32c6-wroom amp2-n0 ampping_n0 1 plantedamp2n0' "$F/flashed" \
+    || bad "the esp32c6-wroom partition was not flashed under its own tag"
+if grep -q '^esp32c6-wroom amp2-n1 ' "$F/flashed"; then
+    bad "a partition's node 1 preset was flashed as an image of its own"
+fi
+
+# A partition whose node 0 build cannot say what it ships is a refused configure, not an image
+# with no judge.
+mv "$F/esp32c6-wroom-amp2-n0.images" "$F/amp.images"
+fleet "$C6_BUS" esp32c6-wroom
+got=$?
+[ "$got" -eq 1 ] || bad "a pass whose partition build cannot list its images exits $got, not 1"
+grep -q '^esp32c6-wroom/amp2-n0  *REFUSED (the tree was not able to say which images' "$TMP/fleet.out" \
+    || bad "a partition build that cannot list its images is not reported as a refused configure"
+if grep -qE '^  esp32c6-wroom +amp_partition +NO JUDGE$' "$TMP/fleet.out"; then
+    bad "a partition build that cannot list its images is reported as an image with no judge"
+fi
+mv "$F/amp.images" "$F/esp32c6-wroom-amp2-n0.images"
+
+# Only a partition's later nodes are passed over: another partition's node 0 and a node whose
+# partition the tree does not declare are each captured.
+cp "$TMP/tree/CMakePresets.json" "$TMP/presets.keep"
+sed -i 's|^    { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryDir": "b3" },$|&\
+    { "name": "esp32c6-wroom-amp3-n0", "generator": "Ninja", "binaryDir": "b7" },\
+    { "name": "esp32c6-wroom-amp3-n1", "generator": "Ninja", "binaryDir": "b8" },\
+    { "name": "esp32c6-wroom-solo-n1", "generator": "Ninja", "binaryDir": "b9" },|' \
+    "$TMP/tree/CMakePresets.json"
+grep -q 'esp32c6-wroom-solo-n1' "$TMP/tree/CMakePresets.json" || fail "the planted presets were not added"
+cp "$F/esp32c6-wroom-amp2-n0.images" "$F/esp32c6-wroom-amp3-n0.images"
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/esp32c6-wroom-solo-n1.images"
+fleet "$C6_BUS" esp32c6-wroom
+for row in 'esp32c6-wroom amp3-n0 ampping_n0 1 plantedamp3n0' 'esp32c6-wroom solo-n1 hello 0 plantedsolon1'; do
+    grep -qxF "$row" "$F/flashed" || bad "the esp32c6-wroom pass did not flash [$row]"
+done
+if grep -qE '^esp32c6-wroom amp[23]-n1 ' "$F/flashed"; then
+    bad "a partition's node 1 preset was flashed as an image of its own"
+fi
+cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
+
+# A tree whose presets cannot be listed fails the pass instead of declaring no variant.
+printf '{\n' > "$TMP/tree/CMakePresets.json"
+fleet "$RX_BUS" rx72m
+got=$?
+[ "$got" -eq 1 ] || bad "a pass over a tree whose presets cannot be listed exits $got, not 1"
+grep -q '^rx72m  *REFUSED (the tree was not able to list its presets' "$TMP/fleet.out" \
+    || bad "a tree whose presets cannot be listed is not reported"
+cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
+
+# The default variant has one definition, which bench.sh and the fleet pass both read.
+defs=$(grep -lE 'VARIANT=st$|VARIANT:?-st\}' tools/bench/*.sh)
+[ "$defs" = tools/bench/board-rows.sh ] \
+    || bad "the default variant is defined in [$(printf '%s' "$defs" | tr '\n' ' ')], not in board-rows.sh alone"
+grep -qF 'VARIANT="${VARIANT-$BENCH_DEFAULT_VARIANT}"' tools/bench/bench.sh \
+    || bad "bench.sh does not default its variant to BENCH_DEFAULT_VARIANT"
+
+# Every variant the tree declares for a board, each under its own tag; a measurement posture is
+# reported and not flashed.
+{
+    printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
+    printf 'cxxtest|kernel|tests/integration/check_qemu_cxxtest.sh|\n'
+} > "$F/esp32-wroom.images"
+{
+    cat "$F/esp32-wroom.images"
+    printf 'slaypeer|kernel|tests/integration/check_slaypeer.sh|\n'
+} > "$F/esp32-wroom-smp.images"
+printf 'bench|kernel|-|\n' > "$F/esp32-wroom-bench.images"
+ESP_BUS='1a86:7523 CH340'
+fleet "$ESP_BUS" esp32-wroom
+got=$?
+[ "$got" -eq 0 ] || bad "a pass capturing every esp32-wroom variant exits $got, not 0"
+for row in 'esp32-wroom - hello 0 planted' 'esp32-wroom - cxxtest 0 planted' \
+           'esp32-wroom smp hello 0 plantedsmp' 'esp32-wroom smp cxxtest 0 plantedsmp' \
+           'esp32-wroom smp slaypeer 0 plantedsmp'; do
+    grep -qxF "$row" "$F/flashed" || bad "the esp32-wroom pass did not flash [$row]"
+done
+if grep -q '^esp32-wroom bench ' "$F/flashed"; then
+    bad "the esp32-wroom pass flashed its KICKOS_BENCH variant, which the bench sweep measures"
+fi
+grep -qE '^  esp32-wroom +cxxtest \(smp\) +captured$' "$TMP/fleet.out" \
+    || bad "the esp32-wroom coverage table does not show cxxtest (smp) captured"
+grep -qE '^  esp32-wroom +variant bench +measurement posture' "$TMP/fleet.out" \
+    || bad "the esp32-wroom coverage table does not report its measurement variant"
+printf 'slaypeer|kernel|-|\n' >> "$F/esp32-wroom-smp.images"
+fleet "$ESP_BUS" esp32-wroom
+got=$?
+[ "$got" -eq 1 ] || bad "a pass where an smp image names no judge exits $got, not 1"
+grep -qE '^  esp32-wroom +slaypeer \(smp\) +NO JUDGE$' "$TMP/fleet.out" \
+    || bad "an smp image that names no judge is not reported NO JUDGE"
 
 # A capture whose judge rests on a bench fitting: the rig declares it or the clause is owed, and
 # no rig line at all declares nothing.
@@ -185,5 +279,6 @@ got=$?
 [ "$got" -eq 3 ] || bad "an echoing f411spi under a rig declaring no jumper exits $got, not 3"
 
 [ "$rc" -eq 0 ] || exit 1
-echo "PASS: an absent board fails the pass; the flat fpclass and an owed AMP clause count, each"
-echo "  under its own label; a loopback is judged only where the rig declares its fitting"
+echo "PASS: an absent board fails the pass; every declared variant is captured under its own tag"
+echo "  and label, a measurement posture is reported and not flashed; a loopback is judged only"
+echo "  where the rig declares its fitting"

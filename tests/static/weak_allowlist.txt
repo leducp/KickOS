@@ -19,18 +19,18 @@ __malloc_unlock
 ___malloc_unlock
 
 # --- hand-rolled vague linkage -----------------------------------------------
-# kickos/app.h defines the per-app build stamp inline and the build force-includes that header
+# kickos/app.h defines the per-app stamp inline and the build force-includes that header
 # into every app TU, so weak is what merges the duplicates; C has no COMDAT. The kernel's
 # matching weak REFERENCE is what lets a link with no app TU at all resolve to null.
-kickos_app_build_time
-_kickos_app_build_time
+kickos_app_stamp
+_kickos_app_stamp
 
 # --- optional-symbol references (weak undefined, absence is legal) ------------
 # The image's own layout bounds are NOT here. They are strong references against a window
 # every linker script states, empty where it carves none (include/kickos/klink.h,
 # arch/common/sections.ld.h), so a script that omits one fails the link.
 #
-# libgcc's unwinder registration, called by the RISC-V chip bring-up only when the link
+# libgcc's unwinder registration, called by the root thread's entry only when the link
 # supplied it. Optional by libgcc's contract and not by ours, so no script can state it.
 __register_frame
 ___register_frame

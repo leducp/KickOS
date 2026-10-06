@@ -64,13 +64,13 @@ enum kos_syscall_nr
 {
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, WHICH CAN BE SHORT
                                 //   where the console took part or a page went away
-                                //   mid-stream, or with no input byte completed -KOS_EAGAIN (the
-                                //   console can take nothing now; try again), -KOS_EFAULT
+                                //   mid-stream, or with no input byte completed -KOS_EFAULT
                                 //   (bad buffer), -KOS_EBUSY (the caller's stdout takes it
                                 //   now), -KOS_ECANCELED (cancelled while waiting) or, for a
                                 //   task that set O_NONBLOCK (KOS_SYS_TASK_NONBLOCK),
-                                //   -KOS_ETIMEDOUT where it would have to wait or try again.
-                                //   Waits, with no bound, while a dead console driver's task
+                                //   -KOS_ETIMEDOUT where it would have to wait. Waits, with no
+                                //   bound, for room in the console, for a peer node's claim
+                                //   on a shared UART, and while a dead console driver's task
                                 //   awaits its reclaim
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0

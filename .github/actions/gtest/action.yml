@@ -27,13 +27,20 @@ runs:
         }
         ~/conan-venv/bin/pip install --disable-pip-version-check "conan==${CONAN_VERSION}"
 
+    - name: OS release (cache key)
+      id: os
+      shell: bash
+      run: |
+        . /etc/os-release
+        echo "release=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
+
     - name: Cache the Conan package cache
       uses: actions/cache@v4
       with:
         path: ~/.conan2/p
         # Conan's package ID does not include ambient compiler flags. Start a fresh cache
         # after removing the flags inherited from sim-ubsan below.
-        key: conan2-${{ runner.os }}-gtest-plain-v2-${{ hashFiles('conan/conanfile.py') }}
+        key: conan2-${{ runner.os }}-${{ steps.os.outputs.release }}-gtest-plain-v2-${{ hashFiles('conan/conanfile.py') }}
 
     - name: Install the dependencies
       shell: bash

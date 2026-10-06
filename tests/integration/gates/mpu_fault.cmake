@@ -24,7 +24,7 @@ endif()
 
 # The two emulator postures that carry an MPU take the identical call, under the derived
 # <board tag>_mpu_fault name.
-if(KICKOS_HAVE_MPU AND (KICKOS_BOARD STREQUAL "qemu-riscv" OR KICKOS_QEMU_MPS2))
+if(KICKOS_HAVE_MPU)
   kickos_add_qemu_test(TARGET mpu_fault
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_mpu_fault.sh"
     ARGS ${KICKOS_FAULT_OUTCOME})

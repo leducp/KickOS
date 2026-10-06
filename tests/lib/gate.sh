@@ -59,7 +59,7 @@ kos_cleanup() {
     if [ -n "$KOS_TRASH_FILE" ]; then
         _kc_f="$KOS_TRASH_FILE"
         KOS_TRASH_FILE=""
-        rm -f "$_kc_f"
+        rm -f "$_kc_f" "$_kc_f.whole"
     fi
     if [ -n "$KOS_TRASH_DIR" ]; then
         _kc_d="$KOS_TRASH_DIR"
@@ -933,6 +933,12 @@ run_image() {
 #
 # A caller's function is called in this shell, so what it records stays readable after the
 # poll; it must not exit, a poll tick being no place to reach a verdict.
+#
+# Both read only the log's whole lines, and OUT drops the line the stop cut, so a stop condition
+# naming the judge's last required lines hands the judge every one of them whole.
+#
+# With KOS_POLL_REPLAY=<log>, nothing boots: the poll reads <log> as if the console had stopped
+# there, and exits 3 when it would not stop on it.
 KOS_POLL_UNTIL=""
 
 poll_image() { # <elf> <ere>...
@@ -940,6 +946,25 @@ poll_image() { # <elf> <ere>...
     shift
     _log="$(mktemp)" || fail "mktemp failed"
     KOS_TRASH_FILE="$_log"
+    _snap="$_log.whole"
+    if [ -n "${KOS_POLL_REPLAY:-}" ]; then
+        _poll_whole "$KOS_POLL_REPLAY" "$_snap"
+        rm -f "$_log"
+        if ! _poll_matched "$_snap" "$@" || ! _poll_until "$_snap"; then
+            rm -f "$_snap"
+            echo "REPLAY: the poll does not stop on $KOS_POLL_REPLAY"
+            exit 3
+        fi
+        POLL_OK=1
+        POLL_UNTIL_OK=1
+        POLL_ALIVE=1
+        POLL_MS=0
+        OUT="$(tr -d '\r' < "$_snap")"
+        KOS_TRASH_FILE=""
+        rm -f "$_snap"
+        printf '%s\n' "$OUT"
+        return
+    fi
     _bound="${QEMU_TIMEOUT:-8}"
     if [ -n "${QEMU_MACHINE:-}" ]; then
         need_qemu
@@ -966,7 +991,8 @@ poll_image() { # <elf> <ere>...
     # (tests/integration/gates/mpu_fault.cmake). At twenty ctest kills it at 15 instead, and a
     # reported "the poll ran out" becomes a timeout carrying no finding.
     while [ "$_n" -lt $((_bound * 5)) ]; do   # poll at 5 Hz
-        if _poll_matched "$_log" "$@" && _poll_until "$_log"; then
+        _poll_whole "$_log" "$_snap"
+        if _poll_matched "$_snap" "$@" && _poll_until "$_snap"; then
             break
         fi
         if ! kill -0 "$_qpid" 2>/dev/null; then             # the image exited on its own
@@ -982,18 +1008,31 @@ poll_image() { # <elf> <ere>...
     # liveness check has everything on the wire and must not read as no-progress. Both
     # conditions are evaluated, and not short-circuited: each one's verdict is reported on
     # its own, and the second is what records what it is still short of.
+    if [ "$POLL_ALIVE" -eq 1 ]; then
+        _poll_whole "$_log" "$_snap"
+    else
+        cp "$_log" "$_snap"
+    fi
     POLL_OK=0
-    if _poll_matched "$_log" "$@"; then
+    if _poll_matched "$_snap" "$@"; then
         POLL_OK=1
     fi
     POLL_UNTIL_OK=0
-    if _poll_until "$_log"; then
+    if _poll_until "$_snap"; then
         POLL_UNTIL_OK=1
     fi
-    OUT="$(tr -d '\r' < "$_log")"
+    OUT="$(tr -d '\r' < "$_snap")"
     KOS_TRASH_FILE=""
-    rm -f "$_log"
+    rm -f "$_log" "$_snap"
     printf '%s\n' "$OUT"
+}
+
+# <dst>: the whole lines of <log>, without a last line still unterminated.
+_poll_whole() { # <log> <dst>
+    cp "$1" "$2" || fail "cannot copy $1"
+    if [ -n "$(tail -c 1 "$2")" ]; then
+        sed -i '$d' "$2"
+    fi
 }
 
 _poll_matched() { # <log> <ere>...

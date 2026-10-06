@@ -22,27 +22,26 @@ extern "C"
 // the cross toolchains and 8 on the host. One static_assert per name in
 // user/src/syscall_stubs.cc holds them at 4, so a name added here needs one there.
 
-// Debug console: unbuffered, polling, straight at the kernel console, so it works in boot and
-// panic. NOT stdout: ordinary output is libc stdio over a userspace console driver. The write(2)
-// shape: returns bytes written (a len-0 write is a legitimate 0), or with none completed
-// -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring or a peer node
-// holding a shared UART; try again), -KOS_EBUSY (a driver owns the console and this thread's
-// stdout send would be taken now; send there instead), -KOS_EFAULT for a buffer the caller cannot
-// read, or -KOS_ECANCELED for a writer cancelled while it waited. THE COUNT CAN BE SHORT, for the
-// same causes: the walk stops at the first byte the console cannot take. On an AMP UART, CR can
+// Debug console: unbuffered, straight at the kernel console, so it works in boot and panic. NOT
+// stdout: ordinary output is libc stdio over a userspace console driver. The write(2) shape:
+// returns bytes written (a len-0 write is a legitimate 0), or with none completed -KOS_EBUSY (a
+// driver owns the console and this thread's stdout send would be taken now; send there instead),
+// -KOS_EFAULT for a buffer the caller cannot read, or -KOS_ECANCELED for a writer cancelled while
+// it waited. A full transmit ring or a peer node holding a shared UART makes it WAIT, with no
+// bound, as a pipe's writer waits, and so does the DARK WINDOW, a console driver's task dead and
+// the kernel's reclaim of the device not landed yet, until the reclaim or a publish. THE COUNT CAN
+// BE SHORT: the walk stops at the first byte the console cannot take. On an AMP UART, CR can
 // precede an uncounted newline; retrying from the reported count sends its LF without repeating
-// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. In the DARK WINDOW, a
-// console driver's task dead and the kernel's reclaim of the device not landed yet, the write
-// waits, with no bound, for the reclaim or a publish. A task that set O_NONBLOCK
-// (kos_task_nonblock) never waits and never needs to try again: it is answered -KOS_ETIMEDOUT
-// instead of either.
-// It is the raw call: what it did not take is the caller's to send again or to drop.
+// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. A task that set
+// O_NONBLOCK (kos_task_nonblock) never waits: it is answered -KOS_ETIMEDOUT instead.
+// It is the raw call: a line no route carries to the wire, a driver owning the UART or the
+// caller's own task holding it, is reported taken and dropped.
 int32_t kos_kconsole_write(void const* buf, size_t len);
 
 // The whole of s to this thread's stdout, as libc's write(1) sends it (kickos::stdout_write,
 // sys/emit.h): through the published console where one serves this thread, else the kernel
 // console, waiting out a full ring and a dark window. A task that set O_NONBLOCK stops at the
-// first byte that would make it wait, the rest dropped.
+// first byte that would make it wait, and a refusal of either route ends it; the rest is dropped.
 void kos_print(char const* s);
 
 void kos_yield(void);
@@ -156,7 +155,8 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
 // Needs KOS_AUTH_CONSOLE and, on `ep`, KOS_CAP_HANDOUT. After this the kernel chip path drops
 // (RTT, if built, still carries kernel output) and libc stdout routes through the driver via
 // cap index 0, seated both into children spawned AFTER the publish and into the CALLER's own
-// table. Through a capability without WAIT, `ep` gains WAIT and the endpoint counts as
+// table, except in a thread of the task that serves it: there cap 0 stays empty, and its stdout
+// takes the kernel console, which drops it while that task owns the UART. Through a capability without WAIT, `ep` gains WAIT and the endpoint counts as
 // receiving, as for its creator, so every publish leaves `ep` holding WAIT and HANDOUT: the
 // caller drops that WAIT once the driver's receiver holds its own (docs/reference/console.md).
 // Re-callable to re-point at a fresh driver: every cap 0 naming the console it replaces follows,
@@ -380,7 +380,8 @@ _Pragma("GCC diagnostic pop")
 int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 
 // Forcibly terminate every member of a task created by the caller, without
-// a cleanup window; a privileged member is killed instead. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
+// a cleanup window; a privileged member is killed instead. The task ends at once, as
+// kos_task_kill ends it. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
 // forever; zero: request only). An empty task whose members' teardown is done
 // succeeds immediately. Returns 0 once empty, every member's teardown done, and
 // released. ETIMEDOUT leaves termination pending and the handle valid for

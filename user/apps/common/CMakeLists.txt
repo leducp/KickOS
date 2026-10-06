@@ -50,7 +50,7 @@ endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, or __builtin_trap.
 if(KICKOS_ARCH STREQUAL "sim")
-  kickos_add_diagnostic_apps(pubpanic simconabi uartloop drvdeath)
+  kickos_add_diagnostic_apps(pubpanic simconabi uartloop drvdeath conrestart)
 endif()
 
 # --- Per-ISA ------------------------------------------------------------------------------

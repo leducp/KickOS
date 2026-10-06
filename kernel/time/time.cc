@@ -264,6 +264,7 @@ namespace kickos
                 case WAIT_NOTIFY:
                 case WAIT_JOIN:
                 case WAIT_TASK_EMPTY:
+                case WAIT_CONSOLE:
                 {
                     // On no list at all, so clearing the tag IS the whole unwind, and it is
                     // what makes exit_current's sweep miss a waiter that has given up.

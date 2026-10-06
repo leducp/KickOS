@@ -1597,8 +1597,9 @@ namespace kickos
     void cap_install_defaults(Thread* child)
     {
         // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
-        // never publishes is untouched, and its apps fall back to kconsole_write.
-        if (stdout_target() == KCAP_STDOUT_NONE)
+        // never publishes is untouched, and its apps fall back to kconsole_write. A member of
+        // the console's own task would send to itself.
+        if (stdout_target() == KCAP_STDOUT_NONE or task_serves_console(child->task))
         {
             return;
         }
@@ -1698,9 +1699,31 @@ namespace kickos
     {
         task_console_serve(t);
         Endpoint* const ep = cap_console_endpoint();
-        if (ep != nullptr and t != nullptr)
+        if (ep == nullptr or t == nullptr)
         {
-            ep->console = EP_CONSOLE_SERVED;
+            return;
+        }
+        ep->console = EP_CONSOLE_SERVED;
+        // A member's stdout naming the console its own task serves would send to itself.
+        Kernel& k = kernel();
+        for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+        {
+            Thread* const th = &k.threads.slots[i];
+            if (th->task != t or not cap_run_held(th->caps))
+            {
+                continue;
+            }
+            CapEntry& e = *cap_slot(th->caps, KOS_CAP_STDOUT);
+            if (e.type != static_cast<uint8_t>(CapType::CAP_ENDPOINT) or e.obj != stdout_target())
+            {
+                continue;
+            }
+            // No gen bump: KOS_CAP_STDOUT answers again once a later publish seats it.
+            CapEntry const prior = e;
+            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e.rights = 0;
+            cap_run_free_release(th->caps, KOS_CAP_STDOUT, &e, &th->cap_free_head);
+            obj_ref_drop(prior, /*teardown=*/false);
         }
     }
 

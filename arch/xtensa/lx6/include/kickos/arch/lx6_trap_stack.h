@@ -21,23 +21,24 @@
 
 /* What kickos_lx6_dispatch_l1 descends below that frame, per kernel-core count.
  *
- * Above one core, 592 on esp32-wroom-benchsmp and 576 on esp32-wroom-smp, a wake whose switch
- * re-acquires the kernel lock: irq_event_isr -> notify_raise -> wake -> resched_after_wake
+ * Above one core, 656 on esp32-wroom-benchsmp and 640 on esp32-wroom-smp, the console's TX
+ * drain waking the writers waiting for ring room, whose switch re-acquires the kernel lock:
+ * console_tx_isr -> console_tx_room_freed -> console_dark_wake -> wake -> resched_after_wake
  * -> pick_and_seat -> klock_attach -> arch_kernel_lock -> kickos_doorbell_poll
  * -> kickos_lx6_doorbell_service -> kickos_irq_route_service -> arch_irq_mask
  * -> kickos_lx6_hw_mask -> phys_int_disable.
  * The poll's four frames are charged to every chain that can spin on the kernel lock, pending
  * drain or not. switch_to and switch_book inline into pick_and_seat, so one more value held live
  * across the switch costs that frame 16 bytes, which is the bench's 16 over esp32-wroom-smp.
- * Enforced at 640, the next multiple of 64 above 592.
+ * Enforced at 704, the next multiple of 64 above 656.
  *
  * At one core, 432 on the three one-core presets: resched_after_wake -> pick_and_seat
  * -> arch_switch -> xtensa_switch[128]. Enforced at 512.
  *
- * FRAME + 640 = 896 against a KICKOS_MIN_STACK_SIZE of 960 above one core, and FRAME + 512 = 768
+ * FRAME + 704 = 960 against a KICKOS_MIN_STACK_SIZE of 960 above one core, and FRAME + 512 = 768
  * against 896 at one. */
 #if KICKOS_KERNEL_CORES > 1
-#define KICKOS_LX6_TRAP_DEPTH 640
+#define KICKOS_LX6_TRAP_DEPTH 704
 #else
 #define KICKOS_LX6_TRAP_DEPTH 512
 #endif

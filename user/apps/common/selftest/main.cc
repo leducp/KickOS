@@ -238,8 +238,8 @@ namespace
     }
 
 
-    // A short count, or -KOS_EAGAIN, leaves the rest of s to the caller, and -KOS_EBUSY all of
-    // it to this thread's stdout; any other refusal leaves nothing to send.
+    // A short count leaves the rest of s to the caller, and -KOS_EBUSY all of it to this thread's
+    // stdout; any other refusal leaves nothing to send.
     void write_rest(char const* s, size_t n, int32_t took)
     {
         size_t sent = 0;
@@ -249,10 +249,10 @@ namespace
         }
         else if (took == -KOS_EBUSY)
         {
-            kickos::stdout_write(s, n);
+            (void)kickos::stdout_write(s, n);
             return;
         }
-        else if (took != -KOS_EAGAIN)
+        else
         {
             return;
         }
@@ -277,7 +277,7 @@ namespace
 #endif
         }
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
-        return took == -KOS_EAGAIN or (took > 0 and static_cast<size_t>(took) <= n);
+        return took > 0 and static_cast<size_t>(took) <= n;
 #else
         return took == static_cast<int32_t>(n);
 #endif
@@ -818,12 +818,25 @@ namespace
         {
             static_cast<volatile int*>(g_mmio)[i] = 0;
         }
-        kos_sem_create(0, &g_irqdrv_done);
-        kos_sem_create(0, &g_irq_ready);
         // main must mint the line (the suite declares KOS_AUTH_IRQ); a worker runs at
-        // authority 0 and cannot claim for itself, so it gets a WAIT-only copy.
+        // authority 0 and cannot claim for itself, so it gets a WAIT-only copy. Claimed before
+        // the ask, so the ask is made with the line's slot already taken.
         kos_cap_t irq = KOS_CAP_NONE;
-        TAP_CHECK(kos_irq_claim(IRQ_LINE, KOS_IRQ_EDGE, &irq) == 0);
+        int const crc = kos_irq_claim(IRQ_LINE, KOS_IRQ_EDGE, &irq);
+        if (crc == -KOS_EMFILE or crc == -KOS_EAGAIN or crc == -KOS_ENOMEM)
+        {
+            tap::skip("IRQ budget or cap table too small (4 concurrent caps)");
+            return;
+        }
+        TAP_CHECK(crc == 0);
+        if (objects_can_host({.sems = 2, .notifies = 1}) != 0)
+        {
+            kos_handle_close(irq);
+            tap::skip("pool too small (2 semaphores and a notification beside the line)");
+            return;
+        }
+        TAP_CHECK(kos_sem_create(0, &g_irqdrv_done) == 0);
+        TAP_CHECK(kos_sem_create(0, &g_irq_ready) == 0);
         kos_cap_t note = notify_for_line(irq);
         TAP_CHECK(note != KOS_CAP_NONE);
         // A claim leaves the line MASKED and the ready handshake fires BEFORE the driver's
@@ -949,6 +962,8 @@ namespace
         bool const live = (g_mask_serviced == 3);
         kos_sem_post(g_irq_ready);
         wait_n(1); // phase B, which is also what says the driver is past its last gate
+        // Below main's priority, so it still holds its objects until it is joined.
+        (void)drv.join();
         kos_sem_destroy(g_irq_ready);
 
         TAP_CHECK(latched);
@@ -1067,6 +1082,8 @@ namespace
         bool const live = (g_disc_serviced == 2);
         kos_sem_post(g_irq_ready);
         wait_n(1); // phase B, which is also what says the driver is past its last gate
+        // Below main's priority, so it still holds its objects until it is joined.
+        (void)drv.join();
         kos_sem_destroy(g_irq_ready);
 
         TAP_CHECK(retired);
@@ -1186,6 +1203,8 @@ namespace
         kos_irq_inject(PHANTOM_LINE);
         wait_n(1);
         TAP_CHECK(g_phantom_seen == 2);
+        // Past its last wait now, and below main's priority, so it still holds its objects.
+        (void)drv.join();
     }
 
 #endif // KICKOS_ENABLE_SELFTEST (tier-1 IRQ + mask)
@@ -1302,6 +1321,11 @@ namespace
     }
     void t_mutex_basic()
     {
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         kos_cap_t m = KOS_CAP_NONE;
         TAP_CHECK(kos_mutex_create(&m) == 0);
         g_mtx_shared = 0;
@@ -1417,6 +1441,11 @@ namespace
     void t_mutex_pi()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         log_reset();
         kos_cap_t m = KOS_CAP_NONE;
         g_gate = KOS_CAP_NONE;
@@ -1674,6 +1703,15 @@ namespace
             *first = rc;
         }
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Whether a batch's first refusal is a supply running out, the only refusal an arm whose
+    // demand is OPTIONAL may answer with a skip; any other code is the arm failing.
+    bool refused_for_want(int rc)
+    {
+        return rc == -KOS_EMFILE or rc == -KOS_EAGAIN or rc == -KOS_ENOMEM;
+    }
+#endif
     void t_mutex_deadlock()
     {
         TAP_SKIP_ONE_CORE_ORDER();
@@ -1694,6 +1732,28 @@ namespace
         kos_cap_t have2 = KOS_CAP_NONE;
         kos_cap_t goA = KOS_CAP_NONE;
         kos_cap_t goB = KOS_CAP_NONE;
+        // The cycle needs 2 mutexes and 4 sems live at once, which the small boards cannot
+        // hold. Which supply ran out is the diagnosis, and the three have opposite fixes:
+        // -KOS_EMFILE is this thread's capability table (widen the declared demand),
+        // -KOS_EAGAIN is this TASK's ceiling with the pool itself still holding slots (raise
+        // KICKOS_TASK_SEMAPHORE_BUDGET, and the pool with it), anything else is an object pool
+        // genuinely out. Reporting the middle one as "pool too small" is the mislabelled skip
+        // syscall-return-abi warns about.
+        int const asked = objects_can_host({.sems = 4, .mutexes = 2});
+        if (asked != 0)
+        {
+            char const* why = "pool too small";
+            if (asked == -KOS_EMFILE)
+            {
+                why = "cap table too small (6 concurrent caps)";
+            }
+            if (asked == -KOS_EAGAIN)
+            {
+                why = "task object budget too small (6 concurrent objects)";
+            }
+            tap::skip("%s", why);
+            return;
+        }
         int refused = 0;
         note_refusal(kos_mutex_create(&m1), &refused);
         note_refusal(kos_mutex_create(&m2), &refused);
@@ -1704,30 +1764,14 @@ namespace
         if (m1 == KOS_CAP_NONE or m2 == KOS_CAP_NONE or have1 == KOS_CAP_NONE
             or have2 == KOS_CAP_NONE or goA == KOS_CAP_NONE or goB == KOS_CAP_NONE)
         {
-            // The cycle needs 2 mutexes and 4 sems live at once, which the small boards
-            // cannot hold. No worker has spawned yet, so reclaiming in any order is safe.
+            // No worker has spawned yet, so reclaiming in any order is safe.
             if (m1 != KOS_CAP_NONE) { kos_handle_close(m1); }
             if (m2 != KOS_CAP_NONE) { kos_handle_close(m2); }
             if (have1 != KOS_CAP_NONE) { kos_sem_destroy(have1); }
             if (have2 != KOS_CAP_NONE) { kos_sem_destroy(have2); }
             if (goA != KOS_CAP_NONE) { kos_sem_destroy(goA); }
             if (goB != KOS_CAP_NONE) { kos_sem_destroy(goB); }
-            // Which supply ran out is the diagnosis, and the three have opposite fixes:
-            // -KOS_EMFILE is this thread's capability table (widen the declared demand),
-            // -KOS_EAGAIN is this TASK's ceiling with the pool itself still holding slots
-            // (raise KICKOS_TASK_SEMAPHORE_BUDGET, and the pool with it), anything else is an
-            // object pool genuinely out. Reporting the middle one as "pool too small" is the
-            // mislabelled skip syscall-return-abi warns about.
-            char const* why = "pool too small";
-            if (refused == -KOS_EMFILE)
-            {
-                why = "cap table too small (6 concurrent caps)";
-            }
-            if (refused == -KOS_EAGAIN)
-            {
-                why = "task object budget too small (6 concurrent objects)";
-            }
-            tap::skip("%s", why);
+            tap::fail("an object the budgets were asked for was refused: %d", refused);
             return;
         }
         kos_cap_grant acaps[] = {{g_done, CH_FULL}, {m1, CH_MTX}, {m2, CH_MTX},
@@ -1799,6 +1843,11 @@ namespace
     void t_mutex_multi_held()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         log_reset();
         kos_cap_t m1 = KOS_CAP_NONE;
         kos_cap_t m2 = KOS_CAP_NONE;
@@ -1966,6 +2015,16 @@ namespace
     void t_prio_self_raise_lower()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(2))
+        {
+            tap::skip("pool too small (2 concurrent workers)");
+            return;
+        }
+        if (objects_can_host({.sems = 2}) != 0)
+        {
+            tap::skip("task object budget too small (2 semaphores)");
+            return;
+        }
         log_reset();
         g_sp_raise = -99;
         g_sp_lower = -99;
@@ -1977,7 +2036,7 @@ namespace
         {
             if (g_gate != KOS_CAP_NONE) { kos_handle_close(g_gate); }
             if (g_sp_go != KOS_CAP_NONE) { kos_handle_close(g_sp_go); }
-            tap::skip("pool too small (2 semaphores)");
+            tap::fail("a semaphore the budget was asked for was refused (%d, %d)", grc, orc);
             return;
         }
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_gate, CH_FULL},
@@ -2055,6 +2114,11 @@ namespace
     void t_prio_self_boosted()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (4 concurrent workers)");
+            return;
+        }
         log_reset();
         g_pb_set = -99;
         kos_cap_t m = KOS_CAP_NONE;
@@ -2497,13 +2561,44 @@ namespace
         g_ho_bound = 0;
         kos_cap_t line = KOS_CAP_NONE;
         TAP_CHECK(irq_claim_await(HANDOVER_LINE, &line) == 0);
+        // Asked with the line held, so its slot is part of the ask.
+        int const asked = objects_can_host({.sems = 3, .notifies = 1});
+        if (asked != 0)
+        {
+            kos_handle_close(line);
+            char const* why = "pool too small";
+            if (asked == -KOS_EMFILE)
+            {
+                why = "cap table too small (5 concurrent caps)";
+            }
+            if (asked == -KOS_EAGAIN)
+            {
+                why = "task object budget too small (3 semaphores and a notification)";
+            }
+            tap::skip("%s", why);
+            return;
+        }
         kos_cap_t note = notify_for_line(line);
         TAP_CHECK(note != KOS_CAP_NONE);
         // Arm the claimed line before injection.
         TAP_CHECK(kos_irq_ack(line) == 0);
-        kos_sem_create(0, &g_irqdrv_done);
-        kos_sem_create(0, &g_irq_ready);
-        kos_sem_create(0, &g_ho_release);
+        g_irqdrv_done = KOS_CAP_NONE;
+        g_irq_ready = KOS_CAP_NONE;
+        g_ho_release = KOS_CAP_NONE;
+        int refused = 0;
+        note_refusal(kos_sem_create(0, &g_irqdrv_done), &refused);
+        note_refusal(kos_sem_create(0, &g_irq_ready), &refused);
+        note_refusal(kos_sem_create(0, &g_ho_release), &refused);
+        if (refused != 0)
+        {
+            if (g_irqdrv_done != KOS_CAP_NONE) { kos_sem_destroy(g_irqdrv_done); }
+            if (g_irq_ready != KOS_CAP_NONE) { kos_sem_destroy(g_irq_ready); }
+            if (g_ho_release != KOS_CAP_NONE) { kos_sem_destroy(g_ho_release); }
+            kos_handle_close(line);
+            kos_handle_close(note);
+            tap::fail("a semaphore the budget was asked for was refused: %d", refused);
+            return;
+        }
         kos_cap_grant caps[] = {{g_irqdrv_done, CH_FULL}, {g_irq_ready, CH_FULL},
                                 {note, CH_FULL}, {g_ho_release, CH_FULL}};
         auto first = irq_spawn(ho_leaver, nullptr, "hoL", 15, caps, 4);
@@ -2699,6 +2794,8 @@ namespace
         if (live)
         {
             wait_n(1); // the driver's own post, so the counter is left balanced
+            // Below main's priority, so it still holds its objects until it is joined.
+            (void)drv.join();
         }
 
         TAP_CHECK(no_phantom);
@@ -2759,9 +2856,8 @@ namespace
     alignas(32) unsigned char g_cstk_block[CSTK_BLOCK];
     unsigned char* const g_cstk_odd = g_cstk_block + 16u;
 #if KICKOS_LIBC_REENT
-    kos_cap_t g_cstk_sem = KOS_CAP_NONE;
     int g_cstk_odd_errno = 0;
-    // caps: g_cstk_sem at CH_DONE, the release at CH_READY
+    // caps: g_done at CH_DONE, the release at CH_READY
     void caller_stack_errno_worker(void*)
     {
         char* end = nullptr;
@@ -2945,28 +3041,26 @@ namespace
         // The worker sets its errno through libc, parks, and reads it back after this thread has
         // set a different one: a thread whose libc state was never seated shares this one's.
         kos_cap_t release = KOS_CAP_NONE;
-        kos_sem_create(0, &g_cstk_sem);
-        kos_sem_create(0, &release);
+        TAP_CHECK(kos_sem_create(0, &release) == 0);
         g_cstk_odd_errno = 0;
-        kos_cap_grant ocaps[] = {{g_cstk_sem, CH_FULL}, {release, CH_FULL}};
+        kos_cap_grant ocaps[] = {{g_done, CH_FULL}, {release, CH_FULL}};
         auto const to = kos::thread::create(caller_stack_errno_worker, nullptr, "cstkO", 10,
                                             KOS_POLICY_FIFO, 0, false, nullptr, 0, g_cstk_odd,
                                             CSTK_ODD, nullptr, 0, ocaps, 2);
         TAP_CHECK(to.valid());
         if (to.valid())
         {
-            kos_sem_wait(g_cstk_sem);
+            wait_n(1);
             char* end = nullptr;
             (void)strtol("99999999999999999999999999", &end, 10);
             int const mine = errno;
             kos_sem_post(release);
-            kos_sem_wait(g_cstk_sem);
+            wait_n(1);
             TAP_CHECK(mine == ERANGE);
             TAP_CHECK(g_cstk_odd_errno == EINVAL);
             TAP_CHECK(errno == ERANGE);
         }
         kos_sem_destroy(release);
-        kos_sem_destroy(g_cstk_sem);
 #else
         TAP_CHECK(kos_endpoint_create(&g_cstk_ep) == 0);
         kos_cap_grant ocaps[] = {{g_cstk_ep, KOS_CAP_SIGNAL}};
@@ -3032,12 +3126,22 @@ namespace
             tap::skip("arena cannot spare the shared region");
             return;
         }
+        if (not pool_can_host(2) or objects_can_host({.sems = 2}) != 0)
+        {
+            tap::skip("pool too small (2 concurrent workers and 2 semaphores)");
+            return;
+        }
         // main's own reach.
         TAP_CHECK(kos_mem_self_grant(const_cast<int*>(g_dshared), 256, 0) == 0);
         *g_dshared = 0;
         g_dreadback = -1;
-        kos_sem_create(0, &g_dwrote);
-        kos_sem_create(0, &g_dread);
+        TAP_CHECK(kos_sem_create(0, &g_dwrote) == 0);
+        if (kos_sem_create(0, &g_dread) != 0)
+        {
+            kos_sem_destroy(g_dwrote);
+            tap::fail("the second semaphore the budget was asked for was refused");
+            return;
+        }
         // Spawn BOTH before either runs (spawn does not preempt).
         kos_cap_grant wcaps[] = {{g_dwrote, CH_FULL}};
         kos_cap_grant rcaps[] = {{g_dwrote, CH_FULL}, {g_dread, CH_FULL}};
@@ -3050,9 +3154,9 @@ namespace
         if (not w.valid() or not r.valid())
         {
             // Whichever worker did spawn self-completes, so nothing needs draining.
-            tap::skip("thread pool too small for 2 concurrent");
             kos_sem_destroy(g_dwrote);
             kos_sem_destroy(g_dread);
+            tap::fail("a worker the pool was asked for was refused");
             return;
         }
         kos_sem_wait(g_dread); // the reader saw the writer's store via the shared region
@@ -3813,7 +3917,7 @@ namespace
     // region MUST be rejected, never read; both run from a spawned unprivileged worker. The
     // positive half is non-vacuous only when PAIRED with the guard-page negative below.
     char const CD_LIT[] = "# [confdep] unpriv rodata buffer accepted by the readable floor\n";
-    // worker: kconsole_write(rodata literal) -> a count, -KOS_EAGAIN or -KOS_EBUSY
+    // worker: kconsole_write(rodata literal) -> a count or -KOS_EBUSY
     long g_cd_lit_rc = -99;
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
     int g_cd_goodname_ran = 0; // that child ran (name-copy path did not break spawn)
@@ -4240,23 +4344,26 @@ namespace
 
     void t_confused_deputy()
     {
-        kos_sem_create(0, &g_cd_done);
+        if (not pool_can_host(2) or objects_can_host({.sems = 2}) != 0)
+        {
+            tap::skip("pool too small (a worker, its child and 2 semaphores)");
+            return;
+        }
+        TAP_CHECK(kos_sem_create(0, &g_cd_done) == 0);
         kos_cap_grant caps[] = {{g_cd_done, CH_FULL}};
         auto w = kos::thread::create_caps(cd_worker, nullptr, "cdwork", 10, caps, 1);
         if (not w.valid())
         {
-            tap::skip("thread pool too small");
             kos_sem_destroy(g_cd_done);
+            tap::fail("the worker the pool was asked for was refused");
             return;
         }
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): the floor accepted an unprivileged caller's rodata
-        // pointer. kos_kconsole_write answers a short count or -KOS_EAGAIN when the console
-        // cannot take the bytes, -KOS_EBUSY when a published driver serves the caller, and
-        // -KOS_EFAULT when it rejects the buffer, so only a rejection reports on the readable
-        // floor this arm is named for.
-        if (g_cd_lit_rc < 0 and g_cd_lit_rc != -KOS_EAGAIN and g_cd_lit_rc != -KOS_EBUSY)
+        // pointer. kos_kconsole_write waits for the console, and answers -KOS_EBUSY when a
+        // published driver serves the caller and -KOS_EFAULT when it rejects the buffer.
+        if (g_cd_lit_rc < 0 and g_cd_lit_rc != -KOS_EBUSY)
         {
             tap::fail("readable floor refused an unprivileged rodata buffer: rc %ld",
                       g_cd_lit_rc);
@@ -6089,12 +6196,6 @@ namespace
         TAP_CHECK(g_frp_rc.load() == -KOS_ENOTIFY and g_frp_bits.load() == mask);
     }
 
-    // Whether a batch's first refusal is a supply running out, the only refusal an arm whose
-    // demand is OPTIONAL may answer with a skip; any other code is the arm failing.
-    bool refused_for_want(int rc)
-    {
-        return rc == -KOS_EMFILE or rc == -KOS_EAGAIN or rc == -KOS_ENOMEM;
-    }
     void t_reply_recv_notify()
     {
         // This ordering requires the server to reach its gate before main injects.
@@ -6114,9 +6215,20 @@ namespace
         int refused = 0;
         note_refusal(irq_claim_await(IRQ_CTX_LINE, &l1), &refused);
         note_refusal(irq_claim_await(FRN_LINE2, &l2), &refused);
+        // Asked with both lines held, so their slots are part of the ask. A badge takes a slot
+        // and no budget, and the endpoint and the gate replace both badges.
+        int asked = 0;
+        if (refused == 0)
+        {
+            asked = objects_can_host({.sems = 1, .endpoints = 1, .notifies = 1});
+            refused = asked;
+        }
         // One object, two lines, one bit each: the badge is what tells them apart, and it is
         // seated at the MINT, so main holds two badged copies just long enough to attach.
-        note_refusal(kos_notify_create(&note), &refused);
+        if (refused == 0)
+        {
+            note_refusal(kos_notify_create(&note), &refused);
+        }
         if (note != KOS_CAP_NONE)
         {
             note_refusal(kos_notify_badge(note, 0u, &b1), &refused);
@@ -6143,6 +6255,11 @@ namespace
             if (l2 != KOS_CAP_NONE) { kos_handle_close(l2); }
             if (note != KOS_CAP_NONE) { kos_handle_close(note); }
             TAP_CHECK(refused_for_want(refused));
+            if (asked == 0 and l1 != KOS_CAP_NONE and l2 != KOS_CAP_NONE)
+            {
+                tap::fail("an object the budgets were asked for was refused: %d", refused);
+                return;
+            }
             // Labelled by the supply that ran out, as t_mutex_deadlock does.
             char const* why = "pool too small";
             if (refused == -KOS_EMFILE)
@@ -6151,7 +6268,7 @@ namespace
             }
             if (refused == -KOS_EAGAIN)
             {
-                why = "task object budget too small (5 concurrent objects)";
+                why = "task object budget too small (a semaphore, an endpoint and a notification)";
             }
             tap::skip("%s", why);
             return;
@@ -6811,6 +6928,11 @@ namespace
     void t_call_donation()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         log_reset();
         g_don_unit = mtx_time_unit();
         don_stage_reset();
@@ -6898,6 +7020,11 @@ namespace
     void t_call_donation_hold()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         log_reset();
         g_don_unit = mtx_time_unit();
         don_stage_reset();
@@ -7092,6 +7219,11 @@ namespace
     void t_call_donation_pending()
     {
         TAP_SKIP_ONE_CORE_ORDER();
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 concurrent workers)");
+            return;
+        }
         log_reset();
         g_don_unit = mtx_time_unit();
         don_stage_reset();
@@ -7610,10 +7742,21 @@ namespace
         return rc;
     }
 
+    // Untyped, so it can go on to the endpoint and notification budgets: a child of main's
+    // task fills its own table out of the budgets main's census leaves.
     int fill_one_cap(kos_cap_t* out)
     {
         bool is_sem = false;
-        return fill_one_cap_typed(out, &is_sem);
+        int rc = fill_one_cap_typed(out, &is_sem);
+        if (rc == -KOS_ENOMEM or rc == -KOS_EAGAIN)
+        {
+            rc = kos_endpoint_create(out);
+        }
+        if (rc == -KOS_ENOMEM or rc == -KOS_EAGAIN)
+        {
+            rc = kos_notify_create(out);
+        }
+        return rc;
     }
 
     // The low 16 bits of a cap handle are its table slot and the high 16 its cap-gen; the
@@ -8397,7 +8540,8 @@ namespace
         {
             seen |= NB_SENT;
         }
-        if (kickos::stdout_write(&probe, 1) == 0u)
+        kickos::WriteResult const tried = kickos::stdout_write(&probe, 1);
+        if (tried.sent == 0u and tried.error == -KOS_ETIMEDOUT)
         {
             seen |= NB_TRIED;
         }
@@ -12134,6 +12278,9 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("sem_destroy", t_sem_destroy);
     TAP_ADD("sem_destroy_quiescent", t_sem_destroy_busy);
     TAP_ADD("sem_raii", t_sem_raii);
+    // PI-mutex capability: production syscalls only, so runs on every board.
+    TAP_ADD("mutex_basic", t_mutex_basic);
+    TAP_ADD("mutex_pi_donation", t_mutex_pi);
 #undef TAP_ADD
 // Region 2.
 #if KICKOS_SELFTEST_REGION(2)
@@ -12141,9 +12288,6 @@ extern "C" void selftest_main(kos_self_t const* self)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
-    // PI-mutex capability: production syscalls only, so runs on every board.
-    TAP_ADD("mutex_basic", t_mutex_basic);
-    TAP_ADD("mutex_pi_donation", t_mutex_pi);
     TAP_ADD("mutex_chain_boost", t_mutex_chain);
     TAP_ADD("mutex_owner_died", t_mutex_owner_died);
     TAP_ADD("mutex_deadlock", t_mutex_deadlock);
@@ -12182,9 +12326,6 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("call_infoless_revert", t_call_infoless_revert);
     TAP_ADD("call_close_reply", t_call_close_reply);
     TAP_ADD("call_happy", t_call_happy);
-    TAP_ADD("reply_recv_loop", t_reply_recv_loop);
-    TAP_ADD("reply_recv_no_reply", t_reply_recv_no_reply);
-    TAP_ADD("reply_recv_timeout", t_reply_recv_timeout);
 #undef TAP_ADD
 // Region 4.
 #if KICKOS_SELFTEST_REGION(4)
@@ -12192,6 +12333,9 @@ extern "C" void selftest_main(kos_self_t const* self)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
+    TAP_ADD("reply_recv_loop", t_reply_recv_loop);
+    TAP_ADD("reply_recv_no_reply", t_reply_recv_no_reply);
+    TAP_ADD("reply_recv_timeout", t_reply_recv_timeout);
     TAP_ADD("reply_recv_bad_ep_wakes_caller", t_reply_recv_bad_ep_wakes_caller);
     TAP_ADD("service_survives_client_fault", t_service_survives_client_fault);
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -12208,7 +12352,6 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("call_server_death", t_call_server_death);
     TAP_ADD("call_prepop_death", t_call_prepop_death);
     TAP_ADD("call_donation", t_call_donation);
-    TAP_ADD("call_donation_hold", t_call_donation_hold);
 #undef TAP_ADD
 // Region 5.
 #if KICKOS_SELFTEST_REGION(5)
@@ -12216,6 +12359,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
+    TAP_ADD("call_donation_hold", t_call_donation_hold);
     TAP_ADD("call_donation_slow", t_call_donation_slow);
     TAP_ADD("call_donation_pending", t_call_donation_pending);
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -12231,10 +12375,6 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("cap_chunk_span", t_cap_chunk_span);
     TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);
     TAP_ADD("cap_child_width", t_cap_child_width);
-    TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast);
-    TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow);
-    TAP_ADD("cap_reply_release_close", t_cap_reply_release_close);
-    TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);
 #undef TAP_ADD
 // Region 6.
 #if KICKOS_SELFTEST_REGION(6)
@@ -12242,6 +12382,10 @@ extern "C" void selftest_main(kos_self_t const* self)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
+    TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast);
+    TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow);
+    TAP_ADD("cap_reply_release_close", t_cap_reply_release_close);
+    TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);
     TAP_ADD("console_publish_priv", t_console_publish);
     TAP_ADD("shutdown_priv", t_shutdown_denied);
 #if defined(KICKOS_ENABLE_SELFTEST)

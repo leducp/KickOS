@@ -55,6 +55,11 @@ namespace
     // kconsole_write_user.
     constexpr int CONSOLE_DARK = -1000;
 
+#if KICKOS_AMP_OWN_IMAGE
+    // How long a user writer parks before it offers a line a peer node's claim refused again.
+    constexpr uint32_t CONSOLE_CLAIM_POLL_US = 1000u;
+#endif
+
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
     // from that point on.
     constinit Atomic<bool, Order::RELAXED> g_console_panicking = false;
@@ -276,6 +281,23 @@ extern "C" void console_on_driver_death(void)
     kickos::console_dark_wake();
 }
 
+extern "C" void console_tx_room_freed(void)
+{
+    kickos::IrqLock lock;
+    kickos::console_dark_wake();
+}
+
+// Whether a thread of `t`'s own task holds the console's registers. A window has one holder.
+static bool console_window_own(kickos::Thread const* t)
+{
+    uintptr_t base = 0;
+    size_t size = 0;
+    arch_console_reclaim_window(&base, &size);
+    kickos::IrqLock lock;
+    return size != 0 and not kickos::dev_window_free(base, size)
+           and not kickos::dev_window_held_outside(base, size, t->task);
+}
+
 // A stale zero here makes kos_console_publish's handover drain give the UART to a
 // userspace driver while a kernel writer is still on the device, hence the lock.
 extern "C" int console_chip_writers(void)
@@ -288,7 +310,8 @@ extern "C" int console_chip_writers(void)
 // window the ring exists to avoid, and is what keeps the line atomic without one.
 //
 // CR+LF goes out as its own segment: a cooked buffer here would stand on a descent the trap
-// red-zone gate measures (kickos/diag.h).
+// red-zone gate measures (kickos/diag.h). The first stalled segment ends the line, so a wedged
+// channel costs one stall per line.
 extern "C" void console_write_line_sync(char const* buf, size_t n)
 {
     kickos::IrqLock lock;
@@ -301,19 +324,22 @@ extern "C" void console_write_line_sync(char const* buf, size_t n)
         {
             continue;
         }
-        if (i > start)
+        if (i > start and not arch_console_write_sync(buf + start, i - start))
         {
-            arch_console_write_sync(buf + start, i - start);
+            return;
         }
-        arch_console_write_sync(CRLF, sizeof(CRLF));
+        if (not arch_console_write_sync(CRLF, sizeof(CRLF)))
+        {
+            return;
+        }
         start = i + 1;
     }
     if (n > start)
     {
-        arch_console_write_sync(buf + start, n - start);
+        (void)arch_console_write_sync(buf + start, n - start);
     }
 #else
-    arch_console_write_sync(buf, n);
+    (void)arch_console_write_sync(buf, n);
 #endif
 }
 
@@ -444,9 +470,7 @@ namespace kickos
 
     int kconsole_write_user(char const* buf, size_t n, bool wait)
     {
-#if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
         Thread* const t = sched::current();
-#endif
         while (true)
         {
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_CONSOLE_CHIP
@@ -456,15 +480,37 @@ namespace kickos
 #else
             int const took = kconsole_write_impl(buf, n, nullptr, WRITE_USER | WRITE_OFFERED);
 #endif
-            if (took != CONSOLE_DARK)
+            if (took != CONSOLE_DARK and (took != 0 or n == 0))
             {
                 return took;
             }
             if (not wait)
             {
-                return -KOS_EAGAIN;
+                if (took == CONSOLE_DARK)
+                {
+                    return -KOS_EAGAIN;
+                }
+                return 0;
             }
-            int const woke = console_dark_wait();
+            int woke = 0;
+            if (took == CONSOLE_DARK)
+            {
+                woke = console_dark_wait();
+            }
+            else
+            {
+                // A drain this writer's own task can stop never comes.
+                if (console_window_own(t))
+                {
+                    return static_cast<int>(n);
+                }
+#if KICKOS_AMP_OWN_IMAGE
+                // A sleep would end a cancelled writer here, past this frame's depth budget.
+                woke = console_claim_wait(CONSOLE_CLAIM_POLL_US);
+#else
+                woke = console_room_wait(buf, n, KICKOS_CONSOLE_CRLF);
+#endif
+            }
             if (woke < 0)
             {
                 return woke;

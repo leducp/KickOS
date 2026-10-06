@@ -80,12 +80,13 @@ everything writable rides the one appdata region. Budget stays 3 (code+appdata+s
 ## The malloc'd FDE node (blocker #2)
 
 On DWARF arches (RISC-V), `__register_frame(&__eh_frame_start)` registers the DWARF table; libgcc mallocs a
-`struct object` to hold it. KickOS already calls `__register_frame` **at boot in `Reset_Handler`
-(privileged)**, before any drop to unprivileged -- so the node is malloc'd from the libc heap
-*while privileged*. Once that heap arena is in the granted appdata region (below), the node lands
-there automatically. **No move needed, and no `__register_frame_info_bases`/static-object path
-required** -- boot-time registration + a granted heap is sufficient (verified: the experiment
-registers at boot and the unprivileged throw unwinds without faulting).
+`struct object` to hold it. KickOS calls `__register_frame` **on the root thread**, first in
+`kickos_root_entry` and before any app constructor, so the node is malloc'd from the libc heap
+of the thread that will throw. Once that heap arena is in the granted appdata region (below), the
+node lands there automatically. **No move needed, and no `__register_frame_info_bases`/static-object
+path required** -- registration on root + a granted heap is sufficient. `Reset_Handler` may not
+make the call: libc finds its state through the thread pointer, which names no block until a
+thread is switched in.
 
 ARM EHABI has **no runtime registration at all**: `.ARM.exidx` is found via linker symbols
 (`__exidx_start`/`__exidx_end`) in the code region. ARM sidesteps this blocker entirely. RX SjLj
@@ -191,7 +192,7 @@ re-flash for the silicon U-mode proof.
 | ARM PMSA v7-M (XMC4800) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K (sub-regions help) | +0 | **xmc4800-relax silicon: U-mode cxxtest ALL PASS (2026-07-19)** |
 | ARM PMSA (RP2040, Cortex-M0+/armv6m) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K | +0 | **picopi silicon: priv-coexistence 9/9 PASS; v6-M cross-domain fault SILICON-PROVEN (2026-07-19); U-mode cxxtest build-only** |
 | RX MPU (RX72M, RXv3) | SjLj (.gcc_except_table in ROM) | none (SjLj chain) | no (RX has no gp small-data) | exact (16 B granular) | +0 | **rx72m silicon: U-mode cxxtest ALL PASS (2026-07-19)** |
-| RISC-V PMP (esp32c6, virt) | DWARF | boot `__register_frame` | **yes (solved: gp-in-appdata)** | pow2 128 K | +0 | **U-mode RUN-PROVEN on qemu-virt (`qemu_riscv_cxxtest` ALL PASS from the unprivileged worker); esp32c6 silicon privileged-coexistence ALL PASS 2026-07-19, U-mode build-only** |
+| RISC-V PMP (esp32c6, virt) | DWARF | root-thread `__register_frame` | **yes (solved: gp-in-appdata)** | pow2 128 K | +0 | **U-mode RUN-PROVEN on qemu-virt (`qemu_riscv_cxxtest` ALL PASS from the unprivileged worker); esp32c6 silicon privileged-coexistence ALL PASS 2026-07-19, U-mode build-only** |
 
 Consumption of the 8-region budget is **+0** everywhere: EH/exidx tables ride the code region,
 all writable runtime state rides the one appdata region. The confined U-mode throw is RUN-PROVEN

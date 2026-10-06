@@ -35,18 +35,6 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // DWARF EH frame table (virt.ld) + the libgcc registrar. The -nostartfiles link drops
-    // crtbegin, so its frame_dummy never registers .eh_frame and a full-C++ app must
-    // register it by hand at boot (Reset_Handler). WEAK ref: a freestanding image
-    // references no _Unwind_*, so __register_frame's libgcc object (unwind-dw2-fde) is
-    // never pulled, the ref stays null and the call is skipped, which keeps the FDE
-    // machinery, newlib malloc and its 64 KB heap arena OUT of freestanding images. A
-    // kickos_cxx app pulls _Unwind_Find_FDE from the same object, defining
-    // __register_frame, so the ref resolves and registration runs.
-    extern uint32_t __eh_frame_start;
-    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
-    // and optional by libgcc's own contract, so no linker script can state it.
-    void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (virt.ld). .appdata holds the app + C++-runtime .data and
     // the gp small-data window; its VMA jumps to the pow2 window base above the NOLOAD
@@ -231,10 +219,6 @@ void Reset_Handler(void)
         *b = 0;
     }
 #endif
-    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
-    {
-        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
-    }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

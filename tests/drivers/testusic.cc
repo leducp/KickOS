@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A packaged console driver over an XMC4800 USIC channel's window, polled like xmcuart: a plain
-// send is console bytes, and a zero-length one a flush answered once the channel has drained. A
+// A packaged console driver over an XMC4800 USIC channel's window, polled: a plain send is
+// console bytes, and a zero-length one a flush answered once the channel has drained. A
 // zero-length kos_call asks it to scramble the channel it holds, answered 0 once the clock is
 // gated, so nothing reaches the wire after it unless the kernel reclaims the console. Any other
 // call is answered -KOS_ENOSYS.

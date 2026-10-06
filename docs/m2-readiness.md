@@ -86,7 +86,7 @@ Scoped to deterministic, host-runnable gates -- no flaky or HW-only steps:
   the authoritative deterministic gate.
 - **qemu-arm** (`mps2-an386` + `microbit`): `ctest` -- the **full `selftest` TAP suite**
   (same binary as sim, on real armv7m PendSV) + hello + sched_exit + fp_switch. These
-  clock off semihosting `SYS_CLOCK`, which QEMU <= 10 (ubuntu-latest ships 8.2) freezes
+  clock off semihosting `SYS_CLOCK`, which QEMU <= 10 (CI's Ubuntu 26.04 ships 10.2) freezes
   while the core halts in WFI -- a timed sleep with every thread idle never wakes. Fixed
   in the kernel: `arch_idle_wait` spins (not WFI) on the QEMU-only mps2/nrf51 chips.
   (icount does NOT fix it -- verified.) `rr_interleave` scales its RR quantum to the

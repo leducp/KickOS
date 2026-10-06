@@ -263,11 +263,6 @@ void irq_thread(Ctx* ctx, UartParams const& p)
     irq_loop(dev, &ctx->sh); // parks in irq_wait; never returns
 }
 
-// The single-thread polled console over the UART class: plain sends only, each byte polled
-// out, a zero-length send answered by kos_uart_flush. Flushes and closes the device, then
-// returns, once the endpoint dies.
-void polled_console_loop(struct kos_uart* dev);
-
 // ---------------------------------------------------------------------------------
 // The service thread's flush: the ring, then the device's transmit path through the IRQ
 // thread, each stage bounded by the console::flush budget. Returns 0 once both drained,

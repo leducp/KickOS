@@ -8,10 +8,11 @@ stdout: /svc/console
 ends: main
 
 tasks:
-  - name: k64uart
-    driver: k64uart
+  - name: k64uartirq
+    driver: k64uartirq
     devices: [/dev/uart0]
     accepts: [coarse_gate, device_not_isolated]
+    lines: { rxtx: /dev/uart0/rxtx }
     serves: /svc/console
     priority: 12
 

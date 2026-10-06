@@ -65,8 +65,21 @@ namespace kickos
     // is no longer dark, or -KOS_ECANCELED where the caller is cancelled, before or during it.
     // Caller holds no lock.
     int console_dark_wait(void);
-    // Wake every writer console_dark_wait parked. Caller holds IrqLock.
+    // Wake every writer console_dark_wait or console_room_wait parked. Caller holds IrqLock.
     void console_dark_wake(void);
+
+    // The ring refused the calling writer's line: on a backend with no TX interrupt the writer
+    // drains it itself until the line fits, and on one whose TX interrupt drains it the writer
+    // parks with no deadline until that drain frees the room (console_tx_room_freed), a publish
+    // or a reclaim. 0 to offer the line again, or -KOS_ECANCELED where the caller is cancelled,
+    // before or during it. Caller holds no lock.
+    int console_room_wait(char const* buf, size_t n, int crlf);
+
+    // Park the calling writer for `timeout_us` while a peer node's claim on a shared UART refuses
+    // its line: nothing marks the end of that claim. 0 to offer the line again, at the timeout or
+    // at a console_dark_wake, or -KOS_ECANCELED where the caller is cancelled, before or during it.
+    // Caller holds no lock.
+    int console_claim_wait(uint32_t timeout_us);
 
     // Check cancellation under IrqLock before any side effect in a blocking
     // operation. Cancellation can arrive after syscall entry checked it but

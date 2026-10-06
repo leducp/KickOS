@@ -15,11 +15,9 @@ if(KICKOS_ARCH STREQUAL "sim")
             "$<TARGET_FILE:tele_pingpong>"
             "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
   set_tests_properties(telemetry_structural PROPERTIES TIMEOUT 40)
-endif()
-
-# CI gate 4: the same bounded workload booted under QEMU, the only automated
-# coverage of the PendSV-tail switch-hook ASM. Trace captured via semihosting.
-if(KICKOS_BOARD STREQUAL "qemu")
+else()
+  # CI gate 4: the same bounded workload booted under QEMU, the only automated
+  # coverage of the PendSV-tail switch-hook ASM. Trace captured via semihosting.
   kickos_add_qemu_test(NAME telemetry_qemu_structural TARGET tele_pingpong
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_qemu.py"
     BOOTS 0 WORK 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")

@@ -57,22 +57,49 @@ WANT="${*:-$ALL}"
 # TAP numbering RESTARTS at 1 in each image, so a lone first plan line is a FRACTION of a run and
 # not a short one, and the pass read green for two splits.
 #
-# The configure this does is the one the runs below reuse: same TAG, same board, same variant,
+# The configure this does is the one the runs below reuse: same tag, same board, same variant,
 # so it lands in the same build dir and costs nothing twice.
 images_for() { # <board> <stderr out> [variant]
   if [ -n "${3:-}" ]; then
-    TAG="$TAG" VARIANT="$3" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
+    TAG="$(variant_tag "$3")" VARIANT="$3" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
   else
     TAG="$TAG" LIST_IMAGES=1 "$BENCH" "$1" 2>"$2"
   fi
 }
 
-# The board's AMP partition is the image a node 0 build of its amp2 preset assembles, so a board
-# has one exactly where the tree declares that preset.
-AMP_VARIANT=amp2-n0
-has_variant() { # <board> <variant>
-  (cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) | grep -qF "\"$1-$2\""
+# EVERY VARIANT A BOARD DECLARES, read off the tree's presets, `<board>-<variant>` each, or
+# status 1 where the tree cannot list them. The default variant is bench.sh's own
+# (BENCH_DEFAULT_VARIANT), the one the pass below takes first; every other one is a build of its
+# own, and a capture of one of its images lands under that variant's tag, so two builds' logs of
+# one image never share a name.
+variants_of() { # <board>
+  local presets
+  presets=$(cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) || return 1
+  printf '%s\n' "$presets" | sed -n "s/^ *\"$1-\([A-Za-z0-9_-]*\)\".*/\1/p"
 }
+# A partition is the variants `<p>-n0` to `<p>-n<k>`, and its node 0 build assembles the whole
+# image: node 0 is captured as the partition, and the others are parts of it.
+partition_first() { # <variant>
+  case $1 in
+    *-n0) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+partition_part() { # <variant> <variants>
+  local p=${1%-n[0-9]*}
+  [ "$p" != "$1" ] && ! partition_first "$1" && printf '%s\n' "$2" | grep -qxF "$p-n0"
+}
+variant_tag() { # <variant>
+  printf '%s%s' "$TAG" "$(printf '%s' "$1" | tr -d '-')"
+}
+# A variant that turns KICKOS_BENCH on is the microbenchmark's posture, which the bench sweep
+# measures; its images are not judged here.
+measurement_variant() { # <board> <variant>
+  grep -qx 'CONFIG_KICKOS_BENCH=y' "${TREE:-$RIG_TREE}/boards/$1/configs/$2/defconfig" 2>/dev/null
+}
+
+# The board's AMP partition is the image a node 0 build of its amp2 preset assembles.
+AMP_VARIANT=amp2-n0
 # An image only the board's flat build ships (one that reads what enforcement would refuse it) is
 # captured from that build; an image both builds ship is the enforcing build's, except a
 # <board>:<image> FLAT_ALSO names, which each build's capture witnesses.
@@ -126,7 +153,7 @@ bench_one() {
   local board=$1 app=$2 sn=$3 label=$4 judge=$5 variant=${6:-} amp=${7:-0} out rc
   local -a vars=(TAG="$TAG" APP="$app")
   if [ -n "$variant" ]; then
-    vars+=(VARIANT="$variant")
+    vars=(TAG="$(variant_tag "$variant")" APP="$app" VARIANT="$variant")
   fi
   if [ "$amp" = "1" ]; then
     vars+=(AMP_PARTITION=1)
@@ -244,6 +271,7 @@ EMULATOR_OWED=""
 HUMAN_OWED=""
 VOID=""
 PARTLY=""
+MEASURED=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
@@ -297,43 +325,68 @@ EOF
   done 4<<ROWS
 $IMAGES
 ROWS
-  if has_variant "$board" "$FLAT_VARIANT"; then
+  if ! VARIANTS=$(variants_of "$board"); then
+    record "$board" "REFUSED (the tree was not able to list its presets, so this board's variants are unknown)"
+    FAILED=1
+    continue
+  fi
+  for variant in $VARIANTS; do
+    if [ "$variant" = "$BENCH_DEFAULT_VARIANT" ] || partition_part "$variant" "$VARIANTS"; then
+      continue
+    fi
+    if partition_first "$variant"; then
+      img="amp_partition ($variant)"
+      if [ "$variant" = "$AMP_VARIANT" ]; then
+        img=amp_partition
+      fi
+      LERR=$(mktemp)
+      AMP_IMAGES=$(images_for "$board" "$LERR" "$variant")
+      if [ -z "$AMP_IMAGES" ]; then
+        record "$board/$variant" "REFUSED (the tree was not able to say which images this board's $variant build ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
+        FAILED=1
+        rm -f "$LERR"
+        continue
+      fi
+      rm -f "$LERR"
+      judge=$(printf '%s\n' "$AMP_IMAGES" | awk -F '|' '$1 == "ampping_n0" { print $3; exit }')
+      if [ -z "$judge" ] || [ "$judge" = "-" ]; then
+        UNJUDGED="$UNJUDGED$board $img
+"
+      else
+        capture_image "$board" ampping_n0 "$img" "$judge" "$variant" 1
+      fi
+      continue
+    fi
+    if measurement_variant "$board" "$variant"; then
+      MEASURED="$MEASURED$board $variant
+"
+      continue
+    fi
     LERR=$(mktemp)
-    FLAT_IMAGES=$(images_for "$board" "$LERR" "$FLAT_VARIANT")
-    if [ -z "$FLAT_IMAGES" ]; then
-      record "$board/$FLAT_VARIANT" "REFUSED (the tree was not able to say which images this board's $FLAT_VARIANT build ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
+    VAR_IMAGES=$(images_for "$board" "$LERR" "$variant")
+    if [ -z "$VAR_IMAGES" ]; then
+      record "$board/$variant" "REFUSED (the tree was not able to say which images this board's $variant build ships): $(grep -m1 REFUSING "$LERR" || echo 'see the configure output')"
       FAILED=1
     fi
     rm -f "$LERR"
     while IFS='|' read -r img _stdout judge args <&4; do
       [ -n "$img" ] || continue
-      if printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }' \
+      if [ "$variant" = "$FLAT_VARIANT" ] \
+        && printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }' \
         && ! flat_also "$board" "$img"; then
         continue
       fi
-      take_image "$board" "$img" "$img ($FLAT_VARIANT)" "$judge" "$args" "$FLAT_VARIANT"
+      take_image "$board" "$img" "$img ($variant)" "$judge" "$args" "$variant"
     done 4<<ROWS
-$FLAT_IMAGES
+$VAR_IMAGES
 ROWS
-  fi
-  if has_variant "$board" "$AMP_VARIANT"; then
-    img=amp_partition
-    LERR=$(mktemp)
-    judge=$(images_for "$board" "$LERR" "$AMP_VARIANT" | awk -F '|' '$1 == "ampping_n0" { print $3; exit }')
-    rm -f "$LERR"
-    if [ -z "$judge" ] || [ "$judge" = "-" ]; then
-      UNJUDGED="$UNJUDGED$board $img
-"
-    else
-      capture_image "$board" ampping_n0 "$img" "$judge" "$AMP_VARIANT" 1
-    fi
-  fi
+  done
 done
 
 echo
 echo "=== fleet pass, TAG=$TAG"
 printf '%s' "$RESULTS"
-echo "logs: $OUTDIR/$TAG*-*.log"
+echo "logs: $OUTDIR/$TAG*-*.log (a variant's under its own tag, $TAG<variant>)"
 if [ "$ABSENT" -ne 0 ]; then
   echo "an ABSENT board is absent from $BENCH_WHERE, and nowhere else was asked."
   echo "  tools/bench/bench-present.sh reports the whole bus, probe serials and consoles."
@@ -392,6 +445,12 @@ while IFS='|' read -r board img why; do
 done <<VOID
 $VOID
 VOID
+while read -r board variant; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s measurement posture, taken by the bench sweep\n' "$board" "variant $variant"
+done <<MEASURED
+$MEASURED
+MEASURED
 HUMANS=0
 while IFS='|' read -r board img what; do
   [ -n "$board" ] || continue

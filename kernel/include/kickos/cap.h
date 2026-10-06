@@ -690,7 +690,8 @@ namespace kickos
     int cap_console_publish_through(Thread* publisher, CapEntry* e, Task* served_by);
 
     // `t` serves the published console from here on (task_console_serve), and its endpoint takes
-    // sends until `t` ends; a null `t` leaves it taking none. Caller holds IrqLock.
+    // sends until `t` ends; a null `t` leaves it taking none. A member of `t` whose stdout names
+    // the console loses that seat. Caller holds IrqLock.
     void cap_console_serve(Task* t);
 
     // The task serving the published console ended: no send is taken there from here on, the

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32-wroom
+   arch    lx6
+   cpu     lx6
+   mpu     off
+   sched   tickless
+
+[slaypeer] slay rc: 0
+[slaypeer] SLAYPEER PASS

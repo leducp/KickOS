@@ -20,8 +20,9 @@ UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mm
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
-    "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
-    "data_cache", "doorbell_seat", "interrupts", "cycle_counter", "c", "reserved", "devices", "memory", "pins", "esptool_image",
+    "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
+    "partition_gate", "data_cache", "doorbell_seat", "interrupts", "cycle_counter", "c", "reserved",
+    "devices", "memory", "pins", "esptool_image",
 )
 PROTECTION_FIELDS = (
     "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports", "driven",

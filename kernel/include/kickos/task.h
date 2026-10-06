@@ -176,6 +176,9 @@ namespace kickos
     // end raises and latches nothing. Every other member is slain (CANCEL_SLAY), with or without
     // a creator, and a privileged one killed (CANCEL_KILL). Caller holds IrqLock.
     void task_end(Task* t, int code, bool latch);
+    // Kill and slay: `t` ends now, before its members have run to their deaths, and every member
+    // is stopped. Caller holds IrqLock.
+    void task_stop(Task* t);
     // Whether `t` has ended, which refuses it a new member. Null-safe: false.
     bool task_ended(Task const* t);
     // Whether `t` set O_NONBLOCK on the console's fds: its stdout sends and kernel console

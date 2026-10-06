@@ -49,8 +49,8 @@ arch_console_write (per chip)
                                                    (console_tx_insert_record_line)
         ... then the bytes leave ...
 [drain ISR]        console_tx_isr:        on a backend with a TX interrupt
-[producer drain]   drain_in_producer:     on a backend with none (irq_line < 0), outside
-                                          the lock, one drainer at a time
+[producer drain]   drain_in_producer:     on a backend with none (irq_line < 0), by each
+                                          producer until its own line has left
 ```
 
 Source: `kernel/init/console.cc` (frontend + routing + panic), `kernel/init/console_tx.cc`
@@ -108,10 +108,8 @@ thread granted the console window can wreck the channel without ever publishing.
 **Every line the ring accepted before a publish goes out before the driver has the UART.** The
 move to `HANDING_OFF` gives up the ring under the same `IrqLock`, and giving it up flushes it
 (`console_tx_deinit`): its bytes are in the device's transmitter before `USER_OWNED` is stored. A
-line the ring refused was never accepted, so it is not among them: the raw `kos_kconsole_write`
-discards what it did not take, and `kos_print`, like every stdout writer, offers it again
-(`<kickos/sys/emit.h>`). A burst written faster than the wire fills the ring, and every line past
-the fill is refused to the raw call, publish or not.
+line the ring refused was never accepted, so it is not among them: a kernel line is lost, and a
+user writer waits for room and offers it again (below).
 
 `HANDING_OFF` exists because the two halves of a publish cannot be one instant. It refuses
 NEW chip writers while leaving the UART the kernel's, so a writer already counted in the
@@ -136,8 +134,9 @@ interrupts open; only the transmission is masked. The claim and wait are bounded
 stalled holder's deadline another node may speak. A write stops at the first input byte its
 claim no longer covers and reports how many completed, so a user write's remainder is offered
 again under a fresh claim. A newline spends CR and LF on the UART; if the claim dies after CR,
-the thread remembers it and its next offer sends only LF, without repeating CR. A write
-with no complete input byte answers `-KOS_EAGAIN`. Panic, fault and ISR output, already masked
+the thread remembers it and its next offer sends only LF, without repeating CR. A user write
+with no complete input byte parks for a poll interval and offers the line again, and a task that
+set O_NONBLOCK is answered `-KOS_ETIMEDOUT` instead. Panic, fault and ISR output, already masked
 and with no caller to offer the rest again, waits the bounded claim masked and drops the rest
 of a line it loses, uncounted. The holder rechecks its claim before each byte's store and
 stops a margin short of the deadline: only a stall longer than that margin between check and
@@ -181,7 +180,9 @@ returns; the bytes leave later, in an interrupt.
   `irq_attach`): push ring bytes while a HW TX slot is free; when the ring drains
   to empty, disable its own TX IRQ. A chip whose console has no TX interrupt reports
   `irq_line < 0` and is drained instead by `drain_in_producer`, in the producer's own
-  context, outside the lock and one drainer at a time.
+  context, by every producer until its own line has left. Each byte is taken and pushed
+  under the lock into a slot found free there, so producers drain one ring in order and none
+  holds a byte across a preemption; only the wait for a slot runs with the lock open.
 
 **Why the lock is brief, and why it is correct.** The drain ISR runs at
 `PRIO_DEVICE` (0x30). `IrqLock` raises `BASEPRI` to 0x20, which masks everything
@@ -203,8 +204,8 @@ The reason is that the alternative is unavailable rather than merely slower: the
 is already a writer at the device, so a producer writing the refused line there itself
 puts a SECOND writer on the wire and the two interleave mid-line. No locking discipline
 around the fallback fixes that, because the interleaving is between the fallback and a
-drain that is not holding the lock. Waiting instead is a decision for the caller, not
-one the kernel takes on its behalf.
+drain that is not holding the lock. A kernel line is lost to it; a user writer waits for
+room instead (`kconsole_write_user`), as below.
 
 **A fault record's line is the exception.** A thread-fault record (`kprintf_fault`) on the kernel's
 own console is not dropped by a full ring: under the mask, the oldest queued bytes go out through
@@ -217,9 +218,8 @@ most `KDIAG_FAULT_LINE_MAX - 1` characters, masks for at most twice that many by
 time scaling with the console's baud. On a wedged channel it masks for at most one stall window of
 the polled writer: once a run reports a stall, the rest of the room is taken unsent. On a backend
 with no TX interrupt the drain that sends the rest runs after the mask is dropped. A record line is
-still refused by a line wider than the ring, by an insert or a record line it interrupted, and on a
-backend with no TX interrupt by a producer drain holding a byte it took, the one writer the mask does
-not stop. Each run is taken before it is written, so a synchronous fault in the polled writer whose
+still refused by a line wider than the ring, and by an insert, a record line or a producer drain's
+push it interrupted. Each run is taken before it is written, so a synchronous fault in the polled writer whose
 handler records again or flushes for a panic sends no byte twice; that flush loses the unsent rest
 of the run.
 
@@ -237,27 +237,55 @@ holds about eleven lines at the default 256-byte bound and about five on a board
 which is inside the length of the shorter blocks.
 
 The kernel console is a DEBUG facility, so a line lost to pressure is lost and nothing counts it.
-The USER path is different: `kos_kconsole_write` splits a write into chunks, and the syscall STOPS
-at the first byte the console refused and returns how much landed, in the shape of `write(2)`: a
-short count, or `-KOS_EAGAIN` when no input byte completed, so userspace retries or gives up, or
-`-KOS_EBUSY` when a driver serves the console and the caller's own stdout send would be taken now,
-so userspace sends there instead. Carrying on past a refusal would put a hole in the middle of a
-line whose tail arrived, which is worse than losing the line.
+The USER path is different: `kos_kconsole_write` splits a write into chunks, waits where the
+console cannot take a chunk yet (below), and STOPS at the first byte the console refused and
+returns how much landed, in the shape of `write(2)`: a short count where a peer node's claim ended
+inside the write, or `-KOS_EBUSY` when a driver serves the console and the caller's own stdout send
+would be taken now, so userspace sends there instead. Carrying on past a refusal would put a hole
+in the middle of a line whose tail arrived, which is worse than losing the line.
 
 **The one copy of the userspace policy is `stdout_write` (`<kickos/sys/emit.h>`)**: the TAP harness,
 `kos_print` and libc's `_write` all write through it, so `kos_print` blocks where `write(1)` would
-and, for a task that set O_NONBLOCK, stops where it would wait. The raw `kos_kconsole_write` is the
-one call that drops: it answers how much it took, and an app that calls it marks the line as the
-measurement (`tests/static/check_kconsole_emit.sh`). It sends on capability 0, and a
-receiver taking fewer bytes than a chunk, none included, is offered the rest again there: the
-rendezvous consumed the receive, so the next send parks until the driver receives again and the
-retry never spins. With no receiver it hands the remainder to the kernel console, and
-`kconsole_write_all`, the entry for a writer that starts at the kernel console, hands it back to
-`stdout_write` on `-KOS_EBUSY`. The kernel console's short count is offered again, yielding between
-attempts, until it is taken: the ring drains and a peer node's claim on a shared UART ends, so no
-bound gives a line up. Output is not lost. A writer the console cannot serve at all waits in the
-kernel instead, in the dark window below, and the only way out of either wait is the writer's own
-kill or slay.
+and, for a task that set O_NONBLOCK, stops where it would wait. `stdout_write` sends on capability
+0, and a receiver taking fewer bytes than a chunk, none included, is offered the rest again there:
+the rendezvous consumed the receive, so the next send parks until the driver receives again and
+the retry never spins. Only a send no route serves hands the remainder to the kernel console:
+`-KOS_EBADF` (capability 0 empty), `-KOS_EAGAIN` (no receiver serves the console) and
+`-KOS_ECONNREFUSED` (its driver gone for good). `kconsole_write_all`, the entry for a writer that
+starts at the kernel console, hands it back to `stdout_write` on `-KOS_EBUSY`.
+
+**A refusal ends the write, as `write(2)` ends.** Any other answer of the send, and any refusal of
+the kernel console but `-KOS_EBUSY`, stops `stdout_write` where it stands: it reports the bytes
+that went and that error, and the bytes after them are not counted taken. That covers a buffer
+the kernel refuses (`-KOS_EFAULT`) and a writer cancelled while it waited (`-KOS_ECANCELED`).
+libc's `_write` returns the count where any byte went, else -1 with `errno` from the kernel's
+error (`EFAULT`, `ECANCELED`, `EAGAIN` for a would-wait). `kos_print` returns nothing and does
+what the one writer does.
+
+**A full ring makes the user writer wait in the kernel, as a pipe's writer waits.** On a backend
+with no TX interrupt the writer drains the ring itself, synchronously, sending the queued bytes
+ahead of its line until the line fits and never more than the line needs, then its own line: a
+writer above the one that queued those bytes does not wait for it to run. On a backend whose TX
+interrupt drains the ring the writer sleeps on the console until that drain has freed the room its
+line needs (`console_room_wait`, `console_tx_room_freed`), a publish and a reclaim waking it too. A
+peer node's claim on a shared UART is waited out by parking a poll interval between offers
+(`console_claim_wait`), since nothing marks the end of that claim. A TX channel that never drains
+blocks the writer as a pipe nobody reads does. No bound gives a line up,
+and output is not lost. A writer the console cannot serve at all waits in the kernel too, in the
+dark window below, and the only way out of either wait is the writer's own kill or slay; a task
+that set O_NONBLOCK is answered at once instead. A writer whose own task holds the console's
+registers is not made to wait for a drain that task can stop: its line is lost to the kernel
+console at once. The raw `kos_kconsole_write` is the same kernel write, and the one call that
+drops where no route reaches the wire: it answers how much it took, and an app that calls it marks
+the line as the measurement (`tests/static/check_kconsole_emit.sh`).
+
+**A thread of the task that serves the console has no capability 0.** A send there would wait on
+the very receiver that is sending, so neither the spawn nor a publish seats one in it, and a
+publish empties the one a member already holds (`cap_console_serve`). Its `kos_print`, `printf`,
+`std::terminate` and exception reports take the kernel console, which drops the line at once
+while that task owns the UART: the write returns, and the line is lost to that route, RTT still
+carrying it where the build has RTT. A driver that needs a line on the wire writes it through its
+own device path.
 
 ### Non-blocking stdout
 
@@ -277,9 +305,10 @@ paths that would wait:
   included, and a send on any other endpoint parks as before.
 - A kernel console write that would wait or have to try again is answered `-KOS_ETIMEDOUT`: the
   dark window, a full ring, a peer node's claim on a shared UART.
-- `kickos::stdout_write` stops at that answer, so a write that would block writes nothing and
-  returns -1 with `errno` `EAGAIN`, and the task carries on. A partial accept returns the short
-  count: a receiver taking part of a message, or a kernel console taking part of a write.
+- `kickos::stdout_write` stops at that answer and reports it with the bytes that went, so a write
+  that would block writes nothing and returns -1 with `errno` `EAGAIN`, and the task carries on.
+  A partial accept returns the short count: a receiver taking part of a message, or a kernel
+  console taking part of a write.
 - It never answers `EPIPE`. A console whose endpoint is gone for good falls back to the kernel
   console, which then owns the device, so nothing is ever unwritable for good.
 
@@ -456,7 +485,9 @@ refusal changes nothing: no right seated, no reference taken, the console untouc
 
 **A DRIVER DEATH is the second route to `RECLAIMED`, and a driver is dead only when its task
 dies.** The task the console was published for ending, or its slot going back before it ever ran,
-NOTES the death (`task_end`, `cap_console_task_ended`), and `console_on_driver_death` then asks the
+NOTES the death (`task_end`, `cap_console_task_ended`); a kill or a slay of that task ends it at
+once, before its members have run to their deaths (`task_stop`), so a slay that times out still
+leaves the console ended, and `console_on_driver_death` then asks the
 DEVICE: it defers while any live thread still holds `arch_console_reclaim_window()`. The task's end
 slays every member, so a holder of that task is gone in finite time: the note stays SET across a
 refusal and every `exit_current` re-runs the check, so the LAST holder's own exit reclaims. A
@@ -630,7 +661,9 @@ wait that the reclaim and a publish both wake (`console_dark_wait`, `console_dar
 writes it: polled after the reclaim, or handed back on `-KOS_EBUSY` after a publish, which
 `kickos::stdout_write` (`<kickos/sys/emit.h>`) then sends to the endpoint. The wait ends otherwise
 only on the writer's own kill or slay. A task that set O_NONBLOCK is answered `-KOS_ETIMEDOUT`
-there instead. The line lands exactly once: on the wire, and on RTT where the build also carries
+there instead. The init's report of a console driver's failed start (`kickos::driver::report`)
+is such a writer: where a slain member of the ended task still holds the console's window, the
+report waits for that member to exit and the reclaim to write it. The line lands exactly once: on the wire, and on RTT where the build also carries
 it, a writer offering a line again putting on RTT only the bytes the chip took. So RTT shows a
 line waiting in the window only once the reclaim writes it, and never one that leaves through
 `-KOS_EBUSY` for the endpoint. What the window

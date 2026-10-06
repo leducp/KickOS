@@ -18,6 +18,8 @@ namespace darkseam
     extern uint32_t g_reclaims;
     // Whether the console's register window is free.
     extern bool g_window_free;
+    // Whether arch_console_write inserts into the ring an arm armed, rather than writing.
+    extern bool g_ring_backed;
 
     void reset();
 }

@@ -22,9 +22,8 @@ Each mechanism's exact contract is `reference/architecture.md`, `console.md`, `i
 
 - **Endpoint/IPC** (syscalls 26/27/28): arch-independent, no per-chip gap. K64F + XMC 39/39 under
   enforcement, rest build-only.
-- **Console handover**: this entry recorded userspace drivers on two chips
-  (`system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`). The set has since grown to ten
-  driver directories, polled and IRQ-driven UARTs plus two USB CDC consoles; it is whatever
+- **Console handover**: this entry recorded polled userspace drivers on two chips, since replaced
+  by their IRQ-driven counterparts. The set is IRQ-driven UARTs plus two USB CDC consoles; it is whatever
   a grep of `system/driver/` for the console service kind reports, counted per driver directory rather than per
   file. G1 survives only for the boards the 2.1 table below still marks GAP.
 - **Panic reclaim**: most of the fleet now carries a real body. The set is whatever
@@ -47,7 +46,7 @@ Silicon-gating: **HW** = needs the board on a bench; **NOW** = doable in-tree / 
 ### G1. Fleet-wide userspace UART / console drivers (OPEN)
 Section 2.1 is the live per-board status, and the boards it still marks GAP are what is left. Each
 driver = {claim the DEV window
-via the MMIO grant, poll TX-ready, drive the ASC/UART, answer the stdout endpoint}, and `xmcuart` is
+via the MMIO grant, poll TX-ready, drive the ASC/UART, answer the stdout endpoint}, and `xmcuartirq` is
 the template. Effort **M per chip family**, less within a family (the 3-4 STM32 USART parts share one
 driver).
 
@@ -89,9 +88,9 @@ Effort **S-M** for the remaining port; the register list is the work.
 
 ### G3. Handover validation per board (PARTLY CLOSED)
 Functional handover wherever a driver exists; ISOLATION only where the MPU permits.
-- **K64F functional half CLOSED** (frdmk64f, 2026-07-30): the full service list (`k64uart` +
-  `k64dspi`) reported `[k64uart] driver up (polled TX)` and ran the whole 66-case TAP suite through
-  the driver. Its reclaim body is written and still UNWITNESSED, the open remainder here.
+- **K64F functional half CLOSED** (frdmk64f, 2026-07-30): the full service list (the polled
+  console driver since removed, and `k64dspi`) reported the console driver up and ran the whole
+  66-case TAP suite through the driver. Its reclaim body is written and still UNWITNESSED, the open remainder here.
 - **Real per-thread peripheral isolation** (grant = a security boundary), OPEN on RX72M and ESP32-C6:
   both G5 prereqs (the RX IRQ demux, the C6 APM open) are CLOSED, and what is still missing is the
   on-silicon isolation witness. XMC is proven (xmcspi).
@@ -143,8 +142,8 @@ power-manager service (G7, sections 3 and 6).
   building drivers on top. Effort **S**, **NOW**.
 
 ### G6. Driver-API maturation (OPEN: the build-layering question)
-The driver-lib + demo split is under way, not finished. `system/driver/<chip>/{xmcuart, xmcssc,
-k64uart, k64dspi}` are LIBS (`add_library`) with a demo app linking them, while
+The driver-lib + demo split is under way, not finished. `system/driver/<chip>/{xmcssc,
+k64dspi}` are LIBS (`add_library`) with a demo app linking them, while
 `user/apps/<board>/{xmcspi, f411spi, k64drv, rxdrv}` are still monolithic DIAGNOSTIC apps
 (`kickos_add_diagnostic_apps`) with driver and demo fused.
 
@@ -205,8 +204,8 @@ status.
 
 | Board | Console UART (instance) | Isolation ceiling | Kernel console today | Userspace driver | Priority |
 |---|---|---|---|---|---|
-| XMC4800 | XMC USIC0-ch0 (U0C0) ASC @0x40030000 | PMSA per-thread (REAL) | ring + sync | **DONE (xmcuart)** | -- |
-| K64F | Kinetis UART0 @0x4006A000 | coarse-AIPS (doc only) | ring + sync | **DONE (k64uart)**, reclaim unwitnessed | -- |
+| XMC4800 | XMC USIC0-ch0 (U0C0) ASC @0x40030000 | PMSA per-thread (REAL) | ring + sync | **DONE (`xmcuartirq`)** | -- |
+| K64F | Kinetis UART0 @0x4006A000 | coarse-AIPS (doc only) | ring + sync | **DONE (`k64uartirq`)**, reclaim unwitnessed | -- |
 | RX72M | Renesas SCI6 @0x0008A0C0 | RX-MPU per-thread (REAL) | ring | **DONE (`rxsci`)** | -- (G5 IRQ demux closed with it) |
 | ESP32-C6 | C6 UART0 @0x60000000 (128-FIFO) | PMP per-thread (REAL) | ring | **DONE (`c6uart`)** | -- |
 | ESP32-WROOM (LX6) | Xtensa UART0 @0x3FF40000 (128-FIFO) | none (no MPU) | ring | **DONE (`lx6uart`)** | -- |

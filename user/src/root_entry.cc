@@ -9,6 +9,16 @@
 
 #include <kickos/arch/arch.h>
 
+// DWARF unwind tables, which an -nostartfiles link leaves unregistered: EHABI and SJLJ unwinders
+// register none, the sim's host crt registers its own, and a PE32+ image cannot hold the weak
+// reference (system/cxx/exception_report.cc registers there).
+#if KICKOS_LINKER_WEAK_UNDEF and not KICKOS_ARCH_SIM and not defined(__ARM_EABI__) \
+    and not defined(__USING_SJLJ_EXCEPTIONS__)
+#define KICKOS_ROOT_REGISTERS_FRAMES 1
+#else
+#define KICKOS_ROOT_REGISTERS_FRAMES 0
+#endif
+
 extern "C"
 {
     // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script routes them
@@ -20,21 +30,20 @@ extern "C"
     extern void (*__kickos_app_init_array_start[])();
     extern void (*__kickos_app_init_array_end[])();
 
-#if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
-    // DWARF EH unwind tables and libgcc's registrar for them, app-side where the image is split.
-    // Weak: null in a freestanding image, and on a target whose unwinder finds the tables another
-    // way. A PE32+ image links no libgcc and cannot resolve a weak undefined reference.
+#if KICKOS_ROOT_REGISTERS_FRAMES
     extern unsigned char __eh_frame_start[];
-    // NOT one of the bounds include/kickos/klink.h makes strong: this symbol is libgcc's
-    // and optional by libgcc's own contract, so no linker script can state it.
+    // Weak, and NOT one of the bounds include/kickos/klink.h makes strong: it is libgcc's, and
+    // an image that never unwinds pulls neither it nor the malloc it calls.
     void __register_frame(void*) __attribute__((weak));
 #endif
 }
 
 extern "C" void kickos_root_entry(void*)
 {
-#if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
-    // Before the ctors below, one of which may throw.
+#if KICKOS_ROOT_REGISTERS_FRAMES
+    // HERE AND NOT IN Reset_Handler: the registrar mallocs, and libc finds its state through the
+    // thread pointer, which names no block until a thread is switched in. Before the ctors
+    // below, one of which may throw.
     if (__register_frame != nullptr)
     {
         __register_frame(__eh_frame_start);

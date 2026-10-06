@@ -65,11 +65,11 @@ TEST(ConsoleHeldRtt, ARefusedUserLineIsNotOnRtt)
         consoleseam::set_slot_free(0);
         heldseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
         std::string const fill(1u, 'f');
-        while (kickos::kconsole_write_user(fill.data(), fill.size(), true) != 0)
+        while (kickos::kconsole_write_user(fill.data(), fill.size(), false) != 0)
         {
         }
         g_rtt.clear();
-        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), 0);
+        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, false), 0);
         EXPECT_EQ(g_rtt, "") << "a line the console refused reached RTT";
     });
 }

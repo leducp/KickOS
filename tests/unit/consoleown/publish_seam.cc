@@ -88,6 +88,9 @@ namespace kickos
         return false;
     }
 
+    // No ring to wait on: the write ends.
+    int console_room_wait(char const*, size_t, int) { return -KOS_ECANCELED; }
+
     int console_dark_wait(void)
     {
         return 0;

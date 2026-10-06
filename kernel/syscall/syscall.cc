@@ -119,10 +119,9 @@ namespace kickos
                       "refused whatever the ring holds");
 
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
-        // the bytes that went out, or with none, -KOS_EAGAIN where the console could take
-        // nothing now, -KOS_EBUSY where the caller's stdout is served again, -KOS_EFAULT where
-        // the buffer went away and -KOS_ECANCELED where the writer was cancelled waiting. A
-        // non-blocking task is answered -KOS_ETIMEDOUT for the wait and the try-again alike.
+        // the bytes that went out, or with none, -KOS_EBUSY where the caller's stdout is served
+        // again, -KOS_EFAULT where the buffer went away and -KOS_ECANCELED where the writer was
+        // cancelled waiting. A non-blocking task is answered -KOS_ETIMEDOUT where it would wait.
         __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
         {
             char chunk[CONSOLE_CHUNK];

@@ -206,7 +206,7 @@ ctl_rv32() {
 '   mpu     off' \
 '   sched   tickless' \
 '   build   2026-09-19 13:03:09 +0200' \
-'   app     Sep 19 2026 13:02:57 +0200' \
+'   app     bench Sep 19 2026 13:02:57 +0200' \
 '   commit  443562b4-dirty' \
 '   heap    16 KiB available' \
 '   kstack  1184 B x 17 = 20128 B' \

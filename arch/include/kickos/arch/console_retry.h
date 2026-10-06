@@ -68,8 +68,9 @@ namespace kickos::console_retry
     };
 
     // Panic, fault and ISR output on a claimed UART, which no caller can offer again. A line
-    // whose claim was lost, or whose FIFO wedged, is dropped up to and including its '\n',
-    // however many calls carry it.
+    // whose claim was lost is dropped up to and including its '\n', however many calls carry it.
+    // A wedged FIFO ends the call: its caller discards the rest, '\n' included, so the next call
+    // starts a line.
     class PolledLine
     {
     public:
@@ -86,11 +87,12 @@ namespace kickos::console_retry
                     continue;
                 }
                 Put const result = put(c);
-                dropping_ = result != Put::STORED and c != '\n';
                 if (result == Put::WEDGED)
                 {
+                    dropping_ = false;
                     return false;
                 }
+                dropping_ = result == Put::LOST and c != '\n';
             }
             return true;
         }

@@ -14,6 +14,45 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+namespace
+{
+    int posix_errno(int32_t error)
+    {
+        switch (error)
+        {
+            // The kernel's answer to a non-blocking task where it would wait.
+            case -KOS_ETIMEDOUT:
+            {
+                return EAGAIN;
+            }
+            case -KOS_EFAULT:
+            {
+                return EFAULT;
+            }
+            case -KOS_ECANCELED:
+            {
+                return ECANCELED;
+            }
+            case -KOS_EACCES:
+            {
+                return EACCES;
+            }
+            case -KOS_EPERM:
+            {
+                return EPERM;
+            }
+            case -KOS_EINVAL:
+            {
+                return EINVAL;
+            }
+            default:
+            {
+                return EIO;
+            }
+        }
+    }
+}
+
 extern "C"
 {
 
@@ -25,15 +64,13 @@ int _write(int, char const* buf, int len)
     {
         return 0;
     }
-    // Short only for a non-blocking task: a short write would make newlib offer the rest again,
-    // and a blocking writer's bytes are lost only to its own cancellation.
-    size_t const took = kickos::stdout_write(buf, static_cast<size_t>(len));
-    if (took == 0)
+    kickos::WriteResult const r = kickos::stdout_write(buf, static_cast<size_t>(len));
+    if (r.sent > 0)
     {
-        errno = EAGAIN;
-        return -1;
+        return static_cast<int>(r.sent);
     }
-    return static_cast<int>(took);
+    errno = posix_errno(r.error);
+    return -1;
 }
 
 int _read(int, char*, int)

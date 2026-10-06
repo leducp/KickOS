@@ -5,11 +5,14 @@
 // console write takes the next answer of its own script; an answer that accepts bytes records
 // them on that route.
 // The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
-// task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait.
+// task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait. libc's _write is the
+// stubs' own body, compiled in under the shim's names.
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <csetjmp>
+#include <cstdlib>
 #include <deque>
 #include <string>
 
@@ -42,7 +45,6 @@ namespace
     int g_closes = 0;
     int g_waiting_sends = 0;    // sends that could park
     int g_waiting_kconsole = 0; // kernel console writes that could wait
-    int g_yields = 0;
 
     int32_t next(std::deque<int32_t>& script)
     {
@@ -83,7 +85,6 @@ namespace
         g_closes = 0;
         g_waiting_sends = 0;
         g_waiting_kconsole = 0;
-        g_yields = 0;
         g_rendezvous = false;
     }
 
@@ -101,6 +102,12 @@ namespace
             g_receives.pop_front();
             g_posted = true;
         }
+    }
+
+    void expect_result(kickos::WriteResult r, size_t sent, int32_t error)
+    {
+        EXPECT_EQ(r.sent, sent);
+        EXPECT_EQ(r.error, error);
     }
 
     int32_t rendezvous(void const* buf, size_t len)
@@ -169,10 +176,12 @@ extern "C"
         return 1;
     }
 
-    void kos_yield(void)
+    void kos_exit(int)
     {
-        g_yields = g_yields + 1;
+        abort();
     }
+
+    int _write(int fd, char const* buf, int len);
 }
 
 namespace
@@ -274,17 +283,13 @@ namespace
         EXPECT_EQ(g_kconsole, "line\n");
     }
 
-    // A full kernel console is offered the line until it takes it, however long that is: no
-    // bound gives the line up.
-    TEST(StdoutWrite, AFullKernelConsoleIsOfferedTheLineUntilItTakesIt)
+    // The kernel console waits for room itself, so a writer never offers a line it refused with
+    // nothing taken again: a try-again ends the write instead of spinning on it.
+    TEST(StdoutWrite, AKernelConsoleTakingNothingIsNotOfferedTheLineAgain)
     {
-        constexpr int REFUSALS = 100000;
-        std::deque<int32_t> kconsole(REFUSALS, -KOS_EAGAIN);
-        kconsole.push_back(TAKE_ALL);
-        reset({-KOS_EBADF}, kconsole);
+        reset({-KOS_EBADF}, {-KOS_EAGAIN});
         kickos::emit("line\n");
-        EXPECT_EQ(g_kconsole, "line\n");
-        EXPECT_EQ(g_yields, REFUSALS);
+        EXPECT_EQ(g_kconsole_writes, 1);
         EXPECT_TRUE(g_kconsole_script.empty());
     }
 
@@ -302,7 +307,7 @@ namespace
     TEST(StdoutNonblocking, AConsoleNobodyReceivesOnTakesNothing)
     {
         reset({-KOS_ETIMEDOUT}, {});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 0u);
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_endpoint, "");
         EXPECT_EQ(g_kconsole_writes, 0);
     }
@@ -311,7 +316,7 @@ namespace
     TEST(StdoutNonblocking, APartialAcceptIsTheShortCount)
     {
         reset({2, -KOS_ETIMEDOUT}, {});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 2u);
+        expect_result(kickos::stdout_write("line\n", 5), 2u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_endpoint, "li");
         EXPECT_EQ(g_sends, 2);
     }
@@ -321,16 +326,15 @@ namespace
     TEST(StdoutNonblocking, TheDarkWindowTakesNothing)
     {
         reset({-KOS_EAGAIN}, {-KOS_ETIMEDOUT});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 0u);
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_kconsole_writes, 1);
-        EXPECT_EQ(g_yields, 0);
     }
 
     // A console nobody published takes what fits on the kernel console, and the rest would wait.
     TEST(StdoutNonblocking, TheKernelConsoleTakesWhatFits)
     {
         reset({-KOS_EBADF}, {3, -KOS_ETIMEDOUT});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 3u);
+        expect_result(kickos::stdout_write("line\n", 5), 3u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_kconsole, "lin");
     }
 
@@ -338,24 +342,106 @@ namespace
     TEST(StdoutNonblocking, ARepublishSendsTheLineToTheEndpoint)
     {
         reset({-KOS_EAGAIN, TAKE_ALL}, {-KOS_EBUSY});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 5u);
+        expect_result(kickos::stdout_write("line\n", 5), 5u, 0);
         EXPECT_EQ(g_endpoint, "line\n");
     }
 
-    // The control: a blocking writer whose bytes its own cancellation lost still counts them.
-    TEST(StdoutNonblocking, ABlockingWriterCountsTheWholeLine)
+    // A send no route serves falls back to the kernel console, whose answer is the write's: its
+    // refusal of the buffer included, with nothing counted taken.
+    class StdoutRoute : public ::testing::TestWithParam<int32_t>
     {
-        reset({-KOS_EAGAIN}, {-KOS_ECANCELED});
-        EXPECT_EQ(kickos::stdout_write("line\n", 5), 5u);
+    };
+
+    TEST_P(StdoutRoute, FallsBackToTheKernelConsole)
+    {
+        reset({GetParam()}, {-KOS_EFAULT});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EFAULT);
+        EXPECT_EQ(g_kconsole_writes, 1);
+        reset({GetParam()}, {TAKE_ALL});
+        expect_result(kickos::stdout_write("line\n", 5), 5u, 0);
+        EXPECT_EQ(g_kconsole, "line\n");
     }
 
-    // kos_print is the same writer: a full kernel console ring is waited out, not dropped.
-    TEST(KosPrint, AFullRingIsWaitedOut)
+    INSTANTIATE_TEST_SUITE_P(NoServer, StdoutRoute,
+                             ::testing::Values(-KOS_EBADF, -KOS_EAGAIN, -KOS_ECONNREFUSED));
+
+    // Any other refusal of the send ends the write where it stands: the kernel console is not
+    // asked, and the bytes not sent are not counted.
+    class StdoutRefusal : public ::testing::TestWithParam<int32_t>
     {
-        reset({-KOS_EBADF}, {-KOS_EAGAIN, -KOS_EAGAIN, TAKE_ALL});
+    };
+
+    TEST_P(StdoutRefusal, EndsTheWrite)
+    {
+        reset({2, GetParam()}, {TAKE_ALL});
+        expect_result(kickos::stdout_write("line\n", 5), 2u, GetParam());
+        EXPECT_EQ(g_endpoint, "li");
+        EXPECT_EQ(g_kconsole_writes, 0);
+    }
+
+    INSTANTIATE_TEST_SUITE_P(Permanent, StdoutRefusal,
+                             ::testing::Values(-KOS_EFAULT, -KOS_ECANCELED, -KOS_EACCES,
+                                               -KOS_EINVAL));
+
+    // The kernel console's own refusal ends the write too, with what it took counted.
+    class KconsoleRefusal : public ::testing::TestWithParam<int32_t>
+    {
+    };
+
+    TEST_P(KconsoleRefusal, EndsTheWrite)
+    {
+        reset({-KOS_EBADF}, {3, GetParam()});
+        expect_result(kickos::stdout_write("line\n", 5), 3u, GetParam());
+        EXPECT_EQ(g_kconsole, "lin");
+        EXPECT_TRUE(g_kconsole_script.empty());
+    }
+
+    INSTANTIATE_TEST_SUITE_P(Permanent, KconsoleRefusal,
+                             ::testing::Values(-KOS_EFAULT, -KOS_ECANCELED));
+
+    // Both routes refuse the buffer: nothing is taken, and write(2) answers -1 with EFAULT.
+    TEST(StdoutWrite, ABufferBothRoutesRefuseTakesNothing)
+    {
+        reset({-KOS_EFAULT}, {-KOS_EFAULT});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_EFAULT);
+        reset({-KOS_EFAULT}, {-KOS_EFAULT});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EFAULT);
+    }
+
+    // A writer cancelled waiting on the kernel console has its lost bytes refused, not taken.
+    TEST(StdoutWrite, ACancelledWriterCountsNothingLost)
+    {
+        reset({-KOS_EAGAIN}, {-KOS_ECANCELED});
+        expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ECANCELED);
+        reset({-KOS_EAGAIN}, {-KOS_ECANCELED});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, ECANCELED);
+    }
+
+    // write(2) answers the count where any byte went, the error the kernel gave only where none
+    // did.
+    TEST(StdoutWrite, LibcWriteAnswersTheBytesThatWent)
+    {
+        reset({2, -KOS_EFAULT}, {});
+        errno = 0;
+        EXPECT_EQ(_write(1, "line\n", 5), 2);
+        EXPECT_EQ(errno, 0);
+        reset({-KOS_ETIMEDOUT}, {});
+        EXPECT_EQ(_write(1, "line\n", 5), -1);
+        EXPECT_EQ(errno, EAGAIN);
+        reset({TAKE_ALL}, {});
+        EXPECT_EQ(_write(1, "line\n", 5), 5);
+    }
+
+    // kos_print is the same writer: the kernel waits a full ring out, so a try-again ends the call.
+    TEST(KosPrint, AFullRingIsWaitedOutInTheKernel)
+    {
+        reset({-KOS_EBADF}, {-KOS_EAGAIN});
         kos_print("line\n");
-        EXPECT_EQ(g_kconsole, "line\n");
-        EXPECT_EQ(g_yields, 2);
+        EXPECT_EQ(g_kconsole_writes, 1);
         EXPECT_TRUE(g_kconsole_script.empty());
     }
 
@@ -383,7 +469,6 @@ namespace
         reset({-KOS_EBADF}, {2, -KOS_ETIMEDOUT});
         kos_print("line\n");
         EXPECT_EQ(g_kconsole, "li");
-        EXPECT_EQ(g_yields, 0);
         EXPECT_TRUE(g_kconsole_script.empty());
     }
 }

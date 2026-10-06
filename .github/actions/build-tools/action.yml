@@ -25,11 +25,11 @@ runs:
         set -eu
         command_for() {
           case "$1" in
-            ninja-build)      echo ninja ;;
-            xz-utils)         echo xz ;;
-            qemu-system-misc) echo qemu-system-riscv32 ;;
-            python3-venv)     echo python3 ;;
-            *)                echo "$1" ;;
+            ninja-build)       echo ninja ;;
+            xz-utils)          echo xz ;;
+            qemu-system-riscv) echo qemu-system-riscv32 ;;
+            python3-venv)      echo python3 ;;
+            *)                 echo "$1" ;;
           esac
         }
         need=""

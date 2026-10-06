@@ -163,24 +163,22 @@ TEST(ConsoleRecordRoom, ALineOfTheWholeRoomFollowsTheWholeRing)
     });
 }
 
-// A producer drain holds a byte it took with the mask open: a record line arriving then is
-// refused, and sends nothing.
-TEST(ConsoleRecordRoom, AProducerDrainHoldingAByteRefusesTheRecord)
+// A producer drain holds no byte between its pushes: a record line arriving there makes its room
+// in ring order, after the line the drain is sending.
+TEST(ConsoleRecordRoom, ARecordBetweenAProducerDrainsPushesTakesItsRoomInOrder)
 {
     run_isolated([]() {
         consoleseam::reset(kRing, -1);
         std::string const queued = fill_undrained(64u);
         // The insert's gap, then the one after the drain claims the ring.
         consoleseam::run_in_gap(consoleseam::gap_count() + 2u, []() {
-            g_seen = consoleseam::wire();
             g_nested = console_tx_insert_record_line(kWide.data(), kWide.size(), 0);
-            EXPECT_EQ(consoleseam::wire(), g_seen) << "a refused record line sent bytes";
         });
         EXPECT_EQ(console_tx_insert_line(kLine.data(), kLine.size(), 0),
                   static_cast<int>(kLine.size()));
         ASSERT_TRUE(consoleseam::seat_fired());
-        EXPECT_EQ(g_nested, 0);
-        EXPECT_EQ(consoleseam::wire(), queued + kLine);
+        EXPECT_EQ(g_nested, static_cast<int>(kWide.size()));
+        EXPECT_EQ(consoleseam::wire(), queued + kLine + kWide);
     });
 }
 

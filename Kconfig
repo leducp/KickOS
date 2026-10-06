@@ -1033,7 +1033,7 @@ config KICKOS_MIN_STACK_SIZE
 	# a whole address space at its deepest (x86_64_trap_stack.h).
 	default 3392 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
 	default 2752 if ARCH_X86_64
-	# Above one core the PREEMPT zone alone is 896 (lx6_trap_stack.h).
+	# Above one core the PREEMPT zone alone is 960 (lx6_trap_stack.h).
 	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
 	default 896 if ARCH_LX6
 	default 1024

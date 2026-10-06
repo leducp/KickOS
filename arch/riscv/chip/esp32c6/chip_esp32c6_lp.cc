@@ -24,8 +24,6 @@ extern "C"
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
-    extern uint32_t __eh_frame_start;
-    void __register_frame(void*) __attribute__((weak));
     uint32_t SystemCoreClock = 20000000u;
     extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
 }
@@ -126,10 +124,6 @@ void Reset_Handler(void)
     for (uint32_t* p = &_sbss; p < &_ebss; p++)
     {
         *p = 0;
-    }
-    if (__register_frame != nullptr)
-    {
-        __register_frame(&__eh_frame_start);
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

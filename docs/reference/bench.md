@@ -209,18 +209,21 @@ The other judges are marks:
   a memory-fault arm on a board that enforces no memory; the args say why.
 - `-`: an image nothing judges.
 
-`bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then, on a board
-whose tree declares a `<board>-flat` preset, every image only that flat build ships (`c6lpprobe`,
-which reads a kernel word) and each image its `FLAT_ALSO` names for that board, labelled `(flat)`,
-and, on a board whose tree declares a
-`<board>-amp2-n0` preset, its AMP partition, and prints an "image coverage"
+`bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, then every other
+variant the tree declares as a `<board>-<variant>` preset: of the flat build, every image only it
+ships (`c6lpprobe`, which reads a kernel word) and each image its `FLAT_ALSO` names for that board;
+of the `amp2-n0` build, the AMP partition; of a variant that turns `KICKOS_BENCH` on, nothing, since
+it is the bench sweep's measurement posture and the table says so; of any other variant (`smp`),
+every image, each labelled `(<variant>)`. It prints an "image coverage"
 table naming each image as `captured`, `captured, partly owed: <clauses>`, `NOT RUN`, `NO JUDGE`,
 `emulator-judged`, `emulator-judged, no emulator: owed`, `human-judged (<what>): owed` or
 `inapplicable (<why>)`. Nothing owed is counted as covered, and the pass states how many images
 and clauses it owes. It exits 1 on a failed capture, an `ABSENT` board, or any `NOT RUN` or `NO JUDGE`, which
 make the pass `INCOMPLETE`; 3 when every capture passed and something is still owed; and 0 only when
-nothing is. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
-(`<session>/logs/<tag>-<board>-<image>.log`), so the captures of one pass never share a log.
+nothing is. One TAG covers the whole pass: a capture's log is keyed by tag, board and image
+(`<session>/logs/<tag>-<board>-<image>.log`), the tag of a variant's capture being TAG with the
+variant appended (`<tag>smp`, `<tag>flat`, `<tag>amp2n0`), so the captures of one pass never share
+a log.
 
 `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
 either, so no line it prints is a witness.
@@ -249,8 +252,9 @@ formats from the same version, board, app stamp and stamped build time and label
 (`<kickos/sys/banner_identity.h>`); an image with no app stamp prints no app row. `bench.sh`
 refuses a capture on that route whose last identity block does not name the image it flashed, its
 build and app stamps read out of that image (`identity_verdict`, `tools/bench/banner.sh`), so
-another image of the same build and commit is refused too; and a judge's capture reads from that
-block as it would from a banner.
+another image of the same build and commit is refused too, the app stamp naming its image beside
+the second it was compiled in; and a judge's capture reads from that block as it would from a
+banner.
 
 ## `fpclass` on the RX72M is captured under both presets
 

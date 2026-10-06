@@ -163,6 +163,8 @@ namespace consoletxsmp
 
 extern "C"
 {
+    void console_tx_room_freed(void) {}
+
 
 // At one core, arch_cpu_id is a macro folding to a literal and no other source may define
 // it; the assert above pins which arm this translation unit is on.

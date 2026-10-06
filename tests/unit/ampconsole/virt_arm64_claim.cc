@@ -29,6 +29,8 @@ namespace
 
     // Before the byte at each of these wire offsets, the clock jumps by g_stall.
     std::set<size_t> g_stall_at;
+    // At each of these wire offsets, the FIFO never drains.
+    std::set<size_t> g_wedge_at;
     uint32_t g_stall = STALL;
     // At the first stall, the peer takes the ended grant.
     bool g_peer_steals = false;
@@ -60,6 +62,7 @@ namespace
             g_spurious = 0;
             g_wire.clear();
             g_stall_at.clear();
+            g_wedge_at.clear();
             g_stall = STALL;
             g_peer_steals = false;
             g_peer_seen = 0;
@@ -115,6 +118,10 @@ namespace kickos::virt_arm64::console
 
     bool wait_room(void)
     {
+        if (g_wedge_at.erase(g_wire.size()) != 0)
+        {
+            return false;
+        }
         if (g_stall_at.erase(g_wire.size()) != 0)
         {
             g_now += g_stall;
@@ -168,6 +175,17 @@ TEST_F(VirtArm64Claim, APolledLineLostMidLineStaysDroppedAcrossCalls)
     EXPECT_TRUE(claim.polled_write("ab", 2u, BUDGET));
     g_word = 0; // the peer's line is done
     EXPECT_TRUE(claim.polled_write("\r\n", 2u, BUDGET));
+    EXPECT_EQ(g_wire, "a");
+    EXPECT_TRUE(claim.polled_write("cd\n", 3u, BUDGET));
+    EXPECT_EQ(g_wire, "acd\n");
+}
+
+// A wedge mid-line ends the call, and its caller discards the rest of the line, '\n' included: the
+// next line, once the FIFO drains again, goes out whole.
+TEST_F(VirtArm64Claim, APolledLineWedgedMidLineLeavesTheNextLineWhole)
+{
+    g_wedge_at = {1u};
+    EXPECT_FALSE(claim.polled_write("ab\n", 3u, BUDGET));
     EXPECT_EQ(g_wire, "a");
     EXPECT_TRUE(claim.polled_write("cd\n", 3u, BUDGET));
     EXPECT_EQ(g_wire, "acd\n");

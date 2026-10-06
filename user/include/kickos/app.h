@@ -30,26 +30,28 @@ extern "C"
 
 int kickos_app_main(int argc, char** argv);
 
-// Per-app build stamp: the app's OWN source compile time, distinct from the banner's `build` line.
-// Weak, and allowlisted in tests/static/weak_allowlist.txt: the definition below is emitted by
-// EVERY app TU, so weak is the C-compatible vague linkage that merges the duplicates.
+// Per-app stamp: the image's name and its OWN source compile time, distinct from the banner's
+// `build` line, so two images built in the same second still differ. Weak, and allowlisted in
+// tests/static/weak_allowlist.txt: the definition below is emitted by EVERY TU of an executable, so
+// weak is the C-compatible vague linkage that merges the duplicates. A TU of any other target
+// emits none, so the copy an image links is always its own executable's.
 //
 // Must stay DATA. The banner reads it before any address space is activated, and a kernel-text
 // reference to app text is what tests/static/check_riscv_kernel_apphalf.sh refuses.
 //
-// The banner prints these bytes as they stand, so the layout is C's own spelling:
-// "Mmm dd yyyy HH:MM:SS", with the zone appended when the build supplies one.
+// The banner prints these bytes as they stand: "<image> Mmm dd yyyy HH:MM:SS", C's own spelling of
+// the time, with the zone appended when the build supplies one.
 //
 // Only the DEFINITION below is weak. The kernel's reference states its own linkage
 // (KICKOS_LINK_OPTIONAL), and a weak one here would override it: ld -m i386pep emits no base
 // relocation for a weak reference to a weak definition, which leaves the kernel's pointer at
 // the link address whenever firmware loads the image elsewhere.
-extern char const kickos_app_build_time[];
+extern char const kickos_app_stamp[];
 
 // The two languages spell a PUBLIC const definition differently: `extern` on a definition with an
 // initialiser is a C diagnostic under -Wextra, and without `extern` a const at namespace scope is
 // internal in C++, which a weak symbol may not be.
-#ifdef main
+#if defined(main) && defined(KICKOS_APP_IMAGE)
 #ifdef __cplusplus
 #define KOS_APP_STAMP extern __attribute__((weak)) char const
 #else
@@ -60,11 +62,11 @@ extern char const kickos_app_build_time[];
    carries no quotes to double-escape on a build-dir reconfigure. */
 #define KOS_TZ_STR2(x) #x
 #define KOS_TZ_STR(x) KOS_TZ_STR2(x)
-KOS_APP_STAMP kickos_app_build_time[] = __DATE__ " " __TIME__ " " KOS_TZ_STR(KICKOS_APP_TZ);
+KOS_APP_STAMP kickos_app_stamp[] = KICKOS_APP_IMAGE " " __DATE__ " " __TIME__ " " KOS_TZ_STR(KICKOS_APP_TZ);
 #undef KOS_TZ_STR
 #undef KOS_TZ_STR2
 #else
-KOS_APP_STAMP kickos_app_build_time[] = __DATE__ " " __TIME__;
+KOS_APP_STAMP kickos_app_stamp[] = KICKOS_APP_IMAGE " " __DATE__ " " __TIME__;
 #endif
 #undef KOS_APP_STAMP
 #endif

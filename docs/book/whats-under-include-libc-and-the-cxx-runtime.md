@@ -345,15 +345,15 @@ rest fall through." Same isolation, opposite selector.
 
 Two arch wrinkles worth naming:
 - **DWARF vs ARM-EHABI FDE registration.** On the DWARF arches the `.eh_frame`
-  table must be *registered* at runtime via `__register_frame` -- KickOS does it at boot
-  in the privileged reset handler, so the registry node is allocated while privileged and
-  lands in the granted heap. That is the RISC-V story, and it is the story any other
+  table must be *registered* at runtime via `__register_frame` -- KickOS does it first
+  thing on the root thread, whose thread pointer already names its libc state, so the
+  registry node lands in the granted heap. That is the RISC-V story, and it is the story any other
   DWARF-unwinding arch would take; RX is not a case of it at all, because the GNURX
   toolchain unwinds by setjmp/longjmp and has no `.eh_frame` to register
   (Chapter 7.2 has all three models side by side). ARM-EHABI needs **no
   runtime registration at all**:
   `.ARM.exidx` is found through linker-defined symbols, sidestepping the whole issue --
-  the K64F proof leaned on exactly this, with no boot `__register_frame` in the picture.
+  the K64F proof leaned on exactly this, with no `__register_frame` in the picture.
 - **The RISC-V `gp` wrinkle.** RISC-V's small-data optimization addresses globals relative
   to the `gp` register, and the flag used to route app globals out of the kernel-side `gp`
   window (`-msmall-data-limit=0`) *breaks* DWARF unwinding on a `-fexceptions` TU. The fix

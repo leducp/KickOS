@@ -7,7 +7,7 @@
 # A whole banner title, full or terse, and every row only a banner prints after it. CR tolerated.
 RESET_BOOT_TITLE_RE='^(   KickOS [0-9][^ ]*  -  microkernel RTOS|K [0-9][^ ]*)'$'\r''?$'
 _rb_stamp='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}'
-_rb_app='[A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}( [+-][0-9]{4})?'
+_rb_app='[A-Za-z0-9_.+-]+ [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}( [+-][0-9]{4})?'
 _rb_commit='[A-Za-z0-9._/+-]+'
 RESET_BOOT_ROW_RE='^('\
 '   board   [a-z0-9-]+|b [a-z0-9-]+|'\

@@ -56,6 +56,21 @@ namespace kickos::esp32c6
 
     namespace detail
     {
+        constexpr char HEX_DIGITS[] = "0123456789abcdef";
+        constexpr char REFUSAL_HEAD[] = "KickOS: ESP32-C6 CPU clock of ";
+        constexpr char REFUSAL_RATE[] =
+            " Hz is not 160 MHz >> n, so MTIME has no exact rate (SYSCLK_CONF ";
+        constexpr char REFUSAL_FREQ[] = ", CPU_FREQ_CONF ";
+        constexpr char REFUSAL_TAIL[] = ")\n";
+        constexpr size_t DEC_MAX = 10u; // digits of a uint32_t
+        constexpr size_t HEX_LEN = 10u; // "0x" and eight digits
+
+        template<size_t N>
+        constexpr size_t text_len(char const (&)[N])
+        {
+            return N - 1u;
+        }
+
         inline size_t put_text(char* out, size_t at, char const* s)
         {
             while (*s != '\0')
@@ -67,7 +82,7 @@ namespace kickos::esp32c6
 
         inline size_t put_dec(char* out, size_t at, uint32_t v)
         {
-            char digits[10];
+            char digits[DEC_MAX];
             size_t n = 0;
             do
             {
@@ -86,7 +101,7 @@ namespace kickos::esp32c6
             at = put_text(out, at, "0x");
             for (int nibble = 7; nibble >= 0; nibble--)
             {
-                out[at++] = "0123456789abcdef"[(v >> (4 * nibble)) & 0xFu];
+                out[at++] = HEX_DIGITS[(v >> (4 * nibble)) & 0xFu];
             }
             return at;
         }
@@ -94,18 +109,27 @@ namespace kickos::esp32c6
 
     constexpr size_t CLOCK_REFUSAL_MAX = 160u;
 
+    // The writes below are unchecked, and run in Reset_Handler before anything can report an
+    // overrun.
+    static_assert(detail::text_len(detail::REFUSAL_HEAD) + detail::DEC_MAX
+                          + detail::text_len(detail::REFUSAL_RATE) + detail::HEX_LEN
+                          + detail::text_len(detail::REFUSAL_FREQ) + detail::HEX_LEN
+                          + detail::text_len(detail::REFUSAL_TAIL)
+                      <= CLOCK_REFUSAL_MAX,
+                  "the clock refusal's longest message overruns its buffer");
+
     // The boot's refusal of a CPU clock MTIME cannot count exactly, naming the rate decoded (0 for
     // none) and the two PCR words it came from. Answers the length written into `out`.
     inline size_t clock_refusal(char (&out)[CLOCK_REFUSAL_MAX], uint32_t hz, uint32_t sysclk_conf,
                                 uint32_t cpu_freq_conf)
     {
-        size_t at = detail::put_text(out, 0, "KickOS: ESP32-C6 CPU clock of ");
+        size_t at = detail::put_text(out, 0, detail::REFUSAL_HEAD);
         at = detail::put_dec(out, at, hz);
-        at = detail::put_text(out, at, " Hz is not 160 MHz >> n, so MTIME has no exact rate (SYSCLK_CONF ");
+        at = detail::put_text(out, at, detail::REFUSAL_RATE);
         at = detail::put_hex(out, at, sysclk_conf);
-        at = detail::put_text(out, at, ", CPU_FREQ_CONF ");
+        at = detail::put_text(out, at, detail::REFUSAL_FREQ);
         at = detail::put_hex(out, at, cpu_freq_conf);
-        return detail::put_text(out, at, ")\n");
+        return detail::put_text(out, at, detail::REFUSAL_TAIL);
     }
 
     // The shift with hz == MTIME_TOP_HZ >> shift, or -1 for a rate the conversions below cannot
@@ -152,7 +176,8 @@ namespace kickos::esp32c6
         uint64_t const hi_lo = static_cast<uint64_t>(a_hi) * b_lo;
         uint64_t const lo_hi = static_cast<uint64_t>(a_lo) * b_hi;
         uint64_t const hi_hi = static_cast<uint64_t>(a_hi) * b_hi;
-        uint64_t const cross = (lo_lo >> 32) + static_cast<uint32_t>(hi_lo) + static_cast<uint32_t>(lo_hi);
+        uint64_t const cross =
+            (lo_lo >> 32) + static_cast<uint32_t>(hi_lo) + static_cast<uint32_t>(lo_hi);
         return hi_hi + (hi_lo >> 32) + (lo_hi >> 32) + (cross >> 32);
     }
 
