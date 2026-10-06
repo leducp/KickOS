@@ -121,26 +121,45 @@ console_row() {
     return 0
 }
 
+# elf_symbol_at <elf> <symbol>
+#
+# Prints the file offset and the size of <symbol>'s bytes in <elf>, read through readelf alone,
+# which takes every target's ELF. Returns 1 where the symbol is undefined or holds no file bytes.
+elf_symbol_at() {
+    local sym sec at
+    sym=$(LC_ALL=C readelf -sW "$1" 2>/dev/null \
+        | awk -v name="$2" '$8 == name && $7 != "UND" { print $2, $3, $7; exit }')
+    [ -n "$sym" ] || return 1
+    # shellcheck disable=SC2086
+    set -- "$1" $sym
+    sec=$(LC_ALL=C readelf -SW "$1" 2>/dev/null \
+        | sed -n "s/^ *\[ *$4\] *//p" | awk '{ print $2, $3, $4; exit }')
+    [ -n "$sec" ] || return 1
+    # shellcheck disable=SC2086
+    set -- "$2" "$3" $sec
+    [ "$3" != NOBITS ] || return 1
+    at=$(( 0x$5 + 0x$1 - 0x$4 ))
+    printf '%s %s\n' "$at" "$(( $2 ))"
+}
+
 # usb_console_image <elf>
 #
 # Succeeds where the image's kickos_usb_device_console (<kickos/usb_console.h>) is 1: its stdout
-# is a USB device console, so its console is the device's own ACM. Read from the file through
-# readelf alone, which takes every target's ELF.
+# is a USB device console, so its console is the device's own ACM.
 usb_console_image() {
-    elf="$1"
-    sym=$(LC_ALL=C readelf -sW "$elf" 2>/dev/null \
-        | awk '$8 == "kickos_usb_device_console" && $7 != "UND" { print $2, $7; exit }')
-    [ -n "$sym" ] || return 1
-    value=${sym% *}
-    ndx=${sym#* }
-    sec=$(LC_ALL=C readelf -SW "$elf" 2>/dev/null \
-        | sed -n "s/^ *\[ *$ndx\] *//p" | awk '{ print $2, $3, $4; exit }')
-    [ -n "$sec" ] || return 1
-    set -- $sec
-    [ "$1" != NOBITS ] || return 1
-    at=$(( 0x$3 + 0x$value - 0x$2 ))
-    byte=$(dd if="$elf" bs=1 skip="$at" count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+    local span byte
+    span=$(elf_symbol_at "$1" kickos_usb_device_console) || return 1
+    byte=$(dd if="$1" bs=1 skip="${span% *}" count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
     [ "$byte" = 1 ]
+}
+
+# image_string <elf> <symbol>
+#
+# Prints the string <symbol> holds in <elf>, up to its NUL. Returns 1 where it holds none.
+image_string() {
+    local span
+    span=$(elf_symbol_at "$1" "$2") || return 1
+    dd if="$1" bs=1 skip="${span% *}" count="${span#* }" 2>/dev/null | tr -d '\000'
 }
 
 # The glob expansion, as a script, so a pattern is expanded WHERE THE DEVICES ARE and by the

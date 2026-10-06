@@ -5,8 +5,9 @@
 #   extern "C" char const kickos_build_time[]
 #   extern "C" char const kickos_build_commit[]
 # and, with -DIDENTITY=<file.cc>, a second one for the user side defining
+#   extern "C" char const kickos_identity_build_time[]
 #   extern "C" char const kickos_identity_commit[]
-# the same label.
+# the same time and label.
 #
 # Why not __DATE__/__TIME__: those bake into whichever TU is compiled, so on an
 # incremental build the banner shows the time that TU last compiled, NOT the time the
@@ -36,5 +37,7 @@ file(WRITE "${OUT}"
     "extern \"C\" char const kickos_build_time[] = \"${_t} ${_z}\";\n"
     "extern \"C\" char const kickos_build_commit[] = \"${_g}\";\n")
 if(DEFINED IDENTITY)
-    file(WRITE "${IDENTITY}" "extern \"C\" char const kickos_identity_commit[] = \"${_g}\";\n")
+    file(WRITE "${IDENTITY}"
+        "extern \"C\" char const kickos_identity_build_time[] = \"${_t} ${_z}\";\n"
+        "extern \"C\" char const kickos_identity_commit[] = \"${_g}\";\n")
 endif()

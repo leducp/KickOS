@@ -13,6 +13,14 @@
 namespace
 {
     constexpr uint64_t SLEEP_NS = 5000000000ull;
+
+    // The kernel time one sleep takes, read on either side of the sleep alone.
+    uint64_t timed_sleep()
+    {
+        uint64_t const from = kos::clock_now();
+        kos::sleep_ns(SLEEP_NS);
+        return kos::clock_now() - from;
+    }
 }
 
 int main(int, char**)
@@ -21,17 +29,14 @@ int main(int, char**)
     ksnprintf(line, sizeof(line), "[wallclock] mark 0, sleeping %llu ns\n",
               static_cast<unsigned long long>(SLEEP_NS));
     kos::print(line);
-    uint64_t const t0 = kos::clock_now();
-    kos::sleep_ns(SLEEP_NS);
-    uint64_t const t1 = kos::clock_now();
+    uint64_t took = timed_sleep();
     ksnprintf(line, sizeof(line),
               "[wallclock] mark 1, the kernel clock advanced %llu ns, sleeping %llu ns\n",
-              static_cast<unsigned long long>(t1 - t0), static_cast<unsigned long long>(SLEEP_NS));
+              static_cast<unsigned long long>(took), static_cast<unsigned long long>(SLEEP_NS));
     kos::print(line);
-    kos::sleep_ns(SLEEP_NS);
-    uint64_t const t2 = kos::clock_now();
+    took = timed_sleep();
     ksnprintf(line, sizeof(line), "[wallclock] mark 2, the kernel clock advanced %llu ns\n",
-              static_cast<unsigned long long>(t2 - t1));
+              static_cast<unsigned long long>(took));
     kos::print(line);
     kos::print("[wallclock] done\n");
     return 0;

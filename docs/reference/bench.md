@@ -18,7 +18,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/stamper.sh` | sourced: starts the stamper with no earlier `<log>.times` left, refuses a capture whose stamper is not running or failed, and truncates the log only with no stamper over it |
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
-| `tools/bench/amp_peers.sh` | sourced: the other nodes' flash text windows of an own-image AMP node's build, which a capture of that image alone erases before the load so the node runs with no peer |
+| `tools/bench/amp_peers.sh` | sourced: the other nodes' flash text windows of an own-image AMP node's build, which a capture of that image alone erases before the load so the node runs with no peer; only the RP2 boards' picotool load erases them, and it needs picotool 2.x and whole 4 KiB sectors, so any other board's capture refuses them |
 | `tools/bench/board-rows.sh` | sourced: THE per-board table, the probe row that decides presence and the console row a capture opens |
 | `tools/bench/exit_rows.py` | READ ONLY: extract the M9.7 emulator exit rows from `docs/archive/M9.7_exit_captures/`, its row pattern also matching the M8.12 format quoted in `docs/archive/M8.12_meas.md` lines 238-239; require every named capture and sampled row |
 
@@ -244,11 +244,13 @@ and `selftest_rt1062usb` on `teensy41`, `usbcdcwit` and `wallclock_usb` are thos
 publishes.
 
 The kernel banner never reaches that console, so the driver opens the host's stream, at each
-configuration, with the banner's identity rows: title, board and commit, in `kbanner`'s formats
-from the same version, board and stamped label (`<kickos/sys/banner_identity.h>`). `bench.sh`
-refuses a capture on that route whose last identity block does not name the build it flashed
-(`identity_verdict`, `tools/bench/banner.sh`), and a judge's capture reads from that block as it
-would from a banner.
+configuration, with the banner's identity rows: title, board, build, app and commit, in `kbanner`'s
+formats from the same version, board, app stamp and stamped build time and label
+(`<kickos/sys/banner_identity.h>`); an image with no app stamp prints no app row. `bench.sh`
+refuses a capture on that route whose last identity block does not name the image it flashed, its
+build and app stamps read out of that image (`identity_verdict`, `tools/bench/banner.sh`), so
+another image of the same build and commit is refused too; and a judge's capture reads from that
+block as it would from a banner.
 
 ## `fpclass` on the RX72M is captured under both presets
 

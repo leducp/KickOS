@@ -135,7 +135,7 @@ int main(int, char**)
     // this function's stack pointer out from under it mid-frame.
     //
     // The read, the msr, the isb and the read-back are ONE asm block and must stay one.
-    // Any syscall in between - an kos::print() included - re-enters the kernel, and the syscall
+    // Any syscall in between - a kos::print() included - re-enters the kernel, and the syscall
     // return path restores CONTROL.nPRIV from ctx.resting_npriv (switch.S), which would
     // paper a successful promotion straight back over to 1 and turn this arm green on a
     // broken system. Both operands are read inside the block for the same reason: the

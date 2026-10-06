@@ -79,11 +79,39 @@ rig_find "$ROOT" || true
 PATH="$PATH:$HOME/.local/bin"
 export PATH
 
-refuse() { printf 'REFUSING: %s\n' "$*" >&2; exit 1; }
+READER=""
+READER_GROUP=0
+# The reader armed last, and with it every process of its group when it leads one.
+stop_reader() {
+  [ -n "$READER" ] || return 0
+  if [ "$READER_GROUP" = 1 ]; then
+    kill -- "-$READER" 2>/dev/null
+  else
+    kill "$READER" 2>/dev/null
+  fi
+  READER=""
+}
+# A refusal leaves no reader holding the port and no stamper running behind it.
+stop_capture() {
+  stop_reader
+  stamper_stop || true
+}
+refuse() {
+  stop_capture
+  printf 'REFUSING: %s\n' "$*" >&2
+  exit 1
+}
 
 [ -x "$ROOT/tools/flash.sh" ] || refuse "no $ROOT/tools/flash.sh: ROOT does not hold the flash recipes"
 [ -f "$ROOT/boards/$BOARD/board.cmake" ] || refuse "no $ROOT/boards/$BOARD/board.cmake"
 [ -e "$IMG" ] || [ -e "$IMG.hex" ] || refuse "no image at $IMG or $IMG.hex"
+# Only the picotool loads erase the peers' flash windows; any other route would leave them to run.
+if [ -n "${PEER_ERASE:-}" ]; then
+  case $BOARD in
+    picopi|pizero2350) ;;
+    *) refuse "PEER_ERASE names flash windows to erase ($PEER_ERASE), and $BOARD's load erases none" ;;
+  esac
+fi
 
 mkdir -p "$(dirname "$LOG")" || refuse "cannot create the log directory for $LOG"
 
@@ -170,6 +198,7 @@ arm_waiting_reader() {
       sleep 0.05
     done' _ "$PATTERN" >> "$LOG" &
   READER=$!
+  READER_GROUP=1
 }
 
 # Answered from the LOG, the device having usually gone by now. dmesg_restrict is 1 here, so
@@ -197,7 +226,6 @@ stop_stamper() {
   stamper_stop || refuse "$STAMPER_WHY"
 }
 
-READER=""
 # A reader armed before the flash must still be alive after it. An FTDI reverts min/time
 # when the last opener closes, and a dead reader leaves a 0-byte log that reads exactly
 # like a board that printed nothing.
@@ -227,10 +255,11 @@ note_reader() {
 arm_wrapped_reader() {
   setsid bash -c 'while true; do cat "$1"; sleep 0.2; done' _ "$1" >> "$LOG" &
   READER=$!
+  READER_GROUP=1
 }
 stop_wrapped_reader() {
   [ -n "$READER" ] || return 0
-  kill -- "-$READER" 2>/dev/null
+  stop_reader
   sleep 1
   # The holder check needs a pinned $PORT; a self-USB console has none, and is usually off
   # the bus by now.
@@ -280,6 +309,7 @@ case $BOARD in
     stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
     cat "$PORT" >> "$LOG" &
     READER=$!
+    READER_GROUP=0
     sleep 1
     check_reader "on arming"
     stamper_truncate "$HERE" "$LOG" "$$" || refuse "$STAMPER_WHY"
@@ -289,13 +319,12 @@ case $BOARD in
     _reset_bytes=$(wc -c < "$LOG")
     if ! WOUT=$(FLASH_STLINK_RESET=1 FLASH_TOOL=stlink FLASH_IMAGE="$IMG" \
         "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
-      kill $READER 2>/dev/null
       printf '%s\n' "$WOUT" | tail -8 >&2
       refuse "the $BOARD reset after the write failed"
     fi
     sleep "${CAP_SECS:-25}"
     note_reader
-    kill $READER 2>/dev/null
+    stop_reader
     _why=$(reset_boot_cut "$LOG" "$_reset_bytes") || refuse "$_why"
     ;;
   picopi|pizero2350)
@@ -323,7 +352,6 @@ case $BOARD in
       sleep 1
       check_reader "on arming"
       if ! POUT=$(FLASH_ERASE_RANGES="${PEER_ERASE:-}" FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
-        kill $READER 2>/dev/null
         printf '%s\n' "$POUT" | tail -8 >&2
         refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
       fi
@@ -450,6 +478,7 @@ case $BOARD in
         echo "    Run JLinkExe once interactively, accept it, retry. Not a wedge."
         printf '%s\n' "$JOUT" | grep -vE '^[[:space:]]*$' | tail -5
       } >&2
+      stop_capture
       exit 1
     fi
     if [ "$SWD_SPEED" != 4000 ]; then

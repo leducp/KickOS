@@ -132,31 +132,63 @@ if pid == 0:
     os._exit(0)
 print(pid, flush=True)' > "$TMP/zombie.pid"
 parent=$!
+zombie=""
+n=0
 until [ -s "$TMP/zombie.pid" ]; do
+    n=$((n + 1))
+    if [ "$n" -ge 500 ]; then
+        bad "the zombie's parent never named its child"
+        break
+    fi
     sleep 0.01
 done
-zombie="$(cat "$TMP/zombie.pid")"
-until [ "$(ps -o stat= -p "$zombie" | cut -c1)" = Z ]; do
-    sleep 0.01
-done
-python3 tools/bench/stamp_lines.py "$LOG" "$zombie" &
-undead=$!
-ends "$undead" || bad "the stamper outlives a watched process that is a zombie"
-kill "$undead" 2>/dev/null
-wait "$undead" 2>/dev/null
+if [ -s "$TMP/zombie.pid" ]; then
+    zombie="$(cat "$TMP/zombie.pid")"
+    n=0
+    until [ "$(ps -o stat= -p "$zombie" | cut -c1)" = Z ]; do
+        n=$((n + 1))
+        if [ "$n" -ge 500 ]; then
+            bad "the planted child $zombie never became a zombie"
+            zombie=""
+            break
+        fi
+        sleep 0.01
+    done
+fi
+if [ -n "$zombie" ]; then
+    python3 tools/bench/stamp_lines.py "$LOG" "$zombie" &
+    undead=$!
+    ends "$undead" || bad "the stamper outlives a watched process that is a zombie"
+    kill "$undead" 2>/dev/null
+    wait "$undead" 2>/dev/null
+fi
 kill "$parent"
 wait "$parent" 2>/dev/null
 
-# A watched pid another user's process holds.
+# A watched pid another user's process holds: one this script may not signal and that is alive.
+foreign=""
 if [ "$(id -u)" -ne 0 ]; then
+    for pid in $(ps -eo pid=,uid= | awk -v me="$(id -u)" '$2 != me { print $1 }'); do
+        if ! kill -0 "$pid" 2>/dev/null && ps -p "$pid" > /dev/null; then
+            foreign=$pid
+            break
+        fi
+    done
+fi
+if [ -n "$foreign" ]; then
     LOG="$TMP/other.log"
     : > "$LOG"
-    python3 tools/bench/stamp_lines.py "$LOG" 1 2> "$TMP/other.err" &
+    python3 tools/bench/stamp_lines.py "$LOG" "$foreign" 2> "$TMP/other.err" &
     other=$!
-    ends "$other" || bad "the stamper outlives a watched pid another user holds"
-    wait "$other" || bad "the stamper fails on a watched pid another user holds: $(tail -n 1 "$TMP/other.err")"
+    if ends "$other"; then
+        wait "$other" || bad "the stamper fails on a watched pid another user holds: $(tail -n 1 "$TMP/other.err")"
+    else
+        bad "the stamper outlives a watched pid another user holds ($foreign)"
+        kill "$other" 2>/dev/null
+        wait "$other" 2>/dev/null
+    fi
 else
-    echo "NOTE: running as root, so no watched pid can belong to another user; that case is not run"
+    echo "NOTE: no process here belongs to another user and refuses this one's signal, so a watched pid of another user's is not run"
 fi
 
 # A start whose stamper is not running is refused, and leaves no earlier stamps behind.
