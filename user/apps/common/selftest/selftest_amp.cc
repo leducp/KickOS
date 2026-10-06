@@ -6,6 +6,8 @@
 
 #include "selftest.h"
 
+#include <kickos/libc/fmt.h>
+
 namespace selftest
 {
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
@@ -279,13 +281,26 @@ namespace selftest
     }
 
     // --- The partition's port capabilities -------------------------------------------------
-    // The kernel seats every capability used below into root from CONFIG_KICKOS_AMP_PORTS;
-    // nothing below mints or binds.
+    // The kernel seats the partition's ports in root from CONFIG_KICKOS_AMP_PORTS, and the init
+    // delegates main the crossings its composition names; nothing below mints or binds.
     //
     // The window layer answers the echo port with no thread; a service port needs a receiver
     // parked in a far kernel, which a peer core under one image does not run.
     constexpr uint32_t AMP_FAR_US = 2u * 1000u * 1000u; // as AMP_REPLY_NS: a host-scheduled vCPU
     constexpr size_t AMP_FAR_LEN = 16;
+
+    // The capability main holds for `port` of `node`, or KOS_CAP_NONE where its composition
+    // names no such crossing of the partition.
+    kos_cap_t amp_crossing(uint32_t node, uint32_t port)
+    {
+        if (kos_amp_port(node, port) == KOS_CAP_NONE)
+        {
+            return KOS_CAP_NONE;
+        }
+        char name[16];
+        (void)ksnprintf(name, sizeof(name), "/amp/%u", static_cast<unsigned>(port));
+        return kos_grant_endpoint(g_self, name);
+    }
 
     // The port this image serves and its local endpoint's capability. KOS_AMP_NO_ENTRY /
     // KOS_CAP_NONE where the partition names none.
@@ -308,22 +323,7 @@ namespace selftest
         {
             return KOS_CAP_NONE;
         }
-        return kos_amp_port(KOS_AMP_SELF_NODE, port);
-    }
-
-    // Any far entry this image may call. KOS_CAP_NONE where the partition names this node none.
-    kos_cap_t amp_far_any(void)
-    {
-        for (uint32_t i = 0; i < KOS_AMP_PORT_COUNT; i++)
-        {
-            uint32_t const node = kos_amp_entry_node(i);
-            if (node == KOS_AMP_SELF_NODE)
-            {
-                continue;
-            }
-            return kos_amp_port(node, kos_amp_entry_port(i));
-        }
-        return KOS_CAP_NONE;
+        return amp_crossing(KOS_AMP_SELF_NODE, port);
     }
 
     // The far entry after `skip` matches, echo or service as `want_echo` asks.
@@ -337,7 +337,7 @@ namespace selftest
             {
                 continue;
             }
-            if (want_echo != (port == KOS_AMP_PORT_ECHO))
+            if (want_echo != (port == KOS_AMP_PORT_ECHO) or amp_crossing(node, port) == KOS_CAP_NONE)
             {
                 continue;
             }
@@ -348,7 +348,7 @@ namespace selftest
             }
             *out_node = node;
             *out_port = port;
-            return kos_amp_port(node, port);
+            return amp_crossing(node, port);
         }
         return KOS_CAP_NONE;
     }
@@ -521,7 +521,7 @@ namespace selftest
             tap::skip("no peer answers a far call on this partition");
             return;
         }
-        // Root is unprivileged, so no user thread reaches the far-endpoint mint.
+        // main is unprivileged, so no user thread reaches the far-endpoint mint.
         kos_cap_t refused = KOS_CAP_NONE;
         TAP_CHECK(kos_amp_endpoint_create(far_node, KOS_AMP_PORT_ECHO, &refused)
                   == -KOS_EPERM);
@@ -568,7 +568,7 @@ namespace selftest
         }
     }
 
-    // Root parks and the worker forges: a far endpoint's capability carries no TRANSFER, so it
+    // main parks and the worker forges: a far endpoint's capability carries no TRANSFER, so it
     // cannot be delegated.
     kos_cap_t g_amp_guard_done = KOS_CAP_NONE;
 
@@ -596,9 +596,9 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_amp_guard_good{0};
     Atomic<uint32_t, Order::RELAXED> g_amp_guard_lapsed{0};
     Atomic<uint32_t, Order::RELAXED> g_amp_guard_drops{0};
-    // Cleared once the forger has nothing left to place, which stops root offering parks.
+    // Cleared once the forger has nothing left to place, which stops main offering parks.
     Atomic<uint32_t, Order::RELAXED> g_amp_guard_forging{0};
-    // Cleared once root has stopped offering parks, which is what ends the forger's wait for
+    // Cleared once main has stopped offering parks, which is what ends the forger's wait for
     // one: a host that holds the forger off longer than a bound would otherwise read as the
     // caller never parking.
     Atomic<uint32_t, Order::RELAXED> g_amp_guard_offering{0};
@@ -831,7 +831,7 @@ namespace selftest
     // call's tag: a caller under KOS_TIMEOUT_NONE has nothing else to wake it.
     Atomic<uint32_t, Order::RELAXED> g_amp_empty_forge{99};
 
-    // Root's call is issued right after the spawn and nothing answers it but this forge, so
+    // main's call is issued right after the spawn and nothing answers it but this forge, so
     // the park is certain and the wait needs no bound.
     void amp_empty_forger(void*) // caps: g_amp_guard_done@1 (CH_DONE)
     {
@@ -933,7 +933,7 @@ namespace selftest
     }
 
     // The receiver must be parked before a forged call arrives, or the delivery finds no
-    // thread and refuses on the spot. Root reaches its receive right after the spawn, so this
+    // thread and refuses on the spot. main reaches its receive right after the spawn, so this
     // waits for nothing else and needs no bound.
     void amp_await_port_parked()
     {
@@ -1101,7 +1101,7 @@ namespace selftest
     // The fault count before the forge. The delta is read by the thread whose landing counts
     // the fault, once that landing is over.
     Atomic<int32_t, Order::RELAXED> g_df_before{-1};
-    // Set once root's call is over, however it ended. A publication the ring had no room for
+    // Set once main's call is over, however it ended. A publication the ring had no room for
     // never parks anyone, and this is what ends the forger's wait for the park.
     Atomic<uint32_t, Order::RELAXED> g_df_over{0};
 
@@ -1549,10 +1549,27 @@ namespace selftest
         tap::diag("inbound reply: a far caller answered through kos_reply, one publication out");
     }
 
-    // --- What the partition seated, and where -----------------------------------------------
-    // The kernel seats the list in order into root's fresh run, so entry i is capability
-    // KOS_CAP_FIRST_DYNAMIC + i.
+    // --- What the partition delegated, and where ---------------------------------------------
+    // Each crossing main's composition names is a capability the init delegated at its spawn.
     constexpr uint32_t AMP_SEAT_PROBE_US = 2u * 1000u;
+
+    // The crossings main's own row of the system table names.
+    unsigned amp_crossings_named(void)
+    {
+        kos_table_header const* const h = kickos_table;
+        kos_table_task const* const tasks = reinterpret_cast<kos_table_task const*>(h + 1);
+        kos_table_grant const* const grants =
+            reinterpret_cast<kos_table_grant const*>(tasks + h->task_count);
+        unsigned n = 0;
+        for (uint16_t k = 0; k < g_self->grant_count; k++)
+        {
+            if (grants[g_self->first_grant + k].kind == KOS_GRANT_PORT)
+            {
+                n++;
+            }
+        }
+        return n;
+    }
 
     void t_amp_port_seating()
     {
@@ -1563,8 +1580,14 @@ namespace selftest
         {
             uint32_t const node = kos_amp_entry_node(i);
             uint32_t const port = kos_amp_entry_port(i);
-            kos_cap_t const cap = kos_amp_port(node, port);
-            TAP_CHECK(cap == KOS_AMP_PORT_CAP(i));
+            kos_cap_t const cap = amp_crossing(node, port);
+            if (cap == KOS_CAP_NONE)
+            {
+                continue;
+            }
+            uint32_t const index = cap & 0xFFFFu;
+            TAP_CHECK(index >= static_cast<uint32_t>(KOS_SPAWN_DELEGATED_CAP0)
+                      and index < KOS_SPAWN_DELEGATED_CAP0 + uint32_t{g_self->cap_grant_count});
             // A local entry carries WAIT, a far one CAP_SIGNAL alone.
             char probe[1] = {};
             if (node == KOS_AMP_SELF_NODE)
@@ -1589,10 +1612,12 @@ namespace selftest
                 far++;
             }
         }
-        tap::diag("partition ports: node %u derived %u local and %u far from %u entr(ies)",
-                  static_cast<unsigned>(KOS_AMP_SELF_NODE), local, far,
-                  static_cast<unsigned>(KOS_AMP_PORT_COUNT));
-        TAP_CHECK(local + far == KOS_AMP_PORT_COUNT);
+        unsigned const named = amp_crossings_named();
+        tap::diag("partition ports: node %u holds %u local and %u far of the %u its composition "
+                  "names, from %u entr(ies)", static_cast<unsigned>(KOS_AMP_SELF_NODE), local, far,
+                  named, static_cast<unsigned>(KOS_AMP_PORT_COUNT));
+        TAP_CHECK(named > 0u);
+        TAP_CHECK(local + far == named);
     }
 
     // --- A crossing the partition does not name has no capability ---------------------------
@@ -1625,6 +1650,7 @@ namespace selftest
         for (uint32_t node = 0; node < KICKOS_AMP_NODES; node++)
         {
             TAP_CHECK(kos_amp_port(node, unnamed) == KOS_CAP_NONE);
+            TAP_CHECK(amp_crossing(node, unnamed) == KOS_CAP_NONE);
             TAP_CHECK(kos_amp_port_is_local(node, unnamed) == 0);
         }
         char body[4] = {};
@@ -1672,10 +1698,10 @@ namespace selftest
         TAP_CHECK(margin > 0u);
     }
 
-    // --- Whose table the partition seated, and whose the forge answers ---------------------
-    // The partition's capabilities live in root's table, so their index names something else
-    // in another task; and KOS_AMP_OP_FORGE answers root's task alone, root's workers included,
-    // where AUTH_SYSTEM admits KOS_AMP_OP_DEFER and no mutating op.
+    // --- Whose table holds the crossings, and whom the forge answers --------------------------
+    // The crossings are capabilities of main's own, so their indices name something else in
+    // another task; and KOS_AMP_OP_FORGE answers a task holding a crossing alone, its workers
+    // included, where AUTH_SYSTEM admits KOS_AMP_OP_DEFER and no mutating op.
     enum
     {
         AG_RAN = 0,
@@ -1683,14 +1709,15 @@ namespace selftest
         AG_FORGE = 2,
         AG_ROUND = 3,
         AG_DEFER = 4,
-        AG_WORDS = 5
+        AG_CROSSING = 5,
+        AG_WORDS = 6
     };
     void amp_gate_worker(void* arg) // caps: done@1
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         char body[4] = {};
-        out[AG_PORT_CAP] = static_cast<uint64_t>(
-            static_cast<int64_t>(kos_send(KOS_AMP_PORT_CAP(0), body, sizeof(body))));
+        out[AG_PORT_CAP] = static_cast<uint64_t>(static_cast<int64_t>(
+            kos_send(static_cast<kos_cap_t>(out[AG_CROSSING]), body, sizeof(body))));
         // Through intptr_t, so the refusal sign-extends: a plain widening of the uintptr_t
         // makes -KOS_EPERM 0x00000000ffffffff on a 32-bit part.
         out[AG_FORGE] = static_cast<uint64_t>(static_cast<int64_t>(static_cast<intptr_t>(
@@ -1703,7 +1730,7 @@ namespace selftest
         kos_sem_post(CH_DONE);
     }
 
-    void t_amp_probe_root_only()
+    void t_amp_probe_crossing_holder()
     {
         // THE CONTROL FIRST: KOS_AMP_OP_ROUND publishes into the peer's ring, so a member
         // admitted by a broken gate would spend the slot and the control would answer FULL.
@@ -1722,6 +1749,23 @@ namespace selftest
         {
             out[i] = 0;
         }
+        uint32_t far_node = 0;
+        uint32_t far_port = 0;
+        kos_cap_t crossing = amp_local_cap();
+        if (crossing == KOS_CAP_NONE)
+        {
+            crossing = amp_far_first(&far_node, &far_port, false, 0);
+        }
+        if (crossing == KOS_CAP_NONE)
+        {
+            crossing = amp_far_first(&far_node, &far_port, true, 0);
+        }
+        TAP_CHECK(crossing != KOS_CAP_NONE);
+        if (crossing == KOS_CAP_NONE)
+        {
+            return;
+        }
+        out[AG_CROSSING] = crossing;
         kos_task_t t = KOS_TASK_NONE;
         if (kos_task_create(blk, AG_BLK, 0, &t) != 0)
         {
@@ -1742,23 +1786,24 @@ namespace selftest
         wait_n(1);
         (void)kos_task_kill(t);
         int64_t const sent1 = amp_count(KOS_AMP_OP_SENT, AMP_SELF_ROW);
-        tap::diag("amp from a non-root task holding AUTH_SYSTEM: partition slot %ld, forge %ld, "
-                  "round %ld, defer %ld sending %ld; root's own round %ld",
+        tap::diag("amp from a task holding AUTH_SYSTEM and no crossing: main's crossing %u %ld, "
+                  "forge %ld, round %ld, defer %ld sending %ld; main's own round %ld",
+                  static_cast<unsigned>(crossing),
                   static_cast<long>(static_cast<int64_t>(out[AG_PORT_CAP])),
                   static_cast<long>(static_cast<int64_t>(out[AG_FORGE])),
                   static_cast<long>(static_cast<int64_t>(out[AG_ROUND])),
                   static_cast<long>(static_cast<int64_t>(out[AG_DEFER])),
                   static_cast<long>(sent1 - sent0), static_cast<long>(mine));
         TAP_CHECK(out[AG_RAN] == 1u);
-        // The first dynamic index in another task's table is that task's own, naming no
-        // endpoint.
+        TAP_CHECK(out[AG_CROSSING] == crossing);
+        // main's crossing index names no endpoint in another task's table.
         TAP_CHECK(static_cast<int64_t>(out[AG_PORT_CAP]) == -KOS_EBADF);
         TAP_CHECK(static_cast<int64_t>(out[AG_FORGE]) == -KOS_EPERM);
-        // KOS_AMP_OP_ROUND spends a peer's doorbell budget, so it is gated by the same task as
-        // the forge; root's own answer is the other half.
+        // KOS_AMP_OP_ROUND spends a peer's doorbell budget, so it is gated like the forge;
+        // main's own answer is the other half.
         TAP_CHECK(static_cast<int64_t>(out[AG_ROUND]) == -KOS_EPERM);
         TAP_CHECK(mine == 0);
-        // The gate's refusal: root's answer is amp::send's, and no send produces this code.
+        // The gate's refusal: main's answer is amp::send's, and no send produces this code.
         TAP_CHECK(static_cast<int64_t>(out[AG_ROUND]) != mine);
         // A refused defer answers zero and sends nothing; an admitted one answers zero only for
         // peer 0 with no raise skipped, and has sent.
@@ -1772,7 +1817,7 @@ namespace selftest
 
     // FILLING THE POOL TAKES TWO TASKS: KICKOS_TASK_ENDPOINT_BUDGET sits strictly below the
     // pool's width. The two arms below need the pool full and bump-allocated to its last index,
-    // or the create after their close lands on a fresh slot instead of the freed one. Root's
+    // or the create after their close lands on a fresh slot instead of the freed one. main's
     // own AMP port capabilities count against its ceiling.
     constexpr int CH_HOLD = 2; // the release semaphore, delegated second
 
@@ -1789,7 +1834,7 @@ namespace selftest
             n++;
         }
         kos_sem_post(CH_DONE);
-        kos_sem_wait(CH_HOLD); // hold the slots while root runs its close-and-create
+        kos_sem_wait(CH_HOLD); // hold the slots while main runs its close-and-create
         for (int i = 0; i < n; i++)
         {
             kos_handle_close(mine[i]);
@@ -1876,7 +1921,7 @@ namespace selftest
             }
             n++;
         }
-        // One back, so root keeps a unit of ceiling to PROBE the pool with below.
+        // One back, so main keeps a unit of ceiling to PROBE the pool with below.
         if (n > 0)
         {
             n--;
@@ -1924,7 +1969,7 @@ namespace selftest
         {
             kos_handle_close(reused);
         }
-        tap::diag("local port slot: root held %d, close %d, create after it %d", n,
+        tap::diag("local port slot: main held %d, close %d, create after it %d", n,
                   closed, created);
         TAP_CHECK(closed == 0);
         // The bind holds its own reference, so the close freed no slot.
@@ -1936,14 +1981,16 @@ namespace selftest
     // pool full, the freed far slot is the only free one under any allocation policy.
     void t_amp_far_slot_reuse()
     {
-        // Closing the partition's far endpoint SPENDS it for the life of the image, so this arm
-        // is last of the block.
-        kos_cap_t const far_ep = amp_far_any();
-        if (far_ep == KOS_CAP_NONE)
+        // A far endpoint of main's alone, so its close frees the slot: the crossings main holds
+        // are copies of root's.
+        if (amp_round_peer() >= static_cast<uint32_t>(KICKOS_AMP_NODES))
         {
-            tap::skip("the partition names no far entry");
+            tap::skip("the partition holds no peer at the kernel's own choice");
             return;
         }
+        int64_t const minted = amp_rc(KOS_AMP_OP_MINT, KOS_AMP_PORT_ECHO | KOS_AMP_MINT_HOLD);
+        TAP_CHECK(minted >= 0);
+        kos_cap_t const far_ep = static_cast<kos_cap_t>(minted);
         kos_cap_t held[AMP_REUSE_SLOTS];
         int n = 0;
         while (n < AMP_REUSE_SLOTS)
@@ -1954,7 +2001,7 @@ namespace selftest
             }
             n++;
         }
-        // One back, so root keeps a unit of ceiling to PROBE the pool with below.
+        // One back, so main keeps a unit of ceiling to PROBE the pool with below.
         if (n > 0)
         {
             n--;
@@ -2026,15 +2073,9 @@ namespace selftest
 #if KICKOS_AMP_OWN_IMAGE
     // --- The partition's user share ---------------------------------------------------------
     constexpr uint32_t AMP_SHARE_JOIN_US = 500000;
-    // The bit amp_share_child's argument carries beside a word-aligned offset into its window.
-    constexpr uintptr_t AMP_SHARE_WRITE = 1u;
     constexpr uint32_t AMP_SHARE_WORD = 0x53574F52u;
     // An echo peer's line and word (user/apps/common/ampping/main_echo.c).
     constexpr uintptr_t AMP_SHARE_LINE = 64u;
-    // 1 + the share's enum arch_map_memtype, as KOS_ASPACE_OP_MEMTYPE_AT and the walks answer.
-    constexpr uint64_t AMP_SHARE_TYPE_AT = 1u + KOS_AMP_SHARE_UNCACHED;
-    constexpr uint8_t AMP_SHARE_OTHER_WINDOW = KOS_AMP_SHARE_WINDOW_FLAGS ^ KOS_WINDOW_UNCACHED;
-    constexpr uint32_t AMP_SHARE_OTHER_MEM = KOS_AMP_SHARE_MEM_FLAGS ^ KOS_MEM_NOCACHE;
     constexpr uint32_t amp_share_mark(uint32_t node)
     {
         return 0x53480000u | node;
@@ -2046,60 +2087,22 @@ namespace selftest
         return (KICKOS_AMP_NODES * AMP_SHARE_LINE + g - 1u) / g * g;
     }
 
-    struct AmpShareSeen
+    // The share as main reaches it: the window the partition region its composition maps opens,
+    // at the share's base. 0 where its composition maps none.
+    uintptr_t amp_share_view(size_t* size)
     {
-        int32_t got;      // kos_window_get's answer for the child's one window
-        uint32_t word;    // the word at the offset, after the child's own write if it made one
-        uint64_t memtype; // KOS_ASPACE_OP_MEMTYPE_AT at the window; 0 where nothing translates
-        uint64_t walk;    // KOS_AMP_OP_WALK at the window; 0 where nothing translates
-    };
-
-    // Reads, and with AMP_SHARE_WRITE first writes, the word at an offset into its one window,
-    // where kos_window_get says it sits, and reports on `ep`.
-    void amp_share_child(void* arg) // caps: E(SIGNAL)@1
-    {
-        uintptr_t const a = reinterpret_cast<uintptr_t>(arg);
-        uintptr_t const off = a & ~AMP_SHARE_WRITE;
-        AmpShareSeen seen = {-1, 0u, 0u, 0u};
-        kos_window w = {};
-        seen.got = kos_window_get(0, &w);
-        if (seen.got == 0)
-        {
-            auto* const at = reinterpret_cast<Atomic<uint32_t, Order::RELAXED>*>(w.base + off);
-            if ((a & AMP_SHARE_WRITE) != 0)
-            {
-                *at = AMP_SHARE_WORD;
-            }
-            seen.word = *at;
-#if KICKOS_HAVE_ASPACE
-            seen.memtype = kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, w.base);
-            seen.walk = kos_amp_probe(KOS_AMP_OP_WALK, w.base);
-#endif
-        }
-        (void)kos_send(1, &seen, sizeof(seen));
-        kos_exit(0);
+        kos_window_t const region = kos_grant_mem(g_self, "/shm/share");
+        *size = kos_window_size(region);
+        return reinterpret_cast<uintptr_t>(kos_window_addr(region));
     }
 
-    // One child holding `w` in `task`, its report on `ep`. The spawn's answer, or the join's.
-    int amp_share_run(kos_window const& w, uintptr_t arg, kos_task_t task, kos_cap_t ep,
-                      AmpShareSeen* seen)
-    {
-        *seen = {-1, 0u, 0u, 0u};
-        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
-        auto const c = kos::thread::create(amp_share_child, reinterpret_cast<void*>(arg), "shr",
-                                           10, KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
-                                           &w, 1, caps, 1, 0, nullptr, task);
-        int const rc = c.error();
-        if (rc != 0)
-        {
-            return rc;
-        }
-        struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, AMP_SHARE_JOIN_US);
-        (void)kos_reply_recv(KOS_CAP_NONE, seen, kos_call_lens_pack(0, sizeof(*seen)), &o);
-        return c.join(AMP_SHARE_JOIN_US);
-    }
+#if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
+    // 1 + the share's enum arch_map_memtype, as KOS_ASPACE_OP_MEMTYPE_AT and the walks answer.
+    constexpr uint64_t AMP_SHARE_TYPE_AT = 1u + KOS_AMP_SHARE_UNCACHED;
+    constexpr uint32_t AMP_SHARE_OTHER_MEM = KOS_AMP_SHARE_MEM_FLAGS ^ KOS_MEM_NOCACHE;
 
+    // Spawns a child holding `w` alone, and answers the spawn's code.
+    void amp_share_child(void*) {}
     int amp_share_spawn(kos_window const& w)
     {
         auto const c = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO,
@@ -2111,33 +2114,6 @@ namespace selftest
         return c.error();
     }
 
-    enum
-    {
-        AMP_SH_OWN = 0,    // the worker's own reservation, self-granted: the authority control
-        AMP_SH_GRANT = 1,  // a part of the share, self-granted: refused
-        AMP_SH_WINDOW = 2, // the same part as a window of a child it spawns: refused
-        AMP_SH_WORDS = 3
-    };
-    // `arg` is the part of the share root's arm handed out, carried as a number.
-    void amp_share_stranger(void* arg) // caps: E(SIGNAL)@1
-    {
-        uintptr_t const at = reinterpret_cast<uintptr_t>(arg);
-        size_t const g = discover_granule();
-        int32_t rep[AMP_SH_WORDS] = {1, 1, 1};
-        void* const mine = kos_ram_alloc(g);
-        if (mine != nullptr)
-        {
-            rep[AMP_SH_OWN] = kos_mem_self_grant(mine, g, 0);
-        }
-        rep[AMP_SH_GRANT] = kos_mem_self_grant(arg, g, KOS_AMP_SHARE_MEM_FLAGS);
-        kos_window const w = {at, static_cast<uint32_t>(g), KOS_WINDOW_MEMORY,
-                              KOS_AMP_SHARE_WINDOW_FLAGS};
-        rep[AMP_SH_WINDOW] = amp_share_spawn(w);
-        (void)kos_send(1, rep, sizeof(rep));
-        kos_exit(0);
-    }
-
-#if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
     // Root's reservation over the share, read back from the record the kernel seated it in.
     void t_amp_share_seated()
     {
@@ -2151,94 +2127,59 @@ namespace selftest
         TAP_CHECK(size == KOS_AMP_SHARE_SIZE);
     }
 
-    // A window anywhere inside the share is root's to hand out, in the share's one memory type,
-    // and nothing past it, from another task, or of the other type is admitted.
+    // The share reaches main as the window its composition's partition region opens, in the
+    // share's one memory type. main holds no reservation of the share, which the init does, so
+    // main naming any part of it, as its own grant or a child's window, is refused.
     void t_amp_share_window()
     {
         size_t const g = discover_granule();
-        if (g == 0 or KOS_AMP_SHARE_SIZE < amp_share_lines(g) + 2u * g)
+        size_t size = 0;
+        uintptr_t const view = amp_share_view(&size);
+        TAP_CHECK(view != 0);
+        if (view == 0)
         {
-            tap::skip("the partition's user share holds no two granules past the nodes' lines");
             return;
         }
-        kos_cap_t ep = KOS_CAP_NONE;
-        kos_task_t t = KOS_TASK_NONE;
-        kos_task_t stranger = KOS_TASK_NONE;
-        if (kos_endpoint_create(&ep) != 0 or kos_task_create(nullptr, 0, 0, &t) != 0
-            or kos_task_create(nullptr, 0, 0, &stranger) != 0)
+        if (g == 0 or size < amp_share_lines(g) + 2u * g)
         {
-            (void)kos_task_kill(t);
-            (void)kos_handle_close(ep);
-            tap::skip("endpoint or task pool too small");
+            tap::skip("main's share holds no two granules past the nodes' lines");
             return;
         }
-        uintptr_t const base = KOS_AMP_SHARE_BASE;
-        uintptr_t const at = base + amp_share_lines(g);
-        uint32_t const gw = static_cast<uint32_t>(g);
-        AmpShareSeen seen = {-1, 0u, 0u, 0u};
-
-        // A part of the share, away from its base: one task's write through its window is what
-        // a task of its own reads through another.
-        kos_window const part = {at, gw, KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
-        TAP_CHECK(amp_share_run(part, AMP_SHARE_WRITE, KOS_TASK_NONE, ep, &seen) == 0);
-        TAP_CHECK(seen.got == 0 and seen.word == AMP_SHARE_WORD);
-        TAP_CHECK(amp_share_run(part, 0u, t, ep, &seen) == 0);
-        TAP_CHECK(seen.got == 0 and seen.word == AMP_SHARE_WORD);
+        auto* const word = reinterpret_cast<Atomic<uint32_t, Order::RELAXED>*>(view + amp_share_lines(g));
+        *word = AMP_SHARE_WORD;
+        uint32_t const read = *word;
+        TAP_CHECK(read == AMP_SHARE_WORD);
 #if KICKOS_HAVE_ASPACE
-        // The share's type, read back from the task's mapping and from the kernel's, the second
-        // read by the hardware's own walk in both views.
+        // The share's type, read back from main's mapping and from the kernel's, each by the
+        // hardware's own walk as well.
+        uint64_t const memtype = kos_aspace_probe(KOS_ASPACE_OP_MEMTYPE_AT, view);
+        uint64_t const walk = kos_amp_probe(KOS_AMP_OP_WALK, view);
         uint64_t const kernel_walk = kos_amp_probe(KOS_AMP_OP_SHARE, 2u);
-        tap::diag("share type: task record %lu, task walk %lu, kernel walk %lu, stated %lu",
-                  static_cast<unsigned long>(seen.memtype), static_cast<unsigned long>(seen.walk),
+        tap::diag("share type: main record %lu, main walk %lu, kernel walk %lu, stated %lu",
+                  static_cast<unsigned long>(memtype), static_cast<unsigned long>(walk),
                   static_cast<unsigned long>(kernel_walk),
                   static_cast<unsigned long>(AMP_SHARE_TYPE_AT));
-        TAP_CHECK(seen.memtype == AMP_SHARE_TYPE_AT);
-        TAP_CHECK(seen.walk == AMP_SHARE_TYPE_AT);
+        TAP_CHECK(memtype == AMP_SHARE_TYPE_AT);
+        TAP_CHECK(walk == AMP_SHARE_TYPE_AT);
         TAP_CHECK(kernel_walk == AMP_SHARE_TYPE_AT);
 #endif
-
-        // The other memory type, as a window and as root's own grant: refused, so no two
-        // mappings of the share disagree.
-        kos_window const other = {at + g, gw, KOS_WINDOW_MEMORY, AMP_SHARE_OTHER_WINDOW};
-        TAP_CHECK(amp_share_spawn(other) == -KOS_EBUSY);
-        TAP_CHECK(kos_mem_self_grant(reinterpret_cast<void*>(at + g), g, AMP_SHARE_OTHER_MEM)
-                  == -KOS_EBUSY);
-
-        // Whole granules, the last of them past the share's end.
-        kos_window const past = {base + g, static_cast<uint32_t>(KOS_AMP_SHARE_SIZE),
-                                 KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
-        TAP_CHECK(amp_share_spawn(past) == -KOS_EPERM);
-#if KICKOS_HAVE_ASPACE
-        kos_window const part_granule = {at, gw - 1u, KOS_WINDOW_MEMORY,
-                                         KOS_AMP_SHARE_WINDOW_FLAGS};
-        TAP_CHECK(amp_share_spawn(part_granule) == -KOS_EINVAL);
-#endif
-
-        int32_t rep[AMP_SH_WORDS] = {1, 1, 1};
-        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
-        auto const w = kos::thread::create(amp_share_stranger, reinterpret_cast<void*>(at), "shs",
-                                           10, KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0,
-                                           nullptr, 0, caps, 1, KOS_AUTH_MEMORY, nullptr,
-                                           stranger);
-        bool heard = false;
-        if (w.valid())
-        {
-            struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, AMP_SHARE_JOIN_US);
-            heard = kos_reply_recv(KOS_CAP_NONE, rep, kos_call_lens_pack(0, sizeof(rep)), &o)
-                    == static_cast<int32_t>(sizeof(rep));
-            (void)w.join(AMP_SHARE_JOIN_US);
-        }
-        tap::diag("share from a task holding none: own %ld, grant %ld, window %ld",
-                  static_cast<long>(rep[AMP_SH_OWN]), static_cast<long>(rep[AMP_SH_GRANT]),
-                  static_cast<long>(rep[AMP_SH_WINDOW]));
-        TAP_CHECK(heard);
-        TAP_CHECK(rep[AMP_SH_OWN] == 0);
-        TAP_CHECK(rep[AMP_SH_GRANT] == -KOS_EPERM);
-        TAP_CHECK(rep[AMP_SH_WINDOW] == -KOS_EPERM);
-        (void)kos_task_kill(stranger);
-        (void)kos_task_kill(t);
-        (void)kos_handle_close(ep);
+        // The authority control: a reservation of main's own is admitted.
+        void* const mine = kos_ram_alloc(g);
+        TAP_CHECK(mine != nullptr);
+        TAP_CHECK(kos_mem_self_grant(mine, g, 0) == 0);
+        uintptr_t const part = KOS_AMP_SHARE_BASE + amp_share_lines(g);
+        int32_t const grant = kos_mem_self_grant(reinterpret_cast<void*>(part), g,
+                                                 KOS_AMP_SHARE_MEM_FLAGS);
+        int32_t const other = kos_mem_self_grant(reinterpret_cast<void*>(part), g,
+                                                 AMP_SHARE_OTHER_MEM);
+        kos_window const w = {part, static_cast<uint32_t>(g), KOS_WINDOW_MEMORY,
+                              KOS_AMP_SHARE_WINDOW_FLAGS};
+        int const window = amp_share_spawn(w);
+        tap::diag("share named by main: grant %ld, the other type %ld, a child's window %ld",
+                  static_cast<long>(grant), static_cast<long>(other), static_cast<long>(window));
+        TAP_CHECK(grant == -KOS_EPERM);
+        TAP_CHECK(other == -KOS_EPERM);
+        TAP_CHECK(window == -KOS_EPERM);
     }
 #endif
 
@@ -2254,10 +2195,16 @@ namespace selftest
             return;
         }
         size_t const g = discover_granule();
-        kos_cap_t ep = KOS_CAP_NONE;
-        if (g == 0 or KOS_AMP_SHARE_SIZE < amp_share_lines(g) or kos_endpoint_create(&ep) != 0)
+        size_t size = 0;
+        uintptr_t const view = amp_share_view(&size);
+        TAP_CHECK(view != 0);
+        if (view == 0)
         {
-            tap::skip("no share for the nodes' lines, or the endpoint pool is too small");
+            return;
+        }
+        if (g == 0 or size < amp_share_lines(g))
+        {
+            tap::skip("main's share holds no line per node");
             return;
         }
         char buf[AMP_FAR_LEN];
@@ -2267,15 +2214,12 @@ namespace selftest
         }
         TAP_CHECK(kos_call_timed(far, buf, sizeof(buf), sizeof(buf), KOS_TIMEOUT_NONE)
                   == static_cast<int32_t>(sizeof(buf)));
-        kos_window const line = {KOS_AMP_SHARE_BASE, static_cast<uint32_t>(amp_share_lines(g)),
-                                 KOS_WINDOW_MEMORY, KOS_AMP_SHARE_WINDOW_FLAGS};
-        AmpShareSeen seen = {-1, 0u, 0u, 0u};
-        TAP_CHECK(amp_share_run(line, far_node * AMP_SHARE_LINE, KOS_TASK_NONE, ep, &seen) == 0);
-        (void)kos_handle_close(ep);
+        auto const* const line =
+            reinterpret_cast<Atomic<uint32_t, Order::RELAXED> const*>(view + far_node * AMP_SHARE_LINE);
+        uint32_t const word = *line;
         tap::diag("share: node %u's word through this node's window: 0x%lx",
-                  static_cast<unsigned>(far_node), static_cast<unsigned long>(seen.word));
-        TAP_CHECK(seen.got == 0);
-        TAP_CHECK(seen.word == amp_share_mark(far_node));
+                  static_cast<unsigned>(far_node), static_cast<unsigned long>(word));
+        TAP_CHECK(word == amp_share_mark(far_node));
     }
 #endif
 #endif

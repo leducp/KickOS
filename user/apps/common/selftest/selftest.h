@@ -17,6 +17,7 @@
 #include <kickos/sys/abi_probe.h>
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/serve.h>
+#include <kickos/sys/table.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
 
@@ -76,6 +77,9 @@ namespace selftest
 
     extern KICKOS_SELFTEST_LOCAL kos_cap_t g_done; // shared completion counter (MAIN's cap; delegated to workers)
     extern KICKOS_SELFTEST_LOCAL kos_cap_t g_lock; // binary semaphore = mutex over the event log (MAIN's cap)
+    // main's own row of the system table: its declared priority, ceiling and authority.
+    extern KICKOS_SELFTEST_LOCAL kos_self_t const* g_self;
+    extern KICKOS_SELFTEST_LOCAL kos_thread_t g_main; // main's own thread
 
     // Well-known child cap indices: a fresh child table has cap-gen 0, so delegated cap i
     // lands at index i+1 (index 0 reserved). Every spawn must delegate in exactly this order.
@@ -86,30 +90,35 @@ namespace selftest
     constexpr int CH_IRQ = 3;   // IRQ-driver tests: the LINE, for ack and discard
     constexpr int CH_NOTE = 4;  // IRQ-driver tests: the notification that line signals, which
                                 // is what the driver binds and waits on
-    constexpr int CH_REL = 4;   // root-to-child release, where the child has no other park
+    constexpr int CH_REL = 4;   // main-to-child release, where the child has no other park
                                 // between signaling readiness and waiting for release
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
-    // root's region set is [app code RX, app static data RW, its own stack], and
+    // main's `authority` in system.yaml and consoles/*.yaml. Never KOS_AUTH_PSTATE: a retune
+    // would retime every deadline the timing arms assert.
+    constexpr uint32_t SELFTEST_AUTHORITY = KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX
+                                            | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS;
+
+    // main's region set is [app code RX, app static data RW, its own stack], and
     // kos_ram_alloc grants the caller nothing: a test that must touch its own allocation
     // asks with kos_mem_self_grant.
 
     // Pin both test threads to core 0 when priority must determine execution order.
     // A lower-priority thread then runs only after the higher one blocks.
     // Core 0 cannot be isolated and belongs to every default task mask.
-    // Spawn both participants: root has no self-handle for affinity changes.
+    // Spawn both participants.
     constexpr uint32_t TAP_PIN_CORE = 0x1u;
     // The two ranks inside that domain: PARKS is the party whose park is the precondition,
     // AFTER the party whose first instruction must not run until it has parked. AFTER is below
-    // root's own KICKOS_PRIO_MIN + 1, so it also waits on root reaching its wait.
+    // main's own KICKOS_PRIO_MIN + 1, so it also waits on main reaching its wait.
     constexpr uint8_t TAP_PRIO_PARKS = 10;
     constexpr uint8_t TAP_PRIO_AFTER = 1;
 
     // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
     // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
     // core. irq_spawn makes such a thread pinned to TAP_PIN_CORE, and TAP_ADD_IRQ runs an arm
-    // whose root claims or waits with root pinned there. One kernel core carries no placement.
+    // whose main claims or waits with main pinned there. One kernel core carries no placement.
 #if KICKOS_KERNEL_CORES > 1
     inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
                                          uint8_t prio, kos_cap_grant const* caps, uint8_t count,
@@ -131,7 +140,7 @@ namespace selftest
         int const rc = kos_thread_set_affinity(self, TAP_PIN_CORE);
         if (rc != 0)
         {
-            tap::fail("root could not pin itself to the core its line is claimed on: %d", rc);
+            tap::fail("main could not pin itself to the core its line is claimed on: %d", rc);
             return;
         }
         Arm();
@@ -151,12 +160,12 @@ namespace selftest
 #if defined(KICKOS_ENABLE_SELFTEST)
     // A member of ANOTHER task gets its own copy of this image's static data, so every report
     // from one crosses on an ENDPOINT and every release crosses on a semaphore. A global
-    // would be written in the member's copy and read in root's.
-    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // root's report endpoint, delegated at child index 1
+    // would be written in the member's copy and read in main's.
+    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // main's report endpoint, delegated at child index 1
 #endif
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // The live thread count while root runs alone, read before the first arm spawns.
+    // The live thread count while main runs alone, read before the first arm spawns.
     extern KICKOS_SELFTEST_LOCAL uintptr_t g_live_rest;
     KICKOS_SELFTEST_LOCAL void settle_exits();
     KICKOS_SELFTEST_LOCAL void t_cap_objects();
@@ -240,7 +249,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_amp_port_seating();
     KICKOS_SELFTEST_LOCAL void t_amp_port_unnamed();
     KICKOS_SELFTEST_LOCAL void t_amp_reply_band();
-    KICKOS_SELFTEST_LOCAL void t_amp_probe_root_only();
+    KICKOS_SELFTEST_LOCAL void t_amp_probe_crossing_holder();
     KICKOS_SELFTEST_LOCAL void t_amp_local_port_slot_held();
     KICKOS_SELFTEST_LOCAL void t_amp_far_slot_reuse();
 #if KICKOS_AMP_OWN_IMAGE

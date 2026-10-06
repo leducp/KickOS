@@ -146,11 +146,13 @@ class Cache:
 class Admitted:
     """What a composition checked against a manifest leaves for the emitter."""
 
-    def __init__(self, root, tasks, shared, ends, heap, init_priority, chip, cluster, manifest, translating,
+    def __init__(self, root, tasks, shared, stdout, ends, heap, init_priority, chip, cluster, manifest, translating,
                  accepts):
         self.root = root
         self.tasks = tasks
         self.shared = shared
+        # `stdout`: "kernel", or the task serving it.
+        self.stdout = stdout
         # The node of `ends`, read only once the composition is admitted.
         self.ends = ends
         # The bytes of libc heap the image carves, its `heap`.
@@ -274,7 +276,7 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
         check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size)
         check_ports(f, tasks, manifest)
         check_partitioned(f, tasks, shared, manifest, partition)
-        return Admitted(root, tasks, shared, top.get("ends"), heap, init_priority, chip, cluster, manifest,
+        return Admitted(root, tasks, shared, stdout, top.get("ends"), heap, init_priority, chip, cluster, manifest,
                         translating, accepts)
     return None
 
@@ -1013,7 +1015,7 @@ def check_partitioned(f, tasks, shared, manifest, partition):
             f.refuse(region.node, "partition.lone",
                      "partition region `%s` is placed by the partition build, and this composition is admitted "
                      "apart from its partition: name every node's with PARTITION" % region.path)
-    if manifest.amp_nodes is None or partition:
+    if manifest.amp_nodes is None or partition or manifest.amp_image == "shared":
         return
     for task in tasks:
         crossings = list(task.uses)

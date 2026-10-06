@@ -723,9 +723,13 @@ def heap_asserts(admitted, name, hosted):
 
 def render_fragment(admitted, table, source, gate=False):
     """The CMake fragment kickos_compose reads: the packaged drivers the composition names and the
-    libraries their clients link, whether it names KickOS::main's entry, and its heap."""
+    libraries their clients link, the driver serving stdout or `kernel`, whether it names
+    KickOS::main's entry, and its heap."""
     drivers = []
     clients = []
+    stdout = "kernel"
+    if admitted.stdout != "kernel":
+        stdout = admitted.stdout.driver
     for task in admitted.tasks:
         if task.driver is not None and task.driver not in drivers:
             drivers.append(task.driver)
@@ -743,6 +747,7 @@ def render_fragment(admitted, table, source, gate=False):
         "",
         "set(KICKOS_COMPOSE_DRIVERS \"%s\")" % ";".join(drivers),
         "set(KICKOS_COMPOSE_CLIENTS \"%s\")" % ";".join(clients),
+        "set(KICKOS_COMPOSE_STDOUT \"%s\")" % stdout,
         "set(KICKOS_COMPOSE_MAIN %d)" % main,
         "set(KICKOS_COMPOSE_HEAP %d)" % admitted.heap,
         "set(KICKOS_COMPOSE_GATE %d)" % int(gate),

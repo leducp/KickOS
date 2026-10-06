@@ -1070,7 +1070,6 @@ namespace kickos
         return static_cast<int>(c->wait_result);
     }
 
-#if KICKOS_KERNEL_CORES > 1
     uint64_t thread_self()
     {
         IrqLock lock;
@@ -1082,7 +1081,6 @@ namespace kickos
         }
         return k.threads.handle_for(i);
     }
-#endif
 
     int thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
     {

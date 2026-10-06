@@ -12,7 +12,7 @@
 set(_systems golden_arm64 golden_x86 golden_xmc alarm chain chain_ends driver_restart init_priority wide
     default_esp32c6_wroom default_f411disco default_frdmk64f default_qemu_arm64 default_qemu_riscv64
     default_qemu_x86_64 default_xmc4800_relax)
-set(_requests "systems=${CMAKE_CURRENT_BINARY_DIR}/systems.cc")
+set(_requests "systems=${CMAKE_CURRENT_BINARY_DIR}/systems.cc" "grants=${KICKOS_MAX_SPAWN_GRANTS}")
 set(_outputs "${CMAKE_CURRENT_BINARY_DIR}/systems.cc")
 foreach(_system IN LISTS _systems)
   set(_table "${CMAKE_CURRENT_BINARY_DIR}/table_${_system}.c")

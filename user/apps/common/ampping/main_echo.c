@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Echo calls on the first partition port assigned to this node. Leave other
-// ports unanswered for reply-guard tests. Never return from root: that would
-// shut down the machine shared by the partition.
+// Echo calls on the crossing this node's composition serves, the first partition port named
+// for it. The node's other ports are served by tasks that never receive, for the reply-guard
+// arms.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+#include "book.h"
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
@@ -18,33 +21,29 @@
 #define AMP_SHARE_LINE 64u
 #define AMP_SHARE_MARK(node) (0x53480000u | (uint32_t)(node))
 
-int main(int argc, char** argv)
+void ampecho_spare(kos_self_t const* self)
 {
-    (void)argc;
-    (void)argv;
-
-    uint32_t port = KOS_AMP_NO_ENTRY;
-    uint32_t i;
-    for (i = 0; i < KOS_AMP_PORT_COUNT; i++)
+    (void)self;
+    while (true)
     {
-        if (kos_amp_entry_node(i) == KOS_AMP_SELF_NODE)
-        {
-            port = kos_amp_entry_port(i);
-            break;
-        }
+        kos_sleep_ns(1000000000ull);
     }
-    if (port == KOS_AMP_NO_ENTRY)
+}
+
+void ampecho_main(kos_self_t const* self)
+{
+    kos_cap_t ep = KOS_CAP_NONE;
+    uint32_t const port = ampping_crossing(self, KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
+    if (port == KOS_AMP_NO_ENTRY or ep == KOS_CAP_NONE)
     {
         printf("ampecho: node %u serves no port\n", (unsigned)KOS_AMP_SELF_NODE);
-        return 1;
+        exit(1);
     }
-    kos_cap_t const ep = kos_amp_port(KOS_AMP_SELF_NODE, port);
-    if (KOS_AMP_SHARE_SIZE != 0
-        and kos_mem_self_grant((void*)KOS_AMP_SHARE_BASE, KOS_AMP_SHARE_SIZE,
-                              KOS_AMP_SHARE_MEM_FLAGS)
-               == 0)
+    kos_window_t const share = kos_grant_mem(self, "/shm/share");
+    unsigned char* const view = (unsigned char*)kos_window_addr(share);
+    if (view != NULL and kos_window_size(share) >= (KOS_AMP_SELF_NODE + 1u) * AMP_SHARE_LINE)
     {
-        __atomic_store_n((uint32_t*)(KOS_AMP_SHARE_BASE + KOS_AMP_SELF_NODE * AMP_SHARE_LINE),
+        __atomic_store_n((uint32_t*)(view + KOS_AMP_SELF_NODE * AMP_SHARE_LINE),
                          AMP_SHARE_MARK(KOS_AMP_SELF_NODE), __ATOMIC_RELAXED);
     }
     printf("ampecho: node %u echoing on port %u\n", (unsigned)KOS_AMP_SELF_NODE,
@@ -85,5 +84,4 @@ int main(int argc, char** argv)
         // The caller's own bytes, unchanged: the far-call arms check the payload.
         (void)kos_reply(info.reply_cap, msg, (size_t)got);
     }
-    return 0;
 }

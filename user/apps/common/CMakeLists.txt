@@ -175,8 +175,8 @@ if(KICKOS_BOARD STREQUAL "picopi"
   add_subdirectory(blink)
 endif()
 
-# Its composition names the board's packaged USB CDC console driver, which runs only where the
-# kernel brought the USB clock up.
+# Its composition names the board's packaged USB CDC console driver; built where the service list
+# publishes the console over USB.
 if(KICKOS_USB_CONSOLE)
   add_subdirectory(usbcdcwit)
 endif()

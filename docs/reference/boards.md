@@ -45,7 +45,7 @@ link within 1,700 bytes of one another -- each link prints its own `size` line, 
 and by how much is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` and
-`selftest_p2` to `selftest_p6`: see *The selftest ships as SEVERAL images on five boards* below.
+`selftest_p2` to `selftest_p9`: see *The selftest ships as SEVERAL images on five boards* below.
 
 ### Recommended: `microbit` is exactly this tier
 
@@ -107,7 +107,7 @@ code wins, then this file.
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
-| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
@@ -875,12 +875,11 @@ the board".
   board takes the nRF51822's 32 KiB variant and QEMU is told the size with
   `-global nrf51-soc.sram-size=32768` (its machine defaults to 16 KiB and ignores `-m`).
   `arch/arm/chip/nrf51/nrf51.ld` carries the reason. At 16 KiB and a 2-slot pool this board
-  skipped TWENTY arms; its three gates now declare four skips between them -- `uart_service` in
-  part 2, which is a deliberate pin and not an arena outcome, and `domain_share`,
-  `confused_deputy` and `mem_self_grant` in part 3, which is the suite outgrowing what 32 KiB
-  seats. `microbit_selftest`, `microbit_selftest_p2` and `microbit_selftest_p3` each set
-  `EXPECT_SKIPS` to the test **names** that part cannot host (the board is a three-image board, see
-  below); every other board keeps the script's default of "nothing may skip". The lists are a **measurement, not slack**
+  skipped TWENTY arms; its gates declare two skips between them, `uart_service` in region 5,
+  which is a deliberate pin and not an arena outcome, and `irq_as_event` in region 8, whose 4 KiB
+  MMIO page no longer fits the arena on 32 KiB. Each `microbit_selftest*` gate sets
+  `EXPECT_SKIPS` to the test **names** its image cannot host; every other board keeps the
+  script's default of "nothing may skip". The lists are a **measurement, not slack**
   -- each name and why it skips is at the call site
   (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
   changed, and a test that merely stopped running shows up as a breach. It is named rather than
@@ -1021,22 +1020,37 @@ operational belongs in this file.
 
 ### The selftest ships as SEVERAL images on five boards
 
-`bluepill-c8`, `f302nucleo`, `microbit`, the ENFORCING `esp32c6-wroom` variants and
-`esp32-wroom-benchsmp`. The condition
-is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three -- `stm32f103`,
-`stm32f302`, `nrf51` -- the chip plus `KICKOS_HAVE_MPU` for `esp32c6`, whose flat variant
-carves no code window and stays one image, and the chip plus `KICKOS_BENCH` and more than one
-kernel core for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
+`bluepill-c8`, `f302nucleo`, `microbit`, the ENFORCING and own-image AMP `esp32c6-wroom`
+variants and every `esp32-wroom` bench build. The condition
+is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three (`stm32f103`,
+`stm32f302`, `nrf51`), the chip plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE` for `esp32c6`,
+whose flat variant carves no code window and stays one image, and the chip plus `KICKOS_BENCH`
+for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
 the arms between them.
 
 **FIVE BOARDS, FOUR DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
-registration list into SIX regions; each image carries a contiguous RUN of them and elides the
-rest, so the number of images is what varies by board and the cut points do not. The two STM32
-parts take SIX images, one region each, because 64 KiB of FLASH no longer holds a fifth of the
-suite. `esp32c6` and `microbit` take FOUR, the first image carrying regions 1 and 2 and the third
-regions 4 and 5. `esp32-wroom-benchsmp` takes TWO, regions 1 to 3 and 4 to 6: every ESP32
-instruction runs from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench
-probes beside the second core's code put the whole suite past it.
+registration list into TEN regions; each image carries a contiguous RUN of them and elides the
+rest, so the number of images is what varies by board and the cut points do not. Each board's cut
+is `_selftest_firsts` in `user/apps/common/selftest/CMakeLists.txt`, the first region of each
+image. The two STM32 parts take NINE images, one region each and the last carrying regions 9 and
+10, because 64 KiB of FLASH holds only a slice of the suite. `microbit` takes FIVE (regions 1-4,
+5-6, 7-8, 9, 10). `esp32c6` takes FIVE on the enforcing bench variant (1-2, 3-4, 5-6, 7-9, 10)
+and FOUR on the enforcing or own-image AMP variants (1-4, 5-6, 7-9, 10).
+An `esp32-wroom` bench build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
+from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench probes beside a
+console driver or the second core's code put the whole suite past it.
+
+The selftest is `main` of a composition (`user/apps/common/selftest/system.yaml`, stdout on the
+kernel console). A board with a console driver also builds one composition per driver,
+`user/apps/common/selftest/consoles/<board>/<driver>.yaml`, with the driver at priority 30 and
+`main` under a ceiling of 30: `k64uart` and `k64uartirq` on `frdmk64f`, `xmcuart` and
+`xmcuartirq` on `xmc4800-relax`, `f4uartirq` on `f411disco` and `blackpill`, `lx6uart` on
+`esp32-wroom`, `c6uart` on `esp32c6-wroom`, `rxsci` on `rx72m`, the USB device consoles `rpusb`
+on `picopi` and `pizero2350` and `rt1062usb` on `teensy41`, and `simcon` on the sim. Each
+driver composition's images are named `selftest_<driver>`, `selftest_<driver>_p2` and so on,
+beside the kernel-console `selftest`, `selftest_p2` and so on. AMP node builds compose the
+selftest per node from `user/apps/common/selftest/systems/<board>/<variant>/node<k>.yaml` and
+build no driver images.
 
 `esp32c6` split for a resource that is neither FLASH nor
 arena: its unprivileged code+rodata is ONE pow2 PMP NAPOT window, `_code_size` in
@@ -1052,8 +1066,8 @@ fit; at the 32 KiB provisioning it is a RESIDUAL, and `user/apps/common/selftest
 says so at the microbit gate. Collapsing it means taking that board's part count to one and
 re-deriving the per-region counts as a whole-suite one.
 
-- The images are `selftest`, `selftest_p2`, `selftest_p3` and `selftest_p4`, and on the two
-  STM32 parts `selftest_p5` and `selftest_p6` too. Each is compiled with the region run it carries
+- The images are `selftest`, `selftest_p2` and so on up to the board's last part (`selftest_p9` on
+  the two STM32 parts, `selftest_p5` on `microbit`). Each is compiled with the region run it carries
   (`KICKOS_SELFTEST_FIRST_REGION`, `KICKOS_SELFTEST_LAST_REGION`), which is what elides the other
   regions' bodies. They all land in `<build>/user/apps/common/selftest/` with the usual `.elf` /
   `.bin` / `.hex`.
@@ -1066,12 +1080,12 @@ re-deriving the per-region counts as a whole-suite one.
 - Configure prints what to expect, off the same expressions:
   `-- selftest: split into <P> images over <R> regions: selftest plans <N1> (region(s) 1-1), ... (<sum> together)`
 - The two 64 KiB parts run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
-- **`microbit` is the only split board with ctest gates, and it has four:** `microbit_selftest`,
-  `microbit_selftest_p2`, `microbit_selftest_p3` and `microbit_selftest_p4`, each with its OWN
+- **`microbit` is the only split board with ctest gates, and it has five:** `microbit_selftest`
+  through `microbit_selftest_p5`, each with its OWN
   `EXPECT_SKIPS` / `EXPECT_PARTIALS`. The declarations are made PER REGION in
   `tests/integration/gates/selftest.cmake` and an image declares the union over the regions it
-  carries: regions 1 and 2 declare nothing, region 3 declares the `uart_service` skip, region 4 the
-  `irq_as_event` skip, region 5 the `caller_stack` partial, and region 6 the
+  carries: regions 1-4, 6 and 7 declare nothing, region 5 declares the `uart_service` skip, region 8 the
+  `irq_as_event` skip, region 9 the `caller_stack` partial, and region 10 the
   `irq_kernel_line_reserved` partial where the arch routes every line itself. A name has to be
   declared in the region that holds its
   `TAP_ADD` line, because `check_tap_stream.sh` reports a name declared in another image as a NOTE
@@ -1153,13 +1167,15 @@ both of the two, and then **a THREE-way cut stopped fitting at all**: the notifi
 (`0df3e360`) left the three images with 840 + 936 free and the third overflowing by 1,280 on
 `bluepill-c8-st`, 496 bytes of headroom in total, which no re-cut of two boundaries can spread.
 A FOURTH region was cut for it, and a fourth image stopped fitting in turn: the console handover's
-arms left `selftest_p4` overflowing by 1,452 B on `bluepill-c8-st`. Regions 5 and 6 were cut for
-that, between the IRQ arms and `caller_stack` and after `ram_alloc_zeroed`. The second of the two
-is where `microbit` needs it: `ram_alloc_zeroed` relies on the arms before it in its image having
-spent the arena, so the two STM32 parts take one region per image while `microbit` and `esp32c6`
-carry regions 4 and 5 together. The boundaries fall after `endpoint_handout`, after
-`call_donation_hold`, after `task_exit_member_exit`, after the IRQ arms and after
-`ram_alloc_zeroed`:
+arms left `selftest_p4` overflowing by 1,452 B on `bluepill-c8-st`, and the cut has grown to ten
+regions since. They end after `sem_raii`, `endpoint_handout`, `reply_abandoned_cap`,
+`call_donation_hold`, `cap_reply_slot_reuse`, `task_exit_member_exit`,
+`task_slay_after_every_sweep`, the IRQ arms and `caller_stack`. `caller_stack` closes region 9 on
+purpose: a stack that fits spends arena that `ram_alloc_zeroed` and the probes before it need on
+`microbit`, which carries region 9 alone.
+
+The table below is the measurement of the six-region cut, six images; the current cut is the
+nine-image one of `_selftest_firsts`.
 
 | image | `bluepill-c8-st` | `f302nucleo-st` | `bluepill-c8` | `f302nucleo` |
 | --- | --- | --- | --- | --- |
@@ -2858,8 +2874,8 @@ of path with no runnable target, and it belongs in *Coverage boundary* below as 
 
 ### M4.6.1 -- the IRQ-driven userspace UART consoles (2026-08-01/02)
 
-Five per-chip drivers, selected with `-DKICKOS_SERVICE_LIST=kickos_services_<board>_uartirq`. **No
-board default points at any of them**, deliberately. Every capture named here carries
+Five per-chip drivers, each run in the `selftest_<driver>` images of its board (for example
+`selftest_k64uartirq`). **The kernel-console `selftest` images run none of them**, deliberately. Every capture named here carries
 `# tap route: stdout endpoint -> console driver (service list published)`, which is what proves the
 stream crossed the userspace driver rather than falling back to the kernel's polled route.
 

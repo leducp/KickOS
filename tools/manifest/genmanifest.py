@@ -120,7 +120,10 @@ def manifest(facts, knobs):
             "ports": facts["amp"]["ports"],
             "share": Hex(knob(knobs, "KICKOS_AMP_USER_SHARE_SIZE", 0)),
             "share_cache": "cached",
+            "image": "shared",
         }
+        if knob(knobs, "KICKOS_AMP_OWN_IMAGE", 0):
+            target["amp"]["image"] = "own"
         if knobs.get("KICKOS_AMP_PARTITION_BASE") and knobs.get("KICKOS_AMP_NODE_SHARE") \
                 and knobs.get("KICKOS_AMP_SHARED_SIZE"):
             base = knob(knobs, "KICKOS_AMP_PARTITION_BASE")

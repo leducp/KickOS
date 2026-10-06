@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The suite as main, holding the authority its arms drive and spawning above itself. No arm
+# allocates from the libc heap, and the 64 KiB parts' arena has no room for one.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    entry: selftest_main
+    priority: 2
+    ceiling: 31
+    authority: [memory, system, pinmux, irq, console, tasks]

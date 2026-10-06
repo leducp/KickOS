@@ -684,18 +684,16 @@ message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_ST
 # because they reference kickos_user.
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST}")
 
-# The USB device clock tree (PLL_USB, clk_usb, the USB block reset) is brought up in chip
-# init. Never cached: a cached value keeps the clock tree on after the service list changes.
+# A build whose service list publishes the console over USB: it builds usbcdcwit, and on
+# imxrt1062 defaults the D-cache off. Chip init brings the USB clock tree up in an image that links
+# a USB device console driver, whatever this says (<kickos/usb_console.h>). Never cached: a cached
+# value outlives a change of service list.
 if(NOT DEFINED KICKOS_USB_CONSOLE)
   set(KICKOS_USB_CONSOLE OFF)
-  # Unanchored: any list with a "_usbcdc" stem needs the same clock tree.
+  # Unanchored: any list with a "_usbcdc" stem publishes over USB.
   if(KICKOS_SERVICE_LIST MATCHES "_usbcdc")
     set(KICKOS_USB_CONSOLE ON)
   endif()
-endif()
-if(KICKOS_USB_CONSOLE)
-  add_compile_definitions(KICKOS_USB_CONSOLE=1)
-  message(STATUS "KickOS: USB device clock tree = on (chip init brings up PLL_USB)")
 endif()
 
 # KICKOS_BOARD_PINMAP names the target that DEFINES kickos_board_pinmap; it back-references
@@ -1558,6 +1556,36 @@ if(TARGET kickos_kernel_leaf)
     kickos_compose(${_system} "${_composition}")
   endforeach()
 endif()
+# Every image this configure emits as `<image>|<stdout>|<judge>`: the stdout is `kernel`, the
+# packaged driver its system names, or `-` for an image composing no system of its own; the judge
+# is the gate script KICKOS_IMAGE_JUDGE names, or `-`. The bench reads it. Deferred behind the
+# systems a directory composes once the manifest is written.
+function(_kickos_write_images)
+  get_property(_images GLOBAL PROPERTY KICKOS_EMITTED_IMAGES)
+  set(_rows "")
+  foreach(_image IN LISTS _images)
+    get_target_property(_judge ${_image} KICKOS_IMAGE_JUDGE)
+    if(NOT _judge)
+      set(_judge "-")
+    endif()
+    set(_stdout "-")
+    get_target_property(_image_system ${_image} KICKOS_APP_SYSTEM)
+    if(_image_system AND TARGET ${_image_system})
+      get_target_property(_stdout ${_image_system} KICKOS_SYSTEM_STDOUT)
+      if(NOT _stdout)
+        message(FATAL_ERROR "${_image}: its system ${_image_system} states no KICKOS_SYSTEM_STDOUT")
+      endif()
+    else()
+      get_target_property(_image_links ${_image} LINK_LIBRARIES)
+      if("KickOS::system_default" IN_LIST _image_links)
+        set(_stdout kernel)
+      endif()
+    endif()
+    string(APPEND _rows "${_image}|${_stdout}|${_judge}\n")
+  endforeach()
+  kickos_write_if_changed("${PROJECT_BINARY_DIR}/kickos-images.txt" "${_rows}")
+endfunction()
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL _kickos_write_images)
 if(KICKOS_BUILD_TESTS)
   _add_test(NAME platform_manifest
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"

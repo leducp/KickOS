@@ -10,7 +10,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | script | job |
 | --- | --- |
 | `tools/bench/bench-present.sh` | READ ONLY: which machine the boards are on, which of them answer, each probe serial and each resolved console. Flashes nothing and is safe at any time |
-| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, runs every board, every service list and every image it owes, then states coverage |
+| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, runs every board and every judged image `LIST_IMAGES` names for it, then states image coverage |
 | `tools/bench/bench.sh` | ONE board: configure, build, locate the image, then hand off -- locally, or over ssh to the bench host |
 | `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
@@ -64,7 +64,7 @@ TRACKED, because it is what the project knows about its own boards:
   report that names a cycle rate and then reads zero or one constant.
 - the TAP validation: the LAST plan line to end of file is the authoritative run, counts
   are never summed across plan lines, and the banner must keep its `-dirty`.
-- the service-list coverage derivation and its refusal (below).
+- the image coverage derivation and its refusal (below).
 
 NOT TRACKED, because it describes one rig and would be a lie in any other checkout: which
 physical cable is on which board, this box's absolute paths, the bench host and its port,
@@ -146,27 +146,42 @@ reads as skipped rather than failed.
 The key is the board name uppercased with dashes turned into underscores:
 `esp32c6-wroom` becomes `RIG_CONSOLE_ESP32C6_WROOM`.
 
-## Service-list coverage
+## Image coverage
 
-A driver is only in the image if `KICKOS_SERVICE_LIST` puts it there, so a green run of a
-board's DEFAULT list says nothing about that board's drivers. `bench-fleet.sh` derives the
-lists a board owes from the tree -- every `kickos_services_<board-ish>[_variant]` provider
-declared in a `CMakeLists.txt` -- so a provider added tomorrow is owed tomorrow, and prints
-a coverage table naming each one as `captured` or `NOT RUN`. Any `NOT RUN` makes the pass
-`INCOMPLETE` and the script exits nonzero.
+`bench.sh` names an image with `APP`; there is no service list to select. A driver is in the image
+whose composition names it, so a green run of a board's kernel-console `selftest` images says
+nothing about that board's drivers, which run in the `selftest_<driver>` images.
 
-Each list gets its own TAG, because TAG keys the log and two captures of one app at one TAG
-overwrite each other.
+    LIST_IMAGES=1 tools/bench/bench.sh <board>    every image the configure emits
 
-Each list is then run in EVERY image the board's suite ships as, and the row naming a result
-names the image. `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes
-nothing; it asks no board either, so no line it prints is a witness.
+It configures and flashes nothing, and prints `<build>/kickos-images.txt`, one
+`<image>|<stdout>|<judge>` row per image. The stdout is `kernel`, the driver serving stdout, or
+`-` for an image composing no system. The judge is the gate script that holds the capture: the
+TAP validator `tests/integration/check_tap_stream.sh` for a selftest image, which the capture
+runs against the image's row of `<build>/kickos-selftest-manifest.txt`, a board app's
+`kickos_app_judge`, or `-` for an image nothing judges.
+
+`bench-fleet.sh` captures every judged image `LIST_IMAGES` names for each board, counts the
+unjudged ones in a row of their own, and prints an "image coverage" table naming each judged
+image as `captured` or `NOT RUN`. Any `NOT RUN` makes the pass `INCOMPLETE` and the script
+exits nonzero. One TAG covers the whole pass: a capture's log is keyed by TAG, board and image
+(`<session>/logs/<tag>-<board>-<image>.log`), so the captures of one pass never share a log.
+
+`DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
+either, so no line it prints is a witness.
+
+The console route is derived from the image. An image whose stdout driver is a USB device
+console, `rpusb` or `rt1062usb`, links that driver's `kickos_usb_device_console`
+(`<kickos/usb_console.h>`), which is also what brings the USB clock tree up in its chip init;
+`usb_console_image` in `tools/bench/board-rows.sh` reads it from the ELF, and such an image is
+captured over the device's own ACM. The selftest's `selftest_rpusb` on `picopi` and `pizero2350`
+and `selftest_rt1062usb` on `teensy41` are those images. `CONSOLE_PIN=1` forces the pin console
+back, for a device-controller backend that dies before it publishes.
 
 ## `fpclass` on the RX72M is a step of its own
 
-`bench-fleet.sh` flashes the selftest images and nothing else. It keeps no per-board image list:
-the images are the ones the board's selftest manifest names, and its verdict is the TAP stream,
-which `fpclass` does not print. rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake`
+`bench-fleet.sh` captures the judged images and nothing else, and `fpclass` names no judge: its
+verdict is `check_fpclass.sh` over the log, and it prints no TAP stream. rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake`
 registers no test there, and the DFPU compare patch's silicon witness is this capture, owed by
 every RX72M pass, enforcing and flat, each under its own TAG:
 
@@ -1056,18 +1071,17 @@ closed span is a board that cannot deliver an injected line, which is refused.
   FRACTION of a run and not a short one, and whatever reports the pass must say which image a
   figure came from. How many images a board ships as is a property of ITS configure, published
   by `user/apps/common/selftest/CMakeLists.txt` as `KICKOS_SELFTEST_IMAGES` and written beside
-  the build as `kickos-selftest-images.txt`; `bench-fleet.sh` asks for it through
+  the build as `kickos-selftest-manifest.txt`; `bench-fleet.sh` asks for it through
   `LIST_IMAGES=1 bench.sh <board>` rather than naming boards. It named them once, went two
   splits stale on two of them and named a third nowhere at all, and a fleet pass then flashed
   one image of three while reading green.
 - a board app is judged by the gate script its CMake names through `kickos_app_judge`
-  (`user/apps/CMakeLists.txt`), which configure writes beside the build as
-  `kickos-app-manifest.txt`, one `<image>|<judge>` row per app. `bench.sh` runs that script over
-  the capture unless `JUDGE` names another, and `LIST_APPS=1 bench.sh <board>` prints the rows.
-  An image other than a selftest that neither a row nor `JUDGE` judges is refused, and
-  `JUDGE=none` takes its capture unjudged. `tests/static/check_app_judges.sh` holds each judge to
-  a planted capture it passes and to damaged copies of it that it refuses, each with the token
-  its row names, and every app a board directory builds to a judge or its waiver list.
+  (`user/apps/CMakeLists.txt`), which configure writes as the third field of the app's row of
+  `kickos-images.txt`. `bench.sh` runs that script over the capture unless `JUDGE` names another.
+  An image that neither its row nor `JUDGE` judges is refused, and `JUDGE=none` takes its
+  capture unjudged. `tests/static/check_app_judges.sh` holds each judge to a planted capture it
+  passes and to damaged copies of it that it refuses, each with the token its row names, and
+  every app a board directory builds to a judge or its waiver list.
 - a board absent from the bus is REPORTED as absent. It is never silently skipped, and an
   absent board is not a pass.
 - a cycle figure is claimable only where the counter MOVED, and the capture says so or

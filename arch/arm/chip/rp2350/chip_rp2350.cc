@@ -38,6 +38,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 #include <kickos/sys/atomic.h>
+#include <kickos/usb_console.h>
 
 #include <stdint.h>
 
@@ -119,7 +120,6 @@ namespace
     uint32_t g_uart_ibrd = reg::uart::IBRD_115200;
     uint32_t g_uart_fbrd = reg::uart::FBRD_115200;
 
-#if defined(KICKOS_USB_CONSOLE)
     // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
     // touch RESETS/CLOCKS, which the MPU reserves for the kernel
     // (arch_reserved_blocks), so the unprivileged driver cannot do them; everything
@@ -168,7 +168,6 @@ namespace
         // and RESET_DONE only asserts once clk_usb runs, hence the ordering above.
         unreset(reg::resets::USBCTRL);
     }
-#endif
 
     // clk_ref is the selected source AFTER CLK_REF_DIV (datasheet 8.1). The register
     // resets to INT=1 but the bootrom overwrites it, so the divisor is read, never assumed.
@@ -545,9 +544,10 @@ void arch_init(void)
         clocks_init();
         unreset(reg::resets::UART1);
         uart1_init();
-#if defined(KICKOS_USB_CONSOLE)
-        usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
-#endif
+        if (&kickos_usb_device_console != nullptr)
+        {
+            usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+        }
 #if KICKOS_AMP_OWN_IMAGE
         g_amp_clk_sys_hz = SystemCoreClock;
         // Before any peer exists, so the release cannot land on a claim in progress.

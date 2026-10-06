@@ -12,9 +12,9 @@
 #include <kickos/config/system.h>
 
 // The tree compiles one geometry, summed at configure; this gate needs all of them, so it
-// restates the width and the child width from its target's CAPTABLE_GATE_* before cap.h
-// reads them. The generated header is included FIRST so that cap.h's own include of it is a
-// no-op and cannot put the configured values back.
+// restates the width, the child width and the grant list a child width is built from, from its
+// target's CAPTABLE_GATE_* before cap.h reads them. The generated header is included FIRST so
+// that cap.h's own include of it is a no-op and cannot put the configured values back.
 #include <kickos/config/cap_width.h>
 #undef KICKOS_MAX_HANDLES
 #define KICKOS_MAX_HANDLES CAPTABLE_GATE_WIDTH
@@ -22,6 +22,8 @@
 #define KICKOS_CAP_CHILD_WIDTH CAPTABLE_GATE_CHILD
 #undef KICKOS_CAP_REPLY_MAX
 #define KICKOS_CAP_REPLY_MAX 1
+#undef KICKOS_MAX_SPAWN_GRANTS
+#define KICKOS_MAX_SPAWN_GRANTS (CAPTABLE_GATE_CHILD - 1 - KICKOS_CAP_REPLY_MAX)
 
 #include <kickos/cap.h>
 

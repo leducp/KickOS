@@ -55,25 +55,20 @@
 #   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
 #     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
 #
-# A board app is judged by the gate script its CMake names (kickos_app_judge) unless JUDGE names
-# another, and LIST_APPS=1 prints its configure's apps as `<image>|<judge>` rows:
+# An image is judged by the gate script its row of the build's image listing names unless JUDGE
+# names another: a board app's kickos_app_judge, or the TAP validator for a selftest image, which
+# the capture runs itself:
 #
 #   VARIANT=st APP=xmcspi tools/bench/bench.sh xmc4800-relax
 #
-# An image other than a selftest that no row and no JUDGE judges is refused; JUDGE=none takes
-# the capture unjudged.
+# An image that no row and no JUDGE judges is refused; JUDGE=none takes the capture unjudged.
 set -u
-# HOW MANY IMAGES THE SUITE SHIPS AS ON THIS BOARD IS A PROPERTY OF ITS CONFIGURE, and
-# LIST_IMAGES=1 is how a caller asks: configure, print the names one per line, flash nothing.
-# Everything this script narrates goes to stderr in that mode, so the caller's $(...) holds the
-# list and nothing else. LIST_APPS=1 asks the same of the board apps.
-LISTING=0
-if [ "${LIST_IMAGES:-0}" = "1" ] && [ "${LIST_APPS:-0}" = "1" ]; then
-  echo "REFUSING: LIST_IMAGES and LIST_APPS each print one list; set one" >&2
-  exit 2
-fi
-if [ "${LIST_IMAGES:-0}" = "1" ] || [ "${LIST_APPS:-0}" = "1" ]; then
-  LISTING=1
+# WHICH IMAGES THIS BOARD'S BUILD SHIPS IS A PROPERTY OF ITS CONFIGURE, and LIST_IMAGES=1 is how a
+# caller asks: configure, print one `<image>|<stdout>|<judge>` row per image, flash nothing. The
+# stdout is `kernel`, the packaged console driver the image's composition names, or `-`; the
+# judge is a gate script relative to the tree, or `-`. Everything this script narrates goes to
+# stderr in that mode, so the caller's $(...) holds the rows and nothing else.
+if [ "${LIST_IMAGES:-0}" = "1" ]; then
   exec 3>&1 1>&2
 fi
 # readlink, because .session/ carries a SYMLINK to this script for muscle memory: without
@@ -113,9 +108,9 @@ bench_host_select "${BENCH_HOST:-}"
 # a board by hand: more than one XMC and more than one K64F are in rotation, so a serial is
 # not a desk fact. A serial given as an argument still wins.
 #
-# Not in LIST_IMAGES mode: asking which images a board ships must not fail for a board that is
+# Not when listing: asking which images a board ships must not fail for a board that is
 # unplugged, or the caller is left choosing between a stale list of its own and nothing.
-if [ -z "$SN" ] && [ "$LISTING" != "1" ]; then
+if [ -z "$SN" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
   PROBE_ID=$(board_probe_rows "$BOARD" 2>/dev/null | awk -F '|' '$2 == "sn" { print $1; exit }')
   if [ -n "$PROBE_ID" ]; then
     bench_bus_read || {
@@ -158,14 +153,6 @@ case $BOARD in
   teensy41) EXTRA+=(-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
   *) ;;
 esac
-# SERVICE_LIST is how a DRIVER gets witnessed at all. Most -st presets default to
-# kickos_services_none (rx72m, esp32-wroom, esp32c6-wroom all do), so their selftest image
-# contains NO driver service and a green run says nothing about one. frdmk64f and
-# xmc4800-relax are the exceptions: their defaults carry the polled console plus SPI. The
-# IRQ UART services live only in the *_uartirq providers and are never a default.
-if [ -n "${SERVICE_LIST:-}" ]; then
-  EXTRA+=(-DKICKOS_SERVICE_LIST="$SERVICE_LIST")
-fi
 # EXTRA_CMAKE reaches the configure verbatim.
 if [ -n "${EXTRA_CMAKE:-}" ]; then
   # Deliberately unquoted: the caller passes one or more -D words.
@@ -173,7 +160,7 @@ if [ -n "${EXTRA_CMAKE:-}" ]; then
   EXTRA+=($EXTRA_CMAKE)
 fi
 # Every -D above lands in the build dir's CACHE and survives there, so reusing the dir at the
-# same TAG-BOARD-VARIANT would measure an EXTRA_CMAKE or SERVICE_LIST this invocation never
+# same TAG-BOARD-VARIANT would measure an EXTRA_CMAKE this invocation never
 # passed. The stamp records the set that configured the dir, and a dir whose set differs, or
 # that carries no stamp, is discarded instead of reused: a capture is a witness for the flags
 # of ITS run. Written only after the configure succeeds, so a half-configured dir is discarded
@@ -185,20 +172,6 @@ if [ -d "$BUILD" ]; then
     echo "=== discarding $BUILD: its cache was not configured with this run's extra -D set"
     rm -rf "$BUILD"
   fi
-fi
-
-# A _usbcdc list publishes the console onto the board's own USB and blinds the pin UART, so
-# the route is the device's own ACM. Derived from the list, not asked for: the provider is
-# what moves the console.
-CONSOLE_USB_CDC=0
-case "${SERVICE_LIST:-}" in
-  *_usbcdc) CONSOLE_USB_CDC=1 ;;
-esac
-# CONSOLE_PIN=1 forces the PIN console back. A device-controller backend that dies before it
-# publishes leaves the kernel console on the pin UART, so that cable is the only channel
-# carrying the failure; an ACM that never enumerates would report silence for a live board.
-if [ "${CONSOLE_PIN:-0}" = "1" ]; then
-  CONSOLE_USB_CDC=0
 fi
 
 # A TAG can COLLIDE with a build dir an earlier session left behind, and then the generator loads
@@ -221,15 +194,18 @@ printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
 # Written by tests/integration/gates/selftest.cmake, which is the file that hands the same three
 # sets to the CTest entries, so nothing here is a second statement of them.
 MANIFEST="$BUILD/kickos-selftest-manifest.txt"
+# EVERY IMAGE THIS CONFIGURE EMITS, one `<image>|<stdout>|<judge>` row each. Written by the root
+# CMakeLists.txt.
+IMAGES="$BUILD/kickos-images.txt"
+[ -s "$IMAGES" ] || { echo "REFUSING: $PRESET configured but listed no image at $IMAGES" >&2; exit 1; }
+TAP_JUDGE=tests/integration/check_tap_stream.sh
 MANIFEST_OWED=0
 case $APP in
   selftest*) MANIFEST_OWED=1 ;;
   *) ;;
 esac
-if [ "${LIST_IMAGES:-0}" = "1" ]; then
+if [ "${LIST_IMAGES:-0}" = "1" ] && awk -F '|' -v j="$TAP_JUDGE" '$3 == j { f = 1 } END { exit !f }' "$IMAGES"; then
   MANIFEST_OWED=1
-elif [ "${LIST_APPS:-0}" = "1" ]; then
-  MANIFEST_OWED=0
 fi
 if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
   echo "REFUSING: $PRESET configured but published no selftest manifest at $MANIFEST." >&2
@@ -238,34 +214,28 @@ if [ "$MANIFEST_OWED" -eq 1 ] && [ ! -s "$MANIFEST" ]; then
   echo "  sets, and a TAP stream nothing checks is a count of the lines that survived." >&2
   exit 1
 fi
-
-# The board apps this configure builds, one `<image>|<judge>` row each, written by
-# user/apps/CMakeLists.txt.
-APP_MANIFEST="$BUILD/kickos-app-manifest.txt"
-if [ "${LIST_APPS:-0}" = "1" ]; then
-  [ -f "$APP_MANIFEST" ] || { echo "REFUSING: $PRESET configured but wrote no $APP_MANIFEST" >&2; exit 1; }
-  cat "$APP_MANIFEST" >&3
-  exit 0
-fi
-if [ -z "${JUDGE:-}" ] && [ -f "$APP_MANIFEST" ]; then
-  JUDGE=$(awk -F '|' -v app="$APP" '$1 == app { print $2; exit }' "$APP_MANIFEST")
-fi
-if [ -z "${JUDGE:-}" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
-  case $APP in
-    selftest*) ;;
-    *)
-      echo "REFUSING: no judge for $APP (JUDGE=none to waive)" >&2
-      exit 2
-      ;;
-  esac
-fi
-
-# Refused rather than defaulted to the first image: a caller that took silence for "one image"
-# would flash a fraction of the suite, and TAP numbering restarts at 1 in each image, so the
-# short run would read as a whole one.
 if [ "${LIST_IMAGES:-0}" = "1" ]; then
-  cut -d'|' -f1 "$MANIFEST" >&3
+  cat "$IMAGES" >&3
   exit 0
+fi
+
+APP_ROW=$(awk -F '|' -v app="$APP" '$1 == app { print; exit }' "$IMAGES")
+APP_STDOUT=""
+APP_JUDGE=""
+if [ -n "$APP_ROW" ]; then
+  IFS='|' read -r _ APP_STDOUT APP_JUDGE <<AROW
+$APP_ROW
+AROW
+fi
+if [ "$APP_JUDGE" = "-" ]; then
+  APP_JUDGE=""
+fi
+if [ -z "${JUDGE:-}" ]; then
+  JUDGE="$APP_JUDGE"
+fi
+if [ -z "$JUDGE" ]; then
+  echo "REFUSING: no judge for $APP (JUDGE=none to waive)" >&2
+  exit 2
 fi
 
 # THE ROW FOR THE IMAGE BEING CAPTURED, passed to the capture so it can run
@@ -370,9 +340,24 @@ if [ -z "$IMG" ]; then
 fi
 [ -n "$IMG" ] || { echo "REFUSING: $APP built but no image under $BUILD/user/apps/{$BOARD,common}/$APP" >&2; exit 1; }
 
+# An image whose stdout driver is a USB device console blinds the pin UART, so the route is the
+# device's own ACM. Derived from the image, not asked for: its composition is what moves the
+# console.
+CONSOLE_USB_CDC=0
+if [ -n "$APP_STDOUT" ] && [ "$APP_STDOUT" != kernel ] && [ "$APP_STDOUT" != - ] \
+     && usb_console_image "$IMG"; then
+  CONSOLE_USB_CDC=1
+fi
+# CONSOLE_PIN=1 forces the PIN console back. A device-controller backend that dies before it
+# publishes leaves the kernel console on the pin UART, so that cable is the only channel
+# carrying the failure; an ACM that never enumerates would report silence for a live board.
+if [ "${CONSOLE_PIN:-0}" = "1" ]; then
+  CONSOLE_USB_CDC=0
+fi
+
 # The capture's verdict, from the gate script JUDGE names; none without one.
 judge() {
-  if [ -z "${JUDGE:-}" ] || [ "$JUDGE" = none ]; then
+  if [ "$JUDGE" = none ] || [ "$JUDGE" = "$TAP_JUDGE" ]; then
     return 0
   fi
   echo "=== judging $LOG with $JUDGE"

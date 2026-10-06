@@ -270,7 +270,7 @@ userspace, as the composition design leaves for when each board moves:
 | `xmc4800-relax`, `frdmk64f`, `picopi`, `f302nucleo` | `KICKOS_BOARD_PINMAP` | userspace | deleted with the pin maps (section 6): a task muxes its own pins and the board file states the wiring |
 | `imx8mp-evk`, `qemu-arm64`, `qemu-riscv64` | `KICKOS_USER_HEAP_SIZE`, 65536 | userspace | stays until the heap knob is deleted (section 6); the figure is already their default composition's `heap` |
 | `microbit` | its full-newlib choice, which C library the package links | kernel | generalised in M10.5.5: the board descriptor names the nano profile (`KICKOS_BOARD_NEWLIB`, also on `f302nucleo` and `bluepill-c8`) and the fleet's `KICKOS_FULL_NEWLIB` chooses the full one; it is what the kernel package is built with, a fact of the export every image links |
-| `picopi`, `pizero2350`, `teensy41` | none yet; the USB console's clock tree is derived from a list's name | kernel | `KICKOS_USB_CONSOLE` becomes their Kconfig option, set by a `usbcdc` defconfig variant: it is chip init the kernel runs |
+| `picopi`, `pizero2350`, `teensy41` | none; chip init brings the USB console's clock tree up in an image linking a USB device console driver | kernel | nothing to configure: the driver's `kickos_usb_device_console` (`<kickos/usb_console.h>`) is what the chip reads |
 | `blackpill`, `bluepill-c8`, `due`, `esp32-wroom`, `esp32c6-wroom`, `f411disco`, `qemu`, `qemu-m3`, `qemu-m7`, `qemu-m33`, `qemu-riscv`, `qemu-x86_64`, `rx72m`, `sim` | none | | nothing to classify |
 
 ### 2.2 The board's pins in the kernel
@@ -349,9 +349,14 @@ with the stamp masked as 1.4 masks it, and A built twice as the null control. Th
 as root, it spends a task slot and its entry thread from `KICKOS_MAX_THREADS`, where root's slot
 was outside both, and its capability table is a child's, `KICKOS_CAP_CHILD_WIDTH` wide, where
 root's was summed. Its declared peak is 5 slots held at once plus 3 the deadlock arm skips without,
-above the `KICKOS_CAP_FIRST_DYNAMIC` reserved ones; at the default `KICKOS_MAX_SPAWN_GRANTS` of 6 a
-child's 7 hold the 2 reserved and the 5 exactly, and its composition delegates no capability at
-the spawn. The row decides each small board: `KICKOS_MAX_THREADS` and `KICKOS_MAX_TASKS` raised by
+above the `KICKOS_CAP_FIRST_DYNAMIC` reserved ones, and its composition delegates no capability at
+the spawn. `KICKOS_MAX_SPAWN_GRANTS` defaults to 9 where the selftest is built on a board whose
+`KICKOS_CAP_TABLE_SUPPLY` is 10 or more, a child's 10 slots holding the 2 reserved, the 5 and the 3.
+`bluepill-c8` and `f302nucleo` state a supply of 7 and stay at 6, a child's 7 holding the 2 and
+the 5 exactly, and their gates declare `mutex_deadlock` a skip. On `microbit` the 9 costs each
+selftest image 560 B of `.bss` and 312 to 856 B of `.text` against 6, measured on two builds of
+one tree, and no image loses a 2 KiB arena block: `selftest` keeps 320 B before the next block
+boundary and the other four 928 to 1,440 B. The row decides each small board: `KICKOS_MAX_THREADS` and `KICKOS_MAX_TASKS` raised by
 one where its RAM allows, recording nothing again; a board whose child width cannot hold the peak
 raises `KICKOS_MAX_SPAWN_GRANTS` where its RAM allows; a misfit goes to the maintainer.
 
@@ -413,7 +418,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `sysdefault` | 1 | already |
 | `trapnest` | 2 | `irq` |
 | `uartloop` | 2 | the packaged `simuart` and a task using its endpoint |
-| `usbcdcwit` | 2 | `stdout` names the packaged `rpusb` or `rt1062usb`, on a build whose defconfig variant sets `KICKOS_USB_CONSOLE` |
+| `usbcdcwit` | 2 | `stdout` names the packaged `rpusb` or `rt1062usb`, on a build whose service list publishes over USB |
 
 ### 4.3 The per-board apps
 
@@ -435,11 +440,24 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 
 ### 4.4 The selftest as a task
 
-The selftest becomes `main` of its own composition on every board, holding `memory`, `system`,
-`pinmux`, `irq`, `console` and `tasks`, the authority it gave itself through
-`KICKOS_APP_AUTHORITY`, with `ends: main` and the heap it needs. A second composition per console
-driver a board has, with `stdout` naming that driver, replaces the service lists the bench fleet
-ran it under (4.5). On an AMP node its composition names the node's crossings.
+The selftest is `main` of its own composition on every board, `user/apps/common/selftest/system.yaml`,
+holding `memory`, `system`, `pinmux`, `irq`, `console` and `tasks`, the authority it gave itself
+through `KICKOS_APP_AUTHORITY`, with `ends: main` and a `heap` of 0: no arm allocates from the libc
+heap, and the 64 KiB parts carve none. Its entry, `selftest_main`, keeps its own row of the table,
+whose priority, ceiling, authority and delegations the arms read. A second composition per
+console driver a board has, `consoles/<board>/<driver>.yaml` with `stdout` naming that driver,
+replaces the service lists the bench fleet ran it under (4.5), its images named
+`selftest_<driver>`; `k64uart`, `k64uartirq`, `xmcuart`, `xmcuartirq`, `f4uartirq`, `lx6uart`,
+`c6uart`, `rxsci`, the USB device consoles `rpusb` and `rt1062usb`, and `simcon`.
+
+**On an AMP node** the composition names the node's crossings. On an own-image node it is
+`systems/<board>/<variant>/node<k>.yaml`: `main` serves the first port the partition names the
+node and uses every port it names another, and maps the partition's user share through a
+partition region. It is admitted in a partition whose other nodes run `ampecho`, itself composed
+(`echo<k>.yaml`), echoing on its node's first port while a task that never receives serves each
+other one, which is the unanswered port the reply-guard arms park on; `amp_partition_selftest`
+assembles that partition. The shared image's one composition names its crossings alone (9.1). An
+AMP node builds no driver images.
 
 **Priority.** Every `entry` task states its `ceiling`, which no default supplies, and the init
 narrows the task's ceiling to it. The selftest spawns threads above the one it runs at, so it runs
@@ -456,19 +474,32 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 
 | arms | today | as a task |
 | --- | --- | --- |
-| `authority_cap`, `task_authority`, `pinmux_set`, `console_publish_priv` | root holds every authority | the task holds exactly its composition's word, which the arms assert |
+| `authority_cap`, `task_authority`, `pinmux_set`, `console_publish_priv` | root holds every authority | the task holds exactly its composition's word, which the arms assert: every bit of it seats on a child, `pstate` does not, and `cpu_clock_set` from `main` is refused |
 | `console_publish_handout`, `console_publish_narrow` | root publishes its own endpoint | unchanged under `console` authority; skipped where `stdout` names a driver, as today under a service list |
-| `thread_join`, `join_stale_gen`, `task_handles`, `call_from_root`, `bus_device_slots`, `cap_index0` | root's thread 0, implicit task handle and slot layout | the task's own, read from `kos_thread_self` and its spawn |
-| `cap_child_width` | root's summed width | the task's table is a child's (section 3), which the arm asserts |
+| `thread_join`, `join_stale_gen`, `task_handles`, `call_from_root`, `bus_device_slots`, `cap_index0`, `thread_slay_gate` | root's thread 0, implicit task handle and slot layout | the task's own, read from `kos_thread_self`, which answers on every kernel |
+| `cap_child_width`, `cap_chunk_span` | root's summed width | the task's table is a child's (section 3), which the arm asserts, beside the init's delegations |
 | `prio_self_ceiling`, `prio_ceiling_*`, `task_group_kill`, the SMP restore | root's priority and ceiling | the declared priority and ceiling |
 | the IRQ arms | root claims `KICKOS_IRQ_FREE_BASE` lines | the task claims them at run time under `irq` |
 | `caller_stack`, `domain_share`, `cross_task_block`, `writable_global`, `window_get` and the region-set reads | root's region set | the task's, on the same static regions |
-| `amp_probe_root_only` | root holds the partition's ports | the task holds the crossings its composition names, and no other |
-| `process_data_from_image`, `process_data_template` | root's data pages | the task's |
-| an arm reading a pin a board pin map set | the default init applied it | deleted with the pin maps |
+| `stack_grant_refused`, `stack_guard_intact`, `stack_handoff_refused` | root's stack, which the kernel placed | a worker's, the task's own stack being a block the init reserved and handed it |
+| `amp_probe_root_only`, now `amp_probe_crossing_holder` | root holds the partition's ports, and the probe answers root's task | the task holds the crossings its composition names, and the probe answers a task holding a crossing; a task holding `system` and none is refused |
+| `amp_port_seating`, `amp_port_unnamed` | the ports at root's seated indices | each named crossing at its delegated slot, and none other |
+| `amp_far_slot_reuse` | closes root's far endpoint, the last capability to it | closes a far endpoint the task alone holds, minted through the probe (`KOS_AMP_MINT_HOLD`): the crossings are copies of root's |
+| `amp_share_window`, `amp_share_crossing` | root holds the user share and hands windows of it | the task reaches the share through its composition's partition region, and naming any part of it itself is refused |
+| `process_data_from_image`, `process_data_template`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, an explicit task the snapshot |
+| an arm reading a pin a board pin map set | the default init applied it | none exists |
 
-Where the selftest overflows an image under its composition, it splits into one more region, as
-ruled. Its bloat audit stays in M10's tail.
+The pools follow the task. A task's entry thread and task come out of `KICKOS_MAX_THREADS` and
+`KICKOS_MAX_TASKS`, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
+table is a child's: `KICKOS_MAX_SPAWN_GRANTS` defaults to 9 where the selftest is built on a board
+whose supply backs the 3 optional slots, and an AMP node's defconfig widens it for its crossings.
+
+**Where the selftest overflows an image under its composition, it splits into one more region**,
+as ruled. `main.cc` cuts ten regions, and each board states the first region of each of its
+images: nine on the two STM32 parts, regions 1 to 8 alone and 9 with 10; five on `microbit`, whose
+binding resource is the arena after `.bss`; five on an enforcing ESP32-C6 bench build and four on
+the other enforcing or AMP builds of that chip; two on an ESP32 bench build. Its bloat audit stays
+in M10's tail.
 
 ### 4.5 Every service list becomes a composition
 
@@ -478,7 +509,7 @@ ruled. Its bloat audit stays in M10's tail.
 | `kickos_services_frdmk64f` (`k64uart`, `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
 | `kickos_services_xmc4800relax` (`xmcuart`, `xmcssc`), `_xmc4800relax_console` | `consoledemo`'s and `xmcssc`'s |
 | each `_uartirq` list (`k64uartirq`, `xmcuartirq`, `c6uart`, `lx6uart`, `rxsci`, `f4uartirq`) | the selftest's composition naming that console driver on its board |
-| the `_usbcdc` lists (`rpusb`, `rt1062usb`) | `usbcdcwit`'s compositions |
+| the `_usbcdc` lists (`rpusb`, `rt1062usb`) | `usbcdcwit`'s compositions and the selftest's composition naming that console driver on its board |
 | `kickos_services_sim` (`simcon`), `kickos_services_simuart` | the compositions of `drvdeath`, `pubpanic`, `simconabi`, `faultsurvive_published`, the published selftest, and `uartloop` |
 
 The catalogue gains every driver a list carried that it lacks: `k64uart`, `k64dspi`, `xmcuart`,
@@ -545,7 +576,7 @@ x86_64's move to `add_executable`.
 | `KICKOS_USER_HEAP_SIZE` the knob: Kconfig, three board overrides, the defconfigs, the leaves' `--defsym`, x86's knob path | every composition's `heap` (maintainer, 2026-10-03); the link symbol of that name stays, defined by the system target alone | `cmake/kernel_leaf.ld`'s fallback; `check_heap_symbol.cmake`; `porting.md`, `boards.md` |
 | `kos_wait_last` and its system call, root-only | `ends`, and the task end that stops a task's members | `sched_exit`'s arm; `abi.h`'s row |
 | `tools/sweep_service_lists.sh` | the fleet sweep over every preset | `boards.md` |
-| the bench's `SERVICE_LIST`, and `bench-fleet.sh`'s list discovery | the bench names an image, and the fleet runs each selftest composition of the board as its own image | `tools/bench/bench.sh`, `tools/bench/bench-fleet.sh`; `KICKOS_USB_CONSOLE` set by the boards' Kconfig (2.1), no longer derived from a list's name |
+| the bench's `SERVICE_LIST`, and `bench-fleet.sh`'s list discovery | the bench names an image, and the fleet runs each selftest composition of the board as its own image | `tools/bench/bench.sh`, `tools/bench/bench-fleet.sh`; the USB console's clock and capture route read from the image (2.1) |
 | the hand-written chip headers, `mpu.cmake`, `aspace.cmake`, the reserved arrays and their fixed bound | section 1 | the configure-time pair checks; `porting.md`'s chip-header steps |
 | the `KickOS::system_default` stub | every board's default (section 2) | the `system_link_stub` gates |
 
@@ -642,6 +673,11 @@ only the node index changed, which `tools/amp/build-partition.sh` already checks
 so node k's composition is admitted against this build's manifest with its node set to k, exactly.
 Every node refuses alike, and no node waits on another's build. The tool runs it as
 `kickos_compose partition <composition>... --manifest <manifest> --node <k>`.
+
+**A shared image is its partition's one composition.** Its peers run a service body and no
+kernel, so nothing runs a composition there: the image links node 0's, which names its crossings
+alone, the manifest's `target.amp.image` stating `shared` (`own` otherwise) so that admission does
+not refuse it as `partition.lone`.
 
 ### 9.2 What crosses, and how it is named
 
@@ -797,7 +833,7 @@ board app that prints.
 | board | the chain has | runs |
 | --- | --- | --- |
 | `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and each of `xmcuart` and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms, the four diagnostic apps, `conreclaim` |
-| `frdmk64f` | probe, console, fleet | default system; selftest, kernel and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi` in loopback |
+| `frdmk64f` | probe, console, fleet | default system; selftest, kernel, `k64uart` and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi` in loopback |
 | `rx72m` | probe, console, fleet | default system; selftest, kernel and `rxsci`; `rxdrv` |
 | `f302nucleo` | probe, console, fleet | default system; selftest; the measurement images of section 3 |
 | `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`, `c6lpprobe`; the `amp2` partition with its gate witness |

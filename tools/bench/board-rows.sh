@@ -106,8 +106,8 @@ console_row() {
         CONSOLE_PATTERN="$pin"
         CONSOLE_PORT=""
     fi
-    # A _usbcdc service list publishes the console on the board's own USB and blinds the pin
-    # UART, so the cable named above goes quiet and resolving it would capture silence.
+    # A USB device console publishes on the board's own USB and blinds the pin UART, so the
+    # cable named above goes quiet and resolving it would capture silence.
     # Keyed on our OWN product strings, not on 1209:0001, which is pid.codes' shared test
     # pair (user/include/kickos/sys/usb_cdc.h) and matches anyone's prototype.
     if [ "$cdc" = "1" ]; then
@@ -119,6 +119,16 @@ console_row() {
         CONSOLE_PORT=""
     fi
     return 0
+}
+
+# usb_console_image <elf>
+#
+# Succeeds where the image links a USB device console driver, which defines
+# kickos_usb_device_console (<kickos/usb_console.h>): its console is the device's own ACM. The
+# driver serves stdout or admission refuses the composition, so the symbol is the image's console.
+usb_console_image() {
+    LC_ALL=C readelf -sW "$1" 2>/dev/null \
+        | awk '$7 != "UND" && $8 == "kickos_usb_device_console" { found = 1 } END { exit !found }'
 }
 
 # The glob expansion, as a script, so a pattern is expanded WHERE THE DEVICES ARE and by the

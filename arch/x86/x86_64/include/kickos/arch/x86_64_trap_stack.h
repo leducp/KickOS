@@ -33,8 +33,8 @@
 /* The KickOS toolchain's x86_64-elf GCC 16.2 (docs/design-m10-toolchain.md) builds deeper
  * frames than the host compilers the figures below were first measured under. Where it did, the
  * class is reserved at a round figure above its measurement, frame size being no constraint on
- * x86 (maintainer, 2026-09-30). On qemu-x86_64-bench it measures IRQ, IRQK and IST 456, EXITK and
- * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1200, RET 1168, SYSK 2336
+ * x86 (maintainer, 2026-09-30). On qemu-x86_64-bench it measures IRQ, IRQK and IST 592, EXITK and
+ * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1200, RET 1168, SYSK 2368
  * and PANIC 608. */
 
 /* struct trap_frame, the frame every entry builds from a 16-byte-aligned top: five hardware
@@ -53,30 +53,31 @@
  * slice through pick_and_seat, whose switch loads the incoming port set. 544 on qemu-x86_64
  * once the image links newlib (docs/design-m10-toolchain.md section 5.5): the same wake's
  * pick_and_seat primes the incoming thread's libc state, reent_prime copying into its space
- * through arch_aspace_acquire. */
-#define KICKOS_X86_64_TRAP_DEPTH_IRQ 576
+ * through arch_aspace_acquire. 592 on qemu-x86_64-bench, whose bench brackets widen
+ * pick_and_seat's frame on that chain. */
+#define KICKOS_X86_64_TRAP_DEPTH_IRQ 640
 
 /* A ring 0 interrupt's whole extent below the rsp it interrupts, FRAME_IRQ + DEPTH_IRQ, which
  * arch_x86_64.cc asserts. */
-#define KICKOS_X86_64_TRAP_NEST 760
+#define KICKOS_X86_64_TRAP_NEST 824
 
-/* The ring 3 syscall on the block. 1832 on qemu-x86_64, a spawn seeding the new task's space:
- *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[480] -> thread_create[128]
+/* The ring 3 syscall on the block. 1864 on qemu-x86_64, a spawn seeding the new task's space:
+ *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
  *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
  *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1832
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1864
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1832 on
+/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1864 on
  * qemu-x86_64, down SYSK's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1856
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1920
 
-/* The same dispatch through the switch: 1832 on qemu-x86_64, down SYSPRIV's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1856
+/* The same dispatch through the switch: 1864 on qemu-x86_64, down SYSPRIV's chain. */
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1920
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
  * down IRQ's chain, which bounds the reporter those vectors actually take, and 544 with newlib
- * linked, down the same chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_IST 576
+ * linked, down the same chain, and 592 on qemu-x86_64-bench. */
+#define KICKOS_X86_64_TRAP_DEPTH_IST 640
 
 /* The fault and slay stubs on the block with an interrupt nested below: 816 on both presets, a
  * dying task's teardown releasing its address space down the map editor's walks. */

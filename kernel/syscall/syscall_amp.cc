@@ -127,23 +127,63 @@ namespace kickos
             return amp::PORT_MAX;
         }
 
-        // True for any thread of root's TASK, not root's thread alone. A null root task refuses
-        // rather than matching: a caller mid-exit has a null task of its own, and equality alone
-        // would open the gate exactly then.
+        // A crossing of the partition: a far endpoint, or the local one a port of this node is
+        // bound to.
+        bool amp_is_crossing(CapEntry const* entry)
+        {
+            if (entry->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT))
+            {
+                return false;
+            }
+            Endpoint* const e = kernel().endpoints.resolve(entry->obj);
+            if (e == nullptr)
+            {
+                return false;
+            }
+            if (endpoint_is_far(e))
+            {
+                return true;
+            }
+            uint16_t const index = static_cast<uint16_t>(kernel().endpoints.index_of(e));
+            for (uint32_t port = 0; port < amp::PORT_MAX; port++)
+            {
+                if (amp::port_endpoint(port) == index)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // True for any thread of a task whose threads hold a crossing of the partition, which
+        // root holds from boot and the init delegates to each task its composition names one to.
+        // A caller mid-exit has a null task and is refused.
         //
-        // Caller holds IrqLock: the field is another thread's and thread exit writes it there.
+        // Caller holds IrqLock: the tables walked are other threads'.
         bool amp_probe_caller_ok(Thread* c)
         {
-            if (c == nullptr)
+            if (c == nullptr or c->task == nullptr)
             {
                 return false;
             }
-            Task const* const root = kernel().threads.slots[ThreadPool::ROOT_INDEX].task;
-            if (root == nullptr)
+            Kernel& k = kernel();
+            for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
             {
-                return false;
+                Thread const* const th = &k.threads.slots[i];
+                if (th->task != c->task)
+                {
+                    continue;
+                }
+                uint32_t const end = thread_cap_capacity(th);
+                for (uint32_t e = 0; e < end; e++)
+                {
+                    if (amp_is_crossing(cap_slot(th->caps, e)))
+                    {
+                        return true;
+                    }
+                }
             }
-            return c->task == root;
+            return false;
         }
 
         // KOS_AMP_OP_DEFER's gate alone.
@@ -649,15 +689,18 @@ namespace kickos
                     return static_cast<uint64_t>(-KOS_EPERM);
                 }
                 uint32_t cap = KCAP_INVALID;
-                int const rc =
-                    amp_endpoint_mint(c, amp_peer_node(), static_cast<uint32_t>(a1), CAP_SIGNAL, &cap);
-                if (rc == 0)
+                uint32_t const port = static_cast<uint32_t>(a1) & ~KOS_AMP_MINT_HOLD;
+                int const rc = amp_endpoint_mint(c, amp_peer_node(), port, CAP_SIGNAL, &cap);
+                if (rc != 0)
                 {
-                    // The table is as it was whatever the answer: this reads the mint's own
-                    // refusal and is not a way to acquire a crossing the partition withheld.
-                    (void)handle_close(c, cap);
+                    return static_cast<uint64_t>(static_cast<int64_t>(rc));
                 }
-                return static_cast<uint64_t>(static_cast<int64_t>(rc));
+                if ((static_cast<uint32_t>(a1) & KOS_AMP_MINT_HOLD) != 0u)
+                {
+                    return cap;
+                }
+                (void)handle_close(c, cap);
+                return 0;
             }
             case KOS_AMP_OP_PORT_PARKED:
             {

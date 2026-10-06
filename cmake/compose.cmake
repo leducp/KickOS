@@ -175,6 +175,7 @@ function(kickos_compose system)
   # The include directories and definitions an app TU sees.
   target_link_libraries(${system}_table PRIVATE KickOS::kernel)
   add_library(${system} INTERFACE)
+  set_target_properties(${system} PROPERTIES KICKOS_SYSTEM_STDOUT "${KICKOS_COMPOSE_STDOUT}")
 
   set(_table_name ${system}_table)
   set(_asserts "${_dir}/asserts.ld")

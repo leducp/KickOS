@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# ampecho on node 0: the peer the suite calls, echoing on the first port the partition names
+# this node, the others served by a task that never receives.
+
+version: 1
+stdout: kernel
+ends: never
+heap: 0
+
+shared:
+  - name: /shm/share
+    size: 0x4000
+    cache: cached
+    partition: true
+
+tasks:
+  - name: echo
+    entry: ampecho_main
+    priority: 5
+    ceiling: 5
+    serves: /amp/2
+    maps: { /shm/share: rw }

@@ -143,10 +143,18 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
 endif()
 
 # The two console_publish arms publish the console themselves, which they refuse to do in an
-# image whose service list may already have published one.
-if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  list(APPEND KICKOS_EXPECT_SKIPS console_publish_handout console_publish_narrow)
-endif()
+# image whose composition names a console driver as `stdout`.
+set(_selftest_driver_skips console_publish_handout console_publish_narrow)
+# <out>: the skip set <img> is judged against, the image's own console taken into account.
+function(_selftest_image_skips img skips out)
+  get_target_property(_console ${img} KICKOS_SELFTEST_CONSOLE)
+  set(_all ${skips})
+  if(NOT _console STREQUAL "kernel")
+    list(APPEND _all ${_selftest_driver_skips})
+  endif()
+  list(JOIN _all "," _all)
+  set(${out} "${_all}" PARENT_SCOPE)
+endfunction()
 
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
@@ -186,19 +194,24 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND KICKOS_EXPECT_PARTIALS vector_fault_contained)
 endif()
-# cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to reach a
-# segmented index. The summed width is not readable here, cmake/cap_table.cmake resolving it
-# after this directory is added, but the SUPPLY is. cap_child_width is on the same condition.
-if(KICKOS_CAP_TABLE_SUPPLY LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span cap_child_width)
+# cap_chunk_span needs main's table, a child's, WIDER than the chunk granule
+# (KICKOS_CAP_CHUNK_TARGET) to reach a segmented index. A child's width is
+# KICKOS_MAX_SPAWN_GRANTS + 1 and the tree's inbound reply peak, which cmake/cap_table.cmake
+# resolves after this directory is added, so the grant floor is what is readable here.
+math(EXPR _selftest_child_floor "${KICKOS_MAX_SPAWN_GRANTS} + 1")
+if(_selftest_child_floor LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
+  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
 endif()
-# It also needs a free slot BELOW the granule, and root's own creates start above everything
-# seated at init: the reserved indices, one capability per partition crossing, and the two
-# main() holds for the run. Widening the table does not take that back, the width sum adding
-# slots at the top.
-set(_selftest_lifetime_caps 2) # g_lock and g_done, created in main() and never closed
-math(EXPR _selftest_cap_seated
-     "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
+# It also needs a free slot BELOW the granule, and main's own creates start above everything
+# seated before its first create: the crossings its composition names, delegated from index 1
+# and at most one per partition port, else the reserved indices, and the two it holds for the
+# run.
+set(_selftest_lifetime_caps 2) # g_lock and g_done, created by main and never closed
+math(EXPR _selftest_cap_seated "1 + ${KICKOS_AMP_PORT_COUNT}")
+if(_selftest_cap_seated LESS KICKOS_CAP_FIRST_DYNAMIC)
+  set(_selftest_cap_seated ${KICKOS_CAP_FIRST_DYNAMIC})
+endif()
+math(EXPR _selftest_cap_seated "${_selftest_cap_seated} + ${_selftest_lifetime_caps}")
 if(NOT _selftest_cap_seated LESS KICKOS_CAP_CHUNK_TARGET)
   list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
 endif()
@@ -231,7 +244,7 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
   endif()
 endif()
 # window_memory_ro's child, writing through its read-only window, and the task_exit arms'
-# sibling, writing a reservation of root's.
+# sibling, writing a reservation of main's.
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
   list(APPEND KICKOS_EXPECT_FAULTS wro txf)
 endif()
@@ -242,6 +255,7 @@ endif()
 
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
 # deref would split the value into further bogus environment entries.
+set(_selftest_skips_list ${KICKOS_EXPECT_SKIPS})
 list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 list(JOIN KICKOS_EXPECT_FAULTS "," KICKOS_EXPECT_FAULTS)
@@ -275,7 +289,8 @@ foreach(_mf_img IN LISTS _selftest_manifest_images)
       "selftest: the image ${_mf_img} records no KICKOS_TAP_ARMS, so a capture of it could be "
       "checked against nothing. user/apps/common/selftest/CMakeLists.txt sets it per image.")
   endif()
-  string(APPEND _selftest_manifest "${_mf_img}|${_mf_arms}|${KICKOS_EXPECT_SKIPS}|"
+  _selftest_image_skips(${_mf_img} "${_selftest_skips_list}" _mf_skips)
+  string(APPEND _selftest_manifest "${_mf_img}|${_mf_arms}|${_mf_skips}|"
                                    "${KICKOS_EXPECT_PARTIALS}|${KICKOS_EXPECT_FAULTS}\n")
 endforeach()
 file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
@@ -287,16 +302,17 @@ if(KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(selftest PROPERTIES TIMEOUT 30)
   set_property(TEST selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
 
-  # The sim's only coverage of the published console route. One provider links per image, so the
-  # script makes its own build tree, and every input the arm count depends on has to travel with
-  # it: a fresh build otherwise takes the board's base variant and every knob default.
+  # The sim's only coverage of the published console route.
+  get_target_property(_simcon_arms selftest_simcon KICKOS_TAP_ARMS)
+  _selftest_image_skips(selftest_simcon "${_selftest_skips_list}" _simcon_skips)
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_published.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_selftest_arms}
-            "${KICKOS_CONFIG_VARIANT}")
-  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
-  set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT ${_selftest_env})
+            "$<TARGET_FILE:selftest_simcon>" ${_simcon_arms})
+  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 60)
+  set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${_simcon_skips}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
+    "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
 endif()
 
@@ -352,12 +368,13 @@ endfunction()
 if(KICKOS_BOARD STREQUAL "microbit")
   # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE,
   # so a stale list quietly permits a regression.
-  set(_mb_skips_r1 "")
-  set(_mb_partials_r1 "")
-  set(_mb_skips_r2 "")
-  set(_mb_partials_r2 "")
-  set(_mb_skips_r3 uart_service)
-  set(_mb_partials_r3 "")
+  foreach(_region 1 2 3 4 6 7 9 10)
+    set(_mb_skips_r${_region} "")
+  endforeach()
+  foreach(_region 1 2 3 4 5 6 7 8 10)
+    set(_mb_partials_r${_region} "")
+  endforeach()
+  set(_mb_skips_r5 uart_service)
   # irq_as_event asks the arena for a 4 KiB MMIO page after the suite's threads have taken
   # their stacks from it, and on 32 KiB it no longer fits: this board's console TX ring costs
   # 256 bytes of .bss, which is what that page stood on. The arm sees the alloc fail and skips
@@ -366,18 +383,14 @@ if(KICKOS_BOARD STREQUAL "microbit")
   # mem_self_grant is NOT here: its decline became a vacuity skip, which is permitted and
   # never expected, so a name for it in this list could never fire and would sit widening the
   # permission. The arm still declines on this board; it declines in the other category.
-  set(_mb_skips_r4 irq_as_event)
-  set(_mb_partials_r4 "")
-  set(_mb_skips_r5 "")
-  set(_mb_partials_r5 caller_stack)
-  set(_mb_skips_r6 "")
-  set(_mb_partials_r6 "")
+  set(_mb_skips_r8 irq_as_event)
+  set(_mb_partials_r9 caller_stack)
   # DERIVED from the decision above rather than restated: these sets are literals, so a
   # permission appended to the whole-suite list reached every other board and not this one,
-  # and a partitioned board's gate reported that as a failure. Region 6 holds the arm's
+  # and a partitioned board's gate reported that as a failure. Region 10 holds the arm's
   # TAP_ADD line, so this is the region that carries it.
   if(_selftest_kernel_line_partial)
-    list(APPEND _mb_partials_r6 irq_kernel_line_reserved)
+    list(APPEND _mb_partials_r10 irq_kernel_line_reserved)
   endif()
   # The image list comes off the targets the app declared, so nothing here states again how
   # many images this board ships.
@@ -390,7 +403,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
     get_target_property(_mb_arms ${_img} KICKOS_TAP_ARMS)
     _selftest_region_union(_mb ${_img} _mb_skips _mb_partials)
     # Comma-separated for the same reason the fleet-wide sets above are.
-    list(JOIN _mb_skips "," _mb_skips)
+    _selftest_image_skips(${_img} "${_mb_skips}" _mb_skips)
     list(JOIN _mb_partials "," _mb_partials)
     kickos_add_qemu_test(TARGET ${_img}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh"
@@ -412,27 +425,25 @@ endif()
 # the fleet-wide sets rather than replacing them, so a derived permission appended above still
 # reaches this board. A MEASUREMENT and not slack, as microbit's are.
 if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
-  # Every one a worker this board cannot seat beside root at KICKOS_MAX_THREADS 2, but
+  foreach(_region RANGE 1 10)
+    set(_f3_skips_r${_region} "")
+    set(_f3_partials_r${_region} "")
+  endforeach()
+  # Every one a worker this board cannot seat beside main at KICKOS_MAX_THREADS 3, but
   # mutex_deadlock, which wants the 3 optional capabilities a 7-slot table does not grant.
-  set(_f3_skips_r1 mutex_basic mutex_pi_donation mutex_chain_boost mutex_deadlock
+  set(_f3_skips_r2 mutex_basic mutex_pi_donation mutex_chain_boost mutex_deadlock
                    mutex_multi_held prio_self_raise_lower prio_self_boosted)
-  set(_f3_partials_r1 "")
   # Workers again, but reply_recv_notify, which holds five capabilities at once, two past the
   # suite's mandatory per-arm peak.
-  set(_f3_skips_r2 call_timeout_revert call_infoless_revert reply_recv_notify call_donation
-                   call_donation_hold)
-  set(_f3_partials_r2 "")
-  set(_f3_skips_r3 call_donation_slow call_donation_pending cap_reply_bound_fast
-                   cap_reply_bound_slow cap_reply_release_close join_stale_gen)
-  set(_f3_partials_r3 "")
+  set(_f3_skips_r3 call_timeout_revert)
+  set(_f3_skips_r4 call_infoless_revert reply_recv_notify call_donation call_donation_hold)
+  set(_f3_skips_r5 call_donation_slow call_donation_pending cap_reply_bound_fast
+                   cap_reply_bound_slow cap_reply_release_close)
+  set(_f3_skips_r6 join_stale_gen)
   # irq_server_handover is a worker too many; irq_as_event's 4 KiB page and caller_stack's
   # 2 KiB stack are arena this part does not have.
-  set(_f3_skips_r4 irq_as_event irq_server_handover)
-  set(_f3_partials_r4 "")
-  set(_f3_skips_r5 "")
-  set(_f3_partials_r5 caller_stack)
-  set(_f3_skips_r6 "")
-  set(_f3_partials_r6 "")
+  set(_f3_skips_r8 irq_as_event irq_server_handover)
+  set(_f3_partials_r9 caller_stack)
   string(REPLACE "," ";" _f3_fleet_skips "${KICKOS_EXPECT_SKIPS}")
   string(REPLACE "," ";" _f3_fleet_partials "${KICKOS_EXPECT_PARTIALS}")
   get_property(_selftest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
@@ -442,7 +453,7 @@ if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
     _selftest_region_union(_f3 ${_img} _f3_skips _f3_partials)
     list(PREPEND _f3_skips ${_f3_fleet_skips})
     list(PREPEND _f3_partials ${_f3_fleet_partials})
-    list(JOIN _f3_skips "," _f3_skips)
+    _selftest_image_skips(${_img} "${_f3_skips}" _f3_skips)
     list(JOIN _f3_partials "," _f3_partials)
     string(APPEND _selftest_manifest "${_img}|${_f3_arms}|${_f3_skips}|"
                                      "${_f3_partials}|${KICKOS_EXPECT_FAULTS}\n")

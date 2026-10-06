@@ -2,16 +2,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the POST-PUBLISH console posture: build the sim with the publishing
-# service list (kickos_services_sim: a userspace console driver owns the "wire", see
-# system/driver/sim/simcon/simcon.cc) and require the selftest TAP stream to arrive over
-# the DRIVER, clean.
-#
-# It needs its own build because KICKOS_SERVICE_LIST selects one provider per image, so the
-# two console postures cannot coexist in a single tree. This is the gate that exercises the
-# published posture: every other sim and QEMU gate runs kickos_services_none, where the
-# kernel keeps the console, cap index 0 is unseated and the endpoint route is never touched,
-# so a handover that silences the whole test harness passes all of them.
+# CI gate for the POST-PUBLISH console posture: run the selftest image whose composition names
+# the packaged simcon as `stdout` (user/apps/common/selftest/consoles/sim/simcon.yaml; a userspace
+# console driver owns the "wire", see system/driver/sim/simcon/simcon.cc) and require the TAP
+# stream to arrive over the DRIVER, clean. Every other sim and QEMU selftest gate runs under
+# `stdout: kernel`, where cap index 0 is unseated and the endpoint route is never touched, so a
+# handover that silences the whole test harness passes all of them.
 #
 # The load-bearing assertion is the NEGATIVE one: the console driver's own kos::print
 # banner must be ABSENT. It goes to the kernel debug console, which a published board
@@ -19,36 +15,16 @@
 # stream we just read came through the endpoint, not through a silent fallback. Without
 # it, a regression that skipped the publish entirely would still pass here.
 #
-# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <variant>
-#
-# <variant> is required. The expected arm count is computed by the CALLING tree's CMake and
-# depends on the posture, while the build below is a fresh one that would otherwise take the
-# board's base variant and every knob default. A caller at another posture then compares its
-# expectation against a different posture's stream and fails with "an arm was added or
-# deleted". Forward every input the arm count depends on; do not infer the posture.
+# usage: [EXPECT_SKIPS=...] [EXPECT_PARTIALS=...] [EXPECT_FAULTS=...] \
+#        check_sim_published.sh <selftest image> <expected-arms>
+# The EXPECT_* sets are read from the environment by check_tap_stream.sh.
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-KICKOS_SRC="$1"
-CMAKE="${2:-cmake}"
-WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
-VARIANT="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
-
-scratch_dir
-
-echo "== configuring the sim with the publishing service list =="
-( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim \
-    -DKICKOS_CONFIG_VARIANT="$VARIANT" >/dev/null ) \
-  || fail "configure with kickos_services_sim failed"
-
-echo "== building selftest =="
-"$CMAKE" --build "$TMP/build" --target selftest >/dev/null \
-  || fail "selftest build failed"
-
-APP="$TMP/build/user/apps/common/selftest/selftest"
-[ -x "$APP" ] || fail "selftest binary not produced at $APP"
+APP="${1:?usage: check_sim_published.sh <selftest image> <expected-arms>}"
+WANT_ARMS="${2:?usage: check_sim_published.sh <selftest image> <expected-arms>}"
+[ -x "$APP" ] || fail "no selftest image at $APP"
 
 echo "== running selftest against the published console =="
 set +e
@@ -68,9 +44,6 @@ has '^# tap route: stdout endpoint' || fail "TAP did not take the published endp
 
 # The stream verdict is check_tap_stream.sh's, so plan against case count against expected
 # arms, the completion marker and the by-name permission sets stay in one place.
-# The two console_publish arms refuse to publish over the console the service list published.
-EXPECT_SKIPS="${EXPECT_SKIPS:+$EXPECT_SKIPS,}console_publish_handout,console_publish_narrow"
-export EXPECT_SKIPS
 printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_published "$WANT_ARMS"
 
 echo "PASS: the full $WANT_ARMS-arm TAP stream is observable over a published userspace console"

@@ -122,12 +122,13 @@
 /* Worst-case bytes the kernel's C dispatch descends BELOW all of that, per class.
  *
  *   _PENDSV   0  handler mode uses SP_main.
- *   _SVC    448  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
- *                PSP. Measured 444 on all SIX presets that enforce this class
- *                (bluepill-c8, bluepill-c8-st, due, due-st, f302nucleo, f302nucleo-st),
- *                rounded up to the next multiple of 64, so the 4 bytes over it are rounding
- *                and not slack. It is not zeroed at KICKOS_KERNEL_STACKS 1: the gate scrapes
- *                it on every preset, and trap_redzone_roots.txt marks the class kstacks=0.
+ *   _SVC    512  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
+ *                PSP. The spawn stages its grant list on this stack, 24 bytes a grant: due-st,
+ *                at KICKOS_MAX_SPAWN_GRANTS 9, measures 508, rounded up to the next multiple
+ *                of 64, and the presets at 6 (bluepill-c8, bluepill-c8-st, due, f302nucleo,
+ *                f302nucleo-st) measure 436. It is not zeroed at KICKOS_KERNEL_STACKS 1: the
+ *                gate scrapes it on every preset, and trap_redzone_roots.txt marks the class
+ *                kstacks=0.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
  * THE PANIC REPORTER IS ON NEITHER THIS CLASS NOR _SVCK: kpanic leaves the stack it was called
@@ -136,7 +137,7 @@
  * tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
  * that call reaches, and the gate refuses to answer while a reachable site is unbound. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV 0
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 448
+#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC 512
 
 /* KICKOS_TELEMETRY is the knob: the trace emitters and arch_shutdown's ring drain are compiled
  * by nothing else, and one fleet-wide figure would make every non-telemetry board reserve

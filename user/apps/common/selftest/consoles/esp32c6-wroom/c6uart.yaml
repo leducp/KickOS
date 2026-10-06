@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The suite with the packaged c6uart serving stdout.
+
+version: 1
+stdout: /svc/console
+ends: main
+heap: 0
+
+tasks:
+  - name: console
+    driver: c6uart
+    devices: [/dev/uart0]
+    lines: { uart0: /dev/uart0/uart0 }
+    core: 0
+    serves: /svc/console
+    priority: 30
+
+  - name: main
+    entry: selftest_main
+    priority: 2
+    ceiling: 30
+    authority: [memory, system, pinmux, irq, console, tasks]

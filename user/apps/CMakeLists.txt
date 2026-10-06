@@ -19,22 +19,32 @@ macro(kickos_add_diagnostic_apps)
 endmacro()
 
 # kickos_app_system(<app> COMPOSITION <file> [SYSTEM <system>])
-#   Links <app> against KickOS::kernel and the system composed from <file>, relative to the
-#   app's sources. Images naming one SYSTEM share it. The root CMakeLists.txt composes every
-#   system once the manifest is written, which is after this tree.
+# kickos_app_system(<app> PARTITION <node0> <node1>... [SYSTEM <system>])
+#   Links <app> against KickOS::kernel and the system composed from <file>, or from this build's
+#   node of the partition the node compositions state, each relative to the app's sources.
+#   Images naming one SYSTEM share it. The root CMakeLists.txt composes every system once the
+#   manifest is written, which is after this tree.
 function(kickos_app_system app)
-  cmake_parse_arguments(KAS "" "SYSTEM;COMPOSITION" "" ${ARGN})
-  if(KAS_UNPARSED_ARGUMENTS OR NOT KAS_COMPOSITION)
-    message(FATAL_ERROR "kickos_app_system(${app}): takes COMPOSITION <file> [SYSTEM <system>], not "
-      "'${ARGN}'")
+  cmake_parse_arguments(KAS "" "SYSTEM;COMPOSITION" "PARTITION" ${ARGN})
+  if(KAS_UNPARSED_ARGUMENTS OR (NOT KAS_COMPOSITION AND NOT KAS_PARTITION)
+     OR (KAS_COMPOSITION AND KAS_PARTITION))
+    message(FATAL_ERROR "kickos_app_system(${app}): takes COMPOSITION <file> or PARTITION <node0> "
+      "<node1>..., then [SYSTEM <system>], not '${ARGN}'")
   endif()
   set(_system ${app}_system)
   if(KAS_SYSTEM)
     set(_system ${KAS_SYSTEM})
   endif()
-  get_filename_component(_composition "${KAS_COMPOSITION}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-  if(NOT EXISTS "${_composition}")
-    message(FATAL_ERROR "kickos_app_system(${app}): no composition at ${_composition}")
+  set(_composition "")
+  foreach(_named IN LISTS KAS_COMPOSITION KAS_PARTITION)
+    get_filename_component(_one "${_named}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_one}")
+      message(FATAL_ERROR "kickos_app_system(${app}): no composition at ${_one}")
+    endif()
+    list(APPEND _composition "${_one}")
+  endforeach()
+  if(KAS_PARTITION)
+    list(PREPEND _composition PARTITION)
   endif()
   get_property(_known GLOBAL PROPERTY KICKOS_APP_SYSTEMS)
   if(_system IN_LIST _known)
@@ -48,12 +58,13 @@ function(kickos_app_system app)
     set_property(GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system} "${_composition}")
   endif()
   target_link_libraries(${app} PRIVATE KickOS::kernel ${_system})
+  set_target_properties(${app} PROPERTIES KICKOS_APP_SYSTEM ${_system})
 endfunction()
 
 # kickos_app_judge(<image> <judge>)
 #   Names the gate script, relative to the tree, that judges a silicon capture of <image> as
-#   tools/bench/bench.sh's JUDGE. Configure writes one `<image>|<judge>` row per call to
-#   kickos-app-manifest.txt, which `LIST_APPS=1 tools/bench/bench.sh <board>` prints.
+#   tools/bench/bench.sh's JUDGE. The judge is the third field of the image's row in
+#   kickos-images.txt, which `LIST_IMAGES=1 tools/bench/bench.sh <board>` prints.
 function(kickos_app_judge image judge)
   if(NOT TARGET ${image})
     message(FATAL_ERROR "kickos_app_judge(${image}): no such image")
@@ -61,7 +72,7 @@ function(kickos_app_judge image judge)
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${judge}")
     message(FATAL_ERROR "kickos_app_judge(${image}): no gate script at ${judge}")
   endif()
-  set_property(GLOBAL APPEND PROPERTY KICKOS_APP_JUDGES "${image}|${judge}")
+  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE "${judge}")
 endfunction()
 
 # This tree's posture for its own apps, which an out-of-tree app does not get. gcc 15 defaults
@@ -81,10 +92,3 @@ add_subdirectory(common)
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_BOARD}")
   add_subdirectory("${KICKOS_BOARD}")
 endif()
-
-get_property(_kos_app_judges GLOBAL PROPERTY KICKOS_APP_JUDGES)
-set(_kos_app_rows "")
-foreach(_kos_row IN LISTS _kos_app_judges)
-  string(APPEND _kos_app_rows "${_kos_row}\n")
-endforeach()
-file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/kickos-app-manifest.txt" CONTENT "${_kos_app_rows}" @ONLY)

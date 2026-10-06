@@ -149,7 +149,7 @@ arm_waiting_reader() {
     while true; do
       m=($1)
       # AMBIGUITY IS REFUSED HERE TOO, not just in resolve_console. Two boards enumerating
-      # this product string at once (a fleet pass with two _usbcdc boards, or a node from
+      # this product string at once (a fleet pass with two USB-console boards, or a node from
       # the previous capture not yet gone) would otherwise be read in glob order and the
       # capture would be of whichever came first, silently and plausibly.
       if [ "${#m[@]}" -gt 1 ]; then
@@ -175,7 +175,7 @@ check_cdc_capture() {
   fi
   refuse "the USB CDC console produced nothing (looked for $PATTERN).
   Either it never enumerated, or it enumerated and said nothing, and this bench cannot
-  tell those apart. Check the image really links a _usbcdc service list."
+  tell those apart. Check the image's composition really names the USB console driver."
 }
 
 if [ "${CONSOLE_USB_CDC:-0}" != "1" ]; then
