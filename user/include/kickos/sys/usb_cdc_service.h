@@ -30,6 +30,10 @@
 // Host configuration may never complete. Keep configured separate from ready,
 // clear it on bus reset, and start the endpoint in nonblocking mode.
 //
+// Each configuration opens the host's stream with the banner's identity rows
+// (<kickos/sys/banner_identity.h>), ahead of anything the ring holds: the kernel's own
+// banner never reaches this console.
+//
 // Bulk IN completion sends the next packet. If the host stops reading without
 // a bus reset, tx_inflight stays set and the ring can remain full; a software
 // doorbell cannot complete the pending USB transfer.
@@ -51,6 +55,7 @@
 #include <kickos/sys/usb_cdc.h>
 
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/banner_identity.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -158,6 +163,7 @@ public:
         {
             return rc;
         }
+        id_len_ = static_cast<uint32_t>(banner_identity(id_, sizeof(id_)));
         reset_state();
         dev_.ep_open_all();
         // The bus pull-up goes on LAST. A host that sees the device before EP0 can
@@ -185,6 +191,9 @@ public:
         }
         pump_tx();
     }
+
+    // Identity bytes still owed to the host, or one of their packets with the controller.
+    bool identity_pending() const { return id_left_ != 0u or id_inflight_; }
 
 private:
     enum ep0_state
@@ -214,6 +223,8 @@ private:
         bulk_in_pid_ = 0;
         bulk_out_pid_ = 0;
         zlp_inflight_ = false;
+        id_left_ = 0;
+        id_inflight_ = false;
         sh_->tx_inflight = 0;
         sh_->tx_zlp = 0;
         sh_->configured = 0;
@@ -225,9 +236,14 @@ private:
     // ring, so the loss must be counted here or it is invisible.
     void drop_in_flight()
     {
-        // Not stats.tx_dropped: that is the service thread's, and this would race it.
-        uint32_t const lost = sh_->tx_lost_link + sh_->tx_inflight;
-        sh_->tx_lost_link = lost;
+        // Not stats.tx_dropped: that is the service thread's, and this would race it. Identity
+        // bytes were never the ring's, so they are not counted.
+        if (not id_inflight_)
+        {
+            uint32_t const lost = sh_->tx_lost_link + sh_->tx_inflight;
+            sh_->tx_lost_link = lost;
+        }
+        id_inflight_ = false;
         sh_->tx_inflight = 0;
         zlp_inflight_ = false;
         sh_->tx_zlp = 0;
@@ -293,6 +309,7 @@ private:
                 // an interrupt before arming the first OUT buffer waits forever while the
                 // host politely retries.
                 dev_.ep_out_arm(KOS_USB_CDC_EP_DATA, bulk_out_pid_);
+                id_left_ = id_len_;
                 sh_->configured = 1;
             }
             else
@@ -519,6 +536,7 @@ private:
             }
             else
             {
+                id_inflight_ = false;
                 sh_->tx_inflight = 0;
             }
         }
@@ -607,6 +625,28 @@ private:
         {
             return; // one buffer is with the controller; its completion re-enters here
         }
+        if (id_left_ != 0u)
+        {
+            uint32_t n = id_left_;
+            if (n > KOS_USB_CDC_BULK_MAX_PACKET)
+            {
+                n = KOS_USB_CDC_BULK_MAX_PACKET;
+            }
+            uint8_t const* const from
+                = reinterpret_cast<uint8_t const*>(id_) + (id_len_ - id_left_);
+            dev_.ep_in(KOS_USB_CDC_EP_DATA, from, n, bulk_in_pid_);
+            bulk_in_pid_ = static_cast<uint8_t>(bulk_in_pid_ ^ 1u);
+            id_inflight_ = true;
+            sh_->tx_inflight = n;
+            uint32_t zlp = 0u;
+            if (n == KOS_USB_CDC_BULK_MAX_PACKET)
+            {
+                zlp = 1u;
+            }
+            sh_->tx_zlp = zlp;
+            id_left_ -= n;
+            return;
+        }
         uint8_t buf[KOS_USB_CDC_BULK_MAX_PACKET];
         uint32_t const n = kos_byte_ring_peek(&sh_->tx, buf, sizeof(buf));
         if (n == 0u)
@@ -651,6 +691,11 @@ private:
     bool ep0_zlp_ = false;
     bool addr_pending_ = false;
     bool zlp_inflight_ = false;
+    // The identity rows, rendered once; id_left_ of them are still to go to the host.
+    char id_[192] = {};
+    uint32_t id_len_ = 0;
+    uint32_t id_left_ = 0;
+    bool id_inflight_ = false;
 };
 
 // ---------------------------------------------------------------------------------
@@ -677,7 +722,8 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
         uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
-        bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
+        bool const tx_had_work
+            = (kos_byte_ring_used(&sh->tx) != 0u or cdc.identity_pending());
         cdc.service_irq();
         if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work)
         {

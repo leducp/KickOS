@@ -5,9 +5,9 @@
 # CONSOLE RECLAIM ON DRIVER DEATH and the TERMINATE DRAIN, on one boot of reclaimwit
 # (natively for the sim, on QEMU when QEMU_MACHINE is set).
 #
-# The verdict is a pair from the SAME kos_print call site, plus the sink's silence:
-#   MUTE line : ZERO times   the publish took, so USER_OWNED dropped that kernel write
-#   LIVE line : EXACTLY once the reclaimed polled route carries the same call site
+# The verdict is a pair on the kernel console, plus the sink's silence:
+#   MUTE line : ZERO times   the publish took, so USER_OWNED dropped that raw kernel write
+#   LIVE line : EXACTLY once the reclaimed polled route carries the kernel console again
 #   sink line : ZERO times   the driver is a pure sink, so no byte is its work
 # Either presence half alone passes on a build where the publish never took. The sink's
 # silence is what makes the LIVE line attributable to arch_console_reclaim and not to a
@@ -113,8 +113,8 @@ if [ "$(n_of "$SINK_LINE")" -ne 0 ]; then
     cfail sink "the console driver WROTE to a console, so a post-death byte no longer separates a fired reclaim from a driver that never died"
 fi
 
-# THE POSITIVE HALF: the same call site as the MUTE line, now carried by the reclaimed
-# polled route.
+# THE POSITIVE HALF: the kernel console the MUTE line was dropped from, now carried by the
+# reclaimed polled route.
 LIVE_N="$(n_of "$LIVE_LINE")"
 if [ "$LIVE_N" -eq 0 ]; then
     cfail live "the console stayed DARK after the driver died: arch_console_reclaim did not fire"

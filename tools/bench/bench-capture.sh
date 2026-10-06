@@ -146,8 +146,8 @@ resolve_console() {
 #
 # The glob resolves per open, the path not existing to pin when this is armed.
 #
-# The HEAD of the stream is unrecoverable on this route: the banner is out before the host
-# finishes enumerating, so a capture taken this way is read for its body.
+# The kernel banner never reaches this route. The identity rows the driver opens each host
+# configuration with stand in for it (bench.sh route_identity).
 arm_waiting_reader() {
   setsid bash -c '
     shopt -s nullglob

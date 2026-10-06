@@ -34,11 +34,6 @@ int32_t kos_kconsole_write(void const* buf, size_t len)
                                              static_cast<uintptr_t>(len), 0, 0));
 }
 
-void kos_print(char const* s)
-{
-    kos_kconsole_write(s, strlen(s));
-}
-
 void kos_yield(void)
 {
     arch_syscall(KOS_SYS_YIELD, 0, 0, 0, 0);

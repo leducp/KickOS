@@ -598,15 +598,21 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
   endif()
 endif()
 
+# kickos_string, where it exists, is kernel code too.
+set(_kernel_archives "$<TARGET_FILE:kickos_kernel>"
+                     "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+                     "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+                     "$<TARGET_FILE:kickos_lib>")
+if(TARGET kickos_string_scan)
+  list(APPEND _kernel_archives "$<TARGET_FILE:kickos_string_scan>")
+endif()
+
 if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
   add_test(
     NAME    kernel_ctor_placement
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_kernel_ctor_placement.sh"
             "$<TARGET_FILE:selftest>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
+            ${_kernel_archives})
   kickos_host_gate(kernel_ctor_placement TIMEOUT 60)
 endif()
 
@@ -630,6 +636,9 @@ if(_class_backends)
   foreach(_cb ${_class_backends})
     list(APPEND _seam_archives "$<TARGET_FILE:${_cb}>")
   endforeach()
+endif()
+if(TARGET kickos_string)
+  list(APPEND _seam_archives "$<TARGET_OBJECTS:kickos_string>")
 endif()
 list(APPEND _seam_archives "$<TARGET_OBJECTS:selftest>")
 add_test(
@@ -669,11 +678,7 @@ if((KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
   add_test(
     NAME    riscv_no_smalldata
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_no_smalldata.sh"
-            "${CMAKE_OBJDUMP}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-            "$<TARGET_FILE:kickos_lib>")
+            "${CMAKE_OBJDUMP}" ${_kernel_archives})
   kickos_host_gate(riscv_no_smalldata TIMEOUT 60)
 endif()
 

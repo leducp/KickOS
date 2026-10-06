@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Sourced by bench-capture.sh, never executed. Reads the image's commit label out of a capture's
-# boot banner (tests/static/check_bench_banner.sh holds it to planted logs).
+# Sourced by bench-capture.sh and bench.sh, never executed. Reads the image's commit label out of
+# a capture's boot banner (tests/static/check_bench_banner.sh holds it to planted logs), and
+# holds a USB device console's identity rows to the build (tests/static/check_usb_identity.sh).
 
 # The label itself can arrive damaged, a console dropping bytes out of its row. A lone 8-hex token
 # in a KickOS banner IS the commit, so it is recovered rather than reporting no banner on a
@@ -132,4 +133,52 @@ bench_boot_start() { # <log>
     return 0
   fi
   printf '%s\n' "$_bs_t"
+}
+
+# The row <macro> of include/kickos/diag.h <diag> prints with <value>, in column <terse> (0 the
+# prose, 1 the short), without its newline.
+identity_row() { # <diag> <macro> <terse> <value>
+  _ir_def=$(grep -E "^#define $2 +KICKOS_DIAG_PICK\(\".*\", \".*\"\)$" "$1")
+  [ -n "$_ir_def" ] || return 1
+  _ir_col=1
+  if [ "$3" = 1 ]; then
+    _ir_col=2
+  fi
+  _ir_fmt=$(sed -E "s/^#define $2 +KICKOS_DIAG_PICK\(\"(.*)\", \"(.*)\"\)$/\\$_ir_col/" <<< "$_ir_def")
+  # shellcheck disable=SC2059
+  printf "$_ir_fmt" "$4"
+}
+
+# A USB device console's capture: its last identity block (kickos/sys/banner_identity.h), the
+# banner's title, board and commit rows a host's configuration opens the stream with, names this
+# build, so it stands in for the kernel banner that console never carries. The rows are rendered
+# here from kbanner's own formats. Prints the refusal and returns 1 otherwise.
+identity_verdict() { # <log> <diag> <terse 0|1> <version> <board> <label>
+  _iv_t=$(identity_row "$2" KDIAG_F_BANNER_NAME "$3" '%s') || { echo "no title format in $2"; return 1; }
+  _iv_b=$(identity_row "$2" KDIAG_F_BANNER_BOARD "$3" "$5") || { echo "no board format in $2"; return 1; }
+  _iv_c=$(identity_row "$2" KDIAG_F_BANNER_COMMIT "$3" "$6") || { echo "no commit format in $2"; return 1; }
+  # shellcheck disable=SC2059
+  _iv_title=$(printf "$_iv_t" "$4")
+  # The last line a title of any version renders, so a stale image's block is the one judged.
+  _iv_at=$(tr -d '\r' < "$1" | KOS_IV_FMT="$_iv_t" awk '
+      BEGIN { f = ENVIRON["KOS_IV_FMT"]; i = index(f, "%s"); pre = substr(f, 1, i - 1)
+              post = substr(f, i + 2) }
+      length($0) > length(pre) + length(post) && substr($0, 1, length(pre)) == pre \
+          && substr($0, length($0) - length(post) + 1) == post { at = NR }
+      END { print at }')
+  if [ -z "$_iv_at" ]; then
+    echo "no identity rows: the image on the board printed none once the host configured it, so the capture names no build"
+    return 1
+  fi
+  _iv_block=$(tr -d '\r' < "$1" | sed -n "${_iv_at},$((_iv_at + 2))p")
+  _iv_n=0
+  for _iv_row in "$_iv_title" "$_iv_b" "$_iv_c"; do
+    _iv_n=$((_iv_n + 1))
+    _iv_got=$(printf '%s\n' "$_iv_block" | sed -n "${_iv_n}p")
+    if [ "$_iv_got" != "$_iv_row" ]; then
+      echo "identity row $_iv_n of the last block reads [$_iv_got], not this build's [$_iv_row]"
+      return 1
+    fi
+  done
+  return 0
 }

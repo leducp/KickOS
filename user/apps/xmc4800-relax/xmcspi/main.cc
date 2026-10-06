@@ -10,7 +10,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
 
@@ -67,7 +66,7 @@ namespace
         char s[112];
         ksnprintf(s, sizeof(s), "[xmcspi] seam %s: rc=%d wrote=0x%x read=0x%x %s\n", reg,
                   rc, static_cast<unsigned>(val), static_cast<unsigned>(got), verdict);
-        kickos::emit(s);
+        kos::print(s);
         return ok;
     }
 
@@ -112,7 +111,7 @@ extern "C" void xmcspi_main(kos_self_t const* self)
     if (win == 0u or kos_window_size(window) < WINDOW_BYTES or line.cap == KOS_CAP_NONE
         or line.index > INPR_SR_LAST)
     {
-        kickos::emit("[xmcspi] ERROR: no /dev/usic0/ch1 window or irq line\n");
+        kos::print("[xmcspi] ERROR: no /dev/usic0/ch1 window or irq line\n");
         exit(1);
     }
     volatile uint32_t* pscr = reinterpret_cast<volatile uint32_t*>(win + off::PSCR);
@@ -133,7 +132,7 @@ extern "C" void xmcspi_main(kos_self_t const* self)
     {
         char e[64];
         ksnprintf(e, sizeof(e), "[xmcspi] ERROR: the line's notification rc %d\n", rc);
-        kickos::emit(e);
+        kos::print(e);
         exit(1);
     }
 
@@ -141,13 +140,13 @@ extern "C" void xmcspi_main(kos_self_t const* self)
     // receive events below.
     if (not bring_up(win, line.index))
     {
-        kickos::emit("[xmcspi] ERROR: bring-up: a PV register did not take the seam write\n");
+        kos::print("[xmcspi] ERROR: bring-up: a PV register did not take the seam write\n");
         exit(1);
     }
 
     // Before the first wait: a misrouted node hangs the wait, and this line tells that apart from
     // a dead board.
-    kickos::emit("[xmcspi] starting SSC loopback (blocking on the USIC0 line)\n");
+    kos::print("[xmcspi] starting SSC loopback (blocking on the USIC0 line)\n");
 
     uint8_t const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
     int fails = 0;
@@ -170,24 +169,24 @@ extern "C" void xmcspi_main(kos_self_t const* self)
         }
         ksnprintf(s, sizeof(s), "[xmcspi] word %u: tx=0x%x rx=0x%x %s\n", i,
                   static_cast<unsigned>(tx), static_cast<unsigned>(rx), verdict);
-        kickos::emit(s);
+        kos::print(s);
     }
     if (fails == 0)
     {
-        kickos::emit("[xmcspi] loopback PASS (all words echoed equal)\n");
+        kos::print("[xmcspi] loopback PASS (all words echoed equal)\n");
     }
     else
     {
-        kickos::emit("[xmcspi] loopback FAIL (word mismatch)\n");
+        kos::print("[xmcspi] loopback FAIL (word mismatch)\n");
     }
 
     // Terminal: the announce must precede the read, or the console shows only the fault.
-    kickos::emit("[xmcspi] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
+    kos::print("[xmcspi] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
     uint32_t const leaked = r32(SCU_CGATCLR0);
 
     char s[72];
     ksnprintf(s, sizeof(s), "[xmcspi] UNGRANTED ACCESS DID NOT FAULT (SCU=0x%x)\n",
               static_cast<unsigned>(leaked));
-    kickos::emit(s);
+    kos::print(s);
     exit(1);
 }

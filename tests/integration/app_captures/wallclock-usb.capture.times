@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+1.402117	   KickOS 0.5.1  -  microkernel RTOS
+1.402848	   board   pizero2350
+1.403579	   commit  65fa3473
+1.404310	[wallclock] mark 0, sleeping 5000000000 ns
+6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
+11.222058	[wallclock] mark 2, the kernel clock advanced 5000025108 ns
+11.226916	[wallclock] done

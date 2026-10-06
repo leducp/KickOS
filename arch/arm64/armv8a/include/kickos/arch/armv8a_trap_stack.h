@@ -29,6 +29,11 @@
  * masked switch has no interrupt below it. */
 #define KICKOS_ARMV8A_TRAP_FRAME_NONE 0
 
+/* An EL0 entry writes nothing on the thread's own stack: a lower-EL vector runs on SP_EL1, the
+ * thread's kernel block, and ENTER_FROM_EL0 reads the EL0 sp out of SP_EL0. */
+#define KICKOS_ARMV8A_TRAP_ENTRY_FRAME 0
+#define KICKOS_ARMV8A_TRAP_NEED_USER 0
+
 /* IRQ and IRQK. 736 on qemu-arm64-amp, 672 benchgicv3 and benchsmp12, 656 gicv3, 560 benchsmp
  * and benchsmp2, 544 smp and smpiso, 464 amp3, 448 amp2, 432 bench, 384 qemu-arm64 and
  * imx8mp-evk. The AMP doorbell's payload drain wins:

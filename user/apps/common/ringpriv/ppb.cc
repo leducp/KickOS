@@ -24,9 +24,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -50,10 +47,10 @@ int main(int, char**)
     char msg[128];
     if (got != own)
     {
-        emit("[ringppb] ERROR: the control load misread this thread's own stack\n");
+        kos::print("[ringppb] ERROR: the control load misread this thread's own stack\n");
         return 1;
     }
-    emit("[ringppb] ok - control: a 32-bit volatile load of held memory succeeded\n");
+    kos::print("[ringppb] ok - control: a 32-bit volatile load of held memory succeeded\n");
 
     // The privileged half of the same access is witnessed by the fault report itself:
     // kickos_armv7m_fault_report reads CFSR/HFSR out of this very PPB page
@@ -63,7 +60,7 @@ int main(int, char**)
               "[ringppb] main: reading privileged-only SCB->CPUID at 0x%x "
               "(expect BusFault)\n",
               static_cast<unsigned int>(SCB_CPUID));
-    emit(msg);
+    kos::print(msg);
 
     // The announce above must be ON THE WIRE before the fault, not merely queued. A chip
     // with a buffered console (stm32f302, xmc4800: arch_console_write is the line insert,
@@ -81,6 +78,6 @@ int main(int, char**)
     ksnprintf(msg, sizeof(msg),
               "[ringppb] CPUID read completed: 0x%x - the ring is NOT confined\n",
               static_cast<unsigned int>(cpuid));
-    emit(msg);
+    kos::print(msg);
     return 0;
 }

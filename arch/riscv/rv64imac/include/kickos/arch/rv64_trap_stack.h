@@ -31,6 +31,11 @@
 /* The frame term where nothing interrupts: a class ending in the masked switch. */
 #define KICKOS_RV64_TRAP_FRAME_NONE 0
 
+/* A U-mode trap writes nothing on the thread's own stack: kickos_rv64_stvec swaps sp for the
+ * trap top before its first store and builds the frame on the thread's kernel block. */
+#define KICKOS_RV64_TRAP_ENTRY_FRAME 0
+#define KICKOS_RV64_TRAP_NEED_USER 0
+
 /* IRQ and IRQK. 880 on qemu-riscv64-benchsmp and -benchsmp2, 816 smp, 624 bench, 592
  * qemu-riscv64 and sv48. The unexpected-cause report, whose console spins on the kernel lock
  * and services a route ask:

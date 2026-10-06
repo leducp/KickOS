@@ -31,9 +31,6 @@
 #include <kickos/sys.h>
 #include <kickos/sys/abi_probe.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -64,13 +61,13 @@ int main(int, char**)
         kos_task_t group = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &group) != 0)
         {
-            emit("[taskleave] ERROR: no task slot\n");
+            kos::print("[taskleave] ERROR: no task slot\n");
             return 1;
         }
         kos_cap_t sig = KOS_CAP_NONE;
         if (kos_sem_create(0, &sig) != 0)
         {
-            emit("[taskleave] ERROR: sem_create refused\n");
+            kos::print("[taskleave] ERROR: sem_create refused\n");
             return 1;
         }
         kos_cap_grant caps[] = {
@@ -89,14 +86,14 @@ int main(int, char**)
                                                 nullptr, 0, 1u << 0);
         if (not a.valid() or not b.valid())
         {
-            emit("[taskleave] ERROR: member spawn refused\n");
+            kos::print("[taskleave] ERROR: member spawn refused\n");
             return 1;
         }
         // Both, and unbounded: a bound here would turn the hazard's own symptom, a core
         // walking freed tables, into a timeout report instead of a hang the gate names.
         if (a.join(KOS_TIMEOUT_NONE) != 0 or b.join(KOS_TIMEOUT_NONE) != 0)
         {
-            emit("[taskleave] ERROR: a member never came back\n");
+            kos::print("[taskleave] ERROR: a member never came back\n");
             return 1;
         }
         // The group is empty, so this drops main's creator hold and releases the slot.
@@ -109,21 +106,21 @@ int main(int, char**)
     char msg[96];
     ksnprintf(msg, sizeof(msg), "[taskleave] release peer hits: %llu\n",
               static_cast<unsigned long long>(hits));
-    emit(msg);
+    kos::print(msg);
     ksnprintf(msg, sizeof(msg), "[taskleave] space destroys: %llu\n",
               static_cast<unsigned long long>(runs));
-    emit(msg);
+    kos::print(msg);
     if (hits != 0u)
     {
-        emit("[taskleave] TASKLEAVE FAIL: a destroy found a peer core holding the space\n");
+        kos::print("[taskleave] TASKLEAVE FAIL: a destroy found a peer core holding the space\n");
         return 1;
     }
     if (runs < static_cast<uintptr_t>(ROUNDS))
     {
-        emit("[taskleave] TASKLEAVE FAIL: destroys ran for fewer rounds than this image had,\n"
-             "so the peer-hit count above answered for a destroy that never ran\n");
+        kos::print("[taskleave] TASKLEAVE FAIL: destroys ran for fewer rounds than this image "
+                   "had,\nso the peer-hit count above answered for a destroy that never ran\n");
         return 1;
     }
-    emit("[taskleave] TASKLEAVE PASS\n");
+    kos::print("[taskleave] TASKLEAVE PASS\n");
     return 0;
 }

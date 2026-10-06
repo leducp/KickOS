@@ -21,9 +21,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -68,7 +65,7 @@ namespace
                                            1u << CORE_VICTIM);
         if (not v.valid())
         {
-            emit("[slaypeer] ERROR: victim spawn refused\n");
+            kos::print("[slaypeer] ERROR: victim spawn refused\n");
             kos_exit(1);
         }
         kos_sleep_ns(SETTLE_NS);
@@ -87,25 +84,25 @@ int main(int, char**)
                                        1u << CORE_SLAYER);
     if (not s.valid())
     {
-        emit("[slaypeer] ERROR: slayer spawn refused\n");
+        kos::print("[slaypeer] ERROR: slayer spawn refused\n");
         return 1;
     }
     // Unbounded, the slay carrying the only bound this run needs: a second one here would
     // report the gate's patience instead of the kernel's answer.
     if (s.join(KOS_TIMEOUT_NONE) != 0)
     {
-        emit("[slaypeer] ERROR: the slayer never came back\n");
+        kos::print("[slaypeer] ERROR: the slayer never came back\n");
         return 1;
     }
 
     char msg[96];
     ksnprintf(msg, sizeof(msg), "[slaypeer] slay rc: %d\n", g_slay_rc);
-    emit(msg);
+    kos::print(msg);
     if (g_slay_rc != 0)
     {
-        emit("[slaypeer] SLAYPEER FAIL: the victim kept the core it was slain on\n");
+        kos::print("[slaypeer] SLAYPEER FAIL: the victim kept the core it was slain on\n");
         return 1;
     }
-    emit("[slaypeer] SLAYPEER PASS\n");
+    kos::print("[slaypeer] SLAYPEER PASS\n");
     return 0;
 }

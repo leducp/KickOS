@@ -179,6 +179,9 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
       "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
       "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
       "$<TARGET_FILE:kickos_lib>")
+  if(TARGET kickos_string_scan)
+    list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_string_scan>")
+  endif()
   # One member of libkickos_user.a, never the whole archive: the rest is unprivileged. A
   # thread_local in newlib_reent.cc is read on the wrong thread pointer, since the context
   # switch seats its word. x86_64 builds no newlib_reent.cc, and the gate refuses a scan that

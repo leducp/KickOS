@@ -11,9 +11,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h> // emit: kos_print is dropped once the console is published
-
-using kickos::emit;
 
 namespace
 {
@@ -22,8 +19,8 @@ namespace
 
 int main(int, char**)
 {
-    emit("[rebootdemo] KickOS reboot-to-bootloader demo\n");
-    emit("[rebootdemo] handing the chip to its bootloader in 3s\n");
+    kos::print("[rebootdemo] KickOS reboot-to-bootloader demo\n");
+    kos::print("[rebootdemo] handing the chip to its bootloader in 3s\n");
     kos::sleep_ns(ARM_NS);
 
     int const rc = kos_reboot();
@@ -31,7 +28,7 @@ int main(int, char**)
     // Reached only where the chip declined: a backend that took the call never returns.
     char msg[80];
     ksnprintf(msg, sizeof(msg), "[rebootdemo] reboot declined: rc=%d\n", rc);
-    emit(msg);
+    kos::print(msg);
     kos_shutdown(0);
     return 0;
 }

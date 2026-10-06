@@ -13,9 +13,6 @@
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -34,20 +31,20 @@ namespace
             arms = arms + 1;
             char msg[96];
             ksnprintf(msg, sizeof(msg), "[rootauth] ok - %s\n", what);
-            emit(msg);
+            kos::print(msg);
             return;
         }
         failures = failures + 1;
         char msg[96];
         ksnprintf(msg, sizeof(msg), "[rootauth] ERROR: %s\n", what);
-        emit(msg);
+        kos::print(msg);
     }
 
     void report_rc(char const* what, int rc)
     {
         char msg[96];
         ksnprintf(msg, sizeof(msg), "[rootauth]   %s rc=%d\n", what, rc);
-        emit(msg);
+        kos::print(msg);
     }
 }
 
@@ -83,13 +80,13 @@ int main(int, char**)
     {
         char msg[64];
         ksnprintf(msg, sizeof(msg), "[rootauth] FAIL (%d)\n", failures);
-        emit(msg);
+        kos::print(msg);
         return 1;
     }
     // The count comes from a counter, the `ok -` lines from one emit per arm: the gate
     // cross-checks the two, so output lost between them cannot read as a clean run.
     char msg[64];
     ksnprintf(msg, sizeof(msg), "[rootauth] PASS (%d arms)\n", arms);
-    emit(msg);
+    kos::print(msg);
     return 0;
 }

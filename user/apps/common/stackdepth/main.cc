@@ -15,9 +15,6 @@
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -39,18 +36,18 @@ int main(int, char**)
 #if KICKOS_SD_MODE == 0
     // The panic arm alone: the spawn arm's contribution is the difference between the two
     // images.
-    emit("[stackdepth] panic arm only\n");
+    kos::print("[stackdepth] panic arm only\n");
     kos_panic("[stackdepth] read the block out");
 #else
-    emit("[stackdepth] driving the grant-carrying spawn\n");
+    kos::print("[stackdepth] driving the grant-carrying spawn\n");
 
     // The grant is what reaches task_for -> domain_for -> grant_region_admissible ->
     // grant_hits_reserved. A spawn without one stops short of that subtree.
     void* const block = kos_ram_alloc(SD_GRANT);
     if (block == nullptr)
     {
-        emit("[stackdepth] no RAM for the grant\n");
-        emit(SD_NOT_RUN);
+        kos::print("[stackdepth] no RAM for the grant\n");
+        kos::print(SD_NOT_RUN);
         return 1;
     }
 
@@ -65,15 +62,15 @@ int main(int, char**)
     int const rc = kos_thread_create(&p, &t);
     char b[64];
     ksnprintf(b, sizeof(b), "[stackdepth] spawn rc=%d\n", rc);
-    emit(b);
+    kos::print(b);
     if (rc != 0)
     {
         // The kernel prints its high-water line whatever this arm reached, so an arm that
         // never entered the subtree has to say so itself.
-        emit(SD_NOT_RUN);
+        kos::print(SD_NOT_RUN);
         return 1;
     }
-    emit(SD_RAN);
+    kos::print(SD_RAN);
 
     kos_panic("[stackdepth] read the block out");
 #endif

@@ -27,9 +27,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
-
-using kickos::emit;
 
 #ifndef RINGPRIV_EXPECT_RING
 #error "RINGPRIV_EXPECT_RING must be 1 (real privilege ring) or 0 (no privilege axis)"
@@ -52,19 +49,19 @@ namespace
         {
             arms = arms + 1;
             ksnprintf(msg, sizeof(msg), "[ringpriv] ok - %s\n", what);
-            emit(msg);
+            kos::print(msg);
             return;
         }
         failures = failures + 1;
         ksnprintf(msg, sizeof(msg), "[ringpriv] ERROR: %s\n", what);
-        emit(msg);
+        kos::print(msg);
     }
 
     [[maybe_unused]] void skip(char const* what)
     {
         char msg[128];
         ksnprintf(msg, sizeof(msg), "[ringpriv] skip - %s\n", what);
-        emit(msg);
+        kos::print(msg);
     }
 
     void report_u32(char const* what, uint32_t v)
@@ -72,7 +69,7 @@ namespace
         char msg[96];
         ksnprintf(msg, sizeof(msg), "[ringpriv]   %s=0x%x\n", what,
                   static_cast<unsigned int>(v));
-        emit(msg);
+        kos::print(msg);
     }
 
     uint32_t read_control()
@@ -138,7 +135,7 @@ int main(int, char**)
     // this function's stack pointer out from under it mid-frame.
     //
     // The read, the msr, the isb and the read-back are ONE asm block and must stay one.
-    // Any syscall in between - an emit() included - re-enters the kernel, and the syscall
+    // Any syscall in between - an kos::print() included - re-enters the kernel, and the syscall
     // return path restores CONTROL.nPRIV from ctx.resting_npriv (switch.S), which would
     // paper a successful promotion straight back over to 1 and turn this arm green on a
     // broken system. Both operands are read inside the block for the same reason: the
@@ -170,10 +167,10 @@ int main(int, char**)
     if (failures != 0)
     {
         ksnprintf(msg, sizeof(msg), "[ringpriv] FAIL (%d)\n", failures);
-        emit(msg);
+        kos::print(msg);
         return 1;
     }
     ksnprintf(msg, sizeof(msg), "[ringpriv] PASS (%d arms)\n", arms);
-    emit(msg);
+    kos::print(msg);
     return 0;
 }

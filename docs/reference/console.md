@@ -9,7 +9,8 @@
 ## What it is, and what it is not
 
 The kernel console is a **write-only debug facility**: the banner, `kprintf` /
-`kputs`, panic and fault reports, and (via a syscall) unprivileged `kos::print`.
+`kputs`, panic and fault reports, and (via the raw `kos_kconsole_write` syscall) userspace's
+fallback when no console is published.
 It is the standard microkernel *exception* -- a minimal, kernel-owned output path
 that must work during bring-up, in a fault, and before any driver exists. It is
 **not** a general device driver: the eventual userspace UART/console driver is a
@@ -107,10 +108,10 @@ thread granted the console window can wreck the channel without ever publishing.
 **Every line the ring accepted before a publish goes out before the driver has the UART.** The
 move to `HANDING_OFF` gives up the ring under the same `IrqLock`, and giving it up flushes it
 (`console_tx_deinit`): its bytes are in the device's transmitter before `USER_OWNED` is stored. A
-line the ring refused was never accepted, so it is not among them: `kos_print` discards a refused
-line by contract, and a writer that cannot afford to lose one offers it again
-(`kickos::kconsole_write_all`, `<kickos/sys/emit.h>`). A burst written faster than the wire fills
-the ring, and every line past the fill is refused, publish or not.
+line the ring refused was never accepted, so it is not among them: the raw `kos_kconsole_write`
+discards what it did not take, and `kos_print`, like every stdout writer, offers it again
+(`<kickos/sys/emit.h>`). A burst written faster than the wire fills the ring, and every line past
+the fill is refused to the raw call, publish or not.
 
 `HANDING_OFF` exists because the two halves of a publish cannot be one instant. It refuses
 NEW chip writers while leaving the UART the kernel's, so a writer already counted in the
@@ -244,7 +245,10 @@ so userspace sends there instead. Carrying on past a refusal would put a hole in
 line whose tail arrived, which is worse than losing the line.
 
 **The one copy of the userspace policy is `stdout_write` (`<kickos/sys/emit.h>`)**: the TAP harness,
-the freestanding `emit()` and libc's `_write` all write through it. It sends on capability 0, and a
+`kos_print` and libc's `_write` all write through it, so `kos_print` blocks where `write(1)` would
+and, for a task that set O_NONBLOCK, stops where it would wait. The raw `kos_kconsole_write` is the
+one call that drops: it answers how much it took, and an app that calls it marks the line as the
+measurement (`tests/static/check_kconsole_emit.sh`). It sends on capability 0, and a
 receiver taking fewer bytes than a chunk, none included, is offered the rest again there: the
 rendezvous consumed the receive, so the next send parks until the driver receives again and the
 retry never spins. With no receiver it hands the remainder to the kernel console, and

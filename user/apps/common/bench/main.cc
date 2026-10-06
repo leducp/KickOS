@@ -7,7 +7,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/sys/emit.h>
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
@@ -344,7 +343,7 @@ namespace
         g_e2e_dev = kos_ram_alloc(E2E_DEV_BYTES);
         if (g_e2e_dev == nullptr or kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0) != 0)
         {
-            kickos::emit("  e2e: SKIP (no device window: allocation or grant refused)\n");
+            kos::print("  e2e: SKIP (no device window: allocation or grant refused)\n");
             return false;
         }
         for (uint32_t i = 0; i < 4; i++)
@@ -366,7 +365,7 @@ namespace
             char cs[96];
             ksnprintf(cs, sizeof(cs), "  e2e: SKIP (line %u claim refused, rc=%d)\n",
                       static_cast<unsigned>(BENCH_E2E_LINE), static_cast<int>(crc));
-            kickos::emit(cs);
+            kos::print(cs);
             return false;
         }
         kos_cap_t note = KOS_CAP_NONE;
@@ -374,7 +373,7 @@ namespace
         {
             kos_handle_close(note);
             kos_handle_close(irq);
-            kickos::emit("  e2e: SKIP (the line could not be attached to a notification)\n");
+            kos::print("  e2e: SKIP (the line could not be attached to a notification)\n");
             return false;
         }
         // The claim leaves the line MASKED and the waiter's first arm happens after the ready
@@ -399,7 +398,7 @@ namespace
         if (not w.valid())
         {
             kos_sem_destroy(g_e2e_ready);
-            kickos::emit("  e2e: SKIP (thread pool too small for the waiter)\n");
+            kos::print("  e2e: SKIP (thread pool too small for the waiter)\n");
             return false;
         }
         g_e2e_tid = w.id();
@@ -411,21 +410,21 @@ namespace
             (void)kos_thread_join(g_e2e_tid, KOS_TIMEOUT_NONE);
             g_e2e_tid = KOS_THREAD_NONE;
             kos_sem_destroy(g_e2e_ready);
-            kickos::emit("  e2e: SKIP (the waiter cannot reach the device window)\n");
+            kos::print("  e2e: SKIP (the waiter cannot reach the device window)\n");
             return false;
         }
         kos_handle_close(g_e2e_ready);
         g_e2e_ready = KOS_CAP_NONE;
         if (kos_sem_create(0, &g_e2e_go) != 0 or kos_sem_create(0, &g_e2e_pass) != 0)
         {
-            kickos::emit("  e2e: SKIP (no semaphore for the raiser handshake)\n");
+            kos::print("  e2e: SKIP (no semaphore for the raiser handshake)\n");
             return false;
         }
         kos_cap_grant rcaps[] = {{g_e2e_go, CH_FULL}, {g_e2e_pass, CH_FULL}};
         auto r = kos::thread::create_caps(e2e_raiser, nullptr, "e2erais", 3, rcaps, 2);
         if (not r.valid())
         {
-            kickos::emit("  e2e: SKIP (thread pool too small for the raiser)\n");
+            kos::print("  e2e: SKIP (thread pool too small for the raiser)\n");
             return false;
         }
         g_e2e_rid = r.id();
@@ -455,7 +454,7 @@ namespace
         ksnprintf(s, sizeof(s), "  e2e-settle: settled=%u/%u\n",
                   static_cast<unsigned>(g_e2e_settled.load()),
                   static_cast<unsigned>(KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE));
-        kickos::emit(s);
+        kos::print(s);
     }
 
     void e2e_stop()
@@ -497,7 +496,7 @@ namespace
             char ss[96];
             ksnprintf(ss, sizeof(ss), "  irq: SKIP (line %u attach refused, rc=%d)\n",
                       static_cast<unsigned>(BENCH_IRQ_LINE), static_cast<int>(setup_rc));
-            kickos::emit(ss);
+            kos::print(ss);
         }
         (void)e2e_start();
 
@@ -532,7 +531,7 @@ namespace
                       static_cast<unsigned>(sw_per_s), static_cast<unsigned>(ns_per_sw),
                       static_cast<unsigned>(switches),
                       static_cast<unsigned>(d_ns / 1000000ull));
-            kickos::emit(s);
+            kos::print(s);
 #if KICKOS_KERNEL_CORES > 1
             sched_report(TAG_W1);
 #endif
@@ -701,7 +700,7 @@ namespace
                 row_name, static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
                 static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
                 static_cast<unsigned>(d_ns / 1000000ull), path, shape);
-            kickos::emit(s);
+            kos::print(s);
         }
         kos_sem_post(2);
     }
@@ -728,7 +727,7 @@ namespace
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
-            kickos::emit("  call/reply: SKIP (no endpoint)\n");
+            kos::print("  call/reply: SKIP (no endpoint)\n");
             return;
         }
         kos::Semaphore done(0);
@@ -757,7 +756,7 @@ namespace
             {
                 done.wait();
             }
-            kickos::emit("  call/reply: SKIP (thread pool too small)\n");
+            kos::print("  call/reply: SKIP (thread pool too small)\n");
             return;
         }
         done.wait(); // caller finished + printed
@@ -798,7 +797,7 @@ namespace
 {
     void row(char const* s)
     {
-        kickos::emit(s);
+        kos::print(s);
     }
 
     // caps: own@1, peer@2, done@3. The leader posts first and times the whole run.
@@ -1061,7 +1060,7 @@ namespace
         char s[128];
         ksnprintf(s, sizeof(s), "  %s: %u switches in %u us\n", name,
                   static_cast<unsigned>(switches), static_cast<unsigned>(d_ns / 1000u));
-        kickos::emit(s);
+        kos::print(s);
     }
 
     // W2: one pinned pair per core, all at once.
@@ -1167,7 +1166,7 @@ namespace
         char s[96];
         ksnprintf(s, sizeof(s), "  push-probe: STALL round=%u/%u (%s)\n",
                   static_cast<unsigned>(round), static_cast<unsigned>(W_PUSH_ROUNDS), what);
-        kickos::emit(s);
+        kos::print(s);
     }
 
     void p_hog0(void*)
@@ -1246,7 +1245,7 @@ namespace
         kos_cap_t m = KOS_CAP_NONE;
         if (kos_sem_create(0, &h1) != 0 or kos_sem_create(0, &m) != 0)
         {
-            kickos::emit("  push-probe: SKIP (no semaphore)\n");
+            kos::print("  push-probe: SKIP (no semaphore)\n");
             kos_handle_close(h1);
             return;
         }
@@ -1292,7 +1291,7 @@ namespace
         }
         else
         {
-            kickos::emit("  push-probe: SKIP (thread pool too small)\n");
+            kos::print("  push-probe: SKIP (thread pool too small)\n");
             g_w_stop = 1;
             for (uint32_t i = 0; i < k; i++)
             {
@@ -1324,7 +1323,7 @@ namespace
                                           KOS_TASK_NONE, nullptr, 0, 1u << 1);
         if (not t.valid())
         {
-            kickos::emit("  reseat-probe: SKIP (thread pool too small)\n");
+            kos::print("  reseat-probe: SKIP (thread pool too small)\n");
             return;
         }
         (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
@@ -1345,12 +1344,11 @@ namespace
 }
 #endif
 
-
 int main(int, char**)
 {
-    kickos::emit("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
-    kickos::emit("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
-    kickos::emit("workload, not a timer. Telemetry OFF for clean numbers.\n");
+    kos::print("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
+    kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
+    kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n");
 
     int64_t const hz_rc = kos_bench(KOS_BENCH_OP_CYCCNT_HZ, 0, 0);
     uint64_t hz = 0;
@@ -1362,7 +1360,7 @@ int main(int, char**)
     ksnprintf(hzline, sizeof(hzline),
               "cycle counter: %llu Hz (0 = no rate converts a reading; cycles only)\n\n",
               static_cast<unsigned long long>(hz));
-    kickos::emit(hzline);
+    kos::print(hzline);
 
     // BEFORE the reset: the probe's own three brackets are then not in the sweep's numbers.
     (void)kos_bench(KOS_BENCH_OP_LOCK_PROBE, 0, 0);
@@ -1390,14 +1388,14 @@ int main(int, char**)
 #if KICKOS_KERNEL_CORES > 1
     sched_report(TAG_CALLREPLY);
 #endif
-    kickos::emit("\n");
+    kos::print("\n");
 
     kos_cap_t a = KOS_CAP_NONE;
     kos_cap_t b = KOS_CAP_NONE;
     if (kos_sem_create(0, &a) != 0 or kos_sem_create(0, &b) != 0
         or kos_sem_create(0, &g_gate) != 0 or kos_sem_create(0, &g_resume) != 0)
     {
-        kickos::emit("bench: FAILED to create the players' semaphores\n");
+        kos::print("bench: FAILED to create the players' semaphores\n");
         return 1;
     }
 
@@ -1420,7 +1418,7 @@ int main(int, char**)
     {
         // Do not park here: on a bootloader-handover board a parked app costs a physical
         // button press, which the bounded reporter exists to avoid.
-        kickos::emit("bench: FAILED to spawn players (thread pool too small?)\n");
+        kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
         return 1;
     }
 
@@ -1440,6 +1438,6 @@ int main(int, char**)
     spawn_exit();
     // The kernel refuses it, and prints nothing, where no backend keeps the watch.
     (void)kos_bench(KOS_BENCH_OP_FASTPATH_WATCH, 0, 0);
-    kickos::emit("bench: done\n");
+    kos::print("bench: done\n");
     return 0;
 }

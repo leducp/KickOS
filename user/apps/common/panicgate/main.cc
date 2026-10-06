@@ -18,13 +18,10 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/emit.h> // emit: kos_print is dropped once the console is published
 
 #ifndef KICKOS_PANICGATE_CASE
 #error "KICKOS_PANICGATE_CASE must be 1, 2, 3, 4 or 5"
 #endif
-
-using kickos::emit;
 
 namespace
 {
@@ -51,21 +48,21 @@ namespace
 int main(int, char**)
 {
 #if KICKOS_PANICGATE_CASE == 1
-    emit("[panicgate] case 1: readable message\n");
+    kos::print("[panicgate] case 1: readable message\n");
     kos_panic("[panicgate] message on the wire");
 #elif KICKOS_PANICGATE_CASE == 2
-    emit("[panicgate] case 2: null message\n");
+    kos::print("[panicgate] case 2: null message\n");
     kos_panic(nullptr);
 #elif KICKOS_PANICGATE_CASE == 3
-    emit("[panicgate] case 3: unreadable message\n");
+    kos::print("[panicgate] case 3: unreadable message\n");
     kos_panic(reinterpret_cast<char const*>(WILD));
 #elif KICKOS_PANICGATE_CASE == 4
-    emit("[panicgate] case 4: oversized message\n");
+    kos::print("[panicgate] case 4: oversized message\n");
     kos_panic(LONG_MSG);
 #else
-    emit("[panicgate] case 5: control bytes in the message\n");
+    kos::print("[panicgate] case 5: control bytes in the message\n");
     kos_panic(CTL_MSG);
 #endif
-    emit("[panicgate] ERROR: kos_panic returned\n");
+    kos::print("[panicgate] ERROR: kos_panic returned\n");
     return 1;
 }

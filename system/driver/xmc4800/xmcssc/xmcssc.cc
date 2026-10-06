@@ -21,7 +21,6 @@
 #include <kickos/driver/declared/xmcssc.h>
 #include <kickos/driver/spi.h>
 #include <kickos/sys/driver_service.h>
-#include <kickos/sys/emit.h> // publish-aware write; kos_print is dropped once published
 #include <kickos/sys/spi_service.h>
 
 #include <kickos/chip_mmap.h>
@@ -35,9 +34,7 @@ namespace declared = kickos::driver::declared::xmcssc;
 
 namespace
 {
-    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. Diagnostics go through
-    // emit, not kos_print: the console is already USER_OWNED here, so the kernel chip path drops
-    // every byte.
+    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
@@ -56,12 +53,12 @@ namespace
         int32_t const opened = kos_spi_bus_open(&bus, &cfg);
         if (opened < 0)
         {
-            kickos::emit("[xmcssc] ERROR: channel bring-up refused (a PV register store was "
+            kos::print("[xmcssc] ERROR: channel bring-up refused (a PV register store was "
                          "discarded)\n");
             drv::trap();
         }
 
-        kickos::emit("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
+        kos::print("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
 
         (void)spi::serve_loop(&bus);
 

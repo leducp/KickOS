@@ -36,9 +36,13 @@ extern "C"
 // waits, with no bound, for the reclaim or a publish. A task that set O_NONBLOCK
 // (kos_task_nonblock) never waits and never needs to try again: it is answered -KOS_ETIMEDOUT
 // instead of either.
-// kos_print discards all of it, so a line that has to survive a burst goes through
-// kickos::emit (sys/emit.h), which retries the remainder.
+// It is the raw call: what it did not take is the caller's to send again or to drop.
 int32_t kos_kconsole_write(void const* buf, size_t len);
+
+// The whole of s to this thread's stdout, as libc's write(1) sends it (kickos::stdout_write,
+// sys/emit.h): through the published console where one serves this thread, else the kernel
+// console, waiting out a full ring and a dark window. A task that set O_NONBLOCK stops at the
+// first byte that would make it wait, the rest dropped.
 void kos_print(char const* s);
 
 void kos_yield(void);

@@ -16,8 +16,8 @@
 [reclaimwit]  2. the app now publishes the console to a driver it spawns
 [reclaimwit]  3. that driver never writes to a console, so the wire must go
 [reclaimwit]     silent: a MUTE line below must occur ZERO times
-[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line with
-[reclaimwit]     the same kos_print call the MUTE line used
+[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line to
+[reclaimwit]     the kernel console the MUTE line was dropped from
 [reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.
 [reclaimwit]     MUTE present == the publish never took, verdict void.
 [reclaimwit]     both absent == the reclaim did not fire, console still dark.

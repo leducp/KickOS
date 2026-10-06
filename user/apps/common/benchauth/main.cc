@@ -19,10 +19,7 @@
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h>
 #include <kickos/sys/irq_free.h>
-
-using kickos::emit;
 
 namespace
 {
@@ -45,19 +42,19 @@ namespace
         {
             arms = arms + 1;
             ksnprintf(msg, sizeof(msg), "[benchauth] ok - %s\n", what);
-            emit(msg);
+            kos::print(msg);
             return;
         }
         failures = failures + 1;
         ksnprintf(msg, sizeof(msg), "[benchauth] ERROR: %s\n", what);
-        emit(msg);
+        kos::print(msg);
     }
 
     void report_rc(char const* what, int64_t rc)
     {
         char msg[112];
         ksnprintf(msg, sizeof(msg), "[benchauth]   %s rc=%d\n", what, static_cast<int>(rc));
-        emit(msg);
+        kos::print(msg);
     }
 
     // At one kernel core the doorbell arm is compiled out ahead of every check in it, so the
@@ -200,6 +197,6 @@ int main(int, char**)
     {
         ksnprintf(msg, sizeof(msg), "[benchauth] FAIL (%d failed)\n", failures);
     }
-    emit(msg);
+    kos::print(msg);
     return 0;
 }

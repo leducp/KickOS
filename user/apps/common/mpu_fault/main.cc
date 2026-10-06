@@ -18,9 +18,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/emit.h> // emit: kos_print is dropped once the console is published
-
-using kickos::emit;
 
 namespace
 {
@@ -30,22 +27,22 @@ namespace
     void domainA_worker(void* arg)
     {
         char* base = static_cast<char*>(arg); // region A base, by value
-        emit("[domain] A: writing my own region\n");
+        kos::print("[domain] A: writing my own region\n");
         volatile int* own = reinterpret_cast<volatile int*>(base + 64); // granted -> ok
         *own = 0x1111;
         // The marker below is the gate's CONTROL, so it must witness the write's EFFECT
         // and not merely its position in program order: read the cell back first.
         if (*own != 0x1111)
         {
-            emit("[domain] ERROR: the control write did not stick\n");
+            kos::print("[domain] ERROR: the control write did not stick\n");
             return;
         }
-        emit("[domain] A: my region ok; writing domain B (expect fault)\n");
+        kos::print("[domain] A: my region ok; writing domain B (expect fault)\n");
         *reinterpret_cast<volatile int*>(base + REGION) = 0x2222; // not granted -> fault
         // Reached only where the MPU is not enforced (privilege-only boards). The
         // wording steers clear of the "did not fault" phrase CTest negative-asserts.
-        emit("[domain] cross-domain write completed: OK where the MPU is a "
-             "no-op; an enforced backend traps this\n");
+        kos::print("[domain] cross-domain write completed: OK where the MPU is a "
+                   "no-op; an enforced backend traps this\n");
     }
 }
 
@@ -57,7 +54,7 @@ int main(int, char**)
     void* rA = kos_ram_alloc(BLOCK);
     if (rA == nullptr)
     {
-        emit("[domain] ERROR: ram_alloc failed\n");
+        kos::print("[domain] ERROR: ram_alloc failed\n");
         return 1;
     }
 
@@ -67,7 +64,7 @@ int main(int, char**)
     char msg[96];
     ksnprintf(msg, sizeof(msg), "[domain] expect fault at %p\n",
               static_cast<char*>(rA) + REGION);
-    emit(msg);
+    kos::print(msg);
 
     kos::thread::create(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
                         /*privileged=*/false, rA, REGION);

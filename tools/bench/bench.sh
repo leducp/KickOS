@@ -91,6 +91,7 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
 . "$HERE/amp_peers.sh"
+. "$HERE/banner.sh"
 rig_load "$(cd "$HERE/../.." && pwd)"
 rig_need RIG_SESSION "the session directory holding env.sh and receiving logs/"
 rig_need RIG_TREE "the tree to build when the caller sets no TREE"
@@ -397,6 +398,25 @@ if [ "${CONSOLE_PIN:-0}" = "1" ]; then
   CONSOLE_USB_CDC=0
 fi
 
+# A USB device console never carries the kernel banner, so the route holds the identity rows
+# the image prints once the host configures it to this build, from its cache, board config and
+# stamp.
+route_identity() {
+  [ "$CONSOLE_USB_CDC" = "1" ] || return 0
+  local version terse why
+  version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt" | tail -1)
+  terse=$(awk '$1 == "#define" && $2 == "KICKOS_DIAG_TERSE" { print $3; exit }' \
+            "$BUILD/generated/include/kickos/board_config.h")
+  [ -n "$version" ] && [ -n "$terse" ] || { echo "REFUSING: $BUILD states no version or no \
+KICKOS_DIAG_TERSE, so the identity rows cannot be rendered" >&2; return 1; }
+  if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$terse" "$version" "$BOARD" \
+               "$EXPECT_COMMIT"); then
+    echo "REFUSING: $LOG is not a capture of this build: $why" >&2
+    return 1
+  fi
+  echo "=== identity rows name $BOARD at $EXPECT_COMMIT"
+}
+
 # The capture's verdict, from the gate script JUDGE names; none without one.
 judge() {
   if [ "$JUDGE" = none ] || [ "$JUDGE" = "$TAP_JUDGE" ]; then
@@ -422,6 +442,7 @@ if [ -z "${BENCH_HOST:-}" ]; then
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
     CONSOLE_USB_CDC="$CONSOLE_USB_CDC" PEER_ERASE="$PEER_ERASE" \
     "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN" || exit $?
+  route_identity || exit $?
   judge || exit $?
   exit 0
 fi
@@ -566,4 +587,5 @@ fi
 [ -n "$RBYTES" ] || { echo "REFUSING: the remote capture reported no byte count" >&2; exit 1; }
 [ "$LBYTES" = "$RBYTES" ] || { echo "REFUSING: fetched $LBYTES bytes, the bench wrote $RBYTES" >&2; exit 1; }
 echo "log: $LOG  ($LBYTES bytes, fetched from $BENCH_HOST)"
+route_identity || exit $?
 judge || exit $?
