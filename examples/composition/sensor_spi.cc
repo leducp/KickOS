@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M10 GOLDEN EXAMPLE: does not build yet. `kos_self_t`, the `kos_grant_*` lookups and the
-// `kos_window_*` accessors are what M10 adds; everything else is today's API.
-//
-// The sensor task. It is a CLIENT of the SPI bus service and the SERVER of /svc/sensor. Its
-// "measurement" is a counter clocked through the bus's internal loopback, which is what lets
-// this example run on a bare Relax Kit. It holds no authority, no device window and no line:
-// the bus service owns the channel, and the composition is the only place that says so.
+// The sensor task for the XMC4800 Relax Kit: a CLIENT of the SPI bus service and the SERVER of
+// /svc/sensor. Its "measurement" is a counter clocked through the bus's internal loopback, which
+// is what lets this example run on a bare Relax Kit. It holds no authority, no device window
+// and no line: the bus service owns the channel, and the composition is the only place that
+// says so.
 
 #include <kickos/sys.h>
 #include <kickos/driver/spi.h>

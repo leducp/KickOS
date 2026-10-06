@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The userspace init-service seam. The kernel's root thread calls kickos_init_entry once
-// kernel init is complete; whatever CMake target the build selected as
-// KICKOS_INIT_PROVIDER supplies that symbol (default: kickos_default_init).
+// kernel init is complete. An image linking KickOS::kernel takes it from its system target's
+// KickOS::init; one linking an old leaf from the CMake target the build selected as
+// KICKOS_INIT_PROVIDER (default: kickos_default_init).
 //
 // Lifecycle, chosen by whether the entry RETURNS:
 //   * Single-shot (the default init). It walks the board's service list
@@ -34,6 +35,12 @@ extern "C"
 // The symbol the kernel boot path calls after kernel init.
 int kickos_init_entry(int argc, char** argv);
 
+struct kos_table_task;
+
+// KickOS::main's entry, a composition's `entry: kickos_main`: runs kickos_app_main with root's
+// kickos_init_args below as the task's entry thread and passes its status to exit().
+void kickos_main(struct kos_table_task const* self);
+
 // The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor window
 // and then calls kickos_init_entry above.
 //
@@ -45,6 +52,13 @@ int kickos_init_entry(int argc, char** argv);
 // address of a default-visibility external function GOT-indirect while `ld -m i386pep` builds no
 // global offset table (tools/check-x86_64-no-got.sh).
 void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
+
+// The kernel creates root at KICKOS_PRIO_MAX, and kickos_root_entry calls this first, before
+// the app's constructors. An image linking no system target takes kickos_root_lower's
+// definition from its link group, which lowers root to KICKOS_PRIO_ROOT, so its constructors
+// and main run there. A system target's init defines it empty: its walk lowers root to the
+// composition's priority as its first act, so its constructors run at KICKOS_PRIO_MAX.
+void kickos_root_lower(void);
 
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it immediately before
 // calling kickos_init_entry above.

@@ -12,6 +12,9 @@ from .subset import (
 
 UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mmu", "none")
 
+# The versions of the chip and board file formats this tool reads.
+CHIP_VERSIONS = (1,)
+BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "arch", "protection", "cores", "clusters_coherent", "partition_gate",
     "data_cache", "devices", "memory", "pins",
@@ -118,7 +121,7 @@ def check_chip(path, text, report):
     if root is None:
         return None
     top = f.fields(root, "the chip file", CHIP_FIELDS, ("version", "chip", "devices"))
-    if top is None or not f.version(top, "the chip file"):
+    if top is None or not f.version(top, "the chip file", CHIP_VERSIONS):
         return None
     folder = os.path.basename(os.path.dirname(os.path.abspath(path)))
     if "chip" in top:
@@ -740,7 +743,7 @@ def check_board(path, text, report, chips, boards):
     if root is None:
         return None
     top = f.fields(root, "the board file", BOARD_FIELDS, ("version", "board", "chip", "console"))
-    if top is None or not f.version(top, "the board file"):
+    if top is None or not f.version(top, "the board file", BOARD_VERSIONS):
         return None
     stem = os.path.splitext(os.path.basename(path))[0]
     if "board" in top:
@@ -760,14 +763,25 @@ def check_board(path, text, report, chips, boards):
     console_path = None
 
     if "console" in top:
-        console = f.fields(top["console"], "`console`", ("device", "pins"), ("device",))
+        console = f.fields(top["console"], "`console`", ("device", "pins", "semihosting"), ())
         if console is not None:
             device = None
+            semihosting = False
+            if "semihosting" in console:
+                semihosting = f.boolean(console["semihosting"], "console `semihosting`") is True
+                if "device" in console:
+                    f.refuse(console["semihosting"], "form.exclusive",
+                             "`console` names both a `device` and `semihosting`; it is one of the two")
+                elif "pins" in console:
+                    f.refuse(console["pins"], "form.inapplicable",
+                             "console `pins` wire a device, and a semihosting console has none")
+            if "device" not in console and not semihosting:
+                f.refuse(top["console"], "form.missing", "`console` needs `device`, or `semihosting: true`")
             if "device" in console:
                 device = resolve_device(f, chip, console["device"], "the console device")
                 if device is not None:
                     console_path = console["device"].value
-            if "pins" in console:
+            if "pins" in console and "semihosting" not in console:
                 pins = f.mapping(console["pins"], "console pins")
                 if pins is not None:
                     for role, (rkey, rvalue) in pins.items():

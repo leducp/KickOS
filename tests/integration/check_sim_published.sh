@@ -68,6 +68,9 @@ has '^# tap route: stdout endpoint' || fail "TAP did not take the published endp
 
 # The stream verdict is check_tap_stream.sh's, so plan against case count against expected
 # arms, the completion marker and the by-name permission sets stay in one place.
+# The two console_publish arms refuse to publish over the console the service list published.
+EXPECT_SKIPS="${EXPECT_SKIPS:+$EXPECT_SKIPS,}console_publish_handout,console_publish_narrow"
+export EXPECT_SKIPS
 printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_published "$WANT_ARMS"
 
 echo "PASS: the full $WANT_ARMS-arm TAP stream is observable over a published userspace console"

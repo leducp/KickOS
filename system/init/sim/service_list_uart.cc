@@ -107,7 +107,7 @@ namespace
 
     void uart_irq_thread(void* arg)
     {
-        uart::Shared* sh = static_cast<uart::Shared*>(arg);
+        uart::Shared* sh = static_cast<uart::Shared*>(drv::thread_start(arg));
         LoopUart dev;
         dev.sh = sh;
         (void)dev.configure(115200u, 8u, KOS_UART_PARITY_NONE, 1u);
@@ -116,7 +116,7 @@ namespace
 
     void uart_service_thread(void* arg)
     {
-        uart::Shared* sh = static_cast<uart::Shared*>(arg);
+        uart::Shared* sh = static_cast<uart::Shared*>(drv::thread_start(arg));
         uart::serve_loop(sh); // parks in recv; returns when the endpoint dies
         kos_exit(0);
     }
@@ -209,7 +209,8 @@ static struct kos_service_cfg const simuart_cfg = {
     .addr = 0,
     .prio = 12,
     .kind = KOS_SVC_UART,
-    .rsv = { 0, 0, 0, 0 }
+    .rsv = { 0, 0, 0, 0 },
+    .instance = nullptr
 };
 
 static struct kos_service_bringup const simuart_services[] = {

@@ -24,9 +24,9 @@
 kickos_add_driver(spi_xmcssc SOURCES spi_usic.cc REGDIR arch/arm/chip/xmc4800)
 
 kickos_add_driver(xmcssc SOURCES xmcssc.cc spi_usic.cc REGDIR arch/arm/chip/xmc4800
-                  THREADS service:0:default:3 RECEIVER service
+                  THREADS service:0:default:3:0 RECEIVER service
                   WINDOWS regs LINES irq NOTIFY BLOCK none
-                  POSTURE retain BARRIER none START xmc_spi0_start)
+                  POSTURE retain BARRIER none START xmc_spi0_start CLIENT kickos_spi_proxy)
 target_compile_definitions(kickos_xmcssc PRIVATE
   kos_spi_bus_open=xmcssc_bus_open
   kos_spi_device_open=xmcssc_device_open

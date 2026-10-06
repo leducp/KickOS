@@ -27,7 +27,9 @@ namespace kickos
     static_assert(KICKOS_MPU_MAX_REGIONS <= ARCH_MPU_ENCODED_SLOTS,
                   "the encoded image carries fewer descriptor slots than the kernel hands it");
 #endif
-    static_assert(KICKOS_MPU_MAX_REGIONS <= 8, "MpuSet::windows_ holds one bit per region");
+    static_assert(KICKOS_MPU_MAX_REGIONS <= 8, "MpuSet::places_ names a region in three bits");
+    static_assert(KICKOS_MAX_THREAD_WINDOWS <= 4,
+                  "MpuSet::places_ and window_flags_ hold four places of a spawn list");
     static_assert(KICKOS_MPU_MAX_REGIONS < 32,
                   "the seating bitmask is a uint32_t, and the no-MPU encode shifts by a count "
                   "that reaches the maximum, so 32 is already the undefined shift");
@@ -49,27 +51,41 @@ namespace kickos
         void clear()
         {
             count_ = 0;
-            windows_ = 0;
+            places_ = 0;
+            window_flags_ = 0;
             encode();
         }
 
-        // add(), for a spawn window: the set remembers which of its regions are windows, a
-        // grant, the stack or the task's data being none, and kos_window_addr asks it.
-        [[nodiscard]] bool add_window(uintptr_t base, size_t size, uint32_t attr)
+        // add(), for a spawn window: the set records the region at `place` in the spawn list,
+        // with the flags it was spawned with, which a later retype of the region leaves alone.
+        [[nodiscard]] bool add_window(uintptr_t base, size_t size, uint32_t attr, uint8_t place,
+                                      uint8_t flags)
         {
             uint8_t const at = count_;
             if (not add(base, size, attr))
             {
                 return false;
             }
-            windows_ = static_cast<uint8_t>(windows_ | (1u << at));
+            places_ = static_cast<uint16_t>(places_ | ((PLACE_SEATED | at) << (4u * place)));
+            window_flags_ = static_cast<uint8_t>(window_flags_ | ((flags & 3u) << (2u * place)));
             return true;
         }
 
-        // Whether the region `r`, one of this set's, is a spawn window.
-        bool is_window(arch_mpu_region const& r) const
+        // The region of the window at `place` in the spawn list and its spawn flags, or null
+        // for a place no window of this set holds.
+        arch_mpu_region const* window(uint32_t place, uint8_t* flags) const
         {
-            return ((windows_ >> (&r - regions_)) & 1u) != 0;
+            if (place >= 4u)
+            {
+                return nullptr;
+            }
+            uint32_t const seat = (places_ >> (4u * place)) & 0xFu;
+            if ((seat & PLACE_SEATED) == 0)
+            {
+                return nullptr;
+            }
+            *flags = static_cast<uint8_t>((window_flags_ >> (2u * place)) & 3u);
+            return &regions_[seat & 7u];
         }
 
         // Appends one region, or answers false and changes nothing because the set is full.
@@ -160,18 +176,18 @@ namespace kickos
         void drop_devices()
         {
             uint8_t kept = 0;
-            uint8_t windows = 0;
             for (uint8_t i = 0; i < count_; i++)
             {
                 if ((regions_[i].attr & ARCH_MPU_DEV) == 0)
                 {
-                    windows = static_cast<uint8_t>(windows | (((windows_ >> i) & 1u) << kept));
                     regions_[kept] = regions_[i];
                     kept++;
                 }
             }
             count_ = kept;
-            windows_ = windows;
+            // Its owner is past its last return to user code, so no window is asked for again.
+            places_ = 0;
+            window_flags_ = 0;
             encode();
         }
 
@@ -222,9 +238,14 @@ namespace kickos
 #endif
         }
 
+        static constexpr uint32_t PLACE_SEATED = 8u;
+
         arch_mpu_region regions_[KICKOS_MPU_MAX_REGIONS] = {};
         uint8_t count_ = 0;
-        uint8_t windows_ = 0; // bit i: regions_[i] is a spawn window
+        // Bits 2p, 2p + 1: the spawn flags of the window at place p.
+        uint8_t window_flags_ = 0;
+        // Bits 4p to 4p + 3: PLACE_SEATED and the region index of the window at place p.
+        uint16_t places_ = 0;
 #if KICKOS_HAVE_MPU
         arch_mpu_encoded image_ = {};
 #endif

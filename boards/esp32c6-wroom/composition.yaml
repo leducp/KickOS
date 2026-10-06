@@ -5,6 +5,7 @@ version: 1
 board: esp32c6-wroom
 stdout: kernel
 ends: main
+heap: 16384
 accepts: [no_protection, no_privilege_split]
 
 tasks:

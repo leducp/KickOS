@@ -73,9 +73,9 @@ namespace kickos
     // arm answers -KOS_EINVAL for those).
     bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset);
 
-    // KOS_SYS_WINDOW_ADDR: writes to `out` where the caller reaches the window it holds at
-    // `base`, the base its spawn list named. 0, or -KOS_EPERM / -KOS_EINVAL / -KOS_EFAULT.
-    int window_addr_call(uintptr_t base, uintptr_t out);
+    // KOS_SYS_WINDOW_GET: writes to `out` the index-th window of the caller's spawn list, its
+    // base where the caller reaches it. 0, or -KOS_EINVAL past the list, -KOS_EFAULT.
+    int window_get_call(uintptr_t index, uintptr_t out);
 
     // KOS_SYS_PORT_REG_WRITE: one byte to port base + offset, which a port window of the
     // caller's covers and the chip keeps for the kernel's write. 0, or -KOS_EPERM /
@@ -197,6 +197,9 @@ namespace kickos
     uint64_t thread_self();
 #endif
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
+    // The caller's own base priority. Takes the whole argument word, so a value that would
+    // truncate into range is refused rather than read.
+    int thread_set_priority(uintptr_t priority);
     int task_slay(kos_task_t task, uint32_t timeout_us);
 
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)

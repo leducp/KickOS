@@ -141,6 +141,8 @@ def manifest(facts, knobs):
     else:
         raise Refused("the build states no arch_mpu_min_region seam for arch %s" % target["arch"])
     protection["thread_windows"] = knob(knobs, WINDOWS_KNOB)
+    # Whether a fault ends its task rather than the system, which the top-level CMakeLists decides.
+    protection["fault_isolation"] = facts["fault_isolation"] != 0
 
     pools = {}
     for name in knobs:
@@ -164,6 +166,7 @@ def manifest(facts, knobs):
         "protection": protection,
         "pools": pools,
         "threads": threads,
+        "init": facts["init"],
     }
     if facts["descriptions"] is not None:
         document["descriptions"] = {

@@ -1252,7 +1252,7 @@ and this freeze would not stand.
 
 **THE FASTPATH SENTENCE DESCRIBED A GUARD THE TREE DID NOT HAVE, and it does now.** It read that
 the register fastpath "bails out on a remote partner", present tense, when nothing in
-`kernel/syscall/syscall_ipc_fast.cc` tested locality at all: what it had was a `recv_holders == 0`
+`kernel/syscall/syscall_ipc_fast.cc` tested locality at all: what it had was a no-receiver
 test, which is a DEAD-ENDPOINT test and refuses a far endpoint only incidentally, because one
 carries no local receiver. Incidental is not a guard, and a freeze asserting one it does not have
 cannot be checked against the tree. The ruling is untouched and only its standing moves.

@@ -326,7 +326,8 @@ small target's is: "x86 is a big platform with MiB or GiB of RAM and hundreds of
 
 **No kernel stack figure moves by construction.** The area lives in the context, never in a
 frame; `KICKOS_X86_64_TRAP_FRAME` stays 176, the interrupt-exit save is inline assembly that
-builds no frame, and `KICKOS_MIN_STACK_SIZE` stays 3264 and 2560. The trap red-zone gate measures
+builds no frame, and `KICKOS_MIN_STACK_SIZE` does not move for it (2624 at one core and 3328
+above, `Kconfig`). The trap red-zone gate measures
 every x86 class again all the same, and
 `arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h` changes only where a measurement passes
 its figure. Newlib's port did pass one, measured: with `KICKOS_LIBC_REENT` at 1 a timer's wake

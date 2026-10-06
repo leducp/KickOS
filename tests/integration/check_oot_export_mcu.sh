@@ -9,6 +9,8 @@
 #
 # A bare-metal package is the only one carrying a linker script, a reset vector and a
 # flashable image, so this is where the whole bare-metal recipe is proven:
+#   - the names a user links are exported under KickOS::, KickOS::kernel among them, and a
+#     KickOS::kernel link with no system target is refused naming the symbol it requires;
 #   - the plain path links at all (the exported target carries the whole recipe);
 #   - an edited linker script RELINKS (INTERFACE_LINK_DEPENDS). Passing the script
 #     as a -T driver option alone does not create that edge, and the failure is
@@ -70,33 +72,8 @@ echo "== installing MCU KickOS package to $TMP/prefix =="
 echo "== the installed export manifest and its descriptions =="
 installed_manifest "$KICKOS_BUILD" "$KICKOS_SRC" "$TMP/prefix"
 
-# The cross toolchain file, whichever family this package was built for. A package also
-# ships the fragments that file include()s, and they are toolchain-*.cmake too; the one a
-# consumer names is the one no other shipped file includes. Derived, so a new fragment does
-# not have to be named here as well.
-is_tc_fragment() { # <path>; 0 when another shipped toolchain file includes it
-  _f="$1"
-  _bn="$(basename "$_f")"
-  for _o in "$TMP"/prefix/lib/cmake/KickOS/toolchain-*.cmake; do
-    if [ "$_o" != "$_f" ] && grep -Fq '${CMAKE_CURRENT_LIST_DIR}/'"$_bn" "$_o"; then
-      return 0
-    fi
-  done
-  return 1
-}
-TC=""
-for _tc in "$TMP"/prefix/lib/cmake/KickOS/toolchain-*.cmake; do
-  [ -f "$_tc" ] || continue
-  if is_tc_fragment "$_tc"; then
-    continue
-  fi
-  if [ -n "$TC" ]; then
-    fail "package ships several cross toolchain files ($(basename "$TC"), \
-$(basename "$_tc")); a consumer cannot tell which one configures it"
-  fi
-  TC="$_tc"
-done
-[ -n "$TC" ] || fail "shipped cross toolchain file missing from package"
+package_toolchain "$TMP/prefix"
+TC="$PACKAGE_TC"
 
 DESC="$TMP/prefix/lib/cmake/KickOS/board.cmake"
 [ -f "$DESC" ] || fail "shipped board descriptor (board.cmake) missing from package"
@@ -141,6 +118,40 @@ done
 KICKOS_TOOLCHAIN=$(sed -n 's/^KICKOS_TOOLCHAIN:PATH=//p' "$KICKOS_BUILD/CMakeCache.txt")
 [ -n "$KICKOS_TOOLCHAIN" ] || fail "the build's cache names no KICKOS_TOOLCHAIN"
 export KICKOS_TOOLCHAIN
+
+echo "== the names a user links, under KickOS:: =="
+package_names "$KICKOS_BUILD" "$KICKOS_SRC" "$CMAKE" "$TMP/prefix" "$TMP/names" \
+  -DCMAKE_TOOLCHAIN_FILE="$TC"
+
+# KickOS::kernel requires the symbol every system target's init defines, so a link of it with
+# none is refused and the linker names the symbol. The probe is the KickOS::kernel image the
+# names check just configured.
+echo "== a KickOS::kernel link with no system target is refused =="
+KERNEL_PROBE="$(grep -xE 'kernel_probe(_image)?' "$TMP/names/link_targets" || true)"
+[ -n "$KERNEL_PROBE" ] || fail "the names probe lists no KickOS::kernel image"
+if "$CMAKE" --build "$TMP/names" --target "$KERNEL_PROBE" >"$TMP/nosystem.log" 2>&1; then
+  fail "a KickOS::kernel image linked with no system target"
+fi
+# The linker's line, not ninja's echo of the command, which names the symbol too.
+grep -q "required symbol [^ ]*kickos_link_one_system_target. not defined" "$TMP/nosystem.log" \
+  || fail "the KickOS::kernel link failed without naming kickos_link_one_system_target: \
+$(sed -n '1,6p' "$TMP/nosystem.log" | tr '\n' ' ')"
+
+# An image reaching KickOS::kernel through a library of its own and linking an old leaf
+# besides would define the heap size twice, and is refused at configure.
+echo "== a link reaching KickOS::kernel and an old leaf is refused =="
+NINJA_PROBE="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$TMP/names/CMakeCache.txt")"
+if "$CMAKE" -S "$KICKOS_SRC/tests/lib/package_names" -B "$TMP/mixed" -G Ninja \
+    -DCMAKE_MAKE_PROGRAM="$NINJA_PROBE" -DCMAKE_TOOLCHAIN_FILE="$TC" \
+    -DCMAKE_PREFIX_PATH="$TMP/prefix" \
+    -DKICKOS_EXPECT_PROVIDERS="$(sed -n 's/^KICKOS_GROUP_PROVIDERS:INTERNAL=//p' "$KICKOS_BUILD/CMakeCache.txt")" \
+    -DKICKOS_PROBE_MIXED_LEAVES=ON >"$TMP/mixed.log" 2>&1; then
+  fail "an image reaching KickOS::kernel and KickOS::kickos_cxx configured"
+fi
+# CMake wraps a message, so the words are matched across its lines.
+tr -s ' \n' '  ' < "$TMP/mixed.log" | grep -q 'would each define KICKOS_USER_HEAP_SIZE' \
+  || fail "the mixed-leaf configure failed for another reason: \
+$(sed -n '/CMake Error/,$p' "$TMP/mixed.log" | sed -n '1,6p' | tr '\n' ' ')"
 
 echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS_BOARD) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/build" -G "$GEN" \

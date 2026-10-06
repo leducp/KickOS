@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The tree's only .c, so the only BUILD that compiles the C-facing headers as C with the
-// real flags. Rewriting it as C++, or including a C++-only header, leaves the C claim
-// those headers make resting on check_c_headers.sh's standalone compile alone.
+// Compiles the kos_* C-facing headers it includes as C with the real flags. Rewriting it as C++,
+// or including a C++-only header, leaves the C claim those headers make resting on
+// check_c_headers.sh's standalone compile alone.
 
 #include <stdbool.h>
 

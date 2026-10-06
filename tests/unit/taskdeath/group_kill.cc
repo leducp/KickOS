@@ -5,11 +5,12 @@
 //
 // Three claims, and only one of them is a counter:
 //   * the SCOPE boundary. A FAULT ends the whole group, because siblings share the address
-//     space the faulting thread was writing and no caller is watching a fault. Every death
-//     a caller asked for ends one thread; the caller that wants the group has kos_task_kill
-//     and kos_task_slay, which cancel every member themselves. Both directions are
-//     asserted: a boundary tested one way passes with the group cancel deleted, and tested
-//     the other way passes with it unconditional.
+//     space the faulting thread was writing and no caller is watching a fault, and so does the
+//     entry's death by any cause; either slays every other member. A non-entry member's
+//     cancel ends that member alone; the caller that wants the group has kos_task_kill and
+//     kos_task_slay, which cancel every member themselves. Both directions are asserted: a
+//     boundary tested one way passes with the group cancel deleted, and tested the other way
+//     passes with it unconditional.
 //   * the REACH of a cancel. Every park has to end, whatever the primitive under it, or a
 //     group kill is only a kill of the threads that happened to park somewhere cancellable.
 //   * the ORDER of a member's death against its peers'. Asserted through the fixture's
@@ -98,9 +99,9 @@ namespace kickos
             EXPECT_EQ(task_member_count(group), 1u) << "the group outlives the member that left";
         }
 
-        // A COOPERATIVE KILL is aimed at ONE thread and takes nobody else: kos_task_kill is
-        // the verb for the group and marks every member itself, so propagating here would make
-        // a single-thread kill unexpressible.
+        // A COOPERATIVE KILL of a member other than the entry ends that member alone:
+        // kos_task_kill is the verb for the group and marks every member itself, so propagating
+        // here would make a single-thread kill unexpressible.
         TEST_F(TaskDeath, a_cooperative_kill_spares_its_peers)
         {
             Task* const group = task(0);
@@ -120,7 +121,7 @@ namespace kickos
             EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and leaves them parked";
         }
 
-        // A SLAY is aimed at ONE named thread and takes nobody else. kos_thread_slay and
+        // A SLAY of a member other than the entry ends that member alone. kos_thread_slay and
         // kos_task_slay are two syscalls, and the second cancels every member itself; making
         // a member's slay reach the group would collapse them into one and leave "stop this
         // worker" unexpressible by its own parent.
@@ -144,8 +145,8 @@ namespace kickos
         }
 
         // A FAULT ends the group, and this is the fault-isolation property: the faulting
-        // thread's siblings share the address space it was writing when it died. Cooperative,
-        // so a peer keeps the window it holds long enough to quiet its device.
+        // thread's siblings share the address space it was writing when it died. Each is slain,
+        // where a creator holds the task as much as where none does.
         TEST_F(TaskDeath, a_fault_ends_the_whole_task)
         {
             Task* const group = task(0);
@@ -159,9 +160,92 @@ namespace kickos
 
             run_exit_faulted(0);
 
-            EXPECT_EQ(peer->cancel_kind, CANCEL_KILL)
-                << "a contained fault ends the group it was contained to";
+            EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY)
+                << "a contained fault slays the group it was contained to";
             EXPECT_NE(peer->state, ThreadState::BLOCKED) << "and the park ends";
+        }
+
+        // A fault by a thread already cancelled still ends its task: the task takes no member
+        // from there on, which is what the spawn path asks, but the cancel was the canceller's
+        // doing, so the fault's code is not the task's status.
+        TEST_F(TaskDeath, a_cancelled_faulter_ends_the_task_without_a_status)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current[kickos_kernel_core()] = c;
+            c->cancel_kind = CANCEL_KILL;
+            int32_t const before = group->exit_status;
+
+            run_exit_faulted(KOS_EXIT_FAULT);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY) << "the group is slain";
+            EXPECT_EQ(group->exit_status, before) << "and the fault's code is not its status";
+            EXPECT_TRUE(task_ended(group)) << "but the task has ended, so a spawn is refused";
+        }
+
+        // The ENTRY's own exit ends the task as a process ends when main returns: a peer
+        // running no system call, READY here and parked nowhere, is slain, its next resume
+        // claimed, and the status the entry exited with is latched.
+        TEST_F(TaskDeath, an_entry_exit_slays_a_running_peer_and_latches_its_status)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            c->task_entry = true;
+            kernel().current[kickos_kernel_core()] = c;
+
+            run_exit(5);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY)
+                << "the peer is slain, its creator holding the task";
+            EXPECT_TRUE(thread_slay_claim_pending(peer))
+                << "so it runs no further instruction of its own";
+            EXPECT_TRUE(task_ended(group));
+            EXPECT_EQ(group->exit_status, 5) << "the entry's code is the task's status";
+        }
+
+        // A cancelled ENTRY ends its task as its return would: the peer is slain, and the task
+        // answers KOS_EXIT_CANCELLED, the cancel being the canceller's doing.
+        namespace
+        {
+            void expect_a_cancelled_entry_ends_the_task(uint8_t kind)
+            {
+                Task* const group = task(0);
+                Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+                Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+                join_task(c, group);
+                join_task(peer, group);
+                Semaphore* const s = semaphore(nullptr);
+                park_sem_waiter(peer, s);
+                c->task_entry = true;
+                c->cancel_kind = kind;
+                kernel().current[kickos_kernel_core()] = c;
+
+                run_exit(0);
+
+                EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY) << "the entry's death slays the group";
+                EXPECT_NE(peer->state, ThreadState::BLOCKED) << "and the peer's park ends";
+                EXPECT_TRUE(task_ended(group)) << "the task has ended, so a spawn is refused";
+                EXPECT_EQ(group->exit_status, KOS_EXIT_CANCELLED)
+                    << "a cancelled entry's code is not the task's status";
+            }
+        }
+
+        TEST_F(TaskDeath, a_killed_entry_ends_the_task)
+        {
+            expect_a_cancelled_entry_ends_the_task(CANCEL_KILL);
+        }
+
+        TEST_F(TaskDeath, a_slain_entry_ends_the_task)
+        {
+            expect_a_cancelled_entry_ends_the_task(CANCEL_SLAY);
         }
 
         // --- the REACH of the cancel ---------------------------------------------------
@@ -281,9 +365,9 @@ namespace kickos
 
         // ORDER, and this is the arm a counter cannot replace. The peer OUTRANKS the dying
         // thread, so the dying guard admits its wake and the switch lands before the rest of
-        // the exit, the console reclaim being the next step that leaves a mark. Moving the
-        // group cancel after the capability sweep reorders this string, and so does a guard
-        // that suppresses the wake.
+        // the exit, the console reclaim being the next step that leaves a mark; the switch
+        // redirects the slain peer into its own exit. Moving the group cancel after the
+        // capability sweep reorders this string, and so does a guard that suppresses the wake.
         TEST_F(TaskDeath, a_higher_priority_peer_is_switched_to_before_the_exit_completes)
         {
             Task* const group = task(0);
@@ -298,8 +382,8 @@ namespace kickos
 
             run_exit_faulted(0);
 
-            EXPECT_STREQ(trace(), "switch10>11 reclaim")
-                << "the cancelled peer runs before the rest of the exit";
+            EXPECT_STREQ(trace(), "redirect11 switch10>11 reclaim")
+                << "the slain peer runs its exit before the rest of this one";
         }
 
         // The other side of the same guard, and the reason the cancel is safe where it sits: a
@@ -321,8 +405,8 @@ namespace kickos
 
             run_exit_faulted(0);
 
-            EXPECT_STREQ(trace(), "reclaim switch10>11")
-                << "the exit completes first, then hands over once";
+            EXPECT_STREQ(trace(), "reclaim redirect11 switch10>11")
+                << "the exit completes first, then hands over once, into the peer's exit";
         }
 
         // The dying test in thread_cancel is the ONLY thing sparing a thread from its own
@@ -341,7 +425,7 @@ namespace kickos
             kernel().current[kickos_kernel_core()] = peer;
 
             IrqLock lock;
-            task_cancel_group(group, CANCEL_KILL);
+            task_cancel_group(group);
 
             EXPECT_EQ(c->cancel_kind, CANCEL_NONE)
                 << "a thread already running its own exit is left alone";
@@ -430,8 +514,8 @@ namespace kickos
             kernel().current[kickos_kernel_core()] = stranger;
 
             IrqLock lock;
-            task_cancel_group(empty, CANCEL_KILL);
-            task_cancel_group(nullptr, CANCEL_KILL);
+            task_cancel_group(empty);
+            task_cancel_group(nullptr);
 
             EXPECT_EQ(stranger->cancel_kind, CANCEL_NONE)
                 << "a thread in no task at all is not a member";

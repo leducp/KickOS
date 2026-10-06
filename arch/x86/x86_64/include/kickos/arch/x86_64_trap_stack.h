@@ -34,7 +34,7 @@
  * frames than the host compilers the figures below were first measured under. Where it did, the
  * class is reserved at a round figure above its measurement, frame size being no constraint on
  * x86 (maintainer, 2026-09-30). On qemu-x86_64-bench it measures IRQ, IRQK and IST 456, EXITK and
- * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1184, RET 1152, SYSK 2304
+ * EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672, EXITK 1200, RET 1168, SYSK 2336
  * and PANIC 608. */
 
 /* struct trap_frame, the frame every entry builds from a 16-byte-aligned top: five hardware
@@ -60,19 +60,17 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 760
 
-/* The ring 3 syscall on the block. 1800 on qemu-x86_64-bench under g++ 13, a spawn seeding the
- * new task's space:
- *   syscall_dispatch[112] -> thread_create_call[32] -> spawn_masked[464] -> thread_create[128]
- *   -> task_for[32] -> domain_for[64] -> claim_slot[32] -> aspace_image_seed[112]
- *   -> arch_aspace_map[96] -> map_into[112] x5 -> kickos_frame_alloc[16] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1800
+/* The ring 3 syscall on the block. 1832 on qemu-x86_64, a spawn seeding the new task's space:
+ *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[480] -> thread_create[128]
+ *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
+ *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1832
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1800 on
- * qemu-x86_64-bench under g++ 13, down SYSK's chain. */
+/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1832 on
+ * qemu-x86_64, down SYSK's chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1856
 
-/* The same dispatch through the switch: 1800 on qemu-x86_64-bench under g++ 13, down SYSPRIV's
- * chain. */
+/* The same dispatch through the switch: 1832 on qemu-x86_64, down SYSPRIV's chain. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1856
 
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
@@ -107,7 +105,7 @@
 
 /* The SMP doorbell, lock wait and route service lengthen reachable call chains. These bounds
  * cover qemu-x86_64-smp12's callgraph after every reachable indirect site was bound, the
- * deepest of the four SMP presets: SYSK's spawn 2296 under g++ 13, IRQ
+ * deepest of the four SMP presets: SYSK's spawn 2336, IRQ
  * and IST 592 and PANIC 536 under g++ 13, EXITK's teardown 1080 and RET 1064 under both. */
 #if KICKOS_KERNEL_CORES > 1
 #undef KICKOS_X86_64_TRAP_DEPTH_IRQ
@@ -116,11 +114,12 @@
 #define KICKOS_X86_64_TRAP_NEST 952
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK, SYSPRIV and SYSPRIVSW: 2296 on qemu-x86_64-smp12 under g++ 13, spawn_masked[480]. */
+/* SYSK, SYSPRIV and SYSPRIVSW measure 2336 on qemu-x86_64-smp12, a spawn seeding the new task's
+ * space. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2304
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2368
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2304
+#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2368
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK

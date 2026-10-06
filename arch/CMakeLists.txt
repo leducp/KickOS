@@ -130,8 +130,7 @@ endif()
 if(KICKOS_ARCH_LINK_LIBRARIES)
   target_link_libraries(kickos_arch_${KICKOS_ARCH} PUBLIC ${KICKOS_ARCH_LINK_LIBRARIES})
 endif()
-install(TARGETS kickos_arch_${KICKOS_ARCH} EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+kickos_export_targets(kickos_arch_${KICKOS_ARCH})
 set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
 
 # kickos_system sits above the arch layer: include its headers, never link it.
@@ -381,8 +380,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       "${KICKOS_CHIP_FAMILY_DIR}"
       "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
   endif()
-  install(TARGETS kickos_chip_${KICKOS_CHIP} EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  kickos_export_targets(kickos_chip_${KICKOS_CHIP})
 
   # --- Class-driver leaf -------------------------------------------------------
   # <family>/chip/<chip>/class/ holds register logic shared by the kernel and an unprivileged
@@ -403,8 +401,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       PRIVATE
         "${CMAKE_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
-    install(TARGETS kickos_class_${KICKOS_CHIP} EXPORT KickOSTargets
-            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+    kickos_export_targets(kickos_class_${KICKOS_CHIP})
   endif()
 
   # boards/<board>/<chip>.ld overrides the chip's script. It keeps the <chip>.ld name so the
@@ -494,11 +491,6 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     if(DEFINED KICKOS_KERNEL_DATA_RESERVE)
       list(APPEND _ld_defs -DKICKOS_KERNEL_DATA_RESERVE=${KICKOS_KERNEL_DATA_RESERVE})
     endif()
-    # The .userheap carved before the thread arena. Inert on an MPU chip, whose heap is the
-    # .appdata window pad.
-    if(DEFINED KICKOS_USER_HEAP_SIZE)
-      list(APPEND _ld_defs -DKICKOS_USER_HEAP_SIZE=${KICKOS_USER_HEAP_SIZE})
-    endif()
     # Opt-in link-time heap floor: the .ld asserts at least this many bytes are available.
     # Undefined by default, so a too-small heap is a runtime bump failure, not a link error.
     if(DEFINED KICKOS_HEAP_MIN)
@@ -515,6 +507,16 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # Unset on the sim, which has no KICKOS_CHIP and never enters this block.
     set_property(GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG "${_mpu_min_region_cfg}")
     set_property(GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG "${_mpu_region_pow2_cfg}")
+    # The static regions arch_domain_static_regions seats in root's region set: the code its
+    # script bounds, and the .appdata window the script carves only under KICKOS_HAVE_MPU.
+    set(_root_statics 0)
+    if("${_ld_sections_txt}" MATCHES "__kickos_code_start *=")
+      math(EXPR _root_statics "${_root_statics} + 1")
+    endif()
+    if(KICKOS_HAVE_MPU AND "${_ld_sections_txt}" MATCHES "__kickos_appdata_start *=")
+      math(EXPR _root_statics "${_root_statics} + 1")
+    endif()
+    set_property(GLOBAL PROPERTY KICKOS_ROOT_STATIC_REGIONS "${_root_statics}")
     # -MD/DEPFILE and not a longer DEPENDS list: a chip script may include headers of its own
     # beside the two common ones, and cpp is what knows which.
     add_custom_command(

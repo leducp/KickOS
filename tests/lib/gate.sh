@@ -528,6 +528,74 @@ package_defs() { # <compile_commands.json> <outfile>
       either the exported target lost its usage requirements or $1 is not a compile database"
 }
 
+# The names a user links, configured out of tree against the installed package by
+# tests/lib/package_names/, handed the build's own provider members, then the link line of each
+# image it defines read without building: no member reaches it by a bare -l, and where the
+# package ships the C++ runtime object every full-C++ image links it.
+package_names() { # <kickos-build> <kickos-source> <cmake> <prefix> <scratch dir> [<cmake arg>...]
+    _pn_build="$1"
+    _pn_src="$2"
+    _pn_cmake="$3"
+    _pn_prefix="$4"
+    _pn_dir="$5"
+    shift 5
+    _pn_providers="$(sed -n 's/^KICKOS_GROUP_PROVIDERS:INTERNAL=//p' "$_pn_build/CMakeCache.txt")"
+    [ -n "$_pn_providers" ] || fail "$_pn_build/CMakeCache.txt states no KICKOS_GROUP_PROVIDERS"
+    "$_pn_cmake" -S "$_pn_src/tests/lib/package_names" -B "$_pn_dir" -G Ninja \
+        -DCMAKE_PREFIX_PATH="$_pn_prefix" -DKICKOS_EXPECT_PROVIDERS="$_pn_providers" "$@" \
+        >"$_pn_dir.log" 2>&1 || {
+        sed -n '/CMake Error/,$p' "$_pn_dir.log" | sed -n '1,20p' >&2
+        fail "an out-of-tree configure does not find the package's KickOS:: names (see above)"
+    }
+    _pn_ninja="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$_pn_dir/CMakeCache.txt")"
+    [ -x "$_pn_ninja" ] || fail "the probe's cache names no usable ninja ($_pn_ninja)"
+    _pn_rt="$(find "$_pn_prefix" -name 'vterminate.*' | head -n 1)"
+    require_nonempty "$_pn_dir/link_targets" "the probe defined no image to read a link line of"
+    while read -r _pn_t; do
+        "$_pn_ninja" -C "$_pn_dir" -t commands "$_pn_t" >"$_pn_dir.$_pn_t" \
+            || fail "ninja lists no commands for $_pn_t"
+        _pn_link="$(tail -n 1 "$_pn_dir.$_pn_t")"
+        [ -n "$_pn_link" ] || fail "$_pn_t has no link line"
+        case "$_pn_link" in
+            *-lKickOS::*|*-lkickos_*)
+                fail "the link line of $_pn_t names a member by a bare -l: $_pn_link" ;;
+        esac
+        if [ -n "$_pn_rt" ]; then
+            case "$_pn_link" in
+                *vterminate*) ;;
+                *) fail "the link line of $_pn_t carries no C++ runtime object: $_pn_link" ;;
+            esac
+        fi
+    done < "$_pn_dir/link_targets"
+}
+
+# PACKAGE_TC: the cross toolchain file an installed package ships for a consumer to name,
+# whichever family it was built for. A package also ships the fragments that file include()s,
+# and they are toolchain-*.cmake too; the one a consumer names is the one no other shipped file
+# includes, derived so a new fragment does not have to be named here as well.
+package_toolchain() { # <prefix>
+    PACKAGE_TC=""
+    for _pt_tc in "$1"/lib/cmake/KickOS/toolchain-*.cmake; do
+        [ -f "$_pt_tc" ] || continue
+        _pt_bn="$(basename "$_pt_tc")"
+        _pt_fragment=0
+        for _pt_o in "$1"/lib/cmake/KickOS/toolchain-*.cmake; do
+            if [ "$_pt_o" != "$_pt_tc" ] && grep -Fq '${CMAKE_CURRENT_LIST_DIR}/'"$_pt_bn" "$_pt_o"; then
+                _pt_fragment=1
+            fi
+        done
+        if [ "$_pt_fragment" -eq 1 ]; then
+            continue
+        fi
+        if [ -n "$PACKAGE_TC" ]; then
+            fail "package ships several cross toolchain files ($(basename "$PACKAGE_TC"), \
+$_pt_bn); a consumer cannot tell which one configures it"
+        fi
+        PACKAGE_TC="$_pt_tc"
+    done
+    [ -n "$PACKAGE_TC" ] || fail "shipped cross toolchain file missing from package"
+}
+
 # The export manifest a package installs, the descriptions it names and the board's default
 # composition: each the build's own copy, and the host tool the package installs run from the
 # prefix on the installed manifest and the installed default.
@@ -560,6 +628,44 @@ installed_manifest() { # <kickos-build> <kickos-source> <prefix>
         (cd "$2" && tests/static/check_platform.sh "$1" installed "$_im_tool" "$_im_found") \
             || fail "the installed tool refuses the installed manifest or a description it names (see above)"
     fi
+}
+
+# IMAGE: <target> of the consumer project at <project-dir>, configured as a user configures one,
+# against <kickos-build>'s package installed in $TMP/prefix and with the toolchain file the
+# package ships, and built under $TMP/<target>: a PE32+ UEFI application where the package
+# builds one, the ELF otherwise. Each <cmake-arg> goes to the configure. Needs scratch_dir.
+# A second call in one run reuses the package already installed in $TMP/prefix.
+package_image() { # <kickos-build> <cmake> <project-dir> <target> [<cmake-arg>...]
+    _pi_build="$1"
+    _pi_cmake="$2"
+    _pi_project="$3"
+    _pi_target="$4"
+    shift 4
+    if [ ! -d "$TMP/prefix" ]; then
+        "$_pi_cmake" --install "$_pi_build" --prefix "$TMP/prefix" >/dev/null \
+            || fail "cmake --install failed"
+    fi
+    package_toolchain "$TMP/prefix"
+    KICKOS_TOOLCHAIN=$(sed -n 's/^KICKOS_TOOLCHAIN:PATH=//p' "$_pi_build/CMakeCache.txt")
+    [ -n "$KICKOS_TOOLCHAIN" ] || fail "the build's cache names no KICKOS_TOOLCHAIN"
+    export KICKOS_TOOLCHAIN
+    _pi_ninja="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$_pi_build/CMakeCache.txt")"
+    _pi_dir="$TMP/$_pi_target"
+    "$_pi_cmake" -S "$_pi_project" -B "$_pi_dir" -G Ninja -DCMAKE_MAKE_PROGRAM="$_pi_ninja" \
+        -DCMAKE_TOOLCHAIN_FILE="$PACKAGE_TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" "$@" \
+        >"$_pi_dir.configure.log" 2>&1 || {
+        sed -n '/CMake Error/,$p' "$_pi_dir.configure.log" | sed -n '1,30p' >&2
+        fail "$_pi_project does not configure against the package (see above)"
+    }
+    "$_pi_cmake" --build "$_pi_dir" >"$_pi_dir.build.log" 2>&1 || {
+        sed -n '1,30p' "$_pi_dir.build.log" >&2
+        fail "$_pi_project does not build (see above)"
+    }
+    IMAGE="$_pi_dir/$_pi_target"
+    if [ -f "$IMAGE.efi" ]; then
+        IMAGE="$IMAGE.efi"
+    fi
+    [ -f "$IMAGE" ] || fail "the build of $_pi_project produced no $_pi_target image"
 }
 
 # How an image is handed to the emulator, per board, into KOS_BOOT_ARGS as a word list the
@@ -728,10 +834,10 @@ run_image() {
 # an image that stopped early are different findings.
 #
 # KOS_POLL_UNTIL names a shell function the poll re-evaluates on every tick beside the
-# patterns, satisfied when it returns 0; the poll stops when the patterns and the function
-# are both satisfied. POLL_UNTIL_OK carries its final verdict separately from POLL_OK: a
-# caller whose bound expires has to say which of the two it was still waiting for, and the
-# function is what knows what is outstanding.
+# patterns, handed the console log so far as its argument, satisfied when it returns 0; the
+# poll stops when the patterns and the function are both satisfied. POLL_UNTIL_OK carries its
+# final verdict separately from POLL_OK: a caller whose bound expires has to say which of the
+# two it was still waiting for, and the function is what knows what is outstanding.
 #
 # A caller's function is called in this shell, so what it records stays readable after the
 # poll; it must not exit, a poll tick being no place to reach a verdict.
@@ -765,7 +871,7 @@ poll_image() { # <elf> <ere>...
     # mpu_fault.cmake). At twenty ctest kills those at 15 instead, and a reported "the poll
     # ran out" becomes a timeout carrying no finding. Raise the registered bounds first.
     while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
-        if _poll_matched "$_log" "$@" && _poll_until; then
+        if _poll_matched "$_log" "$@" && _poll_until "$_log"; then
             break
         fi
         if ! kill -0 "$_qpid" 2>/dev/null; then             # the image exited on its own
@@ -786,7 +892,7 @@ poll_image() { # <elf> <ere>...
         POLL_OK=1
     fi
     POLL_UNTIL_OK=0
-    if _poll_until; then
+    if _poll_until "$_log"; then
         POLL_UNTIL_OK=1
     fi
     OUT="$(tr -d '\r' < "$_log")"
@@ -806,11 +912,11 @@ _poll_matched() { # <log> <ere>...
 
 # An unset KOS_POLL_UNTIL is satisfied, so a caller that names no function polls on the
 # patterns alone.
-_poll_until() {
+_poll_until() { # <log>
     if [ -z "${KOS_POLL_UNTIL:-}" ]; then
         return 0
     fi
-    "$KOS_POLL_UNTIL"
+    "$KOS_POLL_UNTIL" "$1"
 }
 
 # grep OUT as a predicate, with `set -e` kept out of the way.
@@ -848,6 +954,9 @@ has_e() { printf '%s\n' "$OUT" | grep -qE "$1"; }
 # which is why the tolerance survives; an unrelated wide line elsewhere in the capture no longer
 # widens the bound, which is the direction that let a presence check pass on bytes it stitched
 # together from somewhere else.
+#
+# Across two lines the second must begin with the literal's remaining tail; a third writer's
+# bytes inside that tail refuse the match.
 KOS_WIRE_SLACK=64
 
 wire_has() { # <literal>; reads OUT, sets WIRE_SPAN
@@ -894,22 +1003,46 @@ wire_has() { # <literal>; reads OUT, sets WIRE_SPAN
                 }
                 return best
             }
+            # The shortest span holding <pat> across <a> and the line after it, <b>, which opens
+            # with the rest of <pat>, 0 for none.
+            function splitspan(a, b, pat,    m, j, k, i, s, best) {
+                m = length(pat)
+                best = 0
+                for (j = 1; j < m; j++) {
+                    if (substr(b, 1, j) != substr(pat, m - j + 1, j)) { continue }
+                    k = m - j
+                    i = length(a)
+                    while (i >= 1 && k >= 1) {
+                        if (substr(a, i, 1) == substr(pat, k, 1)) { k-- }
+                        i--
+                    }
+                    if (k > 0) { continue }
+                    s = length(a) - i + 1 + j
+                    if (best == 0 || s < best) { best = s }
+                }
+                return best
+            }
+            function bound(wide) {
+                if (m + wide + 1 > m + slack + 1) { return m + wide + 1 }
+                return m + slack + 1
+            }
             { line[NR] = $0 }
             END {
                 pat = ENVIRON["KOS_WIRE_PAT"]
                 m = length(pat)
                 for (k = 1; k <= NR; k++) {
-                    w = line[k]
                     wide = length(line[k])
-                    if (k < NR) {
-                        w = w "\n" line[k + 1]
-                        if (length(line[k + 1]) > wide) { wide = length(line[k + 1]) }
+                    if (reaches(line[k], pat) != 0) {
+                        s = minspan(line[k], pat)
+                        if (s > 0 && s <= bound(wide)) {
+                            print s
+                            exit
+                        }
                     }
-                    lim = m + slack + 1
-                    if (m + wide + 1 > lim) { lim = m + wide + 1 }
-                    if (reaches(w, pat) == 0) { continue }
-                    s = minspan(w, pat)
-                    if (s > 0 && s <= lim) {
+                    if (k == NR) { continue }
+                    if (length(line[k + 1]) > wide) { wide = length(line[k + 1]) }
+                    s = splitspan(line[k], line[k + 1], pat)
+                    if (s > 0 && s <= bound(wide)) {
                         print s
                         exit
                     }
@@ -952,6 +1085,119 @@ require_on_wire() { # <literal> <prose>
     fi
     echo "   TOLERATED A SPLIT: \"$1\" reached the wire across $WIRE_SPAN bytes, broken by a
    kernel status line, which two harts on one unlocked device wire may do at any byte"
+}
+
+# The value of <name> in BOARD_CFG, the build's generated board_config.h, which the caller sets.
+knob() { # <name>
+    require_literal "${BOARD_CFG:-}" "BOARD_CFG"
+    _kn="$(awk -v k="$1" '$1 == "#define" && $2 == k { print $3; exit }' "$BOARD_CFG")"
+    [ -n "$_kn" ] || fail "$BOARD_CFG states no $1"
+    printf '%s' "$_kn"
+}
+
+# AT: the number of the first line of OUT at or after <from> that is <literal>, or with `part`
+# carries it, or above one core (CORES, which the caller sets) carries its bytes in order across
+# that line and the next. Fails naming <what>.
+#
+# A literal ending in a digit is refused: across a split a foreign line ending in that digit
+# completes it, `exits: served 3` out of `exits: served 2` and a foreign `... 3`. A line that
+# carries a number ends in a token only its own writer prints.
+AT=0
+after() { # <from> <literal> <what> [part]
+    require_literal "$2" "the literal sought after line $1"
+    case "$2" in
+        *[0-9])
+            fail "after: '$2' ends in a digit, which a foreign line completes across a split"
+            ;;
+    esac
+    AT="$(printf '%s\n' "$OUT" | KOS_AFTER_LIT="$2" awk -v from="$1" -v part="${4:-}" '
+        BEGIN { lit = ENVIRON["KOS_AFTER_LIT"] }
+        NR >= from && ($0 == lit || (part != "" && index($0, lit) > 0)) { print NR; exit }')"
+    if [ -n "$AT" ]; then
+        return
+    fi
+    if [ "${CORES:-1}" -gt 1 ]; then
+        _af_all="$OUT"
+        _af_n="$(printf '%s\n' "$_af_all" | wc -l)"
+        _af_k="$1"
+        while [ "$_af_k" -le "$_af_n" ]; do
+            OUT="$(printf '%s\n' "$_af_all" | sed -n "${_af_k},$((_af_k + 1))p")"
+            if wire_has "$2"; then
+                OUT="$_af_all"
+                AT="$_af_k"
+                echo "   TOLERATED A SPLIT: \"$2\" reached the wire across $WIRE_SPAN bytes at line $AT"
+                return
+            fi
+            _af_k=$((_af_k + 1))
+        done
+        OUT="$_af_all"
+    fi
+    fail "no $3 at or after line $1 of the capture"
+}
+
+# Whether every <literal> has reached the console log <log>, whole or, above one core (CORES),
+# through wire_has. For a poll's until-function: it only stops the poll, and the verdict is
+# reached on the whole capture after it.
+log_holds() { # <log> <literal>...
+    _lh_log="$1"
+    shift
+    _lh_keep="${OUT:-}"
+    OUT="$(tr -d '\r' < "$_lh_log")"
+    for _lh in "$@"; do
+        if printf '%s\n' "$OUT" | grep -qF -- "$_lh"; then
+            continue
+        fi
+        if [ "${CORES:-1}" -gt 1 ] && wire_has "$_lh"; then
+            continue
+        fi
+        OUT="$_lh_keep"
+        return 1
+    done
+    OUT="$_lh_keep"
+    return 0
+}
+
+# The init's depth on root's stack, from the figure tests/integration/composition_witness/
+# root_depth.cc prints at each of root's waits, the deepest yet. The last one is the run's, so
+# the last line naming a figure must parse; an earlier one a split left unreadable is superseded.
+# Passes on KICKOS_MIN_STACK_SIZE left above the thread-local block, read through knob.
+require_root_depth() {
+    _rd_size="$(knob KICKOS_ROOT_STACK_SIZE)"
+    _rd_margin="$(knob KICKOS_MIN_STACK_SIZE)"
+    _rd_last="$(printf '%s\n' "$OUT" | grep -F 'stack high water' | tail -n 1)"
+    [ -n "$_rd_last" ] || fail "root's stack was never scanned"
+    _rd_figures="$(printf '%s\n' "$_rd_last" \
+        | sed -n 's/^root: stack high water \([0-9][0-9]*\) of [0-9][0-9]*, \([0-9][0-9]*\) free above the thread-local block$/\1 \2/p')"
+    [ -n "$_rd_figures" ] || fail "root's last figure reached the wire unreadable: $_rd_last"
+    # shellcheck disable=SC2086
+    set -- $_rd_figures
+    [ "$2" -ge "$_rd_margin" ] || fail "the init reached $1 of root's $_rd_size bytes, leaving $2 \
+free above the thread-local block, under KICKOS_MIN_STACK_SIZE $_rd_margin"
+    echo "PASS: the init reached $1 of root's $_rd_size bytes, leaving $2 free above the thread-local block"
+}
+
+# Each packaged driver the composition <system> names has printed its up line, whole, before line
+# <before> of OUT. A driver with no up line here is refused rather than passed over.
+require_drivers_up() { # <system> <before>
+    [ -f "$1" ] || fail "no composition at $1"
+    for _du in $(sed -n 's/^ *driver: *\([a-z0-9_]*\).*$/\1/p' "$1"); do
+        case "$_du" in
+            xmcuartirq) _du_line='[xmcuartirq] device up (IRQ TX)' ;;
+            xmcssc) _du_line='[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)' ;;
+            *) fail "no up line is known for packaged driver $_du" ;;
+        esac
+        after 1 "$_du_line" "up line of $_du"
+        [ "$AT" -lt "$2" ] || fail "$_du's up line, at line $AT, follows line $2"
+    done
+}
+
+# OUT: a silicon capture's last boot, from its last banner title on, CR stripped. A flash that
+# starts the image before the capture's own reset leaves an earlier boot ahead of it.
+capture_out() { # <log>
+    [ -s "$1" ] || fail "no capture at $1"
+    _co_at="$(tr -d '\r' < "$1" | awk '/^   KickOS [^ ]+  -  microkernel RTOS$/ || /^K [0-9]/ { at = NR } END { print at }')"
+    [ -n "$_co_at" ] || fail "$1 carries no banner, so no boot in it can be read"
+    OUT="$(tr -d '\r' < "$1" | sed -n "${_co_at},\$p")"
 }
 
 # A weak check by nature above one core, and it cannot be made otherwise: a shuffle hides text
@@ -1042,6 +1288,16 @@ literal_count() { # <text> <literal>
 count_literal() { # <literal>
     literal_count "$OUT" "$1"
     KOS_COUNT="$KOS_LITERAL_N"
+}
+
+# A capture over OUT carrying the producer's drop marker (<kickos/sys/emit.h>) is missing lines,
+# and fails as that rather than as the first line it lacks.
+require_console_whole() {
+    literal_count "$OUT" '# console dropped'
+    if [ "$KOS_LITERAL_N" -gt 0 ]; then
+        printf '%s\n' "$OUT" | grep -F -- '# console dropped' >&2
+        fail "the console dropped output ($KOS_LITERAL_N marker(s)): the capture is missing lines"
+    fi
 }
 
 # KOS_FIELD_N: occurrences of a record `<name>=<value>` in <text>, the value whole. A substring

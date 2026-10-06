@@ -123,7 +123,7 @@ namespace kickos
                 }
                 int const rc = aspace_window_map(domain_space(into), domain_ranges_mut(into), pa,
                                                  w.size, rights, type,
-                                                 static_cast<uint16_t>(slot + 1), donor);
+                                                 static_cast<uint16_t>(slot + 1), i, donor);
                 if (rc != 0)
                 {
                     return rc;
@@ -193,7 +193,7 @@ namespace kickos
                 {
                     return -KOS_EINVAL;
                 }
-                // One window per source base, so kos_window_addr names exactly one mapping.
+                // One window per source base: a list names a block once.
                 for (uint16_t j = 0; j < i; j++)
                 {
                     if (list[j].kind == KOS_WINDOW_MEMORY and list[j].base == w.base)
@@ -733,6 +733,12 @@ namespace kickos
             }
             task_sched_inherit(tk, spawner->task);
         }
+        // An ended task takes no member, live members or none: a restart is a new task.
+        if (task_ended(tk))
+        {
+            task_discard(tk);
+            return -KOS_EBUSY;
+        }
         // A priority inheritance boost is not bounded by this ceiling (sched::set_prio).
         if (p->prio > task_prio_ceiling(tk))
         {
@@ -817,6 +823,9 @@ namespace kickos
         attr.window_count = p->window_count;
         attr.task = tk;
         attr.spawner_tag = k.threads.kill_tag_of(spawner);
+        // The first member a non-member seats, which a task this spawn built always is.
+        attr.task_entry = tk != spawner->task
+                          and (p->task == KOS_TASK_NONE or task_member_count(tk) == 0);
 #if KICKOS_KERNEL_CORES > 1
         attr.core_mask = seated_cores;
 #endif
@@ -846,7 +855,9 @@ namespace kickos
             {
                 // A recycled block still holds the dead thread's locals, and the new thread's
                 // region covers it. arch_ram_alloc's blocks come out of .bss and are never
-                // freed, so only the free list can carry a former owner.
+                // freed, so only the free list can carry a former owner. Cleared under the
+                // spawn's one bracket: a gap here lets a slay claim this spawner's resume, and
+                // the block it popped would then never go back.
                 kmemset(stack, 0, KICKOS_USER_STACK_SIZE);
             }
             else
@@ -1158,6 +1169,35 @@ namespace kickos
         return task_sched_narrow(t, prio_ceiling, asked);
     }
 
+    int thread_set_priority(uintptr_t priority)
+    {
+        // prio indexes the ready lists and a 1u<<prio bitmap shift, as at spawn.
+        if (priority < KICKOS_PRIO_MIN or priority > KICKOS_PRIO_MAX)
+        {
+            return -KOS_EINVAL;
+        }
+        uint8_t const p = static_cast<uint8_t>(priority);
+        IrqLock lock;
+        Thread* const c = sched::current();
+        if (p > task_prio_ceiling(c->task))
+        {
+            return -KOS_EPERM;
+        }
+        c->base_prio = p;
+        // A boost the caller holds stays: the funnel answers the base or the boost above it.
+        uint8_t const was = c->prio;
+        uint8_t const now = thread_effective_prio(c);
+        if (now != was)
+        {
+            sched::set_prio(c, now);
+            if (now < was)
+            {
+                sched::reschedule();
+            }
+        }
+        return 0;
+    }
+
     // An empty group that exists before any of its threads, holding a domain built from this
     // grant. Only the creator may seat members into it or end it.
     int task_create_call(void* mem_base, size_t mem_size, uint32_t mem_attr,
@@ -1201,8 +1241,8 @@ namespace kickos
         return 0;
     }
 
-    // Cooperative as thread_kill is, so a member that never enters the kernel again is never
-    // reached. The members run their own exits, and the slot goes back when the last is gone.
+    // Every member is slain, a member running no system call included, and the slot goes back
+    // once the last member's sweep is done. Returns without waiting for that, as task_slay waits.
     int task_kill(kos_task_t task)
     {
         IrqLock lock;
@@ -1217,7 +1257,7 @@ namespace kickos
         }
         // The group cancel runs before the hold is dropped: dropping it first can free the
         // slot outright when the group is already empty, and `t` would then be a dangling name.
-        task_cancel_group(t, CANCEL_KILL);
+        task_cancel_group(t);
         task_drop_hold(t);
         return 0;
     }
@@ -1253,8 +1293,9 @@ namespace kickos
                 // its resume too.
                 return -KOS_EINVAL;
             }
-            // Already empty: nothing could wake a park here.
-            if (task_member_count(t) == 0)
+            // Already empty and swept: nothing could wake a park here. A member still sweeping
+            // wakes it at the end of its sweep.
+            if (task_member_count(t) == 0 and task_sweeping(t) == 0)
             {
                 task_drop_hold(t);
                 return 0;
@@ -1268,7 +1309,7 @@ namespace kickos
                 ktime_deadline_arm(c, timeout_us);
             }
             epoch = c->switch_count;
-            task_cancel_group(t, CANCEL_SLAY);
+            task_cancel_group(t);
             sched::reschedule();
         }
         wq_confirm_resume(c, epoch);

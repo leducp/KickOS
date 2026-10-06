@@ -167,6 +167,9 @@ namespace kickos
         // reader and releases nothing at zero. Fits the padding before quantum_ns; moving it
         // grows every TCB.
         uint8_t cap_irq_live = 0;
+        // This thread is its task's entry, the first member a non-member seated or the thread
+        // whose spawn built its implicit task: its exit ends the group (task_end). Set at spawn.
+        bool task_entry = false;
 
 #if KICKOS_KERNEL_CORES > 1
         // Allowed cores: one bit pins the thread, multiple bits allow migration.
@@ -406,7 +409,9 @@ namespace kickos
     }
 
     // deadline_ns onwards, minus the MPU set and the capability directory. RXv3 aligns
-    // uint64_t to 4 and so spends less padding here than every other 32-bit target.
+    // uint64_t to 4 and so spends less padding here than every other 32-bit target. The
+    // figures include Thread::task_entry, the eighth byte of the run that starts at `prio`,
+    // which fills the byte of padding before quantum_ns (or affinity) on every target.
     constexpr size_t thread_scalar_bytes()
     {
         size_t bytes = 116 - sizeof(size_t);
@@ -609,6 +614,8 @@ namespace kickos
         // the free list (harvest at reclaim). false for caller-owned and for the
         // arena-allocated idle/root stacks.
         bool kstack_owned = false;
+        // The new thread is its task's entry (Thread::task_entry).
+        bool task_entry = false;
         // Pre-reserved capability run (cap_slab_attach): an exhausted slab must fail the spawn
         // BEFORE anything is built. An empty directory is legal and means the thread holds no
         // capabilities. The free-list head and the seated capacity travel with it: a run seated

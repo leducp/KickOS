@@ -106,7 +106,7 @@ namespace kickos
     //
     // Idempotent, and a no-op on a thread that is already dead or dying. Caller holds IrqLock.
     void thread_cancel_kind(Thread* t, uint8_t kind);
-    // thread_cancel_kind(t, CANCEL_KILL): the cooperative form, and the only one before slay.
+    // thread_cancel_kind(t, CANCEL_KILL): kos_thread_kill's cooperative form.
     void thread_cancel(Thread* t);
 }
 

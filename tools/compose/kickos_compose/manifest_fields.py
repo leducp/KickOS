@@ -7,12 +7,13 @@
 import re
 
 # Every pool and per-task budget, by name rather than by list, so a new knob is exported where it
-# is declared. KICKOS_MAX_THREAD_WINDOWS is the protection unit's region budget and sits there.
-POOL = re.compile(r"KICKOS_(MAX_[A-Z0-9_]+|TASK_[A-Z0-9_]+_BUDGET|CAP_TABLE_SUPPLY)")
+# is declared, and the two record tables a reservation spends. KICKOS_MAX_THREAD_WINDOWS is the
+# protection unit's region budget and sits there.
+POOL = re.compile(r"KICKOS_(MAX_[A-Z0-9_]+|TASK_[A-Z0-9_]+_BUDGET|CAP_TABLE_SUPPLY|RAM_OWNER_SLOTS|ASPACE_RANGES)")
 WINDOWS_KNOB = "KICKOS_MAX_THREAD_WINDOWS"
 
 DRIVER_FIELDS = ("windows", "lines", "threads", "endpoints", "notifications", "block", "posture",
-                 "barrier", "console", "start", "receiver")
+                 "barrier", "console", "start", "receiver", "client")
 
 
 def is_pool(name):

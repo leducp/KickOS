@@ -86,7 +86,7 @@ One buffer carries the request out and receives the reply back (**in-place**): t
 request is fully copied at rendezvous before the caller parks, so overwriting `buf` with
 the reply is safe. A client wanting split tx/rx copies locally.
 
-- Requires `CAP_SIGNAL` on `ep` (a `CAP_ENDPOINT` cap) -- same right as `kos_send`.
+- Requires `CAP_SIGNAL` on `ep` (a `CAP_ENDPOINT` cap), the same right as `kos_send`.
 - `send_len > KOS_EP_MSG_MAX` (256) -> `-KOS_EINVAL` (never clamped). `recv_cap` above the
   bound is clamped (harmless). Reply truncation into `recv_cap` follows datagram semantics
   (not an error).
@@ -103,8 +103,8 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EBADF` | bad endpoint cap |
 | `-KOS_EACCES` | missing `CAP_SIGNAL` |
 | `-KOS_EPERM` | no caller context |
-| `-KOS_EAGAIN` | no receiver (`recv_holders == 0`) while a holder of `KOS_CAP_HANDOUT` remains, so a retry may meet one |
-| `-KOS_ECONNREFUSED` | no receiver and no holder of `KOS_CAP_HANDOUT`: nothing can serve the endpoint again |
+| `-KOS_EAGAIN` | no receiver while a holder of `CAP_WAIT` or `KOS_CAP_HANDOUT` remains, so a receiver may come and a retry may meet it. No receiver: none holds `CAP_WAIT` (`recv_holders == 0`), or the endpoint is vacated (`Endpoint::vacated`): its last receiver left and none has waited on it since, as a server a handout seated has not yet first received |
+| `-KOS_ECONNREFUSED` | no receiver and no holder of `CAP_WAIT` or `KOS_CAP_HANDOUT`: nothing can serve the endpoint again |
 | `-KOS_EPIPE` | the server died holding the request, mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOTSUP` | the receiver took an info-less recv and cannot host a call |
@@ -112,14 +112,15 @@ the reply is safe. A client wanting split tx/rx copies locally.
 Both buffer bound-checks run up front, in caller context, once. Two paths:
 
 - **Fastpath** (a receiver is already parked in recv): under one `IrqLock`, PROBE before
-  popping -- reject an info-less receiver (`ipc.badge_out == 0` -> `ENOTSUP`) or a full
+  popping: reject an info-less receiver (`ipc.badge_out == 0` -> `ENOTSUP`) or a full
   receiver table (`EMFILE`) with NO side effects, THEN pop, copy the request into the
   receiver's buffer, mint the reply cap into the receiver's table, deliver its
   `kos_recv_info`, repurpose the caller's `ipc` to the reply target, park the caller
   queue-less in `CALL_REPLY_WAIT`, donate (D1), and wake the server (switches to it now).
-- **Slowpath** (no receiver parked): park on `send_waiters` in `CALL_SEND_WAIT`; the mint
+- **Slowpath** (a receiver, none parked in recv): park on `send_waiters` in `CALL_SEND_WAIT`; the mint
   + transfer + donation happen later in server context inside `endpoint_recv_locked`. Boost the
   conventional server now (D2) if this caller outranks it.
+- **No receiver**: answered at once with `-KOS_EAGAIN` or `-KOS_ECONNREFUSED`, parking nowhere.
 
 ## `KOS_SYS_CALL_TIMED = 46`
 
@@ -591,9 +592,12 @@ being incomplete the moment a field is added.
 
 **Placement is load-bearing.** In both `endpoint_send` and `endpoint_call` the
 locality decision is taken immediately after the capability resolve and AHEAD of the
-`recv_holders == 0` test. A far endpoint carries no local receiver -- its capability
-is minted with `CAP_SIGNAL` alone and `recv_holders = 0` -- so a dead-endpoint refusal
-taken first would answer `-KOS_EPIPE` for every far send and every far call.
+no-receiver test. A far endpoint carries no local receiver: its capability is minted with
+`CAP_SIGNAL` alone, so it has no holder of `CAP_WAIT` or `KOS_CAP_HANDOUT`, and the no-receiver
+test taken first would answer `-KOS_ECONNREFUSED` to every far send and every far call. Past the
+resolve, `far_publish` answers a far send `-KOS_EFAULT` for a buffer it cannot read, and maps the
+window's refusals: `-KOS_EAGAIN` for a full peer ring, `-KOS_EPIPE` for a far index this node
+cannot believe, and `-KOS_EINVAL`.
 
 **The reply token.** `amp::ReplyTag` is two words carried across the shared window and
 handed straight back to the taker; nothing in `kernel/amp/ampwindow.cc` spends either,

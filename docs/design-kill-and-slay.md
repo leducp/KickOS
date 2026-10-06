@@ -7,9 +7,10 @@
 > an earlier proposal there. Current behavior is in [the ABI](../user/include/kickos/sys/abi.h),
 > [invariants](reference/invariants.md) and code.
 
-`kill` requests cooperative cancellation. `slay` forcibly redirects an eligible target to
-its own teardown on a rebuilt context. It reuses the normal exit path and has no reaper.
-The task form waits for the group to become empty. Self, idle and privileged targets are
+`kos_thread_kill` requests cooperative cancellation. `slay` forcibly redirects an eligible
+target to its own teardown on a rebuilt context. It reuses the normal exit path and has no
+reaper. The task form waits for the group to become empty. `kos_task_kill` slays every member
+as `kos_task_slay` does and does not wait. Self, idle and privileged targets are
 refused before checking the caller's relation to the target.
 
 A slay request may take effect even when the waiting caller returns `-KOS_ECANCELED` because

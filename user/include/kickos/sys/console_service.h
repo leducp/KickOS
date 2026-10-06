@@ -136,9 +136,9 @@ size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* bu
 
 // Recv/dispatch loop with the CONSOLE arm. This endpoint carries TWO protocols: a kos_call is
 // a kos_uart_req frame, a plain send is raw console bytes, and only an info-bearing recv tells
-// them apart. Returns only when the endpoint dies, which is the respawn signal.
+// them apart. Returns the receive's failure, only once the endpoint dies.
 template <typename Transport, typename Shared>
-void console_serve_loop(Shared* sh)
+int32_t console_serve_loop(Shared* sh)
 {
     uint8_t msg[KOS_EP_MSG_MAX];
     struct kos_reply_recv_opts opts;
@@ -162,7 +162,7 @@ void console_serve_loop(Shared* sh)
             {
                 continue;
             }
-            break;
+            return n;
         }
         if (opts.info.reply_cap != KOS_CAP_NONE)
         {

@@ -207,9 +207,9 @@ inline size_t serve_one(struct kos_spi_bus* bus, SlotTable& slots, unsigned char
     return sizeof(struct kos_bus_rsp) + static_cast<size_t>(moved);
 }
 
-// The driver's recv/dispatch loop. Returns only when the endpoint dies, so the driver thread
-// can exit and let root respawn.
-inline void serve_loop(struct kos_spi_bus* bus)
+// The driver's recv/dispatch loop. Returns the receive's failure, only once the endpoint no
+// longer serves.
+inline int32_t serve_loop(struct kos_spi_bus* bus)
 {
     SlotTable slots;
     unsigned char msg[KOS_EP_MSG_MAX];
@@ -232,7 +232,7 @@ inline void serve_loop(struct kos_spi_bus* bus)
             {
                 continue;
             }
-            break; // the recv cap no longer serves: exit, let root respawn
+            return static_cast<int32_t>(n);
         }
         if (opts.info.reply_cap == KOS_CAP_NONE)
         {

@@ -30,6 +30,7 @@ namespace
     uint32_t g_next_task;
     uint32_t g_irq_claims;
     uint32_t g_spawns;
+    void* g_spawn_args[8];
 
     // Run of consecutive kos_sleep_ns calls not yet rendered.
     uint32_t g_pending_sleeps;
@@ -105,6 +106,7 @@ void kos_seam_reset()
     g_next_task = KOS_SEAM_TASK_BASE;
     g_irq_claims = 0;
     g_spawns = 0;
+    memset(g_spawn_args, 0, sizeof(g_spawn_args));
     g_pending_sleeps = 0;
 }
 
@@ -117,6 +119,15 @@ char const* kos_seam_trace()
 char const* kos_seam_msg()
 {
     return g_msg;
+}
+
+void* kos_seam_spawn_arg(uint32_t i)
+{
+    if (i >= sizeof(g_spawn_args) / sizeof(g_spawn_args[0]))
+    {
+        return nullptr;
+    }
+    return g_spawn_args[i];
 }
 
 extern "C"
@@ -191,6 +202,12 @@ extern "C"
 
     int kos_irq_claim(int, unsigned int, kos_cap_t* out_cap)
     {
+        if (g_seam.irq_claim_retiring != 0u)
+        {
+            g_seam.irq_claim_retiring--;
+            note("claim?");
+            return -KOS_EAGAIN;
+        }
         g_irq_claims++;
         if (g_irq_claims == g_seam.irq_claim_fail_at)
         {
@@ -224,6 +241,15 @@ extern "C"
         *out_thread = g_next_thread;
         g_next_thread++;
         note_id("spawn", *out_thread);
+        if (g_spawns <= sizeof(g_spawn_args) / sizeof(g_spawn_args[0]))
+        {
+            g_spawn_args[g_spawns - 1u] = params->arg;
+        }
+        // The core a placed thread runs on, 0 being its task's default set.
+        if (params->core_mask != 0u)
+        {
+            note_id("core", params->core_mask);
+        }
         // The child does not run here, so its ONE observable effect on the parent, reaching
         // its loop and setting the latch, is modelled at the spawn instead.
         if (g_seam.latch_on_spawn and g_seam.latch != nullptr)
@@ -267,6 +293,54 @@ extern "C"
         {
             note_id("task", *out_task);
         }
+        return 0;
+    }
+
+    int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "grant%u/%u/%u", task, prio_ceiling, core_mask);
+        note(buf);
+        if (g_seam.sched_grant_fails)
+        {
+            return -KOS_EPERM;
+        }
+        return 0;
+    }
+
+    int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "watch%u/%u/%u", task, notify_cap, ready_ep);
+        note(buf);
+        if (g_seam.watch_fails)
+        {
+            return -KOS_EACCES;
+        }
+        return 0;
+    }
+
+    int kos_cap_narrow(kos_cap_t cap, uint32_t mask)
+    {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "narrow%u/%u", cap, mask);
+        note(buf);
+        return 0;
+    }
+
+    kos_thread_t kos_thread_self(void)
+    {
+        return 1u;
+    }
+
+    int kos_thread_set_affinity(kos_thread_t, uint32_t core_mask)
+    {
+        if (g_seam.pin_fails)
+        {
+            note("pin!");
+            return -KOS_EPERM;
+        }
+        note_id("pin", core_mask);
         return 0;
     }
 

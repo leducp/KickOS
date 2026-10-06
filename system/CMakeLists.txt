@@ -43,12 +43,43 @@ target_include_directories(kickos_default_init PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${PROJECT_SOURCE_DIR}/user/include")
 
+# kickos_root_lower for an image linking no system target: the old leaves' link group carries
+# it beside the init provider, and a system target's init defines its own.
+add_library(kickos_root_lower STATIC init/common/root_lower.cc)
+kickos_apply_freestanding(kickos_root_lower)
+target_include_directories(kickos_root_lower PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${PROJECT_SOURCE_DIR}/user/include")
+
+# A system target's init (docs/design-m10-target.md, sections 1 and 5): the walk over the emitted
+# table and kickos_init_entry. Objects rather than an archive, so the link always takes them. No
+# image links it here: a system target carries it as KickOS::init.
+add_library(kickos_init_compose OBJECT
+  init/compose/entry.cc
+  init/compose/walk.cc
+  init/compose/driver_path.cc
+  init/compose/message.cc)
+kickos_apply_freestanding(kickos_init_compose)
+target_link_libraries(kickos_init_compose PRIVATE kickos_user)
+target_include_directories(kickos_init_compose PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set_target_properties(kickos_init_compose PROPERTIES EXPORT_NAME init)
+kickos_export_targets(kickos_init_compose)
+
+# KickOS::main: kickos_main, the entry of a composition's task that runs the app's main. A system
+# target carries its object where its composition names it.
+add_library(kickos_main_entry OBJECT init/compose/main.cc)
+kickos_apply_freestanding(kickos_main_entry)
+target_link_libraries(kickos_main_entry PRIVATE kickos_user)
+target_include_directories(kickos_main_entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set_target_properties(kickos_main_entry PROPERTIES EXPORT_NAME main)
+kickos_export_targets(kickos_main_entry)
+
 # The universal-default service-list provider: defines kickos_board_services with
 # count = 0, so the default init brings no services up. Selected by KICKOS_SERVICE_LIST
 # on every board that ships no service list. Its own TU so a board that DOES select a
 # list never also drags this in (one definition of kickos_board_services per image).
 # All the board providers (this + the pinmaps + the per-board service lists below) go
-# through kickos_add_board_provider, which self-installs to KickOSTargets, so there
+# through kickos_add_board_provider, which exports each one, so there
 # is no separate hand-maintained install(TARGETS ...) list to drift out of sync.
 kickos_add_board_provider(services_none SOURCE init/common/services_none.cc
   RETAINED_ENDPOINTS 0)
@@ -249,13 +280,11 @@ if(KICKOS_SPI_LOCAL_ENGINE)
     message(FATAL_ERROR "KICKOS_SPI_LOCAL_ENGINE=ON, but chip '${KICKOS_CHIP}' ships no local "
       "SPI engine. Unset it to answer the SPI class with the bus-service proxy.")
   endif()
-  kickos_select_class_backend(spi ${_kickos_spi_local})
+  kickos_select_class_backend(spi KickOS::${_kickos_spi_local})
 elseif(TARGET kickos_spi_proxy)
-  kickos_select_class_backend(spi kickos_spi_proxy)
+  kickos_select_class_backend(spi KickOS::kickos_spi_proxy)
 endif()
 
-# The header home + the init framework lib are not board providers, so they keep an
-# explicit install here (kickos_system is INTERFACE: no archive, exported for headers).
-install(TARGETS kickos_system kickos_default_init
-        EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+# The header home and the init framework lib are not board providers, so they are exported
+# here (kickos_system is INTERFACE: no archive, exported for headers).
+kickos_export_targets(kickos_system kickos_default_init kickos_root_lower)

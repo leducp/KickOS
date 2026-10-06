@@ -30,7 +30,8 @@ extern "C"
         .addr = 0,
         .prio = 12,
         .kind = KOS_SVC_CONSOLE,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     static struct kos_service_bringup const teensy41_usbcdc_services[] = {

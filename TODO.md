@@ -5858,24 +5858,11 @@ milestone does not close while any of them still composes a system.
       2026-10-02); the rest come with their chip files in M10.5. The tool runs under `uv`, its
       dependencies declared beside it (maintainer, 2026-10-02).
 
-- [ ] **M10.4: THE INIT AND THE NAME LOOKUP.** Scan the table in file order, leave tasks whose
-      `uses` are not ready pending, and rescan them on readiness events. Start each eligible task
-      with exactly what it declares, delegating each capability-bearing grant in order (a window
-      or region is a mapping and takes no capability slot). A packaged driver runs its exported
-      descriptor's sequence, and a console driver's endpoint is published before its line is
-      claimed, the kernel's own handler holding that line until then, then spawned up to its
-      readiness barrier and handed over; the external audit found the first draft claimed first,
-      which the XMC example's console would refuse. Lookups find what was delegated under the
-      path it was declared by; `kos_grant_endpoint` (and its device and line siblings) only finds what was delegated.
-      `kos_grant_mmio` and `kos_grant_mem` answer a handle whose address is where a declared
-      window or shared region is mapped in the calling task, and whose size is the declared
-      one; for a device that address is
-      the physical one on an MPU board and wherever the task's space put it on a translating one;
-      the A53 system is the first time any translating board grants a userspace driver a window.
-      Stay resident when the composition says so, end the system on the declared condition, which
-      answers the reaper init below without a kernel classification, and apply the declared
-      restart; `kos_service_bringup` (or what M10.0 replaces it with) gains the stop hook a restart
-      needs. The three golden systems run: the Relax Kit, the A53 board at four cores, and q35.
+- [x] **M10.4: THE INIT AND THE NAME LOOKUP.** **LANDED** in M10.4.1 to M10.4.9, the steps of
+      `roadmap.md`'s M10.4 ladder, and the design is `docs/design-m10-target.md`. Left: the last
+      fleet sweep over every preset, with the Relax Kit's silicon captures of the golden system and
+      of the restart witness with the init's stack depth, each judged through `tools/bench`'s
+      `JUDGE`.
 
 - [ ] **M10.5: x86_64 LINKS THROUGH `add_executable` LIKE EVERY OTHER BOARD.** Ruled by the
       maintainer on 2026-09-28, so a user's CMake is plain on every board. Today x86 is the one
@@ -5916,6 +5903,70 @@ create-suspended spawn, and an authority for placing a thread of another task, a
 starting a core. None may be answered with "root" when it comes, nor in a way that suits only the
 boot init: a nested init is the consumer most likely to reach them first. The temporal half is out
 by ruling and sits in `roadmap.md`'s `Later`.
+
+
+## Scheduler options for later (maintainer, 2026-10-03)
+
+- [ ] **MORE THAN 32 PRIORITY LEVELS, AS AN OPTION (maintainer, 2026-10-03).** The ready structure
+      is one `uint32_t` bitmap, one bit per level, picked with one count-leading-zeros
+      (`kernel/sched/policy_fifo_rr.cc`), which fixes 32 levels on every board. When a system needs
+      more, the shape is a two-level bitmap: a summary word whose bit i says word i is non-empty,
+      over eight 32-bit words for 256 levels (the summary can be a `uint32_t` at the same cost,
+      which would reach 1024). Pick is two scans, still constant time; making ready sets the level
+      bit and the summary bit; the last thread leaving a level clears its bit and the summary bit
+      when the word empties. It is an OPTION, off by default, so a slow chip does not pay for a fast
+      one: on ARMv6-M and rv32imac each scan is libgcc's software clz, so the pick roughly doubles
+      there. The range stays structural (declared in `cmake/sched_geometry.cmake`, exported in the
+      manifest), so a composition's priorities are checked against the build's range either way.
+
+- [ ] **A FAIR-SHARE BAND, AS AN OPTION OF ITS OWN (maintainer, 2026-10-03).** Today every level is
+      strict priority, FIFO or round-robin inside a level, which is Linux's real-time half
+      (`SCHED_FIFO`, `SCHED_RR`) and nothing of its default fair-share class (CFS, then
+      EEVDF), where `nice` sets a weight and a thread gets CPU time in proportion to it.
+      **Trigger: the first general-purpose subsystem** (a shell, a nested init launching
+      programs, the dynamic-payload case), where many non-real-time tasks share the CPU and
+      hand-assigned priorities would starve each other. Shape (maintainer, 2026-10-03): the
+      band takes the lowest level of the normal 32-level range, or, with the two-level
+      structure above, its FIRST word (the lowest 32 levels) while every other word is
+      real-time (eight words give 224 real-time levels, a `uint32_t` summary over 32 words
+      gives 992), all strictly above it, as Linux's real-time classes sit above its fair
+      class; whether the band's 32 levels carry weight classes or act as one queue is decided
+      when it is built; threads in the band are picked by least weighted runtime instead of
+      FIFO, runtime is charged at each switch from timestamps (the scheduler is tickless), and
+      `nice` sets the weight. Cost: a per-core ordered queue for the band and an accounting
+      step per switch, paid by threads in the band only. No starvation guard (maintainer,
+      2026-10-03): a real-time thread that never blocks starves the band, as Linux with its
+      real-time throttling disabled, which heavy users of real-time Linux do. Priority
+      inheritance is the existing mechanism across the boundary: a band thread boosted into a
+      real-time level keeps its runtime account frozen and resumes with it when the boost
+      ends. Multicore (maintainer, 2026-10-03): each core's band keeps its own virtual clock,
+      and a migrating thread's account is simply reset to the destination core's clock rather
+      than carried as a lag, since a thread migrates only to a core free to run it, where
+      there is little or nobody to be unfair to; a thread waking from a long sleep is placed
+      at its core's clock the same way. An OPTION of its own, off by default and independent
+      of the wider range. Read beside the pluggable EDF and rate-monotonic policies in
+      `roadmap.md`'s Later section.
+
+
+## M10's tail (maintainer, 2026-10-03)
+
+- [ ] **AUDIT THE SELFTEST FOR BLOAT (maintainer, 2026-10-03; ASSIGNED TO M10'S TAIL).** The
+      selftest grows with every milestone and now needs six images on the 64 KiB STM32 parts and
+      more on the ESP32's 128 KiB of IRAM. Some arms may be obsolete (a mechanism since replaced, a
+      regression long covered by a host unit test), some duplicate each other, and many repeat the
+      same spawn/park/check scaffolding. Audit it arm by arm: what each witnesses that no other test
+      does, which ones a host unit test now covers, which share scaffolding that a helper would DRY,
+      and what code each costs per image. Every deletion keeps the witness somewhere, and the
+      per-region counts and skip sets follow.
+
+- [ ] **WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
+      M10'S TAIL).** `arch/xtensa/chip/esp32/esp32.ld` links all code into the upper 128 KiB of
+      internal SRAM0 (`0x4008_0000`) and all data into 192 KiB of SRAM2, executing nothing from
+      flash. Two levers to verify against the ESP32 TRM (1.3.2, "Embedded Memory") and on silicon
+      before relying on either: the low 64 KiB of SRAM0, the flash-cache region, which KickOS never
+      enables, as further code space; and SRAM1, 128 KiB reachable as both data and instruction
+      memory, which the linker map does not use and part of which the ROM loader uses during boot.
+      Found when the selftest outgrew one image's IRAM.
 
 
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
@@ -6570,11 +6621,13 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       from `wait_queue` by `offsetof`, which is the workaround proving there is no tag. The
       generalized tagged `blocked_on` edge probably wants to land first.
 
-### The reaper init is BLOCKED, and not on effort (2026-08-06)
+### The reaper init (2026-08-06)
 
-- [ ] **`kos_wait_last()` answers "am I the last thread in the SYSTEM"; a reaper init needs
+- [x] **`kos_wait_last()` answers "am I the last thread in the SYSTEM"; a reaper init needs
       "has the APP finished". Those coincide only in an image with no services, and the init is
-      never in one.** `sched::add` increments `kernel().live` for every non-idle thread with no
+      never in one.** **CLOSED: a composition's `ends` field and the task ENDED bit answer it, the
+      init ending the system when the task `ends` names ends, whatever else is live.**
+      `sched::add` increments `kernel().live` for every non-idle thread with no
       exclusion for a driver or a daemon (`kernel/sched/sched.cc`), and the init itself spawns the
       service threads one step earlier in `kickos_service_list_run`. So an init that called
       `kos_wait_last()` after `main` would park forever on threads it created. This is not a
@@ -6600,7 +6653,7 @@ rejected alternatives especially. Read them as why the ABI looks the way it does
       re-derived: a live-count watermark taken after bring-up, which fails because a count is not
       an identity and a driver death or respawn moves the floor.
       **Four apps return from `main` with a child that never exits** and would hang under any
-      reaping init, so they need `exit()` said explicitly whenever this lands: `initdemo`
+      reaping init, so they declare their ending explicitly, which M10.5 owns: `initdemo`
       (`console_sink` parks in recv), `tele_pingpong` (five daemons), `drvdeath`
       (`nest_grandchild` parks on a semaphore nothing posts, and `thread_kill` is cooperative so
       it does not wake that park), and `rootfault` on its no-enforcement fall-through.

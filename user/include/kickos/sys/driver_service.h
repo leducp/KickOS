@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The bring-up choreography of an unprivileged driver service, once for every class and
-// every chip: allocate and self-grant the shared block, create the endpoint, publish or
-// retain it, claim the IRQ lines, spawn the threads with their per-thread grants and cap
-// roles, poll the readiness latch strictly between two spawns, unwind on any failure, and
-// finish a console handover.
+// every chip: lay out the shared block, make the group, publish or retain the endpoint, claim
+// the IRQ lines, spawn the threads with their per-thread grants and cap roles, poll the
+// readiness latch strictly between two spawns, unwind on any failure, and finish a console
+// handover. Given an instance (docs/design-m10-target.md, section 2) the init holds the block
+// and the endpoint and handles the task's failure; on a service list the bring-up makes them
+// and kills the task itself.
 //
 // A class enters only as a thread-entry pointer and as the per-chip block_init. No chip
 // header is included here: a descriptor is authored in the per-chip TU, the only one with
@@ -23,6 +25,21 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+
+// What the init keeps of a packaged driver task across its restarts, filled at each start from
+// its record and its table entry and passed in kos_service_cfg::instance.
+struct kos_driver_instance
+{
+    void* block;          // the ring block the init reserved and self-granted at boot, or null
+    uint32_t block_size;  // its bytes, 0 for none
+    uint32_t core_mask;   // the declared core's bit, 0 for none
+    kos_cap_t endpoint;   // the endpoint the init created at boot and keeps with HANDOUT
+    kos_cap_t watch;      // this start's badged copy of the init's notification
+    kos_task_t task;      // the task the bring-up created, written back; KOS_TASK_NONE before it
+    uint16_t lines[2];    // the table's line numbers by role, KOS_DRV_LINES_MAX of them
+    uint8_t line_count;
+    bool console;         // the table names it the console driver, which the init narrows at handover
+};
 
 namespace kickos::driver
 {
@@ -47,6 +64,9 @@ enum
     KOS_DRV_RES_LINE0 = 2,
     KOS_DRV_RES_LINE1 = 3
 };
+
+static_assert(sizeof(kos_driver_instance::lines) / sizeof(uint16_t) == KOS_DRV_LINES_MAX,
+              "an instance carries a line number per line a descriptor claims");
 
 struct Cap
 {
@@ -87,13 +107,13 @@ struct Thread
 enum kos_drv_ep
 {
     // kos_console_publish, then the handover tail. From the publish on the console is
-    // USER_OWNED and a kernel-console write is DROPPED until closing E takes recv_holders
-    // to 0, so every diagnostic below closes before it prints.
+    // USER_OWNED and a kernel-console write is DROPPED until recv_holders reaches 0, so every
+    // diagnostic below drops the caller's WAIT on E before it prints.
     KOS_DRV_EP_HANDOVER = 0,
-    // No publish; root keeps a full-rights cap for the app to narrow per client. Root
-    // therefore holds a WAIT-bearing cap forever, so recv_holders never reaches 0 and the
-    // last-receiver-gone wake never fires: NO failure path in a driver thread under
-    // this posture may exit(), it must panic.
+    // No publish. On a service list root keeps a full-rights cap for the app to narrow per
+    // client, so it holds a WAIT-bearing cap forever, recv_holders never reaches 0 and the
+    // last-receiver-gone wake never fires: NO failure path in a driver thread under this
+    // posture may exit() there, it must panic. Under the init it traps (trap_under_init).
     KOS_DRV_EP_RETAIN = 1
 };
 
@@ -620,6 +640,7 @@ struct Declared
     int8_t prio_delta[KOS_DRV_THREADS_MAX];
     char const* thread_name[KOS_DRV_THREADS_MAX]; // null takes cfg->name
     uint8_t cap_count[KOS_DRV_THREADS_MAX];
+    uint8_t badged[KOS_DRV_THREADS_MAX]; // the badged notification copies each spawn mints
     uint8_t receiver; // the thread that waits on the endpoint
     bool notify;
     uint32_t block_size;
@@ -638,6 +659,18 @@ constexpr bool declared_as(Descriptor const& d, Declared const& m)
     for (uint8_t i = 0; i < d.thread_count; i++)
     {
         if (d.threads[i].cap_count != m.cap_count[i])
+        {
+            return false;
+        }
+        uint8_t badged = 0;
+        for (uint8_t c = 0; c < d.threads[i].cap_count; c++)
+        {
+            if (d.threads[i].caps[c].resource == KOS_DRV_RES_NOTIFY and d.threads[i].caps[c].badge != 0u)
+            {
+                badged++;
+            }
+        }
+        if (badged != m.badged[i])
         {
             return false;
         }
@@ -661,20 +694,46 @@ constexpr bool declared_as(Descriptor const& d, Declared const& m)
 // Print `tag` then `msg` and return -1, the bring-up failure code.
 int fail(char const* tag, char const* msg);
 
+// Ends the calling thread's task by a synchronous fault. The kernel's fault path cancels the
+// group, whichever member traps.
+[[noreturn]] void trap();
+
+// Every descriptor thread's entry calls this first, with the arg it was spawned with, and uses
+// what it returns as the arg its descriptor declares. Given an instance, bring_up spawns each
+// thread with bit 0 of its arg set, every declared arg being null, a ring block or a window
+// base, none of them odd; this records that posture in the calling thread's own space, where
+// trap_under_init reads it, and clears the bit. On a service list no arg carries it.
+void* thread_start(void* arg);
+
+// Given an instance, a driver thread whose call failed traps, so its task's death reaches the
+// init; it returns on a service list, where the caller then fails as it does there. The posture
+// is the one the calling space's threads recorded through thread_start.
+void trap_under_init();
+
 constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 
-// The last two steps of a console handover: close the caller's own WAIT-bearing cap on E,
-// then probe with a zero-length rendezvous on cap 0. Returns 0, or the probe's negative rc.
+// The last two steps of a console handover: drop the caller's own WAIT on E, then probe with a
+// zero-length rendezvous on cap 0. Returns 0, or the probe's negative rc.
 //
-// THE ORDER MATTERS: closing first leaves the driver the SOLE receiver, so its death takes
-// recv_holders to 0, which both refuses the probe -KOS_ECONNREFUSED, the init's own cap and its
-// handout right being gone with the close, and reclaims the console. On any refusal but
-// -KOS_ECONNREFUSED the service thread is still alive and still holds the console, and nothing
+// Given an instance, the caller's capability is NARROWED to SIGNAL, TRANSFER and HANDOUT,
+// dropping the WAIT it created the endpoint with, or the one a restart's publish through HANDOUT
+// seated: the init keeps the endpoint across the driver's death, so a dead receiver answers its
+// writers -KOS_EAGAIN until the next start publishes it again, and -KOS_ECONNREFUSED once the
+// init, its restarts spent, closes it. A probe that fails is a failed start, which the init
+// slays. On a service list it is CLOSED, which leaves the driver the sole receiver, so its death
+// takes recv_holders to 0 and reclaims the console; a probe answered -KOS_ECONNREFUSED kills the
+// group, and any other refusal leaves a live service thread holding the console, which nothing
 // here recovers.
-int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task);
+int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task,
+                            struct kos_driver_instance const* instance);
 
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
 constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;   // ~1 s total
+
+// How often, and how far apart, a claim answered -KOS_EAGAIN, a line retiring from the
+// instance before, is tried again given an instance.
+constexpr uint32_t KOS_DRV_CLAIM_RETRIES = 100u;
+constexpr uint64_t KOS_DRV_CLAIM_RETRY_NS = 1000000ull;
 
 // Poll the readiness latch at `off` inside `blk` until it is set or the budget runs out. The
 // latch MUST be an Atomic<uint32_t, Order::RELAXED>, so `off` comes from a class-substrate
@@ -691,22 +750,30 @@ void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_cap_t note
 // Spawn one descriptor thread into `task` with its per-thread grants and cap roles. A
 // KOS_DRV_RES_NOTIFY cap with a badge is MINTED from `note` for the spawn and closed after
 // it; an unbadged one takes `note` itself. KOS_CAP_NONE where the descriptor names none.
-// Above one kernel core a thread holding a claimed line, or the notification one signals, is
-// spawned pinned to the core the lines were claimed on.
+// `core_mask` places the thread, 0 for its task's default set. `under_init` sets bit 0 of the
+// thread's arg, the posture thread_start records.
 kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
                               kos_cap_t ep, kos_cap_t const* line, kos_cap_t note,
-                              kos_task_t task);
+                              kos_task_t task, uint32_t core_mask, bool under_init);
 
 // The catalogue states what bring_up creates from the build's declaration of it.
 static_assert(KICKOS_DRIVER_ENDPOINTS == 1 and KICKOS_DRIVER_NOTIFICATIONS == 1,
               "bring_up creates one endpoint, and one notification for a driver that uses one");
 
 // The whole choreography. Returns 0, or a negative failure code: a bad descriptor or a failed
-// step prints its own diagnostic; a handover probe refusal is returned unchanged.
+// step prints its own diagnostic; a handover probe refusal is returned unchanged. A cfg whose
+// reserved bytes are not zero is refused.
 //
-// `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must be null under
-// HANDOVER. valid() cannot check that pairing, out_ep being a runtime pointer.
+// Given an instance (cfg->instance), the ring block and the endpoint are the instance's and the
+// kind is the descriptor's; every thread runs on the declared core, where the lines are claimed
+// at the descriptor's trigger once their numbers match the table's, and the task's priority
+// ceiling and core grant are narrowed to the declaration. The task is written back as soon as it
+// exists; a step that fails closes what this call made, narrows a console endpoint before it
+// prints, leaves the task and the endpoint to the init, and returns its code. `out_ep` is
+// neither read nor written.
 //
+// On a service list, `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must
+// be null under HANDOVER; valid() cannot check that pairing, out_ep being a runtime pointer.
 // Above one kernel core a descriptor with lines pins the CALLING thread to the line core for
 // the claims and then resets it to its task's default mask, whatever mask it held before.
 int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep);

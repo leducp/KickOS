@@ -25,7 +25,8 @@ extern "C"
         .addr = 0,
         .prio = 12,
         .kind = KOS_SVC_CONSOLE,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     // DSPI0 @ 0x4002_C000, 0x40 B window (RM ch.50; AIPS0 slot 44; the 32-aligned pow2
@@ -42,7 +43,8 @@ extern "C"
         .addr = 0,
         .prio = 11,
         .kind = KOS_SVC_SPI,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     static struct kos_service_bringup const frdmk64f_services[] = {

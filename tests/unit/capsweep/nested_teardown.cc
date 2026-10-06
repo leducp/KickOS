@@ -421,6 +421,114 @@ namespace kickos
             EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
         }
 
+        // --- the vacated endpoint ---------------------------------------------------------
+
+        namespace
+        {
+            constexpr uint32_t VACATE_INDEX = KICKOS_CAP_FIRST_DYNAMIC;
+
+            // A cap of `rights` on `ep` at VACATE_INDEX of `holder`, through the real counter
+            // locator.
+            uint32_t hold_endpoint(Thread* holder, Endpoint* ep, uint8_t rights)
+            {
+                int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
+                attach_caps(holder, VACATE_INDEX + 1);
+                cap_install_at(holder, VACATE_INDEX, handle, CapType::CAP_ENDPOINT, rights,
+                               KCAP_BADGE_NONE);
+                EXPECT_TRUE(obj_ref_inc(CapType::CAP_ENDPOINT, handle, rights))
+                    << "fixture: the cap took its references";
+                return cap_handle_at(holder, VACATE_INDEX);
+            }
+        }
+
+        TEST_F(CapSweep, a_fresh_endpoint_receives_through_its_creator)
+        {
+            Endpoint* ep = nullptr;
+            ASSERT_GE(endpoint_claim_created(&ep), 0);
+
+            EXPECT_EQ(ep->recv_holders, 1u) << "the creator is a receiver";
+            EXPECT_EQ(ep->handout_holders, 1u) << "and a handout holder";
+            EXPECT_TRUE(endpoint_receiving(ep)) << "so a caller parks for it rather than retrying";
+        }
+
+        TEST_F(CapSweep, closing_the_last_receiver_vacates_the_endpoint)
+        {
+            Endpoint* const ep = endpoint();
+            Thread* const server = spawn(0, PRIO_PEER);
+            Thread* const client = spawn(1, PRIO_PEER);
+            uint32_t const wait_cap = hold_endpoint(server, ep, CAP_WAIT);
+            (void)hold_endpoint(client, ep, CAP_SIGNAL);
+
+            {
+                IrqLock lock;
+                EXPECT_EQ(handle_close(server, wait_cap), 0);
+            }
+
+            EXPECT_EQ(ep->vacated, 1u) << "the last receiver left";
+            EXPECT_FALSE(endpoint_receiving(ep));
+            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_ECONNREFUSED)
+                << "no WAIT and no HANDOUT holder remains";
+        }
+
+        TEST_F(CapSweep, narrowing_wait_away_vacates_the_endpoint_and_a_receive_clears_it)
+        {
+            Endpoint* const ep = endpoint();
+            Thread* const init = spawn(0, PRIO_PEER);
+            Thread* const server = spawn(1, PRIO_PEER);
+            uint32_t const all = hold_endpoint(init, ep, CAP_RIGHTS_ALL);
+
+            {
+                IrqLock lock;
+                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT), 0);
+            }
+            EXPECT_EQ(ep->vacated, 1u) << "the narrow dropped the last receiver";
+            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN) << "a HANDOUT holder remains";
+
+            (void)hold_endpoint(server, ep, CAP_WAIT);
+            EXPECT_FALSE(endpoint_receiving(ep)) << "a seated receiver counts once it waits";
+            {
+                IrqLock lock;
+                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL), 0);
+            }
+            EXPECT_EQ(ep->handout_holders, 0u) << "fixture: no HANDOUT holder remains";
+            EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN)
+                << "the seated WAIT holder may still receive";
+
+            {
+                IrqLock lock;
+                endpoint_receiver_waits(ep, server);
+            }
+            EXPECT_EQ(ep->vacated, 0u) << "the receiver waited";
+            EXPECT_TRUE(endpoint_receiving(ep));
+            EXPECT_EQ(ep->server, server);
+        }
+
+        TEST_F(CapSweep, a_reclaimed_slot_is_not_vacated)
+        {
+            Endpoint* const ep = endpoint();
+            int const index = kernel().endpoints.index_of(ep);
+            Thread* const server = spawn(0, PRIO_PEER);
+            Thread* const client = spawn(1, PRIO_PEER);
+            uint32_t const wait_cap = hold_endpoint(server, ep, CAP_WAIT);
+            (void)hold_endpoint(client, ep, CAP_SIGNAL);
+            {
+                IrqLock lock;
+                EXPECT_EQ(handle_close(server, wait_cap), 0);
+            }
+            ASSERT_EQ(ep->vacated, 1u) << "fixture: the slot was vacated";
+            kernel().endpoints.free(kernel().endpoints.handle_for(index));
+
+            Endpoint* again = nullptr;
+            int claimed = -1;
+            for (int i = 0; i < KICKOS_MAX_ENDPOINTS and claimed != index; i++)
+            {
+                claimed = endpoint_claim_created(&again);
+            }
+            ASSERT_EQ(claimed, index) << "fixture: the freed slot came back";
+            EXPECT_EQ(again->vacated, 0u) << "a reused slot starts as a fresh endpoint";
+            EXPECT_TRUE(endpoint_receiving(again));
+        }
+
         // --- reset()'s guard against a leaked IrqLock -----------------------------------
 
         // note_irq_save with no matching restore stands in for an arm that leaked an

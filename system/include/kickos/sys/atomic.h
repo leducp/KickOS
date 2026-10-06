@@ -3,7 +3,7 @@
 //
 // A single-word cross-thread field whose memory ordering is part of its TYPE.
 // No read-modify-write surface: no fetch_add, no operator++, no operator+=, no
-// compare_exchange.
+// compare_exchange. Beside it, the acquire and release fences a sequence count needs.
 
 #ifndef KICKOS_SYS_ATOMIC_H
 #define KICKOS_SYS_ATOMIC_H
@@ -93,6 +93,18 @@ private:
 
     std::atomic<T> v_;
 };
+
+// A sequence count's fences: the writer's release between its odd store and the fields, the
+// reader's acquire between its copy of the fields and its second load of the count.
+KICKOS_ATOMIC_INLINE void fence_acquire()
+{
+    std::atomic_thread_fence(std::memory_order_acquire);
+}
+
+KICKOS_ATOMIC_INLINE void fence_release()
+{
+    std::atomic_thread_fence(std::memory_order_release);
+}
 
 }
 

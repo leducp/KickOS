@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M10 GOLDEN EXAMPLE: does not build yet. `kos_self_t`, `kos_grant_endpoint` and
-// `KOS_ECONNREFUSED` are what M10 adds; everything else is today's API.
-//
-// The app. It polls /svc/sensor and decides for itself whether the measurement is alive.
-// Whether the sensor, its driver, the bus or the IPC path failed does not matter here: a
-// frozen or missing measurement is dead either way, and only the consumer can judge that end
-// to end. The policy below is this app's, not KickOS's.
+// The app, the same on every board. It polls /svc/sensor and judges for itself whether the
+// measurement is alive: a frozen or missing measurement is dead whether the sensor, its driver,
+// the bus or the IPC path failed, and only the consumer can judge that end to end. The policy
+// is this app's, not KickOS's. The golden gates and the Relax Kit captures read the lines it
+// prints.
 
 #include <kickos/sys.h>
 

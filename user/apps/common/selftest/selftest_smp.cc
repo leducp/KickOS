@@ -5,6 +5,8 @@
 
 #include "selftest.h"
 
+#include <kickos/config/priorities.h>
+
 #include <errno.h>
 #include <stdlib.h>
 
@@ -1503,6 +1505,132 @@ namespace selftest
         TAP_CHECK(spin_core == away);
         TAP_CHECK(cjoined == 0);
         TAP_CHECK(g_xc_call_rc.load() == 5);
+    }
+
+    // --- A caller that lowers itself takes a thread waiting on a peer core ------------------
+    // Root raises itself on its core B, then readies W behind an equal-priority spinner pinned
+    // to core A, W's mask naming A and B. Root's level holds W on A until root lowers itself below
+    // W, and the drop that lowering makes must move W to B, where it runs. Root spins rather than
+    // sleeps throughout: a park would drop B's level by another path.
+    constexpr uint8_t PD_HIGH = 20;
+    constexpr uint8_t PD_EQUAL = 12;
+    constexpr uint8_t PD_LOW = 8;
+    constexpr uint64_t PD_SETTLE_NS = 5000000ull;
+    constexpr uint64_t PD_BUDGET_NS = 200000000ull;
+    Atomic<uint32_t, Order::RELAXED> g_pd_stop{0};
+    Atomic<uint32_t, Order::RELAXED> g_pd_spin_core{0xFFFFFFFFu};
+    Atomic<uint32_t, Order::RELAXED> g_pd_ran{0};
+    Atomic<uint32_t, Order::RELAXED> g_pd_core{0xFFFFFFFFu};
+
+    void pd_spinner(void*)
+    {
+        g_pd_spin_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        while (g_pd_stop.load() == 0)
+        {
+        }
+    }
+
+    void pd_waiter(void*)
+    {
+        g_pd_core = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        g_pd_ran = 1;
+    }
+
+    // Until `flag` is set or `ns` has passed, on the CPU.
+    void pd_spin(Atomic<uint32_t, Order::RELAXED> const* flag, uint64_t ns)
+    {
+        uint64_t const until = kos_clock_now() + ns;
+        while (kos_clock_now() < until)
+        {
+            if (flag != nullptr and flag->load() != 0)
+            {
+                return;
+            }
+        }
+    }
+
+    void t_prio_self_lower_moves_waiter()
+    {
+        if (kos_sched_probe(KOS_SCHED_OP_CEILING) < PD_HIGH)
+        {
+            tap::skip("root's ceiling is below %u", static_cast<unsigned>(PD_HIGH));
+            return;
+        }
+        g_pd_stop = 0;
+        g_pd_spin_core = 0xFFFFFFFFu;
+        g_pd_ran = 0;
+        g_pd_core = 0xFFFFFFFFu;
+        int const raised = kos_thread_set_priority(PD_HIGH);
+        uint32_t const home = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_CORE));
+        uint32_t const iso = static_cast<uint32_t>(kos_sched_probe(KOS_SCHED_OP_ISOLATED));
+        uint32_t away = home;
+        for (uint32_t c = 0; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if (c != home and (iso & (1u << c)) == 0)
+            {
+                away = c;
+                break;
+            }
+        }
+        kos::thread::Handle x;
+        kos::thread::Handle w;
+        if (away != home)
+        {
+            x = kos::thread::create(pd_spinner, nullptr, "pdX", PD_EQUAL, KOS_POLICY_FIFO, 0,
+                                    false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                    nullptr, KOS_TASK_NONE, 1u << away);
+        }
+        if (x.valid())
+        {
+            w = kos::thread::create(pd_waiter, nullptr, "pdW", PD_EQUAL, KOS_POLICY_FIFO, 0,
+                                    false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                    nullptr, KOS_TASK_NONE, 1u << away);
+        }
+        int widened = -99;
+        uint32_t early = 0xFFFFFFFFu;
+        int lowered = -99;
+        uint32_t moved = 0;
+        if (w.valid())
+        {
+            pd_spin(nullptr, PD_SETTLE_NS);
+            widened = kos_thread_set_affinity(w.id(), (1u << away) | (1u << home));
+            pd_spin(nullptr, PD_SETTLE_NS);
+            early = g_pd_ran.load();
+            lowered = kos_thread_set_priority(PD_LOW);
+            pd_spin(&g_pd_ran, PD_BUDGET_NS);
+            moved = g_pd_ran.load();
+        }
+        g_pd_stop = 1;
+        int xjoined = -99;
+        int wjoined = -99;
+        if (x.valid())
+        {
+            xjoined = x.join();
+        }
+        if (w.valid())
+        {
+            wjoined = w.join();
+        }
+        int const restored = kos_thread_set_priority(KICKOS_PRIO_ROOT);
+        if (away == home)
+        {
+            tap::skip("no non-isolated core beside root's");
+            return;
+        }
+        if (not x.valid() or not w.valid())
+        {
+            tap::skip("pool too small for 2 threads");
+            return;
+        }
+        tap::diag("root on core %u lowered with W behind a spinner on core %u: W ran on core %u",
+                  static_cast<unsigned>(home), static_cast<unsigned>(away),
+                  static_cast<unsigned>(g_pd_core.load()));
+        TAP_CHECK(raised == 0 and widened == 0 and lowered == 0 and restored == 0);
+        TAP_CHECK(xjoined == 0 and wjoined == 0);
+        TAP_CHECK(g_pd_spin_core.load() == away);
+        TAP_CHECK(early == 0);
+        TAP_CHECK(moved == 1);
+        TAP_CHECK(g_pd_core.load() == home);
     }
 
     // --- IRQ delivery across cores ----------------------------------------------------------

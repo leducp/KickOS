@@ -34,6 +34,12 @@ set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
 # images below, which link with those same flags.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake")
 
+# The probe images below link no leaf and take the heap from the knob.
+if(NOT KICKOS_X86_64_HEAP_LDFLAGS)
+  message(FATAL_ERROR "KickOS x86_64: KICKOS_USER_HEAP_SIZE is unset, so the probe images' PE "
+    "script has no heap to carve. The board configuration states it.")
+endif()
+
 # arch/include is here for the X3 probe alone; the kernel-free images reach only the two
 # backend directories.
 set(KICKOS_X86_64_INCLUDES
@@ -126,7 +132,7 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
             $<TARGET_OBJECTS:kickos_x86_64_boot_com1>
             $<TARGET_OBJECTS:kickos_x86_64_nokernel>
             $<TARGET_OBJECTS:kickos_x86_64_probe_${_cls}>
-    COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+    COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
             -o "${_img}"
             $<TARGET_OBJECTS:kickos_x86_64_boot>
             $<TARGET_OBJECTS:kickos_x86_64_x2>
@@ -171,7 +177,7 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
           -o "${KICKOS_X3_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe3>
@@ -217,7 +223,7 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
           -o "${KICKOS_X4_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe4>
@@ -262,7 +268,7 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nobench>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
           -o "${KICKOS_X5_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot>
           $<TARGET_OBJECTS:kickos_x86_64_probe5>
@@ -311,7 +317,7 @@ add_custom_command(
           $<TARGET_OBJECTS:kickos_x86_64_nokernel>
           $<TARGET_OBJECTS:kickos_arch_x86_64>
           $<TARGET_OBJECTS:kickos_chip_q35>
-  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS}
+  COMMAND "${KICKOS_X86_64_LD}" ${KICKOS_X86_64_LDFLAGS} ${KICKOS_X86_64_HEAP_LDFLAGS}
           -o "${KICKOS_X6_IMAGE}"
           $<TARGET_OBJECTS:kickos_x86_64_boot_ap>
           $<TARGET_OBJECTS:kickos_x86_64_probe6>
@@ -571,15 +577,16 @@ set(KICKOS_X86_64_APP_OBJECTS "" CACHE INTERNAL
 string(REPLACE "," ";" _kos_x86_64_group "${_kickos_group}")
 set(KICKOS_X86_64_APP_GROUP "${_kos_x86_64_group}" CACHE INTERNAL
     "The archive group an x86_64 application image links, from the root CMakeLists")
+string(REPLACE "," ";" _kos_x86_64_kernel_group "${_kickos_kernel_group}")
+set(KICKOS_X86_64_KERNEL_GROUP "${_kos_x86_64_kernel_group}" CACHE INTERNAL
+    "The archive group an x86_64 image linking KickOS::kernel links, the providers left out")
 
 # --- What an installed package needs to run that same link -------------------
 # The image is written by ld from OBJECTS, so the objects are part of the deliverable: an app
-# built out of tree links these three exactly as an in-tree one does. install(TARGETS OBJECTS)
-# puts them in KickOSTargets as IMPORTED_OBJECTS, which is what makes $<TARGET_OBJECTS:> above
-# resolve in a consumer.
-install(TARGETS kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_kernel
-        EXPORT KickOSTargets
-        OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+# built out of tree links these three exactly as an in-tree one does. Exporting them installs
+# their objects and puts them in KickOSTargets as IMPORTED_OBJECTS, which is what makes
+# $<TARGET_OBJECTS:> in cmake/x86_64_image.cmake resolve in a consumer.
+kickos_export_targets(kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_kernel)
 
 # Beside the module that names them: it reads both list-dir-relative out of a package.
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/x86_64_image.cmake"

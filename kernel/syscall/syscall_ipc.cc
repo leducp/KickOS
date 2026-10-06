@@ -97,20 +97,6 @@ namespace kickos
             }
         }
 
-        // Returns -1 without changing *out if the pool is full.
-        [[nodiscard]] int endpoint_slot_claim(Endpoint** out)
-        {
-            int const i = kernel().endpoints.alloc();
-            Endpoint* const ep = kernel().endpoints.at(i); // at(-1) returns null.
-            if (ep == nullptr)
-            {
-                return -1;
-            }
-            *ep = Endpoint{};
-            *out = ep;
-            return i;
-        }
-
 #if KICKOS_AMP_NODE
         // Copy from a held ring slot into private storage while interrupts are open. A reset
         // invalidates the hold before returning its slot to the producer; the second check
@@ -286,15 +272,11 @@ namespace kickos
             return -KOS_EAGAIN;
         }
         Endpoint* ep = nullptr;
-        int const i = endpoint_slot_claim(&ep);
+        int const i = endpoint_claim_created(&ep);
         if (i < 0)
         {
             return -KOS_ENOMEM;
         }
-        // The creator's cap carries every right, so it counts both as a receiver and as a
-        // holder that may hand the receiving out; kos_cap_narrow drops either.
-        ep->recv_holders = 1;
-        ep->handout_holders = 1;
         kernel().endpoint_refs[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
         int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_RIGHTS_ALL, out_cap);
@@ -408,7 +390,7 @@ namespace kickos
                 return far_publish(c, e, buf, len, amp::REPLY_TAG_NONE);
             }
 #endif
-            if (e->recv_holders == 0)
+            if (not endpoint_receiving(e))
             {
                 return endpoint_unserved(e, 0);
             }
@@ -459,7 +441,7 @@ namespace kickos
             return 0;
         }
         Endpoint* e = kernel().endpoints.resolve(target);
-        if (e == nullptr or e->recv_holders == 0)
+        if (e == nullptr or not endpoint_receiving(e))
         {
             return 0;
         }
@@ -510,7 +492,7 @@ namespace kickos
             KICKOS_BENCH_SPAN(PH_RECV_LOCKED, bm_rlocked);
             return -err; // EBADF (bad cap) or EPERM (no WAIT right)
         }
-        endpoint_server_set(e, c);
+        endpoint_receiver_waits(e, c);
         // A creator watching for this task's readiness is told the first time a member waits
         // on the endpoint it named, through the deferred wake: switching to it here would
         // leave wq_block parking the creator instead of this receiver.
@@ -723,7 +705,7 @@ namespace kickos
             }
             // Handle far endpoints before checking recv_holders: they have no local receiver.
             bool const far = endpoint_is_far(e);
-            if (not far and e->recv_holders == 0)
+            if (not far and not endpoint_receiving(e))
             {
                 return endpoint_unserved(e, 0);
             }
@@ -1137,6 +1119,7 @@ namespace kickos
                         if ((notify_pending_of(c) & opened) != 0u)
                         {
                             // Return the notification now; a queued message can be received next time.
+                            // The endpoint is not entered, so a vacated one stays so until then.
                             rc = -KOS_ENOTIFY;
                         }
                         else
@@ -1250,7 +1233,7 @@ namespace kickos
         uint16_t const bound = amp::port_endpoint(port);
         // The binding holds the endpoint slot alive, so lookup uses its index.
         Endpoint* const e = kernel().endpoints.at(static_cast<int>(bound));
-        if (e == nullptr or e->recv_holders == 0)
+        if (e == nullptr or not endpoint_receiving(e))
         {
             return false;
         }

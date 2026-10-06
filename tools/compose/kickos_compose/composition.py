@@ -3,12 +3,17 @@
 
 import os
 
+from ruamel.yaml.nodes import ScalarNode
+
 from .descriptions import PART, check_board
 from .manifest import read_manifest
 from .supply import check_drivers, check_priorities, check_scheduling, check_supply
 from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, index_below, line_of
 
-COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "shared", "tasks")
+# The versions of the composition format this tool reads.
+COMPOSITION_VERSIONS = (1,)
+COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "init", "shared", "tasks")
+INIT_FIELDS = ("priority",)
 TASK_FIELDS = (
     "name", "entry", "driver", "stack", "priority", "core", "devices", "lines", "serves", "uses",
     "maps", "watches", "authority", "accepts", "restart",
@@ -34,6 +39,8 @@ LIMITATIONS = (
 COMPOSITION_LIMITATIONS = ("no_protection", "no_privilege_split", "cached_incoherent")
 TASK_LIMITATIONS = ("device_not_isolated", "coarse_gate", "bus_master")
 CORES = 32
+# The bits of a watcher's notification, the i-th task it watches raising bit i.
+WATCH_BITS = 32
 # KOS_TABLE_NONE, which no line of the table may be.
 LINE_NONE = 0xFFFF
 # What the emitted table's C source defines, and the prefixes its headers declare and define in.
@@ -130,15 +137,21 @@ class Cache:
 class Admitted:
     """What a composition checked against a manifest leaves for the emitter."""
 
-    def __init__(self, root, tasks, shared, ends, chip, cluster, manifest):
+    def __init__(self, root, tasks, shared, ends, heap, init_priority, chip, cluster, manifest, translating):
         self.root = root
         self.tasks = tasks
         self.shared = shared
         # The node of `ends`, read only once the composition is admitted.
         self.ends = ends
+        # The bytes of libc heap the image carves, its `heap`.
+        self.heap = heap
+        # The priority the init lowers itself to.
+        self.init_priority = init_priority
         self.chip = chip
         self.cluster = cluster
         self.manifest = manifest
+        # Whether each task runs in an address space of its own.
+        self.translating = translating
 
 
 def admit(paths, platform, manifest_path=None):
@@ -181,8 +194,8 @@ def admit_composition(path, text, platform, report, cache, manifest):
     root = f.load(text)
     if root is None:
         return
-    top = f.fields(root, "the composition", COMPOSITION_FIELDS, ("version", "board", "stdout", "ends", "tasks"))
-    if top is None or not f.version(top, "the composition"):
+    top = f.fields(root, "the composition", COMPOSITION_FIELDS, ("version", "board", "stdout", "ends", "heap", "tasks"))
+    if top is None or not f.version(top, "the composition", COMPOSITION_VERSIONS):
         return
     board = None
     if "board" in top:
@@ -199,6 +212,7 @@ def admit_composition(path, text, platform, report, cache, manifest):
     heap = None
     if "heap" in top:
         heap = f.integer(top["heap"], "`heap`", 32)
+    init_priority, init_node = read_init(f, top)
     shared = check_shared(f, top)
     tasks = []
     if "tasks" in top:
@@ -208,6 +222,7 @@ def admit_composition(path, text, platform, report, cache, manifest):
     named = name_tasks(f, tasks)
     served = serve_endpoints(f, tasks)
     stdout = check_order(f, top, tasks, named, served, shared)
+    check_restart(f, top, named)
     if chip is not None:
         check_ownership(f, tasks, chip, cluster, board, stdout)
     if chip is not None and manifest is not None:
@@ -221,10 +236,42 @@ def admit_composition(path, text, platform, report, cache, manifest):
         check_drivers(f, tasks, manifest)
         check_priorities(f, tasks, manifest)
         check_scheduling(f, top, tasks, stdout, manifest)
+        init_priority = check_init_priority(f, root, init_priority, init_node, manifest)
         translating = any(unit.page is not None for view, unit in unit_views(chip, cluster))
-        check_supply(f, root, heap, tasks, shared, chip, cluster, manifest, translating, region_size)
-        return Admitted(root, tasks, shared, top.get("ends"), chip, cluster, manifest)
+        check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size)
+        return Admitted(root, tasks, shared, top.get("ends"), heap, init_priority, chip, cluster, manifest,
+                        translating)
     return None
+
+
+def read_init(f, top):
+    """(the priority `init` states or None, the node stating it or None)."""
+    if "init" not in top:
+        return None, None
+    values = f.fields(top["init"], "`init`", INIT_FIELDS, ())
+    if values is None or "priority" not in values:
+        return None, None
+    return f.integer(values["priority"], "`init` priority", 8), values["priority"]
+
+
+def check_init_priority(f, root, priority, node, manifest):
+    """The priority the init lowers itself to: the one `init` states, else one above the kernel
+    build's lowest. Either is refused outside the build's range."""
+    if manifest.priority is None:
+        return priority
+    lo, hi = manifest.priority
+    if node is None:
+        priority = lo + 1
+        node = root
+        what = "the init's default priority %d, one above the lowest," % priority
+    elif priority is None:
+        return None
+    else:
+        what = "`init` priority %d" % priority
+    if not lo <= priority <= hi:
+        f.refuse(node, "scheduling.init-priority-range",
+                 "%s is outside the kernel build's range [%d, %d]" % (what, lo, hi))
+    return priority
 
 
 def find_board(f, node, platform, cache, manifest):
@@ -511,6 +558,10 @@ def check_task(f, item, index, chip, cluster):
             if name is not None:
                 task.watches.append((name, node))
         unique(f, task.watches, "%s watches" % what)
+        if len(items or ()) > WATCH_BITS:
+            f.refuse(values["watches"], "encoding.watches",
+                     "%s watches %d tasks, and the i-th it watches raises bit i of its %d-bit notification"
+                     % (what, len(items), WATCH_BITS))
     if "authority" in values:
         items = f.sequence(values["authority"], "%s authority" % what)
         held = []
@@ -769,6 +820,16 @@ def check_order(f, top, tasks, named, served, shared):
     return served[path]
 
 
+def check_restart(f, top, named):
+    """A task that ends the system starts once."""
+    ending = None
+    if "ends" in top and isinstance(top["ends"], ScalarNode):
+        ending = named.get(top["ends"].value)
+    if ending is not None and ending.restart_max:
+        f.refuse(ending.nodes["restart"], "restart.ends",
+                 "%s ends the system, `ends` naming it, so it is never restarted" % ending.label())
+
+
 def check_ownership(f, tasks, chip, cluster, board, stdout):
     task_views = views(chip, cluster)
     grants = [grant for task in tasks for grant in task.grants]
@@ -944,10 +1005,13 @@ def check_encoding(f, tasks, chip, cluster, manifest):
                          % (task.label(), grant.path, grant.size, grant.base, unit.page, view_name(chip, view)))
                 break
         count = len(task.grants) + len(task.maps)
+        if task.watches:
+            count = count + 1
         if count > manifest.thread_windows:
             f.refuse(task.node, "encoding.budget",
-                     "%s holds %d windows, its devices and the regions it maps, and a thread holds at most %d, "
-                     "KICKOS_MAX_THREAD_WINDOWS" % (task.label(), count, manifest.thread_windows))
+                     "%s holds %d windows, its devices, the regions it maps and a watcher's /init/status, and "
+                     "a thread holds at most %d, KICKOS_MAX_THREAD_WINDOWS" % (task.label(), count,
+                                                                                manifest.thread_windows))
 
 
 def grant_limits(chip, cluster, board, windows, grant):

@@ -164,6 +164,33 @@ map_included() { # <map> <out>
     tool_out "$2" '' sort -u "$TMP/map_raw"
 }
 
+# The names the link asked for: every strong undefined name of a link-line object and of an
+# archive member that entered the link, and every name the link line's -u asked for. A member
+# nothing asked for is not extracted, and is no shadowing. A weak reference extracts nothing.
+referenced_archive() { # <nm-undefined-output> <included> <refs-out>
+    [ -r "$2" ] || fail "no inclusion list at $2, so no member would read as asking"
+    tool_out "$TMP/ref_a" '' awk -v INC="$2" '
+        BEGIN { while ((getline m < INC) > 0) { k[m] = 1 } }
+        $(NF - 1) == "U" {
+            split($1, p, ":")
+            if (!(p[2] in k)) { next }
+            print $NF
+        }' "$1"
+    cat "$TMP/ref_a" >> "$3"
+}
+
+referenced_object() { # <nm-undefined-output> <refs-out>
+    tool_out "$TMP/ref_o" '' awk '$(NF - 1) == "U" { print $NF }' "$1"
+    cat "$TMP/ref_o" >> "$2"
+}
+
+# ld lists a member a -u pulled in with the bare `(<name>)` under it, where a member another
+# file asked for names that file first. So a -u that extracted nothing is not read here.
+map_undefined() { # <map> <refs-out>
+    tool_out "$TMP/map_u" '' awk '/^[ \t]+[(][^() \t]+[)]$/ { n = $1; gsub(/[()]/, "", n); print n }' "$1"
+    cat "$TMP/map_u" >> "$2"
+}
+
 # A miss here is a class header this gate never read, or an app squatting on kos_*; either
 # leaves a backend shadowable with this gate still green.
 leg3_scan() { # <app-kos> <class-syms> <findings-out>
@@ -185,9 +212,11 @@ expect_app_scan() { # <expect-app> <napp> <findings-out>
     fi
 }
 
-legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out>
+legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out> <referenced> <leg2-count-out>
+    [ -r "$6" ] || fail "no referenced-name list at $6, so leg 2 would read every name as unasked"
     : > "$4"
     _checked=0
+    _leg2=0
     while read -r _sym; do
         [ -n "$_sym" ] || continue
         tool_out "$TMP/l12_src" '' awk -F'\t' -v s="$_sym" '$1 == s { print $2 }' "$2"
@@ -208,14 +237,15 @@ legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out>
             fi
             continue
         fi
-        # Leg 2: a lone archive definition must have been extracted, or the image is using a
-        # definition this inventory never saw.
+        # Leg 2: a lone archive definition the link asked for must have been extracted, or the
+        # image is using a definition this inventory never saw.
         tool_out "$TMP/l12_kind" '' awk -F'\t' -v s="$_sym" '$1 == s { print $4 }' "$2"
         [ -s "$TMP/l12_kind" ] \
             || fail "no kind column came back for $_sym, which this inventory says has a
       definition source; leg 2 would be skipped for it"
         _kind=$(head -1 "$TMP/l12_kind")
-        if [ "$_kind" = "archive" ]; then
+        if [ "$_kind" = "archive" ] && grep -qxF "$_sym" "$6"; then
+            _leg2=$((_leg2 + 1))
             tool_out "$TMP/l12_mem" '' awk -F'\t' -v s="$_sym" '$1 == s { print $3 }' "$2"
             _member=$(head -1 "$TMP/l12_mem")
             if ! grep -qxF "$_member" "$3"; then
@@ -224,6 +254,7 @@ legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out>
         fi
     done < "$1"
     printf '%s\n' "$_checked" > "$5"
+    printf '%s\n' "$_leg2" > "$7"
 }
 
 # --- self-test: prove every clause of the rule, one control per clause --------
@@ -397,18 +428,20 @@ obj_mutate "namespace-anchor" '_?kos_[a-z0-9_]+$' 5
 
 # One planted map record per clause: an inclusion entry, the indented line naming what
 # pulled it, an indented placement, a second inclusion, a column-zero line that is not an
-# archive member, and an inclusion entry with an operand after it.
+# archive member, an inclusion entry with an operand after it, and the line under an inclusion
+# a -u pulled.
 cat > "$ST/map" <<'EOF'
 libx.a(m1.obj)
                               libk.a(syscall.cc.obj) (kos_uart_open)
  .text          0x1000  0x20 libx.a(m2.obj)
 libx.a(m3.obj)
+                              (kos_uart_flush)
 some_function(void)
 libx.a(m4.obj) extra
 EOF
 map_included "$ST/map" "$ST/included_ctl"
 POS="$(wc -l < "$ST/included_ctl" | tr -d ' ')"
-[ "$POS" -eq 2 ] || fail "the map parse read $POS of 2 planted inclusion entries out of 6 records; a member that entered the link would read as absent"
+[ "$POS" -eq 2 ] || fail "the map parse read $POS of 2 planted inclusion entries out of 7 records; a member that entered the link would read as absent"
 for _w in m1.obj m3.obj; do
     grep -qxF "$_w" "$ST/included_ctl" || fail "the map parse missed the planted inclusion entry $_w"
 done
@@ -431,8 +464,9 @@ map_mutate "archive-name" '^[^ \t].*[(].*[)]$' 3
 
 # Legs 1 and 2 over a planted inventory: a symbol shadowed by a link-line object, one with
 # two archive definitions and no object, one whose lone archive member never entered the
-# link, one whose member did, one defined only on the link line, and one nothing defines.
-printf '%s\n' kos_never_defined kos_spi_bus_open kos_uart_close kos_uart_open \
+# link, one whose member did, one defined only on the link line, one nothing defines, and
+# one whose lone member nothing asked for.
+printf '%s\n' kos_never_defined kos_spi_bus_open kos_uart_close kos_uart_flush kos_uart_open \
     kos_uart_read kos_uart_write > "$ST/legsyms"
 {
     printf '%s\t%s\t%s\t%s\n' kos_uart_open    main.cc.obj      main.cc.obj object
@@ -440,16 +474,20 @@ printf '%s\n' kos_never_defined kos_spi_bus_open kos_uart_close kos_uart_open \
     printf '%s\t%s\t%s\t%s\n' kos_spi_bus_open 'liba.a(p.obj)'  p.obj       archive
     printf '%s\t%s\t%s\t%s\n' kos_spi_bus_open 'libb.a(q.obj)'  q.obj       archive
     printf '%s\t%s\t%s\t%s\n' kos_uart_close   'libx.a(m9.obj)' m9.obj      archive
+    printf '%s\t%s\t%s\t%s\n' kos_uart_flush   'libx.a(m8.obj)' m8.obj      archive
     printf '%s\t%s\t%s\t%s\n' kos_uart_read    'libx.a(m2.obj)' m2.obj      archive
     printf '%s\t%s\t%s\t%s\n' kos_uart_write   main.cc.obj      main.cc.obj object
 } > "$ST/legdefs"
 printf '%s\n' m1.obj m2.obj > "$ST/legincluded"
+printf '%s\n' kos_spi_bus_open kos_uart_close kos_uart_open kos_uart_read kos_uart_write > "$ST/legrefs"
 
-legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/legincluded" "$ST/legfind" "$ST/legcount"
+legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/legincluded" "$ST/legfind" "$ST/legcount" "$ST/legrefs" "$ST/leg2count"
 POS="$(wc -l < "$ST/legfind" | tr -d ' ')"
 [ "$POS" -eq 3 ] || fail "legs 1 and 2 reported $POS of 3 planted shadowings; a shadowed backend would read as clean"
 POS="$(cat "$ST/legcount")"
-[ "$POS" -eq 5 ] || fail "legs 1 and 2 checked $POS of the 5 planted symbols that carry a definition"
+[ "$POS" -eq 6 ] || fail "legs 1 and 2 checked $POS of the 6 planted symbols that carry a definition"
+POS="$(cat "$ST/leg2count")"
+[ "$POS" -eq 2 ] || fail "leg 2 checked $POS of the 2 planted lone members the link asked for"
 # The two leg-1 arms are separate clauses, and only the message tells them apart.
 grep -q 'leg 1: kos_uart_open is defined by the link-line object' "$ST/legfind" \
     || fail "leg 1 did not name the link-line object as the winner over the archive member"
@@ -460,7 +498,7 @@ _i=0
 while IFS= read -r _s; do
     _i=$((_i + 1))
     printf '%s\n' "$_s" > "$ST/onesym"
-    legs12_scan "$ST/onesym" "$ST/legdefs" "$ST/legincluded" "$ST/onefind" "$ST/onecount"
+    legs12_scan "$ST/onesym" "$ST/legdefs" "$ST/legincluded" "$ST/onefind" "$ST/onecount" "$ST/legrefs" "$ST/leg2count"
     _n="$(wc -l < "$ST/onefind" | tr -d ' ')"
     case "$_s" in
         kos_spi_bus_open|kos_uart_close|kos_uart_open)
@@ -469,17 +507,53 @@ while IFS= read -r _s; do
             [ "$_n" -eq 0 ] || fail "leg control $_s is not silent on its own: $(cat "$ST/onefind")" ;;
     esac
 done < "$ST/legsyms"
-[ "$_i" -eq 6 ] || fail "$_i leg control(s) ran, expected 6"
+[ "$_i" -eq 7 ] || fail "$_i leg control(s) ran, expected 7"
 
-legs12_scan "$ST/legsyms" "$ST/legdefs" "/dev/null" "$ST/mutfind" "$ST/mutcount"
+legs12_scan "$ST/legsyms" "$ST/legdefs" "/dev/null" "$ST/mutfind" "$ST/mutcount" "$ST/legrefs" "$ST/leg2count"
 POS="$(wc -l < "$ST/mutfind" | tr -d ' ')"
 [ "$POS" -eq 4 ] || fail "with an empty inclusion list legs 1 and 2 reported $POS finding(s), expected 4;
       the leg-2 negative control is not a near miss and proves nothing"
 printf '%s\n' m1.obj m2.obj m9.obj > "$ST/wideinc"
-legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/wideinc" "$ST/mutfind" "$ST/mutcount"
+legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/wideinc" "$ST/mutfind" "$ST/mutcount" "$ST/legrefs" "$ST/leg2count"
 POS="$(wc -l < "$ST/mutfind" | tr -d ' ')"
 [ "$POS" -eq 2 ] || fail "with every member linked legs 1 and 2 reported $POS finding(s), expected 2;
       the leg-2 positive control is caught by another clause and proves nothing about leg 2"
+legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/legincluded" "$ST/mutfind" "$ST/mutcount" "/dev/null" "$ST/leg2count"
+POS="$(wc -l < "$ST/mutfind" | tr -d ' ')"
+[ "$POS" -eq 2 ] || fail "with no name asked for legs 1 and 2 reported $POS finding(s), expected 2;
+      leg 2 is not reading what the link asked for"
+cp "$ST/legrefs" "$ST/widerefs"
+printf '%s\n' kos_uart_flush >> "$ST/widerefs"
+legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/legincluded" "$ST/mutfind" "$ST/mutcount" "$ST/widerefs" "$ST/leg2count"
+POS="$(wc -l < "$ST/mutfind" | tr -d ' ')"
+[ "$POS" -eq 4 ] || fail "with the unasked member asked for legs 1 and 2 reported $POS finding(s), expected 4;
+      the unasked-member control is kept quiet by another clause and proves nothing"
+POS="$(cat "$ST/leg2count")"
+[ "$POS" -eq 3 ] || fail "with the unasked member asked for leg 2 checked $POS member(s), expected 3"
+if ( legs12_scan "$ST/legsyms" "$ST/legdefs" "$ST/legincluded" "$ST/mutfind" "$ST/mutcount" \
+         "$ST/no_such_refs" "$ST/leg2count" ) 2>/dev/null; then
+    fail "leg 2 ran over a referenced-name list that does not exist, reading every name as unasked"
+fi
+
+# The referenced-name parse: an undefined name of an included member, one of a member that
+# never entered the link, a weak one of an included member, a strong and a weak one of a
+# link-line object, and a -u and a file's request in the map.
+printf '%s\n' 'libx.a:m1.obj:                 U kos_uart_open' \
+    'libx.a:m2.obj:                 U kos_uart_read' \
+    'libx.a:m1.obj:                 w kos_uart_close' > "$ST/nm_undef"
+printf '%s\n' '                 U kos_uart_write' '                 w kos_spi_bus_open' > "$ST/nm_undef_obj"
+printf '%s\n' m1.obj > "$ST/refinc"
+: > "$ST/refs_ctl"
+referenced_archive "$ST/nm_undef" "$ST/refinc" "$ST/refs_ctl"
+referenced_object "$ST/nm_undef_obj" "$ST/refs_ctl"
+map_undefined "$ST/map" "$ST/refs_ctl"
+POS="$(tr '\n' ' ' < "$ST/refs_ctl")"
+[ "$POS" = "kos_uart_open kos_uart_write kos_uart_flush " ] || fail "the referenced-name parse read
+      '$POS', expected 'kos_uart_open kos_uart_write kos_uart_flush '; a member outside the
+      link or a weak reference would read as asking, or a link-line object or a -u as silent"
+if ( referenced_archive "$ST/nm_undef" "$ST/no_such_inc" "$ST/refs_ctl" ) 2>/dev/null; then
+    fail "the referenced-name parse ran over an inclusion list that does not exist"
+fi
 
 {
     printf '%s\t%s\n' kos_uart_open  main.cc.obj
@@ -573,17 +647,36 @@ done < "$TMP/findapp"
 # --- map: which archive members entered the link -----------------------------
 map_included "$MAP" "$TMP/included"
 
+# --- the names the link asked for --------------------------------------------
+: > "$TMP/refs"
+for a in $ARCHIVES; do
+    tool_out "$TMP/tool" '' "$NM" -A --undefined-only "$a"
+    referenced_archive "$TMP/tool" "$TMP/included" "$TMP/refs"
+done
+for o in $OBJECTS; do
+    tool_out "$TMP/tool" '' "$NM" --undefined-only "$o"
+    referenced_object "$TMP/tool" "$TMP/refs"
+done
+map_undefined "$MAP" "$TMP/refs"
+sort -u "$TMP/refs" -o "$TMP/refs"
+require_nonempty "$TMP/refs" "no link-line object or included member refers to any name; the
+      referenced-name inventory read nothing, so leg 2 would check nothing"
+
 # --- legs 1 and 2, per class symbol ------------------------------------------
-legs12_scan "$TMP/class_syms" "$TMP/defs" "$TMP/included" "$TMP/find12" "$TMP/count12"
+legs12_scan "$TMP/class_syms" "$TMP/defs" "$TMP/included" "$TMP/find12" "$TMP/count12" "$TMP/refs" \
+    "$TMP/leg2count"
 nchecked=$(cat "$TMP/count12")
 [ "$nchecked" -gt 0 ] || fail "legs 1 and 2 checked no class symbol at all, although the
       inventory holds $(wc -l < "$TMP/defs" | tr -d ' ') definition(s); the per-symbol lookup
       is reading nothing"
+nleg2=$(cat "$TMP/leg2count")
+[ "$nleg2" -gt 0 ] || fail "leg 2 checked no lone archive member the link asked for, although the
+      selftest calls the syscall stubs; the referenced-name inventory is reading nothing"
 while IFS= read -r _msg; do
     bad "$_msg"
 done < "$TMP/find12"
 
 if [ "$rc" -eq 0 ]; then
-    echo "class_backend: OK ($ndeclared class symbols declared, $nchecked defined in this image, $napp of them on the link line)"
+    echo "class_backend: OK ($ndeclared class symbols declared, $nchecked defined in this image, $nleg2 of them read by leg 2, $napp on the link line)"
 fi
 exit "$rc"

@@ -41,8 +41,9 @@
 #define KICKOS_SELFTEST_REGION(n)                                                             \
     ((n) >= KICKOS_SELFTEST_FIRST_REGION and (n) <= KICKOS_SELFTEST_LAST_REGION)
 
-// Unevaluated operand: counts as a use for -Wunused-function without emitting the body.
-#define TAP_ELIDE(fn) ((void)sizeof(&(fn)))
+// Unevaluated operand: counts as a use for -Wunused-function without emitting the body. The
+// cast gives a template-id such as irq_pinned<f> the type that names its one specialization.
+#define TAP_ELIDE(fn) ((void)sizeof(static_cast<void (*)()>(&(fn))))
 
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
@@ -212,6 +213,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_recv_buf_unmapped();
     KICKOS_SELFTEST_LOCAL void t_frame_run_slot_recycle();
     KICKOS_SELFTEST_LOCAL void t_call_reply_undisclosed();
+    KICKOS_SELFTEST_LOCAL void t_process_data_from_image();
     KICKOS_SELFTEST_LOCAL void t_process_data_template();
     KICKOS_SELFTEST_LOCAL void t_reent_seating();
     KICKOS_SELFTEST_LOCAL void t_aspace_acquire_balance();
@@ -255,6 +257,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_affinity_undriven_refused();
     KICKOS_SELFTEST_LOCAL void t_migrate_running();
     KICKOS_SELFTEST_LOCAL void t_resched_reaches_pinned_caller();
+    KICKOS_SELFTEST_LOCAL void t_prio_self_lower_moves_waiter();
     KICKOS_SELFTEST_LOCAL void t_pin_same_task_ok();
     KICKOS_SELFTEST_LOCAL void t_pin_cross_task_refused();
     KICKOS_SELFTEST_LOCAL void t_grant_narrows();

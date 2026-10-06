@@ -117,7 +117,8 @@ namespace kickos
     enum : uint32_t
     {
         DOM_CALLER_PRIVILEGED = 1u << 0, // resolves the kernel domain, whole arena
-        DOM_CALLER_MEM_AUTH = 1u << 1    // the GRANTING thread's AUTH_MEMORY answer
+        DOM_CALLER_MEM_AUTH = 1u << 1,   // the GRANTING thread's AUTH_MEMORY answer
+        DOM_CALLER_TASK = 1u << 2        // an explicit task's: its data is the image snapshot's
     };
 
     // Resolve the domain a group of threads shares. privileged -> kernel; with a data region ->

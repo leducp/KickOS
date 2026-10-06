@@ -8,7 +8,7 @@
 # The layout version of the table a composition is emitted as. Declared on this side, which
 # exports it; the table's C header takes it from here, through the generated
 # <kickos/sys/table_version.h>.
-set(KICKOS_TABLE_VERSION 1)
+set(KICKOS_TABLE_VERSION 3)
 
 # Writes <export_dir>/manifest.yaml, and copies the board's chip and board files to
 # <export_dir>/platform/<chip>/ when platform/<chip>/<board>.yaml exists, and its default
@@ -76,18 +76,33 @@ function(kickos_export_manifest export_dir)
   get_property(_catalogue GLOBAL PROPERTY KICKOS_DRIVER_CATALOGUE)
   foreach(_name IN LISTS _catalogue)
     get_target_property(_entry kickos_${_name} KICKOS_DRIVER_CATALOGUE_ENTRY)
+    kickos_driver_clients_exist(${_name} "${_entry}")
     _kickos_json_quote("${_name}" _qname)
     list(APPEND _drivers "${_qname}: ${_entry}")
   endforeach()
   list(JOIN _drivers ", " _drivers)
 
+  # Root's region set holds KICKOS_MPU_MAX_REGIONS (cmake/mpu_geometry.cmake). Its static regions
+  # and its stack are seated at boot, its domain bringing none, and the init self-grants into the
+  # rest.
+  if(NOT KICKOS_MPU_MAX_REGIONS MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "KickOS: no KICKOS_MPU_MAX_REGIONS; cmake/mpu_geometry.cmake declares it")
+  endif()
+  get_property(_root_statics GLOBAL PROPERTY KICKOS_ROOT_STATIC_REGIONS)
+  if("${_root_statics}" STREQUAL "")
+    set(_root_statics 0)
+  endif()
+  math(EXPR _free_regions "${KICKOS_MPU_MAX_REGIONS} - ${_root_statics} - 1")
+
   set(_stride "\"none\"")
   if(NOT "${KICKOS_STACK_STRIDE}" STREQUAL "")
     set(_stride ${KICKOS_STACK_STRIDE})
   endif()
-  set(_facts "{\"config\": ${_config}, \"abi\": {\"table\": ${KICKOS_TABLE_VERSION}, \"cap_reserved\": ${KICKOS_CAP_FIRST_DYNAMIC}}, \
-\"seams\": ${_seams}, \"amp\": ${_amp}, \
+  set(_facts "{\"config\": ${_config}, \"abi\": {\"table\": ${KICKOS_TABLE_VERSION}, \"cap_reserved\": ${KICKOS_CAP_FIRST_DYNAMIC}, \"symbol_prefix\": \"${KICKOS_C_SYMBOL_PREFIX}\"}, \
+\"seams\": ${_seams}, \"amp\": ${_amp}, \"fault_isolation\": ${KICKOS_FAULT_ISOLATION}, \
 \"priority\": [${KICKOS_PRIO_MIN}, ${KICKOS_PRIO_MAX}], \"stack_align\": ${KICKOS_STACK_ALIGN}, \"stack_stride\": ${_stride}, \
+\"init\": {\"status_record_size\": ${KICKOS_INIT_STATUS_RECORD_SIZE}, \
+\"private_record_size\": ${KICKOS_INIT_PRIVATE_RECORD_SIZE}, \"free_regions\": ${_free_regions}}, \
 \"descriptions\": ${_descriptions}, \"default\": ${_default}, \"drivers\": {${_drivers}}}")
   string(JSON _kind ERROR_VARIABLE _bad TYPE "${_facts}")
   if(_bad)
@@ -104,26 +119,4 @@ function(kickos_export_manifest export_dir)
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${PROJECT_SOURCE_DIR}/tools/manifest/genmanifest.py"
                "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/manifest_fields.py")
-endfunction()
-
-function(kickos_admit_default_composition export_dir)
-  set(_composition "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml")
-  if(NOT EXISTS "${_composition}")
-    return()
-  endif()
-  file(GLOB _tool CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/*.py")
-  set(_stamp "${PROJECT_BINARY_DIR}/compose/admit/admitted.stamp")
-  add_custom_command(
-    OUTPUT "${_stamp}"
-    COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBUILD=${PROJECT_BINARY_DIR}"
-            "-DCOMPOSITION=${_composition}" "-DMANIFEST=${export_dir}/manifest.yaml" "-DSTAMP=${_stamp}"
-            -P "${PROJECT_SOURCE_DIR}/cmake/admit_default.cmake"
-    DEPENDS "${_composition}" "${export_dir}/manifest.yaml"
-            "${export_dir}/platform/${KICKOS_CHIP}/chip.yaml"
-            "${export_dir}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml"
-            "${PROJECT_SOURCE_DIR}/tools/compose/pyproject.toml" "${PROJECT_SOURCE_DIR}/tools/compose/uv.lock"
-            "${PROJECT_SOURCE_DIR}/cmake/admit_default.cmake" ${_tool}
-    COMMENT "Admitting boards/${KICKOS_BOARD}/composition.yaml against this build's manifest"
-    VERBATIM)
-  add_custom_target(kickos_default_composition ALL DEPENDS "${_stamp}")
 endfunction()

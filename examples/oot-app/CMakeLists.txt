@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # A standalone downstream project consuming the installed KickOS package, not
-# part of the KickOS tree. Plain modern CMake: add_executable + kickos link.
+# part of the KickOS tree. Plain modern CMake: add_executable + KickOS::kickos link.
 
 cmake_minimum_required(VERSION 3.24)
 project(kickos_oot_app LANGUAGES C CXX)
@@ -10,7 +10,7 @@ project(kickos_oot_app LANGUAGES C CXX)
 find_package(KickOS REQUIRED)
 
 add_executable(oot_app main.cc)
-target_link_libraries(oot_app PRIVATE kickos)
+target_link_libraries(oot_app PRIVATE KickOS::kickos)
 
 # What the KickOS build this links against resolved for those knobs, forwarded so main.cc
 # can static_assert that the package's headers state the same. The CI gate passes them; a

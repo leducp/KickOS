@@ -42,8 +42,9 @@ namespace kickos
         // by that space's release, and cleared only after the snapshot beside it is frozen.
         struct arch_aspace* g_data_home = nullptr;
 
-        // The pristine static-data snapshot a space seeded once the home is gone copies from.
-        // Its frames leave the pool while root is seeded; the bytes are filled at root's release.
+        // The static-data snapshot an explicit task's space copies from, and every space once
+        // root is gone. Its frames leave the pool while root is seeded; the bytes are filled at
+        // the first explicit task's seed, or at root's release if that comes first.
         arch_phys_addr_t g_data_template = 0;
         bool g_data_template_filled = false;
 
@@ -177,7 +178,8 @@ namespace kickos
             (void)ranges->grant(e.base, e.pages, rights, ARCH_MAP_NORMAL);
         }
 
-        // Runs on the home's way out and nowhere else, with the home's mappings still standing.
+        // Runs with the home's mappings still standing: at the first explicit task's seed and
+        // on the home's way out.
         bool data_template_fill(Extent const& data, size_t g)
         {
             if (g_data_template_filled)
@@ -210,11 +212,17 @@ namespace kickos
             return true;
         }
 
-        // Copy data from the live root or saved snapshot under IrqLock.
+        // Copy data from the live root, or from the snapshot where `from_snapshot` or once root
+        // is gone, under IrqLock.
         bool data_copy(struct arch_aspace* space, VirtualRanges* ranges, Extent const& data,
-                       size_t g)
+                       size_t g, bool from_snapshot)
         {
-            if (g_data_home == nullptr and not g_data_template_filled)
+            if (from_snapshot and not data_template_fill(data, g))
+            {
+                return false;
+            }
+            bool const live = g_data_home != nullptr and not from_snapshot;
+            if (not live and not g_data_template_filled)
             {
                 return false;
             }
@@ -235,7 +243,7 @@ namespace kickos
                 void* const dst = frame_pool_ptr(run + static_cast<arch_phys_addr_t>(i * g));
                 void const* src = nullptr;
                 bool held = false;
-                if (g_data_home != nullptr)
+                if (live)
                 {
                     src = acquire_page(g_data_home, va);
                     held = src != nullptr;
@@ -274,7 +282,7 @@ namespace kickos
         }
     }
 
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges)
+    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot)
     {
         size_t const g = arch_aspace_granule();
         if (not ranges->init(g))
@@ -306,7 +314,7 @@ namespace kickos
         }
         if (g_data_home != nullptr or g_data_template_filled)
         {
-            return data_copy(space, ranges, data, g);
+            return data_copy(space, ranges, data, g, from_snapshot);
         }
         // The first space uses the image data initialized by root constructors.
         // A nonzero template with no live root means snapshot creation failed.
@@ -572,7 +580,7 @@ namespace kickos
 
     int aspace_window_map(struct arch_aspace* space, VirtualRanges* ranges, arch_phys_addr_t pa,
                           size_t bytes, uint32_t rights, enum arch_map_memtype type,
-                          uint16_t holder, Domain* donor)
+                          uint16_t holder, uint32_t place, Domain* donor)
     {
         size_t const g = arch_aspace_granule();
         if (space == nullptr or ranges == nullptr or bytes == 0 or (pa % g) != 0)
@@ -597,7 +605,7 @@ namespace kickos
             donor_tag = static_cast<uint16_t>((domain_handle(donor) & 0xFFFF) + 1);
         }
         if (va == 0
-            or not ranges->reserve(va, pages, VR_BORROWED | VR_WINDOW, VR_RUN_NONE, holder,
+            or not ranges->reserve(va, pages, VR_BORROWED | VR_WINDOW, place, holder,
                                    donor_tag))
         {
             return -KOS_ENOMEM;
@@ -639,22 +647,6 @@ namespace kickos
                 domain_release(&kernel().domains[donor - 1u]);
             }
         }
-    }
-
-    uintptr_t aspace_window_addr(struct arch_aspace* space, VirtualRanges const* ranges,
-                                 uint16_t holder, arch_phys_addr_t pa)
-    {
-        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
-             i++)
-        {
-            VirtualRange const* const e = ranges->at(i);
-            if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder
-                and arch_aspace_frame_at(space, e->base) == pa)
-            {
-                return e->base;
-            }
-        }
-        return 0;
     }
 
     int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,

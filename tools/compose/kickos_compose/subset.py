@@ -21,8 +21,6 @@ from ruamel.yaml.events import (
 from ruamel.yaml.nodes import MappingNode, ScalarNode, SequenceNode
 from ruamel.yaml.tokens import AliasToken, AnchorToken, DirectiveToken, TagToken
 
-KNOWN_VERSIONS = (1,)
-
 RULES = (
     "form.syntax", "form.documents", "form.directive", "form.tag", "form.anchor", "form.alias",
     "form.merge-key", "form.duplicate-key", "form.unknown-field", "form.missing", "form.version",
@@ -40,14 +38,16 @@ RULES = (
     "order.undeclared", "order.forward",
     "ownership.device", "ownership.line", "ownership.gate", "ownership.kernel", "ownership.console",
     "encoding.window", "encoding.budget", "encoding.page", "encoding.page-shared", "encoding.table",
+    "encoding.watches", "restart.ends", "restart.no-isolation",
     "enforcement.no-protection", "enforcement.no-privilege-split", "enforcement.device-not-isolated",
     "enforcement.coarse-gate", "enforcement.port-bank", "enforcement.bus-master", "enforcement.unneeded",
     "memory.uncached", "memory.cached-incoherent",
-    "name.driver-unknown", "name.entry", "driver.line-role", "driver.window-role", "driver.authority",
+    "name.driver-unknown", "name.entry", "driver.line-role", "driver.window-role", "driver.port-window",
+    "driver.authority",
     "scheduling.priority", "scheduling.core", "scheduling.line-core", "scheduling.stdout-priority",
-    "scheduling.stdout-order", "scheduling.console-driver",
+    "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range",
     "supply.pool", "supply.budget", "supply.spawn-grants", "supply.cap-table", "supply.stack", "supply.arena",
-    "supply.size",
+    "supply.size", "supply.init-windows", "supply.reservations", "supply.ranges",
     "manifest.cores", "manifest.amp", "manifest.window", "manifest.priority", "manifest.barrier",
     "manifest.description-path", "manifest.description-unknown", "manifest.default-path", "manifest.default-unknown",
     "manifest.bound", "manifest.console",
@@ -337,16 +337,16 @@ class File:
             return None
         return (a, b)
 
-    def version(self, values, what):
+    def version(self, values, what, known):
+        """Whether `values` states a `version` among `known`, the versions of its format this tool reads."""
         if "version" not in values:
             return False
         version = self.integer(values["version"], "`version`", 16)
         if version is None:
             return False
-        if version not in KNOWN_VERSIONS:
-            known = ", ".join(str(v) for v in KNOWN_VERSIONS)
-            self.refuse(values["version"], "form.version",
-                        "%s version %d is not one this tool reads (%s)" % (what, version, known))
+        if version not in known:
+            self.refuse(values["version"], "form.version", "%s version %d is not one this tool reads (%s)"
+                        % (what, version, ", ".join(str(v) for v in known)))
             return False
         return True
 

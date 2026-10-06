@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The restart witness on QEMU RV32 `virt`, a region board whose SP is not masked, so the init
+# reserves each stack and spawns on it. Shaped like the golden compositions, with no device:
+# the test sensor reads none.
+
+version: 1
+board: qemu-riscv
+
+stdout: kernel
+
+ends: never
+heap: 16384
+
+shared:
+  - name: /shm/history
+    size: 64
+    cache: cached
+
+tasks:
+  - name: sensor
+    entry: restart_sensor_main
+    stack: 4096
+    priority: 9
+    core: 0
+    serves: /svc/sensor
+    maps: { /shm/history: rw }
+    restart: { max: 2 }
+
+  - name: app
+    entry: app_main
+    stack: 8192
+    priority: 8
+    uses: [/svc/sensor]
+
+  - name: health
+    entry: health_main
+    stack: 4096
+    priority: 10
+    watches: [sensor]
+    maps: { /shm/history: ro }

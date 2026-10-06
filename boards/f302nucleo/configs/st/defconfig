@@ -3,7 +3,7 @@
 
 CONFIG_BOARD_F302NUCLEO=y
 
-# Fit self-tests into three images with no heap and reduced pools.
+# Fit self-tests into six images with no heap and reduced pools.
 CONFIG_KICKOS_MAX_THREADS=2
 CONFIG_KICKOS_MAX_TASKS=4
 CONFIG_KICKOS_MAX_DOMAINS=4

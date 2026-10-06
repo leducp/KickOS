@@ -34,6 +34,7 @@ extern "C"
 
 extern "C" void kickos_root_entry(void*)
 {
+    kickos_root_lower();
 #if KICKOS_HAVE_ASPACE and KICKOS_LINKER_WEAK_UNDEF
     // Before the ctors below, one of which may throw.
     if (__register_frame != nullptr)

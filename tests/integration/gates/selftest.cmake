@@ -26,6 +26,7 @@ if(KICKOS_KERNEL_CORES GREATER 1)
   list(APPEND KICKOS_EXPECT_SKIPS
     fifo_order preempt_on_ready irq_thread_ctx sleep_order
     mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
+    prio_self_raise_lower prio_self_boosted
     reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
     call_donation call_donation_hold call_donation_slow call_donation_pending
     reply_recv_notify reply_recv_notify_park
@@ -129,6 +130,12 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_CHIP STREQUAL "rp2350")
   list(APPEND KICKOS_EXPECT_SKIPS amp_deferred_doorbell)
 endif()
 
+# The two console_publish arms publish the console themselves, which they refuse to do in an
+# image whose service list may already have published one.
+if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
+  list(APPEND KICKOS_EXPECT_SKIPS console_publish_handout console_publish_narrow)
+endif()
+
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from the arm count: the conditions below name the postures.
@@ -211,9 +218,14 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
     list(APPEND KICKOS_EXPECT_FAULTS pwb pwi vfmf vfxm)
   endif()
 endif()
-# window_memory_ro's child, writing through its read-only window.
+# window_memory_ro's child, writing through its read-only window, and the task_exit arms'
+# sibling, writing a reservation of root's.
 if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
-  list(APPEND KICKOS_EXPECT_FAULTS wro)
+  list(APPEND KICKOS_EXPECT_FAULTS wro txf)
+endif()
+# task_exit_driver_trap's thread, trapping as a failing packaged driver thread does.
+if(KICKOS_FAULT_ISOLATION)
+  list(APPEND KICKOS_EXPECT_FAULTS txtrap)
 endif()
 
 # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
@@ -342,14 +354,18 @@ if(KICKOS_BOARD STREQUAL "microbit")
   # mem_self_grant is NOT here: its decline became a vacuity skip, which is permitted and
   # never expected, so a name for it in this list could never fire and would sit widening the
   # permission. The arm still declines on this board; it declines in the other category.
-  set(_mb_skips_r4 domain_share confused_deputy irq_as_event)
-  set(_mb_partials_r4 caller_stack mmio_grant)
+  set(_mb_skips_r4 irq_as_event)
+  set(_mb_partials_r4 "")
+  set(_mb_skips_r5 "")
+  set(_mb_partials_r5 caller_stack)
+  set(_mb_skips_r6 "")
+  set(_mb_partials_r6 "")
   # DERIVED from the decision above rather than restated: these sets are literals, so a
   # permission appended to the whole-suite list reached every other board and not this one,
-  # and a partitioned board's gate reported that as a failure. Region 4 holds the arm's
+  # and a partitioned board's gate reported that as a failure. Region 6 holds the arm's
   # TAP_ADD line, so this is the region that carries it.
   if(_selftest_kernel_line_partial)
-    list(APPEND _mb_partials_r4 irq_kernel_line_reserved)
+    list(APPEND _mb_partials_r6 irq_kernel_line_reserved)
   endif()
   # The image list comes off the targets the app declared, so nothing here states again how
   # many images this board ships.
@@ -379,7 +395,7 @@ if(KICKOS_BOARD STREQUAL "microbit")
 endif()
 
 # f302nucleo's own declines on 16 KiB of SRAM, measured on silicon at the -st provisioning (two
-# spawnable threads, a 7-slot capability table, the arena the four images leave), and read only
+# spawnable threads, a 7-slot capability table, the arena each image leaves), and read only
 # off its bench manifest: the board has no emulator, so no CTest entry carries them. ADDED to
 # the fleet-wide sets rather than replacing them, so a derived permission appended above still
 # reaches this board. A MEASUREMENT and not slack, as microbit's are.
@@ -387,20 +403,24 @@ if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
   # Every one a worker this board cannot seat beside root at KICKOS_MAX_THREADS 2, but
   # mutex_deadlock, which wants the 3 optional capabilities a 7-slot table does not grant.
   set(_f3_skips_r1 mutex_basic mutex_pi_donation mutex_chain_boost mutex_deadlock
-                   mutex_multi_held)
+                   mutex_multi_held prio_self_raise_lower prio_self_boosted)
   set(_f3_partials_r1 "")
   # Workers again, but reply_recv_notify, which holds five capabilities at once, two past the
   # suite's mandatory per-arm peak.
-  set(_f3_skips_r2 call_timeout_revert call_infoless_revert reply_recv_notify)
+  set(_f3_skips_r2 call_timeout_revert call_infoless_revert reply_recv_notify call_donation
+                   call_donation_hold)
   set(_f3_partials_r2 "")
-  set(_f3_skips_r3 call_donation call_donation_hold call_donation_slow call_donation_pending
-                   cap_reply_bound_fast cap_reply_bound_slow cap_reply_release_close
-                   join_stale_gen)
+  set(_f3_skips_r3 call_donation_slow call_donation_pending cap_reply_bound_fast
+                   cap_reply_bound_slow cap_reply_release_close join_stale_gen)
   set(_f3_partials_r3 "")
   # irq_server_handover is a worker too many; irq_as_event's 4 KiB page and caller_stack's
   # 2 KiB stack are arena this part does not have.
   set(_f3_skips_r4 irq_as_event irq_server_handover)
-  set(_f3_partials_r4 caller_stack)
+  set(_f3_partials_r4 "")
+  set(_f3_skips_r5 "")
+  set(_f3_partials_r5 caller_stack)
+  set(_f3_skips_r6 "")
+  set(_f3_partials_r6 "")
   string(REPLACE "," ";" _f3_fleet_skips "${KICKOS_EXPECT_SKIPS}")
   string(REPLACE "," ";" _f3_fleet_partials "${KICKOS_EXPECT_PARTIALS}")
   get_property(_selftest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
@@ -463,6 +483,14 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
     kickos_host_gate(oot_export_mcu TIMEOUT 300)
     set_tests_properties(oot_export_mcu PROPERTIES FIXTURES_REQUIRED kickos_build)
   endif()
+endif()
+
+if(KICKOS_ARCH STREQUAL "sim")
+  add_test(
+    NAME    provider_alias
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_provider_alias.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  kickos_host_gate(provider_alias TIMEOUT 300)
 endif()
 
 if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")

@@ -28,6 +28,14 @@ enum kos_table_flags
     KOS_TABLE_ENDS_TASK = 1 << 0 // the system ends when task `ends_task` returns
 };
 
+// kos_table_task.flags
+enum kos_table_task_flags
+{
+    // A packaged driver that takes the console: the init narrows its endpoint at the end of its
+    // handover rather than at boot, and drains it before the system ends.
+    KOS_TABLE_TASK_CONSOLE = 1 << 0
+};
+
 // kos_table_grant.kind
 enum kos_grant_kind
 {
@@ -37,7 +45,8 @@ enum kos_grant_kind
     KOS_GRANT_WINDOW = 3,
     KOS_GRANT_PORTS = 4,
     KOS_GRANT_REGION = 5,
-    KOS_GRANT_LINE = 6
+    KOS_GRANT_LINE = 6,
+    KOS_GRANT_STATUS = 7 // /init/status: the init's status block, read-only, for a watcher
 };
 
 struct kos_service_cfg;
@@ -66,19 +75,23 @@ struct kos_table_header
     uint16_t priv_count;
     uint16_t region_count;
     uint32_t strings_size;
+    uint8_t init_priority; // the priority the init lowers itself to, its first act
+    uint8_t rsv0;
+    uint16_t rsv1;
+    uint32_t rsv2;
 };
 
 struct kos_table_task
 {
     uint32_t name;
-    uint32_t rsv0;
+    uint32_t block; // a packaged driver's ring block in bytes, 0 for none or for user code
     union kos_table_entry entry;
     uint16_t driver; // catalogue index, or KOS_TABLE_NONE for user code
     uint16_t rsv1;
     uint32_t stack;
     uint8_t priority;
     uint8_t restart_max;
-    uint16_t rsv2;
+    uint16_t flags; // enum kos_table_task_flags
     uint32_t core_mask;
     uint32_t authority; // KOS_AUTH_* bits
     uint16_t first_grant;
@@ -99,7 +112,7 @@ struct kos_table_grant
     uint32_t name;
     uint32_t path;
     uint16_t target; // the served endpoint's task, or the region
-    uint16_t rsv0;
+    uint16_t window; // a window-kind grant's place in the spawn's window list, or KOS_TABLE_NONE
     uint64_t base; // a window's PHYSICAL base, or a port range's first port
     uint32_t size; // bytes, or ports
     uint16_t line_index;
@@ -133,6 +146,10 @@ struct kos_table_region
 // The emitted table, defined by the composition's system target.
 extern struct kos_table_header const* const kickos_table;
 
+// Defined beside the table, one per system target. KickOS::kernel requires it at the link, so an
+// image linking no system target fails naming it, and one linking two defines it twice.
+extern char const kickos_link_one_system_target;
+
 #ifdef __cplusplus
 #define KOS_TABLE_ASSERT(cond, why) static_assert(cond, why)
 #else
@@ -141,7 +158,7 @@ extern struct kos_table_header const* const kickos_table;
 
 KOS_TABLE_ASSERT(sizeof(union kos_table_entry) == 8, "the entry is eight bytes (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_header) == 24, "the header is 24 bytes (table layout)");
+KOS_TABLE_ASSERT(sizeof(struct kos_table_header) == 32, "the header is 32 bytes (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, magic) == 0, "header.magic (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, version) == 4, "header.version (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, flags) == 6, "header.flags (table layout)");
@@ -152,17 +169,21 @@ KOS_TABLE_ASSERT(offsetof(struct kos_table_header, ref_count) == 14, "header.ref
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, priv_count) == 16, "header.priv_count (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, region_count) == 18, "header.region_count (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_header, strings_size) == 20, "header.strings_size (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_header, init_priority) == 24, "header.init_priority (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv0) == 25, "header.rsv0 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv1) == 26, "header.rsv1 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv2) == 28, "header.rsv2 (table layout)");
 
 KOS_TABLE_ASSERT(sizeof(struct kos_table_task) == 56, "a task is 56 bytes (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, name) == 0, "task.name (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv0) == 4, "task.rsv0 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_task, block) == 4, "task.block (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, entry) == 8, "task.entry (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, driver) == 16, "task.driver (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv1) == 18, "task.rsv1 (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, stack) == 20, "task.stack (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, priority) == 24, "task.priority (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, restart_max) == 25, "task.restart_max (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv2) == 26, "task.rsv2 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_task, flags) == 26, "task.flags (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, core_mask) == 28, "task.core_mask (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, authority) == 32, "task.authority (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_task, first_grant) == 36, "task.first_grant (table layout)");
@@ -181,7 +202,7 @@ KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, cap_slot) == 2, "grant.cap_slo
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, name) == 4, "grant.name (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, path) == 8, "grant.path (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, target) == 12, "grant.target (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, rsv0) == 14, "grant.rsv0 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, window) == 14, "grant.window (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, base) == 16, "grant.base (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, size) == 24, "grant.size (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, line_index) == 28, "grant.line_index (table layout)");

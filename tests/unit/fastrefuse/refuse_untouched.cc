@@ -59,6 +59,12 @@ namespace kickos
             {
             };
 
+            // gtest runs a *DeathTest suite ahead of the others, which is where a forking arm
+            // belongs.
+            class FastRefuseDeathTest : public KSeam
+            {
+            };
+
             constexpr int SLOT_CALLER = 0;
             constexpr uint8_t PRIO = 5;
             constexpr int FX_RECEIVER = 1;
@@ -383,12 +389,24 @@ namespace kickos
 
         // --- the endpoint --------------------------------------------------------------
 
-        TEST_F(FastRefuse, a_dead_endpoint)
+        // A live parked receiver holds WAIT and has waited on its endpoint, so the fastpath
+        // asserts the endpoint is receiving rather than testing it.
+        TEST_F(FastRefuseDeathTest, a_parked_receiver_on_a_dead_endpoint_panics)
         {
             Stage s = stage();
             s.ep->recv_holders = 0;
 
-            expect_refused(s);
+            KICKOS_EXPECT_PANIC((void)kickos_ipc_fastpath(g_scratch.args),
+                                "debug assert: endpoint_receiving\\(e\\)");
+        }
+
+        TEST_F(FastRefuseDeathTest, a_parked_receiver_on_a_vacated_endpoint_panics)
+        {
+            Stage s = stage();
+            s.ep->vacated = 1;
+
+            KICKOS_EXPECT_PANIC((void)kickos_ipc_fastpath(g_scratch.args),
+                                "debug assert: endpoint_receiving\\(e\\)");
         }
 
         TEST_F(FastRefuse, no_parked_receiver)

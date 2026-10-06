@@ -94,12 +94,6 @@ namespace kickos
 
     void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
 
-    uintptr_t aspace_window_addr(struct arch_aspace*, VirtualRanges const*, uint16_t,
-                                 arch_phys_addr_t)
-    {
-        return 0;
-    }
-
     struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
 
     bool aspace_seated_for(Thread const*)

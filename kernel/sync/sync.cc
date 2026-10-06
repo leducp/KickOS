@@ -299,6 +299,36 @@ namespace kickos
         ep->server = t;
     }
 
+    void endpoint_receiver_waits(Endpoint* ep, Thread* t)
+    {
+        endpoint_server_set(ep, t);
+        ep->vacated = 0;
+    }
+
+    int endpoint_slot_claim(Endpoint** out)
+    {
+        int const i = kernel().endpoints.alloc();
+        Endpoint* const ep = kernel().endpoints.at(i); // at(-1) returns null.
+        if (ep == nullptr)
+        {
+            return -1;
+        }
+        *ep = Endpoint{};
+        *out = ep;
+        return i;
+    }
+
+    int endpoint_claim_created(Endpoint** out)
+    {
+        int const i = endpoint_slot_claim(out);
+        if (i >= 0)
+        {
+            (*out)->recv_holders = 1;
+            (*out)->handout_holders = 1;
+        }
+        return i;
+    }
+
     // The single effective-priority funnel. Runs under IrqLock on every mutex unlock,
     // reply and close, so NO term added here may walk the capability table.
     uint8_t thread_effective_prio(Thread* t)

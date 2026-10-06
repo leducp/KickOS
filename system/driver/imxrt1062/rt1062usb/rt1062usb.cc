@@ -730,7 +730,7 @@ namespace
 
     void rtusb_irq_thread(void* arg)
     {
-        Block* blk = static_cast<Block*>(arg);
+        Block* blk = static_cast<Block*>(drv::thread_start(arg));
         // FIRST statement, before anything that can fault: it separates a thread that never
         // ran from one that ran and died.
         blk->stage = STAGE_ENTERED;
@@ -757,7 +757,7 @@ namespace
 
     void rtusb_service_thread(void* arg)
     {
-        usb::console_serve_loop(&static_cast<Block*>(arg)->sh);
+        usb::console_serve_loop(&static_cast<Block*>(drv::thread_start(arg))->sh);
     }
 
     // The block drv::bring_up allocated: it does not hand the pointer back, so block_init is

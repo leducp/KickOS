@@ -216,44 +216,96 @@ namespace kickos
         return mmio_block_of(c, base) != 0;
     }
 
-    int window_addr_call(uintptr_t base, uintptr_t out)
+    namespace
+    {
+        // The window at `index` in c's spawn list, by the place recorded with it at the spawn:
+        // in the port set where the arch has ports, in the VR_WINDOW range where a space
+        // translates, else in the region set. False past the list. Caller holds IrqLock.
+        bool thread_window_at(Thread const* c, uint32_t index, kos_window* w)
+        {
+#if KICKOS_ARCH_HAS_PORTS
+            for (uint8_t r = 0; r < c->ctx.port_count; r++)
+            {
+                if (((c->ctx.port_places >> (2u * r)) & 3u) != index)
+                {
+                    continue;
+                }
+                w->base = c->ctx.ports[r].base;
+                w->size = static_cast<uint32_t>(c->ctx.ports[r].last - c->ctx.ports[r].base) + 1u;
+                w->kind = KOS_WINDOW_PORTS;
+                return true;
+            }
+#endif
+#if KICKOS_HAVE_ASPACE
+            VirtualRanges const* const ranges = domain_ranges(task_domain(c->task));
+            uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
+            for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
+            {
+                VirtualRange const* const e = ranges->at(i);
+                if (e == nullptr or (e->flags & VR_WINDOW) == 0 or e->holder != holder
+                    or e->place != index)
+                {
+                    continue;
+                }
+                w->base = e->base;
+                w->size = static_cast<uint32_t>(e->pages * arch_aspace_granule());
+                w->kind = KOS_WINDOW_DEVICE;
+                if (e->memtype != static_cast<uint8_t>(ARCH_MAP_DEVICE))
+                {
+                    w->kind = KOS_WINDOW_MEMORY;
+                    if ((e->rights & ARCH_MAP_W) == 0)
+                    {
+                        w->flags = static_cast<uint8_t>(w->flags | KOS_WINDOW_RO);
+                    }
+                    if (e->memtype == static_cast<uint8_t>(ARCH_MAP_NOCACHE))
+                    {
+                        w->flags = static_cast<uint8_t>(w->flags | KOS_WINDOW_UNCACHED);
+                    }
+                }
+                return true;
+            }
+            return false;
+#else
+            uint8_t flags = 0;
+            arch_mpu_region const* const r = c->mpu.window(index, &flags);
+            if (r == nullptr)
+            {
+                return false;
+            }
+            w->base = r->base;
+            w->size = static_cast<uint32_t>(r->size);
+            w->kind = KOS_WINDOW_DEVICE;
+            if ((r->attr & ARCH_MPU_DEV) == 0)
+            {
+                w->kind = KOS_WINDOW_MEMORY;
+                w->flags = flags;
+            }
+            return true;
+#endif
+        }
+    }
+
+    int window_get_call(uintptr_t index, uintptr_t out)
     {
         IrqLock lock;
         Thread* const c = sched::current();
-        if (c == nullptr or out == 0 or (out & (alignof(uintptr_t) - 1u)) != 0)
+        if (c == nullptr or out == 0 or (out & (alignof(kos_window) - 1u)) != 0)
         {
             return -KOS_EINVAL;
         }
-        if (not user_writable_ok(out, sizeof(uintptr_t)))
+        if (not user_writable_ok(out, sizeof(kos_window)))
         {
             return -KOS_EFAULT;
         }
-        uintptr_t addr = 0;
-#if KICKOS_HAVE_ASPACE
-        // A device window names its own frames and a memory window the spawner's address of
-        // its reservation, whose frames are that address less the user offset.
-        Domain const* const d = task_domain(c->task);
-        uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
-        addr = aspace_window_addr(domain_space(d), domain_ranges(d), holder, base);
-        if (addr == 0 and base >= arch_aspace_user_offset())
+        // Zeroed whole, padding included, which the copy below hands to the caller.
+        kos_window w;
+        kmemset(&w, 0, sizeof(w));
+        uint32_t const at = static_cast<uint32_t>(index);
+        if (at != index or not thread_window_at(c, at, &w))
         {
-            addr = aspace_window_addr(domain_space(d), domain_ranges(d), holder,
-                                      aspace_frame_of(base));
+            return -KOS_EINVAL;
         }
-#else
-        for (arch_mpu_region const& r : c->mpu)
-        {
-            if (c->mpu.is_window(r) and r.base == base)
-            {
-                addr = base;
-            }
-        }
-#endif
-        if (addr == 0)
-        {
-            return -KOS_EPERM;
-        }
-        if (not kaccess_word_to_user(user_space_of(c), out, &addr))
+        if (not kaccess_to_user(user_space_of(c), out, &w, sizeof(w)))
         {
             return -KOS_EFAULT;
         }

@@ -69,6 +69,8 @@ struct arch_context
     // bitmap when they differ from the set loaded there.
     struct arch_port_range ports[KICKOS_ARCH_PORT_RANGES];
     uint8_t port_count;
+    // Bits 2r, 2r + 1: the place of ports[r] in the thread's spawn list.
+    uint8_t port_places;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     uint32_t trace_tid;

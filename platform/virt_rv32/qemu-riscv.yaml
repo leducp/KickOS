@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU RV32 `virt`. The kernel console is RISC-V semihosting (chip_virt_rv32.cc).
+
+version: 1
+board: qemu-riscv
+chip: virt_rv32
+
+console:
+  semihosting: true

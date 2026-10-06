@@ -75,8 +75,13 @@ namespace kickos
         uintptr_t base = 0;
         uint32_t pages = 0;
         // The frame RUN a VR_FRAMECAP range names, as a SLOT INDEX PLUS ONE and not a handle:
-        // a handle spends half its word on a generation.
-        uint32_t run = VR_RUN_NONE;
+        // a handle spends half its word on a generation. A VR_WINDOW range, which names no
+        // run, keeps its place in its holder's spawn list here instead.
+        union
+        {
+            uint32_t run = VR_RUN_NONE;
+            uint32_t place;
+        };
         // The ARCH_MAP_* word the mapping carries, in the map editor's own vocabulary: no
         // translation sits between what was granted and what was installed.
         uint8_t rights = 0;
@@ -159,7 +164,7 @@ namespace kickos
         // `run` is the frame-run slot PLUS ONE that a VR_FRAMECAP range names, set HERE
         // rather than at grant: the reference it records was taken before this call, so a
         // reserve that succeeds and a grant that fails still leaves the run named by the
-        // entry the unwind releases.
+        // entry the unwind releases. For a VR_WINDOW range it is the window's `place`.
         bool reserve(uintptr_t base, size_t pages, uint8_t flags = 0,
                      uint32_t run = VR_RUN_NONE, uint16_t holder = 0, uint16_t donor = 0);
 

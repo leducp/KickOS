@@ -232,11 +232,12 @@ declarations ever disagree -- rather than becoming a silent no-op.
    needs per-instance event delivery.
 8. **Dependency inversion -- the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
-   flags) consumed as a plain `add_executable` linked against the exported `kickos` target -- or
-   `kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app. The kernel's root thread calls one
-   init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after kernel init; the CMake
-   cache var `KICKOS_INIT_PROVIDER` selects the target that supplies it (default
-   `kickos_default_init`, a thin passthrough
+   flags) consumed as a plain `add_executable` linked against the exported `KickOS::kickos`
+   target, or `KickOS::kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app. The kernel's root
+   thread calls one init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after kernel
+   init. An image linking `KickOS::kernel` takes it from its system target's `KickOS::init`; for
+   the old leaves the CMake cache var `KICKOS_INIT_PROVIDER` selects the target that supplies it
+   (default `kickos_default_init`, a thin passthrough
    `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
    only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
    seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
@@ -537,10 +538,14 @@ service list holds a driver thread that does not exit.
 
 **Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` makes an EMPTY group
 holding a domain built from its own grant and `kos_thread_params::task` seats a member;
-`KOS_SYS_TASK_KILL` ends the whole group from a supervisor, and a member's own death ends it too.
+`KOS_SYS_TASK_KILL` ends the whole group from a supervisor. From inside, the group ends when its
+entry thread, the first member a non-member seated, exits on its own or when any member faults:
+the task reads ENDED and takes no new member. Either way the group ends as a process does: every
+other member is slain at once, a thread that never re-enters the kernel included, and runs no
+further instruction of its own. It is DEAD once every member's capability sweep is done.
 The gate there is CREATORSHIP rather than possession, the address space stays on `Domain`, and 0
-means the request was ACCEPTED and never that the thread is gone -- a thread that never re-enters
-the kernel is unreachable without preemption. `docs/archive/M4_task_layer_record.md` is the record.
+from a kill means the request was ACCEPTED and never that the group is gone; `KOS_SYS_TASK_SLAY`
+is the form that waits. `docs/archive/M4_task_layer_record.md` is the record.
 
 ---
 
@@ -1019,10 +1024,18 @@ feeds the slave app.
   ```cmake
   find_package(KickOS REQUIRED)              # or FetchContent
   add_executable(my_slave main.cc)
-  target_link_libraries(my_slave PRIVATE kickos)   # `kickos` = the whole OS as usage reqs
+  target_link_libraries(my_slave PRIVATE KickOS::kickos)   # the whole OS as usage reqs
   ```
-  The exported `kickos` INTERFACE target carries the component link group + flags (sim: host libc
-  threads); a full-C++ app links `kickos_cxx` instead (both sit over a posture-neutral `kickos_core`).
+  The exported `KickOS::kickos` INTERFACE target carries the component link group + flags (sim:
+  host libc threads); a full-C++ app links `KickOS::kickos_cxx` instead, and `KickOS::kernel` is
+  `KickOS::kickos_cxx` with no init provider, service list or pin map in its archive group (all
+  three sit over a posture-neutral `KickOS::kickos_core`). `KickOS::kernel` links beside exactly
+  one system target, which carries the init, the emitted table and the heap:
+  `kickos_compose(<system> <composition.yaml>)` makes one, and `KickOS::system_default` is the
+  board's default composition's (`docs/design-m10-target.md`, section 5), or on a board with none a
+  stub whose link fails on a required symbol naming the remedy. Every exported target
+  is named `KickOS::<name>`: installed through the export's namespace, in tree through an `ALIAS`
+  of the same name, so the package's own CMake names one target either way.
   Those two lines are the whole supported path **on MCU targets too**, not just the sim: the
   bare-metal link recipe, the chip linker script and -- via `INTERFACE_LINK_DEPENDS` -- a real
   build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
@@ -1187,7 +1200,9 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   requires the source cap carry `CAP_TRANSFER`, and NARROWS rights subset-only (`child.rights =
   parent.rights & mask`; a mask adding a bit the parent lacks is rejected, never widened); the
   WHOLE list is validated before the child slot is claimed (no half-populated child, no dangling
-  ref bumps).
+  ref bumps). An endpoint's HANDOUT is the one right that lets a delegation seat WAIT the source
+  lacks, so `kos_console_publish` seating WAIT on its HANDOUT-only publisher amplifies nothing:
+  that holder could already seat WAIT on any thread it spawns.
 - **Resolution is cold-path.** A handle is bound to its target at arm time; an ISR **never**
   resolves a cap -- `irq_claim` allocates the `IrqBinding` ONCE and hands `irq_event_isr` that
   binding's own address as its pre-bound argument, so the ISR reaches it with no lookup at all
@@ -1232,7 +1247,10 @@ output). The syscall `kos_console_publish`, gated on `AUTH_CONSOLE`, performs th
 detach/NVIC-mask, disarm), takes a kernel ref on the userspace driver's stdout endpoint, then
 flips the state to USER_OWNED last; a stale chip writer that raced the flip is drained (via the
 `g_chip_writers` count, with the publisher yielding at lowered priority so a lower-priority
-writer can finish) before publish returns. The **field panic path reclaims** the UART:
+writer can finish) before publish returns. The publisher names the endpoint through a capability
+holding HANDOUT, and the publish seats WAIT on it when it is missing, so the init publishes a
+restarted console driver's endpoint again and repeats the first handover (see
+[console.md](console.md), "Capability handover"). The **field panic path reclaims** the UART:
 `kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
@@ -1266,7 +1284,7 @@ structs or a tiny IDL.
 - User-thread SVC roundtrip returns correct results.
 - MPU violation caught and reported (via `mprotect`/`SIGSEGV`).
 - **Dependency inversion**: an out-of-tree app builds against the exported KickOS sim package
-  (`find_package` + plain `add_executable` linked to the `kickos` target) and runs.
+  (`find_package` + plain `add_executable` linked to the `KickOS::kickos` target) and runs.
 
 **Silicon.** Both halves are done and the second is what M2 closed:
 

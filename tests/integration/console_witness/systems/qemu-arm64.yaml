@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The console restart witness on QEMU `virt`: testpl011 serves stdout over the board's console
+# PL011 and is restarted once; the writer's end ends the system.
+
+version: 1
+board: qemu-arm64
+stdout: /svc/console
+ends: writer
+heap: 65536
+
+tasks:
+  - name: console
+    driver: testpl011
+    devices: [/dev/uart0]
+    serves: /svc/console
+    priority: 12
+    restart: { max: 1 }
+
+  - name: writer
+    entry: console_writer_main
+    stack: 12288
+    priority: 8

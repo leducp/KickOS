@@ -198,7 +198,7 @@ namespace kickos
         thread_cancel_kind(t, CANCEL_KILL);
     }
 
-    void task_cancel_group(Task* t, uint8_t kind)
+    void task_cancel_group(Task* t)
     {
         if (t == nullptr)
         {
@@ -214,7 +214,12 @@ namespace kickos
             {
                 continue;
             }
-            thread_cancel_kind(p, kind);
+            uint8_t at = CANCEL_SLAY;
+            if (p->privileged)
+            {
+                at = CANCEL_KILL;
+            }
+            thread_cancel_kind(p, at);
         }
     }
 }

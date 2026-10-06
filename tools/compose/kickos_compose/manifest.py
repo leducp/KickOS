@@ -5,6 +5,7 @@
 # board files it names, relative to its own folder.
 
 import os
+import re
 
 from ruamel.yaml.nodes import ScalarNode
 
@@ -12,13 +13,21 @@ from .descriptions import check_platform
 from .manifest_fields import DRIVER_FIELDS, WINDOWS_KNOB, is_pool
 from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, line_of
 
-MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "threads", "descriptions", "default", "drivers")
+# The versions of the manifest format this tool reads.
+MANIFEST_VERSIONS = (1,)
+MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "threads", "init", "descriptions", "default",
+                   "drivers")
 TARGET_FIELDS = ("board", "chip", "arch", "cores", "kernel_cores", "isolated_cores", "amp")
-PROTECTION_FIELDS = ("enforced", "window_rule", "smallest_window", "thread_windows")
+PROTECTION_FIELDS = ("enforced", "window_rule", "smallest_window", "thread_windows", "fault_isolation")
+ABI_FIELDS = ("table", "cap_reserved", "symbol_prefix")
+# What the C ABI puts before a C name in the link: none, or rx-elf's one underscore.
+SYMBOL_PREFIX = re.compile(r"_*")
 THREAD_FIELDS = ("priority", "min_stack", "user_stack", "idle_stack", "root_stack", "stack_align", "stack_stride")
+INIT_FIELDS = ("status_record_size", "private_record_size", "free_regions")
+THREAD_ENTRY_FIELDS = ("name", "priority", "stack", "caps", "badged")
 CORES = 32
 # The layouts of the emitted table emit.py writes.
-TABLE_LAYOUTS = (1,)
+TABLE_LAYOUTS = (3,)
 
 
 class Manifest:
@@ -32,8 +41,12 @@ class Manifest:
         self.isolated_cores = 0
         self.amp_ports = 0
         self.cap_reserved = None
+        # What the link spells before a C name.
+        self.symbol_prefix = None
         self.table = None
         self.enforced = None
+        # Whether a fault ends its task rather than the system.
+        self.fault_isolation = None
         self.window_rule = None
         self.smallest_window = None
         self.thread_windows = None
@@ -46,6 +59,12 @@ class Manifest:
         self.stack_align = None
         # The block every thread stack is where the thread pointer is masked from SP, or None.
         self.stack_stride = None
+        # The bytes of one record in the init's public status block, one per task, and in its
+        # private block, one per task and per shared region, and the regions root's set holds past
+        # its statics and stack, which a region board's init self-grants into.
+        self.status_record_size = None
+        self.private_record_size = None
+        self.free_regions = None
         # The (chip file, board file) its `descriptions` names, by absolute path, or None.
         self.descriptions = None
         self.drivers = {}
@@ -55,10 +74,12 @@ class Driver:
     def __init__(self):
         self.windows = []
         self.lines = []
-        # (name, priority offset, stack or "default")
+        # In thread order: each thread as (name, priority offset, stack or "default"), the
+        # capabilities its spawn delegates, and the badged copies of the driver's notification
+        # among them.
         self.threads = []
-        # The capabilities each thread's spawn delegates, in thread order.
         self.caps = []
+        self.badged = []
         # The index of the thread that receives on the endpoint.
         self.receiver = None
         self.endpoints = 0
@@ -67,6 +88,8 @@ class Driver:
         self.posture = None
         self.console = False
         self.start = None
+        # The libraries a task using the driver links, by target name.
+        self.client = []
 
 
 def check_manifests(paths):
@@ -100,12 +123,12 @@ def check_manifest(path, text, report):
     if root is None:
         return None
     top = f.fields(root, "the manifest", MANIFEST_FIELDS,
-                   ("version", "abi", "target", "protection", "pools", "threads", "drivers"))
-    if top is None or not f.version(top, "the manifest"):
+                   ("version", "abi", "target", "protection", "pools", "threads", "init", "drivers"))
+    if top is None or not f.version(top, "the manifest", MANIFEST_VERSIONS):
         return None
     manifest = Manifest()
     if "abi" in top:
-        abi = f.fields(top["abi"], "`abi`", ("table", "cap_reserved"), ("table", "cap_reserved"))
+        abi = f.fields(top["abi"], "`abi`", ABI_FIELDS, ABI_FIELDS)
         if abi is not None and "table" in abi:
             manifest.table = f.integer(abi["table"], "`abi` table", 16)
         if manifest.table is not None and manifest.table not in TABLE_LAYOUTS:
@@ -114,6 +137,8 @@ def check_manifest(path, text, report):
                      % (manifest.table, ", ".join(str(v) for v in TABLE_LAYOUTS)))
         if abi is not None and "cap_reserved" in abi:
             manifest.cap_reserved = f.integer(abi["cap_reserved"], "`abi` cap_reserved", 8)
+        if abi is not None and "symbol_prefix" in abi:
+            manifest.symbol_prefix = f.name(abi["symbol_prefix"], "`abi` symbol_prefix", SYMBOL_PREFIX)
     target = None
     if "target" in top:
         target = check_target(f, top["target"], manifest)
@@ -128,11 +153,14 @@ def check_manifest(path, text, report):
             if not is_pool(name):
                 f.refuse(key, "form.unknown-field",
                          "`pools` has no field `%s`; it holds every KICKOS_MAX_* but %s, every "
-                         "KICKOS_TASK_*_BUDGET and KICKOS_CAP_TABLE_SUPPLY" % (name, WINDOWS_KNOB))
+                         "KICKOS_TASK_*_BUDGET, KICKOS_CAP_TABLE_SUPPLY, KICKOS_RAM_OWNER_SLOTS and "
+                         "KICKOS_ASPACE_RANGES" % (name, WINDOWS_KNOB))
                 continue
             manifest.pools[name] = f.integer(value, "pool `%s`" % name, 32)
     if "threads" in top:
         check_threads(f, top["threads"], manifest)
+    if "init" in top:
+        check_init(f, top["init"], manifest)
     if "descriptions" in top and target is not None:
         manifest.descriptions = check_descriptions(f, top["descriptions"], target)
     if "default" in top and target is not None:
@@ -208,11 +236,14 @@ def check_amp(f, node, manifest):
 
 
 def check_protection(f, node, manifest):
-    values = f.fields(node, "`protection`", PROTECTION_FIELDS, ("enforced", "window_rule", "thread_windows"))
+    values = f.fields(node, "`protection`", PROTECTION_FIELDS,
+                      ("enforced", "window_rule", "thread_windows", "fault_isolation"))
     if values is None:
         return
     if "enforced" in values:
         manifest.enforced = f.boolean(values["enforced"], "`protection` enforced")
+    if "fault_isolation" in values:
+        manifest.fault_isolation = f.boolean(values["fault_isolation"], "`protection` fault_isolation")
     if "thread_windows" in values:
         windows = f.integer(values["thread_windows"], "`protection` thread_windows", 8)
         if windows == 0:
@@ -248,7 +279,8 @@ def check_threads(f, node, manifest):
         if pair is not None and (pair[0] == 0 or pair[1] < pair[0]):
             f.refuse(values["priority"], "manifest.priority",
                      "`threads` priority `[%d, %d]` is no range above the idle priority 0" % pair)
-        manifest.priority = pair
+        else:
+            manifest.priority = pair
     for field in ("min_stack", "user_stack", "idle_stack", "root_stack"):
         if field not in values:
             continue
@@ -269,6 +301,21 @@ def check_threads(f, node, manifest):
                      "`threads` stack_stride %d is not a power of two" % stride)
         elif isinstance(stride, int):
             manifest.stack_stride = stride
+
+
+def check_init(f, node, manifest):
+    values = f.fields(node, "`init`", INIT_FIELDS, INIT_FIELDS)
+    if values is None:
+        return
+    for field in ("status_record_size", "private_record_size"):
+        if field not in values:
+            continue
+        size = f.integer(values[field], "`init` %s" % field, 16)
+        if size == 0:
+            f.refuse(values[field], "manifest.bound", "`init` %s is 0, which holds no task's record" % field)
+        setattr(manifest, field, size)
+    if "free_regions" in values:
+        manifest.free_regions = f.integer(values["free_regions"], "`init` free_regions", 8)
 
 
 def check_descriptions(f, node, target):
@@ -339,11 +386,11 @@ def word_or_integer(f, node, what, word, bits):
     return f.integer(node, "%s, or `%s`," % (what, word), bits)
 
 
-def roles(f, node, what):
+def roles(f, node, what, pattern=IDENTIFIER, kind="a role"):
     items = f.sequence(node, what)
     seen = {}
     for item in items or ():
-        name = f.name(item, "a role in %s" % what, IDENTIFIER)
+        name = f.name(item, "%s in %s" % (kind, what), pattern)
         if name is None:
             continue
         if name in seen:
@@ -367,7 +414,7 @@ def check_driver(f, node, what):
         seen = {}
         for n, item in enumerate(threads or ()):
             twhat = "%s thread %d" % (what, n + 1)
-            thread = f.fields(item, twhat, ("name", "priority", "stack", "caps"), ("name", "priority", "stack", "caps"))
+            thread = f.fields(item, twhat, THREAD_ENTRY_FIELDS, THREAD_ENTRY_FIELDS)
             if thread is None:
                 continue
             name = None
@@ -389,6 +436,13 @@ def check_driver(f, node, what):
             if "caps" in thread:
                 caps = f.integer(thread["caps"], "%s caps" % twhat, 8)
             driver.caps.append(caps)
+            badged = None
+            if "badged" in thread:
+                badged = f.integer(thread["badged"], "%s badged" % twhat, 8)
+            if badged is not None and caps is not None and badged > caps:
+                f.refuse(thread["badged"], "manifest.bound",
+                         "%s mints %d badged copies for a spawn that delegates %d capabilities" % (twhat, badged, caps))
+            driver.badged.append(badged)
     for field in ("endpoints", "notifications"):
         if field in values:
             setattr(driver, field, f.integer(values[field], "%s %s" % (what, field), 8))
@@ -408,6 +462,8 @@ def check_driver(f, node, what):
         driver.console = f.boolean(values["console"], "%s console" % what) is True
     if "start" in values:
         driver.start = f.name(values["start"], "%s start" % what, C_IDENTIFIER)
+    if "client" in values:
+        driver.client = roles(f, values["client"], "%s client" % what, C_IDENTIFIER, "a library")
     if "receiver" in values:
         receiver = f.name(values["receiver"], "%s receiver" % what, IDENTIFIER)
         names = [name for name, offset, stack in driver.threads]

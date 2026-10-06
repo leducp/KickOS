@@ -234,6 +234,12 @@ kos_thread_t kos_thread_self(void)
     return static_cast<kos_thread_t>(r);
 }
 
+int kos_thread_set_priority(uint8_t priority)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_PRIORITY,
+                                         static_cast<uintptr_t>(priority), 0, 0, 0));
+}
+
 int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_SCHED_GRANT,
@@ -277,9 +283,15 @@ int kos_task_state(kos_task_t task)
                                          0));
 }
 
-int kos_window_addr(uintptr_t base, void** out)
+int kos_task_exit_status(kos_task_t task, int* status)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_WINDOW_ADDR, base,
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_EXIT_STATUS, static_cast<uintptr_t>(task),
+                                         reinterpret_cast<uintptr_t>(status), 0, 0));
+}
+
+int kos_window_get(uint32_t index, struct kos_window* out)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_WINDOW_GET, index,
                                          reinterpret_cast<uintptr_t>(out), 0, 0));
 }
 

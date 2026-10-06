@@ -26,7 +26,8 @@
       "binaryDir": "${sourceDir}/build/qemu-x86_64-smp2",
       "cacheVariables": {
         "KICKOS_CONFIG_VARIANT": "smp2",
-        "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-x86_64.yaml"
+        "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-x86_64.yaml",
+        "KICKOS_RESTART_WITNESS_SYSTEM": "tests/integration/composition_witness/systems/restart-qemu-x86_64.yaml"
       }
     },
     {

@@ -26,7 +26,8 @@ extern "C"
         .addr = 0,
         .prio = 12,
         .kind = KOS_SVC_CONSOLE,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     // USIC0 CH1 @ 0x4003_0200, 0x200 B window (RM Table 18-21; the 0x200-aligned pow2
@@ -42,7 +43,8 @@ extern "C"
         .addr = 0,
         .prio = 11,
         .kind = KOS_SVC_SPI,
-        .rsv = { 0, 0, 0, 0 }
+        .rsv = { 0, 0, 0, 0 },
+        .instance = nullptr
     };
 
     static struct kos_service_bringup const xmc4800relax_services[] = {

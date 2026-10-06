@@ -33,7 +33,13 @@
       "binaryDir": "${sourceDir}/build/qemu-arm64-smp",
       "cacheVariables": {
         "KICKOS_CONFIG_VARIANT": "smp",
-        "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-arm64.yaml"
+        "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-arm64.yaml",
+        "KICKOS_RESTART_WITNESS_SYSTEM": "tests/integration/composition_witness/systems/restart-qemu-arm64.yaml",
+        "KICKOS_LINE_TAKER_SYSTEM": "tests/integration/composition_witness/systems/line-qemu-arm64.yaml",
+        "KICKOS_DRIVER_WITNESS_SYSTEM": "tests/integration/driver_witness/systems/qemu-arm64.yaml",
+        "KICKOS_CONSOLE_WITNESS_SYSTEM": "tests/integration/console_witness/systems/qemu-arm64.yaml",
+        "KICKOS_TEST_DRIVERS": "ON",
+        "KICKOS_WITNESS_ROOT_DEPTH": "ON"
       }
     },
     {

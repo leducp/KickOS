@@ -964,11 +964,11 @@ namespace kickos
                 // across one of those gaps is a wake into a thread already in teardown.
                 // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
-                // Cancel faulted-task peers before releasing the task slot. Use cooperative
-                // cancellation so device holders can shut down their hardware.
-                if (cause == EXIT_FAULTED)
+                // A fault ends the group (task_end), and so does the entry's death by any cause.
+                // A cancelled thread latches nothing: the task keeps KOS_EXIT_CANCELLED.
+                if (cause == EXIT_FAULTED or c->task_entry)
                 {
-                    task_cancel_group(c->task, CANCEL_KILL);
+                    task_end(c->task, code, c->cancel_kind == CANCEL_NONE);
                 }
 #if KICKOS_HAVE_ASPACE
                 // Unmap this thread's windows, the shootdown included, before the release below
@@ -999,13 +999,14 @@ namespace kickos
 #if KICKOS_ARCH_HAS_PORTS
                 // Its ports too: the next switch on this core closes them.
                 c->ctx.port_count = 0;
+                c->ctx.port_places = 0;
 #endif
                 // Capture task identity before retiring membership.
                 left_task = c->task;
                 left_gen = task_gen(c->task);
                 emptied_task = task_release(c->task);
                 // Clear the task pointer if this death empties the group, since its slot
-                // may be reused during teardown gaps. With surviving siblings, retain it
+                // may be freed during teardown gaps. With surviving siblings, retain it
                 // until teardown finishes so still-open capabilities remain in the task budget.
                 if (emptied_task)
                 {
@@ -1050,6 +1051,9 @@ namespace kickos
                 {
                     k.live--;
                 }
+                // By the last member to finish its sweep, so a slay it wakes and a restart the
+                // report prompts find everything the task's threads held already free.
+                bool const task_dead = task_sweep_done(left_task, left_gen);
                 // EXITED suppresses switching while this loop scans ThreadPool for join and
                 // task-empty waiters.
                 bool const last_out = (k.live == 1);
@@ -1063,9 +1067,9 @@ namespace kickos
                         wake(w);
                         continue;
                     }
-                    // Only when this death emptied the group, compared by pointer as
-                    // membership is. The creator's watch is raised once, below the loop.
-                    if (emptied_task and w->wait_task_target() == left_task)
+                    // Only once the group is empty and swept, compared by pointer as
+                    // membership is. The creator's watch is raised below the loop.
+                    if (task_dead and w->wait_task_target() == left_task)
                     {
                         w->clear_wait_edge();
                         w->wait_result = 0;
@@ -1080,9 +1084,7 @@ namespace kickos
                         wake(w);
                     }
                 }
-                // After the sweep, so a restart the report prompts finds everything this
-                // task's threads held already free.
-                if (emptied_task)
+                if (task_dead)
                 {
                     task_report_death(left_task, left_gen);
                 }

@@ -12,8 +12,9 @@
 // nonblocking waker with wake_next_park. wait_result is poisoned until written.
 //
 // run_exit returns by longjmp from the final idle park. Never use it while
-// holding IrqLock or inside a capability-sweep gap. reset clears global
-// capability state and rejects an unfinished sweep.
+// holding IrqLock or inside a capability-sweep gap, where run_exit_in_gap
+// is the form. reset clears global capability state and rejects an
+// unfinished sweep.
 
 #ifndef KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 #define KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
@@ -185,6 +186,10 @@ namespace kickos
         void park_mutex_waiter(Thread* w, Mutex* m);
         // Run sched::exit_current until its final park.
         void run_exit(int code);
+        // run_exit for `t` from inside a run_in_chunk_gap action, as another core's or a
+        // preempting member's exit runs during a sweep's gap: the outer exit's park arm and
+        // the core's current thread are restored after it.
+        void run_exit_in_gap(Thread* t, int code);
         // Exit as a contained fault, without a cancellation kind.
         void run_exit_faulted(int code);
         void run_exit_as(int code, sched::ExitCause cause);

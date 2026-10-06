@@ -1,27 +1,26 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# M10 GOLDEN EXAMPLE: the end goal, written before the code that reads it. M10 is done when
-# this system is admitted on the host, builds, and runs on an XMC4800 Relax Kit with no jumper
-# and no external part.
+# The golden system on the XMC4800 Relax Kit, with no jumper and no external part: a sensor
+# whose measurement is a counter echoed through the SPI bus service's internal loopback, an app
+# that polls it and reports when it freezes, and a health checker told of each death. Every task
+# runs unprivileged and the user tasks hold no authority: everything privileged happens in the
+# init, from these declarations.
 #
-# The system: a fake sensor whose "measurement" is a counter echoed through the SPI bus
-# service's internal loopback, and an app that polls it and notices when it freezes. Every
-# task below runs unprivileged, and the two user tasks hold no authority at all: everything
-# privileged happens in the init, from these declarations.
-#
-# Rules this file is checked against (M10.3), each refused with a message naming it:
-#   * a field the schema does not know is refused;
-#   * a path in `uses` names an endpoint served by a task declared ABOVE it, and `watches`
-#     names tasks declared above it, so references point backward and nothing is solved;
-#     ready tasks start in file order, and one waiting on a server is skipped and revisited;
-#   * a device window or interrupt line is held by one task at most;
-#   * a grant the platform cannot enforce is refused unless the limitation the chip file
-#     names is listed under `accepts` (none is needed on the XMC4800);
-#   * every task writing stdout runs at or below the console's priority (the console
-#     rendezvous has no priority inheritance);
-#   * counts and sizes fit what the kernel build exports, or the refusal names the Kconfig
-#     knob that would have to grow.
+# Admission refuses, each refusal naming its rule:
+#   * a field the schema does not know, and a required one missing;
+#   * a path in `uses` that no task declared above it serves, and a `watches` naming a task not
+#     declared above it, so references point backward and nothing is solved; ready tasks start
+#     in file order, and one waiting on a server is skipped and revisited;
+#   * a device window or interrupt line held by two tasks, and the board's console device
+#     granted to any task but the one `stdout` names;
+#   * `restart` on the task `ends` names, whose one exit ends the system;
+#   * a grant the platform cannot enforce, unless the limitation the chip file names is listed
+#     under `accepts` (none is needed on the XMC4800);
+#   * a task writing stdout above the console's priority, the console rendezvous having no
+#     priority inheritance, or declared before the task `stdout` names;
+#   * a priority outside the kernel build's range, and counts and sizes past what the kernel
+#     build exports, a supply refusal naming the Kconfig knob that would have to grow.
 
 version: 1
 board: xmc4800-relax
@@ -32,10 +31,12 @@ stdout: /svc/console
 # What ends the system. `never`: it runs until reset, and the init stays resident.
 ends: never
 
+# The libc heap the image carves.
+heap: 16384
+
 # Shared memory, declared once and mapped by the init into each task that lists it under
-# `maps`. Never mapped by hand: user code looks it up by name. The size is checked against
-# what the protection unit can grant -- a power of two of at least 32 bytes on this MPU, a
-# whole page on a translating board.
+# `maps`. Never mapped by hand: user code looks it up by name. The size rounds up to what the
+# protection unit grants, a power of two of at least 32 bytes on this MPU.
 shared:
   - name: /shm/history
     size: 64
@@ -49,10 +50,10 @@ shared:
 
 tasks:
   # A driver shipped with the kernel package. `devices` grants the channel's register window.
-  # `lines` binds each line role the driver's exported metadata declares -- one, `irq`, for
-  # both drivers here -- to the line it takes. Explicit because the chip lets either USIC0
-  # channel raise either module line: nothing else could say which is whose, and admission
-  # refuses an unbound role and a line two tasks take.
+  # `lines` binds each line role the driver's exported metadata declares, `irq` alone for both
+  # drivers here, to the line it takes. The chip lets either USIC0 channel raise either module
+  # line, so nothing else says which is whose; admission refuses an unbound role and a line
+  # two tasks take.
   - name: console
     driver: xmcuartirq
     devices: [/dev/usic0/ch0]

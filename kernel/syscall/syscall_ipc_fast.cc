@@ -96,27 +96,25 @@ namespace kickos
         {
             return nullptr; // bad cap, or no SIGNAL right
         }
-        // AHEAD OF THE DEAD-ENDPOINT TEST, as in endpoint_send and endpoint_call, and for the
-        // same reason: a far endpoint holds no local receiver ever, so a locality test placed
-        // after that one could never run. A fall-through and never an errno, so endpoint_call
-        // produces the answer (docs/design-multicore.md N7).
+        // AHEAD OF THE RECEIVER PEEK, as the locality test sits ahead of the no-receiver test
+        // in endpoint_send and endpoint_call: a far endpoint holds no local receiver ever. A
+        // fall-through and never an errno, so endpoint_call produces the answer
+        // (docs/design-multicore.md N7).
         if (endpoint_is_far(e))
         {
             return nullptr;
         }
-        if (e->recv_holders == 0)
-        {
-            return nullptr; // a dead endpoint
-        }
         Thread* w = wq_peek_highest(e->recv_waiters);
         if (w == nullptr)
         {
-            return nullptr; // no parked receiver: there is nothing to hand off to
+            return nullptr; // no parked receiver, which a vacated endpoint never has
         }
         if (w->ipc.badge_out == 0 or w->dying)
         {
             return nullptr; // info-less receiver cannot host a call; a dying one takes no cap
         }
+        // A live parked receiver holds WAIT and waited here, so the endpoint is receiving.
+        KICKOS_DEBUG_ASSERT(endpoint_receiving(e));
         if (c->prio > w->prio)
         {
             // A caller outranking the receiver would need priority donation, so the fastpath

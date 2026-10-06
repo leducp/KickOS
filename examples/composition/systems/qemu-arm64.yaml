@@ -1,24 +1,27 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# M10 GOLDEN EXAMPLE: the same app and health checker as xmc4800-relax.yaml, on QEMU `virt`
-# with four A53 cores, to exercise what a translating SMP board adds: each task in its own
-# address space, a device window that is a whole page and reached at the address the task's
-# space maps it at, and tasks placed on cores. M10 is done on this board when it is admitted,
-# builds, and runs under the four-core preset.
+# The golden system on QEMU `virt` with four A53 cores: the app and health checker of
+# xmc4800-relax.yaml beside a sensor reading the PL031 clock, on a translating SMP board. Each
+# task runs in its own address space, a device window is a whole page reached at the address
+# the task's space maps it at, and tasks are placed on cores.
 #
-# Checked against the same rules as xmc4800-relax.yaml, plus:
-#   * a window is a whole number of pages;
-#   * a `core` exists in the kernel build, and a task that claims a line is on one core.
+# Admission refuses what it refuses for xmc4800-relax.yaml, and on this board also:
+#   * a device window that is not whole pages, unless its page holds another device's window
+#     and the task accepts `coarse_gate`;
+#   * a `core` the kernel build lacks, and a task taking a line without one `core`.
 
 version: 1
 board: qemu-arm64
 
-# No userspace console driver on this board: stdout stays on the kernel's console, and
-# saying so is explicit rather than a missing entry.
+# No userspace console driver on this board: stdout stays on the kernel's console, stated
+# explicitly rather than left out.
 stdout: kernel
 
 ends: never
+
+# The libc heap the image carves.
+heap: 65536
 
 # Shared memory, declared once and mapped by the init into each task that lists it under
 # `maps`. Never mapped by hand: user code looks it up by name. On this translating board the

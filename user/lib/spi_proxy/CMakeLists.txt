@@ -17,5 +17,4 @@ target_link_libraries(kickos_spi_proxy PUBLIC kickos_user)
 # sys.h/abi.h pull errno.h from kickos_system (kickos_user carries it only PRIVATE).
 target_include_directories(kickos_spi_proxy PRIVATE
   "${PROJECT_SOURCE_DIR}/system/include")
-install(TARGETS kickos_spi_proxy EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+kickos_export_targets(kickos_spi_proxy)

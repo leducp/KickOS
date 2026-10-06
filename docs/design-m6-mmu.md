@@ -1114,9 +1114,13 @@ in it too, because the copy is taken from what root has, not from what the linke
 **AND THE TEMPLATE OUTLIVES ROOT, which M6.2's audit found it did not.** Releasing root's space
 cleared the record of which space held the image's own pages, so the next space seeded mapped those
 pages itself and became a second template: every process created after it copied a LIVE process's
-mutable globals rather than root's. Two properties now hold together. While root lives the source is
-root, unchanged, so a global root writes before a spawn is one the child reads out of its own copy
--- the app's own drivers depend on exactly that. On root's way out, `aspace_release` freezes those
+mutable globals rather than root's. Two properties now hold together. While root lives the source
+of a spawn bringing its own data grant is root, unchanged, so a global root writes before a spawn
+is one the child reads out of its own copy -- the app's own drivers depend on exactly that. An
+explicit task's space copies the snapshot below instead, which the first explicit task's seed
+takes out of the live root (M10.4, `DOM_CALLER_TASK`), so every explicit task and its restarts
+start from root's data as it stood then. On root's way out, where no seed took it first,
+`aspace_release` freezes those
 pages into a snapshot of frames taken off the pool when root was seeded, with root's mappings still
 standing, and every later process copies the snapshot. A seed reaching a lost home with no snapshot
 behind it is REFUSED. No process other than root is ever the template. Witnessed by
