@@ -83,8 +83,8 @@ int console_tx_armed(void);
 // chip-writer bracket, and is dropped only once a driver has the device.
 void console_tx_write(char const* buf, size_t n);
 
-// One line, indivisibly, or nothing: returns n or 0. NEVER WAITS, so it is safe from ISR
-// and fault context. crlf nonzero expands '\n' to CR+LF during the copy.
+// One line, indivisibly, or nothing: returns n or 0. NEVER WAITS UNDER THE MASK, so it is safe
+// from ISR and fault context. crlf nonzero expands '\n' to CR+LF during the copy.
 //
 // A LINE THAT DOES NOT FIT IS REFUSED WHOLE AND DOES NOT GO OUT. The caller owes it NO
 // fallback and must not write it at the device: the drain is already a writer there, and the
@@ -95,9 +95,10 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf);
 
 // One line of a fault record: what console_tx_insert_line answers, except that a full ring does
 // not refuse it. The oldest queued bytes go out through arch_console_write_sync under the mask
-// until the line fits, so the ring's order and its one writer stand, and a line masks at most its
-// own expanded length of wire time. Still 0 for an unarmed ring, a line wider than the ring, a
-// copy it interrupted, and a producer drain holding a byte.
+// until the line fits, so the ring's order and its one writer stand. Under the mask it sends at
+// most the line's own expanded length of queued bytes; a backend with no TX interrupt drains the
+// rest after the mask is dropped. Still 0 for an unarmed ring, a line wider than the ring, an
+// insert or a record line it interrupted, and a producer drain holding a byte.
 int console_tx_insert_record_line(char const* buf, size_t n, int crlf);
 
 #if KICKOS_BENCH

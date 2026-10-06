@@ -50,11 +50,10 @@ namespace
         Atomic<uint32_t, Order::RELAXED> tail = 0; // bytes drained; written by the drain OR a producer
         int irq_line = -1;          // TX IRQ line (from the backend); console_tx_deinit detaches it
         bool armed = false;
-        // Set across the copy in console_tx_insert_line. IrqLock masks interrupts, so nothing
-        // ASYNCHRONOUS can land in there, but a synchronous CPU fault (illegal instruction,
-        // MPU, bus) is not gated by the mask, and its reporter writes to this same console. A
-        // nested insert would build its line at the head this one has not published yet and
-        // then have its publication overwritten by this one's. It is refused instead.
+        // Set across an insert's copy and a record line's polled room-making. A synchronous
+        // CPU fault is not gated by the mask and its reporter writes to this same console: a
+        // nested insert would build its line at a head this one has not published yet, or send
+        // bytes this one is sending. It is refused instead.
         bool inserting = false;
         // Set by whichever producer is draining in its own context, on a backend with no TX
         // interrupt. The INSERT is serialised by IrqLock; the DRAIN must not be, or the
@@ -228,21 +227,80 @@ void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size,
 
 int console_tx_armed(void) { return static_cast<int>(tx().armed); }
 
-static void drain_in_producer(void);
+static __attribute__((noinline)) void drain_in_producer(void);
 
-// One line, indivisibly, or nothing (nonzero on success). NEVER WAITS UNDER THE LOCK, which
-// makes it safe from ISR and fault context. A line that does not fit is refused WHOLE and the
-// caller owes it NO fallback.
+static uint32_t line_needed(char const* buf, size_t n, int crlf)
+{
+    uint32_t needed = static_cast<uint32_t>(n);
+    if (crlf != 0)
+    {
+        for (size_t i = 0; i < n; i++)
+        {
+            if (buf[i] == '\n')
+            {
+                needed++;
+            }
+        }
+    }
+    return needed;
+}
+
+// Caller holds IrqLock over an armed ring. Copies the whole line or nothing.
 //
-// A LINE THE RING CANNOT TAKE DOES NOT GO OUT. The kernel console is a DEBUG facility, so
-// losing an ordinary line under console pressure is the honest outcome; what is not acceptable
-// is a SPLIT line, and any direct write while the ring holds bytes produces one: the drain and
-// the direct writer are two writers at one device and interleave mid-line. A fault record's
-// line makes room instead (console_tx_insert_record_line).
+// noinline, as drain_in_producer: tests/static/trap_redzone_indirect.txt binds the backend calls
+// to these two bodies by name.
+static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    if (r.inserting)
+    {
+        return false;
+    }
+    if (line_needed(buf, n, crlf) > r.space())
+    {
+        return false;
+    }
+
+    bool const was_empty = (r.used() == 0);
+    uint32_t idx = r.head;
+    r.inserting = true;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (crlf != 0 and buf[i] == '\n')
+        {
+            r.buf[idx] = '\r';
+            idx = (idx + 1u) & r.mask;
+        }
+        r.buf[idx] = buf[i];
+        idx = (idx + 1u) & r.mask;
+    }
+    KICKOS_CONSOLE_TX_BARRIER();
+    r.head = idx;
+    r.inserting = false;
+    r.backend->irq_enable();
+
+    // A transition-triggered TX interrupt raises nothing on an idle channel, so the first
+    // byte is pushed here. Citations in enqueue_locked.
+    //
+    // NOT WHILE A PRODUCER DRAIN OWNS A BYTE. That drain takes its byte under this same
+    // lock and pushes it with the lock open, so between the two the ring reads EMPTY while
+    // a byte is still going to the device, and priming then splits the line in flight.
+    uint32_t const tail = r.tail;
+    if (was_empty and not r.draining and idx != tail and r.backend->slot_free() != 0)
+    {
+        r.backend->push(static_cast<uint8_t>(r.buf[tail]));
+        r.tail = (tail + 1u) & r.mask;
+    }
+    return true;
+}
+
+// One line, indivisibly, or nothing (nonzero on success). A line that does not fit is refused
+// WHOLE and does not go out: the drain is already a writer at the device, and a direct write of
+// the refused line would interleave with it mid-line. A fault record's line makes room instead
+// (console_tx_insert_record_line).
 //
-// The one direct write left is the UNARMED ring, before console_tx_init has run. No ring means
-// no drain means no second writer, and early-boot output predates the ring. That case is
-// decided under the same lock as everything else, so it cannot race an arm.
+// The unarmed ring, before console_tx_init, is written directly: no ring means no drain. That
+// case is decided under the same lock as everything else, so it cannot race an arm.
 //
 // CRLF is expanded during the copy. A caller-side cooked buffer would stand on the fault
 // reporter's descent, which the trap red-zone gate measures (kickos/diag.h).
@@ -261,60 +319,9 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
         {
             unbuffered = true;
         }
-        else
+        else if (not insert_locked(buf, n, crlf))
         {
-            if (r.inserting)
-            {
-                return 0;
-            }
-            uint32_t needed = static_cast<uint32_t>(n);
-            if (crlf != 0)
-            {
-                for (size_t i = 0; i < n; i++)
-                {
-                    if (buf[i] == '\n')
-                    {
-                        needed++;
-                    }
-                }
-            }
-            if (needed > r.space())
-            {
-                return 0;
-            }
-
-            bool const was_empty = (r.used() == 0);
-            uint32_t idx = r.head;
-            r.inserting = true;
-            for (size_t i = 0; i < n; i++)
-            {
-                if (crlf != 0 and buf[i] == '\n')
-                {
-                    r.buf[idx] = '\r';
-                    idx = (idx + 1u) & r.mask;
-                }
-                r.buf[idx] = buf[i];
-                idx = (idx + 1u) & r.mask;
-            }
-            KICKOS_CONSOLE_TX_BARRIER();
-            r.head = idx;
-            r.inserting = false;
-            r.backend->irq_enable();
-
-            // A transition-triggered TX interrupt raises nothing on an idle channel, so the
-            // first byte is pushed here. Citations in enqueue_locked.
-            //
-            // NOT WHILE A PRODUCER DRAIN OWNS A BYTE. That drain takes its byte under this
-            // same lock and pushes it with the lock open, so between the two the ring reads
-            // EMPTY while a byte is still going to the device. Priming on that reading puts a
-            // second writer on the wire and splits the line already in flight, which is the
-            // defect the whole drop rule exists to remove.
-            uint32_t const tail = r.tail;
-            if (was_empty and not r.draining and idx != tail and r.backend->slot_free() != 0)
-            {
-                r.backend->push(static_cast<uint8_t>(r.buf[tail]));
-                r.tail = (tail + 1u) & r.mask;
-            }
+            return 0;
         }
     }
 
@@ -327,49 +334,49 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
     return static_cast<int>(n);
 }
 
-// A FAULT RECORD'S LINE IS NOT LOST TO A FULL RING. Under the mask, the oldest queued bytes go
-// out through the polled writer, in ring order, until the line fits, and the line then queues
-// as any other: the ISR and every producer are held off for the span, so the wire has one
-// writer, and the span is at most the line's own expanded length of wire time. A producer drain
-// holding a byte it took is the one writer the mask does not stop, so that ring is not touched.
+// Under the mask, the oldest queued bytes go out through the polled writer, in ring order, until
+// the line fits: never more than the line needs. A producer drain holding a byte it took is the
+// one writer the mask does not stop, so that ring is not touched.
+//
+// `inserting` is held across the polled loop and each byte is TAKEN before it is written: a
+// synchronous fault in the UART poke can nest a record or a panic flush here, and either must
+// find the byte gone rather than send it again or move the tail back.
 int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
 {
     ConsoleTxRing& r = tx();
-    kickos::IrqLock lock;
-    if (not r.armed or r.inserting or r.draining)
+    if (n == 0)
     {
         return 0;
     }
-    uint32_t needed = static_cast<uint32_t>(n);
-    if (crlf != 0)
     {
-        for (size_t i = 0; i < n; i++)
+        kickos::IrqLock lock;
+        if (not r.armed or r.inserting or r.draining)
         {
-            if (buf[i] == '\n')
-            {
-                needed++;
-            }
+            return 0;
+        }
+        uint32_t const needed = line_needed(buf, n, crlf);
+        if (needed > r.size - 1u)
+        {
+            return 0;
+        }
+        r.inserting = true;
+        while (r.space() < needed)
+        {
+            uint32_t const tail = r.tail;
+            r.tail = (tail + 1u) & r.mask;
+            arch_console_write_sync(r.buf + tail, 1);
+        }
+        r.inserting = false;
+        if (not insert_locked(buf, n, crlf))
+        {
+            return 0;
         }
     }
-    if (needed > r.size - 1u)
-    {
-        return 0;
-    }
-    while (r.space() < needed)
-    {
-        uint32_t const tail = r.tail;
-        uint32_t run = needed - r.space();
-        if (run > r.size - tail)
-        {
-            run = r.size - tail;
-        }
-        arch_console_write_sync(r.buf + tail, run);
-        r.tail = (tail + run) & r.mask;
-    }
-    return console_tx_insert_line(buf, n, crlf);
+    drain_in_producer();
+    return static_cast<int>(n);
 }
 
-static void drain_in_producer(void)
+static __attribute__((noinline)) void drain_in_producer(void)
 {
     ConsoleTxRing& r = tx();
     {

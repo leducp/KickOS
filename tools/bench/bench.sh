@@ -392,7 +392,7 @@ judge() {
     return 0
   fi
   local wired
-  wired=$(rig_wired "$BOARD")
+  wired=$(rig_wired "$BOARD") || return 2
   echo "=== judging $LOG with $JUDGE${JUDGE_ARGS:+ ($JUDGE_ARGS)}, fittings: ${wired:-none declared}"
   rig_judge "$BOARD" "$LOG" "$PWD/$BUILD" "$JUDGE" "${JUDGE_ARGS:-}"
 }
@@ -527,10 +527,13 @@ RC=${PIPESTATUS[0]}
 RBYTES=$(sed -n 's/^bytes: *//p' "$ROUT" | head -1)
 rm -f "$ROUT"
 FETCHED=0
+rm -f "$LOG.times"
 if rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG" "$LOG" 2>/dev/null; then
   FETCHED=1
   LBYTES=$(wc -c < "$LOG")
 fi
+# The arrival-time sidecar exists only where the capture route stamps lines.
+rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG.times" "$LOG.times" 2>/dev/null || true
 
 if [ "$RC" -ne 0 ]; then
   # The remote refusal stays the headline and keeps its exit code; whether the log survived

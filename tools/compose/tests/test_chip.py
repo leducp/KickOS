@@ -139,6 +139,7 @@ class Generated(unittest.TestCase):
         self.assertTrue(outputs["chip.cmake"].endswith(
             "\nset(KICKOS_CHIP_REGION_UNIT \"pmsav7\")\nset(KICKOS_CHIP_TRANSLATES OFF)\n"))
         self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE ON)\n", outputs["chip.cmake"])
+        self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS 2)\n", outputs["chip.cmake"])
         self.assertNotIn("KICKOS_CHIP_ESPTOOL_IMAGE", outputs["chip.cmake"])
         self.assertNotIn("KICKOS_QEMU_", outputs["chip.cmake"])
         for name, text in outputs.items():
@@ -165,6 +166,12 @@ class Generated(unittest.TestCase):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
             self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege, text, name)
+
+    def test_tree_reserved_block_count(self):
+        for name, count in (("sim", 0), ("mps2", 0), ("xmc4800", 3), ("stm32f302", 4)):
+            path = os.path.join(TREE, "platform", name, "chip.yaml")
+            text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
+            self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % count, text, name)
 
     def test_tables_follow_ownership(self):
         rows = chip.table_rows(self.view())

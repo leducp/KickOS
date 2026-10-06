@@ -204,6 +204,11 @@ if(KICKOS_CLOCK_RETUNE_TEST
   add_subdirectory(clockretune)
 endif()
 # Arch-neutral (clock_now plus sleep_ns only), so it builds for any board.
+# Its judge times the capture host's arrival stamps, which only the Espressif route writes.
+if((KICKOS_BOARD STREQUAL "esp32c6-wroom" OR KICKOS_BOARD STREQUAL "esp32-wroom")
+   AND NOT KICKOS_AMP_NODE)
+  add_subdirectory(wallclock)
+endif()
 if(KICKOS_CLOCKSOAK_TEST)
   add_subdirectory(clocksoak)
 endif()

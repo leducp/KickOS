@@ -363,10 +363,10 @@ ARMS = [
                                           "interrupts: { }")], False),
     ("form.missing", "stm32f411/chip.yaml", [("count: { value: 86,", "count: {")], False),
     ("chip.link-duplicate", "xmc4800/chip.yaml",
-     [("\n# Pins are", "  dsram2: { base: 0x20020000, size: 0x20000, link: { region: RAM, access: rwx } }\n\n# Pins are")],
+     [("\n# Pins are", "  psram: { base: 0x1FFE8000, size: 0x18000, link: { region: RAM, access: rwx } }\n\n# Pins are")],
      False),
     (None, "xmc4800/chip.yaml",
-     [("\n# Pins are", "  dsram2: { base: 0x20020000, size: 0x20000, link: { region: RAM2, access: rw } }\n\n# Pins are")],
+     [("\n# Pins are", "  psram: { base: 0x1FFE8000, size: 0x18000, link: { region: RAM2, access: rw } }\n\n# Pins are")],
      False),
     ("form.name", "xmc4800/chip.yaml", [("link: { region: RAM, access: rwx }", "link: { region: RAM, access: wr }")], False),
     ("form.name", "xmc4800/chip.yaml", [("link: { region: RAM, access: rwx }", "link: { region: ram, access: rw }")], False),
@@ -724,7 +724,7 @@ IMX_MANIFEST = manifest_of("imx8mp-evk", "imx8mp", "armv8a", TRANSLATING, 1, ARM
 RV64_MANIFEST = manifest_of("qemu-riscv64", "virt_rv64", "rv64imac", TRANSLATING, 1, ARM64_POOLS, (2304, 12288, 4096, 20480, "none"))
 XMC_ENDPOINTS_2 = XMC_MANIFEST.replace("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 2\n")
 XMC_ENDPOINTS_3 = XMC_MANIFEST.replace("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 3\n")
-XMC_ARENA = "    size: 0x20000\n    arena: true\n"
+XMC_ARENA = "    size: 0x40000\n    arena: true\n"
 UNENFORCED = [("  enforced: true\n", "  enforced: false\n")]
 NO_PROTECTION = ("ends: never\n", "ends: never\naccepts: [no_protection]\n")
 VIRTIO = "devices: [/dev/rtc, /dev/virtio/31]\n    accepts: [%s]"
@@ -1588,10 +1588,9 @@ XMC_ODD_REGION = [NO_PROTECTION, ("    size: 64\n", "    size: 0x41\n")]
 # A heap past the arena: the link places it, below the arena.
 HEAP = ("heap: 16384\n", "heap: 0x18000\n")
 C6_FREE = C6_MANIFEST.replace("  free_regions: 5\n", "  free_regions: %d\n")
-# Masked stacks of a user stack the stride rounds up: each block is the user stack's size on a
-# stride's alignment.
+# Masked stacks of one stride on a granule unit: each sits on the stride's alignment.
 XMC_ODD_STACKS = mutate(XMC_MANIFEST, [("window_rule: pow2", "window_rule: granule"),
-                                       ("  user_stack: 4096\n", "  user_stack: 0x1100\n"),
+                                       ("  user_stack: 4096\n", "  user_stack: 0x2000\n"),
                                        ("  stack_stride: 4096\n", "  stack_stride: 0x2000\n")])[0]
 C6_OWNER_SLOTS = C6_MANIFEST.replace("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: %d\n")
 # Two watchers of blink, each reserving and self-granting a status block of its own.
@@ -1660,7 +1659,7 @@ def edited_platform_beside(root):
     edited = os.path.join(os.path.dirname(root), "edited")
     shutil.copytree(root, edited)
     chip = os.path.join(edited, "xmc4800", "chip.yaml")
-    write(chip, mutate(read(chip), [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x8000"))])[0])
+    write(chip, mutate(read(chip), [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8000"))])[0])
     return run_admit([golden(root, "xmc4800-relax.yaml")], edited, manifest_path), []
 
 
@@ -2008,12 +2007,12 @@ SCENARIOS = [
     ("supply.budget", on_xmc([("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /svc/spi0, /svc/console]\n")],
                              [("version: ", "supply.budget"), ("  - name: app", "supply.budget")], [], XMC_ENDPOINTS_2,
                              names="holds 3 endpoints")),
-    ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x8000"))],
+    ("supply.arena", on_xmc([], [("version: ", "supply.arena")], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8000"))],
                             XMC_MANIFEST)),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")],
-                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x8800"))], XMC_MANIFEST)),
-    (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x9000"))], XMC_MANIFEST)),
-    (None, on_xmc([HEAP], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x9000"))], XMC_MANIFEST)),
+                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x8800"))], XMC_MANIFEST)),
+    (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
+    (None, on_xmc([HEAP], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x9000"))], XMC_MANIFEST)),
     ("supply.reservations", on_c6(C6_WATCHERS, [("version: ", "supply.reservations")], manifest=C6_OWNER_SLOTS % 6)),
     (None, on_c6(C6_WATCHERS, [], manifest=C6_OWNER_SLOTS % 7)),
     ("supply.ranges", on_arm64_alone(6, [("    - name: probe", "supply.ranges")])),
@@ -2025,15 +2024,15 @@ SCENARIOS = [
     ("supply.init-windows", on_c6(C6_WATCHERS, [("version: ", "supply.init-windows")], manifest=C6_FREE % 2)),
     (None, on_c6(C6_WATCHERS, [], manifest=C6_FREE % 3)),
     ("supply.arena", on_xmc([], [("version: ", "supply.arena")],
-                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0xF0E0"))], XMC_ODD_STACKS)),
-    (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0xF100"))], XMC_ODD_STACKS)),
+                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0xDFE0"))], XMC_ODD_STACKS)),
+    (None, on_xmc([], [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0xE000"))], XMC_ODD_STACKS)),
     (None, edited_platform_beside),
     ("encoding.window", on_k64f(K64F_UNGUARDED, [("    devices: [/dev/dspi0]", "encoding.window")],
                                 [("[0x4002C000, 0x40]", "[0x4002C008, 0x40]")], manifest=K64F_NO_UNIT)),
     (None, on_k64f(K64F_UNGUARDED, [], [("[0x4002C000, 0x40]", "[0x4002C010, 0x40]")], manifest=K64F_NO_UNIT)),
     ("supply.arena", on_xmc(XMC_ODD_REGION, [("version: ", "supply.arena")],
-                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x67D0"))], XMC_NO_UNIT)),
-    (None, on_xmc(XMC_ODD_REGION, [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x20000", "size: 0x67E0"))], XMC_NO_UNIT)),
+                            [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x67D0"))], XMC_NO_UNIT)),
+    (None, on_xmc(XMC_ODD_REGION, [], [(XMC_ARENA, XMC_ARENA.replace("size: 0x40000", "size: 0x67E0"))], XMC_NO_UNIT)),
     ("ownership.device", diagnostic_app("xmcspi", U0C1 + "    lines: { irq: /dev/usic0/sr1 }\n",
                                         [("    devices: ", "ownership.device"), ("    lines: ", "ownership.line")])),
     ("ownership.device", diagnostic_app("xmccshold", U0C1, [("    devices: ", "ownership.device")])),

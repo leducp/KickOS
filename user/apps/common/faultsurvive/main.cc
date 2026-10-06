@@ -53,19 +53,23 @@ using kickos::emit;
 extern "C" volatile unsigned kickos_trapstack_witness;
 #endif
 
-// A synchronous fault the running instruction owns. The sim reaches the rule through SIGILL.
+// A synchronous fault the running instruction owns. The sim reaches the rule through SIGILL. An
+// SP move shares one asm statement with KICKOS_FS_TRAP_INSN, so nothing runs on the moved SP.
 #if defined(__riscv)
-#define KICKOS_FS_TRAP() __asm volatile(".word 0x00000000") // illegal on RV32
+#define KICKOS_FS_TRAP_INSN ".word 0x00000000" // illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
-#define KICKOS_FS_TRAP() __asm volatile("udf #0")
+#define KICKOS_FS_TRAP_INSN "udf #0"
 #elif defined(__aarch64__)
 // All-zero is a permanently-undefined A64 encoding, reported with EC 0x00. NOT
 // __builtin_trap, which is `brk` on this ISA and raises a DEBUG exception (EC 0x3C).
-#define KICKOS_FS_TRAP() __asm volatile(".inst 0x00000000")
+#define KICKOS_FS_TRAP_INSN ".inst 0x00000000"
 #elif defined(__RX__)
 // MVTIPL in user mode is a defined privileged-instruction exception (RXv3 ISA UM sec.5.1.2).
 // IPL is already 0, so an execution that lands in supervisor mode changes nothing.
-#define KICKOS_FS_TRAP() __asm volatile("mvtipl #0")
+#define KICKOS_FS_TRAP_INSN "mvtipl #0"
+#endif
+#if defined(KICKOS_FS_TRAP_INSN)
+#define KICKOS_FS_TRAP() __asm volatile(KICKOS_FS_TRAP_INSN)
 #else
 #define KICKOS_FS_TRAP() __builtin_trap() // host: x86 ud2 -> SIGILL
 #endif
@@ -150,21 +154,20 @@ namespace
 #if KICKOS_FS_MODE == 1
         g_sink = burn(4096, nullptr); // deeper than any thread stack in the tree
 #elif KICKOS_FS_MODE == 2
-        // Top of the buffer: the frame is pushed DOWNWARDS from here. Nothing may run between
-        // the SP move and the trap.
+        // Top of the buffer: the frame is pushed DOWNWARDS from here.
         uintptr_t const top = reinterpret_cast<uintptr_t>(&g_offstack[sizeof(g_offstack)]);
 #if defined(__riscv)
-        __asm volatile("mv sp, %0" ::"r"(top) : "memory");
+        __asm volatile("mv sp, %0\n\t" KICKOS_FS_TRAP_INSN ::"r"(top) : "memory");
 #elif defined(__RX__)
-        __asm volatile("mov.l %0, r0" ::"r"(top) : "memory"); // R0 IS the SP on RX
+        // R0 IS the SP on RX.
+        __asm volatile("mov.l %0, r0\n\t" KICKOS_FS_TRAP_INSN ::"r"(top) : "memory");
 #else
-        __asm volatile("mov sp, %0" ::"r"(top) : "memory");
+        __asm volatile("mov sp, %0\n\t" KICKOS_FS_TRAP_INSN ::"r"(top) : "memory");
 #endif
-        KICKOS_FS_TRAP();
 #elif KICKOS_FS_MODE == 3
         // A prologue that stores through the U-mode SP writes INTO kernel .data. The extent test
         // refuses the SP first, and the frame base is ctx.kernel_sp and no function of the SP
-        // anyway. Nothing may run between the SP move and the trap.
+        // anyway.
         uintptr_t const kw = reinterpret_cast<uintptr_t>(&kickos_trapstack_witness);
 #if defined(__riscv)
         // trap_entry saves EVERY trap through the same prologue, so an illegal instruction
@@ -174,9 +177,8 @@ namespace
                       "the s2 slot must lie inside the frame, or this arm aims above the "
                       "witness and stops testing the prologue");
         __asm volatile("li s2, 0xC0DEBEEF\n\t"
-                       "mv sp, %0\n\t"
+                       "mv sp, %0\n\t" KICKOS_FS_TRAP_INSN
                        : : "r"(kw + (KICKOS_RV_TRAP_FRAME - KICKOS_RV_TRAP_F_S2)) : "s2", "memory");
-        KICKOS_FS_TRAP();
 #elif defined(__RX__)
         // `int #1` (kickos_rx_syscall_trap) and not the fault path: on RX the fault path already
         // checks the USP and the hole is in the syscall trap. Its generic arm stores the stacked
@@ -191,20 +193,18 @@ namespace
                        : : "r"(kw + 8u) : "memory");
 #endif
 #elif KICKOS_FS_MODE == 4
-        // Nothing may run between the SP move and the trap, so that an intact band names the
-        // kernel and nothing else.
+        // The SP move and the trap are one statement, so an intact band names the kernel and
+        // nothing else.
         uintptr_t const low = g_fs_stack_lo + FS_LOW_ROOM;
-        __asm volatile("mv sp, %0" ::"r"(low) : "memory");
-        KICKOS_FS_TRAP();
+        __asm volatile("mv sp, %0\n\t" KICKOS_FS_TRAP_INSN ::"r"(low) : "memory");
 #elif KICKOS_FS_MODE == 5
         // Two bytes down: bounds and extent both pass and only alignment can refuse it. sp is a
         // multiple of 4 at every instruction boundary, so sp - 2 cannot land aligned by
-        // accident. Nothing may run between the SP move and the trap.
+        // accident.
 #if defined(__riscv)
         // Every trap goes through trap_entry, so the illegal instruction meets the same
         // alignment leg an ecall would.
-        __asm volatile("addi sp, sp, -2" ::: "memory");
-        KICKOS_FS_TRAP();
+        __asm volatile("addi sp, sp, -2\n\t" KICKOS_FS_TRAP_INSN ::: "memory");
 #elif defined(__RX__)
         // int #1, NOT the fault path: RX's alignment leg lives in the syscall trap and the SWINT
         // switcher, while a fault reaches kickos_fault_frame_trusted, which tests range and
@@ -214,9 +214,7 @@ namespace
                        : : : "memory");
 #endif
 #elif KICKOS_FS_MODE == 6
-        // Nothing may run between the SP move and the trap.
-        __asm volatile("mov sp, %0" ::"r"(KICKOS_FS_NOWHERE) : "memory");
-        KICKOS_FS_TRAP();
+        __asm volatile("mov sp, %0\n\t" KICKOS_FS_TRAP_INSN ::"r"(KICKOS_FS_NOWHERE) : "memory");
 #else
         KICKOS_FS_TRAP();
 #endif

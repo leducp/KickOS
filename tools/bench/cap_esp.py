@@ -4,6 +4,9 @@
 #
 # ESP reset-into-run + capture on ONE serial handle (so no boot output is lost to a
 # separate reset step). Usage: cap_esp.py <port> <out> <secs> [until-regex]
+#
+# <out>.times receives one row per received line, `<seconds>\t<line>`, the seconds being host
+# monotonic time from the reset pulse to the arrival of the line's last byte.
 import sys, time, re
 import serial
 
@@ -18,14 +21,24 @@ def main():
     time.sleep(0.1)
     s.setRTS(False)
     buf = bytearray()
+    pending = bytearray()
     t0 = time.monotonic()
-    with open(out, 'wb') as f:
+    with open(out, 'wb') as f, open(out + '.times', 'wb') as times:
         while time.monotonic() - t0 < secs:
-            c = s.read(4096)
+            # Read what has arrived rather than a fixed count, or a line's arrival is stamped
+            # up to one read timeout late.
+            c = s.read(max(1, s.in_waiting))
             if c:
+                now = time.monotonic() - t0
                 f.write(c)
                 f.flush()
                 buf += c
+                pending += c
+                while b'\n' in pending:
+                    line, _, rest = pending.partition(b'\n')
+                    times.write(b'%.6f\t' % now + line.rstrip(b'\r') + b'\n')
+                    pending = bytearray(rest)
+                times.flush()
                 if until is not None and until.search(buf.decode('latin-1')):
                     break
     s.close()

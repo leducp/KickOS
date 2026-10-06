@@ -16,10 +16,10 @@
    kstack  1008 B x 9 = 9072 B
 
 [k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)
-[k64dspi] device open rc=1000000 achieved=1000000 Hz
+[k64dspi] device open rc=0 achieved=1000000 Hz
 [k64dspi] device open: PASS
-[k64dspi] single-byte loopback: FAIL
-[k64dspi] multi-byte (>FIFO) loopback: FAIL
-[k64dspi] zero-tx loopback: FAIL
-[k64dspi] two-segment transaction (one CS bracket): FAIL
-[k64dspi] loopback FAIL (see per-case lines above)
+[k64dspi] single-byte loopback: MISMATCH
+[k64dspi] multi-byte (>FIFO) loopback: MISMATCH
+[k64dspi] zero-tx loopback: MISMATCH
+[k64dspi] two-segment transaction (one CS bracket): MISMATCH
+[k64dspi] loopback MISMATCH (every transfer completed, rx != tx)

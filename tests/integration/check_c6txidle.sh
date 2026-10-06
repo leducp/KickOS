@@ -3,9 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # A silicon capture of c6txidle (user/apps/esp32c6-wroom/c6txidle): the TAIL line whole up to its
-# sentinel's last byte though the TX pad was taken from the UART the moment the console flush
-# returned, the transmitter idle at the encoding the flush waits for, the wait neither shorter than
-# the last frame nor run to its spin bound, and no panic.
+# sentinel's last byte though the kernel probe held the transmitter in reset the moment the console
+# flush returned, the transmitter idle at the encoding the flush waits for, the wait neither
+# shorter than the last frame nor run to its spin bound, and no panic.
 #
 #   KOS_CAPTURE=<log> check_c6txidle.sh <board-build> <kickos-source> <cmake>
 

@@ -627,6 +627,11 @@ namespace kickos
         CapRun cap_run = {};
         uint16_t cap_free_head = KCAP_FREE_NONE;
         uint16_t cap_width = 0;
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        // The region set staged and judged for this thread: thread_regions_stage for a spawn,
+        // thread_regions_boot for idle and root. thread_create seats it as staged.
+        MpuSet const* regions = nullptr;
+#endif
     };
 
     // Static thread-slot pool. Bump-allocated, then EXITED slots reclaimed at spawn. Liveness is

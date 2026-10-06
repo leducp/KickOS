@@ -1189,11 +1189,10 @@ namespace kickos
             return -KOS_EINVAL;
         }
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        attr.regions = thread_regions_stage(task_domain(tk), attr, stack, stack_size);
         // On PMSAv8 any overlap faults the child's exception entry and the kernel's own reads of
         // its frame.
-        if (p->privileged == 0
-            and not thread_regions_expressible(&k.threads.slots[i], task_domain(tk), attr, stack,
-                                               stack_size))
+        if (p->privileged == 0 and not attr.regions->overlaps_expressible())
         {
             spawn_unwind(k, attr, tk, stack, stack_size, i);
             return -KOS_EINVAL;

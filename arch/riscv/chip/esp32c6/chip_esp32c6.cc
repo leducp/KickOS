@@ -98,12 +98,8 @@ extern "C"
         __kickos_appdata_end;
 #endif
 
-    // Core clock in Hz. MEASURED ~160 MHz on silicon: the ROM first-stage loader brings
-    // up the PLL and leaves the CPU on it, so this is NOT XTAL/1 = 40 MHz. Derived from
-    // the MTIME-rate measurement below (MTIME is core-clocked); the CPU clock is not
-    // independently measurable here (the C6 traps on rdcycle). KickOS does not configure
-    // the clock, it inherits the ROM's PLL setup.
-    uint32_t SystemCoreClock = 160000000u;
+    // CPU_CLK, read off PCR by arch_init (mtime_conv.h).
+    uint32_t SystemCoreClock = 0u;
 }
 
 namespace
@@ -111,9 +107,11 @@ namespace
     inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
     inline volatile uint32_t& r32(uintptr_t a) { return *r32p(a); }
 
-    // mtime_ticks_to_ns / mtime_ns_to_ticks: see mtime_conv.h.
     using kickos::esp32c6::mtime_ns_to_ticks;
     using kickos::esp32c6::mtime_ticks_to_ns;
+
+    // MTIME's rate as MTIME_TOP_HZ >> g_mtime_shift, set by arch_init before MTIME counts.
+    uint32_t g_mtime_shift = 0u;
 
     // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on the board's console
     //     pins. The ROM already sets UART0 up (baud/pins) for its own
@@ -493,13 +491,13 @@ uint64_t arch_clock_now(void)
         hi2 = mt[1];
     } while (hi != hi2);
     uint64_t t = (static_cast<uint64_t>(hi) << 32) | lo;
-    return mtime_ticks_to_ns(t);
+    return mtime_ticks_to_ns(t, g_mtime_shift);
 }
 
 // --- One-shot next-event timer: CLINT MTIMECMP (fires when MTIME >= MTIMECMP) ----
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    uint64_t ticks = mtime_ns_to_ticks(deadline_ns);
+    uint64_t ticks = mtime_ns_to_ticks(deadline_ns, g_mtime_shift);
     volatile uint32_t* cmp = r32p(reg::clint::MTIMECMP);
     cmp[1] = 0xFFFFFFFFu; // park high half so no spurious match between the two stores
     cmp[0] = static_cast<uint32_t>(ticks);
@@ -917,10 +915,32 @@ static void apm_program_gate(void)
     __asm volatile("fence" ::: "memory");
 }
 
+// CPU_CLK as the boot path left it, which MTIME counts. A source with no exact rate would leave
+// every sleep and timeout wrong, so it stops the boot.
+static void mtime_rate_init(void)
+{
+    uint32_t const sys = r32(reg::pcr::SYSCLK_CONF);
+    uint32_t const cpu = r32(reg::pcr::CPU_FREQ_CONF);
+    uint32_t const hz = kickos::esp32c6::cpu_clk_hz(
+        (sys >> reg::pcr::SOC_CLK_SEL_S) & reg::pcr::SOC_CLK_SEL_MASK,
+        (sys >> reg::pcr::CLK_XTAL_FREQ_S) & reg::pcr::CLK_XTAL_FREQ_MASK,
+        (cpu >> reg::pcr::CPU_LS_DIV_NUM_S) & reg::pcr::CPU_LS_DIV_NUM_MASK,
+        (cpu >> reg::pcr::CPU_HS_DIV_NUM_S) & reg::pcr::CPU_HS_DIV_NUM_MASK,
+        (cpu & reg::pcr::CPU_HS_120M_FORCE) != 0u);
+    int const shift = kickos::esp32c6::mtime_shift_of(hz);
+    if (shift < 0)
+    {
+        c6_refuse("KickOS: ESP32-C6 CPU clock is not 160 MHz >> n, so MTIME has no exact rate\n");
+    }
+    g_mtime_shift = static_cast<uint32_t>(shift);
+    SystemCoreClock = hz;
+}
+
 void arch_init(void)
 {
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
     c6_early_mark('E'); // watchdogs disabled
+    mtime_rate_init();
 
     // Before anything unprivileged exists: arch_console_reclaim has no other way back to a
     // working baud (see g_console_clkdiv).
@@ -928,8 +948,7 @@ void arch_init(void)
 
     g_clint_msip = r32p(reg::clint::MSIP);   // the deferred-switch software interrupt
 #if KICKOS_BENCH
-    // The C6 traps on `rdcycle`; give the bench the core-clocked CLINT MTIME low word
-    // (== CPU cycles at this PLL) as its free-running counter. Set before any switch.
+    // The C6 traps on `rdcycle`; MTIME counts CPU cycles. Set before any switch.
     extern volatile uint32_t* g_bench_cycle_src;
     g_bench_cycle_src = r32p(reg::clint::MTIME);
 #endif
@@ -1038,8 +1057,8 @@ void arch_amp_release_peers(void)
         arch_console_write_sync(msg, sizeof(msg) - 1u);
         arch_shutdown(1);
     }
-    // Measure the LP RTC clock against HP's 160 MHz CLINT before wake. Its
-    // silicon rate depends on the ROM's clock selection and oscillator trim.
+    // Measure the LP RTC clock against HP's clock before wake. Its silicon rate
+    // depends on the ROM's clock selection and oscillator trim.
     constexpr uintptr_t rtc = 0x600B0C00u;
     auto rtc_ticks = [rtc]() -> uint64_t {
         r32(rtc + 0x10u) |= 1u << 28;
@@ -1056,7 +1075,9 @@ void arch_amp_release_peers(void)
     uint64_t const elapsed_ns = arch_clock_now() - start_ns;
     uint32_t const rtc_hz = static_cast<uint32_t>(
         ((end_ticks - start_ticks) * 1000000000ull) / elapsed_ns);
-    if (rtc_hz < 30000u or rtc_hz > 1000000u)
+    // LP_SLOW_CLK is RC_SLOW (136 kHz nominal) or a 32 kHz source: half the slowest to twice
+    // the fastest.
+    if (rtc_hz < 16000u or rtc_hz > 272000u)
     {
         constexpr char msg[] = "KickOS: ESP32-C6 LP RTC rate invalid\n";
         arch_console_write_sync(msg, sizeof(msg) - 1u);

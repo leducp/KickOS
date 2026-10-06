@@ -3,11 +3,7 @@
 //
 // ESP32-C6 core-local CLINT registers (TRM v1.2 ch.1.7): MSIP (machine software int =
 // deferred switch, mcause 3) + MTIME/MTIMECMP (machine timer = tickless tick, mcause 7).
-// MTIME does not count until MTIMECTL.MTCE is set.
-//
-// MTIME is core-clocked: MEASURED ~160 MHz on silicon, NOT the 16 MHz SYSTIMER rate.
-// 1e9/160e6 = 6.25 ns/tick = 25/4 exactly. If a future clock bring-up changes the CPU
-// frequency, MTIME_HZ must track it.
+// MTIME does not count until MTIMECTL.MTCE is set, and counts CPU_CLK (mtime_conv.h).
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H
@@ -25,8 +21,6 @@ namespace kickos::esp32c6::reg::clint
 
     constexpr uint32_t MTIMECTL_MTCE = 1u << 0; // enable the timer counter
     constexpr uint32_t MTIMECTL_MTIE = 1u << 1; // enable the timer interrupt
-
-    constexpr uint64_t MTIME_HZ = 160000000ull; // MEASURED on silicon (see file header)
 }
 
 #endif

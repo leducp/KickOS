@@ -84,9 +84,11 @@ memory:
     symbol: FLASH_CACHED_BASE
     link: { region: FLASH, access: rx }
     ref: "Table 7-2 Memory Map, p.7-4"
-  dsram1:
+  # DSRAM1 (system) and DSRAM2 (communication), contiguous. The bus matrix ranks ETH and USB
+  # first on DSRAM2, and neither is given a buffer in it.
+  dsram:
     base: 0x20000000
-    size: 0x20000
+    size: 0x40000
     arena: true
     link: { region: RAM, access: rwx }
     ref: "Table 7-2 Memory Map, p.7-4"

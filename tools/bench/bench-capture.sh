@@ -187,6 +187,8 @@ else
   echo "=== $BOARD  console <its own USB CDC, after the flash>  image $IMG"
 fi
 : > "$LOG" || refuse "cannot write $LOG"
+# Only the Espressif route stamps arrival times; a stale sidecar would be judged as this run's.
+rm -f "$LOG.times"
 
 READER=""
 # A reader armed before the flash must still be alive after it. An FTDI reverts min/time
@@ -1231,8 +1233,8 @@ bench_controls() {
   printf 'bench: done\r\n' >> "$CTL/flip"
   ctl_report "$CTL/other" "0000000f"
   printf 'bench: done\r\n' >> "$CTL/other"
-  # A prose commit row that lost its word, a bare hash left. Built from the CLEAN label, since a damaged label that still carries `-dirty` is a label the recovery
-  # can verify; what it cannot verify is a bare hash, and that is the case this plants.
+  # A prose commit row that lost its word, a bare hash left. Built from the CLEAN label: a
+  # damaged label still carrying `-dirty` is one the recovery can verify, and a bare hash is not.
   ctl_head "$CTL/damaged" "${EXPECT_COMMIT%-dirty}" 84000000 "   c "
   ctl_window "$CTL/damaged" 50 50
   printf 'bench: done\r\n' >> "$CTL/damaged"
@@ -1558,12 +1560,12 @@ EOF
 
   rm -rf "$CTL"
   echo "control: the bench verdict passes a complete report at the expected commit, the same" >&2
-  echo "  under the terse banner column, one carrying two accounted windows, one carrying three, one whose switch row sampled" >&2
-  echo "  nothing and carries no end-to-end denominator, and one whose banner title was lost" >&2
-  echo "  and whose commit line stands in for it; it refuses a truncated one, one whose dirty" >&2
-  echo "  state disagrees, one from another commit, one whose banner arrived damaged in either" >&2
-  echo "  column, one whose" >&2
-  echo "  phase table lost a row, one carrying no end-to-end denominator beside a switch row" >&2
+  echo "  under the terse banner column, one carrying two accounted windows, one carrying" >&2
+  echo "  three, one whose switch row sampled nothing and carries no end-to-end denominator," >&2
+  echo "  and one whose banner title was lost and whose commit line stands in for it; it" >&2
+  echo "  refuses a truncated one, one whose dirty state disagrees, one from another commit, one" >&2
+  echo "  whose banner arrived damaged in either column, one whose phase table lost a row, one" >&2
+  echo "  carrying no end-to-end denominator beside a switch row" >&2
   echo "  that sampled, one whose SECOND window lost its accounting, one whose SECOND window" >&2
   echo "  lost its end-to-end block whole and kept the accounting, one whose SECOND window of" >&2
   echo "  three lost its switch row, one carrying two probes in one window, one whose locality" >&2

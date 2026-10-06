@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Pins mtime_ns_to_ticks's reciprocal multiply against the plain "ns * 4ull / 25ull" it
-// replaces (mtime_conv.h). The multiply is proved exact only for
-// ns < MTIME_NS_TO_TICKS_EXACT_BOUND (see the header); this sweep exercises that whole
-// domain, not a corner of it, at every magnitude class a real uptime passes through.
+// Pins mtime_conv.h: the PCR clock fields to MTIME's rate, and mtime_ns_to_ticks's reciprocal
+// multiply against the plain "ns * 4ull / 25ull" it replaces, over the whole domain the multiply
+// is proved exact for, at every magnitude class a real uptime passes through.
 
 #include "arch/riscv/chip/esp32c6/mtime_conv.h"
 
@@ -15,7 +14,9 @@
 
 namespace
 {
+    using kickos::esp32c6::cpu_clk_hz;
     using kickos::esp32c6::mtime_ns_to_ticks;
+    using kickos::esp32c6::mtime_shift_of;
     using kickos::esp32c6::mtime_ticks_to_ns;
     using kickos::esp32c6::mtime_umulh64;
 
@@ -28,7 +29,7 @@ namespace
 
     void expect_pinned(uint64_t ns)
     {
-        EXPECT_EQ(mtime_ns_to_ticks(ns), old_ns_to_ticks(ns)) << "ns=" << ns;
+        EXPECT_EQ(mtime_ns_to_ticks(ns, 0u), old_ns_to_ticks(ns)) << "ns=" << ns;
     }
 }
 
@@ -150,15 +151,51 @@ TEST(MtimeConv, Umulh64AgainstInt128)
     }
 }
 
-// mtime_ticks_to_ns moved into the header unmodified; a light regression check that the
-// extraction did not perturb it.
-TEST(MtimeConv, TicksToNsUnchanged)
+// Every shift against a 128-bit oracle, both directions.
+TEST(MtimeConv, ShiftedAgainstInt128)
 {
     std::mt19937_64 rng(0x71C5);
-    std::uniform_int_distribution<uint64_t> dist(0, UINT64_MAX);
-    for (int i = 0; i < 50000; i++)
+    std::uniform_int_distribution<uint64_t> ns_dist(0, EXACT_BOUND - 1);
+    for (uint32_t shift = 0; shift <= kickos::esp32c6::MTIME_SHIFT_MAX; shift++)
     {
-        uint64_t const ticks = dist(rng);
-        EXPECT_EQ(mtime_ticks_to_ns(ticks), ticks * 25ull / 4ull) << "ticks=" << ticks;
+        // The ~146 years mtime_ticks_to_ns holds at every shift.
+        std::uniform_int_distribution<uint64_t> tick_dist(0, UINT64_MAX / (25u << shift));
+        for (int i = 0; i < 20000; i++)
+        {
+            uint64_t const ns = ns_dist(rng);
+            unsigned __int128 const want_ticks = (static_cast<unsigned __int128>(ns) * 4u) / (25u << shift);
+            EXPECT_EQ(mtime_ns_to_ticks(ns, shift), static_cast<uint64_t>(want_ticks))
+                << "ns=" << ns << " shift=" << shift;
+            uint64_t const ticks = tick_dist(rng);
+            unsigned __int128 const want_ns = (static_cast<unsigned __int128>(ticks) * (25u << shift)) / 4u;
+            EXPECT_EQ(mtime_ticks_to_ns(ticks, shift), static_cast<uint64_t>(want_ns))
+                << "ticks=" << ticks << " shift=" << shift;
+        }
     }
+}
+
+// The reset selection, XTAL / 1, is 40 MHz: 25 ns per tick. 160 MHz would be 6.25.
+TEST(MtimeConv, ResetClockIsFortyMegahertz)
+{
+    uint32_t const hz = cpu_clk_hz(0u, 40u, 0u, 2u, false);
+    EXPECT_EQ(hz, 40000000u);
+    ASSERT_EQ(mtime_shift_of(hz), 2);
+    EXPECT_EQ(mtime_ticks_to_ns(40000000u, 2u), 1000000000u);
+    EXPECT_EQ(mtime_ns_to_ticks(1000000000u, 2u), 40000000u);
+}
+
+TEST(MtimeConv, ClockTreeReadings)
+{
+    EXPECT_EQ(mtime_shift_of(cpu_clk_hz(1u, 40u, 0u, 0u, false)), 0);
+    EXPECT_EQ(mtime_shift_of(cpu_clk_hz(1u, 40u, 0u, 1u, false)), 1);
+    EXPECT_EQ(mtime_shift_of(cpu_clk_hz(1u, 40u, 0u, 3u, false)), 2);
+    EXPECT_EQ(mtime_shift_of(cpu_clk_hz(0u, 40u, 1u, 0u, false)), 3);
+    EXPECT_EQ(mtime_shift_of(cpu_clk_hz(0u, 40u, 31u, 0u, false)), 7);
+    EXPECT_EQ(cpu_clk_hz(1u, 40u, 0u, 0u, true), 120000000u);
+    EXPECT_EQ(mtime_shift_of(120000000u), -1);
+    EXPECT_EQ(cpu_clk_hz(1u, 40u, 0u, 1u, true), 80000000u);
+    EXPECT_EQ(cpu_clk_hz(0u, 40u, 2u, 0u, false), 0u);
+    EXPECT_EQ(cpu_clk_hz(2u, 40u, 0u, 0u, false), 0u);
+    EXPECT_EQ(cpu_clk_hz(3u, 40u, 0u, 0u, false), 0u);
+    EXPECT_EQ(mtime_shift_of(0u), -1);
 }

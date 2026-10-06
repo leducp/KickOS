@@ -13,6 +13,7 @@
 
 #include "probe_catch.h"
 #include "regs.h"
+#include <kickos/arch/armv7m_fault_frame.h>
 #include <kickos/arch/armv7m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
@@ -354,15 +355,6 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-namespace
-{
-    // MSTKERR/MUNSTKERR (CFSR bits 4/3) and STKERR/UNSTKERR (bits 12/11): the hardware aborted
-    // the stacking or unstacking of the frame, so it never was or no longer is a frame, and a
-    // privileged read of it can fault again in handler mode, as one at an address two PMSAv8
-    // regions match does.
-    constexpr uint32_t CFSR_STACKING_ABORTS = 0x1818u;
-}
-
 extern "C"
 {
 
@@ -384,14 +376,14 @@ bool arch_fault_is_user_thread(void* frame)
         return false;
     }
     // A stack overflow arrives as a stacking abort.
-    if (kickos::arm::reg32(0xE000ED28) & CFSR_STACKING_ABORTS)
+    if (not armv7m_fault_frame_readable(kickos::arm::reg32(0xE000ED28)))
     {
         return false;
     }
     // Neither test subsumes the other: the CFSR bits catch a stacking abort whose SP was
     // still in range, this catches a frame written in full at a wild SP, which sets no
     // CFSR bit at all.
-    if (not kickos_fault_frame_trusted(frame, 32))
+    if (not kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES))
     {
         return false;
     }
@@ -429,7 +421,7 @@ void arch_fault_redirect_to_exit(void* frame)
         addr = kickos::arm::reg32(0xE000ED38);
         addr_valid = 1;
     }
-    else if (chip_latched)
+    else if (chip_latched and armv7m_chip_addr_explains(cfsr))
     {
         addr = chip_addr;
         addr_valid = 1;
@@ -519,7 +511,7 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
-    bool const frame_read = (kickos::arm::reg32(0xE000ED28) & CFSR_STACKING_ABORTS) == 0;
+    bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(0xE000ED28));
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
     if (frame_read and kickos_armv7m_probe_caught(frame, exc_return))
     {

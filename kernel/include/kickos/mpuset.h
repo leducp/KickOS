@@ -35,10 +35,11 @@ namespace kickos
                   "the seating bitmask is a uint32_t, and the no-MPU encode shifts by a count "
                   "that reaches the maximum, so 32 is already the undefined shift");
 
-    // Whether an MPU deciding overlaps by `rule` (ARCH_MPU_OVERLAP_*) decides every access to a
-    // byte both regions cover as the kernel's range checks do: allowed where both allow it and
-    // nowhere else. `lower` and `higher` are named by slot number. The memory type is not
-    // asked: the type rules admit one type per block.
+    // Whether an MPU deciding overlaps by `rule` (ARCH_MPU_OVERLAP_*) decides every byte both
+    // regions cover as the kernel's checks do: readable where either region grants R
+    // (user_range_ok), writable only where both grant W (read_only_overlaps), and of the one
+    // memory type both name. `lower` and `higher` are named by slot number. X is not asked: no
+    // kernel check reads it.
     constexpr bool mpu_overlap_expressible(int rule, arch_mpu_region const& lower,
                                            arch_mpu_region const& higher)
     {
@@ -47,22 +48,31 @@ namespace kickos
         {
             return true;
         }
-        uint32_t const rights = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_X;
-        uint32_t const lo = lower.attr & rights;
-        uint32_t const hi = higher.attr & rights;
+        if (((lower.attr ^ higher.attr) & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) != 0)
+        {
+            return false;
+        }
+        uint32_t const lo = lower.attr & (ARCH_MPU_R | ARCH_MPU_W);
+        uint32_t const hi = higher.attr & (ARCH_MPU_R | ARCH_MPU_W);
+        uint32_t const kernel = ((lo | hi) & ARCH_MPU_R) | (lo & hi & ARCH_MPU_W);
+        uint32_t hardware = 0;
         if (rule == ARCH_MPU_OVERLAP_HIGHER)
         {
-            return (hi & ~lo) == 0;
+            hardware = hi;
         }
-        if (rule == ARCH_MPU_OVERLAP_LOWER)
+        else if (rule == ARCH_MPU_OVERLAP_LOWER)
         {
-            return (lo & ~hi) == 0;
+            hardware = lo;
         }
-        if (rule == ARCH_MPU_OVERLAP_UNION)
+        else if (rule == ARCH_MPU_OVERLAP_UNION)
         {
-            return lo == hi;
+            hardware = lo | hi;
         }
-        return false;
+        else
+        {
+            return false;
+        }
+        return hardware == kernel;
     }
 
     class MpuSet
@@ -203,8 +213,8 @@ namespace kickos
 
 #if KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
         // Whether this MPU decides every byte `r`, seated at slot `at`, shares with another
-        // region of the set as the kernel's range checks do. A region already at `at` is the one
-        // `r` replaces.
+        // region of the set as the kernel's checks do (mpu_overlap_expressible). A region already
+        // at `at` is the one `r` replaces.
         [[nodiscard]] __attribute__((noinline)) bool admits(arch_mpu_region const& r,
                                                             uint8_t at) const
         {
@@ -227,7 +237,7 @@ namespace kickos
             return true;
         }
 
-        // Whether this MPU decides every overlap in the set as the kernel's range checks do.
+        // Whether this MPU decides every overlap in the set as the kernel's checks do.
         [[nodiscard]] bool overlaps_expressible() const
         {
             for (uint8_t i = 0; i < count_; i++)

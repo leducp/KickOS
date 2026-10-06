@@ -398,7 +398,8 @@ def emit_cmake(view):
     privilege = "OFF"
     if not units or any(unit.privilege is not False for unit in units):
         privilege = "ON"
-    facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege]
+    facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege,
+             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(table_rows(view)["reserved_blocks"])]
     if view.chip.esptool_image is not None:
         facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
     if view.board is not None and view.board.emulator is not None:

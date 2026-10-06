@@ -3,7 +3,7 @@
  *
  * Linker script for the Infineon XMC4800-F144x2048, Cortex-M4F.
  *   Flash : 2 MiB  @ 0x0800_0000  (cached alias; uncached alias is 0x0C00_0000)
- *   SRAM  : 128 KiB @ 0x2000_0000  (DSRAM1; DSRAM2 @ 0x2002_0000 left unused)
+ *   SRAM  : 256 KiB @ 0x2000_0000  (DSRAM1, then DSRAM2 @ 0x2002_0000: contiguous)
  */
 
 #include <chip_layout.h>

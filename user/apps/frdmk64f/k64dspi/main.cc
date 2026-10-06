@@ -10,6 +10,8 @@
 // Two build modes over the same bus:
 //   DEFAULT: LAN9252 BYTE_TEST probe, EasyCAT shield on the Arduino header.
 //   K64DSPI_LOOPBACK=ON: SOUT(PTD2)->SIN(PTD3) loopback (jumper, no shield).
+// FAIL is printed only for an error no absent fitting explains: a refused open or a transfer that
+// did not move every byte. Completed transfers that read back the wrong bytes print MISMATCH.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -59,20 +61,66 @@ namespace
         return kos_spi_device_open(dev, bus, &dcfg);
     }
 
+    // 0 for a transfer that moved all <len> bytes, else nonzero: the count, or -1 for none.
+    int32_t xfer_rc(int32_t n, size_t len)
+    {
+        if (n == static_cast<int32_t>(len))
+        {
+            return 0;
+        }
+        if (n == 0)
+        {
+            return -1;
+        }
+        return n;
+    }
+
+    // Returns 0, or the open's negative kos_errno.
+    int32_t print_open(int32_t hz, struct kos_spi_device const* dev)
+    {
+        int32_t rc = 0;
+        unsigned long achieved = 0ul;
+        if (hz > 0)
+        {
+            achieved = static_cast<unsigned long>(dev->hz);
+        }
+        else
+        {
+            rc = hz;
+            if (rc == 0)
+            {
+                rc = -1;
+            }
+        }
+        char s[80];
+        ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n", static_cast<int>(rc),
+                  achieved);
+        kos::print(s);
+        return rc;
+    }
+
 #if defined(K64DSPI_LOOPBACK)
 
     int g_fails = 0;
+    int g_mismatches = 0;
 
-    void report(char const* label, bool ok)
+    void report(char const* label, int32_t rc, bool echoed)
     {
-        char s[80];
-        char const* verdict = "PASS";
-        if (not ok)
+        char s[96];
+        if (rc != 0)
         {
-            verdict = "FAIL";
             g_fails++;
+            ksnprintf(s, sizeof(s), "[k64dspi] %s: FAIL (rc=%d)\n", label, static_cast<int>(rc));
         }
-        ksnprintf(s, sizeof(s), "[k64dspi] %s: %s\n", label, verdict);
+        else if (not echoed)
+        {
+            g_mismatches++;
+            ksnprintf(s, sizeof(s), "[k64dspi] %s: MISMATCH\n", label);
+        }
+        else
+        {
+            ksnprintf(s, sizeof(s), "[k64dspi] %s: PASS\n", label);
+        }
         kos::print(s);
     }
 
@@ -106,29 +154,24 @@ namespace
         struct kos_spi_bus bus;
         struct kos_spi_device dev;
         int32_t const hz = open_device(bcfg, &bus, &dev, /*hz=*/1000000u, KOS_BUS_CS_NONE);
-        {
-            char s[80];
-            ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
-                      static_cast<int>(hz), static_cast<unsigned long>(dev.hz));
-            kos::print(s);
-        }
-        report("device open", hz > 0);
+        report("device open", print_open(hz, &dev), true);
 
         // 1) Single bytes echo through the loopback.
         {
             unsigned char const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
             struct kos_bus_seg seg = {1u, 0u, 0u};
-            bool ok = true;
-            for (unsigned i = 0; i < sizeof(pattern); i++)
+            int32_t rc = 0;
+            bool echoed = true;
+            for (unsigned i = 0; i < sizeof(pattern) and rc == 0; i++)
             {
                 unsigned char buf[1] = {pattern[i]};
-                int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, 1u);
-                if (n != 1 or buf[0] != pattern[i])
+                rc = xfer_rc(kos_spi_transfer(&dev, &seg, 1u, buf, 1u), 1u);
+                if (buf[0] != pattern[i])
                 {
-                    ok = false;
+                    echoed = false;
                 }
             }
-            report("single-byte loopback", ok);
+            report("single-byte loopback", rc, echoed);
         }
 
         // 2) Multi-byte transfer larger than the TX FIFO (exercises the refill loop).
@@ -137,8 +180,8 @@ namespace
             unsigned char buf[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
             struct kos_bus_seg seg = {static_cast<uint16_t>(sizeof(buf)), 0u, 0u};
             int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, sizeof(buf));
-            report("multi-byte (>FIFO) loopback",
-                   n == static_cast<int32_t>(sizeof(buf)) and buffers_equal(tx, buf, sizeof(buf)));
+            report("multi-byte (>FIFO) loopback", xfer_rc(n, sizeof(buf)),
+                   buffers_equal(tx, buf, sizeof(buf)));
         }
 
         // 3) All-zero tx: the loopback returns 0x00.
@@ -146,8 +189,7 @@ namespace
             unsigned char buf[4] = {0u, 0u, 0u, 0u};
             struct kos_bus_seg seg = {static_cast<uint16_t>(sizeof(buf)), 0u, 0u};
             int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, sizeof(buf));
-            report("zero-tx loopback",
-                   n == static_cast<int32_t>(sizeof(buf)) and buffer_is(buf, 0x00u, sizeof(buf)));
+            report("zero-tx loopback", xfer_rc(n, sizeof(buf)), buffer_is(buf, 0x00u, sizeof(buf)));
         }
 
         // 4) Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so the
@@ -157,18 +199,22 @@ namespace
             unsigned char buf[7] = {0x03u, 0x00u, 0x64u, 0u, 0u, 0u, 0u};
             struct kos_bus_seg seg[2] = {{3u, 0u, 0u}, {4u, 0u, 0u}};
             int32_t const n = kos_spi_transfer(&dev, seg, 2u, buf, sizeof(buf));
-            report("two-segment transaction (one CS bracket)",
-                   n == static_cast<int32_t>(sizeof(buf)) and buffers_equal(cmd, buf, 3)
-                       and buffer_is(buf + 3, 0x00u, 4));
+            report("two-segment transaction (one CS bracket)", xfer_rc(n, sizeof(buf)),
+                   buffers_equal(cmd, buf, 3) and buffer_is(buf + 3, 0x00u, 4));
         }
 
-        if (g_fails == 0)
+        if (g_fails != 0)
         {
-            kos::print("[k64dspi] loopback PASS (the SPI bus echoes tx == rx)\n");
-            return 0;
+            kos::print("[k64dspi] loopback FAIL (see per-case lines above)\n");
+            return 1;
         }
-        kos::print("[k64dspi] loopback FAIL (see per-case lines above)\n");
-        return 1;
+        if (g_mismatches != 0)
+        {
+            kos::print("[k64dspi] loopback MISMATCH (every transfer completed, rx != tx)\n");
+            return 1;
+        }
+        kos::print("[k64dspi] loopback PASS (the SPI bus echoes tx == rx)\n");
+        return 0;
     }
 
 #else // LAN9252 BYTE_TEST probe (default)
@@ -182,7 +228,7 @@ namespace
     // One BYTE_TEST read: cmd (0x03 + 16-bit addr big-endian) then 4 read bytes, under ONE
     // CS bracket. The read phase is the tail of the same buffer, and its bytes arrive
     // LSB-first.
-    uint32_t read_byte_test(struct kos_spi_device* dev, bool* ok)
+    uint32_t read_byte_test(struct kos_spi_device* dev, int32_t* rc)
     {
         unsigned char buf[7];
         buf[0] = LAN9252_READ;
@@ -194,8 +240,7 @@ namespace
         buf[6] = 0u;
 
         struct kos_bus_seg seg[2] = {{3u, 0u, 0u}, {4u, 0u, 0u}};
-        int32_t const n = kos_spi_transfer(dev, seg, 2u, buf, sizeof(buf));
-        *ok = (n == static_cast<int32_t>(sizeof(buf)));
+        *rc = xfer_rc(kos_spi_transfer(dev, seg, 2u, buf, sizeof(buf)), sizeof(buf));
 
         uint32_t val = static_cast<uint32_t>(buf[3]);
         val |= static_cast<uint32_t>(buf[4]) << 8;
@@ -210,34 +255,32 @@ namespace
         struct kos_spi_bus bus;
         struct kos_spi_device dev;
         int32_t const hz = open_device(bcfg, &bus, &dev, /*hz=*/10000000u, KOS_BUS_CS_GPIO);
-        {
-            char s[80];
-            ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
-                      static_cast<int>(hz), static_cast<unsigned long>(dev.hz));
-            kos::print(s);
-        }
+        print_open(hz, &dev);
 
         bool pass = false;
-        for (int attempt = 1; attempt <= PROBE_RETRIES and not pass; attempt++)
+        int32_t rc = 0;
+        for (int attempt = 1; attempt <= PROBE_RETRIES and not pass and rc == 0; attempt++)
         {
-            bool ok = false;
-            uint32_t val = read_byte_test(&dev, &ok);
+            uint32_t val = read_byte_test(&dev, &rc);
 
-            char const* xfer = "OK";
-            if (not ok)
-            {
-                xfer = "ERR";
-            }
             char s[96];
-            ksnprintf(s, sizeof(s), "[k64dspi] BYTE_TEST attempt %d: 0x%lx (xfer %s)\n",
-                      attempt, static_cast<unsigned long>(val), xfer);
+            if (rc == 0)
+            {
+                ksnprintf(s, sizeof(s), "[k64dspi] BYTE_TEST attempt %d: 0x%lx (xfer OK)\n", attempt,
+                          static_cast<unsigned long>(val));
+            }
+            else
+            {
+                ksnprintf(s, sizeof(s), "[k64dspi] BYTE_TEST attempt %d: (xfer ERR rc=%d)\n", attempt,
+                          static_cast<int>(rc));
+            }
             kos::print(s);
 
-            if (ok and val == LAN9252_BYTE_TEST)
+            if (rc == 0 and val == LAN9252_BYTE_TEST)
             {
                 pass = true;
             }
-            else
+            else if (rc == 0)
             {
                 kos_sleep_ns(RETRY_DELAY_NS);
             }
@@ -248,7 +291,12 @@ namespace
             kos::print("[k64dspi] LAN9252 BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)\n");
             return 0;
         }
-        kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: no valid signature; check CS "
+        if (rc != 0)
+        {
+            kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: a transfer failed\n");
+            return 1;
+        }
+        kos::print("[k64dspi] LAN9252 BYTE_TEST MISMATCH: no valid signature; check CS "
                    "(D9/PTC4), baud/mode, or shield seating\n");
         return 1;
     }

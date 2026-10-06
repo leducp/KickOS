@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The console flush's transmission-complete witness for c6txidle, run where the kernel's own
-// flush runs: in M-mode, once the banner is out and before the ring is armed. A U-mode thread cannot take its place, the APM refusing an
-// ungranted REE0 access to UART0 without a trap: its reads return 0, which is the idle encoding
-// under test. This member is extracted only by a link that names kickos_c6_txidle_record;
-// arch_console_tx_backend reaches the body through a weak reference, so every other C6 image
-// carries neither.
+// The console flush's transmission-complete witness for c6txidle, run in M-mode once the banner
+// is out and before the ring is armed. Not from U-mode: there an ungranted UART0 read returns 0
+// without a trap, which is the idle encoding under test.
 
 #include <kickos/arch/arch.h>
 
@@ -26,6 +23,7 @@ extern "C"
 {
     // Read by c6txidle, which mirrors the indices below.
     uint32_t kickos_c6_txidle_record[8] = {};
+    extern uint32_t SystemCoreClock;
 }
 
 namespace
@@ -43,13 +41,20 @@ namespace
 
     char const TAIL[] = "[c6txidle] TAIL 0123456789abcdef0123456789abcdef <<<TXIDLE-END>>>";
 
-    // MTIME counts the core clock, which may run below its final rate this early, so a span in
-    // ticks is sized at the fastest one: 10 ms outlasts TX_IDLE_NUM's ceiling of 1023 bit times at
-    // 115200 baud, so the transmitter has idled.
-    constexpr uint64_t MTIME_HZ_MAX = 160000000u;
-    constexpr uint64_t QUIET_TICKS = MTIME_HZ_MAX / 100u;
-    constexpr uint64_t QUIET_GIVE_UP_TICKS = MTIME_HZ_MAX * 2u;
-    constexpr uint64_t HOLD_TICKS = MTIME_HZ_MAX / 500u;
+    // 10 ms outlasts TX_IDLE_NUM's ceiling of 1023 bit times at 115200 baud, so the transmitter
+    // has idled. MTIME counts CPU_CLK, which arch_init has published.
+    uint64_t quiet_ticks()
+    {
+        return SystemCoreClock / 100u;
+    }
+    uint64_t quiet_give_up_ticks()
+    {
+        return static_cast<uint64_t>(SystemCoreClock) * 2u;
+    }
+    uint64_t hold_ticks()
+    {
+        return SystemCoreClock / 500u;
+    }
 
     inline volatile uint32_t& r32(uintptr_t a)
     {
@@ -83,7 +88,7 @@ namespace
 
     bool quiet()
     {
-        uint64_t const give_up = ticks() + QUIET_GIVE_UP_TICKS;
+        uint64_t const give_up = ticks() + quiet_give_up_ticks();
         uint64_t empty_since = ticks();
         while (ticks() < give_up)
         {
@@ -92,7 +97,7 @@ namespace
             {
                 empty_since = now;
             }
-            else if (now - empty_since >= QUIET_TICKS)
+            else if (now - empty_since >= quiet_ticks())
             {
                 return true;
             }
@@ -116,7 +121,8 @@ extern "C" void kickos_c6_txidle_probe(void)
     uint32_t const clk_conf = r32(reg::uart::CLK_CONF);
 
     size_t const n = sizeof(TAIL) - 1u;
-    static_assert(sizeof(TAIL) - 1u <= reg::uart::TXFIFO_LIMIT, "the TAIL line is longer than the FIFO");
+    static_assert(sizeof(TAIL) - 1u <= reg::uart::TXFIFO_LIMIT,
+                  "the TAIL line is longer than the FIFO");
     for (size_t i = 0; i < n; i++)
     {
         r32(reg::uart::FIFO) = static_cast<uint8_t>(TAIL[i]);
@@ -131,7 +137,7 @@ extern "C" void kickos_c6_txidle_probe(void)
     r32(reg::uart::CLK_CONF) = clk_conf | reg::uart::CLK_CONF_TX_RST_CORE;
     uint64_t const returned = ticks();
     rec[REC_STATE_RETURN] = tx_state();
-    uint64_t const until = returned + HOLD_TICKS;
+    uint64_t const until = returned + hold_ticks();
     while (ticks() < until)
     {
     }

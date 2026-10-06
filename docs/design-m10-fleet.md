@@ -409,7 +409,7 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | `errnoprobe` | 1 | its arm on a core's first thread before any switch runs as a constructor on root, which runs the app's constructors and is still that thread |
 | `clockretune` | 2 | `system`, `pstate` |
 | `drvdeath` | 3 | retargeted: `stdout` names the packaged `simcon` with no restart; each death knob is a death or a failed start the init reports, the kernel console back each time; `main` uses and watches `simcon`, so a failed start leaves it dependency-down, the system ending with `KOS_EXIT_CANCELLED`, and a death is read off `/init/events`; the two-thread knob's register holder is the driver task's entry, which the app releases through the driver's test hook; the root-identity arm keeps root's handle, the init's thread, `kos_thread_self` answering none on one core |
-| `fault`, `panicgate`, `pspguard`, `ringpriv`, `specfault` | 1 | `main` is the unprivileged faulter or prober that root was |
+| `fault`, `panicgate`, `pspguard`, `ringpriv`, `specfault` | 1 | `main` is the unprivileged faulter or prober that root was; `specfault` is built only where memory is enforced |
 | `stress` | 1 | `main`'s table being a child's, it closes its copies of a pair's semaphores once the pair holds them, a start gate kicking the pairs |
 | `stackdepth` | 1 | it still reads the kernel stacks' high-water mark: its deep spawn chain runs from `main`, and the init's own depth on root's stack is the composition witness's measurement, not this app's |
 | `faultsurvive` | 1, and 2 for `_published` | the published variant's `stdout` names `simcon` |
@@ -506,9 +506,10 @@ whose supply backs the 3 optional slots, and an AMP node's defconfig widens it f
 
 **Where the selftest overflows an image under its composition, it splits into one more region**,
 as ruled. `main.cc` cuts ten regions, and each board states the first region of each of its
-images: nine on the two STM32 parts, regions 1 to 8 alone and 9 with 10; five on `microbit`, whose
-binding resource is the arena after `.bss`; five on an enforcing ESP32-C6 bench build and four on
-the other enforcing or AMP builds of that chip; two on an ESP32 bench build. Its bloat audit stays
+images: ten on the two STM32 parts, one region each; five on `microbit`, whose binding resource is
+the arena after `.bss`; one on an enforcing XMC4800, whose arena spans DSRAM2; five on an
+enforcing ESP32-C6 bench build and four on the other enforcing or AMP builds of that chip; two on
+an ESP32 bench or multi-core build. Its bloat audit stays
 in M10's tail.
 
 ### 4.5 Every service list becomes a composition
@@ -843,12 +844,12 @@ the fleet reads it, and a judge per board app that prints.
 | board | the chain has | runs |
 | --- | --- | --- |
 | `xmc4800-relax` | probe, console, fleet | default system; selftest, kernel console and each of `xmcuart` and `xmcuartirq`; the golden system and the restart witness; `consoledemo`, `xmcssc` in both forms (`xmcssc`, `xmcssc_local`), the four diagnostic apps, `conreclaim` |
-| `frdmk64f` | probe, console, fleet | default system; selftest, kernel, `k64uart` and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi` in loopback |
+| `frdmk64f` | probe, console, fleet | default system; selftest, kernel, `k64uart` and `k64uartirq`; `k64console`, `k64drv` on LPTMR0, `k64dspi`'s LAN9252 `BYTE_TEST` |
 | `rx72m` | probe, console, fleet | default system; selftest, kernel and `rxsci`; `rxdrv` |
 | `f302nucleo` | probe, console, fleet | default system; selftest |
 | `esp32c6-wroom` | probe, console, fleet | default system; selftest, kernel and `c6uart`; `c6blink`; from the flat build, `c6lpprobe` and `c6txidle`; the `amp2` partition with its gate witness |
 | `esp32-wroom` | probe, console, fleet | default system; selftest, kernel and `lx6uart`, one and two cores |
-| `f411disco` | probe, console | default system; selftest, kernel and `f4uartirq`; `f411spi` |
+| `f411disco` | probe, console, fleet | default system; selftest, kernel and `f4uartirq`; `f411spi` |
 | `picopi`, `pizero2350`, `teensy41` | console and capture, no probe row | default system, selftest, `usbcdcwit`; `pizero2350-amp2`'s `ampping` and gate witness |
 
 **No bench row**: `microbit` (QEMU runs it in CI instead), `due`, `bluepill-c8` and `blackpill`

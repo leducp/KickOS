@@ -110,14 +110,16 @@ a device on a bus. Which of them THIS rig carries is `RIG_WIRED_<BOARD>`, the bo
 with dashes turned into underscores, holding the names below. `bench.sh` hands the list to the image's judge as
 `KOS_WIRED`, and a judge evaluates a clause resting on a fitting only where the list names it.
 Elsewhere the capture must still show the transfer, and the judge prints `NOT EVALUATED` for its
-values, so the image is captured but partly owed. Unset declares nothing: a missing key never
-reads as a fitted wire, and a misspelt name owes the clause rather than passing it.
+values, so the image is captured but partly owed; a refused open or a failed transfer fails it
+either way. Unset declares nothing: a missing key never reads as a fitted wire, and a misspelt
+name owes the clause rather than passing it. Fittings that occupy the same pins are exclusive,
+and a rig declaring two of them is refused.
 
 | board | fitting | what it is | the clause it carries |
 | --- | --- | --- | --- |
 | `f411disco` | `spi1-loopback` | a PA7-to-PA6 jumper | `f411spi`'s four echoed words and its loopback verdict |
 | `frdmk64f` | `lan9252` | the EasyCAT LAN9252 shield, chip select on PTC4 | `k64dspi`'s `BYTE_TEST` signature |
-| `frdmk64f` | `dspi0-loopback` | a PTD2-to-PTD3 (SOUT-to-SIN) jumper | the loopback cases of a `K64DSPI_LOOPBACK` build |
+| `frdmk64f` | `dspi0-loopback` | a PTD2-to-PTD3 (SOUT-to-SIN) jumper, shield off; exclusive with `lan9252` | the loopback cases of a `K64DSPI_LOOPBACK` build |
 
     RIG_WIRED_FRDMK64F="lan9252"
 

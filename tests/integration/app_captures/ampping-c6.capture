@@ -16,7 +16,7 @@ entry 0x40800000
    arch    rv32imac
    cpu     esp32c6
 # c6amp: LP RTC 136000 Hz
-# ampdiag: peer node=1 vectors=0x4083c001 tag=0 clk=20000000 self clk=160000000
+# ampdiag: peer node=1 vectors=0x4083c001 tag=0 clk=20000000 self clk=40000000
 ampping: 2 of 2 node app(s) alive on the port the partition names, own row 1
 ampping: gate: node 0 read 0x5a3c from its timg0, node 1 read 0x1f07 from its timg1 and 0x0 from node 0's timg0
 ampping: node 0 calls node 1 port 3

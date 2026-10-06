@@ -395,7 +395,7 @@ if [ "$prc" -ne 0 ]; then
     rc="$prc"
 fi
 
-python3 "$HERE/app_stack.py" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" \
+python3 "$HERE/app_stack.py" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" --preset "$PRESET" \
     --decl "$HERE/app_stack_roots.txt" || rc=1
 
 if [ "$rc" -eq 0 ]; then

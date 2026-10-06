@@ -14,7 +14,7 @@
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
 #        check_amp_peer_arms.sh --controls     judges planted captures only
 #
-# The own-image posture is ALLOWED to skip FOUR arms, amp_far_call, amp_far_reply_guard,
+# The own-image posture expects up to FOUR arms to skip, amp_far_call, amp_far_reply_guard,
 # amp_far_reply_empty and amp_share_crossing (KICKOS_EXPECT_SKIPS in
 # tests/integration/gates/selftest.cmake), because the same image runs standalone and inside
 # a merged partition and only the second has a peer.

@@ -66,6 +66,21 @@ if(_fs_judged)
     kickos_app_judge(faultsurvive_lowedge tests/integration/check_faultsurvive.sh
       ARGS lowedge ${KICKOS_ARCH} terminated)
   endif()
+  if(TARGET faultsurvive_unread)
+    kickos_app_judge(faultsurvive_unread tests/integration/check_faultsurvive.sh
+      ARGS unread ${KICKOS_ARCH} terminated)
+  endif()
+  # Every image of the family names its judge or why none applies.
+  get_property(_fs_targets DIRECTORY "${PROJECT_SOURCE_DIR}/user/apps/common/faultsurvive"
+               PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_fs_target IN LISTS _fs_targets)
+    get_target_property(_fs_type ${_fs_target} TYPE)
+    get_target_property(_fs_judge ${_fs_target} KICKOS_IMAGE_JUDGE)
+    if(_fs_type STREQUAL "EXECUTABLE" AND NOT _fs_judge)
+      message(FATAL_ERROR "faultsurvive: the image ${_fs_target} names no judge and no reason "
+                          "none applies")
+    endif()
+  endforeach()
 endif()
 
 # The board set these arms cover. microbit has an emulator and is deliberately not in it.

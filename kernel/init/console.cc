@@ -393,8 +393,8 @@ namespace kickos
 
     // Locking is PER BACKEND. RTT's WrOff RMW is written from thread, ISR and fault
     // context, so it takes the crit section for the few microseconds it needs. The chip
-    // transport masks the ring COPY alone; only its refusal path masks a whole transmission,
-    // which at 115200 is ~22 ms for a 256 B line.
+    // transport masks the ring COPY, and a fault record's refused line also masks the polled
+    // send of at most its own length of queued bytes.
     //
     // An offered line goes to RTT only as far as the chip took it: offers repeat.
     static int kconsole_write_impl(char const* buf, size_t n, bool* cr_pending = nullptr,

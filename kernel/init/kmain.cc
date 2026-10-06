@@ -187,6 +187,9 @@ namespace kickos
                 attr.privileged = true;
                 attr.cap_run = CapRun{};
                 Thread* const tcb = &kernel().idle_tcb_peer[core - 1];
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+                thread_regions_boot(attr, g_peer_idle_stack[core - 1], KICKOS_IDLE_STACK_SIZE);
+#endif
                 thread_create(tcb, idle_entry, nullptr, g_peer_idle_stack[core - 1],
                               KICKOS_IDLE_STACK_SIZE, attr);
                 sched::add_idle(tcb, core);
@@ -323,6 +326,9 @@ namespace kickos
         idle_attr.policy = Policy::FIFO;
         idle_attr.privileged = true;
         idle_attr.cap_run = CapRun{};
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        thread_regions_boot(idle_attr, idle_stack, KICKOS_IDLE_STACK_SIZE);
+#endif
         thread_create(&kernel().idle_tcb, idle_entry, nullptr,
                       idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0: the telemetry decoder keys CPU%
@@ -401,6 +407,9 @@ namespace kickos
         // that address plus the user offset.
         root_entry = reinterpret_cast<void (*)(void*)>(
             reinterpret_cast<uintptr_t>(kickos_root_entry) + arch_aspace_user_offset());
+#endif
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        thread_regions_boot(root_attr, root_stack, root_stack_size);
 #endif
         thread_create(root_tcb, root_entry, nullptr,
                       root_stack, root_stack_size, root_attr);

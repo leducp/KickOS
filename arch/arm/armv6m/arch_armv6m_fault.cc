@@ -5,6 +5,7 @@
 // arch/common define these two symbols instead.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/armv6m_fault_frame.h>
 
 extern "C"
 {
@@ -32,7 +33,7 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    if (not kickos_fault_frame_trusted(frame, 32))
+    if (not kickos_fault_frame_trusted(frame, ARMV6M_BASIC_FRAME_BYTES))
     {
         return false;
     }

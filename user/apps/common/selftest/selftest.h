@@ -245,6 +245,8 @@ namespace selftest
     extern KICKOS_SELFTEST_LOCAL bool g_ram_starved;
     KICKOS_SELFTEST_LOCAL void* st_ram_alloc(size_t size);
     KICKOS_SELFTEST_LOCAL void* st_ram_alloc_as(bool starved, size_t size);
+    // The tap::skip_tagged tag of an arm declining because st_ram_alloc refused it.
+    constexpr unsigned ST_SKIP_RAM_REFUSED = 1;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // A member of ANOTHER task gets its own copy of this image's static data, so every report

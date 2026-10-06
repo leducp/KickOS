@@ -243,6 +243,8 @@ believe before it reads them, and this is the part that is easy to get wrong.
   CFSR bits catch a stacking abort whose SP was still in range; the bounds test catches a
   frame the hardware wrote in full at an SP the thread had no business holding, which sets no
   CFSR bit at all. A core with no fault-status register (v6-M) has only the bounds test.
+  The panic reporter, which only prints, asks the narrower question of whether the read
+  itself can fault again (`invariants.md`, `fault-frame-untrusted-until-proved`).
   rv32imac has no stacking abort to detect (its trap prologue is software and runs M-mode,
   which bypasses the unlocked PMP entries), so on that backend an overflowed thread's frame
   is written SUCCESSFULLY below its own stack and nothing on the fault path would say so.
@@ -365,7 +367,7 @@ question each symbol answers and who answers it.
   unconverted boards depend on. armv7m is the one arch carrying both.
 
 **The escape a too-small part takes is `KICKOS_TLS=n`.** Where the thread pointer is SP masked
-(`ARCH_TLS_FROM_SP`), TLS on strides every arena block by a power of two, so
+(`ARCH_TLS_FROM_SP`), TLS on aligns every arena block of exactly one stride to that stride, so
 `KICKOS_USER_STACK_SIZE` and `KICKOS_ROOT_STACK_SIZE` must BE powers of two and must be the
 SAME one -- the root `CMakeLists.txt` refuses each failure
 by name at configure, and its message names the two ways out. On a part where that rounding
@@ -1479,9 +1481,9 @@ want the same region. The `p1` image expects no skip at all.
 checks that the window held and, when it did not, reports `ok N - <name> # SKIP VACUOUS
 <reason>` saying how far outside the span the instant fell; the harness tallies those as
 `# vacuous: N`, apart from `# skipped: N`. `tests/integration/check_tap_stream.sh` permits one
-whatever its name and expects none, which is the opposite rule to the declared set above: a
-declared arm that did not skip is only a note, so an arm gone permanently vacuous would read
-green forever if it were named there. The category is read off the stream and is not looked up
+whatever its name and expects none, which is the opposite rule to the declared set above: that
+set is exact, so an arm that goes vacuous only on some runs would fail every run it did not if it
+were named there. The category is read off the stream and is not looked up
 anywhere, because a list of the arms allowed to go vacuous would be a second authority beside
 the arms, stale the moment one is repaired. Every one is printed by name in the gate's output.
 
@@ -1666,16 +1668,20 @@ modes, keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
 | != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
 
 **`KICKOS_TLS` is a FOURTH leg on an arch that selects `ARCH_TLS_FROM_SP`, and there it overrides
-all three.** With the knob on, the alignment is `pow2_ceil(want)` wherever that exceeds the
-geometry above, whatever the descriptor asks for: the ARM thread pointer is SP masked down to the
-thread's own block, so the blocks must be STRIDED by a power of two or a mask lands in a
-neighbour's. armv8a, LX6 and rv32imac seat the register from the context and take no fourth leg. So the row-1 figures are the
-geometry and not the answer -- `microbit` is a no-MPU chip on that row and still strides by
-**2048**, its 2048-byte user and root stacks being their own `pow2_ceil`
+all three for one size.** With the knob on, a block whose rounded size is exactly
+`KICKOS_TLS_STRIDE` is aligned to the stride wherever that exceeds the geometry above, whatever
+the descriptor asks for, and every other block keeps the geometry: the ARM thread pointer is SP
+masked down to the thread's own block, so a stack must sit on a stride or a mask lands in a
+neighbour's, and only a block of one stride can be a stack (`tls_stack_admissible`). armv8a, LX6
+and rv32imac seat the register from the context and take no fourth leg. So the row-1 figures are
+the geometry and not the answer for a stack: `microbit` is a no-MPU chip on that row and still
+strides its 2048-byte user and root stacks by **2048**
 (`../../boards/microbit/configs/base/defconfig`). `f302nucleo` and `bluepill-c8` are the
 boards that set `KICKOS_TLS=n` rather than pay the rounding. `cmake/boot_arena.cmake`'s
-`kickos_region_align()` mirrors this leg, reading both knobs out of the resolved
-configuration, so the link-time assert models the geometry the allocator actually produces.
+`kickos_region_align()` and the composition tool's `ram_align`
+(`tools/compose/kickos_compose/supply.py`) mirror this leg, so the link-time assert and the
+composition's arena check model the geometry the allocator actually produces;
+`tests/unit/ramalign` runs the three copies over one table.
 
 The pow2 mode and the TLS leg are what pay a natural-alignment run-up, and there it can cost
 as much again as the request, so compute it rather than assuming the sum of the sizes. A
@@ -1758,7 +1764,7 @@ base.** Each has a different owner and the demand side may be blameless:
   demand side genuinely had to come down, which is why the enforcing variants provision
   **8** at 8192-byte stacks (`../../boards/frdmk64f/configs/base/defconfig`, `.../st/`)
   while `flat` states no `KICKOS_MAX_THREADS` at all and keeps the default 16. The 8192 is
-  a power of two because `KICKOS_TLS` strides every arena block by one, NOT because the
+  a power of two because `KICKOS_TLS` strides every stack by one, NOT because the
   SYSMPU granule asks for it -- that granule is 32 and this backend is the base+limit row
   of the table above.
 
@@ -1878,7 +1884,7 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
   SIX images today, so the board emits no single `1..63` plan; read the plan sizes off the
-  configure line (see `boards.md`, *The selftest ships as SEVERAL images on six boards*).
+  configure line (see `boards.md`, *The selftest ships as SEVERAL images on five boards*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was inherited from its

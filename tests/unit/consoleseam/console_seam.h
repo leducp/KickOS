@@ -30,8 +30,9 @@ namespace consoleseam
     // Times the mask fell to zero while a producer was running (the drain windows).
     uint32_t gap_count();
 
-    // Attach the mock to a ring of `ring_size` bytes and clear every counter.
-    void reset(uint32_t ring_size);
+    // Attach the mock to a ring of `ring_size` bytes and clear every counter. A negative
+    // `irq_line` is a backend with no TX interrupt: no drain ISR, its producers drain it.
+    void reset(uint32_t ring_size, int irq_line = 3);
 
     // The block the ring sits at the start of, STORAGE_SIZE bytes.
     constexpr uint32_t STORAGE_SIZE = 4096u;
@@ -58,6 +59,10 @@ namespace consoleseam
 
     // Whether that seated function ran.
     bool seat_fired();
+
+    // Run `fn` once, right after the `ordinal`th byte arch_console_write_sync pushes, counted
+    // since reset(): a fault taken in the polled writer.
+    void run_in_sync_write(uint32_t ordinal, void (*fn)(void));
 
     // Called at the instant USER_OWNED is flipped.
     void note_commit();

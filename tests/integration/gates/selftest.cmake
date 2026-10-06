@@ -108,6 +108,11 @@ endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_MAX_THREADS LESS 5)
   list(APPEND KICKOS_EXPECT_SKIPS task_dead_after_every_sweep task_slay_after_every_sweep)
 endif()
+# console_publish_handout holds a keeper, a writer, a driver and a probe beside main, and asks
+# pool_can_host for the four; console_publish_narrow narrows what that arm published.
+if(KICKOS_ENABLE_SELFTEST AND KICKOS_MAX_THREADS LESS 5)
+  list(APPEND KICKOS_EXPECT_SKIPS console_publish_handout console_publish_narrow)
+endif()
 # reent_per_thread_cores holds one checker and two switchers at once.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND KICKOS_MAX_THREADS LESS 3)
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
@@ -116,13 +121,35 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
 endif()
 
-# Allow peer-dependent tests to skip when an AMP image runs alone. The merged
-# partition gate requires them to run when a peer is available.
-# Far-reply guard tests need an unanswered port: a node binds all its ports but
-# serves only the first. Other nodes can use its spare; the owner cannot.
+# Peer-dependent arms skip when an AMP image runs alone; the merged partition gate requires them
+# to run when a peer is available.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty
-       amp_share_crossing)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_share_crossing)
+  # The far-reply arms park a call on a far port nobody receives on: with an echo crossing any
+  # far service port, without one the second, a node serving only its first. They skip where
+  # this node's far entries hold none.
+  set(_selftest_far_service 0)
+  set(_selftest_far_echo 0)
+  string(REPLACE "," ";" _selftest_amp_entries "${KICKOS_AMP_PORTS}")
+  foreach(_selftest_entry IN LISTS _selftest_amp_entries)
+    string(REPLACE ":" ";" _selftest_entry "${_selftest_entry}")
+    list(GET _selftest_entry 0 _selftest_entry_node)
+    list(GET _selftest_entry 1 _selftest_entry_port)
+    if(NOT _selftest_entry_node EQUAL KICKOS_AMP_NODE_ID)
+      if(_selftest_entry_port EQUAL 0)
+        set(_selftest_far_echo 1)
+      else()
+        math(EXPR _selftest_far_service "${_selftest_far_service} + 1")
+      endif()
+    endif()
+  endforeach()
+  set(_selftest_far_unanswered 2)
+  if(_selftest_far_echo)
+    set(_selftest_far_unanswered 1)
+  endif()
+  if(_selftest_far_service LESS _selftest_far_unanswered)
+    list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_guard amp_far_reply_empty)
+  endif()
 endif()
 
 # amp_far_deliver_fault copies a far arrival into a LOCAL thread's buffer and takes that page
@@ -185,8 +212,7 @@ endfunction()
 # <img>'s skip and partial sets: <skips> and <partials> cut to the arms its own regions
 # register, with the image's console taken into account. The cut is by name, off the same
 # region bounds that split the suite, so moving an arm across a boundary moves its permission
-# with it. On an enforcing XMC4800, xmcuartirq's second driver thread and its buffers leave
-# region 9 no arena for its last arm's caller-owned stack.
+# with it.
 function(_selftest_image_sets img skips partials out_skips out_partials)
   get_target_property(_console ${img} KICKOS_SELFTEST_CONSOLE)
   get_target_property(_names ${img} KICKOS_SELFTEST_ARM_NAMES)
@@ -198,8 +224,9 @@ function(_selftest_image_sets img skips partials out_skips out_partials)
     list(APPEND _skips ${_selftest_driver_skips})
   endif()
   set(_partials ${partials})
-  if(KICKOS_CHIP STREQUAL "xmc4800" AND KICKOS_HAVE_MPU AND _console STREQUAL "xmcuartirq")
-    list(APPEND _partials caller_stack)
+  # caller_stack_overlap runs on caller_stack's block, so it skips wherever that block is short.
+  if("caller_stack" IN_LIST _partials)
+    list(APPEND _skips caller_stack_overlap)
   endif()
   _selftest_cut("${_skips}" "${_names}" _skips)
   _selftest_cut("${_partials}" "${_names}" _partials)
@@ -211,17 +238,12 @@ endfunction()
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from the arm count: the conditions below name the postures.
 set(KICKOS_EXPECT_PARTIALS "")
-# Above one kernel core, five arms can each reach a half they cannot judge, for two different
-# reasons. FOUR tier-1 IRQ arms carry a claim about an event that must NOT happen (a service,
-# a redelivery or a wake), and a non-event raises nothing to order a later read after, so
-# there is no closed interval to read the result in. thread_slay_window is the other reason:
-# its control leg needs the victim to reach a park before the kill lands, and that race is the
-# machine's to grant. Each arm names its own in main.cc, and the one-core fleet checks them
-# all. thread_slay_window partials only when its restage budget is spent, so the name is
-# listed here rather than reported every run.
+# Above one kernel core, four tier-1 IRQ arms carry a claim about an event that must NOT happen
+# (a service, a redelivery or a wake), and a non-event raises nothing to order a later read
+# after, so there is no closed interval to read the result in. The one-core fleet checks them.
 if(KICKOS_KERNEL_CORES GREATER 1)
   list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
-                               irq_stale_register thread_slay_window)
+                               irq_stale_register)
 endif()
 # irq_kernel_line_reserved tests both claim and injection rejection for a
 # kernel-reserved line. Report PARTIAL when none exists. GIC and RP2350 have
@@ -277,9 +299,11 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   endif()
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  # The reserved-overlap matrix needs at least one arch_reserved_blocks entry, which the
-  # qemu-riscv PMP port has and the host and mps2 parts do not.
-  if(NOT KICKOS_BOARD STREQUAL "qemu-riscv")
+  # The reserved-overlap matrix needs at least one arch_reserved_blocks entry.
+  if(NOT KICKOS_CHIP_RESERVED_BLOCKS MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_RESERVED_BLOCKS")
+  endif()
+  if(KICKOS_CHIP_RESERVED_BLOCKS EQUAL 0)
     list(APPEND KICKOS_EXPECT_PARTIALS grant_reserved)
   endif()
   if(KICKOS_ARCH STREQUAL "sim")
@@ -327,20 +351,10 @@ set(_selftest_env
   "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}"
   "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
 
-# THE SAME EXPECTATIONS WHERE A CAPTURE OFF SILICON CAN READ THEM. A board with no emulator
-# reaches no entry below, so until now nothing judged its TAP stream at all and
-# tools/bench/bench-capture.sh counted `ok` lines instead: a capture that LOST lines has fewer
-# of them, so the count shrank with the loss while the harness's own trailer kept the truth, and
-# the reader outvoted the producer. The manifest is what lets the bench path run
-# tests/integration/check_tap_stream.sh with the arguments this file would have given it.
-#
-# NOTHING IS STATED HERE THAT IS NOT ALREADY STATED: the arm count comes off each image target,
-# where the app recorded it, and the three sets are the very variables handed to the entries
-# below. The permission sets are per BOARD and derived from that board's own knobs; the only
-# per-IMAGE figure is the arm count, and a split image plans its own.
-#
-# One row per image, `|` separated because the sets are comma-joined and any of them may be
-# empty.
+# The same expectations where a capture off silicon can read them: the bench runs
+# tests/integration/check_tap_stream.sh with the arguments this file would have given it. The arm
+# count comes off each image target and the three sets are the ones handed to the entries below.
+# One row per image, `|` separated because the sets are comma-joined and any of them may be empty.
 get_property(_selftest_manifest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
 set(_selftest_manifest "")
 foreach(_mf_img IN LISTS _selftest_manifest_images)
@@ -406,9 +420,8 @@ if(_selftest_rebased AND TEST ${_tag}_selftest)
 endif()
 
 if(KICKOS_BOARD STREQUAL "microbit")
-  # Both lists are a MEASUREMENT and not slack: a listed arm that did NOT skip is only a NOTE,
-  # so a stale list quietly permits a regression. Stated by NAME: each image is judged against
-  # the members its own regions register (_selftest_image_sets).
+  # Both lists are a MEASUREMENT, exact by NAME: each image is judged against the members its
+  # own regions register (_selftest_image_sets).
   #
   # irq_as_event asks the arena for a 4 KiB MMIO page after the suite's threads have taken
   # their stacks from it, and on 32 KiB it no longer fits: this board's console TX ring costs
@@ -459,8 +472,7 @@ if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
   # Every one a worker this board cannot seat beside main at KICKOS_MAX_THREADS 3, but
   # mutex_deadlock, which wants the 3 optional capabilities a 7-slot table does not grant, and
   # reply_recv_notify, which holds five capabilities at once, two past the suite's mandatory
-  # per-arm peak. console_publish_handout needs a keeper, a parked writer and a returning driver
-  # alive beside main, and console_publish_narrow narrows what that arm published.
+  # per-arm peak.
   set(_f3_skips mutex_basic mutex_pi_donation mutex_chain_boost mutex_deadlock mutex_multi_held
                 prio_self_raise_lower prio_self_boosted
                 call_timeout_revert call_infoless_revert
@@ -468,8 +480,7 @@ if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
                 call_donation_slow call_donation_pending cap_reply_bound_fast cap_reply_bound_slow
                 cap_reply_release_close
                 join_stale_gen
-                irq_server_handover
-                console_publish_handout console_publish_narrow)
+                irq_server_handover)
   # irq_as_event's 4 KiB page and caller_stack's 2 KiB stack are arena this part does not have.
   list(APPEND _f3_skips irq_as_event)
   set(_f3_partials caller_stack)

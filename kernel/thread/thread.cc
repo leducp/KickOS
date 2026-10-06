@@ -262,16 +262,13 @@ namespace kickos
 
     namespace
     {
-        // Adds the spawn's windows to t's region set. noinline: the loop's locals would
-        // otherwise widen thread_create's frame, which sits on the armv7m SVC chain.
-        __attribute__((noinline)) bool seat_windows(Thread* t, ThreadAttr const& attr)
+#if KICKOS_ARCH_HAS_PORTS
+        // A port window's record is the context's port set, which the switch loads.
+        void seat_ports(Thread* t, ThreadAttr const& attr)
         {
-            bool fitted = true;
             for (uint16_t i = 0; i < attr.window_count; i++)
             {
                 kos_window const& w = attr.windows[i];
-#if KICKOS_ARCH_HAS_PORTS
-                // A port window's record is the context's port set, which the switch loads.
                 if (w.kind == KOS_WINDOW_PORTS)
                 {
                     uint8_t const r = t->ctx.port_count;
@@ -280,6 +277,22 @@ namespace kickos
                     t->ctx.port_places =
                         static_cast<uint8_t>(t->ctx.port_places | ((i & 3u) << (2u * r)));
                     t->ctx.port_count++;
+                }
+            }
+        }
+#endif
+
+        // Adds the spawn's windows to a region set. noinline: the loop's locals would
+        // otherwise widen thread_create's frame, which sits on the armv7m SVC chain.
+        __attribute__((noinline)) bool seat_windows(MpuSet& set, ThreadAttr const& attr)
+        {
+            bool fitted = true;
+            for (uint16_t i = 0; i < attr.window_count; i++)
+            {
+                kos_window const& w = attr.windows[i];
+#if KICKOS_ARCH_HAS_PORTS
+                if (w.kind == KOS_WINDOW_PORTS)
+                {
                     continue;
                 }
 #endif
@@ -301,8 +314,7 @@ namespace kickos
                     size = arch_ram_region_size(w.size);
                     rights = window_memory_attr(w.flags);
                 }
-                fitted = t->mpu.add_window(w.base, size, rights, static_cast<uint8_t>(i),
-                                           w.flags)
+                fitted = set.add_window(w.base, size, rights, static_cast<uint8_t>(i), w.flags)
                          and fitted;
             }
             return fitted;
@@ -418,20 +430,20 @@ namespace kickos
     }
 #endif
 
-    // Assembles into t->mpu the region set a thread spawned with `attr` on this stack carries,
-    // in its task's domain `dom`, and answers whether all of it fitted. An unprivileged thread
-    // has no background region, so its set is explicit: app code and static data, its task's
-    // domain regions, its own windows and its own stack, sized to what this MPU can describe.
+    // Assembles into `set` the region set a thread spawned with `attr` on this stack carries, in
+    // its task's domain `dom`, and answers whether all of it fitted. An unprivileged thread has no
+    // background region, so its set is explicit: app code and static data, its task's domain
+    // regions, its own windows and its own stack, sized to what this MPU can describe.
     //
     // Portable code may rely only on the floor, that a thread-scoped grant reaches its HOLDER; a
     // region backend also makes the stack private, and a translating backend maps it task-wide.
-    static bool thread_regions_assemble(Thread* t, Domain const* dom, ThreadAttr const& attr,
+    static bool thread_regions_assemble(MpuSet& set, Domain const* dom, ThreadAttr const& attr,
                                         void* stack_base, size_t stack_size)
     {
-        t->mpu.clear();
+        set.clear();
         if (not attr.privileged)
         {
-            t->mpu.append_statics();
+            set.append_statics();
         }
         // The whole set MUST fit: a truncated set that drops the thread's own stack would fault
         // it on its own memory.
@@ -442,28 +454,58 @@ namespace kickos
             for (size_t i = 0; i < dn; i++)
             {
                 arch_mpu_region const* const dr = domain_region_at(dom, i);
-                fitted = t->mpu.add(dr->base, dr->size, dr->attr) and fitted;
+                fitted = set.add(dr->base, dr->size, dr->attr) and fitted;
             }
         }
         if (not attr.privileged)
         {
-            fitted = seat_windows(t, attr) and fitted;
+            fitted = seat_windows(set, attr) and fitted;
         }
         if (not attr.privileged and stack_base != nullptr and stack_size != 0)
         {
-            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(stack_base),
-                                arch_ram_region_size(stack_size), ARCH_MPU_R | ARCH_MPU_W)
+            fitted = set.add(reinterpret_cast<uintptr_t>(stack_base),
+                             arch_ram_region_size(stack_size), ARCH_MPU_R | ARCH_MPU_W)
                      and fitted;
         }
         return fitted;
     }
 
-#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
-    bool thread_regions_expressible(Thread* scratch, Domain const* dom, ThreadAttr const& attr,
-                                    void* stack_base, size_t stack_size)
+    // idle/root only, and neither can fail here: no grant is requested and both are among the
+    // first task-pool slots, so derr is never set.
+    static Task* thread_task_resolve(ThreadAttr const& attr)
     {
-        (void)thread_regions_assemble(scratch, dom, attr, stack_base, stack_size);
-        return scratch->mpu.overlaps_expressible();
+        int derr = 0;
+        uint32_t caller = DOM_CALLER_MEM_AUTH;
+        if (attr.privileged)
+        {
+            caller |= DOM_CALLER_PRIVILEGED;
+        }
+        return task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
+    }
+
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+    MpuSet const* thread_regions_stage(Domain const* dom, ThreadAttr const& attr,
+                                       void* stack_base, size_t stack_size)
+    {
+        MpuSet& set = kernel().spawn_regions;
+        bool const fitted = thread_regions_assemble(set, dom, attr, stack_base, stack_size);
+        KICKOS_ASSERT(fitted);
+        return &set;
+    }
+
+    void thread_regions_boot(ThreadAttr& attr, void* stack_base, size_t stack_size)
+    {
+        if (attr.task == nullptr)
+        {
+            attr.task = thread_task_resolve(attr);
+        }
+        MpuSet const* const set =
+            thread_regions_stage(task_domain(attr.task), attr, stack_base, stack_size);
+        if (not set->overlaps_expressible())
+        {
+            kpanic(diag::kBootRegionsOverlap);
+        }
+        attr.regions = set;
     }
 #endif
 
@@ -522,15 +564,7 @@ namespace kickos
         t->task = attr.task;
         if (t->task == nullptr)
         {
-            // idle/root only, and neither can fail here: no grant is requested and both are
-            // among the first task-pool slots, so derr is never set.
-            int derr = 0;
-            uint32_t caller = DOM_CALLER_MEM_AUTH;
-            if (attr.privileged)
-            {
-                caller |= DOM_CALLER_PRIVILEGED;
-            }
-            t->task = task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
+            t->task = thread_task_resolve(attr);
         }
         task_ref(t->task);
 #if KICKOS_KERNEL_CORES > 1
@@ -556,15 +590,26 @@ namespace kickos
         }
 #endif
 
-        bool const fitted = thread_regions_assemble(t, task_domain(t->task), attr, stack_base,
-                                                    stack_size);
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        KICKOS_ASSERT(attr.regions != nullptr);
+        t->mpu = *attr.regions;
+#else
+        bool const fitted = thread_regions_assemble(t->mpu, task_domain(t->task), attr,
+                                                    stack_base, stack_size);
+        KICKOS_ASSERT(fitted);
+#endif
+#if KICKOS_ARCH_HAS_PORTS
+        if (not attr.privileged)
+        {
+            seat_ports(t, attr);
+        }
+#endif
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
         if (not attr.privileged)
         {
             thread_region_sync(t);
         }
 #endif
-        KICKOS_ASSERT(fitted);
 
         // Rule 7 backstop: no assembled region may overlap a kernel-reserved block.
 #if KICKOS_MEMORY_ENFORCED

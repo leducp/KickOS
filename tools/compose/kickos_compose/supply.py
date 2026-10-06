@@ -486,7 +486,7 @@ def arena_blocks(tasks, shared, manifest):
     for task in tasks:
         if task.entry and manifest.stack_stride is None:
             continue
-        # arch_ram_alloc(KICKOS_USER_STACK_SIZE), which ram_align strides where SP is masked.
+        # arch_ram_alloc(KICKOS_USER_STACK_SIZE).
         for name, priority, stack, caps in threads_of(task, manifest):
             what = "%s's default stack" % task.label()
             if task.driver is not None:
@@ -540,8 +540,9 @@ def ram_align(want, manifest):
         geometry = manifest.smallest_window
     if manifest.window_rule == "pow2":
         geometry = ram_size(want, manifest)
-    if manifest.stack_stride is not None:
-        geometry = max(geometry, pow2_ceil(want))
+    stride = manifest.stack_stride
+    if stride is not None and ram_size(want, manifest) == stride and stride > geometry:
+        geometry = stride
     return geometry
 
 

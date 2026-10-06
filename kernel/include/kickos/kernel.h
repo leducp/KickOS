@@ -79,11 +79,16 @@ namespace kickos
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
     struct Domain;
 
-    // Whether this MPU decides every overlap of the set thread_create would assemble as the
-    // kernel's range checks do. Assembles it in `scratch`, a claimed slot thread_create has not
-    // yet seated.
-    bool thread_regions_expressible(Thread* scratch, Domain const* dom, ThreadAttr const& attr,
-                                    void* stack_base, size_t stack_size);
+    // The region set thread_create would seat for a thread of `attr` on this stack in domain
+    // `dom`, assembled into the kernel's one spawn staging set for the caller to judge and hand
+    // thread_create through ThreadAttr::regions. Caller holds IrqLock until thread_create.
+    MpuSet const* thread_regions_stage(Domain const* dom, ThreadAttr const& attr,
+                                       void* stack_base, size_t stack_size);
+
+    // For idle and root, which no spawn judges: resolves `attr.task` where it is null, stages
+    // the set and seats it in `attr.regions`, and panics where this MPU would decide one of its
+    // overlaps otherwise than the kernel. No spawn may stage between this and thread_create.
+    void thread_regions_boot(ThreadAttr& attr, void* stack_base, size_t stack_size);
 #endif
 
     // True iff NO live thread holds a DEV region overlapping [base, base+size). The admission

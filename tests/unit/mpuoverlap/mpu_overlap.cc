@@ -128,13 +128,91 @@ namespace
         EXPECT_FALSE(mpu_overlap_expressible(ARCH_MPU_OVERLAP_UNION + 1, r, r));
     }
 
-    // The memory type is the type rules' to refuse, never this predicate's.
-    TEST(MpuOverlap, TheMemoryTypeIsNotAsked)
+    // One thread's set holds one memory type per byte, under every rule.
+    TEST(MpuOverlap, TwoMemoryTypesNeverShareAByte)
     {
         arch_mpu_region const cached = region(BLOCK, SIZE, RW);
         arch_mpu_region const uncached = region(BLOCK, SIZE, RW | ARCH_MPU_NOCACHE);
-        EXPECT_TRUE(mpu_overlap_expressible(ARCH_MPU_OVERLAP_HIGHER, cached, uncached));
-        EXPECT_TRUE(mpu_overlap_expressible(ARCH_MPU_OVERLAP_UNION, cached, uncached));
+        arch_mpu_region const device = region(BLOCK, SIZE, RW | ARCH_MPU_DEV);
+        for (int r = ARCH_MPU_OVERLAP_FAULTS; r <= ARCH_MPU_OVERLAP_UNION; r++)
+        {
+            EXPECT_FALSE(mpu_overlap_expressible(r, cached, uncached)) << r;
+            EXPECT_FALSE(mpu_overlap_expressible(r, uncached, cached)) << r;
+            EXPECT_FALSE(mpu_overlap_expressible(r, cached, device)) << r;
+        }
+    }
+
+    struct Access
+    {
+        bool read;
+        bool write;
+    };
+
+    // The kernel's checks on a byte both regions cover: user_range_ok reads through any region
+    // granting R, and read_only_overlaps refuses a write wherever a region lacks W.
+    Access kernel_decides(uint32_t lo, uint32_t hi)
+    {
+        return {((lo | hi) & ARCH_MPU_R) != 0, (lo & hi & ARCH_MPU_W) != 0};
+    }
+
+    // What each rule's hardware grants on that byte; FAULTS grants nothing.
+    Access hardware_decides(int rule, uint32_t lo, uint32_t hi)
+    {
+        uint32_t granted = 0;
+        if (rule == ARCH_MPU_OVERLAP_HIGHER)
+        {
+            granted = hi;
+        }
+        if (rule == ARCH_MPU_OVERLAP_LOWER)
+        {
+            granted = lo;
+        }
+        if (rule == ARCH_MPU_OVERLAP_UNION)
+        {
+            granted = lo | hi;
+        }
+        return {(granted & ARCH_MPU_R) != 0, (granted & ARCH_MPU_W) != 0};
+    }
+
+    // Exhaustive over every attribute pair: admitted exactly where the hardware decides the
+    // shared byte as the kernel does and both regions name one memory type.
+    TEST(MpuOverlap, AdmittedExactlyWhereTheHardwareDecidesAsTheKernel)
+    {
+        uint32_t const all = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_X | ARCH_MPU_DEV | ARCH_MPU_NOCACHE;
+        for (int rule = ARCH_MPU_OVERLAP_FAULTS; rule <= ARCH_MPU_OVERLAP_UNION; rule++)
+        {
+            for (uint32_t lo = 0; lo <= all; lo++)
+            {
+                for (uint32_t hi = 0; hi <= all; hi++)
+                {
+                    Access const k = kernel_decides(lo, hi);
+                    Access const h = hardware_decides(rule, lo, hi);
+                    bool const one_type =
+                        ((lo ^ hi) & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) == 0;
+                    bool const same = rule != ARCH_MPU_OVERLAP_FAULTS and h.read == k.read
+                                      and h.write == k.write;
+                    EXPECT_EQ(mpu_overlap_expressible(rule, region(BLOCK, SIZE, lo),
+                                                      region(BLOCK, SIZE, hi)),
+                              one_type and same)
+                        << "rule " << rule << " lower " << lo << " higher " << hi;
+                }
+            }
+        }
+    }
+
+    // On a union MPU that is exactly equal W bits.
+    TEST(MpuOverlap, AUnionMpuAdmitsExactlyEqualWriteRights)
+    {
+        for (uint32_t lo = 0; lo < 8u; lo++)
+        {
+            for (uint32_t hi = 0; hi < 8u; hi++)
+            {
+                EXPECT_EQ(mpu_overlap_expressible(ARCH_MPU_OVERLAP_UNION, region(BLOCK, SIZE, lo),
+                                                  region(BLOCK, SIZE, hi)),
+                          ((lo ^ hi) & ARCH_MPU_W) == 0)
+                    << "lower " << lo << " higher " << hi;
+            }
+        }
     }
 
     // This build's own rule, which the set answers by.

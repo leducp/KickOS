@@ -15,7 +15,7 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
 # <map> <out>: each discarded table section the map lists, with the file it came from. Status 2
-# when the map carries no discard list, which is a map this read no longer understands.
+# when the map carries no discard list.
 discarded_tables() {
     awk '/^Discarded input sections/ { on = 1; seen = 1; next }
          on && /^(Memory Configuration|Linker script and memory map)/ { exit }

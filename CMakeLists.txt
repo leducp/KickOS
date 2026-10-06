@@ -1035,6 +1035,22 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(capture_matchers PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME tap_stream_sets
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_tap_stream_sets.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(tap_stream_sets PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME starved_arms
+            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_starved_arms.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/common/selftest"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(starved_arms PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME kconsole_emit
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconsole_emit.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(kconsole_emit PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME boot_bounds
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_boot_bounds.sh" 120
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

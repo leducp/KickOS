@@ -11088,9 +11088,9 @@ here because they are pre-existing isolation facts, not things that pass created
 - [x] **`pvprobe` and `inprstorm` print via `kos::print`, not `kickos::emit`**, so their output is
       silently dropped on any board whose console has been published to a userspace driver.
       `pvprobe` and `xmcspi` print through `kickos::emit` now: on the kernel console a burst filled
-      the ring and `kos_print` dropped the lines their judges read. `inprstorm` keeps `kos::print`:
-      its composition's stdout is the kernel's by design, the console path being what it attacks,
-      so no publish can take its output.
+      the ring and `kos_print` dropped the lines their judges read. `inprstorm` prints the same
+      way, its heartbeat aside: a dropped beat is what it measures, and its stdout is the kernel's
+      by design, the console path being what it attacks.
 - [~] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. ADDRESSED by
       stage 3, silicon-unwitnessed.** The `stm32f411` `arch_periph_enable` backend covers the SPI1
       clock gate and the pinmux encoding covers `PE3`, but `frdmk64f` was the only board on the bench
