@@ -324,7 +324,7 @@ namespace
 
     // --- Diagnostic LED: the board's addressable WS2812B (VDD tied to 3V3, no enable pin).
     //     GPIO bit-bang FAILS here: the register-write latency exceeds
-    //     the WS2812B ~400 ns bit high-time even at 160 MHz, so software cannot form
+    //     the WS2812B ~400 ns bit high-time, so software cannot form
     //     valid bits (LED latched solid white). The RMT peripheral (regs/rmt.h) clocks
     //     the pulse train in hardware. Panic path: single frame, polled, no
     //     interrupts/DMA.

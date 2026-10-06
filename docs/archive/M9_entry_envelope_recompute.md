@@ -2,6 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The M9 entry envelope, recomputed against M8.12
 
+> **ESP32-C6 timing in this record, corrected at M10.5:** the C6 core ran at 40 MHz (XTAL, the
+> reset selection), not the 160 MHz stated here, and the kernel converted MTIME at 160 MHz. C6
+> cycle counts stand; C6 nanosecond figures read 4x short and per-second rates and the LP RTC
+> rate 4x high.
+
 > **Status: ACTIVE.** M9.0's third deliverable, recorded 2026-09-22. It reads frozen numbers
 > and writes no code. It is the gate M9.1 through M9.7 were held behind; it approves none of
 > them itself, and what it states is what the evidence supports.

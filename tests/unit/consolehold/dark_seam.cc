@@ -91,6 +91,10 @@ extern "C"
     {
         kickos_panic_report(msg, file, line);
     }
+
+#if KICKOS_CONSOLE_RTT
+    void kickos_rtt_write(char const*, size_t) {}
+#endif
 }
 
 namespace kickos

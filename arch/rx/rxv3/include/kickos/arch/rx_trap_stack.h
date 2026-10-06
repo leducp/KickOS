@@ -196,6 +196,12 @@
     (KICKOS_RX_TRAP_FRAME_PENDSW + KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW)
 #define KICKOS_RX_TRAP_REDZONE_SYS 308
 
+/* What a trap spends ABOVE the USP the syscall guard validates: nothing, the INT trap and
+ * every interrupt being accepted on the ISP. So a thread needs KICKOS_RX_TRAP_REDZONE_SYS below
+ * its deepest sp, which dominates REDZONE_PENDSW, a preemption's whole spend.
+ * tests/static/app_stack_roots.txt prices app threads on the pair. */
+#define KICKOS_RX_TRAP_ENTRY_FRAME 0
+
 /* What one kernel block has to hold: a requirement on KICKOS_KERNEL_STACK_SIZE and not a bound
  * anything refuses at run time, every byte of it being written by privileged code through a
  * pointer the kernel seated. arch_rxv3.cc static_asserts the block against it, and

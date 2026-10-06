@@ -9,14 +9,16 @@
 # The corpus is narrowed to the units the image's own link map LOADs, so the many apps that
 # define main or a file-scoped helper of one name do not merge. Everything the walk cannot see
 # fails the thread rather than shrinking it: a reachable node with no frame (assembly, newlib,
-# libgcc) that app_stack_roots.txt does not size, a reachable indirect call, a dynamic stack
-# object, a cycle, a symbol two linked units define.
+# libgcc) that neither app_stack_roots.txt nor trap_redzone_roots.txt sizes, a reachable
+# indirect call trap_redzone_indirect.txt does not bind, a dynamic stack object, a cycle, a
+# symbol two linked units define.
 #
 # The figures are read through the compiler, with the compile command of the unit that defines
 # the root, so the posture is the image's: the stack macro from that unit, the arch's frame and
 # zone from the header it is told to include. The ISA flags stay in, because a figure the arch
 # header selects on __ARM_FP resolves to the integer posture without them.
 
+import collections
 import json
 import os
 import re
@@ -37,7 +39,7 @@ def die(msg):
 
 
 class Decl(object):
-    def __init__(self, path, arch):
+    def __init__(self, path, arch, kernel_cores=1):
         self.need = None                            # (header, frame macro, zone macro)
         self.threads = []                           # (image, name, root spec, stack macro, presets)
         self.unsized = {}                           # symbol -> (bytes, [(callee, optional)])
@@ -70,17 +72,25 @@ class Decl(object):
                                      frozenset(presets)))
             elif kind == 'unsized':
                 if len(f) < 4:
-                    die('%s: unsized wants <arch> <symbol> <bytes> [calls=...]' % where)
+                    die('%s: unsized wants <arch> <symbol> <bytes> [cores=1|cores>1]'
+                        ' [calls=...]' % where)
                 try:
                     cost = int(f[3])
                 except ValueError:
                     die('%s: unsized %s carries a non-numeric frame' % (where, f[2]))
+                scope = [x for x in f[4:] if x.startswith('cores')]
+                if scope:
+                    if len(scope) > 1 or scope[0] not in (T.SCOPE_ONE_CORE, T.SCOPE_MULTI_CORE):
+                        die('%s: unsized %s scope is neither %s nor %s'
+                            % (where, f[2], T.SCOPE_ONE_CORE, T.SCOPE_MULTI_CORE))
+                    if not T.in_scope(scope[0], None, kernel_cores):
+                        continue
                 calls = []
                 for c in fields.get('calls', '').split(','):
                     if c:
                         calls.append((c.lstrip('?'), c.startswith('?')))
                 if f[2] in self.unsized:
-                    die('%s: unsized %s declared twice' % (where, f[2]))
+                    die('%s: unsized %s declared twice for this posture' % (where, f[2]))
                 self.unsized[f[2]] = (cost, calls)
             else:
                 die('%s: unknown record kind "%s"' % (where, kind))
@@ -213,8 +223,8 @@ def find_map(build_dir, image):
     return None
 
 
-def check_thread(build_dir, src_dir, decl, entries, preset, image, name, root, stack_macro,
-                 presets):
+def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, name, root,
+                 stack_macro, presets):
     map_path = find_map(build_dir, image)
     if map_path is None and preset in presets:
         return ['IMAGE NOT LINKED: %s/%s is bounded on %s, and the tree links no %s.map'
@@ -223,7 +233,13 @@ def check_thread(build_dir, src_dir, decl, entries, preset, image, name, root, s
         print('app_stack: %s/%s: not bounded on %s' % (image, name, preset))
         return []
     graph = ImageGraph(build_dir, map_path)
-    graph.bind_indirect({})
+    # A record for a caller this image does not link binds nothing here; every other one is
+    # resolved exactly as the trap gate resolves it.
+    linked = collections.OrderedDict()
+    for site, binding in bindings.items():
+        if graph.match(T.split_site_key(site)[0]):
+            linked[site] = binding
+    graph.bind_indirect(T.resolve_bindings(graph, linked))
     key = graph.resolve(root)
     if key is None:
         die('%s/%s: root %s is not in the units %s loads' % (image, name, root, map_path))
@@ -296,24 +312,35 @@ def run(argv):
     opt = {}
     i = 0
     while i < len(argv):
-        if argv[i] not in ('--ci-dir', '--src', '--arch', '--preset', '--decl') \
-                or i + 1 >= len(argv):
+        if argv[i] not in ('--ci-dir', '--src', '--arch', '--preset', '--decl', '--roots',
+                           '--indirect', '--kernel-cores') or i + 1 >= len(argv):
             die('usage: app_stack.py --ci-dir <dir> --src <dir> --arch <arch> --preset <preset>'
-                ' --decl <file>')
+                ' --decl <file> --roots <file> --indirect <file> --kernel-cores <n>')
         opt[argv[i][2:]] = argv[i + 1]
         i += 2
-    for k in ('ci-dir', 'src', 'arch', 'preset', 'decl'):
+    for k in ('ci-dir', 'src', 'arch', 'preset', 'decl', 'roots', 'indirect', 'kernel-cores'):
         if k not in opt:
             die('missing --%s' % k)
-    decl = Decl(opt['decl'], opt['arch'])
+    try:
+        cores = int(opt['kernel-cores'])
+    except ValueError:
+        die('--kernel-cores %s is not a number' % opt['kernel-cores'])
+    decl = Decl(opt['decl'], opt['arch'], cores)
     if not decl.threads:
         print('app_stack: %s declares no app thread for %s' % (opt['decl'], opt['arch']))
         return 0
+    # The trap gate's own allowances for code no .ci sizes, so one figure prices both.
+    base = T.Decl(opt['roots'], opt['arch'], cores)
+    for sym, (cost, _reason) in base.unsized.items():
+        if sym in decl.unsized:
+            die('unsized %s is declared in both %s and %s' % (sym, opt['decl'], opt['roots']))
+        decl.unsized[sym] = (cost, base.unsized_calls.get(sym, []))
+    bindings = T.read_bindings(opt['indirect'], opt['arch'], opt['preset'], cores)
     entries = compile_entries(opt['ci-dir'])
     fails = []
     for image, name, root, stack, presets in decl.threads:
-        fails += check_thread(opt['ci-dir'], opt['src'], decl, entries, opt['preset'], image,
-                              name, root, stack, presets)
+        fails += check_thread(opt['ci-dir'], opt['src'], decl, bindings, entries, opt['preset'],
+                              image, name, root, stack, presets)
     if fails:
         for f in fails:
             sys.stderr.write('FAIL: %s\n' % f)

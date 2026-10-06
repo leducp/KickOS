@@ -2,6 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design -- bounding the IPC critical section
 
+> **ESP32-C6 timing in this record, corrected at M10.5:** the C6 core ran at 40 MHz (XTAL, the
+> reset selection), not the 160 MHz stated here, and the kernel converted MTIME at 160 MHz. C6
+> cycle counts stand; C6 nanosecond figures read 4x short and per-second rates and the LP RTC
+> rate 4x high.
+
 > **Status: MEASURED, not yet designed.** Section 1 is the baseline and is a measurement, so it
 > does not get rewritten. Everything after it is open.
 

@@ -2,6 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # M3 raw measurement captures
 
+> **ESP32-C6 timing in this record, corrected at M10.5:** the C6 core ran at 40 MHz (XTAL, the
+> reset selection), not the 160 MHz stated here, and the kernel converted MTIME at 160 MHz. C6
+> cycle counts stand; C6 nanosecond figures read 4x short and per-second rates and the LP RTC
+> rate 4x high.
+
 Raw console captures, M3 HW validation pass on the two boards physically on the bench:
 FRDM-K64F + XMC4800-Relax (both J-Link/OpenSDA, flashed one at a time). Persisted in-repo
 (not the /tmp scratchpad) against power-off. Verbatim KickOS output; only the trailing CR

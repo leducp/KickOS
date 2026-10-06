@@ -3258,6 +3258,15 @@ namespace selftest
         TAP_CHECK(s3 - s2b == 2u * TD_PAGES * UA_PER);
     }
 
+    void pr_seed_close(uint64_t seed)
+    {
+        if (seed != 0)
+        {
+            (void)kos_handle_close(static_cast<kos_cap_t>(seed & 0xFFFFFFFFull));
+            (void)kos_handle_close(static_cast<kos_cap_t>(seed >> 32));
+        }
+    }
+
     // Each call that syncs ahead of its lock, its record lost on its first PR_DROPS rounds as
     // to another call's completed edit: the call syncs again each round and then succeeds.
     constexpr uint32_t PR_PAGES = 20;
@@ -3295,6 +3304,7 @@ namespace selftest
         kos_task_t into = KOS_TASK_NONE;
         if (seed == 0 or va == 0 or blk == nullptr or kos_task_create(nullptr, 0, 0, &into) != 0)
         {
+            pr_seed_close(seed);
             tap::skip("no frame run, reservation or task left for the four calls");
             return;
         }
@@ -3352,7 +3362,9 @@ namespace selftest
 #if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
     constexpr int PR_LINE = KICKOS_IRQ_SOFT_ONLY_BASE + 2;
 #else
-    constexpr int PR_LINE = KICKOS_IRQ_FREE_BASE + 12;
+    // The claim gate's line, free outside its own arms: base+10 is the last line every chip
+    // leaves free.
+    constexpr int PR_LINE = KICKOS_IRQ_FREE_BASE + 7;
 #endif
     constexpr int CH_PR_NOTE = 2;
     constexpr int CH_PR_FRAME = 3;
@@ -3595,6 +3607,7 @@ namespace selftest
         if (seed == 0 or g_pr_va == 0 or not line.ok or blk == nullptr
             or kos_task_create(nullptr, 0, 0, &into) != 0)
         {
+            pr_seed_close(seed);
             tap::skip("no frame run, reservation, task, line or notification left for the race");
             return;
         }
@@ -3845,6 +3858,7 @@ namespace selftest
         PrLine line;
         if (not line.ok)
         {
+            pr_seed_close(seed);
             tap::skip("no line or notification left");
             return;
         }
@@ -4153,6 +4167,7 @@ namespace selftest
         g_pr_va = kos_aspace_probe(KOS_ASPACE_OP_CAP_SEED_VA, PR_PAGES);
         if (seed == 0 or g_pr_va == 0)
         {
+            pr_seed_close(seed);
             tap::skip("no frame run left");
             return;
         }
@@ -4278,6 +4293,7 @@ namespace selftest
         PrLine line;
         if (seed == 0 or g_pr_va == 0 or grant == nullptr or target == nullptr or not line.ok)
         {
+            pr_seed_close(seed);
             tap::skip("no frame run, reservation, line or notification left");
             return;
         }

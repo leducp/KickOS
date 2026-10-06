@@ -66,6 +66,14 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 704
 #endif
 
+/* What a U-mode trap writes on the interrupted thread's own stack, above and below the sp it
+ * bounds: nothing. trap_entry's csrrw moves to the trap stack before its first store and the
+ * frame goes on ctx.kernel_sp, so an unprivileged thread pays only its own descent, kept inside
+ * [stack_lo, stack_hi] or refused at the next trap. tests/static/app_stack_roots.txt prices app
+ * threads on the pair. */
+#define KICKOS_RV_TRAP_ENTRY_FRAME 0
+#define KICKOS_RV_TRAP_NEED_USER 0
+
 /* The one figure a privileged thread's stack has to hold. No bound on an M-mode sp exists to
  * refuse it at run time. */
 #define KICKOS_RV_TRAP_NEED_SYSPRIV \

@@ -1705,3 +1705,38 @@ site lx6 * console_tx.cc:drain_in_producer@1/1 chip_esp32.cc:esp32_tx_push
 # two-core lx6 preset owes a row here or its trap_redzone reports every figure as a lower bound.
 site lx6 esp32-wroom-smp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body
 site lx6 esp32-wroom-benchsmp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body
+
+# --- lx6: the syscall paths an app thread descends ---------------------------------
+# A KickOS syscall is a plain call on this arch, so tests/static/app_stack.py walks an app
+# thread down the kernel's own call paths. The SchedPolicy and ConsoleTxRing::backend sites it
+# meets are the same two pointers as above.
+site lx6 cores=1 kickos::sched::add@1/1          policy_fifo_rr.cc:policy_on_ready
+site lx6 * kickos::sched::yield@1/1              policy_fifo_rr.cc:policy_on_yield
+site lx6 * kickos::sched::detach_current@1/1     policy_fifo_rr.cc:policy_on_remove
+site lx6 * kickos::sched::exit_current@1/1       policy_fifo_rr.cc:policy_on_remove
+site lx6 * console_tx_deinit@1/1                 chip_esp32.cc:esp32_tx_irq_disable
+# Unlocated edges with no indirect call behind them, read off the reclaimwit image each
+# esp32-wroom preset links that has app threads (-st, -smp, -bench, -benchsmp): no callx or
+# jx up to each body's last retw. task_object_admit_grants' one jx is its switch's jump
+# table, eight .rodata words that all land inside the body. On the two-core presets the
+# callx12 objdump shows past domain_for's last retw.n decodes the padding and the l32r pool of
+# arch_domain_static_regions, which follows it. spawn_masked is bound per preset: on
+# esp32-wroom, which builds no app thread, it is inlined away.
+site lx6 * kickos::domain_for@indirect           NONE reason: no indirect call in the emitted body
+site lx6 * kickos::endpoint_reply_recv@indirect  NONE reason: no indirect call in the emitted body
+site lx6 * kickos::endpoint_slot_claim@indirect  NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_create@indirect          NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_for@indirect             NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_object_admit_binding_notify@indirect NONE reason: no indirect call in the emitted body
+site lx6 * kickos::task_object_admit_grants@indirect NONE reason: its one jx is a jump table inside the body
+site lx6 esp32-wroom-st syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-smp syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-bench syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-benchsmp syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-bench bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-bench bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-bench kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-benchsmp bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-benchsmp bench.cc:dist_total@indirect     NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-benchsmp kickos::bench_reset@indirect     NONE reason: no indirect call in the emitted body
+site lx6 esp32-wroom-benchsmp kickos::dist_print_fmt@indirect  NONE reason: no indirect call in the emitted body

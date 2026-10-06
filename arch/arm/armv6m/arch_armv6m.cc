@@ -103,8 +103,8 @@ static_assert(KICKOS_ARMV6M_TRAP_NEED_SVC > KICKOS_ARMV6M_TRAP_NEED_PENDSV,
 // the spawn check and is then refused by the guard on every syscall it makes. Stricter
 // than the red-zone gate's own floor clause: the hardware spends bytes ABOVE the PSP
 // before the guard runs, so a floor-sized empty stack offers the guard only
-// KICKOS_MIN_STACK_SIZE minus that frame, hence the +32 below. STKALIGN washes out, a
-// 4-mod-8 SP making entry spend 36 and handing the trampoline back the same 36.
+// KICKOS_MIN_STACK_SIZE minus that frame. STKALIGN washes out, a 4-mod-8 SP making entry
+// spend 36 and handing the trampoline back the same 36.
 //
 // The death path splits: the fault and slay stubs relocate to the thread's kernel block,
 // so the BLOCK above its canary holds them; kickos_thread_return does not relocate.
@@ -114,7 +114,8 @@ static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
 static_assert(KICKOS_MIN_STACK_SIZE
                   >= KICKOS_ARMV6M_TRAP_NEST_EXIT + KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET,
               "the spawn floor cannot hold a privileged thread's entry return");
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV6M_TRAP_NEED_SVC + 32,
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV6M_TRAP_NEED_SVC + KICKOS_ARMV6M_TRAP_ENTRY_FRAME,
               "KICKOS_MIN_STACK_SIZE is below the armv6m syscall red zone plus the "
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
