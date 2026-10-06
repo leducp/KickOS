@@ -3,15 +3,16 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # CI gate for the MCU out-of-tree packaging surface: install a bare-metal KickOS package,
-# then configure + build a standalone app against it with the SHIPPED cross toolchain via
-# find_package(KickOS) + plain add_executable. Build-only, so every assertion is on what
-# the build produced.
+# then configure and build a standalone app against it with the SHIPPED cross toolchain via
+# find_package(KickOS) and a plain add_executable linking KickOS::kernel and
+# KickOS::system_default. check_oot_mcu_run.sh runs that app where the board has an emulator.
 #
 # A bare-metal package is the only one carrying a linker script, a reset vector and a
 # flashable image, so this is where the whole bare-metal recipe is proven:
 #   - the names a user links are exported under KickOS::, KickOS::kernel among them, and a
 #     KickOS::kernel link with no system target is refused naming the symbol it requires;
-#   - the plain path links at all (the exported target carries the whole recipe);
+#   - the plain path links at all (the exported targets carry the whole recipe), and the
+#     image defines a system target's symbol;
 #   - an edited linker script RELINKS (INTERFACE_LINK_DEPENDS). Passing the script
 #     as a -T driver option alone does not create that edge, and the failure is
 #     silent: a stale image gets flashed;
@@ -256,6 +257,22 @@ it for something other than an EFI application"
   [ "$PE_ENTRY" -ne 0 ] || fail "$EFI names entry point 0, so firmware would call the image \
 base rather than the entry symbol"
   echo "   $(basename "$EFI"): PE32+ EFI application, entry +0x$(printf '%x' "$PE_ENTRY")"
+fi
+
+echo "== the app links a system target =="
+if [ "$KIND" = elf ]; then
+  tool_out "$TMP/app_syms" "$READELF_SYM_RE" "$READELF" -sW "$APP"
+  awk '$5 == "GLOBAL" && $7 != "UND" && $8 ~ /^_?kickos_link_one_system_target$/ { found = 1 }
+       END { exit !found }' "$TMP/app_syms" \
+    || fail "the out-of-tree app defines no kickos_link_one_system_target, so it links no \
+system target"
+else
+  # readelf walks no symbol table in a PE32+ image.
+  [ -s "$EFI.map" ] || fail "no link map beside $EFI, so nothing here can tell which system \
+target the image links"
+  grep -Eq '^[[:space:]]+0x[0-9a-fA-F]+[[:space:]]+kickos_link_one_system_target$' "$EFI.map" \
+    || fail "the out-of-tree app's link map defines no kickos_link_one_system_target, so it \
+links no system target"
 fi
 
 echo "== our warning policy must not reach the consumer's TUs =="

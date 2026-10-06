@@ -12,5 +12,5 @@
 # UART driver may not be linked beside this one.
 kickos_add_driver(c6uart SOURCES c6uart.cc uart_c6.cc ../../espuart/uart_esp.cc REGDIR arch/riscv/chip/esp32c6
                   THREADS c6uartirq:1:default:2:0 service:0:default:2:1 RECEIVER service
-                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  WINDOWS regs LINES uart0 NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START c6uart_console_start CONSOLE)

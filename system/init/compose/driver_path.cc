@@ -8,6 +8,18 @@
 
 namespace kickos::init::driver_path
 {
+    namespace
+    {
+        uint32_t block_flags(kos_table_task const& t)
+        {
+            if ((t.flags & KOS_TABLE_TASK_BLOCK_UNCACHED) != 0u)
+            {
+                return KOS_MEM_NOCACHE;
+            }
+            return 0u;
+        }
+    }
+
     void reserve(Walk& walk, uint16_t task)
     {
         kos_table_task const& t = walk.task(task);
@@ -17,7 +29,8 @@ namespace kickos::init::driver_path
         }
         TaskRecord& r = walk.record(task);
         r.block = walk.reserve(t.block, "kos_ram_alloc of the ring block", task);
-        walk.check(kos_mem_self_grant(r.block, t.block, 0u), "kos_mem_self_grant of the ring block", task);
+        walk.check(kos_mem_self_grant(r.block, t.block, block_flags(t)), "kos_mem_self_grant of the ring block",
+                   task);
     }
 
     int start(Walk& walk, uint16_t task, kos_cap_t badged, kos_task_t* out)
@@ -28,6 +41,7 @@ namespace kickos::init::driver_path
         kos_driver_instance instance = {};
         instance.block = r.block;
         instance.block_size = t.block;
+        instance.block_flags = block_flags(t);
         instance.core_mask = t.core_mask;
         instance.endpoint = r.endpoint;
         instance.watch = badged;
@@ -55,7 +69,8 @@ namespace kickos::init::driver_path
                 // refused by the bring-up.
                 if (lines < kickos::driver::KOS_DRV_LINES_MAX)
                 {
-                    instance.lines[lines] = g.line;
+                    instance.lines[lines].number = g.line;
+                    instance.lines[lines].index = g.line_index;
                 }
                 lines++;
             }

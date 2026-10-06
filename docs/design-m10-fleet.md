@@ -558,9 +558,11 @@ section of every image byte-identical to the custom-command link it replaced, an
 `examples/oot-app` (the sim) and `examples/oot-mcu-app` link `KickOS::kernel` and
 `KickOS::system_default`, `add_executable` on every arch once section 7 lands. Their gates,
 `check_oot_export.sh` and `check_oot_export_mcu.sh` over `tests/integration/oot_arch_boards.txt`,
-build them against the installed package and, where the board's emulator runs, run the image and
-expect its line and status 0 through the default composition. `check_oot_arch_cover.sh` keeps
-every arch covered. `examples/composition` is the maintainer's and does not change.
+build them against the installed package. The sim gate also runs its app, and on a board an
+emulator runs, the image gate `check_oot_mcu_run.sh` boots the MCU app. Each run expects the app's
+line and its `main`'s status through the default composition.
+`check_oot_arch_cover.sh` keeps every arch covered. `examples/composition` is the maintainer's and
+does not change.
 
 ## 9. The partition build
 

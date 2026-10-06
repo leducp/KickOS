@@ -31,6 +31,7 @@ namespace
     uint32_t g_irq_claims;
     uint32_t g_spawns;
     void* g_spawn_args[8];
+    int g_claim_lines[8];
 
     // Run of consecutive kos_sleep_ns calls not yet rendered.
     uint32_t g_pending_sleeps;
@@ -107,6 +108,10 @@ void kos_seam_reset()
     g_irq_claims = 0;
     g_spawns = 0;
     memset(g_spawn_args, 0, sizeof(g_spawn_args));
+    for (int& line : g_claim_lines)
+    {
+        line = -1;
+    }
     g_pending_sleeps = 0;
 }
 
@@ -119,6 +124,15 @@ char const* kos_seam_trace()
 char const* kos_seam_msg()
 {
     return g_msg;
+}
+
+int kos_seam_claimed_line(uint32_t i)
+{
+    if (i >= sizeof(g_claim_lines) / sizeof(g_claim_lines[0]))
+    {
+        return -1;
+    }
+    return g_claim_lines[i];
 }
 
 void* kos_seam_spawn_arg(uint32_t i)
@@ -200,7 +214,7 @@ extern "C"
         return 0;
     }
 
-    int kos_irq_claim(int, unsigned int, kos_cap_t* out_cap)
+    int kos_irq_claim(int line, unsigned int, kos_cap_t* out_cap)
     {
         if (g_seam.irq_claim_retiring != 0u)
         {
@@ -209,6 +223,10 @@ extern "C"
             return -KOS_EAGAIN;
         }
         g_irq_claims++;
+        if (g_irq_claims <= sizeof(g_claim_lines) / sizeof(g_claim_lines[0]))
+        {
+            g_claim_lines[g_irq_claims - 1u] = line;
+        }
         if (g_irq_claims == g_seam.irq_claim_fail_at)
         {
             // The out-param is left UNTOUCHED, as the real syscall leaves it on a refusal:

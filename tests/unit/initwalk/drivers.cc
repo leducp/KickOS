@@ -150,6 +150,12 @@ extern "C"
 {
     int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
     {
+        if (drivers::behaviour.uncached_console)
+        {
+            drv::Descriptor uncached = drivers::k_console;
+            uncached.block_flags = KOS_MEM_NOCACHE;
+            return drv::bring_up(uncached, cfg, nullptr);
+        }
         return drv::bring_up(drivers::k_console, cfg, nullptr);
     }
 

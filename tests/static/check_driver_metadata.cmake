@@ -98,6 +98,12 @@ if(DEFINED CASE)
     kickos_driver_metadata(d _p _j _h THREADS service:0:default:1:0 RECEIVER service BLOCK none
                            POSTURE retain BARRIER none START d_start CLIENT d_proxy)
     kickos_driver_clients_exist(d "${_j}")
+  elseif(CASE STREQUAL "bad_block_cache")
+    kickos_driver_metadata(d _p _j _h THREADS service:0:default:1:0 RECEIVER service BLOCK 1024 BLOCK_CACHE nocache
+                           POSTURE retain BARRIER 1 START d_start)
+  elseif(CASE STREQUAL "uncached_no_block")
+    kickos_driver_metadata(d _p _j _h THREADS service:0:default:1:0 RECEIVER service BLOCK none BLOCK_CACHE uncached
+                           POSTURE retain BARRIER none START d_start)
   elseif(CASE STREQUAL "role_not_name")
     kickos_driver_metadata(d _p _j _h THREADS service:0:default:1:0 RECEIVER service LINES Irq BLOCK none
                            POSTURE retain BARRIER none START d_start)
@@ -121,7 +127,7 @@ endif()
 foreach(_check "windows;0;no" "lines;0;n" "lines;1;false" "lines;2;ignore" "threads;0;name;off"
                "threads;1;name;service" "threads;0;caps;2" "threads;0;badged;0" "threads;1;badged;1"
                "start;uart_console_start" "client;0;uart_proxy" "client;1;uart_stats"
-               "receiver;service")
+               "receiver;service" "block_cache;cached")
   list(POP_BACK _check _want)
   string(JSON _got GET "${_json}" ${_check})
   if(NOT _got STREQUAL _want)
@@ -129,13 +135,22 @@ foreach(_check "windows;0;no" "lines;0;n" "lines;1;false" "lines;2;ignore" "thre
   endif()
 endforeach()
 foreach(_want ".thread_name = {\"off\", nullptr}" ".line_count = 3" ".window_count = 1"
-              ".notify = true" ".block_size = 1024u" ".cap_count = {2, 2}" ".badged = {0, 1}" ".receiver = 1"
+              ".notify = true" ".block_size = 1024u" ".block_flags = 0u" ".cap_count = {2, 2}" ".badged = {0, 1}"
+              ".receiver = 1"
               "extern \"C\" int uart_console_start(struct kos_service_cfg const* cfg);")
   string(FIND "${_header}" "${_want}" _at)
   if(_at EQUAL -1)
     message(FATAL_ERROR "FAIL: the generated header lacks `${_want}`:\n${_header}")
   endif()
 endforeach()
+
+kickos_driver_metadata(nocache _p _nocache_json _nocache_header THREADS service:0:default:1:0 RECEIVER service
+                       BLOCK 4096 BLOCK_CACHE uncached POSTURE retain BARRIER 1 START nocache_start)
+string(JSON _got GET "${_nocache_json}" block_cache)
+string(FIND "${_nocache_header}" ".block_flags = KOS_MEM_NOCACHE" _at)
+if(NOT _got STREQUAL "uncached" OR _at EQUAL -1)
+  message(FATAL_ERROR "FAIL: BLOCK_CACHE uncached reached neither the entry ('${_got}') nor the header")
+endif()
 
 # No CLIENT: nothing to link, so nothing to find.
 kickos_driver_metadata(clientless _p _clientless_json _h THREADS service:0:default:1:0 RECEIVER service
@@ -169,7 +184,8 @@ foreach(_case_rule "bare_threads;given with no value" "metadata_alone;beside its
                    "thread_role_twice;THREADS names 'service' twice" "role_not_name;LINES role 'Irq'"
                    "client_not_target;CLIENT names the library" "client_twice;CLIENT names 'd_proxy' twice"
                    "client_alone;beside its THREADS" "client_empty;CLIENT given with no value"
-                   "client_no_target;kickos_add_driver(d): CLIENT names 'd_proxy', and no target KickOS::d_proxy")
+                   "client_no_target;kickos_add_driver(d): CLIENT names 'd_proxy', and no target KickOS::d_proxy"
+                   "bad_block_cache;BLOCK_CACHE is cached or uncached" "uncached_no_block;BLOCK_CACHE uncached types")
   list(GET _case_rule 0 _case)
   list(GET _case_rule 1 _rule)
   execute_process(COMMAND "${CMAKE_COMMAND}" -DKICKOS_SOURCE_DIR=${KICKOS_SOURCE_DIR}

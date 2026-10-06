@@ -33,6 +33,11 @@ int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud
     ctx->ucfg.parity = KOS_UART_PARITY_NONE;
     ctx->ucfg.stop_bits = 1;
     ctx->ucfg.rsv = 0;
+    ctx->ucfg.line_index = 0;
+    if (cfg->instance != nullptr and cfg->instance->line_count != 0u)
+    {
+        ctx->ucfg.line_index = cfg->instance->lines[0].index;
+    }
     return 0;
 }
 

@@ -4,7 +4,7 @@
 #
 # Fault-isolation witness ON A PUBLISHED CONSOLE: build the sim with the publishing service
 # list (kickos_services_sim, where a userspace driver owns the "wire"; see
-# system/init/sim/service_list.cc) and require the `survive' arm to hold there too.
+# system/driver/sim/simcon/simcon.cc) and require the `survive' arm to hold there too.
 #
 # The claim is ORDERING through the driver's own queue. cap_console_deliver hands the record
 # to the driver by popping it out of recv, so root's later line finds no parked receiver and

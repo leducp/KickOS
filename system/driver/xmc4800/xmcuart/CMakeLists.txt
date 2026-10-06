@@ -12,4 +12,6 @@
 # calling it. kickos_xmcuartirq compiles the SAME backend, so an image may link only one
 # of the two drivers.
 kickos_add_driver(xmcuart SOURCES xmcuart.cc ../uart_usic.cc
-                  CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800)
+                  CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
+                  THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
+                  BLOCK none POSTURE handover BARRIER none START xmcuart_console_start CONSOLE)

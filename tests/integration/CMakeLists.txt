@@ -44,3 +44,8 @@ endif()
 foreach(_gate IN LISTS _kickos_gates)
   include("${_gate}")
 endforeach()
+
+add_test(NAME ${_tag}_host_gate_boots
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_host_gate_boots.sh" "${PROJECT_SOURCE_DIR}"
+          "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}" "${PROJECT_BINARY_DIR}")
+kickos_host_gate(${_tag}_host_gate_boots TIMEOUT 30)

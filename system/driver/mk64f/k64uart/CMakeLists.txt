@@ -12,4 +12,6 @@
 # code); CLASS carries the transmit-ready read, which is shared UART register logic
 # (decision R-A), not a local copy.
 kickos_add_driver(k64uart SOURCES k64uart.cc ../uart_k64.cc
-                  REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f)
+                  REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f
+                  THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
+                  BLOCK none POSTURE handover BARRIER none START k64uart_console_start CONSOLE)

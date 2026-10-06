@@ -6,9 +6,10 @@
 # creates no target, so tests/static/check_driver_metadata.cmake drives it under cmake -P.
 
 set(KICKOS_DRIVER_OPTIONS NOTIFY CONSOLE)
-set(KICKOS_DRIVER_SINGLE CLASS REGDIR BLOCK POSTURE BARRIER START RECEIVER)
+set(KICKOS_DRIVER_SINGLE CLASS REGDIR BLOCK BLOCK_CACHE POSTURE BARRIER START RECEIVER)
 set(KICKOS_DRIVER_MULTI SOURCES THREADS WINDOWS LINES CLIENT)
-set(KICKOS_DRIVER_METADATA THREADS WINDOWS LINES BLOCK POSTURE BARRIER START RECEIVER NOTIFY CONSOLE CLIENT)
+set(KICKOS_DRIVER_METADATA THREADS WINDOWS LINES BLOCK BLOCK_CACHE POSTURE BARRIER START RECEIVER NOTIFY CONSOLE
+    CLIENT)
 
 # Writes `content` to `path` unless it already holds it, so nothing that depends on the file is
 # rebuilt for an identical configure. No @-reference or ${} in `content` is expanded again.
@@ -78,6 +79,15 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
       message(FATAL_ERROR "kickos_add_driver(${name}): BLOCK ${M_BLOCK} is no power of two, and the "
         "kernel grants a ring block only as one")
     endif()
+  endif()
+  if(NOT DEFINED M_BLOCK_CACHE)
+    set(M_BLOCK_CACHE cached)
+  endif()
+  if(NOT M_BLOCK_CACHE MATCHES "^(cached|uncached)$")
+    message(FATAL_ERROR "kickos_add_driver(${name}): BLOCK_CACHE is cached or uncached, not '${M_BLOCK_CACHE}'")
+  endif()
+  if(M_BLOCK_CACHE STREQUAL "uncached" AND M_BLOCK STREQUAL "none")
+    message(FATAL_ERROR "kickos_add_driver(${name}): BLOCK_CACHE uncached types a ring block, and BLOCK is none")
   endif()
   if(NOT M_START MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
     message(FATAL_ERROR "kickos_add_driver(${name}): START is the C symbol the init calls to bring "
@@ -206,11 +216,16 @@ function(kickos_driver_metadata name out_packaged out_json out_header)
   _kickos_json_array(_jthreads ${_threads})
   _kickos_json_array(_jclients ${_clients})
   _kickos_json_quote("${M_POSTURE}" _qposture)
+  _kickos_json_quote("${M_BLOCK_CACHE}" _qblock_cache)
+  set(_block_flags 0u)
+  if(M_BLOCK_CACHE STREQUAL "uncached")
+    set(_block_flags KOS_MEM_NOCACHE)
+  endif()
   _kickos_json_quote("${M_START}" _qstart)
   _kickos_json_quote("${M_RECEIVER}" _qreceiver)
   set(${out_json} "{\"windows\": ${_jwindows}, \"lines\": ${_jlines}, \"threads\": ${_jthreads}, \
 \"endpoints\": ${KICKOS_DRIVER_ENDPOINTS}, \"notifications\": ${_notifications}, \
-\"block\": ${_qblock}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
+\"block\": ${_qblock}, \"block_cache\": ${_qblock_cache}, \"posture\": ${_qposture}, \"barrier\": ${_qbarrier}, \"console\": ${_console}, \
 \"start\": ${_qstart}, \"receiver\": ${_qreceiver}, \"client\": ${_jclients}}"
       PARENT_SCOPE)
 
@@ -246,6 +261,7 @@ namespace kickos::driver::declared::${name}
         .receiver = ${_receiver},
         .notify = ${_notify},
         .block_size = ${_block}u,
+        .block_flags = ${_block_flags},
         .ep_posture = ::kickos::driver::KOS_DRV_EP_${_posture},
         .barrier = ${_barrier},
         .barrier_after = ${_barrier_after},

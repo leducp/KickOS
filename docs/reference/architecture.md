@@ -233,12 +233,12 @@ becoming a silent no-op.
    needs per-instance event delivery.
 8. **Dependency inversion -- the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
-   flags) consumed as a plain `add_executable` linked against the exported `KickOS::kickos`
-   target, or `KickOS::kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app. The kernel's root
-   thread calls one init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after kernel
-   init. An image linking `KickOS::kernel` takes it from its system target's `KickOS::init`; for
-   the old leaves the CMake cache var `KICKOS_INIT_PROVIDER` selects the target that supplies it
-   (default `kickos_default_init`, a thin passthrough
+   flags) consumed as a plain `add_executable` linked against the exported `KickOS::kernel` and
+   one system target, `KickOS::system_default` for the board's default composition. The kernel's
+   root thread calls one init seam `kickos_init_entry(argc, argv)` (`<kickos/sys/init.h>`) after
+   kernel init. An image linking `KickOS::kernel` takes it from its system target's
+   `KickOS::init`; for the old leaves the CMake cache var `KICKOS_INIT_PROVIDER` selects the
+   target that supplies it (default `kickos_default_init`, a thin passthrough
    `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
    only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
    seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
@@ -1030,12 +1030,12 @@ feeds the slave app.
   ```cmake
   find_package(KickOS REQUIRED)              # or FetchContent
   add_executable(my_slave main.cc)
-  target_link_libraries(my_slave PRIVATE KickOS::kickos)   # the whole OS as usage reqs
+  target_link_libraries(my_slave PRIVATE KickOS::kernel KickOS::system_default)
   ```
-  The exported `KickOS::kickos` INTERFACE target carries the component link group + flags (sim:
-  host libc threads); a full-C++ app links `KickOS::kickos_cxx` instead, and `KickOS::kernel` is
-  `KickOS::kickos_cxx` with no init provider, service list or pin map in its archive group (all
-  three sit over a posture-neutral `KickOS::kickos_core`). `KickOS::kernel` links beside exactly
+  The exported `KickOS::kernel` INTERFACE target carries the component link group + flags (sim:
+  host libc threads) with no init provider, service list or pin map in its archive group; the
+  old leaves `KickOS::kickos` and `KickOS::kickos_cxx` carry those three (all sit over a
+  posture-neutral `KickOS::kickos_core`). `KickOS::kernel` links beside exactly
   one system target, which carries the init, the emitted table and the heap:
   `kickos_compose(<system> <composition.yaml>)` makes one, and `KickOS::system_default` is the
   board's default composition's (`docs/design-m10-target.md`, section 5), or on a board with none a
@@ -1056,7 +1056,7 @@ feeds the slave app.
   and kernel-landing objects ride the exported leaves, so `kickos_emit_image()` only checks the
   image's leaves there. The order of an image's objects decides its app half, and
   `tests/static/check_x86_64_link_order.sh` pins it. An app whose sources call a driver class
-  adds `kickos_link_class_backends(<target> <class>...)` before its `KickOS::kickos` line: an
+  adds `kickos_link_class_backends(<target> <class>...)` before its `target_link_libraries` line: an
   app names the class (it is already in its `#include` list); the backend and its position
   ahead of the rescan group come from `kickos_select_class_backend`, called by
   `system/CMakeLists.txt` because the choice is the image posture's, since every backend of one
@@ -1073,7 +1073,12 @@ feeds the slave app.
   each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREADS ...])` -- a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with `THREADS`
   a packaged driver whose declared metadata reaches both its descriptor, through the generated
-  `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue; `kickos_add_qemu_test(NAME
+  `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
+  list carries is packaged; a line role is named after the chip file's line it binds, but on a
+  module whose channels share their lines, as the XMC's USIC does. A composition binds each role
+  to a line, and the init hands the driver's `START` a `kos_driver_instance` carrying each line
+  as its number and its index among its device's lines: `bring_up` claims the instance's lines,
+  never the descriptor's numbers, which only a service list still claims; `kickos_add_qemu_test(NAME
   TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
   prefix in exactly one place; and `kickos_add_board_provider(<name> SOURCE [LINK])` -- a pinmap or
   service-list descriptor lib that folds its `install(EXPORT)` in so adding a provider cannot drift
@@ -1292,7 +1297,8 @@ structs or a tiny IDL.
 - User-thread SVC roundtrip returns correct results.
 - MPU violation caught and reported (via `mprotect`/`SIGSEGV`).
 - **Dependency inversion**: an out-of-tree app builds against the exported KickOS sim package
-  (`find_package` + plain `add_executable` linked to the `KickOS::kickos` target) and runs.
+  (`find_package` + plain `add_executable` linked to `KickOS::kernel` and
+  `KickOS::system_default`), runs, and ends with its `main`'s status.
 
 **Silicon.** Both halves are done and the second is what M2 closed:
 

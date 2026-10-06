@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `c6uart` serving the console.
+
+version: 1
+board: esp32c6-wroom
+stdout: /svc/console
+ends: main
+heap: 16384
+accepts: [no_protection, no_privilege_split]
+
+tasks:
+  - name: c6uart
+    driver: c6uart
+    devices: [/dev/uart0]
+    lines: { uart0: /dev/uart0/uart0 }
+    core: 0
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 8192
+    priority: 2
+    authority: [memory, system, tasks]

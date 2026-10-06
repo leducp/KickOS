@@ -38,13 +38,14 @@ namespace declared = kickos::driver::declared::xmcssc;
 namespace
 {
     constexpr int USIC0_SR1_IRQ = 85; // RM Table 4-3
+    constexpr uint16_t USIC0_SR1_INDEX = 1;
 
     // KOS_CAP_NONE = not up, or already taken.
     kos_cap_t g_spi0_ep = KOS_CAP_NONE;
 
-    // UNPRIVILEGED driver thread. The window base arrives as the arg VALUE, never dereferenced
-    // as memory. Diagnostics go through emit, not kos_print: the console is already USER_OWNED
-    // here, so the kernel chip path drops every byte.
+    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. Diagnostics go through
+    // emit, not kos_print: the console is already USER_OWNED here, so the kernel chip path drops
+    // every byte.
     //
     // NO FAILURE PATH MAY exit on a service list: root KEEPS a WAIT-bearing cap on E under
     // KOS_DRV_EP_RETAIN, so recv_holders never reaches 0 when this thread dies, the
@@ -56,7 +57,8 @@ namespace
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
         // the first receive event needs.
         struct kos_spi_bus_config cfg;
-        cfg.base = reinterpret_cast<uintptr_t>(drv::thread_start(arg));
+        cfg.irq_index = drv::line_index_of(drv::thread_start(arg));
+        cfg.base = mmap::USIC0_CH1_BASE;
         cfg.ep = KOS_CAP_NONE; // a local engine reaches no endpoint
         cfg.irq = spi::KOS_SPI_CAP_LINE;
         // The bring-up attached LINE 0 to this object on BIT 0 and handed the unbadged
@@ -85,8 +87,8 @@ namespace
 
     constexpr drv::Descriptor k_desc = {
         .tag = "[xmcssc] ",
-        // SR1 below is claimed BY NUMBER, so a cfg naming the sibling channel would grant one
-        // window and interrupt on the other. The console owns U0C0; SPI is U0C1.
+        // The thread drives U0C1 at this base, so a cfg naming the sibling channel would grant
+        // one window and program the other. The console owns U0C0.
         .expected_base = mmap::USIC0_CH1_BASE,
         .block_size = declared::k_declared.block_size,
         .block_flags = 0,
@@ -97,14 +99,14 @@ namespace
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
         // EDGE: the receive flags are W1C'd by the engine before it acks.
-        .lines = {{USIC0_SR1_IRQ, KOS_IRQ_EDGE}},
+        .lines = {{USIC0_SR1_IRQ, KOS_IRQ_EDGE, USIC0_SR1_INDEX}},
         // No register access by root: it holds no DEV region at all (ARCH_MPU_DEV is attached
         // only by thread_create_call), so this thread is the only one that can address the channel.
         // USIC0's module clock is already ungated by the console (U0C0) bring-up.
         .threads = {{.entry = bus_thread,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_WINDOW,
+                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
                      .window_grant = true,
                      .cap_count = 3,
                      // All WAIT only: the driver receives and services, it does not send,

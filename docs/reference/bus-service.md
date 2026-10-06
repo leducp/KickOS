@@ -256,11 +256,15 @@ reference services; a new bus driver writes an engine against `<kickos/driver/sp
 
 A bus service's whole bring-up is `kickos::driver::bring_up(desc, cfg, &g_ep)` over a
 `constexpr Descriptor` authored in the driver's own TU, which is also the only TU that sees the
-chip's register directory. It creates the endpoint, claims the descriptor's IRQ lines, creates
+chip's register directory. It creates the endpoint, claims its IRQ lines (the instance's under
+the init, which its composition binds, and the descriptor's numbers on a service list), creates
 ONE notification and attaches every line to it (line `i` on BIT `i`), mints a badged copy per
 signaller, and spawns each thread with its own MMIO window, memory grant and cap list, `caps[i]`
 landing at child cap index `KOS_SPAWN_DELEGATED_CAP0 + i`; every failure unwinds the steps
-already taken. A driver's badge space therefore starts at bit `line_count`, and leg L13 refuses
+already taken. A thread that routes its device's events onto one of the device's lines, as
+`xmcssc` programs a USIC channel's INPR, takes `KOS_DRV_ARG_LINE0_INDEX`: line 0's index among
+its device's lines, read back with `line_index_of`, which the engine is handed as
+`kos_spi_bus_config::irq_index`. A driver's badge space therefore starts at bit `line_count`, and leg L13 refuses
 a doorbell badge below it: a badge inside the lines' range would read as a device interrupt. A bus takes
 the `KOS_DRV_EP_RETAIN` posture: root keeps the full-rights cap so the app can delegate a narrowed
 copy per client, which also means root never stops being a receiver, so NO failure path in the

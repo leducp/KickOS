@@ -4,7 +4,7 @@
 #
 # CI gate for TERMINAL REPORTING on a published console: build the sim with the
 # publishing service list (kickos_services_sim, where a userspace driver owns the
-# "wire"; see system/init/sim/service_list.cc), then require both terminal reports to
+# "wire"; see system/driver/sim/simcon/simcon.cc), then require both terminal reports to
 # still reach the wire:
 #   pubpanic1  kos_panic  -> "KERNEL PANIC: [pubpanic] banner after handover"
 #   pubpanic2  ud2/SIGILL -> "=== SIM FAULT (illegal instruction)", exactly once

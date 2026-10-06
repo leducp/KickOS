@@ -45,6 +45,7 @@ namespace
         bcfg.irq = KOS_CAP_NONE;
         bcfg.notify = KOS_CAP_NONE;
         bcfg.notify_bit = 0;
+        bcfg.irq_index = 0u;
         int32_t const brc = kos_spi_bus_open(bus, &bcfg);
         if (brc < 0)
         {

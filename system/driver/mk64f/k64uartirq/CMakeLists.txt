@@ -17,7 +17,7 @@
 kickos_add_driver(k64uartirq SOURCES k64uartirq.cc ../uart_k64.cc
                   REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f
                   THREADS uartirq:1:default:2:0 service:0:default:2:1 RECEIVER service
-                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
+                  WINDOWS regs LINES rxtx NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
                   POSTURE handover BARRIER 1 START k64uartirq_console_start CONSOLE)
 
 # The bring-up entry is declared beside the driver rather than in user/include, so a

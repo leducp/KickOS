@@ -27,7 +27,7 @@ INIT_FIELDS = ("status_record_size", "private_record_size", "free_regions")
 THREAD_ENTRY_FIELDS = ("name", "priority", "stack", "caps", "badged")
 CORES = 32
 # The layouts of the emitted table emit.py writes.
-TABLE_LAYOUTS = (3,)
+TABLE_LAYOUTS = (4,)
 
 
 class Manifest:
@@ -89,6 +89,8 @@ class Driver:
         self.endpoints = 0
         self.notifications = 0
         self.block = "none"
+        # The ring block's memory type: "cached", or "uncached" for KOS_MEM_NOCACHE.
+        self.block_cache = "cached"
         self.posture = None
         self.console = False
         self.start = None
@@ -466,6 +468,13 @@ def check_driver(f, node, what):
                      "%s has a %d-byte ring block, and the kernel grants a ring block only as one power "
                      "of two" % (what, block))
         driver.block = block
+    if "block_cache" in values:
+        cache = f.enum(values["block_cache"], "%s block_cache" % what, ("cached", "uncached"))
+        if cache == "uncached" and block == "none":
+            f.refuse(values["block_cache"], "manifest.block-cache",
+                     "%s types its ring block `uncached`, and it has none" % what)
+        elif cache is not None:
+            driver.block_cache = cache
     posture = None
     if "posture" in values:
         posture = f.enum(values["posture"], "%s posture" % what, ("handover", "retain"))

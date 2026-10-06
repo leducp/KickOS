@@ -88,7 +88,7 @@ namespace
         in.watch = 8u;
         in.core_mask = 1u << 3;
         in.line_count = 1;
-        in.lines[0] = 16u;
+        in.lines[0] = {16u, 0u};
         struct kos_service_cfg cfg = cfg_of();
         cfg.instance = &in;
         EXPECT_EQ(drv::bring_up(k_bus, &cfg, nullptr), 0);
@@ -103,7 +103,7 @@ namespace
         in.watch = 8u;
         in.core_mask = 1u << 3;
         in.line_count = 1;
-        in.lines[0] = 16u;
+        in.lines[0] = {16u, 0u};
         return in;
     }
 

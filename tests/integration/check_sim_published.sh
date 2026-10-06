@@ -4,7 +4,7 @@
 #
 # CI gate for the POST-PUBLISH console posture: build the sim with the publishing
 # service list (kickos_services_sim: a userspace console driver owns the "wire", see
-# system/init/sim/service_list.cc) and require the selftest TAP stream to arrive over
+# system/driver/sim/simcon/simcon.cc) and require the selftest TAP stream to arrive over
 # the DRIVER, clean.
 #
 # It needs its own build because KICKOS_SERVICE_LIST selects one provider per image, so the

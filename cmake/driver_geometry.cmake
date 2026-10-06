@@ -10,6 +10,10 @@
 set(KICKOS_DRIVER_ENDPOINTS 1)
 set(KICKOS_DRIVER_NOTIFICATIONS 1)
 
-# The UART console class's ring block, one power-of-two grant. A UART console driver declares it
-# as its BLOCK.
+# The UART and USB CDC console classes' ring blocks, each one power-of-two grant. A driver of the
+# class declares it as its BLOCK.
 set(KICKOS_UART_BLOCK_SIZE 1024)
+set(KICKOS_USB_BLOCK_SIZE 2048)
+# The i.MX RT USB console's ring block, its controller's queue heads and transfer descriptors
+# among it.
+set(KICKOS_RT1062USB_BLOCK_SIZE 4096)

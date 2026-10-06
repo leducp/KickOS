@@ -1528,6 +1528,14 @@ if(KICKOS_BUILD_TESTS)
                     "${PROJECT_BINARY_DIR}" manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(platform_manifest PROPERTIES TIMEOUT 300 LABELS host)
+  # Each packaged driver of this board's catalogue in a composition the board admits.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/tests/drivers/${KICKOS_BOARD}")
+    _add_test(NAME platform_drivers
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
+                      "${PROJECT_BINARY_DIR}" drivers "${PROJECT_BINARY_DIR}/export/manifest.yaml" "${KICKOS_BOARD}"
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(platform_drivers PROPERTIES TIMEOUT 300 LABELS host)
+  endif()
   set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
       "A golden composition this build targets, relative to the source root, admitted against its manifest")
   if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")

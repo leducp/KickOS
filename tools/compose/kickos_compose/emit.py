@@ -58,6 +58,7 @@ class TaskEntry:
         self.priority = 0
         self.restart_max = 0
         self.console = False
+        self.block_uncached = False
         self.core_mask = 0
         self.authority = []
         self.first_grant = 0
@@ -184,6 +185,7 @@ def build(admitted):
             symbol = (task.catalogue.start, "driver")
             entry.block = ring_block(task) or 0
             entry.console = task.catalogue.console
+            entry.block_uncached = task.catalogue.block_cache == "uncached"
         entry.entry = symbol[0]
         if symbol not in table.externs:
             table.externs.append(symbol)
@@ -418,8 +420,13 @@ def render(table, source, composition=None, output="table.c"):
             out.append("            .stack = %d," % task.stack)
             out.append("            .priority = %d," % task.priority)
             out.append("            .restart_max = %d," % task.restart_max)
+            flags = []
             if task.console:
-                out.append("            .flags = KOS_TABLE_TASK_CONSOLE,")
+                flags.append("KOS_TABLE_TASK_CONSOLE")
+            if task.block_uncached:
+                flags.append("KOS_TABLE_TASK_BLOCK_UNCACHED")
+            if flags:
+                out.append("            .flags = %s," % " | ".join(flags))
             out.append("            .core_mask = 0x%Xu," % task.core_mask)
             out.append("            .authority = %s," % bits(task.authority, AUTHORITY_BITS))
             out.append("            .first_grant = %d," % task.first_grant)
@@ -627,9 +634,12 @@ def dump(table):
            % (table.version, names_or_dash(flags), none_text(table.ends_task), len(table.tasks), len(table.grants),
               len(table.refs), len(table.privs), len(table.regions), pool.size, table.init_priority)]
     for n, task in enumerate(table.tasks):
-        flags = "-"
+        names = []
         if task.console:
-            flags = "console"
+            names.append("console")
+        if task.block_uncached:
+            names.append("block_uncached")
+        flags = names_or_dash(names)
         out.append("task %d name=%s entry=%s driver=%s stack=%d block=%d priority=%d restart_max=%d flags=%s "
                    "core_mask=0x%X authority=%s grants=%d+%d cap_grants=%d uses=%d+%d watches=%d+%d"
                    % (n, task.name, task.entry, none_text(task.driver), task.stack, task.block, task.priority,

@@ -31,9 +31,9 @@ third-party kernel code. Register definitions come from hardware manuals.
   scheduler, syscall dispatcher and capability code, with emulated privilege transitions.
 - **Portable backends.** Architecture and chip code implement the interface described in
   the [porting guide](docs/reference/porting.md).
-- **CMake integration.** Applications can use `find_package(KickOS)`, link `KickOS::kickos` and
-  provide an ordinary `main`. See the [host](examples/oot-app/) and
-  [MCU](examples/oot-mcu-app/) examples.
+- **CMake integration.** Applications can use `find_package(KickOS)`, link `KickOS::kernel` and
+  `KickOS::system_default` and provide an ordinary `main`, whose return value ends the system
+  with that status. See the [host](examples/oot-app/) and [MCU](examples/oot-mcu-app/) examples.
 
 ## Supported targets
 

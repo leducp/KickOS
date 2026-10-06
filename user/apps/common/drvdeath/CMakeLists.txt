@@ -8,7 +8,7 @@ target_link_libraries(drvdeath PRIVATE kickos)
 kickos_emit_image(drvdeath)
 
 # Case 3 of the gate: the console driver is TWO threads and the second one holds the
-# register window. The same knob the service list reads (system/CMakeLists.txt); the app
+# register window. The same knob the driver reads (system/driver/sim/simcon); the app
 # needs it because the deferred-reclaim assertion and the cancel that ends it live here.
 if(KICKOS_SIMCON_WINDOW_THREAD)
   target_compile_definitions(drvdeath PRIVATE KICKOS_SIMCON_WINDOW_THREAD=1)

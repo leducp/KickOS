@@ -217,6 +217,7 @@ void arch_console_reclaim(void)
     u::reg32(CONSOLE_WIN_BASE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
     u::reg32(CONSOLE_WIN_BASE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
     u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, ru::DX0_DSEL_B); // DX0 RX input mux
+    u::reg32(CONSOLE_WIN_BASE + u::off::INPR) = 0; // TBINP back to SR0, which a driver may have moved
 
     // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
     // TBUF (TDV=1): FMR.MTDV=10B clears TDV so the pending word is gated off and never

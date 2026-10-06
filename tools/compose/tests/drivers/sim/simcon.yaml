@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `simcon` serving the console.
+
+version: 1
+board: sim
+stdout: /svc/console
+ends: main
+heap: 16384
+
+tasks:
+  - name: simcon
+    driver: simcon
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 65536
+    priority: 2
+    authority: [memory, system, tasks]

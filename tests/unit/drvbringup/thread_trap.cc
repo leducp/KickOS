@@ -206,4 +206,21 @@ namespace
         EXPECT_EXIT(uart::irq_thread<struct kos_uart>(&g_ctx, k_params), ::testing::ExitedWithCode(42),
                     "PANIC \\[drvtrap\\] open refused");
     }
+
+    TEST(UartContext, the_instance_s_line_0_index_reaches_the_class_config)
+    {
+        struct kos_driver_instance in = {};
+        in.line_count = 1;
+        in.lines[0] = {40u, 3u};
+        struct kos_service_cfg cfg = {};
+        cfg.mmio_base = 0x40000000u;
+        cfg.instance = &in;
+        uart::Ctx ctx;
+        EXPECT_EQ(uart::ctx_init(&ctx, &cfg, 0u), 0);
+        EXPECT_EQ(ctx.ucfg.line_index, 3u);
+
+        cfg.instance = nullptr;
+        EXPECT_EQ(uart::ctx_init(&ctx, &cfg, 0u), 0);
+        EXPECT_EQ(ctx.ucfg.line_index, 0u) << "a service list routes onto index 0";
+    }
 }

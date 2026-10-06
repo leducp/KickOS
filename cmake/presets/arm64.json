@@ -38,6 +38,7 @@
         "KICKOS_LINE_TAKER_SYSTEM": "tests/integration/composition_witness/systems/line-qemu-arm64.yaml",
         "KICKOS_DRIVER_WITNESS_SYSTEM": "tests/integration/driver_witness/systems/qemu-arm64.yaml",
         "KICKOS_CONSOLE_WITNESS_SYSTEM": "tests/integration/console_witness/systems/qemu-arm64.yaml",
+        "KICKOS_DRIVER_LINE_SYSTEM": "tests/integration/driver_witness/systems/line-qemu-arm64.yaml",
         "KICKOS_TEST_DRIVERS": "ON",
         "KICKOS_WITNESS_ROOT_DEPTH": "ON"
       }

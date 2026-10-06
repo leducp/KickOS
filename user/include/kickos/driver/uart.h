@@ -58,6 +58,8 @@ extern "C"
         uint8_t parity; // enum kos_uart_parity
         uint8_t stop_bits;
         uint8_t rsv; // reserved zero
+        // Which of its device's lines the backend routes its events onto, for a backend that can.
+        uint16_t line_index;
     };
 
     // The cfg clauses every backend refuses IDENTICALLY, stated once in the contract's own

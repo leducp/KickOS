@@ -37,7 +37,8 @@ static struct bit_name const grant_flag_names[] = {
     {KOS_WINDOW_RO, "ro"}, {KOS_WINDOW_UNCACHED, "uncached"}, {0, NULL}};
 static struct bit_name const region_flag_names[] = {{KOS_MEM_NOCACHE, "uncached"}, {0, NULL}};
 static struct bit_name const header_flag_names[] = {{KOS_TABLE_ENDS_TASK, "ends_task"}, {0, NULL}};
-static struct bit_name const task_flag_names[] = {{KOS_TABLE_TASK_CONSOLE, "console"}, {0, NULL}};
+static struct bit_name const task_flag_names[] = {
+    {KOS_TABLE_TASK_CONSOLE, "console"}, {KOS_TABLE_TASK_BLOCK_UNCACHED, "block_uncached"}, {0, NULL}};
 
 static char const* const kind_names[] = {"endpoint_serve", "endpoint_use", "notification", "window",
                                          "ports",          "region",       "line",         "status"};
@@ -159,7 +160,9 @@ int main(void)
                (unsigned)t->grant_count, (unsigned)t->cap_grant_count, (unsigned)t->first_use,
                (unsigned)t->use_count, (unsigned)t->first_watch, (unsigned)t->watch_count);
         if (t->rsv1 != 0 or t->rsv3[0] != 0 or t->rsv3[1] != 0 or t->rsv3[2] != 0
-            or (t->flags & ~(uint16_t)KOS_TABLE_TASK_CONSOLE) != 0 or (t->driver == KOS_TABLE_NONE and t->block != 0))
+            or (t->flags & ~(uint16_t)(KOS_TABLE_TASK_CONSOLE | KOS_TABLE_TASK_BLOCK_UNCACHED)) != 0
+            or ((t->flags & KOS_TABLE_TASK_BLOCK_UNCACHED) != 0 and t->block == 0)
+            or (t->driver == KOS_TABLE_NONE and t->block != 0))
         {
             ++faults;
         }

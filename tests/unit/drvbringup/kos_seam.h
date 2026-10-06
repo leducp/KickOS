@@ -74,6 +74,9 @@ char const* kos_seam_trace();
 // Everything kos_print was handed, concatenated.
 char const* kos_seam_msg();
 
+// The line the `i`-th claim taken or refused since the reset named, or -1 past the claims recorded.
+int kos_seam_claimed_line(uint32_t i);
+
 // The arg the `i`-th spawn since the reset handed its thread, or null past the spawns recorded.
 void* kos_seam_spawn_arg(uint32_t i);
 

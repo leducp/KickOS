@@ -12,7 +12,7 @@ import re
 POOL = re.compile(r"KICKOS_(MAX_[A-Z0-9_]+|TASK_[A-Z0-9_]+_BUDGET|CAP_TABLE_SUPPLY|RAM_OWNER_SLOTS|ASPACE_RANGES)")
 WINDOWS_KNOB = "KICKOS_MAX_THREAD_WINDOWS"
 
-DRIVER_FIELDS = ("windows", "lines", "threads", "endpoints", "notifications", "block", "posture",
+DRIVER_FIELDS = ("windows", "lines", "threads", "endpoints", "notifications", "block", "block_cache", "posture",
                  "barrier", "console", "start", "receiver", "client")
 
 

@@ -196,7 +196,8 @@ A packaged driver's metadata is declared where the driver is built, on `kickos_a
 role names of its windows and lines, its threads with their priority offset, stack, the
 capabilities each one's spawn delegates and the badged copies of the driver's notification among
 them, the thread that receives on its endpoint, the
-endpoints and notifications it creates, its ring block, a power of two, its endpoint posture,
+endpoints and notifications it creates, its ring block, a power of two, and the block's memory
+type, `BLOCK_CACHE cached` or `uncached`, its endpoint posture,
 its readiness barrier, whether it takes the console, `START`, the C function the init calls
 to bring it up, at which a driver task's `entry` points, and `CLIENT`, the libraries a task using
 it links, each a target the manifest's export refuses the driver for lacking. The build emits it
@@ -358,7 +359,8 @@ header    magic u32, version u16, flags u16 (ends: never / on a task),
 task      name u32, block u32 (a packaged driver's ring block in bytes, or 0),
           entry (a pointer: user code, or a packaged driver's start),
           driver u16 (catalogue index, or none), stack u32, priority u8, restart_max u8,
-          flags u16 (console: a packaged driver that takes the console),
+          flags u16 (console: a packaged driver that takes the console; block_uncached: its ring
+          block is self-granted KOS_MEM_NOCACHE),
           core_mask u32, authority u32 (the word the spawn seats),
           first_grant u16, grant_count u16, cap_grant_count u16,
           first_use u16, use_count u16      -> ref[]: the tasks whose endpoints it uses
@@ -448,7 +450,7 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | `descriptions` | the board's chip and board files, by their path beside the manifest, on a board that has them; admission and emission against the manifest read the board and chip there and nowhere else | `platform/<chip>/<board>.yaml` and its chip file, copied beside the manifest |
 | `default` | `composition`, the board's default composition, by its path beside the manifest, on a board that has one, which needs its descriptions | `boards/<board>/composition.yaml`, copied beside the manifest |
 | `init` | `status_record_size`, one watched task's record in a watcher's status block, which sizes the watcher's `/init/status`; `private_record_size`, one record in its private block, which holds one per task and one per shared region; `free_regions`, the regions root's set holds past its static regions and its stack, which the init self-grants into on a region board | `cmake/init_geometry.cmake` beside `cmake/driver_geometry.cmake`; `KICKOS_MPU_MAX_REGIONS` in `cmake/mpu_geometry.cmake` less the static regions root's linker script bounds and its stack |
-| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block, endpoint posture, readiness barrier, whether it takes the console, its start, and the libraries its clients link | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
+| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block and its memory type (`block_cache`, `cached` or `uncached`), endpoint posture, readiness barrier, whether it takes the console, its start, and the libraries its clients link | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
 
 The catalogue lists the drivers this build declares, and a composition naming a `driver` the
 catalogue does not list is refused.

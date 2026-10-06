@@ -3,10 +3,10 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # CI gate for the dependency-inversion acceptance criterion: install the KickOS sim package,
-# then configure + build + run a standalone out-of-tree app against it via
-# find_package(KickOS) + plain add_executable, linking the exported KickOS::kickos usage target.
-# No KickOS-specific macro is involved, which is the supported downstream shape. The MCU half
-# of the same criterion is check_oot_export_mcu.sh.
+# then configure, build and run a standalone out-of-tree app against it via find_package(KickOS)
+# and a plain add_executable linking KickOS::kernel and KickOS::system_default. The run must
+# print the app's line and end with main's status through the default composition. The MCU
+# half of the same criterion is check_oot_export_mcu.sh.
 #
 # usage: check_oot_export.sh <kickos-build-dir> <kickos-source-dir> <cmake> <generator>
 
@@ -19,6 +19,10 @@ CMAKE="${3:-cmake}"
 GEN="${4:-Ninja}"
 
 scratch_dir
+
+# Must match examples/oot-app/main.cc.
+APP_LINE='[oot] hello from an out-of-tree KickOS app'
+APP_STATUS=42
 
 # The provisioning THIS build resolved, read from the header it generated, and handed to the
 # child configure so the example can static_assert the installed headers state the same. A
@@ -82,10 +86,15 @@ else
   fail "no compile_commands.json: cannot check the consumer's flag posture"
 fi
 
-echo "== running out-of-tree app =="
-OUT="$("$APP")" || fail "out-of-tree app exited non-zero"
-echo "$OUT"
-echo "$OUT" | grep -q '\[oot\] hello from an out-of-tree KickOS app' \
-  || fail "out-of-tree app did not run correctly"
+echo "== the app links a system target =="
+tool_out "$TMP/app_syms" '^ *[0-9]+: ' "${READELF:-readelf}" -sW "$APP"
+awk '$5 == "GLOBAL" && $7 != "UND" && $8 ~ /^kickos_link_one_system_target$/ { found = 1 }
+     END { exit !found }' "$TMP/app_syms" \
+  || fail "the out-of-tree app defines no kickos_link_one_system_target, so it links no system \
+target and the run below would not witness the default composition"
 
-echo "PASS: out-of-tree find_package(KickOS) build ran"
+echo "== running out-of-tree app through the default composition =="
+"$(dirname "$0")/check_system_default.sh" "$APP" "$APP_LINE" "$APP_STATUS" \
+  || fail "the out-of-tree app did not print its line and end with status $APP_STATUS"
+
+echo "PASS: out-of-tree find_package(KickOS) build ran and ended with main's status"
