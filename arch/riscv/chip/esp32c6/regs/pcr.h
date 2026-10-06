@@ -17,7 +17,8 @@ namespace kickos::esp32c6::reg::pcr
     constexpr uintptr_t UART0_SCLK_CONF = mmap::PCR_BASE + 0x04u; // Register 8.2
     constexpr uintptr_t RMT_CONF = mmap::PCR_BASE + 0x2Cu;        // CLK_EN bit0, RST_EN bit1
     constexpr uintptr_t RMT_SCLK_CONF = mmap::PCR_BASE + 0x30u;
-    constexpr uintptr_t SYSCLK_CONF = mmap::PCR_BASE + 0x110u; // Register 8.63
+    constexpr uintptr_t SYSCLK_CONF = mmap::PCR_BASE + 0x110u;   // Register 8.63
+    constexpr uintptr_t CPU_FREQ_CONF = mmap::PCR_BASE + 0x118u; // Register 8.65
 
     constexpr uint32_t RMT_CLK_EN = 1u << 0;
     constexpr uint32_t RMT_RST_EN = 1u << 1;
@@ -44,6 +45,15 @@ namespace kickos::esp32c6::reg::pcr
     // in MHz.
     constexpr uint32_t CLK_XTAL_FREQ_S = 24u; // [30:24]
     constexpr uint32_t CLK_XTAL_FREQ_MASK = 0x7Fu;
+    constexpr uint32_t SOC_CLK_SEL_S = 16u; // [17:16] 0=XTAL 1=PLL 2=RC_FAST
+    constexpr uint32_t SOC_CLK_SEL_MASK = 0x3u;
+
+    // CPU_FREQ_CONF (Register 8.65).
+    constexpr uint32_t CPU_LS_DIV_NUM_S = 0u; // [7:0]
+    constexpr uint32_t CPU_LS_DIV_NUM_MASK = 0xFFu;
+    constexpr uint32_t CPU_HS_DIV_NUM_S = 8u; // [15:8]
+    constexpr uint32_t CPU_HS_DIV_NUM_MASK = 0xFFu;
+    constexpr uint32_t CPU_HS_120M_FORCE = 1u << 16;
 
     // PLL_F80M is the SPLL/6 tap and the TRM names it at 80 MHz (Register 8.68). SPLL's own
     // rate lives in PCR_PLL_FREQ, which is HRO: "Only hardware can read from this

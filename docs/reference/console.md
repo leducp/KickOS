@@ -43,7 +43,9 @@ console_emit                   -- THE ownership guard
 arch_console_write (per chip)
    +- console_tx_insert_line(buf, n, CRLF) != 0 -> the line is in the ring, return
    +- unarmed ring (pre-init)                   -> console_write_line_sync, no drain to race
-   \- refused                                   -> the line does not go out; answer 0
+   \- refused                                   -> the line does not go out; answer 0,
+                                                   unless a fault record's: it makes room
+                                                   (console_tx_insert_record_line)
         ... then the bytes leave ...
 [drain ISR]        console_tx_isr:        on a backend with a TX interrupt
 [producer drain]   drain_in_producer:     on a backend with none (irq_line < 0), outside
@@ -119,8 +121,10 @@ the device no longer the kernel's, and drop the rest of its message with nothing
 The load-bearing invariant of the whole design is **line atomicity**: a reader parses lines,
 so bytes from two producers inside one line destroy it while whole lines in any order stay
 legible. `console_tx_insert_line` copies a whole line under one `IrqLock` or refuses it, and a
-refused line DOES NOT GO OUT, so nothing ever writes at the device beside the drain. A panic still takes the polled path: the system stops
-afterwards, so a line left queued is a line nobody reads.
+refused line DOES NOT GO OUT, so nothing writes at the device beside a running drain. A fault
+record's refused line writes queued bytes itself, under the mask that holds every drain off (see
+below). A panic still takes the polled path: the system stops afterwards, so a line left queued
+is a line nobody reads.
 
 **Across cores, the speaker is the device owner, not the CPU.** SMP cores in one kernel
 insert normal lines into one ring; one drain sends its bytes. Own-image AMP kernels have
@@ -184,9 +188,10 @@ numerically >= 0x20 -- including the TX ISR (`arch/arm/armv7m/regs.h`). So the
 producer's "publish head + enable IRQ" is atomic with respect to the ISR's "drain
 to empty + disable IRQ": either the ISR's empty-check happened before the publish
 (then the producer's enable re-arms it) or after (then the ISR sees the new bytes
-and keeps draining). **No lost wakeup.** The lock is held
+and keeps draining). **No lost wakeup.** For an insert the lock is held
 for the copy plus a pointer store and one bit -- microseconds bounded by the ring
-size -- not the ~22 ms a 256-byte transmission used to hold. The copy is inside the
+size, not the ~22 ms a 256-byte transmission used to hold; a fault record's line is the one
+insert that transmits under it. The copy is inside the
 lock, not outside it: that also serialises concurrent *thread* producers, which the
 single-producer argument alone would not cover: the ring takes a line from any
 context, so its producers are many and only the lock orders them.
@@ -200,16 +205,19 @@ around the fallback fixes that, because the interleaving is between the fallback
 drain that is not holding the lock. Waiting instead is a decision for the caller, not
 one the kernel takes on its behalf.
 
-**A fault record's line is the exception.** A thread-fault record (`kprintf_fault`) on the
-kernel's own console is not dropped by a full ring: under the mask, the oldest queued bytes go out
-through `arch_console_write_sync`, in ring order, until the line fits, and the line then queues
+**A fault record's line is the exception.** A thread-fault record (`kprintf_fault`) on the kernel's
+own console is not dropped by a full ring: under the mask, the oldest queued bytes go out through
+`arch_console_write_sync`, in ring order, until the line fits, and the line then queues
 (`console_tx_insert_record_line`). The drain ISR and every producer are held off for that span, so
-the device still has one writer and the lines queued first go out first and whole. The span is
-bounded by the record: a line sends at most its own length, CRs included, so one record masks
-interrupts for at most `KDIAG_FAULT_RECORD_MAX` bytes plus one CR per line of wire time, about
-25 ms at 115200. A record line is still refused by a line wider than the ring and by a nested
-insert, and on a backend with no TX interrupt by a producer drain holding a byte it took, the one
-writer the mask does not stop.
+the device still has one writer and the lines queued first go out first and whole. The span is per
+LINE, each line its own masked span: it sends at most the line's own length of queued bytes, CRs
+included, so a line, at most `KDIAG_FAULT_LINE_MAX - 1` characters, masks for at most twice that
+many bytes of wire time, the time scaling with the console's baud. On a backend with no TX interrupt
+the drain that sends the rest runs after the mask is dropped. A record line is still refused by a
+line wider than the ring, by an insert or a record line it interrupted, and on a backend with no TX
+interrupt by a producer drain holding a byte it took, the one writer the mask does not stop. Each
+queued byte is taken before it is written, so a synchronous fault in the polled writer whose handler
+records again or flushes for a panic sends no byte twice.
 
 **The one kernel caller that WAITS is the bench report** (`kprintf_paced`, in this file, under
 `KICKOS_BENCH`). Forty phase rows at about 45 bytes each is roughly 156 ms of wire time at 115200,

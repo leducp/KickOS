@@ -65,28 +65,67 @@ rig_need() {
     fi
 }
 
+# The fittings of <board> that occupy the same pins, so at most one of them is fitted.
+rig_exclusive() { # <board>
+    case "$1" in
+        frdmk64f)
+            echo "lan9252 dspi0-loopback"
+            ;;
+        *)
+            ;;
+    esac
+}
+
 # rig_wired <board>  prints the bench fittings RIG_WIRED_<BOARD> declares on that board, such
 # as a loopback jumper or a shield, as space-separated names. Unset declares none, so a judge
-# owes every clause that rests on one rather than reading a missing wire as a failure.
+# owes every clause that rests on one rather than reading a missing wire as a failure. Refuses,
+# returning 2, a declaration naming two fittings rig_exclusive says cannot be fitted together.
 rig_wired() {
     _rig_key="RIG_WIRED_$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
     eval "_rig_w=\${$_rig_key:-}"
-    printf '%s\n' "$_rig_w" | tr -s ' \t' ' ' | sed 's/^ //; s/ $//'
+    _rig_w="$(printf '%s\n' "$_rig_w" | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')"
+    _rig_both=""
+    _rig_n=0
+    for _rig_f in $(rig_exclusive "$1"); do
+        case " $_rig_w " in
+            *" $_rig_f "*)
+                _rig_both="$_rig_both $_rig_f"
+                _rig_n=$((_rig_n + 1))
+                ;;
+            *)
+                ;;
+        esac
+    done
+    if [ "$_rig_n" -gt 1 ]; then
+        echo "REFUSING: $_rig_key declares$_rig_both, which occupy the same pins on $1" >&2
+        return 2
+    fi
+    printf '%s\n' "$_rig_w"
 }
 
 # rig_judge <board> <log> <build> <judge> <args>  runs the capture judge <judge> over <log>,
 # with <args> split at each `;` and <board>'s fittings in KOS_WIRED (tests/lib/gate.sh wired).
 rig_judge() {
-    _rj_wired="$(rig_wired "$1")"
+    _rj_wired="$(rig_wired "$1")" || return 2
     _rj_log="$2"
     _rj_build="$3"
     _rj_judge="$4"
     _rj_ifs="$IFS"
+    _rj_glob=1
+    case "$-" in
+        *f*)
+            _rj_glob=0
+            ;;
+        *)
+            ;;
+    esac
     IFS=';'
     set -f
     # shellcheck disable=SC2086
     set -- $5
-    set +f
+    if [ "$_rj_glob" -eq 1 ]; then
+        set +f
+    fi
     IFS="$_rj_ifs"
     KOS_WIRED="$_rj_wired" KOS_CAPTURE="$_rj_log" sh "$_rj_judge" "$_rj_build" "$PWD" cmake "$@"
 }

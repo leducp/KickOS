@@ -105,8 +105,8 @@ namespace
 // Answers every thread_local access on rxv3, UNPRIVILEGED AND IN THE CALLING THREAD. It
 // cannot read the current TCB out of a kernel global: on an enforcing board that load
 // faults. RX hands unprivileged code no register that differs per thread except the stack
-// pointer, so the thread pointer is derived from R0 and every arena block is strided by
-// KICKOS_TLS_STRIDE (arch_ram_region_align).
+// pointer, so the thread pointer is derived from R0 and every arena block of exactly
+// KICKOS_TLS_STRIDE, the only size a stack can be, is aligned to it (arch_ram_region_align).
 //
 // THE SUBTRACT IS NOT DEFENSIVE, IT IS THE EDGE OF THE RANGE. A stack top is EXCLUSIVE, so
 // a thread with an empty stack has R0 exactly at base + stride, which masks to the NEXT

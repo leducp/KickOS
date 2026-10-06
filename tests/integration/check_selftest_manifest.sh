@@ -7,8 +7,8 @@
 # left on the wrong image's row permits nothing there while the image that does run the arm is
 # judged without it. Which arms an image carries is read off the LINKED image: each registration
 # a region compiles leaves an absolute symbol `kickos_tap_arm.<name>` (TAP_REGISTER,
-# user/apps/common/selftest/selftest.h). A name no image of the build registers is a posture's
-# arm compiled out everywhere, which permits nothing anywhere, and is reported as a note.
+# user/apps/common/selftest/selftest.h). A name no image of the build registers permits nothing
+# anywhere, so it is refused as stale.
 #
 #   check_selftest_manifest.sh <manifest> <image list> <nm>
 #   check_selftest_manifest.sh --self-test
@@ -59,7 +59,7 @@ judge() {
                     bad "$_j_name runs in ${_j_where% }, not in $_j_img, whose row permits it to
   $_j_kind: the image running it is judged without the permission and this row permits nothing"
                 else
-                    echo "note: $_j_img's row names $_j_name ($_j_kind), which no image of this build registers"
+                    bad "$_j_img's row names $_j_name ($_j_kind), which no image of this build registers"
                 fi
             done
         done
@@ -101,12 +101,11 @@ EOF
     verdict movedpartial 'p1|2||gamma|' 'p2|2|||'
     [ "$?" -ne 0 ] || fail "a row permitting a partial another image runs passes"
     verdict absent 'p1|2|zeta||' 'p2|2|||'
-    [ "$?" -eq 0 ] || fail "a name no image registers is refused rather than noted:
-  $(cat "$TMP/absent.out")"
-    grep -q 'note: p1.s row names zeta' "$TMP/absent.out" \
-        || fail "a name no image registers passes without its note: $(cat "$TMP/absent.out")"
+    [ "$?" -ne 0 ] || fail "a name no image registers passes"
+    grep -q "p1's row names zeta" "$TMP/absent.out" \
+        || fail "a name no image registers is refused for another reason: $(cat "$TMP/absent.out")"
     verdict lookalike 'p1|2|lookalike||' 'p2|2|||'
-    grep -q 'note: p1.s row names lookalike' "$TMP/lookalike.out" \
+    grep -q "p1's row names lookalike" "$TMP/lookalike.out" \
         || fail "a symbol that is not a registration was read as one: $(cat "$TMP/lookalike.out")"
     verdict stray 'p3|2|||'
     [ "$?" -ne 0 ] || fail "a row for an image the list does not carry passes"
@@ -117,7 +116,7 @@ EOF
         || fail "an image carrying no registration symbol is refused for another reason:
   $(cat "$TMP/blind.out")"
     echo "PASS: a skip or partial on the wrong image's row is refused naming the image that runs"
-    echo "  the arm, a name no image registers is noted, and an image whose registrations"
+    echo "  the arm, a name no image registers is refused, and an image whose registrations"
     echo "  cannot be read is refused"
     exit 0
 fi

@@ -6,7 +6,8 @@
 # entry reserves below each one's deepest sp.
 #
 #   need    <arch> header=<path> frame=<MACRO> zone=<MACRO> reason: <text>
-#   thread  <arch> <image> <name> root=<symbol> stack=<MACRO> reason: <text>
+#   thread  <arch> <image> <name> root=<symbol> stack=<MACRO> presets=<preset>[,<preset>]...
+#           reason: <text>
 #   unsized <arch> <symbol> <bytes> [calls=[?]<symbol>[,...]] reason: <text>
 #
 # A thread passes when its root's longest path, plus frame, plus zone, fits the stack less the
@@ -15,7 +16,9 @@
 # with no frame and no unsized record, an indirect call, a dynamic stack object, a cycle.
 #
 # stack= is a macro of the unit that defines the root, and the spawn has to pass exactly it.
-# Every macro resolves under that unit's own compile command, ISA flags included.
+# Every macro resolves under that unit's own compile command, ISA flags included. presets= names
+# every trap_redzone preset whose tree links the image, and the thread fails on one that does not;
+# presets= may repeat.
 #
 # ONLY A THREAD WHOSE WHOLE GRAPH CLOSES CAN BE DECLARED. Prebuilt newlib and libstdc++ carry
 # no .ci, so a call into them is an unsized node, and the ones a thread reaches through a
@@ -27,8 +30,18 @@ need    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h \
                frame=KICKOS_ARMV7M_TRAP_ENTRY_FRAME zone=KICKOS_ARMV7M_TRAP_NEED_SVC \
                reason: the SVC guard's red zone below the validated PSP and the entry frame above it, which dominate a preemption's frame and the PendSV push at every posture
 thread  armv7m reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu,qemu-flat,qemu-telem,qemu-m3,qemu-m3-flat,qemu-m7,qemu-m7-flat \
+               presets=qemu-m33,qemu-m33-flat,frdmk64f-st,teensy41-st,xmc4800-relax-st \
+               presets=xmc4800-relax-bench,f411disco-st,f411disco-bench,blackpill-st,due-st \
+               presets=pizero2350-st,pizero2350-amp,pizero2350-amp2-n0,pizero2350-amp2-n1 \
+               presets=f302nucleo-st,bluepill-c8-st \
                reason: the published console driver, spawned on a stack main allocates
 thread  armv7m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu,qemu-flat,qemu-telem,qemu-m3,qemu-m3-flat,qemu-m7,qemu-m7-flat \
+               presets=qemu-m33,qemu-m33-flat,frdmk64f-st,teensy41-st,xmc4800-relax-st \
+               presets=xmc4800-relax-bench,f411disco-st,f411disco-bench,blackpill-st,due-st \
+               presets=pizero2350-st,pizero2350-amp,pizero2350-amp2-n0,pizero2350-amp2-n1 \
+               presets=f302nucleo-st,bluepill-c8-st \
                reason: the published console driver, spawned on a stack main allocates
 unsized armv7m arch_syscall 0 reason: switch.S, a load, the svc and bx lr, which write no stack
 unsized armv7m _free_r 16 calls=__malloc_lock,__malloc_unlock \

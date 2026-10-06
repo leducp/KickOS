@@ -5,7 +5,8 @@
 # A silicon capture of f411spi (user/apps/f411disco/f411spi): four words moved on the SPI1 line,
 # the loopback verdict, then the task killed for its read of GPIOB. The words echo only through a
 # PA7-to-PA6 jumper, so the echo is judged where the rig declares the `spi1-loopback` fitting and
-# owed otherwise.
+# owed otherwise. Unwired, the capture witnesses that TXE came ready for each of the four words,
+# and nothing more.
 #
 #   KOS_CAPTURE=<log> check_f411spi.sh <board-build> <kickos-source> <cmake>
 

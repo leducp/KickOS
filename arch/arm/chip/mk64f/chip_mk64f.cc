@@ -28,6 +28,8 @@
 #include "regs/port.h"
 #include "regs/sim.h"
 #include "regs/sysmpu.h"
+#include "sysmpu_error.h"
+#include "sysmpu_rights.h"
 #include "regs/uart.h"
 #include "regs/wdog.h"
 
@@ -340,29 +342,9 @@ namespace
     console_tx_backend const k64_console_backend = {
         k64_tx_slot_free, k64_tx_push, k64_tx_irq_enable, k64_tx_irq_disable};
 
-    // K64 SYSMPU (RM section 19), not the ARM core MPU.
-    // The core uses crossbar masters M0 (code bus) and M1 (system bus).
-    // RGD0 supplies supervisor access; RGD1..11 hold user regions. Permissions
-    // are the union of matching descriptors. See regs/sysmpu.h.
-#if KICKOS_HAVE_MPU
-    // Grant data rights on both M0 and M1: flash and SRAM_L use M0, while
-    // SRAM_U and peripherals use M1. Stacks may be in either SRAM bank.
-    // Descriptors remain address-bounded, so this does not widen the region.
-    // Execute applies only to the code bus; supervisor access comes from RGD0.
-    uint32_t sysmpu_word2(uint32_t attr)
-    {
-        uint32_t w = reg::sysmpu::WORD2_M0UM_R | reg::sysmpu::WORD2_M1UM_R; // read: M0 + M1
-        if (attr & ARCH_MPU_W)
-        {
-            w |= reg::sysmpu::WORD2_M0UM_W | reg::sysmpu::WORD2_M1UM_W; // write: M0 + M1
-        }
-        if (attr & ARCH_MPU_X)
-        {
-            w |= reg::sysmpu::WORD2_M0UM_X; // execute: code bus (M0) only
-        }
-        return w;
-    }
-#endif
+    // K64 SYSMPU (RM section 19), not the ARM core MPU. RGD0 supplies supervisor access;
+    // RGD1..11 hold user regions (sysmpu_rights.h). Permissions are the union of matching
+    // descriptors.
 }
 
 extern "C"
@@ -614,26 +596,16 @@ extern "C" void kickos_arch_mpu_commit(void)
     uint32_t primask;
     __asm volatile("mrs %0, primask" : "=r"(primask));
     __asm volatile("cpsid i" ::: "memory");
-    // One-time: make RGD0 a supervisor-only background. At reset RGD0 grants ALL
-    // masters rwx over all memory; strip the core's USER access on BOTH masters so
-    // a U-mode access then needs a per-thread RGD, while supervisor (the privileged
-    // kernel) keeps full rwx. RGDAAC0 is the WORD2 alt view (does not clear VLD).
+    // One-time: strip the core's USER access from RGD0, the whole-space background, so a
+    // U-mode access needs a per-thread RGD. RGDAAC0 is the WORD2 alt view (does not clear VLD).
     static bool rgd0_ready = false;
     if (not rgd0_ready)
     {
-        // CRITICAL: RGD0 resets with the SUPERVISOR fields M0SM/M1SM = 0b11 = "same
-        // as user mode" (K64 RM 19.6.1). Clearing only the user fields (M0UM/M1UM)
-        // therefore drops SUPERVISOR access too, since it defers to the now-zero user
-        // field: the privileged kernel faults on its very next instruction fetch,
-        // double-faults while stacking, and the core locks up -> reset with no dump.
-        // So ALSO clear M0SM/M1SM to 0b00 (= supervisor r/w/x), pinning supervisor
-        // full-access independent of UM.
-        // Bit fields (both core masters): M0UM[2:0] M0SM[4:3], M1UM[8:6] M1SM[10:9].
-        constexpr uint32_t core_user_and_sm =
-            reg::sysmpu::WORD2_M0UM_R | reg::sysmpu::WORD2_M0UM_W | reg::sysmpu::WORD2_M0UM_X
-            | reg::sysmpu::WORD2_M0SM
-            | reg::sysmpu::WORD2_M1UM_R | reg::sysmpu::WORD2_M1UM_W | reg::sysmpu::WORD2_M1UM_X
-            | reg::sysmpu::WORD2_M1SM;
+        // M0SM resets to 0b11, "as user mode" (RM 19.3.6): clearing M0UM alone would drop the
+        // kernel's own access and lock the core up. 0b00 pins supervisor r/w/x. The
+        // debugger's M1 fields are not the core's to write (RM 3.3.7.5, Table 3-23).
+        constexpr uint32_t core_user_and_sm = SYSMPU_WORD2_M0UM_R | SYSMPU_WORD2_M0UM_W
+                                              | SYSMPU_WORD2_M0UM_X | SYSMPU_WORD2_M0SM;
         r32(reg::sysmpu::RGDAAC0) &= ~core_user_and_sm;
         r32(reg::sysmpu::CESR) |= reg::sysmpu::CESR_VLD; // (already enabled at reset)
         g_mpu_held_valid = false;
@@ -728,26 +700,14 @@ int arch_bitband_present(void)
     return 1;
 }
 
-// The lowest slave port whose protection error is latched, read and then cleared. SPERR is
-// W1C and VLD (bit 0) plain R/W, so VLD is written back as read: a bare write of the port's
-// bit would disable the whole SYSMPU.
-static bool sysmpu_take_error(size_t* port, uint32_t* ear, uint32_t* edr)
+uint32_t sysmpu_error_read(uintptr_t offset)
 {
-    uint32_t const cesr = r32(reg::sysmpu::CESR);
-    uint32_t const sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
-    for (size_t p = 0; p < reg::sysmpu::SLAVE_PORTS; p++)
-    {
-        if ((sperr & (1u << (4 - p))) == 0)
-        {
-            continue;
-        }
-        *port = p;
-        *ear = r32(reg::sysmpu::EAR0 + p * 8u);
-        *edr = r32(reg::sysmpu::EDR0 + p * 8u);
-        r32(reg::sysmpu::CESR) = (cesr & reg::sysmpu::CESR_VLD) | (1u << (31 - p));
-        return true;
-    }
-    return false;
+    return r32(mmap::SYSMPU_BASE + offset);
+}
+
+void sysmpu_error_write(uintptr_t offset, uint32_t value)
+{
+    r32(mmap::SYSMPU_BASE + offset) = value;
 }
 
 // A SYSMPU protection error reaches the core as an imprecise BUS error, so neither MMFAR nor
@@ -781,19 +741,7 @@ void arch_fault_report_extra(void)
 
 bool arch_fault_chip_addr(uintptr_t* addr)
 {
-    size_t port = 0;
-    uint32_t ear = 0;
-    uint32_t edr = 0;
-    if (not sysmpu_take_error(&port, &ear, &edr))
-    {
-        return false;
-    }
-    *addr = ear;
-    // A second port's latch left standing would label the next fault with this one's address.
-    while (sysmpu_take_error(&port, &ear, &edr))
-    {
-    }
-    return true;
+    return sysmpu_core_error_addr(addr);
 }
 
 int arch_console_write(char const* buf, size_t n)

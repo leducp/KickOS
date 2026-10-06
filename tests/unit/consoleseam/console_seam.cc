@@ -26,6 +26,9 @@ namespace
     bool g_in_gap = false;
     bool g_seat_fired = false;
     void (*g_seat_fn)(void) = nullptr;
+    uint32_t g_sync_pushes = 0;
+    uint32_t g_sync_seat = 0;
+    void (*g_sync_fn)(void) = nullptr;
     std::string g_wire;
     char g_storage[consoleseam::STORAGE_SIZE];
 
@@ -125,7 +128,7 @@ namespace consoleseam
         return g_gaps;
     }
 
-    void reset(uint32_t ring_size)
+    void reset(uint32_t ring_size, int irq_line)
     {
         g_mask_depth = 0;
         g_cur_masked = 0;
@@ -138,13 +141,16 @@ namespace consoleseam
         g_gap_left = 0;
         g_in_isr = false;
         g_committed = false;
-        g_isr_runs = true;
+        g_isr_runs = (irq_line >= 0);
         g_tx_irq_on = false;
         g_in_gap = false;
         g_seat_fired = false;
         g_seat_fn = nullptr;
+        g_sync_pushes = 0;
+        g_sync_seat = 0;
+        g_sync_fn = nullptr;
         g_wire.clear();
-        console_tx_init(&g_backend, g_storage, ring_size, 3);
+        console_tx_init(&g_backend, g_storage, ring_size, irq_line);
     }
 
     char* storage()
@@ -188,6 +194,12 @@ namespace consoleseam
     {
         g_committed = true;
     }
+
+    void run_in_sync_write(uint32_t ordinal, void (*fn)(void))
+    {
+        g_sync_seat = ordinal;
+        g_sync_fn = fn;
+    }
 }
 
 extern "C"
@@ -214,13 +226,19 @@ extern "C"
         return 0;
     }
 
-    // Unmasked, so these bytes land on the wire without counting against the masked-push
-    // metric.
+    // Counted against the masked-push metric whenever the caller holds the mask.
     void arch_console_write_sync(char const* buf, size_t n)
     {
         for (size_t i = 0; i < n; i++)
         {
             mock_push(static_cast<uint8_t>(buf[i]));
+            g_sync_pushes++;
+            if (g_sync_fn != nullptr and g_sync_pushes == g_sync_seat)
+            {
+                void (*const fn)(void) = g_sync_fn;
+                g_sync_fn = nullptr;
+                fn();
+            }
         }
     }
 

@@ -106,6 +106,7 @@ RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 # The jumpers and devices fitted on each board, as space-separated names; docs/reference/bench.md
 # lists them and the clause each one carries. A judge checks such a clause only where its fitting
 # is named here, and owes it otherwise, so leave a board's key unset when nothing is fitted. Key is
-# RIG_WIRED_<BOARD>, the board name upper-cased with '-' as '_'.
+# RIG_WIRED_<BOARD>, the board name upper-cased with '-' as '_'. Fittings that occupy the same pins
+# (lan9252 and dspi0-loopback on frdmk64f) are exclusive, and declaring both is refused.
 #RIG_WIRED_F411DISCO="spi1-loopback"
 #RIG_WIRED_FRDMK64F="lan9252"

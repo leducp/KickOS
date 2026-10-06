@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A silicon capture of inprstorm (user/apps/xmc4800-relax/inprstorm): the storm thread reroutes
-# USIC0 channel 1's receive interrupt onto the console node and storms it, while the entry
+# A silicon capture of inprstorm (user/apps/xmc4800-relax/inprstorm): the entry reroutes USIC0
+# channel 1's receive interrupt onto the console node and storms it, while a thread it spawned
 # heartbeats. The console surviving is the point, so the capture must carry the reroute and two
 # heartbeats after it, with no panic.
 #

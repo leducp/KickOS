@@ -32,7 +32,7 @@ to 8,192 anyway, so the board provisions **8 x 8,192** rather than 12 x 7,584. R
 - `KICKOS_MAX_THREADS=2` at a 1,024-byte stack, root 1,536, idle 512 -> **4,096 bytes of
   arena**. (`KICKOS_THREAD_SLOTS` is one more than that, root holding a slot of its own.)
 - `KICKOS_CAP_TABLE_SUPPLY=7`, the range floor -> 224 bytes of `.bss`
-- `KICKOS_TLS=n`. Deriving the ARM thread pointer from SP needs every arena block strided by one
+- `KICKOS_TLS=n`. Deriving the ARM thread pointer from SP needs every stack strided by one
   power of two, and three 2,048-byte blocks do not fit; paying it would cost a thread. A
   `thread_local` in an app built for this board is a link error naming `__aeabi_read_tp`.
 - `KICKOS_KERNEL_STACKS=0`. armv7m is the one arch that legitimately resolves 0, so a no-MPU
@@ -45,7 +45,7 @@ link within 1,700 bytes of one another -- each link prints its own `size` line, 
 and by how much is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` and
-`selftest_p2` to `selftest_p10`: see *The selftest ships as SEVERAL images on six boards* below.
+`selftest_p2` to `selftest_p10`: see *The selftest ships as SEVERAL images on five boards* below.
 
 ### Recommended: `microbit` is exactly this tier
 
@@ -57,8 +57,8 @@ but the thread count:
 - `KICKOS_KERNEL_STACKS=1`: `KICKOS_THREAD_SLOTS` blocks, so 5 x 896 = 4,480 bytes of kernel
   `.bss` below the arena. Raising the thread count shrinks the arena while growing the demand
   on it, which is why this board is at 4 and not 8.
-- `KICKOS_TLS=y`, TLS stride 2,048 (`1 << 11`), so every arena block is aligned to its own
-  rounded size.
+- `KICKOS_TLS=y`, TLS stride 2,048 (`1 << 11`), so every arena block of 2,048 bytes is aligned to
+  2,048.
 - `KICKOS_CAP_TABLE_SUPPLY` at the fleet default 16, 896 bytes of `.bss`. The two 16 KiB parts
   above are the only boards in the fleet still cutting it to 7.
 
@@ -107,7 +107,7 @@ code wins, then this file.
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
 | `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip selects no memory family, so the map is flat. See *Per-board caveats* below |
-| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on six boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **The core runs at 40 MHz**, the reset selection (XTAL / 1) the ROM leaves: KickOS sets no clock tree, `MTIME` counts `CPU_CLK`, and `arch_init` reads that rate off PCR, so a boot that keeps the PLL converts at its rate instead; `wallclock` holds a kernel sleep against the capture host's arrival stamps. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
@@ -1016,17 +1016,17 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
-### The selftest ships as SEVERAL images on six boards
+### The selftest ships as SEVERAL images on five boards
 
 `bluepill-c8`, `f302nucleo`, `microbit`, the ENFORCING and own-image AMP `esp32c6-wroom`
-variants, the ENFORCING `xmc4800-relax` variants and every `esp32-wroom` bench build. The
+variants and every `esp32-wroom` bench build. The
 condition is in `user/apps/common/selftest/CMakeLists.txt`: the CHIP for the first three
 (`stm32f103`, `stm32f302`, `nrf51`), the chip plus `KICKOS_HAVE_MPU` or `KICKOS_AMP_OWN_IMAGE`
-for `esp32c6`, whose flat variant carves no code window and stays one image, the chip plus
-`KICKOS_HAVE_MPU` for `xmc4800`, and the chip plus `KICKOS_BENCH` for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
+for `esp32c6`, whose flat variant carves no code window and stays one image, and the chip plus
+`KICKOS_BENCH` for `esp32`. Every other board still produces one `selftest`, unchanged. The suite outgrew a 64 KiB part, so it is built as self-contained images that partition
 the arms between them.
 
-**SIX BOARDS, FIVE DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
+**FIVE BOARDS, FOUR DIFFERENT RESOURCES, AND THE IMAGE COUNT IS PER BOARD.** `main.cc` cuts the
 registration list into TEN regions; each image carries a contiguous RUN of them and elides the
 rest, so the number of images is what varies by board and the cut points do not. Each board's cut
 is `_selftest_firsts` in `user/apps/common/selftest/CMakeLists.txt`, the first region of each
@@ -1034,10 +1034,8 @@ image. The two STM32 parts take TEN images, one region each, because 64 KiB of F
 slice of the suite. `microbit` takes FIVE (regions 1-4,
 5-6, 7-8, 9, 10). `esp32c6` takes FIVE on the enforcing bench variant (1-2, 3-4, 5-6, 7-9, 10)
 and FOUR on the enforcing or own-image AMP variants (1-3, 4-6, 7-9, 10).
-An enforcing `xmc4800-relax` build takes THREE, regions 1 to 8, 9 and 10: its thread arena is
-the 56 KiB between the app window and the kernel stack, the allocator never takes a block back,
-and by region 9 the earlier arms' blocks and the suite's stacks have spent it, so region 9's
-grants and stacks need an image of their own, and so does region 10's console handover.
+An enforcing `xmc4800-relax` build takes ONE: its thread arena runs from the app window through
+DSRAM2 to the kernel stack, about 184 KiB, which the whole suite never spends.
 An `esp32-wroom` bench build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
 from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench probes beside a
 console driver or the second core's code put the whole suite past it.
@@ -1329,7 +1327,7 @@ not describe a fleet split today.
 | Board | Backend | Date, tip | Service list | `selftest` unpriv / privileged control | Confinement fault, as reported on the wire |
 |---|---|---|---|---|---|
 | `xmc4800-relax` | PMSAv7, 144 MHz | 2026-07-27 `22e1c5a`; re-witnessed 2026-07-28 `75227d4` | console-only | 61 / 60 `ok` / 1 skip -- vs 61 / 61 `ok` / 0 skip | `=== MPU FAULT ===` `CFSR=0x82` `MMFAR=0x20013000` |
-| `esp32c6-wroom` | RISC-V PMP NAPOT, ~160 MHz | 2026-07-28 `e5c651b` | `kickos_services_none`, kernel console | 62 / 61 `ok` / 1 skip -- vs 62 / 62 `ok` / 0 skip | `MPU FAULT: task 'root' attempted write at 0x40834000 -- reported` |
+| `esp32c6-wroom` | RISC-V PMP NAPOT, 40 MHz | 2026-07-28 `e5c651b` | `kickos_services_none`, kernel console | 62 / 61 `ok` / 1 skip -- vs 62 / 62 `ok` / 0 skip | `MPU FAULT: task 'root' attempted write at 0x40834000 -- reported` |
 | `pizero2350` | PMSAv8, 150 MHz | 2026-07-28 `6857df3`; `selftest` + `mpu_fault` at `3204121` | `kickos_services_none`, kernel console | 62 / 61 `ok` / 1 skip -- vs 62 / 62 `ok` / 0 skip | `=== MPU FAULT ===` `CFSR=0x82` `MMFAR=0x20026000`; plus `mpu_fault` child-to-child `CFSR=0x82` `MMFAR=0x20027000` |
 | `rx72m` | RXv3 RX-MPU, 240 MHz | 2026-07-28 `d71b313` | `kickos_services_none`, kernel console | 62 / 61 `ok` / 1 skip -- vs 62 / 62 `ok` / 0 skip | `MPU FAULT: task 'root' attempted write at 0x14000 -- reported` |
 | `f411disco` | PMSAv7, 84 MHz | 2026-07-29 `6646c8e` | `kickos_services_none`, kernel console | 62 / 61 `ok` / 1 skip -- vs 62 / 62 `ok` / 0 skip | `=== MPU FAULT ===` `CFSR=0x82` `MMFAR=0x2000a000`; the control-side `mpu_fault` is `CFSR=0x82` `MMFAR=0x2000b000` |

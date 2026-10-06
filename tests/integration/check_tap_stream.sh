@@ -4,9 +4,10 @@
 #
 # Verdict on a completed TAP stream, read from stdin. Shared by every selftest gate.
 #
-# EXPECT_SKIPS, EXPECT_PARTIALS and EXPECT_FAULTS (all default empty) are permission sets, not
-# budgets: a skip, a partial or a faulting thread whose name is not listed fails the gate, and
-# a listed name that did not skip, go partial or fault is a note, never a failure.
+# EXPECT_SKIPS and EXPECT_PARTIALS (default empty) are measurements, exact by name: a skip or a
+# partial whose name is not listed fails the gate, and so does a listed name that did not skip
+# or go partial. EXPECT_FAULTS is a permission set: a faulting thread whose name is not listed
+# fails, and a listed one that did not fault is a note.
 #
 # A vacuity skip is the exception and takes no list at all: it is permitted whatever its name
 # and expected nowhere. The stream says which kind of skip it is; see VACUITY_MARK below for
@@ -430,15 +431,14 @@ fi
 # wire under the SKIP directive and are judged by opposite rules:
 #
 #   provisioning, `# SKIP <reason>`: this board cannot host the arm. Declared in EXPECT_SKIPS;
-#     an undeclared one fails and a declared one that did not skip is a note.
+#     an undeclared one fails and so does a declared one that did not skip.
 #   vacuity, `# SKIP VACUOUS <reason>`: the timing window the arm's claim rests on did not hold
 #     on this run, so the arm asserted nothing. Permitted whatever its name, never expected.
 #
-# A vacuity skip may not join the declared set: that set is a measurement and not slack, and an
-# arm gone permanently vacuous would read green forever with a listed-but-unskipped arm being
-# only a note. Nor may there be a separate list of the arms allowed to go vacuous, since that
-# would be a second authority beside the arms, stale the moment one of them is repaired. So the
-# category travels on the wire and is read here.
+# A vacuity skip may not join the declared set: that set is exact, and an arm that goes vacuous
+# only on some runs would fail every run it did not. Nor may there be a separate list of the arms
+# allowed to go vacuous, since that would be a second authority beside the arms, stale the moment
+# one of them is repaired. So the category travels on the wire and is read here.
 #
 # It stays a SKIP directive on the wire on purpose: a directive of its own would read as a
 # plain pass to every reader not taught the category, check_amp_peer_arms.sh's armed() among
@@ -521,12 +521,18 @@ check_directive() { # <DIRECTIVE> <summary-label> <permitted names> [<names a su
         exit 1
     fi
 
+    _stale=""
     for _x in $_expect; do
         case " $_names " in
             *" $_x "*) ;;
-            *) echo "NOTE: '$_x' is on the expected-$_label list but no arm reported it; trim it" ;;
+            *) _stale="$_stale $_x" ;;
         esac
     done
+    if [ -n "$_stale" ]; then
+        echo "FAIL: on the expected-$_label list but not reported $_dir:$_stale"
+        echo "      expected:${_expect:+ $_expect}"
+        exit 1
+    fi
 }
 
 # The expected-failure category, read before the tally because it subtracts from it. An arm

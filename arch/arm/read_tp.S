@@ -18,8 +18,8 @@
 
 /* Runs UNPRIVILEGED in the calling thread, so it cannot read the current TCB from a kernel
  * global: that load faults on an enforcing board. M-profile gives unprivileged code no
- * register that differs per thread except SP, which is what arch_ram_region_align strides
- * every arena block by KICKOS_TLS_STRIDE for.
+ * register that differs per thread except SP, which is why arch_ram_region_align aligns every
+ * arena block of exactly KICKOS_TLS_STRIDE, the only size a stack can be, to the stride.
  *
  * AEABI restricted clobber: r0, ip, lr and the flags ONLY, so no scratch register and no
  * memory access may be added here.

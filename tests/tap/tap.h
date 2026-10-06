@@ -111,6 +111,8 @@ namespace tap
     // a sub-case unexercised is tap::partial, not this.
     // Like tap::fail it only records and does not return: follow it with `return`.
     void skip(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+    // tap::skip carrying a nonzero <tag> of the suite's own, which nested_run can ask for.
+    void skip_tagged(unsigned tag, char const* fmt, ...) __attribute__((format(printf, 2, 3)));
 
     // Mark the current test skipped for vacuity: the timing window its claim rests on did
     // not hold on this run, so the arm could assert nothing. The harness emits
@@ -119,8 +121,7 @@ namespace tap
     // a reader that does not know the category still refuses it rather than reading a pass.
     //
     // A gate permits one whatever its name and never expects one, which a provisioning skip
-    // is not. Naming such an arm in EXPECT_SKIPS instead would make an arm gone permanently
-    // vacuous read green forever, since a declared arm that did not skip is only a note.
+    // is not: EXPECT_SKIPS is exact, so it cannot name an arm that skips only on some runs.
     // The reason must say how far outside the window the run fell, or the permission hides
     // the same gap the missing detection did.
     // Like tap::skip it only records and does not return: follow it with `return`.
@@ -154,10 +155,18 @@ namespace tap
     // Emit a free-form TAP diagnostic (`# <text>`) on the harness's own route.
     void diag(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-    // Run fn inside the current test and answer whether it recorded a skip. The current
-    // test's own verdict and reason are left as they were; any other nested verdict is
-    // emitted as a diagnostic.
-    bool nested_skips(TestFn fn);
+    // How a nested_run ended: SKIPPED is a skip carrying the tag asked for.
+    enum class Nested : unsigned char
+    {
+        SKIPPED,
+        SKIPPED_OTHER,
+        RAN,
+        FAILED
+    };
+    // Run fn inside the current test and answer how it ended. The current test's own verdict
+    // and reason are left as they were; every end but SKIPPED is emitted as a diagnostic with
+    // its reason, and a FAILED one runs the set_after_failure repair before this returns.
+    Nested nested_run(TestFn fn, unsigned tag);
 
     // Register a repair to run after a test that failed, before the next one starts. A
     // failing TAP_CHECK returns mid-test, so a suite sharing state across tests strands

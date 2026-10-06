@@ -138,6 +138,24 @@ wired_f411() {
     || bad "rig_wired does not read RIG_WIRED_F411DISCO as its space-separated names"
 [ -z "$(wired_f411 'RIG_WIRED_BLACKPILL=spi1-loopback')" ] \
     || bad "rig_wired declares another board's fitting on f411disco"
+# <rig line>: rig_wired frdmk64f under a rig carrying it, with its refusal on stdout.
+wired_k64() {
+    { cat "$TMP/rig.conf"; printf '%s\n' "$1"; } > "$TMP/rig-wired.conf"
+    (
+        KICKOS_RIG="$TMP/rig-wired.conf"
+        . "$TMP/tools/bench/rig.sh"
+        rig_find "$TMP/tree" && rig_wired frdmk64f 2>&1
+    )
+}
+[ "$(wired_k64 'RIG_WIRED_FRDMK64F=lan9252')" = lan9252 ] \
+    || bad "rig_wired does not read a single frdmk64f fitting"
+if _k64="$(wired_k64 'RIG_WIRED_FRDMK64F="dspi0-loopback lan9252"')"; then
+    bad "rig_wired accepts lan9252 and dspi0-loopback declared together on frdmk64f"
+fi
+case "$_k64" in
+    REFUSING:*) ;;
+    *) bad "rig_wired does not name its refusal of two exclusive fittings: $_k64" ;;
+esac
 
 F411_BUS='0483:3748 STLINK'
 printf 'f411spi|kernel|tests/integration/check_f411spi.sh|\n' > "$F/f411disco.images"

@@ -308,10 +308,10 @@ case "$arm" in
             armv7m:unread)
                 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
                 [ -n "$cfsr" ] || cfail cause "the dump carries no CFSR: the report died before it, the core locked up reading the frame?"
-                if [ $(( 0x$cfsr & 0x1818 )) -eq 0 ]; then
+                if [ $(( 0x$cfsr & 0x1010 )) -eq 0 ]; then
                     cfail cause "CFSR=0x$cfsr carries no stacking-abort bit, so the frame was readable and this arm witnessed nothing"
                 fi
-                has "frame not read: its stacking at" \
+                has "frame not read: its stacking or unstacking at" \
                   || cfail frame "the dump does not say it left the aborted frame unread"
                 banners="$(printf '%s\n' "$OUT" | grep -oE "$KOS_PANIC_RE" | wc -l | tr -d ' ')"
                 if [ "$banners" -ne 1 ]; then

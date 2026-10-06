@@ -56,6 +56,16 @@ tests/integration/check_f411spi.sh|f411spi-unwired.capture||killed|drop|=== THRE
 tests/integration/check_f411spi.sh|f411spi-unwired.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404
 tests/integration/check_f411spi.sh|f411spi-unwired.capture||panic|swap|PC=0x080002f4|KERNEL PANIC: PC=0x080002f4
 tests/integration/check_k64drv.sh|k64drv.capture||timer-start|drop|counting the 1 kHz LPO|
+tests/integration/check_wallclock.sh|wallclock.capture||mark-0|drop|[wallclock] mark 0|
+tests/integration/check_wallclock.sh|wallclock.capture||mark-1|drop|[wallclock] mark 1|
+tests/integration/check_wallclock.sh|wallclock.capture||mark-1|order|[wallclock] mark 0|[wallclock] mark 1
+tests/integration/check_wallclock.sh|wallclock.capture||done|drop|[wallclock] done|
+tests/integration/check_wallclock.sh|wallclock.capture||panic|after|[wallclock] mark 1|KERNEL PANIC: planted
+tests/integration/check_wallclock.sh|wallclock.capture||sleep-short|swap|advanced 5000031725 ns|advanced 4999031725 ns
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|21.219733
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|3.719733
+tests/integration/check_wallclock.sh|wallclock.capture||host-time|swap|6.219733|6.269733
+tests/integration/check_wallclock.sh|wallclock.capture||no-times|drop|1.217408|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|drop|[k64drv] tick 7|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|swap|[k64drv] tick 2|[k64drv] tick 22
 tests/integration/check_k64drv.sh|k64drv.capture||tick|order|[k64drv] tick 4|[k64drv] tick 5
@@ -78,7 +88,8 @@ tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCR
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|panic|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=OFF
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: PASS|
-tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: PASS|single-byte loopback: FAIL
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: PASS|single-byte loopback: FAIL (rc=-5)
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|swap|single-byte loopback: PASS|single-byte loopback: MISMATCH
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|order|single-byte loopback: PASS|zero-tx loopback: PASS
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback PASS (the SPI|
 tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback PASS (the SPI|KERNEL PANIC: planted
@@ -87,22 +98,32 @@ tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||byte-test|d
 tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||device-open|drop|device open rc=|
 tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||case|cache||K64DSPI_LOOPBACK:BOOL=ON
 tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||posture|cache||KICKOS_SPI_LOCAL_ENGINE:BOOL=ON
-tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||error|swap|BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)|BYTE_TEST FAIL: no valid signature
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||error|swap|BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)|BYTE_TEST FAIL: a transfer failed
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||byte-test|swap|BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)|BYTE_TEST MISMATCH: no valid signature
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||xfer|swap|0x87654321 (xfer OK)|(xfer ERR rc=-5)
 tests/integration/check_k64dspi.sh|k64dspi-lan9252.capture||device-open|drop|device open rc=|
 tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST attempt 1:|
-tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST FAIL|
-tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|order|BYTE_TEST attempt 1:|BYTE_TEST FAIL
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST MISMATCH|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|order|BYTE_TEST attempt 1:|BYTE_TEST MISMATCH
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||device-open|drop|device open rc=|
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||error|after|BYTE_TEST attempt 2:|[k64dspi] ERROR: planted
-tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||panic|after|BYTE_TEST FAIL|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||panic|after|BYTE_TEST MISMATCH|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||xfer|swap|0x0 (xfer OK)|(xfer ERR rc=-5)
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||error|swap|0x0 (xfer OK)|(xfer ERR rc=-5)|swap|BYTE_TEST MISMATCH: no valid signature; check CS (D9/PTC4), baud/mode, or shield seating|BYTE_TEST FAIL: a transfer failed
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||error|swap|BYTE_TEST MISMATCH|BYTE_TEST FAIL
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||device-open|swap|rc=0 achieved=10000000 Hz|rc=-16 achieved=0 Hz
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||posture|cache||KICKOS_SPI_LOCAL_ENGINE:BOOL=ON
-tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: FAIL|
-tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|swap|device open: PASS|device open: FAIL
-tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback FAIL (see|
-tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|after|zero-tx loopback: FAIL|[k64dspi] ERROR: planted
-tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback FAIL (see|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: MISMATCH|
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|device open: PASS|
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|device open: PASS|device open: FAIL (rc=-16)
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|device-open|swap|rc=0 achieved=1000000 Hz|rc=-16 achieved=0 Hz
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: MISMATCH|single-byte loopback: FAIL (rc=-5)
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|loopback: MISMATCH|loopback: FAIL (rc=-5)|swap|loopback MISMATCH (every transfer completed, rx != tx)|loopback FAIL (see per-case lines above)
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback MISMATCH (every|
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|after|zero-tx loopback: MISMATCH|[k64dspi] ERROR: planted
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback MISMATCH (every|KERNEL PANIC: planted
 tests/integration/check_rxdrv.sh|rxdrv.capture||mux|swap|general I/O rc 0|general I/O rc -16
 tests/integration/check_rxdrv.sh|rxdrv.capture||console-pin|drop|refused (-KOS_EBUSY)|
 tests/integration/check_rxdrv.sh|rxdrv.capture||holder|drop|PASS periph_enable holder|
@@ -211,6 +232,7 @@ tests/integration/check_inprstorm.sh|inprstorm.capture||panic|after|rerouting IN
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||load|drop|load:0x4083c000|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||lp-rtc|drop|# c6amp: LP RTC|
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|vectors=0x4083c001|vectors=0x4083c000
+tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||vectors|swap|self clk=40000000|self clk=120000000
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||gate|swap|and 0x0 from node 0's timg0|and 0x5a3c from node 0's timg0
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||call|drop|ampping: node 0 calls node 1 port 3|
@@ -418,6 +440,9 @@ tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||order|order|[fs] worker about to fault|=== MPU FAULT
 tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||dump|drop|=== HARD FAULT|
 tests/integration/check_faultsurvive.sh;offstack;armv7m;terminated|faultsurvive-armv7m-offstack.capture||cause|swap|CFSR=0x10000|CFSR=0x10010
+tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||cause|swap|CFSR=0x10010|CFSR=0x10800
+tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||frame|drop|frame not read|
+tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|faultsurvive-armv7m-unread.capture||doubled|after|CFSR=0x10010|=== MPU FAULT ===
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|faultsurvive-armv6m.capture||survived|drop|[fs] survivor ran|
 tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|faultsurvive-armv6m-overflow.capture||dump|drop|=== HARD FAULT|
@@ -481,6 +506,7 @@ tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|the system e
 tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;overflow;armv6m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|the escalation ended the system with exit 132
+tests/integration/check_faultsurvive.sh;unread;armv7m;terminated|the escalation ended the system with exit 132
 tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|the escalation ended the system with exit 0
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|the system exited 0 once main returned
@@ -554,6 +580,25 @@ plant() {
         }' "$1" > "$5"
 }
 
+# <in> <op> <literal> <replacement> <out>: plant, and the same edit on <in>'s arrival stamps,
+# <in>.times, where it has them.
+plant_pair() {
+    plant "$1" "$2" "$3" "$4" "$5"
+    rm -f "$5.times"
+    if [ -f "$1.times" ]; then
+        plant "$1.times" "$2" "$3" "$4" "$5.times"
+    fi
+}
+
+# <a> <b>: the two captures and their arrival stamps are the same bytes.
+same_pair() {
+    cmp -s "$1" "$2" || return 1
+    if [ -f "$1.times" ] || [ -f "$2.times" ]; then
+        cmp -s "$1.times" "$2.times" || return 1
+    fi
+    return 0
+}
+
 # <judge> <cache line> <capture>: the judge's exit status over the capture.
 judged() {
     mkdir -p "$TMP/build"
@@ -597,7 +642,7 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
     [ -f "${judge%%;*}" ] || fail "no judge ${judge%%;*}"
     [ -f "tests/integration/app_captures/$fixture" ] || fail "no fixture $fixture"
     [ -n "$token" ] || fail "the row for $judge over $fixture names no token"
-    plant "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
+    plant_pair "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
     case "$passed" in
         *"|$judge $fixture $cache|"*) ;;
         *)
@@ -618,13 +663,17 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
         judged "$judge" "$rep" "$TMP/good.log"
         jrc=$?
     else
-        plant "$TMP/good.log" "$op" "$lit" "$rep" "$TMP/bad.log"
+        plant_pair "$TMP/good.log" "$op" "$lit" "$rep" "$TMP/bad.log"
         if [ -n "$op2" ]; then
             what="$what and the $op2 of '$lit2'"
-            plant "$TMP/bad.log" "$op2" "$lit2" "$rep2" "$TMP/bad2.log"
+            plant_pair "$TMP/bad.log" "$op2" "$lit2" "$rep2" "$TMP/bad2.log"
             mv "$TMP/bad2.log" "$TMP/bad.log"
+            rm -f "$TMP/bad.log.times"
+            if [ -f "$TMP/bad2.log.times" ]; then
+                mv "$TMP/bad2.log.times" "$TMP/bad.log.times"
+            fi
         fi
-        if cmp -s "$TMP/good.log" "$TMP/bad.log"; then
+        if same_pair "$TMP/good.log" "$TMP/bad.log"; then
             bad "$what leaves $fixture unchanged"
             continue
         fi
@@ -698,7 +747,7 @@ while IFS= read -r key; do
     fixture="$(printf '%s' "$run" | cut -d '|' -f 2)"
     cache="$(printf '%s' "$run" | cut -d '|' -f 3)"
     cp "${key%%;*}" "$TMP/silenced/${key%%;*}"
-    plant "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
+    plant_pair "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
     if ! judged "$TMP/silenced/$key" "$cache" "$TMP/good.log"; then
         bad "$key with its NOT EVALUATED silenced refuses $fixture, so the control proves nothing: \
 $(tail -n 1 "$TMP/judge.out")"

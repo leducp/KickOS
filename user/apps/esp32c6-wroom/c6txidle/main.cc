@@ -41,9 +41,14 @@ namespace
 int main(int, char**)
 {
     uint32_t const* const rec = kickos_c6_txidle_record;
-    if (rec[REC_DONE] != 1u)
+    if (rec[REC_DONE] == 2u)
     {
         kickos::emit("[c6txidle] ERROR: the console FIFO never stayed empty\n");
+        return 1;
+    }
+    if (rec[REC_DONE] != 1u)
+    {
+        kickos::emit("[c6txidle] ERROR: the kernel probe recorded nothing\n");
         return 1;
     }
     uint32_t const frame = rec[REC_FRAME];

@@ -59,23 +59,18 @@ set(_selftest_regions 10)
 # 64 KiB of FLASH on the two STM32 parts, the 128 KiB pow2 PMP code window (`_code_size` in
 # arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 128
 # KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
-# partition, the arena that follows .bss on nrf51 and the 56 KiB one between the app window and the
-# kernel stack on an enforcing XMC4800 (`xmc4800.ld`), which never takes a block back: regions 1 to
-# 8 spend it before region 9's grants and stacks, and region 9 before region 10's console handover,
-# and the 128 KiB IRAM every ESP32 instruction runs from (`IRAM` in
-# arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a console driver or the
-# second core's code. The bench probes take the C6's code window past one more cut. None of these is
-# a number the build can read back from the board, so the cut is stated here and nowhere else: the
-# chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from the board's own config, and
-# every gate takes the image list and each image's arm count off the targets below rather than
-# restating either.
+# partition, the arena that follows .bss on nrf51, and the 128 KiB IRAM every ESP32 instruction
+# runs from (`IRAM` in arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a
+# console driver or the second core's code. The bench probes take the C6's code window past one
+# more cut. None of these is a number the build can read back from the board, so the cut is stated
+# here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from
+# the board's own config, and every gate takes the image list and each image's arm count off the
+# targets below rather than restating either.
 set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
   set(_selftest_firsts 1 2 3 4 5 6 7 8 9 10)
 elseif(KICKOS_CHIP STREQUAL "nrf51")
   set(_selftest_firsts 1 5 7 9 10)
-elseif(KICKOS_CHIP STREQUAL "xmc4800" AND KICKOS_HAVE_MPU)
-  set(_selftest_firsts 1 9 10)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
   set(_selftest_firsts 1 3 5 7 10)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE))
@@ -373,7 +368,7 @@ if(KICKOS_MEMORY_ENFORCED AND KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms "${_tap_arms} + 5") # window_memory_ro, task_exit_member_fault, task_exit_entry_killed, task_exit_cancelled_fault, task_exit_implicit_fault
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
-  math(EXPR _tap_arms "${_tap_arms} + 1") # region_mode
+  math(EXPR _tap_arms "${_tap_arms} + 2") # region_mode, caller_stack_overlap
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 2") # periph_reg_write_mask, window_list
@@ -475,7 +470,7 @@ if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # caller_stack_arena
 endif()
 if(NOT KICKOS_HAVE_ASPACE)
-  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # region_mode
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 2") # region_mode, caller_stack_overlap
 endif()
 if(KICKOS_MEMORY_ENFORCED)
   math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 2") # cross_task_block, reservation_refused_skips

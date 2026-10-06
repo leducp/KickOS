@@ -5,7 +5,8 @@
 // and a new thread's windows, task data and stack (thread_region_sync, from thread_create), each
 // syncing the block through grant_sync and the arena's ownership record of what a non-cacheable
 // region left owed; and the refusal of a cacheable stack over a block another region holds
-// non-cacheable (stack_type_free).
+// non-cacheable (stack_type_free). And the set thread_create seats: a spawn's staged one as
+// staged, and idle's or root's judged before it.
 
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
@@ -19,6 +20,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #if not KICKOS_ARCH_ARENA_DCACHE or KICKOS_HAVE_ASPACE
@@ -161,6 +163,7 @@ namespace kickos
 
     void kpanic(char const* msg)
     {
+        fprintf(stderr, "kernel panic: %s\n", msg);
         ADD_FAILURE() << "kernel panic: " << msg;
         abort();
     }
@@ -326,6 +329,7 @@ namespace
         kickos::ram_owner_set_sync_owed(blk_[1], BLOCK, true);
         kickos::ThreadAttr attr;
         attr.task = task();
+        kickos::thread_regions_boot(attr, reinterpret_cast<void*>(blk_[1]), BLOCK);
         kickos::Thread child{};
         kickos::thread_create(&child, entry, nullptr, reinterpret_cast<void*>(blk_[1]), BLOCK,
                               attr);
@@ -341,5 +345,39 @@ namespace
         EXPECT_TRUE(kickos::stack_type_free(blk_[0], BLOCK, &w, 1));
         w.flags = 0;
         EXPECT_TRUE(kickos::stack_type_free(blk_[1], BLOCK, &w, 1));
+    }
+
+    // The spawn assembles and judges the set once; thread_create seats it as staged.
+    TEST_F(RegionSync, a_staged_set_is_seated_as_staged)
+    {
+        kickos::MpuSet staged;
+        staged.clear();
+        ASSERT_TRUE(staged.add(blk_[0], BLOCK, RW));
+        kickos::ThreadAttr attr;
+        attr.task = task();
+        attr.regions = &staged;
+        kickos::Thread child{};
+        kickos::thread_create(&child, entry, nullptr, reinterpret_cast<void*>(blk_[1]), BLOCK,
+                              attr);
+        ASSERT_EQ(child.mpu.end() - child.mpu.begin(), 1);
+        EXPECT_EQ(child.mpu.begin()->base, blk_[0]);
+    }
+
+    // No spawn judges idle's or root's set: one this MPU decides otherwise than the kernel
+    // stops the boot.
+    TEST_F(RegionSync, a_boot_thread_whose_set_the_mpu_decides_otherwise_panics)
+    {
+        ASSERT_EQ(ARCH_MPU_OVERLAP, ARCH_MPU_OVERLAP_HIGHER);
+        kos_window const w = {blk_[1], BLOCK, KOS_WINDOW_MEMORY, KOS_WINDOW_RO};
+        uintptr_t const stack = blk_[1];
+        EXPECT_DEATH(
+            {
+                kickos::ThreadAttr attr;
+                attr.task = task();
+                attr.windows = &w;
+                attr.window_count = 1;
+                kickos::thread_regions_boot(attr, reinterpret_cast<void*>(stack), BLOCK);
+            },
+            "regions overlap where the MPU decides");
     }
 }

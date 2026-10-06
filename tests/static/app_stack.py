@@ -39,7 +39,7 @@ def die(msg):
 class Decl(object):
     def __init__(self, path, arch):
         self.need = None                            # (header, frame macro, zone macro)
-        self.threads = []                           # (image, name, root spec, stack macro)
+        self.threads = []                           # (image, name, root spec, stack macro, presets)
         self.unsized = {}                           # symbol -> (bytes, [(callee, optional)])
         for n, f, reason in T.records(path):
             where = '%s:%d' % (path, n)
@@ -59,10 +59,15 @@ class Decl(object):
                         die('%s: need wants header=, frame= and zone=' % where)
                 self.need = (fields['header'], fields['frame'], fields['zone'])
             elif kind == 'thread':
-                if len(f) != 6 or 'root' not in fields or 'stack' not in fields:
+                presets = set()
+                for x in f[4:]:
+                    if x.startswith('presets='):
+                        presets.update(p for p in x[len('presets='):].split(',') if p)
+                if len(f) < 7 or 'root' not in fields or 'stack' not in fields or not presets:
                     die('%s: thread wants <arch> <image> <name> root=<symbol> stack=<macro>'
-                        % where)
-                self.threads.append((f[2], f[3], fields['root'], fields['stack']))
+                        ' presets=<preset>[,<preset>...]...' % where)
+                self.threads.append((f[2], f[3], fields['root'], fields['stack'],
+                                     frozenset(presets)))
             elif kind == 'unsized':
                 if len(f) < 4:
                     die('%s: unsized wants <arch> <symbol> <bytes> [calls=...]' % where)
@@ -208,11 +213,14 @@ def find_map(build_dir, image):
     return None
 
 
-def check_thread(build_dir, src_dir, decl, entries, image, name, root, stack_macro):
+def check_thread(build_dir, src_dir, decl, entries, preset, image, name, root, stack_macro,
+                 presets):
     map_path = find_map(build_dir, image)
+    if map_path is None and preset in presets:
+        return ['IMAGE NOT LINKED: %s/%s is bounded on %s, and the tree links no %s.map'
+                % (image, name, preset, image)]
     if map_path is None:
-        print('app_stack: %s/%s: image not linked on this preset, nothing to bound'
-              % (image, name))
+        print('app_stack: %s/%s: not bounded on %s' % (image, name, preset))
         return []
     graph = ImageGraph(build_dir, map_path)
     graph.bind_indirect({})
@@ -288,11 +296,13 @@ def run(argv):
     opt = {}
     i = 0
     while i < len(argv):
-        if argv[i] not in ('--ci-dir', '--src', '--arch', '--decl') or i + 1 >= len(argv):
-            die('usage: app_stack.py --ci-dir <dir> --src <dir> --arch <arch> --decl <file>')
+        if argv[i] not in ('--ci-dir', '--src', '--arch', '--preset', '--decl') \
+                or i + 1 >= len(argv):
+            die('usage: app_stack.py --ci-dir <dir> --src <dir> --arch <arch> --preset <preset>'
+                ' --decl <file>')
         opt[argv[i][2:]] = argv[i + 1]
         i += 2
-    for k in ('ci-dir', 'src', 'arch', 'decl'):
+    for k in ('ci-dir', 'src', 'arch', 'preset', 'decl'):
         if k not in opt:
             die('missing --%s' % k)
     decl = Decl(opt['decl'], opt['arch'])
@@ -301,9 +311,9 @@ def run(argv):
         return 0
     entries = compile_entries(opt['ci-dir'])
     fails = []
-    for image, name, root, stack in decl.threads:
-        fails += check_thread(opt['ci-dir'], opt['src'], decl, entries, image, name, root,
-                              stack)
+    for image, name, root, stack, presets in decl.threads:
+        fails += check_thread(opt['ci-dir'], opt['src'], decl, entries, opt['preset'], image,
+                              name, root, stack, presets)
     if fails:
         for f in fails:
             sys.stderr.write('FAIL: %s\n' % f)

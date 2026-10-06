@@ -74,6 +74,9 @@ classify() {
         # so a `#` header above the banner is never judged.
         *.capture)
             printf 'need\n' ;;
+        # A planted capture's arrival stamps: its judge reads only the rows that carry a line.
+        *.capture.times)
+            printf 'need\n' ;;
         # objcopy --redefine-syms input: `#` starts a comment there too, which a reader who
         # takes the file for a bare two-column table would not expect.
         *.syms)
@@ -183,6 +186,8 @@ arm none   docs/archive/M9.7_exit_campaign.log
 arm refuse docs/archive/M9.7_exit_campaign.log.1
 arm need   tests/integration/app_captures/c6blink.capture
 arm refuse tests/integration/app_captures/c6blink.captured
+arm need   tests/integration/app_captures/wallclock.capture.times
+arm refuse tests/integration/app_captures/wallclock.times
 arm need   kernel/sched.cc
 arm need   arch/arm/armv7m/vectors.S
 arm need   docs/reference/style.md
@@ -226,12 +231,12 @@ while IFS="$TAB" read -r want path; do
         refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
     esac
 done < "$TMP/classify_controls"
-[ "$i" -eq 43 ] || fail "$i classify() control(s) ran, expected 43"
+[ "$i" -eq 45 ] || fail "$i classify() control(s) ran, expected 45"
 # All three verdicts, or a classify() collapsed onto one of them would satisfy every equality
 # above and still classify the whole tree wrong.
-[ "$C_NEED" -eq 16 ] || fail "classify() answered need for $C_NEED of 16 controls"
+[ "$C_NEED" -eq 17 ] || fail "classify() answered need for $C_NEED of 17 controls"
 [ "$C_NONE" -eq 10 ] || fail "classify() answered none for $C_NONE of 10 controls"
-[ "$C_REFUSE" -eq 17 ] || fail "classify() answered refuse for $C_REFUSE of 17 controls"
+[ "$C_REFUSE" -eq 18 ] || fail "classify() answered refuse for $C_REFUSE of 18 controls"
 
 # The header check. Each positive is one clause: no tag at all, a tag one line past the
 # window, a copyright line not beside the tag, the two words in PROSE, and a copyright line

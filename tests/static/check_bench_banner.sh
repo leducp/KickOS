@@ -53,6 +53,13 @@ boot "$TMP/bare" "$TERSE" '6c3ce8c7'
 label_is bare 6c3ce8c7-UNVERIFIED
 boot "$TMP/nolabel" "$TERSE" 'c '
 label_is nolabel ''
+# A last boot that lost its commit row is not credited with the boot before it.
+boot "$TMP/rowlessterse" "$TERSE" 'c 6c3ce8c7'
+boot "$TMP/rowlessterse" "$TERSE" ''
+label_is rowlessterse 6c3ce8c7-UNVERIFIED
+boot "$TMP/rowlessprose" "$PROSE" '   commit  6c3ce8c7'
+boot "$TMP/rowlessprose" "$PROSE" ''
+label_is rowlessprose 6c3ce8c7-UNVERIFIED
 
 # The last boot starts at the later of its title and its commit row, so either one lost leaves
 # the other as the anchor; an earlier boot's rows never stand in.

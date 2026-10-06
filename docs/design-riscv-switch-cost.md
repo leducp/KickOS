@@ -22,7 +22,7 @@ alone and so charges armv7m nothing for the hardware stacking it nonetheless pay
 
 Measured this branch, enforcing, both on the corrected brackets:
 
-| | `esp32c6-wroom` (rv32imac, 160 MHz) | `f411disco` (armv7m) |
+| | `esp32c6-wroom` (rv32imac, 40 MHz) | `f411disco` (armv7m) |
 | --- | --- | --- |
 | `SWITCH` p50/p99/max | 144/144/159 (n=40001) | 80/80/232 |
 | `MPU_COMMIT` | 75 | 247 |
@@ -71,8 +71,8 @@ switch that costs nothing at all. Against the two real denominators:
 
 | denominator | cycles | eligible switches | ceiling if the save were FREE |
 | --- | --- | --- | --- |
-| 8 B call/reply round trip (38325 ns at 160 MHz) | 6130 | 1 | **2.7 percent** |
-| ping-pong handoff (53626 ctx-sw/s, `docs/archive/M8.8_meas.md` 201) | 2984 | 1 | **5.6 percent** |
+| 8 B call/reply round trip (6130 MTIME ticks, which count CPU cycles) | 6130 | 1 | **2.7 percent** |
+| ping-pong handoff (13406 ctx-sw/s at 40 MHz; `docs/archive/M8.8_meas.md` 201 reads 53626 through the 160 MHz conversion) | 2984 | 1 | **5.6 percent** |
 
 A cooperative frame is 13 words each way against 30, and it still pays the `tp` derive and
 the deferred PMP commit; it removes the `mscratch` swap, the `gp` anchor, the `mcause` demux,
@@ -83,8 +83,9 @@ ceiling, which is where the "~2x on the bracket" claim lands. **The delivered wi
 **And it does not explain the soak that raised the item.** The entry cites the M3 C6
 enforcement soak, C6 ~10.5k iterations against the XMC's ~33.9k in the same window, a 3.2x
 gap. A term whose absolute ceiling is 5.6 percent of a handoff cannot produce a 3.2x gap.
-Whatever the soak is measuring, it is not this, and the item was sized against a gap it does
-not reach.
+What the soak measured is the clock: the C6 runs at 40 MHz (XTAL, the reset selection the ROM
+leaves) against the XMC's 144 MHz, a 3.6x gap, and the item was sized against a gap this term
+does not reach.
 
 ## What it would cost to build
 

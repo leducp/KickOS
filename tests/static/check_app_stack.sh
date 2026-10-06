@@ -11,7 +11,9 @@
 #     ambiguous once both are linked;
 #   - the unit's own flags reach the figures: a header that selects its frame on a macro the
 #     compile command's -f flag predefines answers the wider one;
-#   - the real app_stack_roots.txt parses.
+#   - an image not linked fails on a preset its thread names and passes on any other;
+#   - the real app_stack_roots.txt parses, and each thread names only presets the trap_redzone
+#     gate runs on for its arch.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -95,22 +97,22 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
         write(os.path.join(build, 'app1', 'app1.map'), loads + carve_line)
     write(os.path.join(build, 'app2', 'app2.map'), 'LOAD a.cc.o\nLOAD c.cc.o\n' + carve_line)
     decl = ('need plant header=hdr.h frame=PLANT_FRAME zone=PLANT_ZONE reason: planted\n'
-            'thread plant app1 t root=a.cc:entry stack=PLANT_STACK reason: planted\n')
+            'thread plant app1 t root=a.cc:entry stack=PLANT_STACK presets=p1 reason: planted\n')
     if sys_sized:
         decl += 'unsized plant sys 0 reason: planted\n'
     write(os.path.join(tmp, 'decl.txt'), decl)
 
 
-def run():
+def run(preset):
     r = subprocess.run(['python3', '-B', tool, '--ci-dir', build, '--src', src,
-                        '--arch', 'plant', '--decl', os.path.join(tmp, 'decl.txt')],
+                        '--arch', 'plant', '--preset', preset, '--decl', os.path.join(tmp, 'decl.txt')],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return r.returncode, r.stdout.decode('utf-8', 'replace')
 
 
-def expect(what, want_rc, words, **kw):
+def expect(what, want_rc, words, preset='p1', **kw):
     plant(**kw)
-    rc, out = run()
+    rc, out = run(preset)
     if rc != want_rc:
         die('%s: exit %d, want %d\n%s' % (what, rc, want_rc, out))
     for w in words:
@@ -132,7 +134,10 @@ expect('an indirect call fails', 1, ['UNBOUND INDIRECT SITE'], indirect=True)
 expect('both images linking libfn is ambiguous', 1, ['AMBIGUOUS DEFINITION'], both=True)
 expect('the -f flag reaches the header', 1, ['PLANT_FRAME 104', 'STACK BELOW ITS THREAD'],
        fflag='-ffast-math')
-expect('an image not linked is named', 0, ['image not linked on this preset'], map1=False)
+expect('an image not linked where its thread is bounded fails', 1,
+       ['IMAGE NOT LINKED: app1/t is bounded on p1'], map1=False)
+expect('an image not linked elsewhere is named', 0, ['app1/t: not bounded on p2'], preset='p2',
+       map1=False)
 
 # The real declarations parse, for every arch they name, on a host that builds none of them.
 sys.path.insert(0, os.path.dirname(os.path.abspath(tool)))
@@ -142,6 +147,9 @@ real = os.path.join(os.path.dirname(os.path.abspath(tool)), 'app_stack_roots.txt
 arches = set(f[1] for _n, f, _r in trap_redzone.records(real) if len(f) > 1)
 if not arches:
     die('%s declares nothing' % real)
+roots = os.path.join(os.path.dirname(os.path.abspath(tool)), 'trap_redzone_roots.txt')
+gated = set((f[1], f[2]) for _n, f, _r in trap_redzone.records(roots)
+            if len(f) == 3 and f[0] == 'preset')
 for arch in sorted(arches):
     try:
         d = app_stack.Decl(real, arch)
@@ -149,5 +157,10 @@ for arch in sorted(arches):
         die(str(e))
     if not d.threads:
         die('%s: %s has records and no thread' % (real, arch))
+    for image, name, _root, _stack, presets in d.threads:
+        for preset in sorted(presets):
+            if (arch, preset) not in gated:
+                die('%s: %s/%s is bounded on %s, which %s runs no trap_redzone gate on'
+                    % (real, image, name, preset, os.path.basename(roots)))
 print('app_stack control: %s parses for %s' % (os.path.basename(real), ', '.join(sorted(arches))))
 PYEOF

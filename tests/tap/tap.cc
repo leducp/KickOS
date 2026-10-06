@@ -48,6 +48,8 @@ namespace tap
             FAIL
         };
         Verdict g_verdict = Verdict::PASS;
+        // The tag of a skip recorded through skip_tagged, 0 for any other.
+        unsigned g_skip_tag = 0;
         char g_msg[192];
         static_assert(sizeof(g_msg) > REASON_CHARS_MAX);
         // Orthogonal to the verdict, and that is the whole of the category: the arm runs and
@@ -129,7 +131,7 @@ namespace tap
 
         // The two skip categories rank together: first skip of either kind wins, and a fail
         // recorded later still outranks both.
-        void record_skip(Verdict v, char const* fmt, va_list ap)
+        void record_skip(Verdict v, unsigned tag, char const* fmt, va_list ap)
         {
             if (g_verdict == Verdict::FAIL or g_verdict == Verdict::SKIP
                 or g_verdict == Verdict::SKIP_VACUOUS)
@@ -138,6 +140,7 @@ namespace tap
             }
             record(g_msg, sizeof(g_msg), fmt, ap);
             g_verdict = v;
+            g_skip_tag = tag;
         }
 
         // Is this thread's stdout cap seated (a console driver published the console)?
@@ -180,7 +183,15 @@ namespace tap
     {
         va_list ap;
         va_start(ap, fmt);
-        record_skip(Verdict::SKIP, fmt, ap);
+        record_skip(Verdict::SKIP, 0, fmt, ap);
+        va_end(ap);
+    }
+
+    void skip_tagged(unsigned tag, char const* fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        record_skip(Verdict::SKIP, tag, fmt, ap);
         va_end(ap);
     }
 
@@ -188,7 +199,7 @@ namespace tap
     {
         va_list ap;
         va_start(ap, fmt);
-        record_skip(Verdict::SKIP_VACUOUS, fmt, ap);
+        record_skip(Verdict::SKIP_VACUOUS, 0, fmt, ap);
         va_end(ap);
     }
 
@@ -222,22 +233,43 @@ namespace tap
         va_end(ap);
     }
 
-    bool nested_skips(TestFn fn)
+    Nested nested_run(TestFn fn, unsigned tag)
     {
         Verdict const outer = g_verdict;
+        unsigned const outer_tag = g_skip_tag;
         char saved[sizeof(g_msg)];
         memcpy(saved, g_msg, sizeof(g_msg));
         g_verdict = Verdict::PASS;
+        g_skip_tag = 0;
         g_msg[0] = 0;
         fn();
-        bool const skipped = g_verdict == Verdict::SKIP;
-        if (not skipped)
+        Nested end = Nested::RAN;
+        if (g_verdict == Verdict::SKIP and g_skip_tag == tag)
         {
-            diag("nested arm did not skip: %s", g_msg);
+            end = Nested::SKIPPED;
+        }
+        else if (g_verdict == Verdict::SKIP or g_verdict == Verdict::SKIP_VACUOUS)
+        {
+            end = Nested::SKIPPED_OTHER;
+            diag("nested arm skipped for another reason: %s", g_msg);
+        }
+        else if (g_verdict == Verdict::FAIL)
+        {
+            end = Nested::FAILED;
+            diag("nested arm failed: %s", g_msg);
+            if (g_after_failure != nullptr)
+            {
+                g_after_failure();
+            }
+        }
+        else
+        {
+            diag("nested arm ran to its end: %s", g_msg);
         }
         g_verdict = outer;
+        g_skip_tag = outer_tag;
         memcpy(g_msg, saved, sizeof(g_msg));
-        return skipped;
+        return end;
     }
 
     void set_after_failure(TestFn fn) { g_after_failure = fn; }
@@ -275,6 +307,7 @@ namespace tap
         for (int i = 0; i < g_count; i++)
         {
             g_verdict = Verdict::PASS;
+            g_skip_tag = 0;
             g_msg[0] = 0;
             g_todo = false;
             g_todo_msg[0] = 0;

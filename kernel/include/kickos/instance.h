@@ -173,6 +173,10 @@ namespace kickos
         // is one of each thread's kernel block on the trap red zone. Read only within the
         // IrqLock hold that wrote it, which is the cross-core kernel lock above one core.
         kos_window window_stage[KICKOS_MAX_THREAD_WINDOWS] = {};
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        // A spawn's region set, under the same rule as window_stage.
+        MpuSet spawn_regions;
+#endif
 #if KICKOS_PRESYNC
         // Per thread slot (aspace.h, presync_begin), and how many are live. Under IrqLock, but
         // for the owner's own reads and its staged run's bytes outside it.

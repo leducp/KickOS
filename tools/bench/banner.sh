@@ -27,12 +27,12 @@ BANNER_COMMIT_RE='commit +[A-Za-z0-9._/+-]+'
 # title row `K <version>` and a commit row `c <label>`. Each is the WHOLE line, so both are held
 # to the line's start and end, and a commit row counts only after a short title: a prose row
 # that lost bytes still reads `   c <hash>` and is recovered below as damaged, never taken here.
-# <log> [title|commit]: the label of the last short commit row, or with `title`/`commit` the line
-# number of the last short row of that kind.
+# <log> [title|commit]: the label of the last short commit row after the last short title, or
+# with `title`/`commit` the line number of the last short row of that kind.
 banner_terse() {
   awk -v want="${2:-label}" '
       { sub(/\r$/, "") }
-      /^K [0-9]+\.[^ ]*$/ { terse = 1; title = NR; next }
+      /^K [0-9]+\.[^ ]*$/ { terse = 1; title = NR; label = ""; next }
       terse && /^c [A-Za-z0-9._\/+-]+$/ { label = substr($0, 3); row = NR }
       END {
         if (want == "title" && title != "") { print title }
@@ -41,8 +41,15 @@ banner_terse() {
       }' "$1"
 }
 
+# A commit row is read only after the last boot's title, so a boot that lost its own row is
+# recovered below as damaged rather than credited with an earlier boot's label.
 banner_label() { # <log> [expected label]
-  _bl=$(grep -aoE "$BANNER_COMMIT_RE" "$1" | tail -1)
+  _bl_from=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
+  _bl_tt=$(banner_terse "$1" title)
+  if [ -n "$_bl_tt" ] && { [ -z "$_bl_from" ] || [ "$_bl_tt" -gt "$_bl_from" ]; }; then
+    _bl_from=$_bl_tt
+  fi
+  _bl=$(tail -n +"${_bl_from:-1}" "$1" | grep -aoE "$BANNER_COMMIT_RE" | tail -1)
   if [ -n "$_bl" ]; then
     printf '%s\n' "${_bl##* }"
     return 0
