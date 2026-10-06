@@ -134,8 +134,8 @@ def problems(texts):
     for f, body in bodies.items():
         if f == HOLDER:
             continue
-        for g in bodies:
-            if g != f and re.search(r'\b%s\b' % re.escape(g), body):
+        for g in set(re.findall(r'\w+', body)):
+            if g != f and g in bodies:
                 callers.setdefault(g, set()).add(f)
     reaching = set()
     todo = list(sites)

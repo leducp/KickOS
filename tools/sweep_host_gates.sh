@@ -25,7 +25,8 @@
 #   SWEEP_OUT=<dir>       build trees, logs and the summary  (default /var/tmp/kickos-hostsweep)
 #   SWEEP_JOBS=<n>        build parallelism WITHIN one preset (default 4)
 #   SWEEP_PAR=<n>         presets at once                     (default nproc / SWEEP_JOBS)
-#   SWEEP_GTEST_PREFIX    CMAKE_PREFIX_PATH for GTest        (default /var/tmp/kickos-conan)
+#   SWEEP_GTEST_PREFIX    CMAKE_PREFIX_PATH for GTest        (default <checkout>/kickos-conan,
+#                         the MAIN checkout's when this tree is a git worktree)
 #                         `-` disables it, which SHRINKS the sim suite; see below.
 #   SWEEP_FORCE=1         redo presets a previous run already passed
 #
@@ -47,7 +48,14 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 OUT="${SWEEP_OUT:-/var/tmp/kickos-hostsweep}"
 JOBS="${SWEEP_JOBS:-4}"
-GPREFIX="${SWEEP_GTEST_PREFIX:-/var/tmp/kickos-conan}"
+# kickos-conan is gitignored, so a worktree has none of its own: the main checkout holds it.
+MAIN="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -n "$MAIN" ]; then
+    MAIN="$(dirname "$MAIN")"
+else
+    MAIN="$ROOT"
+fi
+GPREFIX="${SWEEP_GTEST_PREFIX:-$MAIN/kickos-conan}"
 FORCE="${SWEEP_FORCE:-0}"
 
 # PRESETS AT ONCE. Sized so SWEEP_PAR x SWEEP_JOBS is the core count. Only the BUILD is
@@ -103,7 +111,8 @@ rm -f "$SENTINEL"
 
 PREFIX_ARG=""
 if [ "$GPREFIX" != "-" ]; then
-    [ -d "$GPREFIX" ] || die "SWEEP_GTEST_PREFIX=$GPREFIX is not a directory. Regenerate it
+    [ -f "$GPREFIX/GTestConfig.cmake" ] || die "SWEEP_GTEST_PREFIX=$GPREFIX holds no GTestConfig.cmake,
+      so find_package(GTest) would find nothing there. Regenerate it
       (conan install $ROOT/conan/conanfile.py --output-folder=$GPREFIX -s compiler.cppstd=20 --build=missing),
       point SWEEP_GTEST_PREFIX at another one, or pass SWEEP_GTEST_PREFIX=- to sweep the
       sim with its host unit tests OFF and know that is what you measured."

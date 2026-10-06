@@ -104,7 +104,8 @@ rig_wired() {
 }
 
 # rig_judge <board> <log> <build> <judge> <args>  runs the capture judge <judge> over <log>,
-# with <args> split at each `;` and <board>'s fittings in KOS_WIRED (tests/lib/gate.sh wired).
+# with <args> split at each `;` and then `@<fitting>` for each of <board>'s fittings
+# (tests/lib/gate.sh wired).
 rig_judge() {
     _rj_wired="$(rig_wired "$1")" || return 2
     _rj_log="$2"
@@ -127,5 +128,8 @@ rig_judge() {
         set +f
     fi
     IFS="$_rj_ifs"
-    KOS_WIRED="$_rj_wired" KOS_CAPTURE="$_rj_log" sh "$_rj_judge" "$_rj_build" "$PWD" cmake "$@"
+    for _rj_f in $_rj_wired; do
+        set -- "$@" "@$_rj_f"
+    done
+    KOS_CAPTURE="$_rj_log" sh "$_rj_judge" "$_rj_build" "$PWD" cmake "$@"
 }

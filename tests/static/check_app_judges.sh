@@ -14,7 +14,7 @@
 # and `cache` judges the fixture whole with the replacement as the cache line instead. A second
 # edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
-# `;@<fitting>` for each bench fitting the rig declares on the board (KOS_WIRED); none declares none.
+# `;@<fitting>` for each bench fitting the rig declares on the board; none declares none.
 # Every judge an app CMake or a gate fragment names must have a passing row, and every app a
 # board directory builds names a judge, is human-judged or sits on WAIVED. With --listing, every
 # (judge, arguments) pair one build's image listing names must have a row.
@@ -613,18 +613,7 @@ judged() {
     IFS="$_jd_ifs"
     _jd_script="$1"
     shift
-    _jd_wired=""
-    _jd_n=$#
-    while [ "$_jd_n" -gt 0 ]; do
-        case "$1" in
-            @*) _jd_wired="$_jd_wired ${1#@}" ;;
-            *) set -- "$@" "$1" ;;
-        esac
-        shift
-        _jd_n=$((_jd_n - 1))
-    done
-    KOS_WIRED="$_jd_wired" KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" \
-        > "$TMP/judge.out" 2>&1
+    KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" > "$TMP/judge.out" 2>&1
 }
 
 # <judge> <output>: the NOT EVALUATED clauses in <output> are not exactly those OWED declares.
@@ -764,6 +753,18 @@ $(tail -n 1 "$TMP/judge.out")"
 done <<KEYS
 $(printf '%s\n' "$OWED" | cut -d '|' -f 1 | sort -u)
 KEYS
+
+# A fitting reaches a judge as an argument and from nowhere else: a judge run straight from a
+# shell that exports a fitting list judges the unjumpered capture as unwired.
+plant tests/integration/app_captures/f411spi-unwired.capture none "" "" "$TMP/good.log"
+mkdir -p "$TMP/build"
+: > "$TMP/build/CMakeCache.txt"
+if ! KOS_WIRED=spi1-loopback KOS_FITTINGS=spi1-loopback KOS_CAPTURE="$TMP/good.log" \
+        sh tests/integration/check_f411spi.sh "$TMP/build" "$PWD" cmake > "$TMP/judge.out" 2>&1; then
+    bad "check_f411spi.sh takes a fitting from the environment: $(tail -n 1 "$TMP/judge.out")"
+elif ! grep -qxF 'NOT EVALUATED: loopback (bench wiring absent)' "$TMP/judge.out"; then
+    bad "check_f411spi.sh run with a fitting in the environment does not owe the loopback"
+fi
 
 BOARD_APPS="$(git ls-files 'user/apps/*/*/CMakeLists.txt' | grep -v '^user/apps/common/')"
 [ -n "$BOARD_APPS" ] || fail "git ls-files found no board app, so the judge check below reads nothing"

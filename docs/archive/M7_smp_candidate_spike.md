@@ -3,6 +3,11 @@
 
 # SMP candidates and the staged model (M7)
 
+> **ESP32-C6 timing in this record, corrected at M10.5:** the C6 core ran at 40 MHz (XTAL, the
+> reset selection), not the 160 MHz stated here, and the kernel converted MTIME at 160 MHz. C6
+> cycle counts stand; C6 nanosecond figures read 4x short and per-second rates and the LP RTC
+> rate 4x high.
+
 > **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M7 is the
 > milestone after the MMU, which is M6; the M4/M5 driver era returns at M11.
 

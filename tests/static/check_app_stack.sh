@@ -6,7 +6,9 @@
 # hand-written .ci files and link maps. Each arm states what must hold:
 #   - a thread whose need equals its stack passes, and one byte less fails;
 #   - the image's thread-local carve comes off the stack;
-#   - a reachable node with no frame and no unsized record fails, as does an indirect call;
+#   - a reachable node with no frame and no unsized record fails, as does an indirect call no
+#     site record binds; a bound site is charged its callee, and the trap roots' unsized
+#     records size a node too, never one the declarations also size;
 #   - a deeper definition in a unit only the other image links is not charged, and fails as
 #     ambiguous once both are linked;
 #   - the unit's own flags reach the figures: a header that selects its frame on a macro the
@@ -60,7 +62,7 @@ def edge(a, b, loc):
 
 
 def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, both=False,
-          fflag='', map1=True):
+          fflag='', map1=True, bound=False, roots_sys=None):
     for d in (src, build):
         subprocess.run(['rm', '-rf', d])
     write(os.path.join(src, 'hdr.h'),
@@ -101,11 +103,24 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     if sys_sized:
         decl += 'unsized plant sys 0 reason: planted\n'
     write(os.path.join(tmp, 'decl.txt'), decl)
+    roots = ('arch plant header=hdr.h\npreset plant p1\npreset plant p2\n'
+             'floor plant files=1 nodes=1 reason: planted\n'
+             'class plant T frame=PLANT_FRAME depth=PLANT_ZONE\n'
+             'root plant T NONE reason: planted\n')
+    if roots_sys is not None:
+        roots += 'unsized plant sys %d reason: planted\n' % roots_sys
+    write(os.path.join(tmp, 'roots.txt'), roots)
+    sites = ''
+    if bound:
+        sites = 'site plant * helper@1/1 libfn reason: planted\n'
+    write(os.path.join(tmp, 'indirect.txt'), sites)
 
 
 def run(preset):
     r = subprocess.run(['python3', '-B', tool, '--ci-dir', build, '--src', src,
-                        '--arch', 'plant', '--preset', preset, '--decl', os.path.join(tmp, 'decl.txt')],
+                        '--arch', 'plant', '--preset', preset, '--decl', os.path.join(tmp, 'decl.txt'),
+                        '--roots', os.path.join(tmp, 'roots.txt'),
+                        '--indirect', os.path.join(tmp, 'indirect.txt'), '--kernel-cores', '1'],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return r.returncode, r.stdout.decode('utf-8', 'replace')
 
@@ -131,6 +146,11 @@ expect('one carve byte more fails', 1, ['tls carve 17', 'STACK BELOW ITS THREAD'
 expect('an unsized reachable node fails', 1, ['UNSIZED REACHABLE NODE', 'reaches sys'],
        sys_sized=False)
 expect('an indirect call fails', 1, ['UNBOUND INDIRECT SITE'], indirect=True)
+expect('an indirect call bound to its callee is charged it', 1,
+       ['= 898 bytes', 'STACK BELOW ITS THREAD'], indirect=True, bound=True)
+expect('the trap roots size a node the declarations leave unsized', 1,
+       ['= 888 bytes', 'STACK BELOW ITS THREAD'], sys_sized=False, roots_sys=10)
+expect('a node sized in both files is refused', 2, ['declared in both'], roots_sys=10)
 expect('both images linking libfn is ambiguous', 1, ['AMBIGUOUS DEFINITION'], both=True)
 expect('the -f flag reaches the header', 1, ['PLANT_FRAME 104', 'STACK BELOW ITS THREAD'],
        fflag='-ffast-math')

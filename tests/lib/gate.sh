@@ -1348,12 +1348,34 @@ cnot_evaluated() { # <clause>
     echo "NOT EVALUATED: $1"
 }
 
-# A bench fitting the rig declares on the captured board: KOS_WIRED, which tools/bench/rig.sh
-# fills from RIG_WIRED_<BOARD>. Unset declares none, so a clause resting on a fitting is owed.
+# The bench fittings the rig declares on the captured board, which a capture judge takes as
+# `@<fitting>` arguments (tools/bench/rig.sh rig_judge) and never from the environment. They are
+# taken out of the judge's own arguments here, so its positional reads never see them.
+KOS_FITTINGS=""
+if [ -n "${KOS_CAPTURE:-}" ]; then
+    _kf_n=$#
+    while [ "$_kf_n" -gt 0 ]; do
+        case "$1" in
+            @*)
+                KOS_FITTINGS="$KOS_FITTINGS ${1#@}"
+                ;;
+            *)
+                set -- "$@" "$1"
+                ;;
+        esac
+        shift
+        _kf_n=$((_kf_n - 1))
+    done
+fi
+
+# Whether the rig declares <fitting>; none declared, a clause resting on one is owed.
 wired() { # <fitting>
-    case " ${KOS_WIRED:-} " in
-        *" $1 "*) return 0 ;;
-        *) ;;
+    case " $KOS_FITTINGS " in
+        *" $1 "*)
+            return 0
+            ;;
+        *)
+            ;;
     esac
     return 1
 }

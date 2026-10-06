@@ -102,10 +102,8 @@ static_assert(KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST == KICKOS_RX_TRAP_KERNEL_DEPT
               "two depths are one measurement");
 
 // The floor must DOMINATE the red zone, or a thread spawned at the floor passes the spawn
-// check and is then refused by the guard on every syscall it makes. Unlike the two ARM
-// backends this needs no entry-frame term: RX accepts interrupts on the ISP, so nothing is
-// spent above the USP the guard validates.
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS,
+// check and is then refused by the guard on every syscall it makes.
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RX_TRAP_REDZONE_SYS + KICKOS_RX_TRAP_ENTRY_FRAME,
               "KICKOS_MIN_STACK_SIZE is below the rxv3 syscall red zone: raise the "
               "per-arch default in Kconfig, never the red zone, which is a measurement");
 // The lowest word of the block is the overflow canary (kernel/thread/thread.cc), so the

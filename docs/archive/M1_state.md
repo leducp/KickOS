@@ -2,6 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # M1 validation -- final state
 
+> **ESP32-C6 timing in this record, qualified at M10.5:** the kernel converted MTIME at 160 MHz,
+> which the first bring-up measured on its boot path; every later EN-reset boot ran at 40 MHz
+> (XTAL, the reset selection), and which of the two these figures were taken at is not recorded.
+> C6 cycle counts stand either way; at 40 MHz its nanosecond figures read 4x short.
+
 M1 is the uniformity / bring-up milestone: **every board boots, has a console, runs the
 selftest, panics visibly, and runs at its true (or safely-degraded) clock.** This file records
 the validated end state. Raw console captures are in `M1_raw_meas.md`; per-board pin/flash

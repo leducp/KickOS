@@ -1640,8 +1640,9 @@ inside the tree.
       had been wrong. Nothing computes with the seam either: the retune's refusal path returns it
       unmodified, the dispatch arm casts it, `ampdiag` prints it, and the two clock apps print it.
       `t_cpu_clock_hz` already accepted 0 for the host sim and passes unchanged on a board now
-      answering it. `esp32c6` is untouched at a real 160 MHz, its counter reading a CLINT MTIME that
-      IS core-clocked, so its two rates legitimately agree. The rv64 definition itself is gone in
+      answering it. `esp32c6` is untouched, its counter reading a CLINT MTIME that IS core-clocked,
+      so its two rates legitimately agree; that rate is 40 MHz (XTAL), not the 160 MHz assumed here
+      until M10.5, and `arch_init` now reads it off PCR. The rv64 definition itself is gone in
       M8.7: `arch/sim/system_core_clock_default.cc` makes a missing definition a link failure only
       on the arches whose `arch_cpu_clock_hz` reads the symbol, which rv64imac is not, so only
       `virt_rv32` publishes 0 now.
@@ -4286,7 +4287,7 @@ below, not duplicated in this section.
       **M8.11 TOOK THE MEASUREMENT AND HANDS THE MECHANISM TO M9.3.** The worst-case sweep prices a
       masked span directly: on `esp32c6-wroom` a 256-byte span costs 2560 cycles against a 208-cycle
       floor at zero bytes, and on `f411disco` 2816 against 52, so ONE copy at `KOS_EP_MSG_MAX` is
-      worth about 15 us of added interrupt latency on the C6 and 34 us on the F411, against a bare
+      worth about 59 us of added interrupt latency on the C6 (40 MHz) and 34 us on the F411, against a bare
       entry of 192 and 36 cycles. Two such copies happen per message. The item is therefore real and
       it is an ISR-latency item exactly as filed. What it needs is the REPLY side holding its slot
       until the receiver has copied, which is the ring lifetime M9.3 designs (the kinds, the depth

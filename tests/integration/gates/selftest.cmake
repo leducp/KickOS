@@ -42,8 +42,11 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     call_donation call_donation_hold call_donation_slow call_donation_pending
     reply_recv_notify reply_recv_notify_park
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
-    mutex_owner_died_nowaiter aspace_two_spaces_same_grant
-    parked_frame_hostile)
+    mutex_owner_died_nowaiter)
+  # Registered only where tasks have address spaces of their own.
+  if(KICKOS_HAVE_ASPACE)
+    list(APPEND KICKOS_EXPECT_SKIPS aspace_two_spaces_same_grant parked_frame_hostile)
+  endif()
 endif()
 
 # The arms over the sync a system call makes outside the kernel lock, which rv64imac, having no

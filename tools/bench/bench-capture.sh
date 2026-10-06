@@ -187,8 +187,16 @@ else
   echo "=== $BOARD  console <its own USB CDC, after the flash>  image $IMG"
 fi
 : > "$LOG" || refuse "cannot write $LOG"
-# Only the Espressif route stamps arrival times; a stale sidecar would be judged as this run's.
-rm -f "$LOG.times"
+# Every route's lines are stamped on arrival here, for a judge that times the board against this
+# host. It stops at the capture window's end, before a route cuts the log's head away.
+python3 "$HERE/stamp_lines.py" "$LOG" "$$" &
+STAMPER=$!
+stop_stamper() {
+  [ -n "$STAMPER" ] || return 0
+  kill -TERM "$STAMPER" 2>/dev/null
+  wait "$STAMPER" 2>/dev/null
+  STAMPER=""
+}
 
 READER=""
 # A reader armed before the flash must still be alive after it. An FTDI reverts min/time
@@ -205,6 +213,7 @@ check_reader() {
 # actually matters is whether the LOG is complete, and the plan and count checks at the bottom
 # decide that.
 note_reader() {
+  stop_stamper
   [ -n "$READER" ] || return 0
   ps -p "$READER" > /dev/null && return 0
   echo "NOTE: the reader exited before the window closed (EOF on a quiet port). The counts" >&2
@@ -275,16 +284,16 @@ case $BOARD in
     sleep 1
     check_reader "on arming"
     : > "$LOG"
+    # Taken BEFORE the reset: the core restarts at the read's detach, ahead of st-flash's exit,
+    # so the boot's first lines are already in the log when the command returns. What the earlier
+    # image prints past this until the connect stops it carries no banner title.
+    _reset_bytes=$(wc -c < "$LOG")
     if ! WOUT=$(FLASH_STLINK_RESET=1 FLASH_TOOL=stlink FLASH_IMAGE="$IMG" \
         "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
       kill $READER 2>/dev/null
       printf '%s\n' "$WOUT" | tail -8 >&2
       refuse "the $BOARD reset after the write failed"
     fi
-    # The core stops at the read's connect under reset and restarts at its detach, so no byte of
-    # the earlier image lands past this while st-flash outlasts the console's delivery latency; a
-    # banner of the reset's own boot that lands ahead of it is refused, never kept.
-    _reset_bytes=$(wc -c < "$LOG")
     sleep "${CAP_SECS:-25}"
     note_reader
     kill $READER 2>/dev/null
@@ -491,6 +500,7 @@ case $BOARD in
     stop_wrapped_reader
     ;;
 esac
+stop_stamper
 
 # Every `KickOS: ` line the log holds, echoed before this script's own verdict: an image that
 # refuses by name says why it produced no plan line.

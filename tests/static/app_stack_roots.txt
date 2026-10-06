@@ -46,3 +46,59 @@ thread  armv7m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_
 unsized armv7m arch_syscall 0 reason: switch.S, a load, the svc and bx lr, which write no stack
 unsized armv7m _free_r 16 calls=__malloc_lock,__malloc_unlock \
                reason: newlib nano, measured on the linked image: push {r4, lr} then sp lowered by 8, and __malloc_unlock is a tail call
+
+# --- armv6m ------------------------------------------------------------------------------
+need    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h \
+               frame=KICKOS_ARMV6M_TRAP_ENTRY_FRAME zone=KICKOS_ARMV6M_TRAP_NEED_SVC \
+               reason: the SVC guard's red zone below the validated PSP and the hardware frame above it, which dominate a preemption's frame and the PendSV push
+thread  armv6m reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=microbit,picopi-st \
+               reason: the published console driver, spawned on a stack main allocates
+thread  armv6m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=microbit,picopi-st \
+               reason: the published console driver, spawned on a stack main allocates
+unsized armv6m arch_syscall 4 reason: switch.S, a push {r4} popped again ahead of the svc, then bx lr
+unsized armv6m _free_r 16 calls=__malloc_lock,__malloc_unlock \
+               reason: newlib nano, measured on the linked microbit image: push {r4, r5, r6, lr} and no sub
+
+# --- rv32imac ----------------------------------------------------------------------------
+need    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h \
+               frame=KICKOS_RV_TRAP_ENTRY_FRAME zone=KICKOS_RV_TRAP_NEED_USER \
+               reason: a U-mode trap builds its frame on the kernel block and writes nothing on the thread's stack
+thread  rv32imac reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-riscv,qemu-riscv-flat,qemu-riscv-bench,esp32c6-wroom-st \
+               presets=esp32c6-wroom-amp2-n0,esp32c6-wroom-amp2-n1 \
+               reason: the published console driver, spawned on a stack main allocates
+thread  rv32imac reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=qemu-riscv,qemu-riscv-flat,qemu-riscv-bench,esp32c6-wroom-st \
+               presets=esp32c6-wroom-amp2-n0,esp32c6-wroom-amp2-n1 \
+               reason: the published console driver, spawned on a stack main allocates
+unsized rv32imac arch_syscall 0 reason: switch.S, an ecall and a ret, which write no stack
+
+# --- rxv3 --------------------------------------------------------------------------------
+need    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h \
+               frame=KICKOS_RX_TRAP_ENTRY_FRAME zone=KICKOS_RX_TRAP_REDZONE_SYS \
+               reason: the syscall guard's red zone below the USP, which dominates a preemption's save; nothing lands above it
+thread  rxv3 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=rx72m-st,rx72m-bench \
+               reason: the published console driver, spawned on a stack main allocates
+thread  rxv3 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=rx72m-st,rx72m-bench \
+               reason: the published console driver, spawned on a stack main allocates
+unsized rxv3 arch_syscall 4 reason: switch.S, an int #1 and an rts; the 4 is the return address the caller pushed, which an rx-elf frame charges to the callee
+
+# --- lx6 ---------------------------------------------------------------------------------
+# No user mode: a syscall is a plain call, so the walk runs down the kernel's own paths, and a
+# level-1 interrupt builds its frame and runs its dispatch on whatever stack it interrupts.
+need    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h \
+               frame=KICKOS_LX6_TRAP_FRAME zone=KICKOS_LX6_TRAP_DEPTH \
+               reason: a level-1 interrupt's frame and its dispatch, both on the interrupted thread's stack, which nothing bounds
+thread  lx6 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=esp32-wroom-st,esp32-wroom-smp,esp32-wroom-bench,esp32-wroom-benchsmp \
+               reason: the published console driver, spawned on a stack main allocates
+thread  lx6 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               presets=esp32-wroom-st,esp32-wroom-smp,esp32-wroom-bench,esp32-wroom-benchsmp \
+               reason: the published console driver, spawned on a stack main allocates
+unsized lx6 _free_r 32 calls=__malloc_lock,__malloc_unlock \
+               reason: newlib, measured on the linked images: entry a1 32 and call8 into the two
+unsized lx6 __umoddi3 32 reason: libgcc's _umoddi3.o, entry a1 32, and it references no other symbol

@@ -152,6 +152,10 @@ extern "C"
     }
 
     void arch_context_init(struct arch_context*, void (*)(void*), void*, void*, size_t, int) {}
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    void arch_trace_stamp_id(struct arch_context*, uint16_t) {}
+#endif
 }
 
 namespace kickos

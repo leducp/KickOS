@@ -56,7 +56,7 @@ printf '[blink] tick 43\r\n[blink] tick 44\r\n' >> "$TMP/none"
 if cut_log none "$SIZE"; then
     bad "a capture in which no boot follows the reset is not refused"
 fi
-grep -q 'no whole banner title or commit line follows the reset' "$TMP/why" \
+grep -q 'no whole banner title follows the reset' "$TMP/why" \
     || bad "the no-boot refusal says: $(cat "$TMP/why")"
 
 # The earlier boot's own banner ahead of the reset is no boot the reset started.
@@ -73,14 +73,43 @@ if cut_log pretitle-ticks "$SIZE"; then
     bad "a capture whose only banner precedes the reset, with lines after it, is not refused"
 fi
 
-tail_of_earlier damaged
+# The earlier image prints on past the reset point until the connect stops it.
+tail_of_earlier late
+printf 'ck 43\r\n[blink] tick 44\r\nK 0.5.1\r\n\r\nb f302nucleo\r\nc 0355b756\r\n[hello] up\r\n' >> "$TMP/late"
+cut_log late "$SIZE" || bad "a terse boot after the earlier image's last lines is refused: $(cat "$TMP/why")"
+head -n 1 "$TMP/late" | grep -q '^K 0.5.1' \
+    || bad "the cut does not start at the terse title: $(head -n 1 "$TMP/late")"
+
+# A boot whose head landed ahead of the reset point: what follows it is no whole banner.
+tail_of_earlier headless
+printf '\r\nm off\r\ns tickless\r\nc 0355b756\r\nh 1\r\n\r\n[hello] up\r\n' >> "$TMP/headless"
+if cut_log headless "$SIZE"; then
+    bad "a capture whose boot lost its banner title ahead of the reset point is kept headless"
+fi
+grep -q 'arrived without its banner title' "$TMP/why" \
+    || bad "the headless refusal says: $(cat "$TMP/why")"
+
+# A damaged title is refused even where a later boot's whole one would anchor a cut, which would
+# hide the first boot.
+for case in damaged notitle onlycommit nobanner; do
+    tail_of_earlier "$case"
+done
 banner "$TMP/damaged" '   KckOS 0.5.1  -  micrkernel RTOS' '   cmmit  0355b756'
 printf '[panicgate] case 1\r\n' >> "$TMP/damaged"
-if cut_log damaged "$SIZE"; then
-    bad "a lone boot whose title and commit both arrived damaged is not refused"
-fi
-grep -q 'no whole banner title or commit line follows the reset' "$TMP/why" \
-    || bad "the damaged-banner refusal says: $(cat "$TMP/why")"
+banner "$TMP/notitle" '   KckOS 0.5.1  -  micrkernel RTOS' "$COMMIT"
+printf '1..3\r\nok 1\r\n' >> "$TMP/notitle"
+banner "$TMP/notitle" "$TITLE" "$COMMIT"
+banner "$TMP/onlycommit" '   KckOS 0.5.1  -  micrkernel RTOS' "$COMMIT"
+banner "$TMP/nobanner" '   KckOS 0.5.1  -  micrkernel RTOS' '   cmmit  0355b756'
+printf '1..3\r\nok 1\r\n' >> "$TMP/nobanner"
+banner "$TMP/nobanner" "$TITLE" "$COMMIT"
+for case in damaged notitle onlycommit nobanner; do
+    if cut_log "$case" "$SIZE"; then
+        bad "the $case capture, whose boot after the reset lost its title, is not refused"
+    fi
+    grep -q 'arrived without its banner title' "$TMP/why" \
+        || bad "the $case refusal says: $(cat "$TMP/why")"
+done
 
 # The line the reset splits joins the earlier output to the reset's first bytes.
 tail_of_earlier joined
@@ -88,34 +117,6 @@ printf 'x\r\n  ==============================================\r\n%s\r\n' "$TITLE
 cut_log joined "$SIZE" || bad "a capture whose reset split a line is refused: $(cat "$TMP/why")"
 head -n 1 "$TMP/joined" | grep -qE '^  =+'"$(printf '\r')"'$' \
     || bad "the line the reset split is read as damage: $(head -n 1 "$TMP/joined")"
-
-tail_of_earlier notitle
-banner "$TMP/notitle" '   KckOS 0.5.1  -  micrkernel RTOS' "$COMMIT"
-printf '1..3\r\nok 1\r\n' >> "$TMP/notitle"
-banner "$TMP/notitle" "$TITLE" "$COMMIT"
-printf '1..3\r\n' >> "$TMP/notitle"
-cut_log notitle "$SIZE" || bad "a damaged title with a whole commit is refused: $(cat "$TMP/why")"
-[ "$(grep -c '^1\.\.3' "$TMP/notitle")" -eq 2 ] || bad "a damaged first title lost the reset's boot"
-if grep -q 'blink' "$TMP/notitle"; then
-    bad "the earlier boot's tail survives a cut at the commit line"
-fi
-
-tail_of_earlier onlycommit
-banner "$TMP/onlycommit" '   KckOS 0.5.1  -  micrkernel RTOS' "$COMMIT"
-printf '[panicgate] case 1\r\n' >> "$TMP/onlycommit"
-cut_log onlycommit "$SIZE" || bad "a lone boot with a damaged title and a whole commit is refused"
-
-tail_of_earlier nobanner
-banner "$TMP/nobanner" '   KckOS 0.5.1  -  micrkernel RTOS' '   cmmit  0355b756'
-printf '1..3\r\nok 1\r\n' >> "$TMP/nobanner"
-banner "$TMP/nobanner" "$TITLE" "$COMMIT"
-printf '1..3\r\n' >> "$TMP/nobanner"
-cut_log nobanner "$SIZE" || bad "a damaged title and commit are refused: $(cat "$TMP/why")"
-[ "$(grep -c '^1\.\.3' "$TMP/nobanner")" -eq 2 ] \
-    || bad "a damaged first title and commit lost the reset's boot"
-if grep -q 'tick 4' "$TMP/nobanner"; then
-    bad "the earlier boot's whole lines survive a cut at the reset"
-fi
 
 mkdir -p "$TMP/bin" "$TMP/tmpdir"
 cat > "$TMP/bin/st-flash" <<'EOF'

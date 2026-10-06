@@ -14,6 +14,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/bench.sh` | ONE board: configure, build, locate the image, then hand off -- locally, or over ssh to the bench host |
 | `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
+| `tools/bench/stamp_lines.py` | stamps each line every capture route appends to the log with its host arrival time, into `<log>.times`, which `bench.sh` fetches beside the log; `wallclock`'s judge times a kernel sleep by it |
 | `tools/bench/rig.sh` | finds and reads the rig config; refuses by name when a required value is absent |
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
 | `tools/bench/board-rows.sh` | sourced: THE per-board table, the probe row that decides presence and the console row a capture opens |
@@ -107,8 +108,9 @@ an alias carries and reach a different machine. A user is never synthesised eith
 
 Some verdicts rest on hardware fitted on the bench rather than on the board: a loopback jumper, or
 a device on a bus. Which of them THIS rig carries is `RIG_WIRED_<BOARD>`, the board name uppercased
-with dashes turned into underscores, holding the names below. `bench.sh` hands the list to the image's judge as
-`KOS_WIRED`, and a judge evaluates a clause resting on a fitting only where the list names it.
+with dashes turned into underscores, holding the names below. `bench.sh` hands each one to the image's judge as
+an `@<fitting>` argument, and a judge evaluates a clause resting on a fitting only where an argument
+names it, never from its environment.
 Elsewhere the capture must still show the transfer, and the judge prints `NOT EVALUATED` for its
 values, so the image is captured but partly owed; a refused open or a failed transfer fails it
 either way. Unset declares nothing: a missing key never reads as a fitted wire, and a misspelt

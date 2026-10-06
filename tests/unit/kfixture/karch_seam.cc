@@ -168,6 +168,8 @@ extern "C"
         return static_cast<uint32_t>(kickos::testfix::g_now_ns);
     }
 
+    void arch_trace_stamp_id(struct arch_context*, uint16_t) {}
+
     int kickos_rtt_write_record_ch1(uint8_t const*, size_t)
     {
         return 1; // accepted: a 0 here would count a drop on every record

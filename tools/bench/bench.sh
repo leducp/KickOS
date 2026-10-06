@@ -50,8 +50,8 @@
 #
 # JUDGE names a gate script, relative to the tree, that reads a capture through KOS_CAPTURE. It
 # runs here over the log just taken, as `<script> <board build> <tree> cmake <args>...`, the args
-# being JUDGE_ARGS split at each `;` and the board's RIG_WIRED_<BOARD> fittings in KOS_WIRED, and
-# its verdict is this run's exit status:
+# being JUDGE_ARGS split at each `;`, then `@<fitting>` for each of the board's RIG_WIRED_<BOARD>
+# fittings, and its verdict is this run's exit status:
 #
 #   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
 #     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
@@ -532,7 +532,6 @@ if rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG" "$LOG" 2>/dev/null; then
   FETCHED=1
   LBYTES=$(wc -c < "$LOG")
 fi
-# The arrival-time sidecar exists only where the capture route stamps lines.
 rsync -a -s -e "$RSH" "$BENCH_HOST:$RLOG.times" "$LOG.times" 2>/dev/null || true
 
 if [ "$RC" -ne 0 ]; then

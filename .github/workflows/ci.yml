@@ -147,10 +147,11 @@ jobs:
         run: |
           tests/ci/ctest_named.sh 'AmpShare\.|AmpShareWindow\.|AmpShareType\.|cached_AmpShareType\.|C6Apm\.|Rp2350Gate\.|OwnerInstances\.|AliasSync\.' \
             --preset sim --no-tests=error --output-on-failure
-      # Run only the two additional telemetry checks. The main sim build covers unit tests.
+      # Build every unit test at the telemetry posture, so each one links there, and run only
+      # the two additional telemetry checks. The main sim build runs the unit tests.
       - name: the ch1 trace decoder gates (sim-telem)
         run: |
-          cmake --preset sim-telem
+          cmake --preset sim-telem -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
           cmake --build --preset sim-telem
           tests/ci/ctest_named.sh 'telemetry_ring_wrap|telemetry_structural' \
             --preset sim-telem --no-tests=error --output-on-failure
